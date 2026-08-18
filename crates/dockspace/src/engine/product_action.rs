@@ -12,7 +12,7 @@ use crate::workspace::WorkspaceIndex;
 
 mod contained;
 
-enum ProductActionPlan {
+pub(super) enum ProductActionPlan {
     Noop(DockspaceActionOutcome),
     Command {
         command: WorkspaceCommand,
@@ -30,8 +30,8 @@ enum CompleteRootMainDisposition {
     PromoteContained { floating: FloatingPresentationId },
 }
 
-#[derive(Debug)]
-enum ProductCommandContext {
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ProductCommandContext {
     Select {
         item: ItemId,
     },
@@ -94,6 +94,12 @@ enum ProductCommandContext {
         surface: SurfaceId,
         floating: FloatingPresentationId,
     },
+    FloatRootRehome {
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+        items: Vec<ItemId>,
+    },
     SetContainedRect {
         root: RootId,
         surface: SurfaceId,
@@ -107,6 +113,60 @@ enum ProductCommandContext {
 }
 
 impl DockEngine {
+    pub(crate) fn prepare_product_action_if_available(
+        &self,
+        action: ProductAction,
+    ) -> Result<Result<PreparedDockAction, DockspaceActionRejection>, EngineError> {
+        if product_presentation_transition_root(action)
+            .is_some_and(|root| self.root_has_pending_presentation_transition(root))
+        {
+            return Ok(Err(DockspaceActionRejection::Conflict));
+        }
+        if let ProductAction::TearOffRoot { root, placement } = action {
+            return self
+                .validate_product_native_tear_off_availability(root, placement, &self.policy)
+                .map(|availability| availability.map(|()| self.prepare_product_action(action)));
+        }
+        if let ProductAction::FloatRoot { root, surface, .. } = action
+            && let Err(reason) = self.validate_product_root_float_availability(root, surface)
+        {
+            return Ok(Err(reason));
+        }
+        if let ProductAction::DockBackRoot { root } = action {
+            match self.native_main_dock_back_target(root) {
+                Ok(Some(surface)) => {
+                    return Ok(self
+                        .validate_product_root_float_availability(root, surface)
+                        .map(|()| self.prepare_product_action(action)));
+                }
+                Ok(None) => {}
+                Err(reason) => return Ok(Err(reason)),
+            }
+        }
+
+        let plan = match self.compile_product_action(action) {
+            Ok(plan) => plan,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        if let ProductActionPlan::Command { command, .. } = &plan
+            && self
+                .product_command_complete_root(&command)
+                .is_some_and(|root| self.root_has_pending_presentation_transition(root))
+        {
+            return Ok(Err(DockspaceActionRejection::Conflict));
+        }
+        if let ProductActionPlan::Command { command, .. } = &plan
+            && let Err(error) = crate::operation::authorize_workspace_command(
+                &self.workspace,
+                &self.policy,
+                &command,
+            )
+        {
+            return Ok(Err(product_command_rejection(action, &error)?));
+        }
+        Ok(Ok(self.prepare_product_action(action)))
+    }
+
     /// Prepares one selection action against the exact published workspace version.
     #[must_use]
     pub const fn prepare_select_item(&self, item: ItemId) -> PreparedDockAction {
@@ -143,6 +203,12 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::DockRoot { root, placement })
     }
 
+    /// Prepares one complete-root dock-back action against the exact published version.
+    #[must_use]
+    pub const fn prepare_dock_root_back(&self, root: RootId) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::DockBackRoot { root })
+    }
+
     /// Prepares one complete-root native tear-off against the exact published version.
     #[must_use]
     pub const fn prepare_tear_off_root(
@@ -151,6 +217,41 @@ impl DockEngine {
         placement: NativeWindowPlacement,
     ) -> PreparedDockAction {
         self.prepare_product_action(ProductAction::TearOffRoot { root, placement })
+    }
+
+    /// Prepares one complete-root move to a native window against the published version.
+    #[must_use]
+    pub const fn prepare_move_root_to_new_window(
+        &self,
+        root: RootId,
+        placement: NativeWindowPlacement,
+    ) -> PreparedDockAction {
+        self.prepare_tear_off_root(root, placement)
+    }
+
+    /// Prepares one complete-root contained-floating action against the published version.
+    #[must_use]
+    pub const fn prepare_float_root(&self, root: RootId, surface: SurfaceId) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::FloatRoot {
+            root,
+            surface,
+            rect: None,
+        })
+    }
+
+    /// Prepares one complete-root contained-floating action with explicit bounds.
+    #[must_use]
+    pub const fn prepare_float_root_at(
+        &self,
+        root: RootId,
+        surface: SurfaceId,
+        rect: LogicalRect,
+    ) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::FloatRoot {
+            root,
+            surface,
+            rect: Some(rect),
+        })
     }
 
     /// Prepares one contained-floating action against the exact published workspace version.
@@ -219,10 +320,21 @@ impl DockEngine {
                 root,
                 placement,
             },
+            ProductAction::DockBackRoot { root } => EngineInput::DockBackRoot { expected, root },
             ProductAction::TearOffRoot { root, placement } => EngineInput::TearOffRoot {
                 expected,
                 root,
                 placement,
+            },
+            ProductAction::FloatRoot {
+                root,
+                surface,
+                rect,
+            } => EngineInput::FloatRoot {
+                expected,
+                root,
+                surface,
+                rect,
             },
             ProductAction::FloatItem {
                 item,
@@ -251,6 +363,8 @@ impl DockEngine {
     pub(super) fn reduce_product_action(
         &mut self,
         input: InputSequence,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
         action: ProductAction,
         policy: &DockPolicySnapshot,
@@ -262,6 +376,14 @@ impl DockEngine {
             return Ok(InputOutcome::StaleRejected {
                 expected,
                 accepted_base,
+            });
+        }
+        if product_presentation_transition_root(action)
+            .is_some_and(|root| self.root_has_pending_presentation_transition(root))
+        {
+            return Ok(InputOutcome::ProductActionRejected {
+                reason: DockspaceActionRejection::Conflict,
+                version: self.version,
             });
         }
 
@@ -283,7 +405,28 @@ impl DockEngine {
             }
             ProductActionPlan::Command { command, context } => (command, context),
         };
-
+        if self
+            .product_command_complete_root(&command)
+            .is_some_and(|root| self.root_has_pending_presentation_transition(root))
+        {
+            return Ok(InputOutcome::ProductActionRejected {
+                reason: DockspaceActionRejection::Conflict,
+                version: self.version,
+            });
+        }
+        if let Some(outcome) = self.reduce_native_product_rehome(
+            input,
+            cause,
+            focus_causal,
+            expected,
+            action,
+            command.clone(),
+            context.clone(),
+            policy,
+            events,
+        )? {
+            return Ok(outcome);
+        }
         match self.reduce_workspace_command(
             input,
             expected,
@@ -317,6 +460,27 @@ impl DockEngine {
             _ => Err(EngineError::ReductionCauseInvariant {
                 detail: "product action command produced an unrelated input outcome",
             }),
+        }
+    }
+
+    pub(super) fn apply_journal_product_action(
+        &mut self,
+        cause: ReductionCause,
+        action: ProductAction,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<Result<DockspaceActionOutcome, DockspaceActionRejection>, EngineError> {
+        let plan = match self.compile_product_action(action) {
+            Ok(plan) => plan,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        let (command, context) = match plan {
+            ProductActionPlan::Noop(outcome) => return Ok(Ok(outcome)),
+            ProductActionPlan::Command { command, context } => (command, context),
+        };
+        match self.apply_journal_workspace_command(cause, &command, policy, events)? {
+            Ok((outcome, changed)) => Ok(Ok(context.map_outcome(outcome, changed)?)),
+            Err(error) => Ok(Err(product_command_rejection(action, &error)?)),
         }
     }
 
@@ -357,7 +521,20 @@ impl DockEngine {
             ProductAction::DockRoot { root, placement } => {
                 self.compile_product_root_move(root, placement)
             }
+            ProductAction::DockBackRoot { root } => self.compile_product_dock_back(root),
             ProductAction::TearOffRoot { .. } => Err(DockspaceActionRejection::Conflict),
+            ProductAction::FloatRoot {
+                root,
+                surface,
+                rect,
+            } => self.compile_product_root_float(
+                root,
+                surface,
+                match rect {
+                    Some(rect) => rect,
+                    None => self.derive_product_root_float_rect(root, surface)?,
+                },
+            ),
             ProductAction::FloatItem {
                 item,
                 surface,
@@ -549,6 +726,31 @@ impl DockEngine {
             .map_err(|_| DockspaceActionRejection::Conflict)
     }
 
+    fn product_command_complete_root(&self, command: &WorkspaceCommand) -> Option<RootId> {
+        match command {
+            WorkspaceCommand::RehomeRoot { source, .. }
+            | WorkspaceCommand::PromoteContained { source, .. } => Some(source.root()),
+            WorkspaceCommand::Move { payload, .. }
+            | WorkspaceCommand::CreateSurfaceRoot {
+                content: RootContent::Move(payload),
+                ..
+            }
+            | WorkspaceCommand::CreateContainedRoot {
+                content: RootContent::Move(payload),
+                ..
+            }
+            | WorkspaceCommand::InstallMainRoot {
+                content: RootContent::Move(payload),
+                ..
+            } => self
+                .capture_complete_root_payload(payload)
+                .ok()
+                .flatten()
+                .map(|source| source.root()),
+            _ => None,
+        }
+    }
+
     fn compile_complete_root_main(
         &self,
         root: RootId,
@@ -707,8 +909,24 @@ impl DockEngine {
     }
 }
 
+const fn product_presentation_transition_root(action: ProductAction) -> Option<RootId> {
+    match action {
+        ProductAction::DockRoot { root, .. }
+        | ProductAction::DockBackRoot { root }
+        | ProductAction::TearOffRoot { root, .. }
+        | ProductAction::FloatRoot { root, .. } => Some(root),
+        ProductAction::SelectItem { .. }
+        | ProductAction::OpenItem { .. }
+        | ProductAction::DockItem { .. }
+        | ProductAction::FloatItem { .. }
+        | ProductAction::SetContainedRect { .. }
+        | ProductAction::RaiseContained { .. }
+        | ProductAction::BringContainedIntoView { .. } => None,
+    }
+}
+
 impl ProductCommandContext {
-    fn map_outcome(
+    pub(super) fn map_outcome(
         self,
         outcome: CommandOutcome,
         changed: bool,
@@ -887,11 +1105,39 @@ impl ProductCommandContext {
                 })
             }
             (
+                Self::FloatRootRehome {
+                    root: expected_root,
+                    surface: expected_surface,
+                    floating: expected_floating,
+                    items,
+                    ..
+                },
+                CommandOutcome::RootRehomed {
+                    root,
+                    surface,
+                    floating: Some(floating),
+                    changed: outcome_changed,
+                },
+            ) if root == expected_root
+                && surface == expected_surface
+                && floating == expected_floating
+                && changed == outcome_changed =>
+            {
+                Ok(DockspaceActionOutcome::RootFloated {
+                    root,
+                    surface,
+                    floating,
+                    items,
+                    changed,
+                })
+            }
+            (
                 Self::FloatCreate {
                     item,
                     root: expected_root,
                     surface: expected_surface,
                     floating: expected_floating,
+                    ..
                 },
                 CommandOutcome::ContainedRootCreated {
                     surface,
@@ -919,6 +1165,7 @@ impl ProductCommandContext {
                     root: expected_root,
                     surface: expected_surface,
                     floating: expected_floating,
+                    ..
                 },
                 CommandOutcome::RootRehomed {
                     root,
@@ -1052,7 +1299,10 @@ pub(super) fn product_command_rejection(
             Ok(DockspaceActionRejection::MainSurfaceUnavailable { surface: *surface })
         }
         CommandError::MissingSurface { surface }
-            if matches!(action, ProductAction::FloatItem { .. }) =>
+            if matches!(
+                action,
+                ProductAction::FloatItem { .. } | ProductAction::FloatRoot { .. }
+            ) =>
         {
             Ok(DockspaceActionRejection::SurfaceUnavailable { surface: *surface })
         }

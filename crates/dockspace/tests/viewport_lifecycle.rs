@@ -16,6 +16,7 @@ use dockspace::effect::{
 use dockspace::engine::{
     BackendIngressProgress, CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
 };
+use dockspace::error::CommandError;
 use dockspace::frame::{
     BindingRetirementOrigin, BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest,
     RecoveryPendingStatus,
@@ -1085,9 +1086,13 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
             (NativeDragSource::Item(item), PresentationHitRegionKind::TabBody(tab)) => {
                 tab.item == item
             }
-            (NativeDragSource::Group(tabs), PresentationHitRegionKind::TabGroupGrip(group)) => {
-                group.tabs == tabs
-            }
+            (
+                NativeDragSource::Group(tabs),
+                PresentationHitRegionKind::TabGroupDrag {
+                    bar: group,
+                    region: dockspace::scene::TabGroupDragRegionKind::LeadingGrip,
+                },
+            ) => group.tabs == tabs,
             _ => false,
         })
         .expect("journal drag source must have an exact receiver");
@@ -3580,17 +3585,17 @@ fn create_ready_with_a_stale_source_is_compensated_without_moving_content() {
 }
 
 #[test]
-fn complete_root_create_rejects_frozen_fingerprint_changes() {
+fn pending_complete_root_create_rejects_fingerprint_changes_atomically() {
     let mut fixture = fixture();
     prepare_child_source_platform(&mut fixture);
-    let payload = MovePayload::Tabs(
-        fixture
-            .engine
-            .workspace()
-            .capture_node_source(ROOT_SOURCE, fixture.source_tabs)
-            .expect("complete tabs root must be current"),
-    );
+    let source_before = fixture
+        .engine
+        .workspace()
+        .capture_node_source(ROOT_SOURCE, fixture.source_tabs)
+        .expect("complete tabs root must be current");
+    let payload = MovePayload::Tabs(source_before.clone());
     let request = start_native_create_with_payload(&mut fixture, payload, ROOT_SOURCE);
+    let version_before = fixture.engine.version();
     let changing_source = fixture
         .engine
         .workspace()
@@ -3602,9 +3607,41 @@ fn complete_root_create_rejects_frozen_fingerprint_changes() {
             source: changing_source,
         },
     );
-    submit_test_input(&mut fixture, input).expect("source mutation must commit");
+    let rejected = submit_test_input(&mut fixture, input).expect("source mutation must reduce");
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::CommandRejected {
+            error: CommandError::SurfaceLifecycleFrozen {
+                surface: SURFACE_SOURCE
+            },
+            version,
+        } if *version == version_before
+    ));
+    assert_eq!(fixture.engine.version(), version_before);
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .capture_node_source(ROOT_SOURCE, fixture.source_tabs)
+            .expect("the rejected mutation preserves the exact source"),
+        source_before
+    );
 
-    observe_ready_and_assert_compensation(&mut fixture, request);
+    let transferred = advance_native_create_to_ownership_transfer(&mut fixture, request);
+    assert!(platform_effects(&fixture, &transferred).iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::CompensatingClose { binding, .. } if *binding == request.binding()
+        )
+    }));
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .surface(SURFACE_NATIVE)
+            .and_then(|surface| surface.main_root),
+        Some(ROOT_SOURCE)
+    );
     assert_eq!(
         fixture
             .engine
@@ -3617,7 +3654,7 @@ fn complete_root_create_rejects_frozen_fingerprint_changes() {
 }
 
 #[test]
-fn complete_single_item_root_create_rejects_replacement_content() {
+fn complete_single_item_root_create_serializes_replacement_after_compensation() {
     let mut fixture = fixture_with_source_items(&[1]);
     prepare_child_source_platform(&mut fixture);
     let payload = MovePayload::Item(
@@ -3637,14 +3674,41 @@ fn complete_single_item_root_create_rejects_replacement_content() {
             content: RootContent::OpenItem(ItemId::new(99)),
         },
     );
-    let replacement = submit_test_input(&mut fixture, input).expect("replacement root must commit");
+    let blocked = submit_test_input(&mut fixture, input).expect("replacement root must reduce");
+    let blocked_outcome = blocked.reduced_inputs()[0].outcome();
+    assert!(
+        matches!(
+            blocked_outcome,
+            InputOutcome::CommandRejected {
+                error: CommandError::SurfaceLifecycleFrozen {
+                    surface: SURFACE_SOURCE
+                },
+                ..
+            }
+        ),
+        "unexpected blocked replacement-root outcome: {blocked_outcome:?}"
+    );
+    assert!(fixture.engine.workspace().root(ROOT_REPLACEMENT).is_none());
+
+    observe_ready_and_assert_compensation(&mut fixture, request);
+
+    let retry = command_input(
+        &fixture.engine,
+        WorkspaceCommand::CreateSurfaceRoot {
+            surface: SURFACE_REPLACEMENT,
+            root: ROOT_REPLACEMENT,
+            content: RootContent::OpenItem(ItemId::new(99)),
+        },
+    );
+    let replacement =
+        submit_test_input(&mut fixture, retry).expect("replacement root must commit after cleanup");
     let replacement_outcome = replacement.reduced_inputs()[0].outcome();
     assert!(
         matches!(
             replacement_outcome,
             InputOutcome::CommandProcessed { changed: true, .. }
         ),
-        "unexpected replacement-root outcome: {replacement_outcome:?}"
+        "unexpected replacement-root outcome after cleanup: {replacement_outcome:?}"
     );
     assert!(fixture.engine.workspace().root(ROOT_REPLACEMENT).is_some());
     assert!(
@@ -3654,8 +3718,6 @@ fn complete_single_item_root_create_rejects_replacement_content() {
             .surface(SURFACE_REPLACEMENT)
             .is_some()
     );
-
-    observe_ready_and_assert_compensation(&mut fixture, request);
     let items = fixture.engine.workspace().item_multiset();
     assert!(items.contains_key(&ItemId::new(99)));
     assert!(!items.contains_key(&ItemId::new(1)));

@@ -23,6 +23,7 @@ use dockspace::interaction::{
     InteractionOutcome, InteractionRejection, InteractionStatus, PreviewResolutionStatus,
     PreviewVisual, ScrollReductionOutcome, ScrollTerminationReason,
 };
+use dockspace::model::DockspaceActionOutcome;
 use dockspace::platform::{
     ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
     PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowInputState,
@@ -1421,8 +1422,10 @@ fn point_inside_tab_group(
         .find(|region| {
             matches!(
                 region.id().kind(),
-                PresentationHitRegionKind::TabGroupGrip(group)
-                    if group.root == tab.id().root && group.tabs == tab.id().tabs
+                PresentationHitRegionKind::TabGroupDrag {
+                    bar: group,
+                    region: dockspace::scene::TabGroupDragRegionKind::LeadingGrip,
+                } if group.root == tab.id().root && group.tabs == tab.id().tabs
             )
         })
         .expect("item's tab stack has an exact group-grip region");
@@ -4621,24 +4624,33 @@ fn journal_contained_close_requires_a_matching_release() {
     complete(&engine, &mut release_frame);
     let release = host.finish(release_frame, &mut engine);
     let [
-        InteractionOutcome::CloseRequested {
-            plan,
-            reused: false,
-        },
+        InteractionOutcome::ProductActionApplied(DockspaceActionOutcome::RootDocked {
+            root,
+            items,
+            changed: true,
+            ..
+        }),
     ] = release.reduced_pointer_edges()[0].interaction_outcomes()
     else {
-        panic!("matching contained release must open one close plan");
+        panic!("matching contained release must dock the floating root back");
     };
-    assert_eq!(plan.items().len(), 1);
-    assert_eq!(plan.items()[0].item(), ItemId::new(2));
+    assert_eq!(*root, CONTAINED_ROOT);
+    assert_eq!(items, &[ItemId::new(2)]);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert!(release.reduced_inputs().is_empty());
     assert!(
         engine
             .workspace()
             .contained_floating(CONTAINED_FLOATING)
-            .is_some()
+            .is_none()
     );
+    assert!(
+        engine
+            .workspace()
+            .item_multiset()
+            .contains_key(&ItemId::new(2))
+    );
+    assert_eq!(engine.active_close_plans().count(), 0);
 }
 
 #[test]

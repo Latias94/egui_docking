@@ -19,8 +19,14 @@ use crate::event::NativeWindowEventRecord;
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NativeWindowClosePolicy {
-    /// Keep the native window open.
+    /// Recover a managed child through its core-owned anchor.
+    ///
+    /// The external application root has no predecessor presentation to
+    /// recover into, so this default accepts that operating-system close and
+    /// retains its logical layout for application-owned shutdown handling.
     #[default]
+    RecoverPresentation,
+    /// Keep the native window open.
     Cancel,
     /// Destroy the native binding while retaining its logical surface roster.
     RetainLayout,
@@ -29,8 +35,12 @@ pub enum NativeWindowClosePolicy {
 }
 
 impl NativeWindowClosePolicy {
-    pub(crate) const fn request(self) -> Option<NativeSurfaceCloseAction> {
+    pub(crate) const fn request(self, is_external_root: bool) -> Option<NativeSurfaceCloseAction> {
         match self {
+            Self::RecoverPresentation if is_external_root => {
+                Some(NativeSurfaceCloseAction::RetainLayout)
+            }
+            Self::RecoverPresentation => Some(NativeSurfaceCloseAction::RecoverPresentation),
             Self::Cancel => None,
             Self::RetainLayout => Some(NativeSurfaceCloseAction::RetainLayout),
             Self::CloseContent => Some(NativeSurfaceCloseAction::CloseContent),

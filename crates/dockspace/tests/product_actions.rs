@@ -3,13 +3,13 @@ use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
-    DockspaceActionRejection, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
-    DockspaceRootLayout, DockspaceSurfaceLayout, NativeWindowPlacement,
+    DockspaceActionRejection, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout,
+    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, NativeWindowPlacement,
 };
 use crate::runtime::{
     DockPresentationConfig, DockspaceCloseRequestRejection, DockspaceHostFrame,
-    DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin, HostFrameReport,
-    HostInputOutcome, SurfaceUnavailableReason,
+    DockspacePresentationCommand, DockspaceRuntimeErrorKind, DockspaceSession,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, SurfaceUnavailableReason,
 };
 
 const MAIN_SURFACE: SurfaceId = SurfaceId::new(10);
@@ -40,6 +40,40 @@ fn session_with_policy(policy: crate::policy::DockPolicy) -> DockspaceSession {
 
 fn session() -> DockspaceSession {
     session_with_policy(crate::policy::DockPolicy::default())
+}
+
+#[test]
+fn presentation_commands_report_current_availability_before_submission() {
+    let session = session();
+
+    let contained = session.presentation_commands(CONTAINED_ROOT);
+    assert_eq!(contained.root(), CONTAINED_ROOT);
+    assert!(matches!(
+        contained
+            .dock_back()
+            .expect("dock-back availability is queryable"),
+        DockspacePresentationCommand::Ready(_)
+    ));
+
+    let docked = session.presentation_commands(MAIN_ROOT);
+    let dock_back = docked
+        .dock_back()
+        .expect("docked root availability is queryable");
+    assert_eq!(
+        dock_back.unavailable_reason(),
+        Some(DockspaceActionRejection::DockBackUnavailable { root: MAIN_ROOT })
+    );
+
+    let placement = NativeWindowPlacement::new(
+        PhysicalRect::new(900.0, 120.0, 420.0, 320.0).expect("native placement validates"),
+    );
+    let native = contained
+        .move_to_new_window(placement)
+        .expect("native availability is queryable");
+    assert_eq!(
+        native.unavailable_reason(),
+        Some(DockspaceActionRejection::PolicyDenied)
+    );
 }
 
 fn commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
@@ -253,7 +287,7 @@ fn prepared_native_root_tear_off_rejects_a_newer_workspace_revision() {
     let placement = NativeWindowPlacement::new(
         PhysicalRect::new(900.0, 120.0, 420.0, 320.0).expect("native placement validates"),
     );
-    let prepared = session.prepare_tear_off_root(CONTAINED_ROOT, placement);
+    let prepared = session.prepare_move_root_to_new_window(CONTAINED_ROOT, placement);
 
     let mut frame = session
         .begin_host_frame()
@@ -280,6 +314,337 @@ fn prepared_native_root_tear_off_rejects_a_newer_workspace_revision() {
         ]
     );
     assert!(session.view().root(CONTAINED_ROOT).is_some());
+}
+
+#[test]
+fn complete_root_cross_surface_float_and_dock_back_use_current_surface() {
+    const TARGET_SURFACE: SurfaceId = SurfaceId::new(30);
+    const EXISTING_ROOT: RootId = RootId::new(301);
+    const EXISTING_ITEM: ItemId = ItemId::new(31);
+    let source = DockspaceSurfaceLayout::new(
+        MAIN_SURFACE,
+        DockspaceRootLayout::new(
+            MAIN_ROOT,
+            DockspaceNode::tabs_with_selection([FIRST, SECOND], Some(SECOND))
+                .expect("source selection validates"),
+        ),
+    );
+    let target = DockspaceSurfaceLayout::new(
+        TARGET_SURFACE,
+        DockspaceRootLayout::new(EXISTING_ROOT, DockspaceNode::tabs([EXISTING_ITEM])),
+    );
+    let layout = DockspaceLayout::new([source, target]).expect("root float layout validates");
+    let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
+        .expect("root float session initializes");
+    let rect = LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("float rect validates");
+
+    let prepared = session.prepare_float_root_at(MAIN_ROOT, TARGET_SURFACE, rect);
+    let mut frame = session.begin_host_frame().expect("root float frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("prepared root float stages");
+    let floated = commit(frame);
+    assert!(matches!(
+        floated.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::RootFloated {
+                root: MAIN_ROOT,
+                surface: TARGET_SURFACE,
+                items,
+                changed: true,
+                ..
+            }
+        )] if items == &[FIRST, SECOND]
+    ));
+    let floating = session
+        .view()
+        .item(FIRST)
+        .and_then(|item| item.contained())
+        .expect("the complete source root becomes contained");
+    assert_eq!(
+        session.view().contained(floating).map(|view| view.rect()),
+        Some(rect)
+    );
+    assert_eq!(
+        session
+            .view()
+            .root(MAIN_ROOT)
+            .and_then(|root| root.content())
+            .and_then(|node| node.tabs())
+            .and_then(|tabs| tabs.selected()),
+        Some(SECOND)
+    );
+    assert!(session.view().surface(MAIN_SURFACE).is_none());
+
+    let prepared = session.prepare_dock_root_back(MAIN_ROOT);
+    let mut frame = session.begin_host_frame().expect("dock-back frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("prepared dock-back stages");
+    let docked = commit(frame);
+    assert!(
+        matches!(
+            docked.inputs(),
+            [HostInputOutcome::ProductActionApplied(
+                DockspaceActionOutcome::RootDocked {
+                    root: MAIN_ROOT,
+                    target_root: EXISTING_ROOT,
+                    items,
+                    changed: true,
+                }
+            )] if items == &[FIRST, SECOND]
+        ),
+        "unexpected dock-back outcomes: {:?}",
+        docked.inputs()
+    );
+    assert!(session.view().surface(MAIN_SURFACE).is_none());
+    assert!(session.view().root(MAIN_ROOT).is_none());
+    assert_eq!(
+        session
+            .view()
+            .surface(TARGET_SURFACE)
+            .and_then(|surface| surface.main_root())
+            .map(|root| root.id()),
+        Some(EXISTING_ROOT)
+    );
+    assert_eq!(
+        session
+            .view()
+            .root(EXISTING_ROOT)
+            .and_then(|root| root.content())
+            .and_then(|node| node.tabs())
+            .and_then(|tabs| tabs.selected()),
+        Some(SECOND)
+    );
+    assert_eq!(
+        session
+            .view()
+            .root(EXISTING_ROOT)
+            .and_then(|root| root.content())
+            .and_then(|node| node.tabs())
+            .map(|tabs| tabs.items()),
+        Some([EXISTING_ITEM, FIRST, SECOND].as_slice())
+    );
+}
+
+#[test]
+fn same_surface_split_root_float_and_dock_back_preserve_root_identity() {
+    const LEFT: ItemId = ItemId::new(31);
+    const RIGHT: ItemId = ItemId::new(32);
+    let source_root = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [DockspaceNode::tabs([LEFT]), DockspaceNode::tabs([RIGHT])],
+    )
+    .expect("split source validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        MAIN_SURFACE,
+        DockspaceRootLayout::new(MAIN_ROOT, source_root),
+    )])
+    .expect("same-surface split layout validates");
+    let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
+        .expect("same-surface split session initializes");
+    let rect = LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("float rect validates");
+
+    let prepared = session.prepare_float_root_at(MAIN_ROOT, MAIN_SURFACE, rect);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("same-surface split float frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("same-surface split float stages");
+    let floated = commit(frame);
+    assert!(matches!(
+        floated.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::RootFloated {
+                root: MAIN_ROOT,
+                surface: MAIN_SURFACE,
+                items,
+                changed: true,
+                ..
+            }
+        )] if items == &[LEFT, RIGHT]
+    ));
+    assert!(
+        session
+            .view()
+            .surface(MAIN_SURFACE)
+            .is_some_and(|surface| surface.is_rootless())
+    );
+    assert!(
+        session
+            .view()
+            .root(MAIN_ROOT)
+            .and_then(|root| root.content())
+            .and_then(|node| node.split())
+            .is_some()
+    );
+
+    let prepared = session.prepare_dock_root_back(MAIN_ROOT);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("same-surface split dock-back frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("same-surface split dock-back stages");
+    let docked = commit(frame);
+    assert!(matches!(
+        docked.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::RootDocked {
+                root: MAIN_ROOT,
+                target_root: MAIN_ROOT,
+                items,
+                changed: true,
+            }
+        )] if items == &[LEFT, RIGHT]
+    ));
+    let restored = session
+        .view()
+        .surface(MAIN_SURFACE)
+        .and_then(|surface| surface.main_root())
+        .expect("the exact split root is promoted on its current surface");
+    assert_eq!(restored.id(), MAIN_ROOT);
+    assert!(restored.content().and_then(|node| node.split()).is_some());
+}
+
+#[test]
+fn cross_surface_split_root_dock_back_uses_current_surface_and_configured_fraction() {
+    const TARGET_SURFACE: SurfaceId = SurfaceId::new(30);
+    const TARGET_ROOT: RootId = RootId::new(301);
+    const LEFT: ItemId = ItemId::new(31);
+    const RIGHT: ItemId = ItemId::new(32);
+    const TARGET_ITEM: ItemId = ItemId::new(33);
+    let source_root = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [DockspaceNode::tabs([LEFT]), DockspaceNode::tabs([RIGHT])],
+    )
+    .expect("split source validates");
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            MAIN_SURFACE,
+            DockspaceRootLayout::new(MAIN_ROOT, source_root),
+        ),
+        DockspaceSurfaceLayout::new(
+            TARGET_SURFACE,
+            DockspaceRootLayout::new(TARGET_ROOT, DockspaceNode::tabs([TARGET_ITEM])),
+        ),
+    ])
+    .expect("split recovery layout validates");
+    let presentation = DockPresentationConfig::builder()
+        .dock_fraction(0.3)
+        .build()
+        .expect("custom dock fraction validates");
+    let mut session = DockspaceSession::from_layout_with_presentation_config(
+        layout,
+        crate::policy::DockPolicy::default(),
+        presentation,
+    )
+    .expect("split recovery session initializes");
+    let rect = LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("float rect validates");
+
+    let prepared = session.prepare_float_root_at(MAIN_ROOT, TARGET_SURFACE, rect);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("split float frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("split float stages");
+    let floated = commit(frame);
+    assert!(matches!(
+        floated.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::RootFloated {
+                root: MAIN_ROOT,
+                surface: TARGET_SURFACE,
+                items,
+                changed: true,
+                ..
+            }
+        )] if items == &[LEFT, RIGHT]
+    ));
+    assert!(session.view().surface(MAIN_SURFACE).is_none());
+
+    let prepared = session.prepare_dock_root_back(MAIN_ROOT);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("split dock-back frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("split dock-back stages");
+    let docked = commit(frame);
+
+    assert!(
+        matches!(
+            docked.inputs(),
+            [HostInputOutcome::ProductActionApplied(
+                DockspaceActionOutcome::RootDocked {
+                    root: MAIN_ROOT,
+                    target_root: TARGET_ROOT,
+                    items,
+                    changed: true,
+                }
+            )] if items == &[LEFT, RIGHT]
+        ),
+        "unexpected split dock-back outcomes: {:?}",
+        docked.inputs()
+    );
+    assert!(session.view().surface(MAIN_SURFACE).is_none());
+    assert!(session.view().root(MAIN_ROOT).is_none());
+    let restored = session
+        .view()
+        .surface(TARGET_SURFACE)
+        .and_then(|surface| surface.main_root())
+        .expect("the split root docks into its current surface");
+    assert_eq!(restored.id(), TARGET_ROOT);
+    let split = restored
+        .content()
+        .and_then(|node| node.split())
+        .expect("a split payload docks at an outer edge");
+    let weights = split.weights().collect::<Vec<_>>();
+    assert_eq!(weights.len(), 3);
+    assert!((weights[0] - 0.7).abs() <= f32::EPSILON, "{weights:?}");
+    assert!(
+        (weights[1] + weights[2] - 0.3).abs() <= f32::EPSILON,
+        "{weights:?}"
+    );
+    for item in [TARGET_ITEM, LEFT, RIGHT] {
+        let location = session.view().item(item).expect("item remains present");
+        assert_eq!(location.surface(), TARGET_SURFACE);
+        assert_eq!(location.root(), TARGET_ROOT);
+    }
+}
+
+#[test]
+fn prepared_root_float_rejects_an_unknown_surface_atomically() {
+    let mut session = session();
+    let version = session.version();
+    let prepared = session.prepare_float_root(MAIN_ROOT, SurfaceId::new(9_999));
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("unknown float frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("unknown target action is structurally accepted");
+    let report = commit(frame);
+
+    assert_eq!(report.before(), version);
+    assert_eq!(report.after(), version);
+    assert!(matches!(
+        report.inputs(),
+        [HostInputOutcome::ProductActionRejected(
+            DockspaceActionRejection::SurfaceUnavailable { surface }
+        )] if *surface == SurfaceId::new(9_999)
+    ));
+    assert_eq!(
+        session
+            .view()
+            .surface(MAIN_SURFACE)
+            .and_then(|surface| surface.main_root())
+            .map(|root| root.id()),
+        Some(MAIN_ROOT)
+    );
 }
 
 #[test]

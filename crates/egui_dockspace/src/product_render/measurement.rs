@@ -48,6 +48,11 @@ impl PaintResources {
         for row in plan.tab_list_menus().flat_map(|menu| menu.rows()) {
             resources.insert_tab(row.tab_visual_id(), row.item(), ui, panes, style);
         }
+        if let Some(decoration) = plan.drag_decoration()
+            && let Some(item) = decoration.ghost_item()
+        {
+            resources.insert_tab(decoration.source_visual(), item, ui, panes, style);
+        }
         resources
     }
 

@@ -117,6 +117,8 @@ pub enum SurfaceCloseDisposition {
         /// Stable logical target; exact geometry and graph proofs stay core-private.
         target: SurfaceId,
     },
+    /// Recover the complete presentation through its core-validated anchor.
+    RecoverPresentation,
     /// Close every content item in the complete source roster.
     CloseContent,
 }
@@ -228,6 +230,8 @@ pub enum SurfaceCloseRequest {
         /// Fully typed destination used to prepare the atomic transaction.
         target: SurfaceRehomeTarget,
     },
+    /// Recover the complete presentation through its core-owned recovery obligation.
+    RecoverPresentation,
     /// Close every content item in the complete source roster.
     CloseContent,
 }
@@ -241,6 +245,7 @@ impl SurfaceCloseRequest {
             Self::RehomeAll { target } => SurfaceCloseDisposition::RehomeAll {
                 target: target.surface(),
             },
+            Self::RecoverPresentation => SurfaceCloseDisposition::RecoverPresentation,
             Self::CloseContent => SurfaceCloseDisposition::CloseContent,
         }
     }
@@ -250,7 +255,7 @@ impl SurfaceCloseRequest {
     pub fn target_surface(&self) -> Option<SurfaceId> {
         match self {
             Self::RehomeAll { target } => Some(target.surface()),
-            Self::RetainLayout | Self::CloseContent => None,
+            Self::RetainLayout | Self::RecoverPresentation | Self::CloseContent => None,
         }
     }
 }

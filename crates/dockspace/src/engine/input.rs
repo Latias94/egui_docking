@@ -339,6 +339,12 @@ pub enum LocalContainedGesturePhase {
 pub(crate) enum LocalTabChromeAction {
     /// Activate one exact scroll or tab-list-menu control.
     ActivateControl(FrozenTabStripControlClick),
+    /// Scroll one exact current tab-strip viewport.
+    ScrollStrip {
+        key: crate::tab_strip::TabStripStateKey,
+        record: TabBarRecord,
+        adjustment: TabScrollAdjustment,
+    },
     /// Select one exact row from the active tab-list menu.
     ActivateMenuRow(FrozenTabListMenuRowClick),
     /// Dismiss the exact active tab-list menu.
@@ -513,6 +519,13 @@ pub enum EngineInput {
         /// Item-, root-, or surface-centric destination.
         placement: crate::model::DockPlacement,
     },
+    /// Dock one complete contained root into the default target selected by core.
+    DockBackRoot {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable root moved as one payload.
+        root: RootId,
+    },
     /// Start one native child-window lifecycle for a complete root.
     TearOffRoot {
         /// Exact workspace version from which this product action was derived.
@@ -521,6 +534,17 @@ pub enum EngineInput {
         root: RootId,
         /// Explicit application-requested outer-window placement.
         placement: crate::model::NativeWindowPlacement,
+    },
+    /// Move one complete root into a contained presentation on an existing surface.
+    FloatRoot {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable complete root moved as one payload.
+        root: RootId,
+        /// Existing target surface.
+        surface: SurfaceId,
+        /// Optional explicit durable bounds; `None` delegates placement to core.
+        rect: Option<crate::geometry::LogicalRect>,
     },
     /// Move one open item into a contained presentation on an existing surface.
     FloatItem {
@@ -585,6 +609,15 @@ pub enum EngineInput {
         /// Stable close-control identity exposed by that candidate.
         target: CloseSceneTarget,
     },
+    /// Dock one exact current-frame contained presentation back into its surface.
+    DockBackLocalContained {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Stable contained presentation exposed by that candidate.
+        floating: crate::ids::FloatingPresentationId,
+    },
     /// Select one exact tab activated by a current-frame framework response.
     SelectLocalSceneTab {
         /// Workspace version from which the local response was captured.
@@ -630,6 +663,19 @@ pub enum EngineInput {
         /// Stable structural splitter identity exposed by that candidate.
         splitter: SplitterSceneId,
         /// Signed displacement along the split axis in logical surface units.
+        delta: f64,
+    },
+    /// Apply one axis of a splitter junction captured from an exact current-frame response.
+    AdjustLocalSplitterJunctionResize {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Complete junction identity exposed by that candidate.
+        junction: crate::scene::SplitterJunctionId,
+        /// Logical split axis adjusted by the semantic control.
+        axis: crate::model::DockspaceAxis,
+        /// Signed displacement shared by every incident splitter on `axis`.
         delta: f64,
     },
     /// Apply one cardinal contained resize captured from an exact current-frame response.
@@ -828,7 +874,9 @@ impl EngineInput {
             | Self::OpenItem { .. }
             | Self::DockItem { .. }
             | Self::DockRoot { .. }
+            | Self::DockBackRoot { .. }
             | Self::TearOffRoot { .. }
+            | Self::FloatRoot { .. }
             | Self::FloatItem { .. }
             | Self::SetContainedRect { .. }
             | Self::RaiseContained { .. }
@@ -836,11 +884,13 @@ impl EngineInput {
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }
+            | Self::DockBackLocalContained { .. }
             | Self::SelectLocalSceneTab { .. }
             | Self::ApplyLocalTabChromeAction { .. }
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
             | Self::AdjustLocalSplitterResize { .. }
+            | Self::AdjustLocalSplitterJunctionResize { .. }
             | Self::AdjustLocalContainedResize { .. }
             | Self::LocalSplitterGesture { .. }
             | Self::LocalTabGesture { .. }

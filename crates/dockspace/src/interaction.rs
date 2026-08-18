@@ -24,6 +24,7 @@ use crate::intent::{
     ContainedTearOffProposal, ContainedTransformKind, NativePresentationOffer, PointerButton,
     PointerId, SurfaceBackgroundRootOffer, TabGestureSource,
 };
+use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use crate::operation::PreparedContentClose;
 use crate::pointer_journal::{
     PointerCaptureOwner, PointerEventDeliveryOwner, PointerStreamId, ScrollCancelReason,
@@ -480,6 +481,13 @@ pub(crate) struct FrozenCloseClick {
     pub(crate) prepared: PreparedContentClose,
 }
 
+/// Exact contained presentation action frozen by an authoritative Click-lane press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrozenContainedDockBackClick {
+    pub(crate) floating: FloatingPresentationId,
+    pub(crate) root: RootId,
+}
+
 /// Exact tab-strip control action frozen by an authoritative Click-lane press.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FrozenTabStripControlClick {
@@ -515,6 +523,7 @@ pub(crate) struct FrozenTabListMenuBackdropClick {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum FrozenClickAction {
     Close(FrozenCloseClick),
+    DockBack(FrozenContainedDockBackClick),
     TabStripControl(FrozenTabStripControlClick),
     TabListMenuRow(FrozenTabListMenuRowClick),
     TabListMenuBlocker(FrozenTabListMenuBlockerClick),
@@ -1092,6 +1101,8 @@ pub enum InteractionRejection {
     /// Another stream already owns the engine's mutually exclusive docking
     /// gesture state. Journal input never replaces it implicitly.
     GestureBusy { status: InteractionStatus },
+    /// A presentation ownership transfer already owns the shared preview lane.
+    PresentationTransitionPending,
     /// A primary press reported a known capture owner incompatible with its
     /// immutable provider endpoint or exact presented native binding.
     CaptureOwnerMismatch {
@@ -1450,6 +1461,10 @@ pub enum InteractionOutcome {
         /// True when repeated activation reused the same unresolved request.
         reused: bool,
     },
+    /// One scene-bound presentation action committed or produced a valid no-op.
+    ProductActionApplied(DockspaceActionOutcome),
+    /// One scene-bound presentation action was rejected without mutation.
+    ProductActionRejected(DockspaceActionRejection),
     /// A core-owned tab-strip control settled on matching release.
     TabStripControlActivated {
         /// Exact control whose press and release matched.
@@ -1714,6 +1729,9 @@ pub(crate) enum PreviewProof {
     Native {
         command: WorkspaceCommand,
         offer: NativePresentationOffer,
+    },
+    PresentationRehome {
+        command: WorkspaceCommand,
     },
 }
 
@@ -2173,6 +2191,37 @@ pub struct InteractionState {
 }
 
 impl InteractionState {
+    pub(crate) fn prepare_presentation_rehome_preview(
+        &mut self,
+        epoch: WorkspaceEpoch,
+        scene: SurfaceSceneStamp,
+        visual: PreviewVisual,
+        proof: PreviewProof,
+    ) -> Result<PublishedPreview, InteractionCounterError> {
+        let generation = self
+            .last_drag_generation
+            .checked_next()
+            .ok_or(InteractionCounterError::DragGenerationExhausted)?;
+        let sequence = self
+            .last_preview_sequence
+            .checked_next()
+            .ok_or(InteractionCounterError::PreviewSequenceExhausted)?;
+        self.last_drag_generation = generation;
+        self.last_preview_sequence = sequence;
+        Ok(PublishedPreview {
+            public: InteractionPreview {
+                token: PreviewToken {
+                    session: DragSessionId::new(epoch, generation),
+                    scene,
+                    sequence,
+                },
+                visual,
+            },
+            proof,
+            painted: false,
+        })
+    }
+
     pub(crate) const fn local_response_gesture_surface(&self) -> Option<SurfaceId> {
         match self.active_owner() {
             Some(owner) => owner.local_response_surface(),

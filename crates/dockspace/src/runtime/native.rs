@@ -347,12 +347,13 @@ impl NativeSurfaceCloseRequest {
 
 /// Product action used to resolve one exact native surface-close edge.
 ///
-/// Rehoming requires an explicit destination program and is intentionally not
-/// part of this minimal facade. Hosts must never guess such a destination from
-/// the current window roster.
+/// Presentation recovery uses the exact core-owned recovery obligation. Hosts
+/// never derive a destination from their current window roster.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeSurfaceCloseAction {
+    /// Recover the complete presentation through its validated recovery anchor.
+    RecoverPresentation,
     /// Destroy the native binding while retaining its logical surface roster.
     RetainLayout,
     /// Close every content item owned by the logical surface.
@@ -362,9 +363,18 @@ pub enum NativeSurfaceCloseAction {
 impl NativeSurfaceCloseAction {
     fn into_request(self) -> crate::close_plan::SurfaceCloseRequest {
         match self {
+            Self::RecoverPresentation => {
+                crate::close_plan::SurfaceCloseRequest::RecoverPresentation
+            }
             Self::RetainLayout => crate::close_plan::SurfaceCloseRequest::RetainLayout,
             Self::CloseContent => crate::close_plan::SurfaceCloseRequest::CloseContent,
         }
+    }
+}
+
+impl Default for NativeSurfaceCloseAction {
+    fn default() -> Self {
+        Self::RecoverPresentation
     }
 }
 

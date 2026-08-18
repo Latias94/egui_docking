@@ -66,8 +66,9 @@ struct NativeExampleApp {
 enum InspectorActionState {
     #[default]
     Idle,
-    AwaitingOutcome,
+    AwaitingTearOffOutcome,
     AwaitingFirstPresentation(SurfaceId),
+    AwaitingDockBackOutcome,
 }
 
 impl InspectorActionState {
@@ -78,7 +79,11 @@ impl InspectorActionState {
 
 impl eframe::App for NativeExampleApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        if matches!(self.action, InspectorActionState::AwaitingOutcome) {
+        if matches!(
+            self.action,
+            InspectorActionState::AwaitingTearOffOutcome
+                | InspectorActionState::AwaitingDockBackOutcome
+        ) {
             self.collect_action_status();
         }
         egui::Panel::top("native-example-controls").show(ui, |ui| {
@@ -130,9 +135,10 @@ impl NativeExampleApp {
                 self.request_inspector_window();
             }
             if inspector_is_detached {
-                ui.label(
-                    "Inspector is live in a second OS window; close is cancelled in this demo.",
-                );
+                if ui.button("Dock Inspector Back").clicked() {
+                    self.request_inspector_dock_back();
+                }
+                ui.label("Inspector is live in a second OS window; closing it also docks it back.");
             } else if !root_presented {
                 ui.label("Waiting for the root output to be presented…");
             } else {
@@ -151,7 +157,14 @@ impl NativeExampleApp {
             ui.strong("Native multiview demo");
             ui.separator();
             ui.spinner();
-            ui.label("Creating and presenting the native child window…");
+            match self.action {
+                InspectorActionState::AwaitingDockBackOutcome => {
+                    ui.label("Presenting Inspector back in the root dockspace…");
+                }
+                _ => {
+                    ui.label("Creating and presenting the native child window…");
+                }
+            }
         });
         if let Some(status) = &self.status {
             ui.small(status);
@@ -168,10 +181,20 @@ impl NativeExampleApp {
             .request_tear_off_root(INSPECTOR_ROOT, placement)
         {
             Ok(()) => {
-                self.action = InspectorActionState::AwaitingOutcome;
+                self.action = InspectorActionState::AwaitingTearOffOutcome;
                 self.status = None;
             }
             Err(error) => self.status = Some(format!("Could not open native window: {error}")),
+        }
+    }
+
+    fn request_inspector_dock_back(&mut self) {
+        match self.dockspace.request_dock_root_back(INSPECTOR_ROOT) {
+            Ok(()) => {
+                self.action = InspectorActionState::AwaitingDockBackOutcome;
+                self.status = None;
+            }
+            Err(error) => self.status = Some(format!("Could not dock Inspector back: {error}")),
         }
     }
 
@@ -179,9 +202,12 @@ impl NativeExampleApp {
         let Some(status) = self.dockspace.take_action_status() else {
             return;
         };
-        match status {
-            DockspaceActionStatus::Applied(
-                DockspaceActionOutcome::NativeRootTearOffRequested { target_surface, .. },
+        match (self.action, status) {
+            (
+                InspectorActionState::AwaitingTearOffOutcome,
+                DockspaceActionStatus::Applied(
+                    DockspaceActionOutcome::NativeRootTearOffRequested { target_surface, .. },
+                ),
             ) => {
                 self.action = InspectorActionState::AwaitingFirstPresentation(target_surface);
                 self.status = Some(
@@ -189,20 +215,38 @@ impl NativeExampleApp {
                         .to_owned(),
                 );
             }
-            DockspaceActionStatus::Applied(outcome) => {
+            (
+                InspectorActionState::AwaitingDockBackOutcome,
+                DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
+                    root: INSPECTOR_ROOT,
+                    changed: true,
+                    ..
+                }),
+            ) => {
+                self.action = InspectorActionState::Idle;
+                self.status =
+                    Some("Inspector was presented back in the root dockspace.".to_owned());
+            }
+            (_, DockspaceActionStatus::Applied(outcome)) => {
                 self.action = InspectorActionState::Idle;
                 self.status = Some(format!(
                     "Unexpected native demo action outcome: {outcome:?}"
                 ));
             }
-            DockspaceActionStatus::Rejected(reason) => {
+            (_, DockspaceActionStatus::Rejected(reason)) => {
                 self.action = InspectorActionState::Idle;
-                self.status = Some(format!("Native child creation was rejected: {reason:?}"));
+                self.status = Some(format!("The presentation action was rejected: {reason:?}"));
             }
-            DockspaceActionStatus::Stale { .. } => {
+            (_, DockspaceActionStatus::Stale { .. }) => {
                 self.action = InspectorActionState::Idle;
                 self.status =
                     Some("The layout changed before the request committed; try again.".to_owned());
+            }
+            (_, DockspaceActionStatus::PresentationFailed { reason, .. }) => {
+                self.action = InspectorActionState::Idle;
+                self.status = Some(format!(
+                    "The target presentation did not complete: {reason:?}"
+                ));
             }
         }
     }

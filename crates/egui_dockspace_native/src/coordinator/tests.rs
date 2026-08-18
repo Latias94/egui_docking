@@ -1,9 +1,14 @@
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use dockspace::model::{
     DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::runtime::{HostInputOutcome, NativeHostCapabilities, SurfaceUnavailableReason};
+use dockspace::runtime::{
+    HostFrameReport, HostInputOutcome, NativeCloseState, NativeHostCapabilities,
+    NativeWindowInputState, NativeWindowPresentationState, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
+};
 use eframe::{NativeViewportVisibilityStatus, egui};
 use winit::event::WindowEvent;
 
@@ -30,6 +35,21 @@ fn native_rect() -> NativePhysicalRect {
     NativePhysicalRect::new(100, 200, 800, 600)
 }
 
+fn ready_window_facts(x: f64) -> NativeWindowFacts {
+    let content = PhysicalRect::new(x, 0.0, 640.0, 480.0).expect("test content bounds validate");
+    let outer =
+        PhysicalRect::new(x - 8.0, -30.0, 656.0, 518.0).expect("test outer bounds validate");
+    let scale = ScaleFactor::new(1.0).expect("test scale validates");
+    NativeWindowFacts::live()
+        .with_content_bounds(content)
+        .with_outer_bounds(outer)
+        .with_native_scale_factor(scale)
+        .with_presentation_scale_factor(scale)
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_close(NativeCloseState::Clear, None)
+}
+
 #[test]
 fn deferred_viewport_rect_requires_exact_physical_pixels() {
     let exact = PhysicalRect::new(-120.0, 48.0, 800.0, 600.0).expect("test rect is valid");
@@ -48,6 +68,34 @@ fn deferred_viewport_rect_never_rounds_or_accepts_empty_extents() {
 
     assert!(exact_native_rect(fractional).is_none());
     assert!(exact_native_rect(empty).is_none());
+}
+
+#[test]
+fn deferred_binding_authority_only_semantically_paints_a_current_surface() {
+    assert_eq!(
+        deferred_binding_authority(true, true, true, true),
+        DeferredBindingAuthority::CurrentSurface
+    );
+    assert_eq!(
+        deferred_binding_authority(true, true, true, false),
+        DeferredBindingAuthority::Retiring
+    );
+    assert_eq!(
+        deferred_binding_authority(true, false, true, true),
+        DeferredBindingAuthority::Retiring
+    );
+}
+
+#[test]
+fn deferred_binding_authority_rejects_foreign_or_forgotten_bindings() {
+    assert_eq!(
+        deferred_binding_authority(false, true, true, true),
+        DeferredBindingAuthority::Invalid
+    );
+    assert_eq!(
+        deferred_binding_authority(true, false, false, false),
+        DeferredBindingAuthority::Invalid
+    );
 }
 
 fn coordinator() -> NativeCoordinator {
@@ -163,8 +211,8 @@ fn register_root_and_child(
     coordinator
         .report_snapshot(
             [
-                (root, NativeWindowFacts::live()),
-                (child, NativeWindowFacts::live()),
+                (root, ready_window_facts(0.0)),
+                (child, ready_window_facts(720.0)),
             ],
             NativeWorkAreaRoster::Unknown,
             test_managed_capabilities(),
@@ -178,6 +226,70 @@ fn register_root_and_child(
         .expect("the live child inventory settles every surface");
     observed.commit().expect("the live child inventory commits");
     (root, child)
+}
+
+fn paint_and_present_all_surfaces(coordinator: &mut NativeCoordinator) -> HostFrameReport {
+    let metrics = UniformSurfaceMetrics::new(
+        LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+        LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+        80.0,
+    )
+    .expect("test metrics validate");
+    let mut measurement = coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native roster measurement frame begins");
+    for surface in measurement.frame.surfaces() {
+        measurement
+            .frame
+            .measure_surface(surface, metrics)
+            .expect("native roster surface measures");
+    }
+    let mut measurement_report = measurement
+        .commit()
+        .expect("native roster measurement frame commits");
+    assert!(measurement_report.take_native_effects().is_empty());
+
+    let mut paint = coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native roster paint frame begins");
+    let surfaces = paint.frame.surfaces();
+    for surface in &surfaces {
+        assert!(
+            paint
+                .frame
+                .paint_plan(*surface)
+                .expect("native roster paint plan resolves")
+                .is_some(),
+            "surface {surface:?} must have a ready native paint plan",
+        );
+        paint
+            .confirm_surface_painted(*surface)
+            .expect("native roster surface paint confirms");
+    }
+    let mut paint_report = paint.commit().expect("native roster paint frame commits");
+    assert!(paint_report.take_native_effects().is_empty());
+    let outputs = paint_report.take_painted_outputs();
+    assert_eq!(outputs.len(), surfaces.len());
+    for output in outputs {
+        coordinator
+            .session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("native roster output presentation records");
+    }
+
+    let mut observed = coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native roster presentation frame begins");
+    observed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("native roster presentation frame settles every surface");
+    let report = observed
+        .commit()
+        .expect("native roster presentation frame commits");
+    coordinator
+        .settle_native_admissions(report.native_admissions())
+        .expect("native roster admissions settle");
+    report
 }
 
 fn live_roster(

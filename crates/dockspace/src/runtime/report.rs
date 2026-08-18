@@ -4,13 +4,15 @@ use std::collections::BTreeSet;
 
 use super::{
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
-    DockspaceCloseRequestRejection, DockspaceCloseResolution, HostCloseRequestOrigin,
-    HostFrameReport, HostInputOutcome, HostSurfaceCommit, NativeEffectRequest,
-    NativeSurfaceBinding, NativeSurfaceCloseRejection, NativeSurfaceCloseRequest,
-    PaintedNativeStagingOutput, PaintedSurfaceOutput, native_effect,
+    DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspacePresentationTransition,
+    DockspacePresentationTransitionResult, HostCloseRequestOrigin, HostFrameReport,
+    HostInputOutcome, HostSurfaceCommit, NativeEffectRequest, NativeSurfaceBinding,
+    NativeSurfaceCloseRejection, NativeSurfaceCloseRequest, PaintedNativeStagingOutput,
+    PaintedSurfaceOutput, native_effect,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
+use crate::event::{PresentationRehomeResult, WorkspaceEventKind};
 use crate::interaction::InteractionOutcome;
 use crate::model::SurfaceId;
 use crate::transition::InputOutcome;
@@ -156,7 +158,7 @@ impl HostFrameReport {
                         accepted: *accepted_base,
                     }),
                     InputOutcome::InteractionProcessed { outcome, .. } => {
-                        interaction_close_request(outcome)
+                        interaction_host_outcome(outcome)
                     }
                     _ => None,
                 };
@@ -171,7 +173,7 @@ impl HostFrameReport {
             }
             for (edge_index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
                 for (outcome_index, outcome) in edge.interaction_outcomes().iter().enumerate() {
-                    if let Some(outcome) = interaction_close_request(outcome) {
+                    if let Some(outcome) = interaction_host_outcome(outcome) {
                         ordered_inputs.push((
                             edge.causal_ordinal().get(),
                             edge_index,
@@ -183,6 +185,46 @@ impl HostFrameReport {
             }
         }
         let inputs = finish_ordered_inputs(ordered_inputs);
+        let presentation_transitions = transition
+            .events()
+            .iter()
+            .filter_map(|event| {
+                let WorkspaceEventKind::PresentationRehomeSettled {
+                    root,
+                    source_surface,
+                    target_surface,
+                    result,
+                } = event.kind()
+                else {
+                    return None;
+                };
+                Some(DockspacePresentationTransition {
+                    root: *root,
+                    source_surface: *source_surface,
+                    target_surface: *target_surface,
+                    result: match result {
+                        PresentationRehomeResult::Applied => {
+                            DockspacePresentationTransitionResult::Applied
+                        }
+                        PresentationRehomeResult::TargetNotPresented => {
+                            DockspacePresentationTransitionResult::TargetNotPresented
+                        }
+                        PresentationRehomeResult::WorkspaceChanged => {
+                            DockspacePresentationTransitionResult::WorkspaceChanged
+                        }
+                        PresentationRehomeResult::PolicyChanged => {
+                            DockspacePresentationTransitionResult::PolicyChanged
+                        }
+                        PresentationRehomeResult::SourceUnavailable => {
+                            DockspacePresentationTransitionResult::SourceUnavailable
+                        }
+                        PresentationRehomeResult::CommandRejected => {
+                            DockspacePresentationTransitionResult::CommandRejected
+                        }
+                    },
+                })
+            })
+            .collect();
         let surface_commits = transition
             .surface_contributions()
             .iter()
@@ -208,6 +250,7 @@ impl HostFrameReport {
             affected_surfaces: repaint_surfaces.clone(),
             surface_commits,
             inputs,
+            presentation_transitions,
             painted_outputs,
             painted_native_staging_outputs,
             native_admissions,
@@ -218,8 +261,14 @@ impl HostFrameReport {
     }
 }
 
-fn interaction_close_request(outcome: &InteractionOutcome) -> Option<HostInputOutcome> {
+fn interaction_host_outcome(outcome: &InteractionOutcome) -> Option<HostInputOutcome> {
     match outcome {
+        InteractionOutcome::ProductActionApplied(outcome) => {
+            Some(HostInputOutcome::ProductActionApplied(outcome.clone()))
+        }
+        InteractionOutcome::ProductActionRejected(reason) => {
+            Some(HostInputOutcome::ProductActionRejected(*reason))
+        }
         InteractionOutcome::CloseRequested { plan, reused } => {
             Some(HostInputOutcome::CloseRequested {
                 plan: DockspaceClosePlan::from_core(plan),

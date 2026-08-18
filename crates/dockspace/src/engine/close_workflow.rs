@@ -870,7 +870,10 @@ impl DockEngine {
             .capabilities()
             .close_cancellation()
             .is_supported();
-        let accept_only_candidate = matches!(&request, SurfaceCloseRequest::RehomeAll { .. });
+        let accept_only_candidate = matches!(
+            &request,
+            SurfaceCloseRequest::RehomeAll { .. } | SurfaceCloseRequest::RecoverPresentation
+        );
         if !close_cancellation_supported && !accept_only_candidate {
             return Ok(self.reject_surface_close_without_cancellation(edge, request));
         }
@@ -1130,7 +1133,7 @@ impl DockEngine {
         PaneFocusDisposition::from_record(self.viewport_focus.panel_focus(surface))
     }
 
-    fn capture_surface_close(
+    pub(super) fn capture_surface_close(
         &self,
         edge: NativeCloseEdge,
         request: &SurfaceCloseRequest,
@@ -1154,6 +1157,28 @@ impl DockEngine {
             }
             SurfaceCloseRequest::RehomeAll { target } => {
                 let transaction = self.compile_surface_rehome(&roster, target, policy)?;
+                Ok(SurfaceCloseCapture {
+                    requirements: Vec::new(),
+                    prepared: PreparedCloseOperation::SurfaceRehome {
+                        roster,
+                        transaction,
+                        recovery_focus,
+                    },
+                })
+            }
+            SurfaceCloseRequest::RecoverPresentation => {
+                let bound = self
+                    .bound_surface_recoveries
+                    .get(&surface)
+                    .filter(|bound| bound.binding == edge.binding())
+                    .ok_or(SurfaceCloseRequestRejection::RehomeProgramUnavailable)?;
+                let target = bound.obligation.target();
+                let facts = self
+                    .freeze_surface_recovery_target(target.host_surface())
+                    .ok_or(SurfaceCloseRequestRejection::RehomeProgramUnavailable)?;
+                let transaction = roster
+                    .compile_recovery_transaction(&self.workspace, target, facts)
+                    .map_err(|_| SurfaceCloseRequestRejection::RehomeProgramUnavailable)?;
                 Ok(SurfaceCloseCapture {
                     requirements: Vec::new(),
                     prepared: PreparedCloseOperation::SurfaceRehome {

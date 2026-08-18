@@ -293,7 +293,7 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
     );
     assert!(
         native
-            .drive_close_policy(NativeWindowClosePolicy::RetainLayout)
+            .drive_close_policy(NativeWindowClosePolicy::RetainLayout, binding.surface())
             .expect("the close request is accepted")
     );
 

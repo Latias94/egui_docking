@@ -13,6 +13,7 @@ impl NativeCoordinator {
     pub(crate) fn drive_close_policy(
         &mut self,
         policy: NativeWindowClosePolicy,
+        external_root: SurfaceId,
     ) -> Result<bool, NativeRuntimeError> {
         let requests = self.close_control.unresolved_requests().collect::<Vec<_>>();
         if requests.is_empty() {
@@ -20,7 +21,7 @@ impl NativeCoordinator {
         }
 
         for close in requests {
-            match policy.request() {
+            match policy.request(close.surface() == external_root) {
                 Some(request) => self.session.request_native_surface_close(close, request)?,
                 None => self.session.cancel_native_surface_close(close)?,
             }
@@ -68,6 +69,7 @@ impl NativeCoordinator {
         &mut self,
         mut report: HostFrameReport,
     ) -> Result<(), NativeRuntimeError> {
+        self.retain_internal_presentation_transitions(&report);
         self.settle_host_frame_inputs(report.inputs());
         self.settle_close_control_inputs(report.inputs())?;
         self.settle_native_admissions(report.native_admissions())?;

@@ -3,7 +3,7 @@
 use std::{error::Error, fmt};
 
 use dockspace::runtime::{DockPresentationConfig, DockPresentationConfigError};
-use egui::{Color32, Rgba, Vec2, Visuals};
+use egui::{Color32, Frame, Margin, Rgba, Style as EguiStyle, Vec2, Visuals};
 
 /// Optional visual overrides applied on top of the current egui theme.
 ///
@@ -77,6 +77,14 @@ pub(crate) struct ResolvedDockVisuals {
     pub(crate) floating_border_color: Color32,
     pub(crate) ghost_fill: Color32,
     pub(crate) ghost_border_color: Color32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ResolvedContainedWindowVisuals {
+    pub(crate) frame: Frame,
+    pub(crate) title_fill: Color32,
+    pub(crate) title_text_color: Color32,
+    pub(crate) title_margin: Margin,
 }
 
 impl DockVisualOverrides {
@@ -192,6 +200,29 @@ pub struct DockStyle {
 impl DockStyle {
     pub(crate) fn resolved_visuals(&self, visuals: &Visuals) -> ResolvedDockVisuals {
         self.visuals.resolve(visuals)
+    }
+
+    pub(crate) fn resolved_contained_window(
+        &self,
+        style: &EguiStyle,
+    ) -> ResolvedContainedWindowVisuals {
+        let mut frame = Frame::window(style);
+        let title_margin = frame.inner_margin;
+        frame.inner_margin = Margin::ZERO;
+        frame.outer_margin = Margin::ZERO;
+        frame.stroke.width = self.floating_border_width;
+        if let Some(fill) = self.visuals.floating_fill {
+            frame.fill = fill;
+        }
+        if let Some(color) = self.visuals.floating_border_color {
+            frame.stroke.color = color;
+        }
+        ResolvedContainedWindowVisuals {
+            frame,
+            title_fill: self.visuals.floating_title_fill.unwrap_or(frame.fill),
+            title_text_color: style.visuals.widgets.noninteractive.fg_stroke.color,
+            title_margin,
+        }
     }
 
     pub(crate) fn presentation_config(
@@ -478,6 +509,39 @@ mod tests {
     }
 
     #[test]
+    fn contained_window_inherits_egui_window_recipe() {
+        let mut egui_style = EguiStyle::default();
+        egui_style.spacing.window_margin = Margin::symmetric(7, 9);
+        egui_style.visuals.window_fill = Color32::from_rgb(31, 41, 59);
+        egui_style.visuals.window_stroke = egui::Stroke::new(2.0, Color32::from_rgb(148, 163, 184));
+        egui_style.visuals.window_corner_radius = egui::CornerRadius::same(11);
+        egui_style.visuals.window_shadow = egui::epaint::Shadow {
+            offset: [2, 3],
+            blur: 12,
+            spread: 1,
+            color: Color32::from_black_alpha(96),
+        };
+        let dock_style = DockStyle {
+            floating_border_width: 2.0,
+            ..DockStyle::default()
+        };
+
+        let resolved = dock_style.resolved_contained_window(&egui_style);
+
+        assert_eq!(resolved.frame.fill, egui_style.visuals.window_fill());
+        assert_eq!(resolved.frame.stroke, egui_style.visuals.window_stroke());
+        assert_eq!(
+            resolved.frame.corner_radius,
+            egui_style.visuals.window_corner_radius
+        );
+        assert_eq!(resolved.frame.shadow, egui_style.visuals.window_shadow);
+        assert_eq!(resolved.frame.inner_margin, Margin::ZERO);
+        assert_eq!(resolved.frame.outer_margin, Margin::ZERO);
+        assert_eq!(resolved.title_margin, egui_style.spacing.window_margin);
+        assert_eq!(resolved.title_fill, egui_style.visuals.window_fill());
+    }
+
+    #[test]
     fn translucent_theme_tokens_keep_their_unmultiplied_color_channels() {
         let mut egui_visuals = Visuals::dark();
         let selection = Color32::from_rgba_unmultiplied(160, 96, 48, 128);
@@ -585,7 +649,7 @@ mod tests {
             Err(DockStyleError::GuideOuterInsetTooSmall)
         );
 
-        style.drop_guide_outer_inset = 64.0;
+        style.drop_guide_outer_inset = 72.0;
         assert_eq!(style.validate(), Ok(()));
     }
 

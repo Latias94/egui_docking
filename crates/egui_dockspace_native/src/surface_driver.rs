@@ -24,6 +24,12 @@ enum SurfaceFrameDisposition {
     RejectIncompletePaint,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeSurfaceUpdate {
+    Semantic,
+    RetainPrevious,
+}
+
 const fn surface_frame_disposition(
     had_ready_plan: bool,
     transient_visuals_complete: bool,
@@ -162,6 +168,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
         Ok(())
     }
 
+    pub(crate) fn request_dock_root_back(
+        &mut self,
+        root: RootId,
+    ) -> Result<(), NativeActionRequestError> {
+        if self.shutdown.is_some() {
+            return Err(NativeActionRequestError::stopped());
+        }
+        let action = self.coordinator.session().prepare_dock_root_back(root);
+        self.application_actions.enqueue(action)?;
+        self.request_root_repaint();
+        Ok(())
+    }
+
     pub(crate) fn request_tear_off_root(
         &mut self,
         root: RootId,
@@ -204,21 +223,42 @@ impl<P: PaneView> NativeRuntimeState<P> {
         &mut self,
         ui: &mut egui::Ui,
         surface: SurfaceId,
-    ) -> Result<(), NativeRuntimeError> {
+    ) -> Result<NativeSurfaceUpdate, NativeRuntimeError> {
         let context = ui.ctx().clone();
         if surface == self.root_surface {
             self.root_context = Some(context.clone());
         }
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
-        let coordinator = &mut self.coordinator;
-        let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
-        let quiescence_recorded =
-            surface == self.root_surface && coordinator.try_report_retirement_quiescence()?;
-        let reduced_callback = coordinator.reduce_callback_head()?;
-        if let Some(error) = coordinator.take_callback_error() {
+        let (pending_effect_reported, quiescence_recorded, reduced_callback, callback_error) = {
+            let coordinator = &mut self.coordinator;
+            let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
+            let quiescence_recorded =
+                surface == self.root_surface && coordinator.try_report_retirement_quiescence()?;
+            let reduced_callback = coordinator.reduce_callback_head()?;
+            let callback_error = coordinator.take_callback_error();
+            (
+                pending_effect_reported,
+                quiescence_recorded,
+                reduced_callback,
+                callback_error,
+            )
+        };
+        let internal_transitions = self.coordinator.take_internal_presentation_transitions();
+        let internal_action_settled = if internal_transitions.is_empty() {
+            false
+        } else {
+            self.application_actions
+                .settle_presentation_transitions(
+                    &internal_transitions,
+                    self.coordinator.session().view(),
+                )
+                .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?
+        };
+        if let Some(error) = callback_error {
             return Err(error);
         }
+        let coordinator = &mut self.coordinator;
         let prepared_retirements = if surface == self.root_surface {
             coordinator.prepare_committed_retirements()?
         } else {
@@ -232,77 +272,91 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let pass_actions = &mut self.pass_actions;
         let root_surface = self.root_surface;
         let mut host_frame = coordinator.begin_resolved_host_frame(&context)?;
+        let retain_previous_output = !host_frame.frame.surfaces().contains(&surface);
         let mut final_paint = None;
         let mut painted_output_expected = false;
         let mut post_action_repaint = false;
         let mut discarded = false;
 
-        let render_result = (|| -> Result<(), NativeRuntimeError> {
-            let dock_rect = ui.available_rect_before_wrap();
-            let popup_rect = context.input(egui::InputState::content_rect).round_ui();
-            let mut paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
-            if context.will_discard() {
-                pass_actions
-                    .discard_pass(token, &mut paint)
+        let render_result = if retain_previous_output {
+            pass_actions.abandon(token);
+            host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        } else {
+            (|| -> Result<(), NativeRuntimeError> {
+                let dock_rect = ui.available_rect_before_wrap();
+                let popup_rect = context.input(egui::InputState::content_rect).round_ui();
+                let mut paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
+                if context.will_discard() {
+                    pass_actions
+                        .discard_pass(token, &mut paint)
+                        .map_err(map_pass_action_error)?;
+                    discarded = true;
+                    return Ok::<(), NativeRuntimeError>(());
+                }
+
+                let actions = pass_actions
+                    .finish_pass(token, &mut paint)
                     .map_err(map_pass_action_error)?;
-                discarded = true;
-                return Ok::<(), NativeRuntimeError>(());
-            }
+                let has_application_action =
+                    surface == root_surface && application_actions.has_queued();
+                let has_actions = actions.has_actions() || has_application_action;
+                let disposition = surface_frame_disposition(
+                    paint.had_ready_plan(),
+                    paint.transient_visuals_complete(),
+                    paint.deferred_measurement(),
+                    has_actions,
+                );
+                if disposition == SurfaceFrameDisposition::RejectIncompletePaint {
+                    return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
+                }
+                if has_application_action {
+                    let action = application_actions
+                        .take()
+                        .expect("a checked application action remains pending");
+                    host_frame.submit_prepared_action(action)?;
+                }
+                for action in actions.into_ordered() {
+                    host_frame.submit_surface_action(action)?;
+                }
 
-            let actions = pass_actions
-                .finish_pass(token, &mut paint)
-                .map_err(map_pass_action_error)?;
-            let has_application_action =
-                surface == root_surface && application_actions.has_queued();
-            let has_actions = actions.has_actions() || has_application_action;
-            let disposition = surface_frame_disposition(
-                paint.had_ready_plan(),
-                paint.transient_visuals_complete(),
-                paint.deferred_measurement(),
-                has_actions,
-            );
-            if disposition == SurfaceFrameDisposition::RejectIncompletePaint {
-                return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
-            }
-            if has_application_action {
-                let action = application_actions
-                    .take()
-                    .expect("a checked application action remains pending");
-                host_frame.submit_prepared_action(action)?;
-            }
-            for action in actions.into_ordered() {
-                host_frame.submit_surface_action(action)?;
-            }
-
-            match disposition {
-                SurfaceFrameDisposition::ConfirmPainted => {
-                    host_frame.confirm_surface_painted(surface)?;
-                    host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                    painted_output_expected = true;
+                match disposition {
+                    SurfaceFrameDisposition::ConfirmPainted => {
+                        host_frame.confirm_surface_painted(surface)?;
+                        host_frame
+                            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+                        painted_output_expected = true;
+                    }
+                    SurfaceFrameDisposition::Defer => {
+                        host_frame
+                            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+                        post_action_repaint = has_actions;
+                    }
+                    SurfaceFrameDisposition::Measure => {
+                        host_frame
+                            .measure_surface(surface, ui, dock_rect, popup_rect, panes, style)?;
+                        host_frame
+                            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+                    }
+                    SurfaceFrameDisposition::RejectIncompletePaint => unreachable!(
+                        "incomplete transient paint is rejected before submitting surface actions"
+                    ),
                 }
-                SurfaceFrameDisposition::Defer => {
-                    host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                    post_action_repaint = has_actions;
-                }
-                SurfaceFrameDisposition::Measure => {
-                    host_frame.measure_surface(surface, ui, dock_rect, popup_rect, panes, style)?;
-                    host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                }
-                SurfaceFrameDisposition::RejectIncompletePaint => unreachable!(
-                    "incomplete transient paint is rejected before submitting surface actions"
-                ),
-            }
-            final_paint = Some(paint);
-            Ok(())
-        })();
+                final_paint = Some(paint);
+                Ok(())
+            })()
+        };
         render_result?;
         if discarded {
-            return Ok(());
+            return Ok(NativeSurfaceUpdate::Semantic);
         }
 
         let mut report = host_frame.commit()?;
-        let application_action_settled = application_actions
-            .settle(report.inputs())
+        let mut application_action_settled = application_actions
+            .settle(
+                report.inputs(),
+                report.presentation_transitions(),
+                self.coordinator.session().view(),
+            )
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         let coordinator = &mut self.coordinator;
         let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
@@ -316,7 +370,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
         }
         if surface == self.root_surface {
-            self.bind_root_registration(token, report.inputs())?;
+            Self::bind_root_registration(coordinator, self.root_surface, token, report.inputs())?;
         }
         let native_effects = report.take_native_effects();
         let mut outputs = report.take_painted_outputs();
@@ -361,7 +415,17 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let coordinator = &mut self.coordinator;
         let native_effects_emitted = !native_effects.is_empty();
         coordinator.accept_native_effects(native_effects)?;
-        let native_close_progress = coordinator.drive_close_policy(self.close_policy)?;
+        let native_close_progress =
+            coordinator.drive_close_policy(self.close_policy, self.root_surface)?;
+        let internal_transitions = coordinator.take_internal_presentation_transitions();
+        if !internal_transitions.is_empty() {
+            application_action_settled |= application_actions
+                .settle_presentation_transitions(
+                    &internal_transitions,
+                    coordinator.session().view(),
+                )
+                .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
+        }
         for (viewport, command) in coordinator.take_viewport_commands() {
             context.send_viewport_cmd_to(viewport, command);
         }
@@ -395,30 +459,36 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 || native_snapshot_applied
                 || native_admission_settled
                 || post_action_repaint
+                || internal_action_settled
                 || application_action_settled
                 || native_effects_emitted
                 || native_close_settled
                 || native_close_progress,
         );
-        Ok(())
+        Ok(if retain_previous_output {
+            NativeSurfaceUpdate::RetainPrevious
+        } else {
+            NativeSurfaceUpdate::Semantic
+        })
     }
 
     fn bind_root_registration(
-        &mut self,
+        coordinator: &mut NativeCoordinator,
+        root_surface: SurfaceId,
         token: NativeOutputToken,
         inputs: &[HostInputOutcome],
     ) -> Result<(), NativeRuntimeError> {
         for input in inputs {
             match input {
                 HostInputOutcome::NativeSurfaceRegistered { binding }
-                    if binding.surface() == self.root_surface =>
+                    if binding.surface() == root_surface =>
                 {
-                    self.coordinator
+                    coordinator
                         .bind_viewport(egui::ViewportId::ROOT, token.window_id(), *binding)
                         .map_err(|_| NativeHostProtocolError::RootViewportBindingFailed)?;
                 }
                 HostInputOutcome::NativeSurfaceRegistrationRejected { surface }
-                    if *surface == self.root_surface =>
+                    if *surface == root_surface =>
                 {
                     return Err(NativeHostProtocolError::RootRegistrationRejected(*surface).into());
                 }
@@ -681,9 +751,13 @@ mod tests {
         );
         state
             .application_actions
-            .settle(&[HostInputOutcome::ProductActionRejected(
-                dockspace::model::DockspaceActionRejection::PolicyDenied,
-            )])
+            .settle(
+                &[HostInputOutcome::ProductActionRejected(
+                    dockspace::model::DockspaceActionRejection::PolicyDenied,
+                )],
+                &[],
+                state.coordinator.session().view(),
+            )
             .expect("the exact product result settles the action");
         assert!(!state.application_actions.has_queued());
         assert!(state.application_actions.is_occupied());
@@ -706,6 +780,39 @@ mod tests {
                 .expect_err("a stopped runtime rejects new application actions"),
             crate::NativeActionRequestError::Stopped
         );
+    }
+
+    #[test]
+    fn presentation_gated_action_remains_busy_after_its_request_is_accepted() {
+        let mut state = test_state();
+        let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
+        state
+            .request_dock_root(RootId::new(1), placement)
+            .expect("the presentation action is queued");
+        let _action = state
+            .application_actions
+            .take()
+            .expect("the final root pass takes the pending action");
+
+        assert!(
+            state
+                .application_actions
+                .settle(
+                    &[HostInputOutcome::ProductActionApplied(
+                        dockspace::model::DockspaceActionOutcome::RootDockRequested {
+                            root: RootId::new(1),
+                            source_surface: SURFACE,
+                            target_root: RootId::new(1),
+                            items: vec![ItemId::new(1)],
+                        },
+                    )],
+                    &[],
+                    state.coordinator.session().view(),
+                )
+                .expect("the accepted request advances to its presentation barrier")
+        );
+        assert!(state.application_actions.is_occupied());
+        assert!(state.take_action_status().is_none());
     }
 
     #[test]
@@ -743,9 +850,13 @@ mod tests {
             .expect("the final root pass takes the pending action");
         state
             .application_actions
-            .settle(&[HostInputOutcome::ProductActionRejected(
-                dockspace::model::DockspaceActionRejection::PolicyDenied,
-            )])
+            .settle(
+                &[HostInputOutcome::ProductActionRejected(
+                    dockspace::model::DockspaceActionRejection::PolicyDenied,
+                )],
+                &[],
+                state.coordinator.session().view(),
+            )
             .expect("the exact product result settles the action");
 
         state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());

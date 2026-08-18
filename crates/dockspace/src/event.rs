@@ -2,8 +2,8 @@
 
 use crate::command::{CloseCommitOutcome, CommandOutcome};
 use crate::ids::{
-    InputSequence, ReducerCausalOrdinal, ReducerTickId, SourceSequence, StableInputSourceId,
-    SurfaceId,
+    InputSequence, ReducerCausalOrdinal, ReducerTickId, RootId, SourceSequence,
+    StableInputSourceId, SurfaceId,
 };
 use crate::pointer_journal::{PointerEdgeTicket, PointerStreamId};
 use crate::presentation_observation::{HostPresentationStreamId, PresentationHostLease};
@@ -200,6 +200,34 @@ pub enum WorkspaceEventKind {
     CommandCommitted(CommandOutcome),
     /// One ClosePlan-approved content-close transaction changed state.
     CloseCommitted(CloseCommitOutcome),
+    /// One presentation-gated root rehome reached a terminal state.
+    PresentationRehomeSettled {
+        /// Stable root whose presentation was being moved.
+        root: RootId,
+        /// Surface which retained ownership while the target was prepared.
+        source_surface: SurfaceId,
+        /// Surface whose exact output gated the transition.
+        target_surface: SurfaceId,
+        /// Terminal product-neutral result.
+        result: PresentationRehomeResult,
+    },
     /// Application docking policy changed.
     PolicyReplaced,
+}
+
+/// Terminal result of one presentation-gated root rehome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentationRehomeResult {
+    /// The exact target presentation was observed and the frozen command committed.
+    Applied,
+    /// The target output never reached a presented terminal.
+    TargetNotPresented,
+    /// The source workspace changed before ownership transfer.
+    WorkspaceChanged,
+    /// Dock policy changed before ownership transfer.
+    PolicyChanged,
+    /// The exact source presentation or binding was no longer current.
+    SourceUnavailable,
+    /// The frozen topology command was rejected at the ownership-transfer barrier.
+    CommandRejected,
 }

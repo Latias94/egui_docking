@@ -47,6 +47,8 @@ const fn pointer_move_outcome_allows_local_presentation_refresh(
         | InteractionOutcome::Rejected(_) => true,
         InteractionOutcome::Scroll(_)
         | InteractionOutcome::CloseRequested { .. }
+        | InteractionOutcome::ProductActionApplied(_)
+        | InteractionOutcome::ProductActionRejected(_)
         | InteractionOutcome::TabStripControlActivated { .. }
         | InteractionOutcome::TabListMenuItemSelected { .. }
         | InteractionOutcome::TabListMenuDismissed { .. }
@@ -474,7 +476,9 @@ impl DockEngine {
                 &mut observation_events,
                 &mut observation_interaction_events,
             )?;
-        if drag_release_settled || contained_release_settled {
+        let presentation_rehome_settled =
+            candidate.settle_presented_pending_presentation_rehome(&mut observation_events)?;
+        if drag_release_settled || contained_release_settled || presentation_rehome_settled {
             candidate.rebuild_presentation_requirements(candidate.last_input)?;
         }
         candidate.reconcile_interaction_after_presentation_observations(
@@ -1516,7 +1520,17 @@ impl CoreHostFrame {
                 return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
             }
         };
-        if (drag_release_settled || contained_release_settled)
+        let presentation_rehome_settled = match self
+            .candidate
+            .settle_presented_pending_presentation_rehome(&mut self.events)
+        {
+            Ok(settled) => settled,
+            Err(error) => {
+                self.input_prefix_error = Some(error);
+                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            }
+        };
+        if (drag_release_settled || contained_release_settled || presentation_rehome_settled)
             && let Err(error) = self
                 .candidate
                 .rebuild_presentation_requirements(self.candidate.last_input)

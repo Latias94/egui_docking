@@ -133,18 +133,33 @@ pub enum HostPresentationDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostPresentationDispositionOutcome {
     slot: HostPresentationSlot,
+    interaction: HostInteractionPresentation,
     disposition: HostPresentationDisposition,
 }
 
 impl HostPresentationDispositionOutcome {
-    const fn new(slot: HostPresentationSlot, disposition: HostPresentationDisposition) -> Self {
-        Self { slot, disposition }
+    pub(super) const fn new(
+        slot: HostPresentationSlot,
+        interaction: HostInteractionPresentation,
+        disposition: HostPresentationDisposition,
+    ) -> Self {
+        Self {
+            slot,
+            interaction,
+            disposition,
+        }
     }
 
     /// Returns the exact physical slot answered by the host.
     #[must_use]
     pub const fn slot(self) -> HostPresentationSlot {
         self.slot
+    }
+
+    /// Returns the transient interaction identity frozen for this physical slot.
+    #[must_use]
+    pub const fn interaction(self) -> HostInteractionPresentation {
+        self.interaction
     }
 
     /// Returns whether that slot was painted or explicitly unavailable.
@@ -726,7 +741,14 @@ impl HostPresentationObligationSet {
     pub(super) fn dispositions(&self) -> Vec<HostPresentationDispositionOutcome> {
         self.resolved
             .iter()
-            .map(|(slot, disposition)| HostPresentationDispositionOutcome::new(*slot, *disposition))
+            .map(|(slot, disposition)| {
+                let interaction = self
+                    .roster
+                    .frozen_output(*slot)
+                    .expect("resolved presentation slot remains in its frozen roster")
+                    .interaction();
+                HostPresentationDispositionOutcome::new(*slot, interaction, *disposition)
+            })
             .collect()
     }
 }

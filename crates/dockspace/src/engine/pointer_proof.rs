@@ -161,7 +161,7 @@ const fn delivery_action_lane(kind: PresentationHitRegionKind) -> Option<Present
         PresentationHitRegionKind::TabStripScroll(_)
         | PresentationHitRegionKind::TabListMenuScroll(_) => Some(PresentationPointerLane::Scroll),
         PresentationHitRegionKind::TabBody(_)
-        | PresentationHitRegionKind::TabGroupGrip(_)
+        | PresentationHitRegionKind::TabGroupDrag { .. }
         | PresentationHitRegionKind::SplitterHandle(_)
         | PresentationHitRegionKind::SplitterJunction(_)
         | PresentationHitRegionKind::ContainedTitle(_)

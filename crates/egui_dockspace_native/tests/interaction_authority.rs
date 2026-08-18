@@ -9,7 +9,8 @@ use dockspace::runtime::{
 };
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{
-    Context, Event, Id, InputState, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Ui, vec2,
+    Context, CursorIcon, Event, Id, InputState, Modifiers, PointerButton, Pos2, RawInput, Rect,
+    Sense, Ui, vec2,
 };
 use eframe::egui::{
     WidgetHitIdentity, WidgetScrollDelta, WidgetScrollHit, WidgetScrollHitChallenge,
@@ -48,6 +49,7 @@ struct SurfaceFrameResult {
     scroll_receivers: Vec<native_support::NativeScrollPaintReceiver>,
     scroll_identities: Vec<WidgetHitIdentity>,
     receiver_generation: Option<(eframe::egui::ViewportId, u64)>,
+    cursor_icon: CursorIcon,
 }
 
 fn session() -> DockspaceSession {
@@ -182,6 +184,7 @@ fn run_surface_frame(
         }
         frame.commit().expect("host frame commits");
     });
+    let cursor_icon = output.platform_output.cursor_icon;
     output.textures_delta.clear();
     SurfaceFrameResult {
         pane_center,
@@ -193,6 +196,7 @@ fn run_surface_frame(
         scroll_receivers,
         scroll_identities,
         receiver_generation,
+        cursor_icon,
     }
 }
 
@@ -270,6 +274,66 @@ fn external_pointer_journal_suppresses_local_response_actions() {
             .is_selected(),
         "native rendering must not submit a second local pointer action"
     );
+}
+
+#[test]
+fn external_pointer_journal_does_not_retain_an_egui_drag_owner_after_pointer_gone() {
+    let context = Context::default();
+    let mut session = session();
+    let mut panes = Panes;
+    install_ready_candidate(&mut session);
+
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let source = painted
+        .second_tab_center
+        .expect("stable paint plan contains the second tab");
+    let moved = source + vec2(24.0, 8.0);
+    let _ = run_surface_frame(
+        &context,
+        &mut session,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            Event::PointerButton {
+                pos: source,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    let _ = run_surface_frame(
+        &context,
+        &mut session,
+        &mut panes,
+        vec![Event::PointerMoved(moved)],
+    );
+    assert_eq!(
+        context.dragged_id(),
+        None,
+        "the external journal keeps the drag lane without a second egui owner"
+    );
+
+    let cancelled = run_surface_frame(&context, &mut session, &mut panes, vec![Event::PointerGone]);
+    assert_eq!(context.dragged_id(), None);
+    assert_ne!(
+        cancelled.cursor_icon,
+        CursorIcon::Grabbing,
+        "capture loss must not leave stale docking drag feedback"
+    );
+    let (viewport, pass) = cancelled
+        .receiver_generation
+        .expect("the cancelled frame still publishes exact receiver identities");
+    let hit = context
+        .hit_test_last_pass(viewport, source)
+        .expect("the cancelled viewport completed its pass");
+    assert_eq!(hit.cumulative_pass_nr(), pass);
+    let drag = hit
+        .drag()
+        .expect("the external journal retains the next drag-delivery lane");
+    assert!(cancelled.receivers.iter().any(|receiver| {
+        receiver.widget_id() == drag.id() && receiver.layer_id() == drag.layer_id()
+    }));
 }
 
 #[test]

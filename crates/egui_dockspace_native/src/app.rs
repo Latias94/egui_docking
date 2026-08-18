@@ -15,7 +15,7 @@ use crate::deferred_viewport::{
 };
 use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErrorKind};
 use crate::mailbox::DeferredViewportPaint;
-use crate::surface_driver::NativeRuntimeState;
+use crate::surface_driver::{NativeRuntimeState, NativeSurfaceUpdate};
 
 /// Fork-backed eframe application whose [`DockspaceSession`] is the sole graph authority.
 ///
@@ -37,6 +37,11 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// while unavailable facts remain fail-closed rather than being inferred
     /// from application startup.
     ///
+    /// The default close policy restores managed child presentations through
+    /// their core-owned recovery anchors. Closing the external application
+    /// root is accepted and retains the logical layout so the application can
+    /// complete its normal shutdown.
+    ///
     /// # Errors
     ///
     /// Returns an error when the requested root surface is absent, native
@@ -54,7 +59,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
             root_surface,
             panes,
             style,
-            NativeWindowClosePolicy::Cancel,
+            NativeWindowClosePolicy::default(),
         )
     }
 
@@ -162,6 +167,20 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).request_dock_root(root, placement)
     }
 
+    /// Queues recovery of one contained or native complete-root presentation.
+    ///
+    /// The core derives and revalidates the current recovery target. Native
+    /// ownership remains with the source window until the target output is
+    /// actually presented.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another application action is pending or the
+    /// native runtime has stopped.
+    pub fn request_dock_root_back(&self, root: RootId) -> Result<(), NativeActionRequestError> {
+        lock_state(&self.state).request_dock_root_back(root)
+    }
+
     /// Queues one complete-root native tear-off for the next final root pass.
     ///
     /// Source ownership remains in place until the managed native lifecycle
@@ -203,12 +222,20 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
                 return;
             }
             let root_surface = state.root_surface();
-            if let Err(error) = state.update_surface(ui, root_surface) {
-                state.stop_current_output(error);
-                state.render_error(ui);
-                (Vec::new(), true)
-            } else {
-                (state.deferred_viewport_specs(), false)
+            match state.update_surface(ui, root_surface) {
+                Ok(NativeSurfaceUpdate::Semantic) => (state.deferred_viewport_specs(), false),
+                Ok(NativeSurfaceUpdate::RetainPrevious) => {
+                    state.stop_current_output(
+                        NativeHostProtocolError::RootSurfaceUnavailable(root_surface).into(),
+                    );
+                    state.render_error(ui);
+                    (Vec::new(), true)
+                }
+                Err(error) => {
+                    state.stop_current_output(error);
+                    state.render_error(ui);
+                    (Vec::new(), true)
+                }
             }
         };
         if stopped {
@@ -253,10 +280,18 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
     let disposition = state.deferred_viewport_paint(token);
     match disposition {
         DeferredViewportPaint::Semantic(binding) if binding == spec.binding() => {
-            if let Err(error) = state.update_surface(ui, binding.surface()) {
-                state.stop_current_output(error);
-                ui.ctx().request_repaint_of(ViewportId::ROOT);
-                state.render_error(ui);
+            match state.update_surface(ui, binding.surface()) {
+                Ok(NativeSurfaceUpdate::Semantic) => {}
+                Ok(NativeSurfaceUpdate::RetainPrevious) => {
+                    if !eframe::retain_current_native_output() {
+                        paint_placeholder(ui, class, Some(DeferredViewportPaint::Waiting));
+                    }
+                }
+                Err(error) => {
+                    state.stop_current_output(error);
+                    ui.ctx().request_repaint_of(ViewportId::ROOT);
+                    state.render_error(ui);
+                }
             }
         }
         DeferredViewportPaint::Semantic(_) => {

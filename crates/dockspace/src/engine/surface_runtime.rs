@@ -1795,7 +1795,7 @@ impl DockEngine {
         })
     }
 
-    fn freeze_surface_recovery_target(
+    pub(super) fn freeze_surface_recovery_target(
         &self,
         surface: crate::ids::SurfaceId,
     ) -> Option<SurfaceRecoveryHostFacts> {

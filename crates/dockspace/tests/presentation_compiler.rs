@@ -13,13 +13,13 @@ use dockspace::policy::{
     CloseCapability, DockItemRule, DockPolicy, DockSurfaceRule, DockTargetRule, DockTargetRuleKey,
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
 };
-use dockspace::scene::{SplitterGapPresentation, TabBarSceneId};
+use dockspace::scene::{SplitterGapPresentation, TabBarSceneId, TabGroupDragRegionKind};
 use support::{TestPresentationHost, install_surface_projection, next_plan, publish_surface};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(3);
-const GUIDE_EXTENT: f64 = 40.0;
+const GUIDE_EXTENT: f64 = 48.0;
 const GUIDE_GAP: f64 = 12.0;
 const GUIDE_HIT_PADDING: f64 = 6.0;
 const GUIDE_HIT_EXTENT: f64 = GUIDE_EXTENT + 2.0 * GUIDE_HIT_PADDING;
@@ -27,14 +27,14 @@ const GUIDE_INNER_OFFSET: f64 = GUIDE_EXTENT + GUIDE_GAP;
 const INNER_GUIDE_REFERENCE_SPAN: f64 =
     3.0 * GUIDE_EXTENT + 2.0 * GUIDE_GAP + 2.0 * GUIDE_HIT_PADDING;
 const OUTER_GUIDE_REFERENCE_SPAN: f64 =
-    2.0 * (64.0 + 2.0 * (GUIDE_EXTENT * 0.5 + GUIDE_HIT_PADDING));
+    2.0 * (72.0 + 2.0 * (GUIDE_EXTENT * 0.5 + GUIDE_HIT_PADDING));
 
 fn bounds() -> LogicalRect {
     LogicalRect::new(0.0, 0.0, 360.0, 260.0).expect("surface bounds are valid")
 }
 
 #[test]
-fn ordinary_noncentral_panes_keep_exact_five_way_square_guides() {
+fn ordinary_noncentral_panes_keep_uniform_five_way_square_guides() {
     let mut builder = Workspace::builder();
     let left = builder.insert_node(Node::tabs([ItemId::new(10)]));
     let right = builder.insert_node(Node::tabs([ItemId::new(11)]));
@@ -57,6 +57,13 @@ fn ordinary_noncentral_panes_keep_exact_five_way_square_guides() {
             .find(|cluster| cluster.id().scope == DropGuideScope::Inner(tabs))
             .expect("every ordinary noncentral pane keeps its inner guide");
         assert_eq!(cluster.targets().count(), 5);
+        let activation = cluster.activation().rect();
+        let scale = (activation.width() / INNER_GUIDE_REFERENCE_SPAN)
+            .min(activation.height() / INNER_GUIDE_REFERENCE_SPAN)
+            .min(1.0);
+        let expected_extent = GUIDE_EXTENT * scale;
+        let expected_hit_extent = GUIDE_HIT_EXTENT * scale;
+        let expected_inner_offset = GUIDE_INNER_OFFSET * scale;
         for slot in [
             DropGuideSlot::Center,
             DropGuideSlot::Edge(Edge::Left),
@@ -65,10 +72,13 @@ fn ordinary_noncentral_panes_keep_exact_five_way_square_guides() {
             DropGuideSlot::Edge(Edge::Bottom),
         ] {
             let target = cluster.target(slot).expect("all five slots exist");
-            assert_eq!(target.draw().width(), GUIDE_EXTENT);
-            assert_eq!(target.draw().height(), GUIDE_EXTENT);
-            assert_eq!(target.target().region().rect().width(), GUIDE_HIT_EXTENT);
-            assert_eq!(target.target().region().rect().height(), GUIDE_HIT_EXTENT);
+            assert_close(target.draw().width(), expected_extent);
+            assert_close(target.draw().height(), expected_extent);
+            assert_close(target.target().region().rect().width(), expected_hit_extent);
+            assert_close(
+                target.target().region().rect().height(),
+                expected_hit_extent,
+            );
         }
         let center = cluster
             .target(DropGuideSlot::Center)
@@ -82,8 +92,8 @@ fn ordinary_noncentral_panes_keep_exact_five_way_square_guides() {
             .target(DropGuideSlot::Edge(Edge::Top))
             .expect("top exists")
             .draw();
-        assert_eq!(center.x() - left_draw.x(), GUIDE_INNER_OFFSET);
-        assert_eq!(center.y() - top_draw.y(), GUIDE_INNER_OFFSET);
+        assert_close(center.x() - left_draw.x(), expected_inner_offset);
+        assert_close(center.y() - top_draw.y(), expected_inner_offset);
     }
 }
 
@@ -325,10 +335,19 @@ fn central_root_compiles_center_only_inner_and_exact_outer_guides() {
     let top = outer
         .target(DropGuideSlot::Edge(Edge::Top))
         .expect("top guide exists");
-    assert_eq!(top.draw().width(), GUIDE_EXTENT);
-    assert_eq!(top.draw().height(), GUIDE_EXTENT);
-    assert_eq!(top.target().region().rect().width(), GUIDE_HIT_EXTENT);
-    assert_eq!(top.target().region().rect().height(), GUIDE_HIT_EXTENT);
+    let scale =
+        (ready.bounds().width().min(ready.bounds().height()) / OUTER_GUIDE_REFERENCE_SPAN).min(1.0);
+    assert_close(top.draw().width(), GUIDE_EXTENT * scale);
+    assert_close(top.draw().height(), GUIDE_EXTENT * scale);
+    assert_close(
+        top.target().region().rect().width(),
+        GUIDE_HIT_EXTENT * scale,
+    );
+    assert_close(
+        top.target().region().rect().height(),
+        GUIDE_HIT_EXTENT * scale,
+    );
+    assert_compact_cluster_geometry(outer, ready.bounds());
     assert!(matches!(
         top.target().destination(),
         DropDestination::Topology(DockTarget::OuterEdge(target))
@@ -599,8 +618,8 @@ fn frozen_policy_is_the_only_close_affordance_authority() {
         .contained_record(LOCKED_FLOATING)
         .expect("locked contained root is visible");
     assert!(
-        locked.close_bounds().is_none(),
-        "one Disabled payload item must omit the contained-root close affordance"
+        locked.close_bounds().is_some(),
+        "presentation dock-back remains available when content close is disabled"
     );
 }
 
@@ -719,6 +738,100 @@ fn target_disabled_tab_bar_keeps_paint_records_without_semantic_actions() {
             .drop_targets()
             .iter()
             .all(|target| !matches!(target.id(), DropTargetId::TabGap { .. }))
+    );
+}
+
+#[test]
+fn tab_group_drag_regions_are_exact_disjoint_leading_and_trailing_space() {
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(10), ItemId::new(11)]));
+    builder.set_root(ROOT, RootRecord::new(tabs));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    let workspace = builder.build().expect("workspace is valid");
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
+    let mut host = TestPresentationHost::new(&mut engine);
+
+    install_surface_projection(&mut engine, &mut host, SURFACE, bounds());
+    let ready = next_plan(&engine, SURFACE);
+    let bar = ready
+        .tab_bar_records()
+        .first()
+        .expect("the tabs leaf has one bar");
+    let group = bar
+        .group_drag()
+        .expect("an interactive non-empty bar has group regions");
+    let leading = group.leading_grip();
+    let trailing = group
+        .trailing_empty()
+        .expect("unused trailing strip space remains");
+
+    assert_eq!(leading.kind(), TabGroupDragRegionKind::LeadingGrip);
+    assert_eq!(
+        leading.bounds(),
+        bar.group_grip_bounds().expect("grip is painted")
+    );
+    assert_eq!(leading.hit().rect(), leading.bounds());
+    assert_eq!(trailing.kind(), TabGroupDragRegionKind::TrailingEmpty);
+    assert_eq!(trailing.hit().rect(), trailing.bounds());
+    assert_eq!(trailing.bounds().max().x(), bar.viewport().max().x());
+    assert_eq!(
+        trailing.bounds().x(),
+        bar.members()
+            .last()
+            .expect("the group is non-empty")
+            .full_bounds()
+            .max()
+            .x()
+    );
+    assert!(!rects_overlap(leading.bounds(), trailing.bounds()));
+    for tab in ready
+        .tab_records()
+        .iter()
+        .filter(|tab| tab.id().tabs == tabs)
+    {
+        assert!(!rects_overlap(tab.visible_bounds(), trailing.bounds()));
+        assert!(
+            tab.close_bounds()
+                .is_none_or(|close| !rects_overlap(close, trailing.bounds()))
+        );
+    }
+    assert_eq!(group.regions().count(), 2);
+}
+
+#[test]
+fn overflowing_tab_bar_omits_trailing_empty_group_region() {
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([
+        ItemId::new(10),
+        ItemId::new(11),
+        ItemId::new(12),
+        ItemId::new(13),
+        ItemId::new(14),
+        ItemId::new(15),
+    ]));
+    builder.set_root(ROOT, RootRecord::new(tabs));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    let workspace = builder.build().expect("workspace is valid");
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
+    let mut host = TestPresentationHost::new(&mut engine);
+    let narrow = LogicalRect::new(0.0, 0.0, 180.0, 160.0).expect("narrow bounds are valid");
+
+    install_surface_projection(&mut engine, &mut host, SURFACE, narrow);
+    let ready = next_plan(&engine, SURFACE);
+    let bar = ready
+        .tab_bar_records()
+        .first()
+        .expect("the tabs leaf has one bar");
+    let group = bar
+        .group_drag()
+        .expect("the leading group grip remains available");
+
+    assert!(bar.maximum_scroll_offset() > 0.0);
+    assert!(group.trailing_empty().is_none());
+    assert_eq!(group.regions().count(), 1);
+    assert_eq!(
+        group.leading_grip().kind(),
+        TabGroupDragRegionKind::LeadingGrip
     );
 }
 

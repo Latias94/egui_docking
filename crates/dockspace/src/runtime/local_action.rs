@@ -16,7 +16,8 @@ use crate::interaction::{
 };
 use crate::model::WorkspaceVersion;
 use crate::scene::{
-    ContainedResizeDirection, SplitterResizeTarget, SplitterSceneId, SurfaceSceneStamp, TabSceneId,
+    ContainedResizeDirection, SplitterJunctionId, SplitterResizeTarget, SplitterSceneId,
+    SurfaceSceneStamp, TabSceneId,
 };
 
 /// Product-facing navigation within one exact tab strip.
@@ -163,6 +164,20 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn dock_back(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        floating: crate::ids::FloatingPresentationId,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::DockBack { scene, floating },
+        }
+    }
+
     pub(super) const fn local_tab_gesture(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -227,6 +242,27 @@ impl PreparedSurfaceAction {
             action: SurfaceAction::AdjustSplitter {
                 scene,
                 splitter,
+                delta,
+            },
+        }
+    }
+
+    pub(super) const fn adjust_splitter_junction(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        junction: SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::AdjustSplitterJunction {
+                scene,
+                junction,
+                axis,
                 delta,
             },
         }
@@ -326,8 +362,10 @@ impl PreparedSurfaceAction {
         match self.action {
             SurfaceAction::SelectTab { tab, .. } => Some(tab.item),
             SurfaceAction::Close { .. }
+            | SurfaceAction::DockBack { .. }
             | SurfaceAction::TabChrome { .. }
             | SurfaceAction::AdjustSplitter { .. }
+            | SurfaceAction::AdjustSplitterJunction { .. }
             | SurfaceAction::AdjustContainedResize { .. }
             | SurfaceAction::CancelWithEscape
             | SurfaceAction::LocalTabGesture { .. }
@@ -355,6 +393,11 @@ impl PreparedSurfaceAction {
                 expected: self.expected,
                 scene,
                 target,
+            },
+            SurfaceAction::DockBack { scene, floating } => EngineInput::DockBackLocalContained {
+                expected: self.expected,
+                scene,
+                floating,
             },
             SurfaceAction::TabChrome { scene, action } => EngineInput::ApplyLocalTabChromeAction {
                 expected: self.expected,
@@ -394,6 +437,18 @@ impl PreparedSurfaceAction {
                 expected: self.expected,
                 scene,
                 splitter,
+                delta,
+            },
+            SurfaceAction::AdjustSplitterJunction {
+                scene,
+                junction,
+                axis,
+                delta,
+            } => EngineInput::AdjustLocalSplitterJunctionResize {
+                expected: self.expected,
+                scene,
+                junction,
+                axis,
                 delta,
             },
             SurfaceAction::AdjustContainedResize {
@@ -449,6 +504,10 @@ enum SurfaceAction {
         scene: SurfaceSceneStamp,
         target: CloseSceneTarget,
     },
+    DockBack {
+        scene: SurfaceSceneStamp,
+        floating: crate::ids::FloatingPresentationId,
+    },
     TabChrome {
         scene: SurfaceSceneStamp,
         action: LocalTabChromeAction,
@@ -471,6 +530,12 @@ enum SurfaceAction {
         splitter: SplitterSceneId,
         delta: f64,
     },
+    AdjustSplitterJunction {
+        scene: SurfaceSceneStamp,
+        junction: SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+    },
     AdjustContainedResize {
         scene: SurfaceSceneStamp,
         floating: FloatingPresentationId,
@@ -491,11 +556,13 @@ impl SurfaceAction {
         match self {
             Self::SelectTab { .. } => "select-tab",
             Self::Close { .. } => "close",
+            Self::DockBack { .. } => "dock-back",
             Self::TabChrome { .. } => "tab-chrome",
             Self::LocalTabGesture { .. } => "tab-gesture",
             Self::LocalSplitterGesture { .. } => "splitter-gesture",
             Self::LocalContainedGesture { .. } => "contained-gesture",
             Self::AdjustSplitter { .. } => "adjust-splitter",
+            Self::AdjustSplitterJunction { .. } => "adjust-splitter-junction",
             Self::AdjustContainedResize { .. } => "adjust-contained-resize",
             Self::CancelWithEscape => "cancel-with-escape",
             Self::AcknowledgePreview { .. } => "acknowledge-preview",

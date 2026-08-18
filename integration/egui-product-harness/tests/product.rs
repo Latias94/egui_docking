@@ -1,4 +1,4 @@
-use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+use egui::accesskit::{Action, ActionRequest, Orientation, Role, TreeId};
 use egui::{
     Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, RepaintCause,
     Ui, vec2,
@@ -10,6 +10,7 @@ use egui_dockspace::{
     DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
     PaneView, RootId, SurfaceId,
 };
+use egui_kittest::{Harness, kittest::Queryable as _};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -33,6 +34,12 @@ fn instrumented_style() -> DockStyle {
 }
 
 struct Panes;
+
+struct KittestProductState {
+    dockspace: Dockspace,
+    panes: Panes,
+    close_requests: Vec<DockspaceCloseRequest>,
+}
 
 #[derive(Default)]
 struct LateDiscardPlugin {
@@ -77,6 +84,34 @@ impl PaneView for Panes {
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
         ui.label(format!("Pane {}", item.get()));
     }
+}
+
+fn kittest_harness(
+    id: &'static str,
+    layout: DockspaceLayout,
+) -> Harness<'static, KittestProductState> {
+    let dockspace = Dockspace::builder(id, layout)
+        .build()
+        .expect("the kittest product facade initializes");
+    Harness::builder()
+        .with_size(vec2(800.0, 600.0))
+        .with_max_steps(8)
+        .build_ui_state(
+            |ui, state: &mut KittestProductState| {
+                let response = state
+                    .dockspace
+                    .show_single_surface(SURFACE, ui, &mut state.panes)
+                    .expect("the kittest product frame advances");
+                state
+                    .close_requests
+                    .extend(response.close_request_events().iter().cloned());
+            },
+            KittestProductState {
+                dockspace,
+                panes: Panes,
+                close_requests: Vec::new(),
+            },
+        )
 }
 
 fn layout() -> DockspaceLayout {
@@ -359,6 +394,16 @@ fn root_weights(dockspace: &Dockspace) -> Option<Vec<f32>> {
     )
 }
 
+fn splitter_junction_weights(dockspace: &Dockspace) -> Option<(Vec<f32>, Vec<Vec<f32>>)> {
+    let root = dockspace.view().root(ROOT)?.content()?.split()?;
+    let root_weights = root.weights().collect();
+    let column_weights = root
+        .children()
+        .map(|child| child.split().map(|split| split.weights().collect()))
+        .collect::<Option<Vec<_>>>()?;
+    Some((root_weights, column_weights))
+}
+
 fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
     let rect = dockspace
         .view()
@@ -464,6 +509,54 @@ fn rect_fill_count(output: &egui::FullOutput, fill: egui::Color32) -> usize {
         .count()
 }
 
+fn rect_with_fill(output: &egui::FullOutput, fill: egui::Color32) -> Option<Rect> {
+    output.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Rect(rect) if rect.fill == fill => Some(rect.rect),
+        _ => None,
+    })
+}
+
+fn last_rect_fill_index(output: &egui::FullOutput, fills: &[egui::Color32]) -> Option<usize> {
+    output
+        .shapes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, shape)| match &shape.shape {
+            egui::Shape::Rect(rect) if fills.contains(&rect.fill) => Some(index),
+            _ => None,
+        })
+        .next_back()
+}
+
+fn rect_fill_count_in(output: &egui::FullOutput, fill: egui::Color32, bounds: Rect) -> usize {
+    output
+        .shapes
+        .iter()
+        .filter(|shape| {
+            matches!(
+                &shape.shape,
+                egui::Shape::Rect(rect)
+                    if rect.fill == fill && bounds.contains(rect.rect.center())
+            )
+        })
+        .count()
+}
+
+fn line_segment_count_in(output: &egui::FullOutput, color: egui::Color32, bounds: Rect) -> usize {
+    output
+        .shapes
+        .iter()
+        .filter(|shape| {
+            matches!(
+                &shape.shape,
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == color
+                        && points.iter().all(|point| bounds.contains(*point))
+            )
+        })
+        .count()
+}
+
 fn splitter_rect(output: &egui::FullOutput, idle: egui::Color32, active: egui::Color32) -> Rect {
     output
         .shapes
@@ -534,6 +627,40 @@ fn default_visuals_follow_the_current_egui_theme() {
 }
 
 #[test]
+fn contained_panes_use_the_egui_window_fill() {
+    let context = Context::default();
+    let panel_fill = egui::Color32::from_rgb(23, 31, 43);
+    let window_fill = egui::Color32::from_rgb(67, 79, 101);
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = panel_fill;
+    visuals.window_fill = window_fill;
+    context.set_visuals(visuals);
+    let mut dockspace = Dockspace::builder("product-contained-window-fill", contained_layout())
+        .build()
+        .expect("the themed contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let contained_content = |rect: &egui::epaint::RectShape| {
+        rect.rect.min.x >= 500.0 && rect.rect.min.y > 280.0 && rect.rect.width() > 200.0
+    };
+
+    assert!(ready.output.shapes.iter().any(|shape| {
+        matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect) if rect.fill == window_fill && contained_content(rect)
+        )
+    }));
+    assert!(!ready.output.shapes.iter().any(|shape| {
+        matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect) if rect.fill == panel_fill && contained_content(rect)
+        )
+    }));
+}
+
+#[test]
 fn visual_override_wins_without_detaching_unspecified_theme_tokens() {
     let context = Context::default();
     let panel = egui::Color32::from_rgb(36, 41, 47);
@@ -556,6 +683,162 @@ fn visual_override_wins_without_detaching_unspecified_theme_tokens() {
     assert!(rect_fill_count(&ready.output, workspace_override) > 0);
     assert!(rect_fill_count(&ready.output, bar) > 0);
     assert!(rect_fill_count(&ready.output, panel) > 0);
+}
+
+#[test]
+fn default_splitter_visuals_follow_egui_response_state() {
+    let context = Context::default();
+    let idle = egui::Color32::from_rgb(19, 29, 39);
+    let hovered = egui::Color32::from_rgb(61, 127, 149);
+    let active = egui::Color32::from_rgb(191, 97, 53);
+    let mut visuals = egui::Visuals::dark();
+    visuals.extreme_bg_color = idle;
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0, hovered);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(3.0, active);
+    context.set_visuals(visuals);
+    let mut dockspace = Dockspace::builder("product-response-splitter", split_layout())
+        .build()
+        .expect("the response-driven splitter facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let splitter = splitter_rect(&stable.output, idle, hovered);
+    let point = splitter.center();
+    let hovered_output = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(point)],
+    );
+    assert!(rect_fill_count(&hovered_output.output, hovered) > 0);
+
+    let active_output = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(point, true)],
+    );
+    assert!(rect_fill_count(&active_output.output, active) > 0);
+}
+
+#[test]
+fn default_close_visuals_use_egui_interaction_strokes() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let idle = egui::Color32::from_rgb(31, 47, 59);
+    let hovered = egui::Color32::from_rgb(79, 143, 167);
+    let active = egui::Color32::from_rgb(211, 101, 67);
+    let mut visuals = egui::Visuals::dark();
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, idle);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0, hovered);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(3.0, active);
+    context.set_visuals(visuals);
+    let mut dockspace = Dockspace::builder("product-response-close", layout())
+        .build()
+        .expect("the response-driven close facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let close = node_rect(&stable.output, Role::Button, "Close First");
+    assert!(line_segment_count_in(&stable.output, idle, close.expand(4.0)) >= 2);
+
+    let hovered_output = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(close.center())],
+    );
+    assert!(line_segment_count_in(&hovered_output.output, hovered, close.expand(4.0)) >= 2);
+
+    let active_output = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(close.center(), true)],
+    );
+    assert!(line_segment_count_in(&active_output.output, active, close.expand(4.0)) >= 2);
+}
+
+#[test]
+fn selected_tab_text_override_does_not_leak_into_close_interaction() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let tab_text = egui::Color32::from_rgb(43, 157, 181);
+    let selected_text = egui::Color32::from_rgb(229, 83, 61);
+    let hovered_text = egui::Color32::from_rgb(103, 211, 139);
+    let mut visuals = egui::Visuals::dark();
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0, hovered_text);
+    context.set_visuals(visuals);
+    let mut style = DockStyle::default();
+    style.visuals.tab_text_color = Some(tab_text);
+    style.visuals.tab_active_text_color = Some(selected_text);
+    let mut dockspace = Dockspace::builder("product-close-color-roles", layout())
+        .style(style)
+        .build()
+        .expect("the role-specific close facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let close = node_rect(&stable.output, Role::Button, "Close First");
+    let hovered = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(close.center())],
+    );
+
+    assert!(line_segment_count_in(&hovered.output, hovered_text, close.expand(4.0)) >= 2);
+    assert_eq!(
+        line_segment_count_in(&hovered.output, tab_text, close.expand(4.0)),
+        0,
+        "the idle tab text override must not replace egui's hovered control stroke",
+    );
+    assert_eq!(
+        line_segment_count_in(&hovered.output, selected_text, close.expand(4.0)),
+        0,
+        "selected-tab text color is not a generic hovered-control color",
+    );
+}
+
+#[test]
+fn inactive_tab_close_hides_only_its_paint_until_emphasized() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let idle = egui::Color32::from_rgb(31, 47, 59);
+    let hovered = egui::Color32::from_rgb(79, 143, 167);
+    let mut visuals = egui::Visuals::dark();
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, idle);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0, hovered);
+    context.set_visuals(visuals);
+    let mut dockspace = Dockspace::builder("product-inactive-close-visibility", layout())
+        .build()
+        .expect("the close visibility facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let close = node_rect(&stable.output, Role::Button, "Close Second");
+    assert_eq!(
+        line_segment_count_in(&stable.output, idle, close.expand(4.0)),
+        0,
+        "the inactive close keeps its exact response bounds without idle icon noise"
+    );
+
+    let hover = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(close.center())],
+    );
+    assert!(line_segment_count_in(&hover.output, hovered, close.expand(4.0)) >= 2);
+    assert_eq!(
+        node_rect(&hover.output, Role::Button, "Close Second"),
+        close,
+        "paint visibility must not change the reserved close geometry"
+    );
 }
 
 #[test]
@@ -721,7 +1004,7 @@ fn default_features_contained_chrome_exposes_focusable_accessibility_controls() 
 }
 
 #[test]
-fn default_features_contained_close_supports_pointer_accesskit_and_keyboard() {
+fn default_features_contained_dock_back_supports_pointer_accesskit_and_keyboard() {
     #[derive(Clone, Copy)]
     enum Activation {
         Pointer,
@@ -781,18 +1064,17 @@ fn default_features_contained_close_supports_pointer_accesskit_and_keyboard() {
             }
         };
 
-        assert_eq!(activated.close_requests.len(), 1, "{name}");
-        let request = &activated.close_requests[0];
-        assert!(!request.reused(), "{name}");
-        assert_eq!(
-            request.plan().target(),
-            ClosePlanTarget::Root {
-                root: FLOATING_ROOT,
-            },
-            "{name}",
-        );
-        assert_eq!(request.plan().items().len(), 1);
-        assert_eq!(request.plan().items()[0].item(), SECOND);
+        assert!(activated.close_requests.is_empty(), "{name}");
+        assert!(dockspace.view().contained(FLOATING).is_none(), "{name}");
+        assert!(dockspace.view().root(FLOATING_ROOT).is_none(), "{name}");
+        let tabs = dockspace
+            .view()
+            .root(ROOT)
+            .and_then(|root| root.content())
+            .and_then(|content| content.tabs())
+            .expect("the contained pane docks into the current main root");
+        assert_eq!(tabs.items(), &[FIRST, SECOND], "{name}");
+        assert_eq!(tabs.selected(), Some(SECOND), "{name}");
     }
 }
 
@@ -1118,6 +1400,377 @@ fn default_features_keyboard_navigation_keeps_tab_focus_with_selection() {
 }
 
 #[test]
+fn tab_drag_uses_egui_grab_cursors() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-tab-drag-cursors", layout())
+        .build()
+        .expect("the product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tab = node_rect(&stable.output, Role::Tab, "First");
+    let source = tab.center();
+    let hovered = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source)],
+    );
+    assert_eq!(
+        hovered.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grab
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(source, true)],
+    );
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(12.0, 0.0))],
+    );
+    assert_eq!(
+        dragging.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+}
+
+#[test]
+fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let tab_fill = egui::Color32::from_rgb(37, 73, 109);
+    let active_fill = egui::Color32::from_rgb(53, 101, 149);
+    let ghost_fill = egui::Color32::from_rgba_unmultiplied(219, 139, 57, 96);
+    let ghost_offset = vec2(17.0, 11.0);
+    let mut style = DockStyle::default();
+    style.visuals.tab_fill = Some(tab_fill);
+    style.visuals.tab_active_fill = Some(active_fill);
+    style.visuals.ghost_fill = Some(ghost_fill);
+    style.ghost_offset = ghost_offset;
+    let mut dockspace = Dockspace::builder("product-tab-drag-decoration", layout())
+        .style(style)
+        .build()
+        .expect("the decorated drag facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source_rect = node_rect(&stable.output, Role::Tab, "First");
+    let source = source_rect.center();
+    assert!(rect_fill_count_in(&stable.output, active_fill, source_rect) > 0);
+
+    let armed = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    assert!(
+        rect_fill_count_in(&armed.output, active_fill, source_rect) > 0,
+        "an armed press must not hide the source tab"
+    );
+    assert_eq!(rect_fill_count(&armed.output, ghost_fill), 0);
+
+    let dragged = source + vec2(24.0, 8.0);
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(dragged)],
+    );
+    assert_eq!(
+        dragging.output.platform_output.num_completed_passes, 2,
+        "the threshold-crossing pass is discarded so the final output uses core drag state"
+    );
+    assert_eq!(
+        rect_fill_count_in(&dragging.output, active_fill, source_rect),
+        0,
+        "the active source tab must become a real visual gap"
+    );
+    assert_eq!(
+        rect_fill_count(&dragging.output, ghost_fill),
+        1,
+        "one non-interactive pointer ghost represents the dragged tab"
+    );
+    let ghost = rect_with_fill(&dragging.output, ghost_fill).expect("the tab ghost is painted");
+    assert!(
+        ghost.min.distance(dragged + ghost_offset) <= 0.01,
+        "the pointer ghost follows the current pointer plus the configured style offset"
+    );
+    let _ = accesskit_node(&dragging.output, Role::Tab, "First");
+    let _ = accesskit_node(&dragging.output, Role::Button, "Close First");
+    assert_eq!(
+        dragging.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Escape));
+    let cancelled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(rect_fill_count_in(&cancelled.output, active_fill, source_rect) > 0);
+    assert_eq!(rect_fill_count(&cancelled.output, ghost_fill), 0);
+}
+
+#[test]
+fn rejected_drag_begin_requests_only_one_settlement_pass() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let active_fill = egui::Color32::from_rgb(61, 109, 157);
+    let ghost_fill = egui::Color32::from_rgba_unmultiplied(231, 145, 53, 96);
+    let mut style = DockStyle::default();
+    style.visuals.tab_fill = Some(active_fill);
+    style.visuals.tab_active_fill = Some(active_fill);
+    style.visuals.tab_hover_fill = Some(active_fill);
+    style.visuals.ghost_fill = Some(ghost_fill);
+    let mut policy = dockspace::policy::DockPolicy::default();
+    let mut first = dockspace::policy::DockItemRule::new();
+    first.set_source_enabled(false);
+    policy.set_item_rule(FIRST, first);
+    let mut dockspace = Dockspace::builder("product-rejected-tab-drag-decoration", layout())
+        .style(style)
+        .policy(policy)
+        .build()
+        .expect("the source-disabled drag facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source_rect = node_rect(&stable.output, Role::Tab, "First");
+    let source = source_rect.center();
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let rejected = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(24.0, 8.0))],
+    );
+
+    assert_eq!(
+        rejected.output.platform_output.num_completed_passes, 2,
+        "a rejected Begin is marked per logical frame instead of discarding until max_passes"
+    );
+    assert!(rect_fill_count_in(&rejected.output, active_fill, source_rect) > 0);
+    assert_eq!(rect_fill_count(&rejected.output, ghost_fill), 0);
+}
+
+#[test]
+fn unused_tab_bar_space_starts_the_exact_group_drag() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let group_fill = egui::Color32::from_rgb(71, 107, 157);
+    let ghost_fill = egui::Color32::from_rgba_unmultiplied(227, 151, 61, 96);
+    let mut style = instrumented_style();
+    style.visuals.tab_active_fill = Some(group_fill);
+    style.visuals.ghost_fill = Some(ghost_fill);
+    let mut dockspace = Dockspace::builder("product-tab-group-trailing-drag", contained_layout())
+        .style(style)
+        .build()
+        .expect("the product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let second = node_rect(&stable.output, Role::Tab, "Second");
+    let source = Pos2::new((second.max.x + 80.0).min(760.0), second.center().y);
+    assert!(
+        source.x > second.max.x,
+        "the fixture must leave a positive trailing tab-bar region"
+    );
+
+    let hovered = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source)],
+    );
+    assert_eq!(
+        hovered.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grab,
+        "unused tab-bar space must expose the same group drag affordance as the leading grip"
+    );
+
+    let armed = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(source, true)],
+    );
+    assert!(rect_fill_count_in(&armed.output, group_fill, second) > 0);
+    assert_eq!(rect_fill_count(&armed.output, ghost_fill), 0);
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(12.0, 0.0))],
+    );
+    assert_eq!(
+        dragging.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+    assert_eq!(
+        dragging.output.platform_output.num_completed_passes, 2,
+        "the threshold-crossing pass is discarded so the final output uses core group state"
+    );
+    assert_eq!(
+        rect_fill_count_in(&dragging.output, group_fill, second),
+        0,
+        "the terminal threshold-crossing output already contains the group source gap"
+    );
+    assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 1);
+
+    let passive = dockspace
+        .style()
+        .visuals
+        .drop_guide_fill
+        .expect("the fixture fixes its passive guide color");
+    let active = dockspace
+        .style()
+        .visuals
+        .drop_guide_active_fill
+        .expect("the fixture fixes its active guide color");
+    let preview = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(Pos2::new(400.0, 528.0))],
+    );
+    assert!(
+        guide_button_count(&preview.output, passive, active) >= 4,
+        "the trailing region must enter the same core-owned group drag as the leading grip"
+    );
+    assert_eq!(
+        rect_fill_count_in(&preview.output, group_fill, second),
+        0,
+        "an active group drag must omit the source tab-stack paint"
+    );
+    assert_eq!(
+        rect_fill_count(&preview.output, ghost_fill),
+        1,
+        "one non-interactive pointer ghost represents the dragged group"
+    );
+    let ghost = rect_with_fill(&preview.output, ghost_fill).expect("the group ghost is painted");
+    assert!(ghost.width() <= 280.0);
+    assert!(
+        ghost.height() <= 64.0,
+        "a group ghost stays header-sized rather than copying the whole pane"
+    );
+    let guide_index = last_rect_fill_index(&preview.output, &[passive, active])
+        .expect("the active group drag paints guide shapes");
+    let ghost_index = last_rect_fill_index(&preview.output, &[ghost_fill])
+        .expect("the active group drag paints a ghost shape");
+    assert!(
+        ghost_index > guide_index,
+        "the pointer ghost remains above every target preview and guide"
+    );
+    let _ = accesskit_node(&preview.output, Role::Tab, "Second");
+    let _ = accesskit_node(&preview.output, Role::Button, "Close Second");
+    let tree = preview
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let pane_label = tree
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            (node.role() == Role::Label && node.value() == Some("Pane 2")).then_some(node)
+        })
+        .expect("the transparent pane keeps its application accessibility node");
+    assert!(
+        !pane_label.is_disabled(),
+        "paint omission must not disable application controls or surrender pane focus"
+    );
+}
+
+#[test]
+fn contained_title_drag_settles_root_gap_and_compact_ghost_in_the_same_run() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let source_fill = egui::Color32::from_rgb(83, 59, 137);
+    let ghost_fill = egui::Color32::from_rgba_unmultiplied(235, 157, 67, 96);
+    let mut style = DockStyle::default();
+    style.visuals.floating_fill = Some(source_fill);
+    style.visuals.ghost_fill = Some(ghost_fill);
+    let mut dockspace = Dockspace::builder("product-contained-drag-decoration", contained_layout())
+        .style(style)
+        .build()
+        .expect("the decorated contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source_bounds = contained_rect(&dockspace);
+    let source_rect = Rect::from_min_max(
+        Pos2::new(
+            source_bounds.min().x() as f32,
+            source_bounds.min().y() as f32,
+        ),
+        Pos2::new(
+            source_bounds.max().x() as f32,
+            source_bounds.max().y() as f32,
+        ),
+    );
+    let source = contained_title_point(&dockspace);
+    assert!(rect_fill_count_in(&stable.output, source_fill, source_rect) > 0);
+
+    let armed = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    assert!(rect_fill_count_in(&armed.output, source_fill, source_rect) > 0);
+    assert_eq!(rect_fill_count(&armed.output, ghost_fill), 0);
+
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(24.0, 8.0))],
+    );
+    assert_eq!(dragging.output.platform_output.num_completed_passes, 2);
+    assert_eq!(
+        rect_fill_count_in(&dragging.output, source_fill, source_rect),
+        0,
+        "the terminal threshold-crossing output contains a real contained-root gap"
+    );
+    assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 1);
+    let ghost = rect_with_fill(&dragging.output, ghost_fill).expect("the root ghost is painted");
+    assert!(ghost.width() <= 280.0);
+    assert!(ghost.height() <= 64.0);
+    let _ = accesskit_node(&dragging.output, Role::TitleBar, "Second");
+    let _ = accesskit_node(&dragging.output, Role::Button, "Close floating Second");
+    assert_eq!(
+        dragging.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+}
+
+#[test]
 fn default_features_tab_drag_reorders_across_multipass_discard() {
     let context = Context::default();
     context.enable_accesskit();
@@ -1299,25 +1952,25 @@ fn default_features_paint_outer_guides_and_dock_each_edge() {
     for (name, target, expected_axis, expected_items) in [
         (
             "left",
-            Pos2::new(40.0, 300.0),
+            Pos2::new(72.0, 300.0),
             DockspaceAxis::Horizontal,
             vec![vec![SECOND], vec![FIRST]],
         ),
         (
             "right",
-            Pos2::new(760.0, 300.0),
+            Pos2::new(728.0, 300.0),
             DockspaceAxis::Horizontal,
             vec![vec![FIRST], vec![SECOND]],
         ),
         (
             "top",
-            Pos2::new(400.0, 40.0),
+            Pos2::new(400.0, 72.0),
             DockspaceAxis::Vertical,
             vec![vec![SECOND], vec![FIRST]],
         ),
         (
             "bottom",
-            Pos2::new(400.0, 560.0),
+            Pos2::new(400.0, 528.0),
             DockspaceAxis::Vertical,
             vec![vec![FIRST], vec![SECOND]],
         ),
@@ -1534,7 +2187,7 @@ fn default_features_splitter_junction_tracks_both_axes_and_commits_once() {
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let initial = node_rect(&ready.output, Role::Splitter, "Resize pane grid");
+    let initial = node_rect(&ready.output, Role::Group, "Resize pane grid");
     let source = initial.center();
     let moved = source + vec2(70.0, 50.0);
     let before_version = dockspace.version();
@@ -1552,7 +2205,7 @@ fn default_features_splitter_junction_tracks_both_axes_and_commits_once() {
         vec![Event::PointerMoved(moved)],
     );
     let live = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let live_junction = node_rect(&live.output, Role::Splitter, "Resize pane grid");
+    let live_junction = node_rect(&live.output, Role::Group, "Resize pane grid");
 
     assert!(
         live_junction.center().x > initial.center().x + 35.0
@@ -1579,6 +2232,79 @@ fn default_features_splitter_junction_tracks_both_axes_and_commits_once() {
     let committed_version = dockspace.version();
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(dockspace.version(), committed_version);
+}
+
+#[test]
+fn default_features_splitter_junction_exposes_independent_axis_semantics() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "product-splitter-junction-semantics",
+        splitter_junction_layout(),
+    )
+    .build()
+    .expect("the product splitter junction facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, group_node) = accesskit_node(&stable.output, Role::Group, "Resize pane grid");
+    let (horizontal, horizontal_node) = accesskit_node(
+        &stable.output,
+        Role::Splitter,
+        "Resize pane grid horizontally",
+    );
+    let (vertical, vertical_node) = accesskit_node(
+        &stable.output,
+        Role::Splitter,
+        "Resize pane grid vertically",
+    );
+    assert_eq!(horizontal_node.orientation(), Some(Orientation::Vertical));
+    assert_eq!(vertical_node.orientation(), Some(Orientation::Horizontal));
+    assert!(group_node.children().contains(&horizontal));
+    assert!(group_node.children().contains(&vertical));
+    for node in [horizontal_node, vertical_node] {
+        assert!(node.supports_action(Action::Focus));
+        assert!(node.supports_action(Action::Increment));
+        assert!(node.supports_action(Action::Decrement));
+    }
+
+    let (before_root, before_columns) =
+        splitter_junction_weights(&dockspace).expect("the product junction fixture remains split");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(horizontal, Action::Increment)],
+    );
+    let (horizontal_root, horizontal_columns) = splitter_junction_weights(&dockspace)
+        .expect("the horizontally adjusted junction remains split");
+    assert!(horizontal_root[0] > before_root[0]);
+    assert_eq!(horizontal_columns, before_columns);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(vertical, Action::Focus)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        key_press(Key::ArrowDown),
+    );
+    let (vertical_root, vertical_columns) = splitter_junction_weights(&dockspace)
+        .expect("the vertically adjusted junction remains split");
+    assert_eq!(vertical_root, horizontal_root);
+    assert!(
+        vertical_columns
+            .iter()
+            .zip(horizontal_columns.iter())
+            .all(|(after, before)| after[0] > before[0]),
+        "Down Arrow advances every vertical-axis incident splitter together"
+    );
 }
 
 #[test]
@@ -1637,7 +2363,7 @@ fn default_features_escape_cancels_one_active_drag_and_clears_preview() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = tab_center(&stable.output, "Second");
-    let target = Pos2::new(400.0, 40.0);
+    let target = Pos2::new(400.0, 72.0);
     let passive = dockspace
         .style()
         .visuals
@@ -1675,6 +2401,11 @@ fn default_features_escape_cancels_one_active_drag_and_clears_preview() {
     let cancelled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(guide_button_count(&cancelled.output, passive, active), 0);
     assert_eq!(
+        context.dragged_id(),
+        None,
+        "Escape must clear egui's local drag owner together with the core gesture"
+    );
+    assert_eq!(
         root_split(&dockspace),
         Some((DockspaceAxis::Horizontal, vec![vec![FIRST], vec![SECOND]],)),
     );
@@ -1703,8 +2434,8 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = tab_center(&stable.output, "Second");
-    let painted_top = Pos2::new(400.0, 40.0);
-    let release_bottom = Pos2::new(400.0, 560.0);
+    let painted_top = Pos2::new(400.0, 72.0);
+    let release_bottom = Pos2::new(400.0, 528.0);
 
     let _ = run_frame(
         &context,
@@ -1736,8 +2467,7 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
     );
     let version_before_visual_update = dockspace.version();
     let mut visual_only_style = dockspace.style().clone();
-    visual_only_style.visuals.tab_active_fill =
-        Some(egui::Color32::from_rgb(41, 83, 109));
+    visual_only_style.visuals.tab_active_fill = Some(egui::Color32::from_rgb(41, 83, 109));
     let visual_mutation = dockspace
         .set_style(visual_only_style)
         .expect("visual-only styling does not disturb the pending release");
@@ -1779,8 +2509,8 @@ fn default_features_discarded_preview_cannot_release_a_drag() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = tab_center(&stable.output, "Second");
-    let top = Pos2::new(400.0, 40.0);
-    let bottom = Pos2::new(400.0, 560.0);
+    let top = Pos2::new(400.0, 72.0);
+    let bottom = Pos2::new(400.0, 528.0);
 
     let _ = run_frame(
         &context,
@@ -1844,8 +2574,8 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = tab_center(&stable.output, "Second");
-    let top = Pos2::new(400.0, 40.0);
-    let bottom = Pos2::new(400.0, 560.0);
+    let top = Pos2::new(400.0, 72.0);
+    let bottom = Pos2::new(400.0, 528.0);
 
     let _ = run_frame(
         &context,
@@ -2046,7 +2776,7 @@ fn default_features_contained_title_redocks_through_the_canonical_guide() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = contained_title_point(&dockspace);
-    let target = Pos2::new(400.0, 40.0);
+    let target = Pos2::new(400.0, 72.0);
 
     let _ = run_frame(
         &context,
@@ -2121,4 +2851,110 @@ fn default_features_replace_policy_and_style_atomically() {
     assert!(dockspace.set_style(invalid_style).is_err());
     assert_eq!(dockspace.version(), version_before_invalid_style);
     assert_eq!(dockspace.style(), &visual_only_style);
+}
+
+#[test]
+fn kittest_selects_and_closes_tabs_through_accessible_controls() {
+    let mut harness = kittest_harness("product-kittest-tabs", layout());
+
+    harness
+        .get_by_role_and_label(Role::Tab, "Second")
+        .click_accesskit();
+    harness.run_steps(2);
+    assert_eq!(selected(&harness.state().dockspace), Some(SECOND));
+
+    harness
+        .get_by_role_and_label(Role::Button, "Close Second")
+        .click_accesskit();
+    harness.run_steps(2);
+    let request = harness
+        .state_mut()
+        .close_requests
+        .pop()
+        .expect("the accessible close control opens one close plan");
+    let item = request.plan().items()[0];
+    assert_eq!(item.item(), SECOND);
+    harness
+        .state_mut()
+        .dockspace
+        .resolve_close(request.plan().request(), item.token(), CloseDecision::Allow)
+        .expect("the kittest close decision commits");
+    harness.run_steps(2);
+
+    assert!(harness.state().dockspace.view().item(SECOND).is_none());
+    assert_eq!(tab_items(&harness.state().dockspace), vec![FIRST]);
+}
+
+#[test]
+fn kittest_moves_and_resizes_contained_content_semantically() {
+    let mut harness = kittest_harness("product-kittest-contained", contained_layout());
+    let initial = contained_rect(&harness.state().dockspace);
+    let source = harness
+        .get_by_role_and_label(Role::TitleBar, "Second")
+        .rect()
+        .center();
+    let destination = source + vec2(-80.0, 60.0);
+
+    harness.hover_at(source);
+    harness.step();
+    harness.drag_at(source);
+    harness.step();
+    harness.hover_at(destination);
+    harness.step();
+    harness.drop_at(destination);
+    harness.run_steps(3);
+
+    let moved = contained_rect(&harness.state().dockspace);
+    assert_eq!(moved.size(), initial.size());
+    assert!((moved.min().x() - (initial.min().x() - 80.0)).abs() < 0.5);
+    assert!((moved.min().y() - (initial.min().y() + 60.0)).abs() < 0.5);
+
+    harness
+        .get_by_role_and_label(Role::Splitter, "Resize floating right edge")
+        .focus();
+    harness.run_steps(2);
+    harness.key_press(Key::ArrowRight);
+    harness.run_steps(3);
+
+    let resized = contained_rect(&harness.state().dockspace);
+    assert_eq!(resized.min(), moved.min());
+    assert!(resized.width() > moved.width());
+    assert_eq!(resized.height(), moved.height());
+}
+
+#[test]
+fn kittest_adjusts_splitter_junction_axes_independently() {
+    let mut harness = kittest_harness("product-kittest-junction", splitter_junction_layout());
+    let (initial_root, initial_columns) = splitter_junction_weights(&harness.state().dockspace)
+        .expect("the kittest junction fixture remains split");
+
+    harness
+        .get_by_role_and_label(Role::Splitter, "Resize pane grid horizontally")
+        .focus();
+    harness.run_steps(2);
+    harness.key_press(Key::ArrowRight);
+    harness.run_steps(3);
+
+    let (horizontal_root, horizontal_columns) =
+        splitter_junction_weights(&harness.state().dockspace)
+            .expect("the horizontally adjusted kittest junction remains split");
+    assert!(horizontal_root[0] > initial_root[0]);
+    assert_eq!(horizontal_columns, initial_columns);
+
+    harness
+        .get_by_role_and_label(Role::Splitter, "Resize pane grid vertically")
+        .focus();
+    harness.run_steps(2);
+    harness.key_press(Key::ArrowDown);
+    harness.run_steps(3);
+
+    let (vertical_root, vertical_columns) = splitter_junction_weights(&harness.state().dockspace)
+        .expect("the vertically adjusted kittest junction remains split");
+    assert_eq!(vertical_root, horizontal_root);
+    assert!(
+        vertical_columns
+            .iter()
+            .zip(horizontal_columns.iter())
+            .all(|(after, before)| after[0] > before[0])
+    );
 }

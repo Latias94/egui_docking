@@ -38,13 +38,12 @@ struct SplitterGroup {
 /// Expanded hit geometry is consulted only after structural contact is proven.
 /// Contacts are aggregated by their exact centerline intersection, and any
 /// directional conflict fails closed rather than selecting a winner.
+/// Operability remains a separate scene capability so adapters can publish one
+/// axis-specific semantic control even when atomic pointer resize is disabled.
 pub(crate) fn derive_splitter_junction_candidates<'a>(
     splitters: impl IntoIterator<Item = &'a SplitterRecord>,
 ) -> Result<Vec<SplitterJunctionCandidate>, GeometryError> {
-    let splitters = splitters
-        .into_iter()
-        .filter(|splitter| splitter.operable())
-        .map(IndexedSplitter::from_record);
+    let splitters = splitters.into_iter().map(IndexedSplitter::from_record);
     derive_indexed_splitter_junction_candidates(splitters).map(|(candidates, _)| candidates)
 }
 

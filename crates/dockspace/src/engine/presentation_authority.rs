@@ -1473,6 +1473,11 @@ impl DockEngine {
                         ticket.surface(),
                         interaction,
                     );
+                    self.observe_pending_presentation_rehome(
+                        promotion.key(),
+                        ticket.surface(),
+                        interaction,
+                    );
                     self.observe_pending_contained_transform_release_presentation(
                         promotion.key(),
                         ticket.surface(),
@@ -1526,6 +1531,14 @@ impl DockEngine {
                 outcomes,
             );
         }
+        if let Some(pending) = self.pending_presentation_rehome.as_mut() {
+            Self::retire_pending_release_outputs(
+                &mut pending.presentation_outputs,
+                pending.presented_output,
+                &mut pending.presentation_failed,
+                outcomes,
+            );
+        }
     }
 
     pub(super) fn observe_pending_release_host_retirement(
@@ -1541,6 +1554,14 @@ impl DockEngine {
             );
         }
         if let Some(pending) = self.pending_contained_transform_release.as_mut() {
+            Self::retire_pending_release_output_keys(
+                &mut pending.presentation_outputs,
+                pending.presented_output,
+                &mut pending.presentation_failed,
+                retired_outputs,
+            );
+        }
+        if let Some(pending) = self.pending_presentation_rehome.as_mut() {
             Self::retire_pending_release_output_keys(
                 &mut pending.presentation_outputs,
                 pending.presented_output,
@@ -1620,6 +1641,22 @@ impl DockEngine {
         // preview, so requiring a post-release emission would reverse valid
         // presentation-before-release causality.
         if interaction.drag_preview() == Some(pending.preview) && surface == preview_surface {
+            pending.presented_output = Some(output);
+        }
+    }
+
+    fn observe_pending_presentation_rehome(
+        &mut self,
+        output: HostFrameKey,
+        surface: SurfaceId,
+        interaction: HostInteractionPresentation,
+    ) {
+        let Some(pending) = self.pending_presentation_rehome.as_mut() else {
+            return;
+        };
+        if interaction.drag_preview() == Some(pending.preview.public().token())
+            && surface == pending.target_surface
+        {
             pending.presented_output = Some(output);
         }
     }

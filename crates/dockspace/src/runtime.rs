@@ -18,6 +18,7 @@ mod paint;
 #[cfg(feature = "serde")]
 mod persistence;
 mod presentation;
+mod presentation_commands;
 mod report;
 mod session;
 
@@ -79,13 +80,14 @@ pub use native_effect::{
 };
 pub use paint::{
     ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,
-    DockspaceContainedTransformPreview, DockspaceDragPreview, DockspaceDropDirection,
-    DockspaceDropEligibility, DockspaceGuideScope, DockspacePaintLayer, DockspacePreviewVisual,
-    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSemanticOutput, DockspaceVisualId,
-    DockspaceVisualKind, DropAffordanceClusterPaintRecord, DropAffordancePaintRecord,
-    DropAffordanceTargetPaintRecord, DropGuidePaintRecord, DropGuideTargetPaintRecord,
-    PanePaintRecord, SplitterGapVisibility, SplitterJunctionPaintRecord, SplitterPaintRecord,
-    StructuralSplitterGapStatus, SurfacePaintPlan, TabBarPaintRecord,
+    DockspaceContainedTransformPreview, DockspaceDragDecoration, DockspaceDragPreview,
+    DockspaceDragSourceKind, DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope,
+    DockspacePaintLayer, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceSemanticOutput, DockspaceVisualId, DockspaceVisualKind,
+    DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
+    DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord, SplitterGapVisibility,
+    SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
+    SurfacePaintPlan, TabBarPaintRecord, TabGroupDragRegionKind, TabGroupDragRegionPaintRecord,
     TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
     TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord, TabStripMemberPaintRecord,
     TabStripMemberVisibility,
@@ -101,6 +103,7 @@ pub use presentation::{
     NativeStagingPresentationReportError, PaintedNativeStagingOutput, PaintedSurfaceOutput,
     SurfacePresentationReportError, SurfacePresentationResult,
 };
+pub use presentation_commands::{DockspacePresentationCommand, DockspacePresentationCommands};
 
 use thiserror::Error;
 
@@ -108,7 +111,7 @@ use crate::close_plan::SurfaceCloseDisposition;
 use crate::engine::{
     CoreHostFrameError, EngineError, SurfaceContributionBeginError, SurfaceContributionPrepareError,
 };
-use crate::ids::SurfaceId;
+use crate::ids::{RootId, SurfaceId};
 use crate::model::{
     DockspaceActionOutcome, DockspaceActionRejection, PreparedDockActionAuthorityMismatch,
 };
@@ -336,6 +339,54 @@ impl HostSurfaceCommit {
     }
 }
 
+/// One presentation-gated root transition settled by a host frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DockspacePresentationTransition {
+    root: RootId,
+    source_surface: SurfaceId,
+    target_surface: SurfaceId,
+    result: DockspacePresentationTransitionResult,
+}
+
+impl DockspacePresentationTransition {
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    #[must_use]
+    pub const fn source_surface(self) -> SurfaceId {
+        self.source_surface
+    }
+
+    #[must_use]
+    pub const fn target_surface(self) -> SurfaceId {
+        self.target_surface
+    }
+
+    #[must_use]
+    pub const fn result(self) -> DockspacePresentationTransitionResult {
+        self.result
+    }
+}
+
+/// Stable terminal category for a presentation-gated root transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockspacePresentationTransitionResult {
+    /// The exact target presentation was observed and ownership moved once.
+    Applied,
+    /// The target output did not reach a presented terminal.
+    TargetNotPresented,
+    /// The workspace changed before the transfer barrier.
+    WorkspaceChanged,
+    /// Dock policy changed before the transfer barrier.
+    PolicyChanged,
+    /// The exact source presentation or native binding was no longer current.
+    SourceUnavailable,
+    /// The frozen topology mutation was rejected at the transfer barrier.
+    CommandRejected,
+}
+
 /// High-level report from one atomically published facade frame.
 #[derive(Debug, PartialEq)]
 pub struct HostFrameReport {
@@ -346,6 +397,7 @@ pub struct HostFrameReport {
     affected_surfaces: Vec<SurfaceId>,
     surface_commits: Vec<HostSurfaceCommit>,
     inputs: Vec<HostInputOutcome>,
+    presentation_transitions: Vec<DockspacePresentationTransition>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
     painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
     native_admissions: Vec<NativeSurfaceBinding>,
@@ -399,6 +451,16 @@ impl HostFrameReport {
     #[must_use]
     pub fn inputs(&self) -> &[HostInputOutcome] {
         &self.inputs
+    }
+
+    /// Returns presentation-gated product transitions settled by this frame.
+    ///
+    /// These results may settle an action requested by an earlier frame. They
+    /// therefore remain separate from [`Self::inputs`] while preserving the
+    /// core event order of the current atomic publication.
+    #[must_use]
+    pub fn presentation_transitions(&self) -> &[DockspacePresentationTransition] {
+        &self.presentation_transitions
     }
 
     /// Takes the affine capabilities for outputs actually painted by this frame.

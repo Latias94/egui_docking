@@ -1,36 +1,58 @@
 //! Pane and tab rendering over opaque product paint records.
 
 use dockspace::model::ItemId;
-use dockspace::runtime::{SurfaceTabNavigation, TabPaintRecord};
+use dockspace::runtime::{SurfaceTabNavigation, TabGroupDragRegionKind, TabPaintRecord};
 use egui::accesskit::{Action, Role};
 use egui::{
     Align, CursorIcon, EventFilter, Id, Key, Layout, PointerButton, Sense, Stroke, StrokeKind, Ui,
     UiBuilder, pos2,
 };
 
-use crate::style::ResolvedDockVisuals;
-
 use super::RenderContext;
-use super::actions::{button_activated, gesture_phase};
+use super::actions::{
+    LocalScrollAxis, button_activated, consume_local_scroll_input, gesture_phase,
+    local_scroll_input,
+};
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
 use super::schedule::RootPaintSchedule;
 
-pub(crate) fn paint_root(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
-    paint_panes(context, root);
+#[derive(Clone, Copy)]
+pub(crate) enum RootVisualContext {
+    Main,
+    Contained { pane_fill: egui::Color32 },
+}
+
+pub(crate) fn paint_root(
+    context: &mut RenderContext<'_, '_, '_>,
+    root: &RootPaintSchedule<'_>,
+    visual_context: RootVisualContext,
+) {
+    paint_panes(context, root, visual_context);
     paint_tab_bars(context, root);
     paint_tabs(context, root);
 }
 
-fn paint_panes(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
+fn paint_panes(
+    context: &mut RenderContext<'_, '_, '_>,
+    root: &RootPaintSchedule<'_>,
+    visual_context: RootVisualContext,
+) {
+    let pane_fill = match visual_context {
+        RootVisualContext::Main => context.visuals.workspace_fill,
+        RootVisualContext::Contained { pane_fill } => pane_fill,
+    };
     for pane in root.panes() {
+        let paint_omitted = context
+            .plan
+            .drag_decoration()
+            .is_some_and(|decoration| decoration.omits_visual(pane.visual_id()));
         let Some(bounds) = egui_rect(pane.bounds()) else {
             continue;
         };
-        context
-            .ui
-            .painter()
-            .rect_filled(bounds, 0.0, context.visuals.workspace_fill);
+        if !paint_omitted {
+            context.ui.painter().rect_filled(bounds, 0.0, pane_fill);
+        }
         let Some(pane_rect) = egui_rect(pane.content_bounds()) else {
             continue;
         };
@@ -53,6 +75,11 @@ fn paint_panes(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule
                 .max_rect(pane_rect)
                 .layout(Layout::top_down(Align::Min)),
         );
+        if paint_omitted {
+            // Keep pane widget identities alive so focus and application-owned
+            // accessibility state survive the temporary source gap.
+            child.set_opacity(0.0);
+        }
         child.set_clip_rect(pane_rect);
         if context
             .resources
@@ -70,7 +97,11 @@ fn paint_panes(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule
 
 fn paint_tab_bars(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
     for bar in root.tab_bars() {
-        if let Some(bounds) = egui_rect(bar.bounds()) {
+        let paint_omitted = context
+            .plan
+            .drag_decoration()
+            .is_some_and(|decoration| decoration.omits_visual(bar.visual_id()));
+        if !paint_omitted && let Some(bounds) = egui_rect(bar.bounds()) {
             context
                 .ui
                 .painter()
@@ -83,54 +114,83 @@ fn paint_tab_bars(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSched
         ));
         let receiver = context.plan.receiver_for_tab_strip_scroll(bar);
         context.register_scroll_receiver(id, receiver);
-        paint_group_grip(context, bar);
+        if let Some(scroll) = local_scroll_input(
+            context.ui,
+            context.pointer_authority,
+            LocalScrollAxis::Horizontal,
+        ) && let Some(action) =
+            context
+                .plan
+                .prepare_tab_strip_scroll_at(bar, scroll.point(), scroll.offset_delta())
+        {
+            consume_local_scroll_input(context.ui, scroll);
+            context.push_local_action(action);
+        }
+        paint_group_drag_regions(context, bar);
     }
 }
 
-fn paint_group_grip(
+fn paint_group_drag_regions(
     context: &mut RenderContext<'_, '_, '_>,
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
 ) {
-    let Some(grip) = bar.group_grip_bounds().and_then(egui_rect) else {
-        return;
-    };
-    let id =
-        context
-            .ui
-            .make_persistent_id((context.instance_id, "tab-group-grip", bar.visual_id()));
-    let response = context
-        .interact_receiver(
-            grip,
-            id,
-            Sense::drag(),
-            context.plan.receiver_for_tab_group_grip(bar),
-        )
-        .on_hover_text("Drag tab group");
-    let active = response.hovered() || response.dragged();
-    if active {
-        context.ui.ctx().set_cursor_icon(if response.dragged() {
-            CursorIcon::Grabbing
-        } else {
-            CursorIcon::Grab
-        });
-    }
-    paint_group_grip_icon(context.ui, grip, context.visuals, active);
-    if context.pointer_authority.accepts_local_pointer_actions()
-        && let Some(phase) = gesture_phase(&response)
-        && let Some(action) = context
-            .plan
-            .prepare_tab_group_gesture(bar.visual_id(), phase)
-    {
-        context.push_preview_gesture_action(action);
+    for region in bar.group_drag_regions() {
+        let Some(bounds) = egui_rect(region.bounds()) else {
+            continue;
+        };
+        let id = context.ui.make_persistent_id((
+            context.instance_id,
+            "tab-group-drag-region",
+            region.visual_id(),
+        ));
+        let response = context
+            .interact_receiver(
+                bounds,
+                id,
+                Sense::click_and_drag(),
+                context.plan.receiver_for_tab_group_drag_region(region),
+            )
+            .on_hover_text("Drag tab group");
+        let locally_dragged = context.response_dragged_locally(&response);
+        if response.hovered() || locally_dragged {
+            context.ui.ctx().set_cursor_icon(if locally_dragged {
+                CursorIcon::Grabbing
+            } else {
+                CursorIcon::Grab
+            });
+        }
+        if region.kind() == TabGroupDragRegionKind::LeadingGrip {
+            let paint_omitted = context
+                .plan
+                .drag_decoration()
+                .is_some_and(|decoration| decoration.omits_visual(region.visual_id()));
+            if !paint_omitted {
+                paint_group_grip_icon(
+                    context.ui,
+                    bounds,
+                    context.interaction_stroke(&response, context.style.visuals.tab_text_color),
+                );
+            }
+        }
+        if context.pointer_authority.accepts_local_pointer_actions()
+            && let Some(phase) = gesture_phase(&response)
+        {
+            if let Some(action) = context
+                .plan
+                .prepare_tab_group_gesture(bar.visual_id(), phase)
+                && context.accept_drag_phase_once(
+                    response.id,
+                    phase,
+                    "egui_dockspace: settle tab-group drag decoration",
+                )
+            {
+                context.push_preview_gesture_action(action);
+            }
+        }
     }
 }
 
-fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, visuals: ResolvedDockVisuals, active: bool) {
-    let color = if active {
-        visuals.tab_active_text_color
-    } else {
-        visuals.tab_text_color
-    };
+fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, stroke: Stroke) {
     let spacing = 3.5_f32.min(rect.width() * 0.18).min(rect.height() * 0.18);
     let radius = 1.0_f32.min(spacing * 0.32);
     for x in [-0.5, 0.5] {
@@ -138,7 +198,7 @@ fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, visuals: ResolvedDockVisuals
             ui.painter().circle_filled(
                 rect.center() + egui::vec2(x * spacing, y * spacing),
                 radius,
-                color,
+                stroke.color,
             );
         }
     }
@@ -171,38 +231,56 @@ fn paint_tab(
         Sense::click_and_drag(),
         context.plan.receiver_for_tab_body(tab),
     );
+    let locally_dragged = context.response_dragged_locally(&response);
+    if response.hovered() || locally_dragged {
+        context.ui.ctx().set_cursor_icon(if locally_dragged {
+            CursorIcon::Grabbing
+        } else {
+            CursorIcon::Grab
+        });
+    }
+    let source_gap = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(tab.visual_id()));
     let selected = tab.selected();
     let focused = response.has_focus();
-    let fill = if selected {
-        context.visuals.tab_active_fill
-    } else if response.hovered() {
-        context.visuals.tab_hover_fill
-    } else {
-        context.visuals.tab_fill
-    };
-    context.ui.painter().rect_filled(visible, 0.0, fill);
-    if focused {
-        context.ui.painter().rect_stroke(
-            visible.shrink(1.0),
-            0.0,
-            Stroke::new(1.0, context.visuals.drop_border_color),
-            StrokeKind::Inside,
-        );
-    }
-    if let Some(text) = egui_rect(tab.text_bounds()) {
-        let color = if selected {
-            context.visuals.tab_active_text_color
+    if !source_gap {
+        let fill = if selected {
+            context.visuals.tab_active_fill
+        } else if RenderContext::response_emphasized(&response) {
+            context.interaction_fill(&response)
         } else {
-            context.visuals.tab_text_color
+            context.visuals.tab_fill
         };
-        context.ui.painter_at(text).galley_with_override_text_color(
-            pos2(text.min.x, text.center().y - resource.galley.size().y * 0.5),
-            resource.galley.clone(),
-            color,
-        );
+        context.ui.painter().rect_filled(visible, 0.0, fill);
+        if focused {
+            context.ui.painter().rect_stroke(
+                visible.shrink(1.0),
+                0.0,
+                Stroke::new(1.0, context.visuals.drop_border_color),
+                StrokeKind::Inside,
+            );
+        }
+        if let Some(text) = egui_rect(tab.text_bounds()) {
+            let color = if selected {
+                context.visuals.tab_active_text_color
+            } else if RenderContext::response_emphasized(&response) {
+                context
+                    .interaction_stroke(&response, context.style.visuals.tab_text_color)
+                    .color
+            } else {
+                context.visuals.tab_text_color
+            };
+            context.ui.painter_at(text).galley_with_override_text_color(
+                pos2(text.min.x, text.center().y - resource.galley.size().y * 0.5),
+                resource.galley.clone(),
+                color,
+            );
+        }
     }
     configure_tab_accessibility(context.ui, id, visible, resource.title.as_str(), selected);
-    capture_tab_actions(context, tab, resource, &response, focused);
+    capture_tab_actions(context, tab, resource, &response, focused, !source_gap);
 }
 
 fn tab_id(ui: &Ui, instance_id: Id, tab: TabPaintRecord<'_>) -> Id {
@@ -215,6 +293,7 @@ fn capture_tab_actions(
     resource: &TabPaintResource,
     response: &egui::Response,
     focused: bool,
+    paint_close_icon: bool,
 ) {
     let id = response.id;
     let keyboard_activation = focused
@@ -276,9 +355,16 @@ fn capture_tab_actions(
     }
     if context.pointer_authority.accepts_local_pointer_actions()
         && let Some(phase) = gesture_phase(response)
-        && let Some(action) = context.plan.prepare_tab_gesture(tab.item(), phase)
     {
-        context.push_preview_gesture_action(action);
+        if let Some(action) = context.plan.prepare_tab_gesture(tab.item(), phase)
+            && context.accept_drag_phase_once(
+                response.id,
+                phase,
+                "egui_dockspace: settle tab drag decoration",
+            )
+        {
+            context.push_preview_gesture_action(action);
+        }
     }
 
     if let Some(close_bounds) = tab.close_bounds().and_then(egui_rect) {
@@ -287,7 +373,9 @@ fn capture_tab_actions(
             tab.item(),
             close_bounds,
             resource.title.as_str(),
+            tab.selected() || response.hovered() || response.has_focus(),
             context.plan.receiver_for_tab_close(tab),
+            paint_close_icon,
         );
     }
 }
@@ -297,33 +385,34 @@ fn paint_close(
     item: ItemId,
     rect: egui::Rect,
     title: &str,
+    tab_emphasized: bool,
     receiver: Option<dockspace::runtime::DockspaceReceiverDescriptor>,
+    paint_icon: bool,
 ) {
     let id = context
         .ui
         .make_persistent_id((context.instance_id, "tab-close", item));
     let response = context.interact_receiver(rect, id, Sense::click(), receiver);
-    let color = if response.hovered() {
-        context.visuals.tab_active_text_color
-    } else {
-        context.visuals.tab_text_color
-    };
-    let inset = rect.width().min(rect.height()) * 0.28;
-    let stroke = Stroke::new(1.5, color);
-    context.ui.painter().line_segment(
-        [
-            rect.left_top() + egui::vec2(inset, inset),
-            rect.right_bottom() - egui::vec2(inset, inset),
-        ],
-        stroke,
-    );
-    context.ui.painter().line_segment(
-        [
-            rect.right_top() + egui::vec2(-inset, inset),
-            rect.left_bottom() + egui::vec2(inset, -inset),
-        ],
-        stroke,
-    );
+    let visuals = *context.ui.style().interact(&response);
+    if paint_icon && (tab_emphasized || RenderContext::response_emphasized(&response)) {
+        let paint_rect = rect.expand(visuals.expansion);
+        let inset = paint_rect.width().min(paint_rect.height()) * 0.28;
+        let stroke = context.interaction_stroke(&response, context.style.visuals.tab_text_color);
+        context.ui.painter().line_segment(
+            [
+                paint_rect.left_top() + egui::vec2(inset, inset),
+                paint_rect.right_bottom() - egui::vec2(inset, inset),
+            ],
+            stroke,
+        );
+        context.ui.painter().line_segment(
+            [
+                paint_rect.right_top() + egui::vec2(-inset, inset),
+                paint_rect.left_bottom() + egui::vec2(inset, -inset),
+            ],
+            stroke,
+        );
+    }
     context.ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(Role::Button);
         node.set_bounds(accesskit_bounds(rect));

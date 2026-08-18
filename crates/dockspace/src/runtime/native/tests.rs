@@ -9,9 +9,9 @@ use crate::platform::PlatformCapability;
 use crate::policy::DockPolicy;
 use crate::runtime::native_effect::{NativeEffectDropQueue, NativeEffectRequest};
 use crate::runtime::{
-    DockspaceSemanticOutput, NativeDispatchFailure, NativeReceiverPurpose, NativeReceiverQuery,
-    PaintedSurfaceOutput, PresentedDockspaceSurface, SurfacePresentationResult,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    DockspaceSemanticOutput, HostFrameReport, NativeDispatchFailure, NativeReceiverPurpose,
+    NativeReceiverQuery, PaintedSurfaceOutput, PresentedDockspaceSurface,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
@@ -21,6 +21,16 @@ const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const ITEM: ItemId = ItemId::new(1);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
+
+#[test]
+fn native_surface_close_defaults_to_presentation_recovery() {
+    let action = NativeSurfaceCloseAction::default();
+    assert_eq!(action, NativeSurfaceCloseAction::RecoverPresentation);
+    assert_eq!(
+        action.into_request(),
+        crate::close_plan::SurfaceCloseRequest::RecoverPresentation
+    );
+}
 
 fn unknown_focus() -> crate::viewport_focus::FocusObservationEnvelope {
     crate::viewport_focus::unknown_focus_observation(
@@ -147,6 +157,13 @@ fn native_root_session_with_profile(
 fn paint_native_output(
     session: &mut DockspaceSession,
 ) -> (PaintedSurfaceOutput, DockspaceSemanticOutput) {
+    paint_native_surface_output(session, SURFACE)
+}
+
+fn paint_native_surface_output(
+    session: &mut DockspaceSession,
+    surface: SurfaceId,
+) -> (PaintedSurfaceOutput, DockspaceSemanticOutput) {
     let metrics = UniformSurfaceMetrics::new(
         LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
         LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
@@ -156,9 +173,11 @@ fn paint_native_output(
     let mut measured = session
         .begin_host_frame()
         .expect("native measurement frame begins");
-    measured
-        .measure_surface(SURFACE, metrics)
-        .expect("native surface measurements stage");
+    for measured_surface in measured.surfaces() {
+        measured
+            .measure_surface(measured_surface, metrics)
+            .expect("native surface measurements stage");
+    }
     measured
         .commit()
         .expect("native surface measurements commit");
@@ -167,19 +186,77 @@ fn paint_native_output(
         .begin_host_frame()
         .expect("native paint frame begins");
     let semantic_output = painted
-        .paint_plan(SURFACE)
+        .paint_plan(surface)
         .expect("native paint plan lookup succeeds")
         .expect("native paint plan is ready")
         .semantic_output();
     painted
-        .confirm_surface_painted(SURFACE)
+        .confirm_surface_painted(surface)
         .expect("native surface paint stages");
+    painted
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the remaining native surfaces retain their current plans");
     let mut report = painted.commit().expect("native surface paint emits");
     let output = report
         .take_painted_outputs()
         .pop()
         .expect("native paint emits one exact output");
     (output, semantic_output)
+}
+
+fn paint_and_present_all_native_surfaces(session: &mut DockspaceSession) -> HostFrameReport {
+    let metrics = UniformSurfaceMetrics::new(
+        LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+        LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+        80.0,
+    )
+    .expect("test metrics validate");
+    let mut measured = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native roster measurement frame begins");
+    for surface in measured.surfaces() {
+        measured
+            .measure_surface(surface, metrics)
+            .expect("native roster measurements stage");
+    }
+    measured
+        .commit()
+        .expect("native roster measurements commit");
+
+    let mut painted = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native roster paint frame begins");
+    let surfaces = painted.surfaces();
+    for surface in &surfaces {
+        assert!(
+            painted
+                .paint_plan(*surface)
+                .expect("native roster paint plan resolves")
+                .is_some(),
+            "surface {surface:?} must have a ready native paint plan",
+        );
+        painted
+            .confirm_surface_painted(*surface)
+            .expect("native roster surface paint stages");
+    }
+    let mut painted_report = painted.commit().expect("native roster paint emits");
+    let outputs = painted_report.take_painted_outputs();
+    assert_eq!(outputs.len(), surfaces.len());
+    for output in outputs {
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("native roster output presentation records");
+    }
+
+    let mut observed = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native roster presentation frame begins");
+    observed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("native roster presentation frame settles every surface");
+    observed
+        .commit()
+        .expect("native roster presentation commits")
 }
 
 fn foreign_semantic_output() -> DockspaceSemanticOutput {
@@ -478,20 +555,55 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
         [super::super::HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
         outcomes => panic!("expected one owned child registration, got {outcomes:?}"),
     };
+    let exact_window_facts = |x: f64| {
+        let bounds = PhysicalRect::new(x, 0.0, 640.0, 480.0).expect("native bounds validate");
+        let scale = ScaleFactor::new(1.0).expect("native scale validates");
+        NativeWindowFacts::live()
+            .with_content_bounds(bounds)
+            .with_outer_bounds(bounds)
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_close(NativeCloseState::Clear, None)
+    };
     session
         .report_managed_native_snapshot(
             [
-                (root_binding, NativeWindowFacts::live()),
-                (child_binding, NativeWindowFacts::live()),
+                (root_binding, exact_window_facts(0.0)),
+                (child_binding, exact_window_facts(700.0)),
             ],
-            NativeWorkAreaRoster::Unknown,
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
         )
         .expect("the exact live inventory records");
     commit_managed_frame(&mut session);
 
+    let _ = paint_and_present_all_native_surfaces(&mut session);
+    assert!(
+        session.engine.interaction_projection(SURFACE).is_some(),
+        "root scene after complete presentation: {:?}",
+        session.engine.scene().surface(SURFACE),
+    );
+    assert!(
+        session
+            .engine
+            .interaction_projection(child_surface)
+            .is_some(),
+        "child scene after complete presentation: {:?}",
+        session.engine.scene().surface(child_surface),
+    );
+
     let mut redock = session
         .begin_host_frame()
         .expect("the owned child redock frame begins");
+    assert!(
+        redock
+            .frame
+            .view()
+            .interaction_projection(SURFACE)
+            .is_some(),
+        "root interaction authority must survive the next host-frame prelude",
+    );
     redock
         .dock_root_current(
             child_root,
@@ -502,6 +614,56 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the owned child redock settles every surface");
     let mut report = redock.commit().expect("the owned child redock commits");
+    assert!(
+        matches!(
+            report.inputs(),
+            [super::super::HostInputOutcome::ProductActionApplied(
+                crate::model::DockspaceActionOutcome::RootDockRequested {
+                    root: actual_root,
+                    source_surface,
+                    target_root,
+                    ..
+                }
+            )] if *actual_root == child_root
+                && *source_surface == child_surface
+                && *target_root == ROOT
+        ),
+        "actual redock inputs: {:?}",
+        report.inputs()
+    );
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .bindings()
+            .active_cleanup_obligations(),
+        0,
+        "the child remains live until the target presentation is proven",
+    );
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(
+        session
+            .view()
+            .item(ItemId::new(2))
+            .expect("the child item remains present")
+            .surface(),
+        child_surface,
+    );
+
+    let mut report = paint_and_present_all_native_surfaces(&mut session);
+    assert!(
+        matches!(
+            report.presentation_transitions(),
+            [transition]
+                if transition.root() == child_root
+                    && transition.source_surface() == child_surface
+                    && transition.target_surface() == SURFACE
+                    && transition.result()
+                        == super::super::DockspacePresentationTransitionResult::Applied
+        ),
+        "actual presentation transitions: {:?}",
+        report.presentation_transitions()
+    );
     assert_eq!(
         session
             .engine
@@ -509,7 +671,7 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
             .bindings()
             .active_cleanup_obligations(),
         1,
-        "redocking retains one exact child cleanup obligation",
+        "presented redocking retains one exact child cleanup obligation",
     );
     let effects = report.take_native_effects();
     assert!(matches!(

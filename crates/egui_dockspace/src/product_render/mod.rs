@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 
 mod actions;
 mod contained;
+mod drag_feedback;
 mod geometry;
 mod guides;
 mod measurement;
@@ -16,9 +17,10 @@ mod tabs;
 
 use dockspace::model::ItemId;
 use dockspace::runtime::{
-    DockspacePreviewVisual, DockspaceReceiverDescriptor, PreparedSurfaceAction, SurfacePaintPlan,
+    DockspacePreviewVisual, DockspaceReceiverDescriptor, PreparedSurfaceAction,
+    SurfaceGesturePhase, SurfacePaintPlan,
 };
-use egui::{Id, Key, Modifiers, Sense, Stroke, StrokeKind, Ui};
+use egui::{Color32, Id, Key, Modifiers, Response, Sense, Stroke, StrokeKind, Ui};
 
 use crate::pane::PaneView;
 use crate::style::{DockStyle, ResolvedDockVisuals};
@@ -66,9 +68,77 @@ struct RenderContext<'ui, 'plan, 'scroll> {
 }
 
 impl RenderContext<'_, '_, '_> {
+    fn response_emphasized(response: &Response) -> bool {
+        response.sense.interactive()
+            && (response.is_pointer_button_down_on()
+                || response.has_focus()
+                || response.clicked()
+                || response.hovered()
+                || response.highlighted())
+    }
+
+    fn interaction_stroke(&self, response: &Response, idle_color: Option<Color32>) -> Stroke {
+        let mut stroke = self.ui.style().interact(response).fg_stroke;
+        if !Self::response_emphasized(response)
+            && let Some(color) = idle_color
+        {
+            stroke.color = color;
+        }
+        stroke
+    }
+
+    fn interaction_fill(&self, response: &Response) -> Color32 {
+        self.style
+            .visuals
+            .tab_hover_fill
+            .unwrap_or_else(|| self.ui.style().interact(response).weak_bg_fill)
+    }
+
+    fn response_dragged_locally(&self, response: &Response) -> bool {
+        self.pointer_authority.accepts_local_pointer_actions() && response.dragged()
+    }
+
+    fn splitter_fill(&self, response: &Response, emphasized: bool) -> Color32 {
+        if emphasized {
+            self.style
+                .visuals
+                .splitter_hover_color
+                .unwrap_or_else(|| self.ui.style().interact(response).fg_stroke.color)
+        } else {
+            self.visuals.splitter_color
+        }
+    }
+
     fn push_preview_gesture_action(&mut self, action: PreparedSurfaceAction) {
         *self.defer_measurement = true;
         self.local_actions.push(action);
+    }
+
+    fn accept_drag_phase_once(
+        &mut self,
+        widget: Id,
+        phase: SurfaceGesturePhase,
+        discard_reason: &'static str,
+    ) -> bool {
+        if !matches!(phase, SurfaceGesturePhase::Begin { .. }) {
+            return true;
+        }
+        let marker = self
+            .ui
+            .make_persistent_id((self.instance_id, "drag-begin-frame", widget));
+        let frame = self.ui.ctx().cumulative_frame_nr();
+        let first = self.ui.ctx().data_mut(|data| {
+            if data.get_temp::<u64>(marker) == Some(frame) {
+                false
+            } else {
+                data.insert_temp(marker, frame);
+                true
+            }
+        });
+        if first {
+            self.ui.ctx().request_discard(discard_reason);
+        }
+        first
     }
 
     fn push_local_action(&mut self, action: PreparedSurfaceAction) {
@@ -87,6 +157,15 @@ impl RenderContext<'_, '_, '_> {
         _receiver: Option<DockspaceReceiverDescriptor>,
     ) -> egui::Response {
         let response = self.ui.interact(rect, id, sense);
+        #[cfg(feature = "native-render-support")]
+        if self.pointer_authority == PointerActionAuthority::ExternalJournal
+            && sense.senses_drag()
+            && self.ui.ctx().dragged_id() == Some(response.id)
+        {
+            // The native pointer journal owns docking gestures. Retain egui's
+            // completed-pass hit record, but release this widget's local owner.
+            self.ui.ctx().stop_dragging();
+        }
         #[cfg(feature = "native-render-support")]
         if let Some(receiver) = _receiver {
             self.receivers.push(ProductReceiverBinding {
@@ -198,14 +277,21 @@ pub(crate) fn paint_surface(
             pointer_authority,
         };
         for root in schedule.main_roots() {
-            tabs::paint_root(&mut context, root);
+            tabs::paint_root(&mut context, root, tabs::RootVisualContext::Main);
             splitters::paint_root(&mut context, root);
         }
 
         for root in schedule.contained_roots() {
             let record = root.contained();
-            contained::paint_background(&mut context, record, root.records());
-            tabs::paint_root(&mut context, root.records());
+            let window_visuals = context.style.resolved_contained_window(context.ui.style());
+            contained::paint_background(&mut context, record, root.records(), window_visuals);
+            tabs::paint_root(
+                &mut context,
+                root.records(),
+                tabs::RootVisualContext::Contained {
+                    pane_fill: window_visuals.frame.fill,
+                },
+            );
             splitters::paint_root(&mut context, root.records());
             contained::paint_controls(&mut context, record, root.records());
         }
@@ -233,12 +319,14 @@ pub(crate) fn paint_surface(
         {
             context.push_presentation_action(action);
         }
+        drag_feedback::paint(&mut context);
         if context.pointer_authority.accepts_local_pointer_actions()
             && let Some(action) = context.plan.prepare_escape_cancel()
             && context
                 .ui
                 .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
         {
+            context.ui.ctx().stop_dragging();
             context.push_local_action(action);
         }
     }

@@ -645,6 +645,28 @@ pub struct SurfaceRosterDisposition {
     contained_minimum_authority: Option<ContainedMinimumAuthority>,
 }
 
+/// Exact single-root program derived from one bound native recovery obligation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ConvertedMainRecoveryProgram {
+    command: WorkspaceCommand,
+    target_surface: SurfaceId,
+    floating: FloatingPresentationId,
+    rect: LogicalRect,
+}
+
+impl ConvertedMainRecoveryProgram {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        WorkspaceCommand,
+        SurfaceId,
+        FloatingPresentationId,
+        LogicalRect,
+    ) {
+        (self.command, self.target_surface, self.floating, self.rect)
+    }
+}
+
 /// Source-scene authority frozen only for recovery placement.
 #[derive(Debug, Clone, PartialEq)]
 struct ContainedMinimumAuthority {
@@ -880,6 +902,63 @@ impl SurfaceRosterDisposition {
             )?;
         crate::operation::prepare_surface_recovery_transaction(workspace, &transaction)?;
         Ok(transaction)
+    }
+
+    pub(crate) fn compile_converted_main_recovery(
+        &self,
+        workspace: &Workspace,
+        target: SurfaceRecoveryTarget,
+        host: SurfaceRecoveryHostFacts,
+    ) -> Result<ConvertedMainRecoveryProgram, SurfaceRecoveryError> {
+        let host_surface = target.host_surface();
+        if host_surface == self.surface() {
+            return Err(SurfaceRecoveryError::SourceIsRecoveryHost {
+                surface: self.surface(),
+            });
+        }
+        if host.surface() != host_surface {
+            return Err(SurfaceRecoveryError::HostFactsMismatch {
+                target_surface: host_surface,
+                facts_surface: host.surface(),
+            });
+        }
+        if host.scene().surface() != host_surface {
+            return Err(SurfaceRecoveryError::HostSceneSurfaceMismatch {
+                host_surface,
+                scene_surface: host.scene().surface(),
+            });
+        }
+        if workspace.surface(host_surface).is_none() {
+            return Err(SurfaceRecoveryError::MissingHostSurface {
+                surface: host_surface,
+            });
+        }
+        if !self.matches_workspace(workspace) {
+            return Err(SurfaceRecoveryError::SourceRosterChanged {
+                surface: self.surface(),
+            });
+        }
+        let placement = self
+            .compile_converted_main_placement(workspace, target, host, self.source_coordinates)?
+            .ok_or(SurfaceRecoveryError::ShapeMismatch {
+                surface: self.surface(),
+                source_has_main: self.roster.main_source().is_some(),
+                target_has_main: target.converted_main().is_some(),
+            })?;
+        let source = self
+            .roster
+            .main_source()
+            .ok_or(SurfaceRecoveryError::ShapeMismatch {
+                surface: self.surface(),
+                source_has_main: false,
+                target_has_main: true,
+            })?;
+        Ok(ConvertedMainRecoveryProgram {
+            command: Self::compile_contained_command(source.clone(), host_surface, placement),
+            target_surface: host_surface,
+            floating: placement.floating,
+            rect: placement.rect,
+        })
     }
 
     fn compile_converted_main_placement(

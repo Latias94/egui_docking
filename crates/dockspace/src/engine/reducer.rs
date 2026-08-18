@@ -613,6 +613,7 @@ impl DockEngine {
         let before_pending_drag_release = self.pending_drag_release.clone();
         let before_pending_contained_transform_release =
             self.pending_contained_transform_release.clone();
+        let before_pending_presentation_rehome = self.pending_presentation_rehome.clone();
         let before_close = self.close.clone();
         let before_viewport = self.viewport.clone();
         let before_viewport_focus = self.viewport_focus.clone();
@@ -730,6 +731,12 @@ impl DockEngine {
         )?;
         if let Some(cause) = last_configuration_cause {
             let _ = candidate.cancel_revoked_presentation_caused(cause, &mut interaction_events)?;
+        }
+
+        let _ =
+            candidate.observe_pending_presentation_rehome_dispositions(&presentation_dispositions);
+        if candidate.settle_presented_pending_presentation_rehome(&mut events)? {
+            candidate.rebuild_presentation_requirements(candidate.last_input)?;
         }
 
         // Native close decisions are deliberately emitted only after every
@@ -865,6 +872,7 @@ impl DockEngine {
             || before_pending_drag_release != candidate.pending_drag_release
             || before_pending_contained_transform_release
                 != candidate.pending_contained_transform_release
+            || before_pending_presentation_rehome != candidate.pending_presentation_rehome
             || before_close != candidate.close
             || before_viewport != candidate.viewport
             || !focus_delta.is_empty();
@@ -947,9 +955,9 @@ impl DockEngine {
                 coordinate_generation,
                 interaction,
             } => {
-                let (drag_release, contained_release) =
+                let (drag_release, contained_release, presentation_rehome) =
                     self.pending_release_output_matches(surface, interaction)?;
-                if drag_release || contained_release {
+                if drag_release || contained_release || presentation_rehome {
                     return Ok(HostPresentationContinuation::Terminal);
                 }
                 let promotion_eligible = self.paint_output_is_promotion_eligible(
@@ -1009,7 +1017,7 @@ impl DockEngine {
         &self,
         surface: crate::ids::SurfaceId,
         interaction: crate::presentation_observation::HostInteractionPresentation,
-    ) -> Result<(bool, bool), EngineError> {
+    ) -> Result<(bool, bool, bool), EngineError> {
         let drag = if let Some(pending) = self.pending_drag_release.as_ref()
             && interaction.drag_preview() == Some(pending.preview)
         {
@@ -1050,7 +1058,20 @@ impl DockEngine {
         } else {
             false
         };
-        Ok((drag, contained))
+        let presentation_rehome = if let Some(pending) = self.pending_presentation_rehome.as_ref()
+            && interaction.drag_preview() == Some(pending.preview.public().token())
+        {
+            if surface != pending.target_surface {
+                return Err(EngineError::PresentationLedger {
+                    detail: "presentation rehome preview output was emitted on the wrong surface"
+                        .to_owned(),
+                });
+            }
+            true
+        } else {
+            false
+        };
+        Ok((drag, contained, presentation_rehome))
     }
 
     fn bind_pending_release_outputs(
@@ -1060,7 +1081,7 @@ impl DockEngine {
         let Some(interaction) = output.payload().interaction() else {
             return Ok(());
         };
-        let (drag_release, contained_release) =
+        let (drag_release, contained_release, presentation_rehome) =
             self.pending_release_output_matches(output.surface(), interaction)?;
         if drag_release && let Some(pending) = self.pending_drag_release.as_mut() {
             pending.presentation_outputs.insert(output.key());
@@ -1068,6 +1089,9 @@ impl DockEngine {
         if contained_release
             && let Some(pending) = self.pending_contained_transform_release.as_mut()
         {
+            pending.presentation_outputs.insert(output.key());
+        }
+        if presentation_rehome && let Some(pending) = self.pending_presentation_rehome.as_mut() {
             pending.presentation_outputs.insert(output.key());
         }
         Ok(())
@@ -1095,12 +1119,14 @@ impl DockEngine {
             interaction_events,
         )?;
         self.cancel_invalid_pending_release_obligations_caused(cause, interaction_events);
+        self.invalidate_pending_presentation_rehome();
         if matches!(&input.input, EngineInput::ReplacePresentationConfig { .. }) {
             let _ = self.cancel_pending_release_obligations_caused(
                 cause,
                 InteractionCancelReason::SceneUnavailable,
                 interaction_events,
             );
+            self.fail_pending_presentation_rehome();
         }
         let _ = self.cancel_revoked_presentation_input(input.sequence, interaction_events)?;
         if events[workspace_event_start..]
@@ -1321,6 +1347,8 @@ impl DockEngine {
             ),
             EngineInput::SelectItem { expected, item } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::SelectItem { item: *item },
                 tick_start.policy,
@@ -1333,6 +1361,8 @@ impl DockEngine {
                 placement,
             } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::OpenItem {
                     item: *item,
@@ -1348,6 +1378,8 @@ impl DockEngine {
                 placement,
             } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::DockItem {
                     item: *item,
@@ -1363,11 +1395,23 @@ impl DockEngine {
                 placement,
             } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::DockRoot {
                     root: *root,
                     placement: *placement,
                 },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::DockBackRoot { expected, root } => self.reduce_product_dock_back(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                *root,
                 tick_start.policy,
                 events,
                 interaction_events,
@@ -1384,6 +1428,23 @@ impl DockEngine {
                 *placement,
                 tick_start.policy,
             ),
+            EngineInput::FloatRoot {
+                expected,
+                root,
+                surface,
+                rect,
+            } => self.reduce_product_root_float(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                *root,
+                *surface,
+                *rect,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::FloatItem {
                 expected,
                 item,
@@ -1391,6 +1452,8 @@ impl DockEngine {
                 rect,
             } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::FloatItem {
                     item: *item,
@@ -1407,6 +1470,8 @@ impl DockEngine {
                 rect,
             } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::SetContainedRect {
                     item: *item,
@@ -1418,6 +1483,8 @@ impl DockEngine {
             ),
             EngineInput::RaiseContained { expected, item } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::RaiseContained { item: *item },
                 tick_start.policy,
@@ -1426,6 +1493,8 @@ impl DockEngine {
             ),
             EngineInput::BringContainedIntoView { expected, item } => self.reduce_product_action(
                 input.sequence,
+                cause,
+                focus_causal,
                 *expected,
                 ProductAction::BringContainedIntoView { item: *item },
                 tick_start.policy,
@@ -1460,6 +1529,22 @@ impl DockEngine {
                 *scene,
                 *target,
                 tick_start.policy,
+            ),
+            EngineInput::DockBackLocalContained {
+                expected,
+                scene,
+                floating,
+            } => self.reduce_local_contained_dock_back_input(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                *application_base,
+                *scene,
+                *floating,
+                tick_start.policy,
+                events,
+                interaction_events,
             ),
             EngineInput::SelectLocalSceneTab {
                 expected,
@@ -1528,6 +1613,24 @@ impl DockEngine {
                 *application_base,
                 *scene,
                 *splitter,
+                *delta,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::AdjustLocalSplitterJunctionResize {
+                expected,
+                scene,
+                junction,
+                axis,
+                delta,
+            } => self.reduce_local_splitter_junction_adjustment_input(
+                input.sequence,
+                *expected,
+                *application_base,
+                *scene,
+                *junction,
+                *axis,
                 *delta,
                 tick_start.policy,
                 events,

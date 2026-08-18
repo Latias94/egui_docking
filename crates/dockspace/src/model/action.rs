@@ -177,6 +177,41 @@ pub enum DockspaceActionOutcome {
         /// Whether topology, geometry, or stacking changed.
         changed: bool,
     },
+    /// A complete root was moved into a contained presentation as one unit.
+    RootFloated {
+        /// Stable root moved as the payload authority.
+        root: RootId,
+        /// Surface which owns the contained presentation.
+        surface: SurfaceId,
+        /// Stable contained-presentation identity.
+        floating: crate::ids::FloatingPresentationId,
+        /// Stable items moved with the complete root in traversal order.
+        items: Vec<ItemId>,
+        /// Whether presentation ownership, geometry, or stacking changed.
+        changed: bool,
+    },
+    /// A complete native root retained source ownership while contained admission was staged.
+    RootFloatRequested {
+        /// Stable root retained by the pending transfer.
+        root: RootId,
+        /// Native surface which remains authoritative until admission.
+        source_surface: SurfaceId,
+        /// Surface which must present the exact contained staging output.
+        target_surface: SurfaceId,
+        /// Stable items retained by the pending root transfer.
+        items: Vec<ItemId>,
+    },
+    /// A complete native root retained source ownership while dock admission was staged.
+    RootDockRequested {
+        /// Stable root retained by the pending transfer.
+        root: RootId,
+        /// Native surface which remains authoritative until admission.
+        source_surface: SurfaceId,
+        /// Root which will own the payload after the presented transfer.
+        target_root: RootId,
+        /// Stable items retained by the pending root transfer.
+        items: Vec<ItemId>,
+    },
     /// One contained presentation's durable bounds were checked and optionally changed.
     ContainedBoundsUpdated {
         /// Stable root presented by the contained window.
@@ -221,10 +256,14 @@ impl DockspaceActionOutcome {
             | Self::Docked { changed, .. }
             | Self::RootDocked { changed, .. }
             | Self::Floated { changed, .. }
+            | Self::RootFloated { changed, .. }
             | Self::ContainedBoundsUpdated { changed, .. }
             | Self::ContainedRaised { changed, .. } => *changed,
             Self::Opened { .. } => true,
-            Self::Existing { .. } | Self::NativeRootTearOffRequested { .. } => false,
+            Self::Existing { .. }
+            | Self::RootFloatRequested { .. }
+            | Self::RootDockRequested { .. }
+            | Self::NativeRootTearOffRequested { .. } => false,
         }
     }
 }
@@ -254,6 +293,12 @@ pub enum DockspaceActionRejection {
     #[error("dock root {root} is unavailable")]
     RootUnavailable {
         /// Missing root.
+        root: RootId,
+    },
+    /// The root has no core-derived destination for a default dock-back action.
+    #[error("dock root {root} has no available default dock-back destination")]
+    DockBackUnavailable {
+        /// Root whose current presentation cannot be docked back automatically.
         root: RootId,
     },
     /// The requested rootless main-surface destination is unavailable.
@@ -349,9 +394,17 @@ pub(crate) enum ProductAction {
         root: RootId,
         placement: DockPlacement,
     },
+    DockBackRoot {
+        root: RootId,
+    },
     TearOffRoot {
         root: RootId,
         placement: NativeWindowPlacement,
+    },
+    FloatRoot {
+        root: RootId,
+        surface: SurfaceId,
+        rect: Option<LogicalRect>,
     },
     FloatItem {
         item: ItemId,

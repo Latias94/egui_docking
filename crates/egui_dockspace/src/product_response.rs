@@ -1,7 +1,7 @@
 //! Stable responses produced by the renderer-neutral product facade.
 
 use dockspace::model::{
-    DockspaceActionOutcome, DockspaceActionRejection, ItemId, SurfaceId, WorkspaceVersion,
+    DockspaceActionOutcome, DockspaceActionRejection, ItemId, RootId, SurfaceId, WorkspaceVersion,
 };
 pub use dockspace::runtime::{
     DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePlan,
@@ -9,7 +9,8 @@ pub use dockspace::runtime::{
     DockspaceCloseResolution,
 };
 use dockspace::runtime::{
-    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,
+    DockspacePresentationTransitionResult, HostCloseRequestOrigin, HostFrameReport,
+    HostInputOutcome, HostSurfaceCommitStatus,
 };
 
 /// Product-level summary of one atomic docking publication.
@@ -97,6 +98,17 @@ pub enum DockspaceActionStatus {
         expected: WorkspaceVersion,
         /// Version accepted by the reducer boundary.
         accepted: WorkspaceVersion,
+    },
+    /// A presentation-gated action was accepted, but its exact transfer barrier failed.
+    PresentationFailed {
+        /// Stable root retained while the target presentation was prepared.
+        root: RootId,
+        /// Surface which retained ownership before the failed transfer.
+        source_surface: SurfaceId,
+        /// Surface whose exact presentation terminal settled the transfer.
+        target_surface: SurfaceId,
+        /// Stable terminal category reported by the core presentation authority.
+        reason: DockspacePresentationTransitionResult,
     },
 }
 

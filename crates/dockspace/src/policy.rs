@@ -1390,6 +1390,13 @@ impl DockPolicySnapshot {
         PolicyDecision::from_result(self.evaluate_drop_parts(operation, payload, target))
     }
 
+    pub(crate) fn evaluate_drag_source_facts(
+        &self,
+        payload: &DockPayloadPolicyFacts,
+    ) -> PolicyDecision {
+        PolicyDecision::from_result(self.evaluate_source(payload, None))
+    }
+
     /// Computes the effective tab-bar policy by intersecting workspace, surface, and target rules.
     #[must_use]
     pub fn tab_bar_policy(&self, request: DockTabBarPolicyRequest) -> TabBarPolicy {

@@ -742,9 +742,32 @@ fn validate_pane_and_tab_records(
             TabBarInteraction::Enabled => match (bar.group_grip_bounds(), bar.group_drag()) {
                 (None, None) => items.is_empty(),
                 (Some(grip), Some(group)) => {
-                    group.grip_bounds() == grip
-                        && group.hit().rect() == grip
-                        && rect_has_area(group.hit().rect())
+                    let leading = group.leading_grip();
+                    let expected_trailing_start = bar
+                        .members()
+                        .last()
+                        .map_or(bar.viewport().x(), |member| member.full_bounds().max().x())
+                        .min(bar.viewport().max().x());
+                    let expected_trailing = bar.maximum_scroll_offset() == 0.0
+                        && expected_trailing_start < bar.viewport().max().x();
+                    let trailing_matches = match (expected_trailing, group.trailing_empty()) {
+                        (false, None) => true,
+                        (true, Some(trailing)) => {
+                            trailing.kind() == TabGroupDragRegionKind::TrailingEmpty
+                                && trailing.bounds().x() == expected_trailing_start
+                                && trailing.bounds().y() == bar.viewport().y()
+                                && trailing.bounds().max().x() == bar.viewport().max().x()
+                                && trailing.bounds().height() == bar.viewport().height()
+                                && trailing.hit().rect() == trailing.bounds()
+                                && rect_has_area(trailing.bounds())
+                        }
+                        _ => false,
+                    };
+                    leading.kind() == TabGroupDragRegionKind::LeadingGrip
+                        && leading.bounds() == grip
+                        && leading.hit().rect() == grip
+                        && rect_has_area(leading.hit().rect())
+                        && trailing_matches
                 }
                 _ => false,
             },

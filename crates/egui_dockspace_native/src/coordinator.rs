@@ -6,14 +6,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseDisposition,
-    NativeCloseEffectAcknowledgement, NativeCloseState, NativeDispatchFailure,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
-    NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason,
-    NativePointerInput, NativePointerRoster, NativePresentationEffectAcknowledgement,
-    NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason,
-    NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput,
-    PaintedSurfaceOutput, SurfacePresentationResult, SurfaceUnavailableReason,
+    DockspacePresentationTransition, DockspaceSession, HostFrameReport, HostInputOutcome,
+    HostWindowToken, NativeCloseDisposition, NativeCloseEffectAcknowledgement, NativeCloseState,
+    NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
+    NativeEffectResult, NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind,
+    NativeIndeterminateReason, NativePointerInput, NativePointerRoster,
+    NativePresentationEffectAcknowledgement, NativeReceiverAnswer, NativeReceiverQuery,
+    NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts, NativeWorkAreaBinding,
+    NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    SurfacePresentationResult, SurfaceUnavailableReason,
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
@@ -84,6 +85,7 @@ pub(crate) struct NativeCoordinator {
     receivers: NativeReceiverStore,
     effects: NativeEffectCoordinator,
     pending_effect_results: VecDeque<PendingNativeEffectResult>,
+    pending_presentation_transitions: Vec<DockspacePresentationTransition>,
     callback_errors: VecDeque<NativeRuntimeError>,
     retirements: NativeRetirementState,
     pointer_translator: NativePointerTranslator,
@@ -92,6 +94,28 @@ pub(crate) struct NativeCoordinator {
     focus_control: NativeFocusControl,
     input_control: NativeInputControl,
     lifecycle_progress: NativeLifecycleProgress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeferredBindingAuthority {
+    CurrentSurface,
+    Retiring,
+    Invalid,
+}
+
+fn deferred_binding_authority(
+    route_matches: bool,
+    binding_is_current: bool,
+    binding_is_recognized: bool,
+    surface_is_present: bool,
+) -> DeferredBindingAuthority {
+    if !route_matches || !binding_is_recognized {
+        DeferredBindingAuthority::Invalid
+    } else if binding_is_current && surface_is_present {
+        DeferredBindingAuthority::CurrentSurface
+    } else {
+        DeferredBindingAuthority::Retiring
+    }
 }
 
 /// One terminal result which still needs a causal boundary in the core.
@@ -203,6 +227,10 @@ impl std::fmt::Debug for NativeCoordinator {
             .field("receivers", &self.receivers)
             .field("effects", &self.effects)
             .field("pending_effect_results", &self.pending_effect_results.len())
+            .field(
+                "pending_presentation_transitions",
+                &self.pending_presentation_transitions.len(),
+            )
             .field("callback_errors", &self.callback_errors.len())
             .field("retirements", &self.retirements)
             .field("pointer_translator", &self.pointer_translator)
@@ -239,6 +267,7 @@ impl NativeCoordinator {
             receivers: NativeReceiverStore::default(),
             effects: NativeEffectCoordinator::default(),
             pending_effect_results: VecDeque::new(),
+            pending_presentation_transitions: Vec::new(),
             callback_errors: VecDeque::new(),
             retirements: NativeRetirementState::default(),
             pointer_translator: NativePointerTranslator::default(),
@@ -278,12 +307,24 @@ impl NativeCoordinator {
             && !self.deferred_viewports.has_transitional_viewport()
             && !self.effects.has_pending_work()
             && self.pending_effect_results.is_empty()
+            && self.pending_presentation_transitions.is_empty()
             && self.callback_errors.is_empty()
             && !self.retirements.has_pending_work()
             && !self.pointer_translator.has_pending_provider_tail()
             && !self.close_control.has_pending_work()
             && !self.focus_control.has_pending_work()
             && !self.input_control.has_pending_work()
+    }
+
+    fn retain_internal_presentation_transitions(&mut self, report: &HostFrameReport) {
+        self.pending_presentation_transitions
+            .extend_from_slice(report.presentation_transitions());
+    }
+
+    pub(crate) fn take_internal_presentation_transitions(
+        &mut self,
+    ) -> Vec<DockspacePresentationTransition> {
+        std::mem::take(&mut self.pending_presentation_transitions)
     }
 
     /// Associates one eframe viewport with an exact current core binding.
@@ -513,11 +554,37 @@ impl NativeCoordinator {
                 token.window_id(),
                 token.create_attempt(),
             );
-        if current == Some(binding) && self.session.is_current_native_binding(binding) {
-            disposition
-        } else {
-            self.bridge.abandon_output(token);
-            DeferredViewportPaint::Waiting
+        let authority = deferred_binding_authority(
+            current == Some(binding),
+            self.session.is_current_native_binding(binding),
+            self.session.recognizes_native_binding(binding),
+            self.session.view().surface(binding.surface()).is_some(),
+        );
+        match (disposition, authority) {
+            (DeferredViewportPaint::Semantic(_), DeferredBindingAuthority::CurrentSurface)
+            | (DeferredViewportPaint::Retain(_), DeferredBindingAuthority::CurrentSurface) => {
+                disposition
+            }
+            (
+                DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
+                DeferredBindingAuthority::Retiring,
+            ) => {
+                self.bridge.abandon_output(token);
+                DeferredViewportPaint::Retain(binding)
+            }
+            (
+                DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
+                DeferredBindingAuthority::Invalid,
+            ) => {
+                self.bridge.abandon_output(token);
+                DeferredViewportPaint::Waiting
+            }
+            (
+                DeferredViewportPaint::Created
+                | DeferredViewportPaint::Staging(_)
+                | DeferredViewportPaint::Waiting,
+                _,
+            ) => unreachable!("only binding paint dispositions reach authority resolution"),
         }
     }
 
@@ -1421,6 +1488,7 @@ impl NativeCoordinator {
         frame.confirm_native_staging_painted(staging.request())?;
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let mut report = frame.commit()?;
+        self.retain_internal_presentation_transitions(&report);
         let mut outputs = report.take_painted_native_staging_outputs();
         if outputs.len() != 1 {
             let actual = outputs.len();

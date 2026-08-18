@@ -17,7 +17,7 @@ pub use splitter::{
 };
 pub use tab::{
     PaneRecord, PaneSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord,
-    TabListMenuBackdropRecord, TabListMenuGeometryAvailability, TabListMenuRecord,
-    TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord, TabStripMemberRecord,
-    TabStripMemberVisibility,
+    TabGroupDragRegionKind, TabGroupDragRegionRecord, TabListMenuBackdropRecord,
+    TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
+    TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
 };

@@ -119,6 +119,11 @@ impl DockEngine {
             LocalTabChromeAction::ActivateControl(control) => {
                 self.finish_journal_tab_strip_control(cause, control, &plan)?
             }
+            LocalTabChromeAction::ScrollStrip {
+                key,
+                record,
+                adjustment,
+            } => self.finish_tab_strip_scroll(cause, &plan, *key, record, adjustment)?,
             LocalTabChromeAction::ActivateMenuRow(row) => self.finish_journal_tab_list_menu_row(
                 cause,
                 focus_causal,
@@ -172,6 +177,64 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_local_contained_dock_back_input(
+        &mut self,
+        input: InputSequence,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        expected: WorkspaceVersion,
+        application_base: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        floating: FloatingPresentationId,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != application_base {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: application_base,
+            });
+        }
+        let root = {
+            let candidate = match self.local_response_candidate(scene) {
+                Ok(candidate) => candidate,
+                Err(error) => return Ok(self.local_response_rejection(error)),
+            };
+            let target = CloseSceneTarget::Contained(floating);
+            let Some(record) = candidate.plan().contained_record(floating) else {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::CloseSceneTargetUnavailable { target },
+                ));
+            };
+            let Some(close_bounds) = record.close_bounds() else {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::CloseControlUnavailable { target },
+                ));
+            };
+            if !candidate
+                .plan()
+                .region_is_operable(close_bounds, record.layer())
+            {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::CloseActivationOccluded { target },
+                ));
+            }
+            record.root()
+        };
+        self.reduce_product_action(
+            input,
+            cause,
+            focus_causal,
+            expected,
+            ProductAction::DockBackRoot { root },
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_local_splitter_adjustment_input(
         &mut self,
         input: InputSequence,
@@ -196,6 +259,42 @@ impl DockEngine {
             splitter,
             delta,
             SplitterAdjustmentAuthority::LocalReady,
+            policy,
+            events,
+            interaction_events,
+        )?;
+        Ok(InputOutcome::InteractionProcessed {
+            outcome,
+            version: self.version,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_local_splitter_junction_adjustment_input(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        application_base: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        junction: crate::scene::SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != application_base {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: application_base,
+            });
+        }
+        let outcome = self.adjust_splitter_junction_resize(
+            input,
+            scene,
+            junction,
+            axis,
+            delta,
             policy,
             events,
             interaction_events,
@@ -289,6 +388,9 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
+        if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
+            return Ok(InteractionOutcome::Rejected(rejection));
+        }
         if self.interaction.status() != InteractionStatus::Idle {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::SessionMismatch,
@@ -714,7 +816,9 @@ impl DockEngine {
                 initial,
                 current,
             } => {
-                if self.interaction.status() != InteractionStatus::Idle {
+                if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
+                    InteractionOutcome::Rejected(rejection)
+                } else if self.interaction.status() != InteractionStatus::Idle {
                     InteractionOutcome::Rejected(InteractionRejection::SessionMismatch)
                 } else {
                     let candidate = match self.local_response_candidate(scene) {

@@ -17,8 +17,9 @@ use crate::platform::{
     WorkAreaRosterObservation,
 };
 use crate::pointer_journal::{
-    PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdgeJournal, PointerEdgeSequence,
-    PointerProviderScope, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+    PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
+    PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence, PointerProviderScope,
+    SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
 };
 use crate::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverReceipt, PointerReceiverReceiptBatch,
@@ -172,6 +173,42 @@ impl TestInputStream {
             frame.append_input(self.source, sequence, input)
         }
     }
+}
+
+fn local_pointer_journal(
+    previous: u64,
+    edges: impl IntoIterator<Item = (PointerEdgeKind, LogicalPoint)>,
+) -> PointerEdgeJournal {
+    let previous = PointerEdgeSequence::new(previous);
+    let edges = edges
+        .into_iter()
+        .enumerate()
+        .map(|(offset, (kind, position))| {
+            let offset = u64::try_from(offset).expect("test edge offset must fit u64");
+            let sequence = PointerEdgeSequence::new(previous.get() + offset + 1);
+            PointerEdge::new(
+                sequence,
+                TEST_POINTER,
+                kind,
+                PointerEdgeLocation::SurfaceLocal {
+                    position: Authority::Known(position),
+                },
+                Authority::Known(PointerCaptureOwner::ProviderEndpoint),
+            )
+        })
+        .collect::<Vec<_>>();
+    let committed = edges.last().map_or(previous, PointerEdge::sequence);
+    PointerEdgeJournal::new(previous, committed, edges)
+        .expect("test pointer journal must be contiguous")
+}
+
+fn region_center(region: &crate::presentation_hit::PresentationHitRegion) -> LogicalPoint {
+    let rect = region.hit().rect();
+    LogicalPoint::new(
+        rect.x() + rect.width() * 0.5,
+        rect.y() + rect.height() * 0.5,
+    )
+    .expect("test receiver center must be finite")
 }
 
 fn begin_test_host_frame(engine: &DockEngine, host: PresentationHostLease) -> CoreHostFrame {

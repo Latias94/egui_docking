@@ -14,7 +14,7 @@ use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
     ContainedResizeDirection, PaneSceneId, PresentationPlan, SplitterJunctionId, SplitterSceneId,
-    TabBarSceneId, TabSceneId,
+    TabBarSceneId, TabGroupDragRegionKind, TabSceneId,
 };
 use crate::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use crate::{drop_guide::DropGuideClusterId, drop_target::DropTargetId};
@@ -74,8 +74,13 @@ pub enum PresentationHitRegionKind {
     TabListMenuBlocker(TabListMenuSessionId),
     /// Consume pointer input outside the menu frame across one exact surface.
     TabListMenuBackdrop(TabListMenuSessionId),
-    /// Begin dragging a complete tabs group.
-    TabGroupGrip(TabBarSceneId),
+    /// Begin dragging a complete tabs group from one exact empty strip region.
+    TabGroupDrag {
+        /// Stable tab-bar identity shared by every region for the same group.
+        bar: TabBarSceneId,
+        /// Distinct leading or trailing region identity.
+        region: TabGroupDragRegionKind,
+    },
     /// Begin resizing one split boundary.
     SplitterHandle(SplitterSceneId),
     /// Begin an atomic multi-handle resize at one splitter junction.
@@ -239,7 +244,7 @@ enum PresentationHitPrecedence {
     PopupScroll,
     PaneBody,
     TabBody,
-    TabGroupGrip,
+    TabGroupDrag,
     TabClose,
     TabStripControl,
     TabStripScroll,
@@ -315,7 +320,7 @@ impl PresentationHitSuppression {
             | PresentationHitRegionKind::TabListMenuScroll(_)
             | PresentationHitRegionKind::TabListMenuBlocker(_)
             | PresentationHitRegionKind::TabListMenuBackdrop(_)
-            | PresentationHitRegionKind::TabGroupGrip(_)
+            | PresentationHitRegionKind::TabGroupDrag { .. }
             | PresentationHitRegionKind::SplitterHandle(_)
             | PresentationHitRegionKind::SplitterJunction(_)
             | PresentationHitRegionKind::ContainedTitle(_)
@@ -461,23 +466,28 @@ impl PresentationHitManifest {
 
         for bar in plan.tab_bar_records() {
             if let Some(group) = bar.group_drag() {
-                push_region_if_hittable(
-                    &mut regions,
-                    PresentationHitRegion::new(
-                        PresentationHitRegionId::new(
-                            surface,
-                            PresentationHitRegionKind::TabGroupGrip(*bar.id()),
+                for region in group.regions() {
+                    push_region_if_hittable(
+                        &mut regions,
+                        PresentationHitRegion::new(
+                            PresentationHitRegionId::new(
+                                surface,
+                                PresentationHitRegionKind::TabGroupDrag {
+                                    bar: *bar.id(),
+                                    region: region.kind(),
+                                },
+                            ),
+                            region.hit(),
+                            PresentationPointerLanes::DRAG,
+                            PresentationHitStackKey::new(
+                                PresentationPlane::Workspace,
+                                bar.layer(),
+                                PresentationHitPrecedence::TabGroupDrag,
+                            ),
+                            PresentationHitBehavior::ExclusiveReceiver,
                         ),
-                        group.hit(),
-                        PresentationPointerLanes::DRAG,
-                        PresentationHitStackKey::new(
-                            PresentationPlane::Workspace,
-                            bar.layer(),
-                            PresentationHitPrecedence::TabGroupGrip,
-                        ),
-                        PresentationHitBehavior::ExclusiveReceiver,
-                    ),
-                );
+                    );
+                }
             }
             if bar.interaction() == crate::policy::TabBarInteraction::Enabled
                 && bar.maximum_scroll_offset() > 0.0
@@ -630,7 +640,11 @@ impl PresentationHitManifest {
             );
         }
 
-        for junction in plan.splitter_junction_records() {
+        for junction in plan
+            .splitter_junction_records()
+            .iter()
+            .filter(|junction| junction.operable())
+        {
             push_region_if_hittable(
                 &mut regions,
                 PresentationHitRegion::new(

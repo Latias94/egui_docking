@@ -8,6 +8,7 @@ use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
 use super::RenderContext;
+use super::actions::{LocalScrollAxis, consume_local_scroll_input, local_scroll_input};
 use super::geometry::{accesskit_bounds, egui_rect};
 
 pub(crate) fn paint(context: &mut RenderContext<'_, '_, '_>) {
@@ -32,10 +33,20 @@ fn paint_controls(context: &mut RenderContext<'_, '_, '_>) {
         let response = context.interact_receiver(
             hit,
             id,
-            Sense::click(),
+            if control.enabled() {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
             context.plan.receiver_for_tab_strip_control(control),
         );
-        paint_control(context, control, bounds, response.hovered());
+        let paint_omitted = context
+            .plan
+            .drag_decoration()
+            .is_some_and(|decoration| decoration.omits_visual(control.visual_id()));
+        if !paint_omitted {
+            paint_control(context, control, bounds, &response);
+        }
         configure_control_accessibility(context, control, id, bounds);
 
         let keyboard = response.has_focus()
@@ -61,15 +72,18 @@ fn paint_control(
     context: &RenderContext<'_, '_, '_>,
     control: TabStripControlPaintRecord,
     bounds: Rect,
-    hovered: bool,
+    response: &egui::Response,
 ) {
-    let fill = if hovered && control.enabled() {
-        context.visuals.tab_hover_fill
+    let emphasized = control.enabled() && RenderContext::response_emphasized(response);
+    let fill = if emphasized {
+        context.interaction_fill(response)
     } else {
         context.visuals.tab_bar_fill
     };
     let color = if control.enabled() {
-        context.visuals.tab_text_color
+        context
+            .interaction_stroke(response, context.style.visuals.tab_text_color)
+            .color
     } else {
         context.visuals.tab_text_color.gamma_multiply(0.45)
     };
@@ -201,13 +215,19 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
     ));
     context.register_scroll_receiver(frame_scroll_id, frame_receiver);
     let _ = context.interact_receiver(bounds, frame_id, Sense::hover(), frame_receiver);
-    context.ui.painter().rect(
-        bounds,
-        3.0,
-        context.visuals.floating_fill,
-        Stroke::new(1.0, context.visuals.floating_border_color),
-        StrokeKind::Inside,
-    );
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(menu.visual_id()));
+    if !paint_omitted {
+        context.ui.painter().rect(
+            bounds,
+            3.0,
+            context.visuals.floating_fill,
+            Stroke::new(1.0, context.visuals.floating_border_color),
+            StrokeKind::Inside,
+        );
+    }
     context.ui.ctx().accesskit_node_builder(frame_id, |node| {
         node.set_role(Role::Menu);
         node.set_bounds(accesskit_bounds(bounds));
@@ -221,6 +241,18 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
     ));
     let scroll_receiver = context.plan.receiver_for_tab_list_menu_scroll(menu);
     context.register_scroll_receiver(scroll_id, scroll_receiver);
+    if let Some(scroll) = local_scroll_input(
+        context.ui,
+        context.pointer_authority,
+        LocalScrollAxis::Vertical,
+    ) && let Some(action) =
+        context
+            .plan
+            .prepare_tab_list_menu_scroll_at(menu, scroll.point(), scroll.offset_delta())
+    {
+        consume_local_scroll_input(context.ui, scroll);
+        context.push_local_action(action);
+    }
 
     let rows = menu.rows().collect::<Vec<_>>();
     for row in rows.iter().copied() {
@@ -251,17 +283,31 @@ fn paint_menu_row(
             context.plan.receiver_for_tab_list_menu_row(row),
         )
     });
-    let hovered = response.as_ref().is_some_and(egui::Response::hovered);
-    let fill = if row.focused() || hovered {
-        context.visuals.tab_hover_fill
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(row.visual_id()));
+    let fill = if row.focused() {
+        context
+            .style
+            .visuals
+            .tab_hover_fill
+            .unwrap_or(context.ui.visuals().widgets.active.weak_bg_fill)
+    } else if let Some(response) = response
+        .as_ref()
+        .filter(|response| RenderContext::response_emphasized(response))
+    {
+        context.interaction_fill(response)
     } else if row.selected() {
         context.visuals.tab_active_fill
     } else {
         context.visuals.floating_fill
     };
     let painter = context.ui.painter_at(viewport);
-    painter.rect_filled(bounds, 0.0, fill);
-    if let Some(resource) = context.resources.item(row.item()) {
+    if !paint_omitted {
+        painter.rect_filled(bounds, 0.0, fill);
+    }
+    if !paint_omitted && let Some(resource) = context.resources.item(row.item()) {
         let text_pos = pos2(
             bounds.min.x + 8.0,
             bounds.center().y - resource.galley.size().y * 0.5,
@@ -271,6 +317,13 @@ fn paint_menu_row(
             resource.galley.clone(),
             if row.selected() {
                 context.visuals.tab_active_text_color
+            } else if let Some(response) = response
+                .as_ref()
+                .filter(|response| RenderContext::response_emphasized(response))
+            {
+                context
+                    .interaction_stroke(response, context.style.visuals.tab_text_color)
+                    .color
             } else {
                 context.visuals.tab_text_color
             },
@@ -337,11 +390,26 @@ fn paint_scrollbar(
         "tab-list-menu-scrollbar",
         menu.visual_id(),
     ));
-    let _ = context.ui.interact(track, id, Sense::hover());
-    context
-        .ui
-        .painter()
-        .rect_filled(track, 2.0, context.visuals.tab_bar_fill);
+    let response = context.interact_receiver(
+        track,
+        id,
+        if context.pointer_authority.accepts_local_pointer_actions() {
+            Sense::click_and_drag()
+        } else {
+            Sense::hover()
+        },
+        context.plan.receiver_for_tab_list_menu_frame(menu),
+    );
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(menu.visual_id()));
+    if !paint_omitted {
+        context
+            .ui
+            .painter()
+            .rect_filled(track, 2.0, context.visuals.tab_bar_fill);
+    }
     let content_extent = f64::from(viewport.height()) + menu.maximum_scroll_offset();
     let thumb_height = (f64::from(track.height()) * f64::from(viewport.height()) / content_extent)
         .max(12.0)
@@ -352,10 +420,12 @@ fn paint_scrollbar(
         pos2(track.min.x + 2.0, track.min.y + travel * fraction),
         vec2((track.width() - 4.0).max(1.0), thumb_height),
     );
-    context
-        .ui
-        .painter()
-        .rect_filled(thumb, 2.0, context.visuals.splitter_hover_color);
+    if !paint_omitted {
+        context
+            .ui
+            .painter()
+            .rect_filled(thumb, 2.0, context.visuals.splitter_hover_color);
+    }
     context.ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(Role::ScrollBar);
         node.set_bounds(accesskit_bounds(track));
@@ -387,6 +457,87 @@ fn paint_scrollbar(
             context.push_local_action(action);
         }
     }
+    capture_scrollbar_pointer(context, menu, track, thumb, &response);
+}
+
+fn capture_scrollbar_pointer(
+    context: &mut RenderContext<'_, '_, '_>,
+    menu: TabListMenuPaintRecord<'_>,
+    track: Rect,
+    thumb: Rect,
+    response: &egui::Response,
+) {
+    if !context.pointer_authority.accepts_local_pointer_actions() {
+        return;
+    }
+
+    let anchor_id = response.id.with("drag-anchor");
+    let primary_down = response.is_pointer_button_down_on()
+        && context.ui.input(|input| input.pointer.primary_down());
+    let primary_finished = response.clicked_by(PointerButton::Primary)
+        || response.drag_stopped_by(PointerButton::Primary);
+    let pointer_target = if primary_down || primary_finished {
+        response.interact_pointer_pos().and_then(|pointer| {
+            let anchor = context
+                .ui
+                .data(|data| data.get_temp::<f32>(anchor_id))
+                .unwrap_or_else(|| {
+                    let anchor = if thumb.contains(pointer) {
+                        pointer.y - thumb.min.y
+                    } else {
+                        thumb.height() * 0.5
+                    };
+                    context
+                        .ui
+                        .data_mut(|data| data.insert_temp(anchor_id, anchor));
+                    anchor
+                });
+            scrollbar_target_offset(
+                track,
+                thumb.height(),
+                pointer.y,
+                anchor,
+                menu.maximum_scroll_offset(),
+            )
+        })
+    } else {
+        None
+    };
+
+    if !primary_down {
+        context.ui.data_mut(|data| data.remove::<f32>(anchor_id));
+    }
+    let Some(target) = pointer_target else {
+        return;
+    };
+    let delta = target - menu.scroll_offset();
+    if delta != 0.0
+        && let Some(action) = context.plan.prepare_tab_list_menu_scroll_by(menu, delta)
+    {
+        context.push_local_action(action);
+    }
+}
+
+fn scrollbar_target_offset(
+    track: Rect,
+    thumb_height: f32,
+    pointer_y: f32,
+    grab_offset: f32,
+    maximum_scroll_offset: f64,
+) -> Option<f64> {
+    let travel = track.height() - thumb_height;
+    if !travel.is_finite()
+        || travel <= 0.0
+        || !pointer_y.is_finite()
+        || !grab_offset.is_finite()
+        || !maximum_scroll_offset.is_finite()
+        || maximum_scroll_offset <= 0.0
+    {
+        return None;
+    }
+    let thumb_top = (pointer_y - grab_offset).clamp(track.min.y, track.max.y - thumb_height);
+    let fraction = (thumb_top - track.min.y) / travel;
+    Some(f64::from(fraction) * maximum_scroll_offset)
 }
 
 fn capture_menu_keyboard(
@@ -438,5 +589,43 @@ fn capture_menu_keyboard(
         && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(backdrop)
     {
         context.push_local_action(action);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrollbar_target_offset;
+    use egui::{Rect, pos2};
+
+    #[test]
+    fn scrollbar_target_preserves_the_pointer_grab_offset_and_clamps_to_track() {
+        let track = Rect::from_min_max(pos2(0.0, 10.0), pos2(12.0, 110.0));
+
+        assert_eq!(
+            scrollbar_target_offset(track, 20.0, 50.0, 10.0, 400.0),
+            Some(150.0)
+        );
+        assert_eq!(
+            scrollbar_target_offset(track, 20.0, -50.0, 10.0, 400.0),
+            Some(0.0)
+        );
+        assert_eq!(
+            scrollbar_target_offset(track, 20.0, 250.0, 10.0, 400.0),
+            Some(400.0)
+        );
+    }
+
+    #[test]
+    fn scrollbar_target_rejects_non_operable_geometry() {
+        let track = Rect::from_min_max(pos2(0.0, 10.0), pos2(12.0, 110.0));
+
+        assert_eq!(
+            scrollbar_target_offset(track, 100.0, 50.0, 10.0, 400.0),
+            None
+        );
+        assert_eq!(
+            scrollbar_target_offset(track, 20.0, 50.0, 10.0, f64::NAN),
+            None
+        );
     }
 }

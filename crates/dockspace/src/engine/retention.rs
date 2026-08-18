@@ -40,6 +40,11 @@ impl DockEngine {
             emissions.extend(pending.presentation_outputs.iter().copied());
             emissions.extend(pending.presented_output);
         }
+        if let Some(pending) = &self.pending_presentation_rehome {
+            emissions.insert(pending.source_presentation.emission());
+            emissions.extend(pending.presentation_outputs.iter().copied());
+            emissions.extend(pending.presented_output);
+        }
         emissions.extend(
             self.viewport
                 .retained_native_staging_resources()

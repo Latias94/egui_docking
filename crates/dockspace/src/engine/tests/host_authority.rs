@@ -1,6 +1,7 @@
 //! Host-frame, provider, identity, and presentation authority tests.
 
 use super::*;
+use crate::model::DockspaceActionOutcome;
 use crate::pointer_journal::{
     FiniteScrollVector, ScrollModifiers, ScrollMomentum, SurfaceLocalPointerRetirementDisposition,
 };
@@ -811,33 +812,6 @@ fn reverse_surface_contributions_use_indexed_canonical_storage() {
     }
 }
 
-fn local_pointer_journal(
-    previous: u64,
-    edges: impl IntoIterator<Item = (PointerEdgeKind, LogicalPoint)>,
-) -> PointerEdgeJournal {
-    let previous = PointerEdgeSequence::new(previous);
-    let edges = edges
-        .into_iter()
-        .enumerate()
-        .map(|(offset, (kind, position))| {
-            let offset = u64::try_from(offset).expect("test edge offset must fit u64");
-            let sequence = PointerEdgeSequence::new(previous.get() + offset + 1);
-            PointerEdge::new(
-                sequence,
-                TEST_POINTER,
-                kind,
-                PointerEdgeLocation::SurfaceLocal {
-                    position: Authority::Known(position),
-                },
-                Authority::Known(PointerCaptureOwner::ProviderEndpoint),
-            )
-        })
-        .collect::<Vec<_>>();
-    let committed = edges.last().map_or(previous, PointerEdge::sequence);
-    PointerEdgeJournal::new(previous, committed, edges)
-        .expect("test pointer journal must be contiguous")
-}
-
 #[test]
 fn surface_local_scroll_batch_refreshes_only_the_changed_surface() {
     for surface_count in [16_usize, 128, 1_024] {
@@ -970,15 +944,6 @@ fn surface_local_scroll_batch_refreshes_only_the_changed_surface() {
             )
         }));
     }
-}
-
-fn region_center(region: &crate::presentation_hit::PresentationHitRegion) -> LogicalPoint {
-    let rect = region.hit().rect();
-    LogicalPoint::new(
-        rect.x() + rect.width() * 0.5,
-        rect.y() + rect.height() * 0.5,
-    )
-    .expect("test receiver center must be finite")
 }
 
 #[test]
@@ -1195,6 +1160,176 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
 }
 
 #[test]
+fn real_host_frame_contained_close_docks_back_without_opening_content_close() {
+    let floating = FloatingPresentationId::new(9);
+    let mut builder = Workspace::builder();
+    let main_tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
+    let contained_tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
+    builder.set_root(
+        SOURCE_ROOT,
+        RootRecord::new(main_tabs).with_central(main_tabs),
+    );
+    builder.set_root(TARGET_ROOT, RootRecord::new(contained_tabs));
+    builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+    builder.set_contained_floating(
+        floating,
+        ContainedFloating::new(
+            TARGET_ROOT,
+            LogicalRect::new(180.0, 120.0, 260.0, 180.0)
+                .expect("contained close fixture bounds validate"),
+        ),
+    );
+    builder
+        .attach_contained(SOURCE_SURFACE, floating)
+        .expect("contained close fixture attaches");
+    let mut engine = DockEngine::new(
+        builder
+            .build()
+            .expect("contained close workspace validates"),
+        DockPolicy::default(),
+    )
+    .expect("contained close engine initializes");
+    let host = engine
+        .create_presentation_host()
+        .expect("contained close presentation host mints");
+    publish_surface_projection(
+        &mut engine,
+        host,
+        SOURCE_SURFACE,
+        LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("contained close surface bounds validate"),
+    );
+    let projection = engine
+        .interaction_projection(SOURCE_SURFACE)
+        .expect("contained close projection is receiver-authoritative");
+    let close_region = projection
+        .hit_manifest()
+        .regions()
+        .iter()
+        .find(|region| region.id().kind() == PresentationHitRegionKind::ContainedClose(floating))
+        .expect("contained chrome exposes one close receiver")
+        .id();
+    let point = region_center(
+        projection
+            .hit_manifest()
+            .region(close_region)
+            .expect("contained close receiver remains present"),
+    );
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("contained close pointer provider mints");
+
+    let mut frame = begin_test_host_frame(&engine, host);
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(
+                0,
+                [(
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    point,
+                )],
+            ),
+        )
+        .expect("contained close press stages");
+    let press_candidate = frame
+        .pointer_receiver_candidates()
+        .expect("contained close press requests a receiver")
+        .candidates()[0]
+        .clone();
+    let press_delivery = PointerReceiverDelivery::new(
+        frame
+            .view()
+            .interaction_projection(SOURCE_SURFACE)
+            .expect("press retains contained close authority"),
+        PointerReceiverDeliveryDisposition::Dock(close_region),
+    )
+    .expect("contained close supports click delivery");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([press_candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(press_delivery),
+                    ])
+                    .expect("contained close press answers delivery"),
+                ),
+            )])
+            .expect("contained close press receipt batch is exact"),
+        )
+        .expect("contained close press receipt stages");
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(
+                1,
+                [(
+                    PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                    point,
+                )],
+            ),
+        )
+        .expect("contained close release stages");
+    let release_candidate = frame
+        .pointer_receiver_candidates()
+        .expect("contained close release requests a receiver")
+        .candidates()[0]
+        .clone();
+    let release_delivery = PointerReceiverDelivery::new(
+        frame
+            .view()
+            .interaction_projection(SOURCE_SURFACE)
+            .expect("release retains contained close authority"),
+        PointerReceiverDeliveryDisposition::Dock(close_region),
+    )
+    .expect("contained close supports matching release delivery");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([release_candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(release_delivery),
+                    ])
+                    .expect("contained close release answers delivery"),
+                ),
+            )])
+            .expect("contained close release receipt batch is exact"),
+        )
+        .expect("contained close release receipt stages");
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut frame);
+    let transition = frame
+        .finish(&mut engine)
+        .expect("contained close journal frame commits");
+
+    assert!(transition.reduced_pointer_edges().iter().any(|edge| {
+        matches!(
+            edge.interaction_outcomes(),
+            [InteractionOutcome::ProductActionApplied(
+                DockspaceActionOutcome::RootDocked {
+                    root: TARGET_ROOT,
+                    items,
+                    changed: true,
+                    ..
+                }
+            )] if items == &[ItemId::new(2)]
+        )
+    }));
+    assert!(engine.workspace().contained_floating(floating).is_none());
+    assert!(
+        engine
+            .workspace()
+            .item_multiset()
+            .contains_key(&ItemId::new(2))
+    );
+    assert_eq!(engine.close.active_plans().count(), 0);
+}
+
+#[test]
 fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     let mut builder = Workspace::builder();
     let left = builder.insert_node(Node::tabs([ItemId::new(1)]));
@@ -1390,7 +1525,7 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
         crate::drop_resolver::structural_work::EngineCloneVolume {
             scene_surfaces: 1,
             scene_retained_plans: 1,
-            scene_paint_hit_regions: 30,
+            scene_paint_hit_regions: 32,
             presentation_hosts: 1,
             presentation_streams: 1,
             presentation_pending_outputs: 0,

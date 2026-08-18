@@ -1,5 +1,6 @@
 //! Opaque framework gesture preparation over one exact paint plan.
 
+use crate::geometry::LogicalPoint;
 use crate::ids::{FloatingPresentationId, ItemId};
 use crate::interaction::{FrozenTabListMenuRowClick, FrozenTabStripControlClick};
 use crate::scene::{
@@ -12,8 +13,8 @@ use super::super::{
     SurfaceSplitterAdjustment, SurfaceTabListNavigation, SurfaceTabNavigation,
 };
 use super::{
-    DockspaceVisualId, SurfacePaintPlan, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
-    TabListMenuRowPaintRecord, TabStripControlPaintRecord, VisualIdentity,
+    DockspaceVisualId, SurfacePaintPlan, TabBarPaintRecord, TabListMenuBackdropPaintRecord,
+    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabStripControlPaintRecord, VisualIdentity,
 };
 
 /// Product-facing direction of one contained-floating resize handle.
@@ -90,6 +91,49 @@ impl SurfacePaintPlan<'_> {
         ))
     }
 
+    /// Prepares a finite wheel adjustment for the sole authoritative tab-strip
+    /// scroll receiver at `point`.
+    ///
+    /// The point is a framework input fact. Core resolves popup coverage and
+    /// contained-floating occlusion before binding the opaque action to the
+    /// current bar record and scene.
+    #[must_use]
+    pub fn prepare_tab_strip_scroll_at(
+        self,
+        bar: TabBarPaintRecord<'_>,
+        point: LogicalPoint,
+        delta: f64,
+    ) -> Option<PreparedSurfaceAction> {
+        let receiver = self.receiver_for_tab_strip_scroll(bar)?;
+        if !receiver.bounds().contains(point)
+            || self.plan.tab_scroll_owner_at(point)? != *bar.record.id()
+        {
+            return None;
+        }
+        let record = self
+            .plan
+            .tab_bar_records()
+            .iter()
+            .find(|record| *record == bar.record)
+            .cloned()?;
+        let adjustment = crate::engine::TabScrollAdjustment::scroll_by(delta).ok()?;
+        let target = (record.scroll_offset() + delta).clamp(0.0, record.maximum_scroll_offset());
+        if target == record.scroll_offset() {
+            return None;
+        }
+        let key = TabStripStateKey::new(self.surface, *record.id());
+        Some(PreparedSurfaceAction::tab_chrome(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::engine::LocalTabChromeAction::ScrollStrip {
+                key,
+                record,
+                adjustment,
+            },
+        ))
+    }
+
     /// Prepares activation of one exact current-frame tab-list row.
     #[must_use]
     pub fn prepare_tab_list_menu_row_activation(
@@ -159,6 +203,27 @@ impl SurfacePaintPlan<'_> {
         let adjustment =
             crate::engine::TabScrollAdjustment::scroll_by_preserving(delta, []).ok()?;
         self.prepare_tab_list_menu_scroll(menu, adjustment)
+    }
+
+    /// Prepares a finite wheel adjustment only when `point` is inside the exact
+    /// current tab-list menu scroll receiver.
+    #[must_use]
+    pub fn prepare_tab_list_menu_scroll_at(
+        self,
+        menu: TabListMenuPaintRecord<'_>,
+        point: LogicalPoint,
+        delta: f64,
+    ) -> Option<PreparedSurfaceAction> {
+        let receiver = self.receiver_for_tab_list_menu_scroll(menu)?;
+        receiver.bounds().contains(point).then_some(())?;
+        if !delta.is_finite() {
+            return None;
+        }
+        let target = (menu.scroll_offset() + delta).clamp(0.0, menu.maximum_scroll_offset());
+        if target == menu.scroll_offset() {
+            return None;
+        }
+        self.prepare_tab_list_menu_scroll_by(menu, delta)
     }
 
     /// Prepares the minimum scroll needed to reveal one exact menu row.
@@ -282,6 +347,33 @@ impl SurfacePaintPlan<'_> {
                     self.splitter_keyboard_step * adjustment.direction(),
                 )
             })
+    }
+
+    /// Prepares one keyboard or accessibility adjustment for a single axis of
+    /// an exact splitter junction.
+    #[must_use]
+    pub fn prepare_splitter_junction_adjustment(
+        self,
+        junction: DockspaceVisualId,
+        axis: crate::model::DockspaceAxis,
+        adjustment: SurfaceSplitterAdjustment,
+    ) -> Option<PreparedSurfaceAction> {
+        let VisualIdentity::SplitterJunction(id) = junction.0 else {
+            return None;
+        };
+        let record = self
+            .splitter_junctions()
+            .find(|record| record.visual_id() == junction)?;
+        self.splitter_junction_axis_operable(record, axis).then(|| {
+            PreparedSurfaceAction::adjust_splitter_junction(
+                self.authority_domain,
+                self.version,
+                self.scene,
+                id,
+                axis,
+                self.splitter_keyboard_step * adjustment.direction(),
+            )
+        })
     }
 
     /// Prepares one keyboard or accessibility adjustment for an exact cardinal

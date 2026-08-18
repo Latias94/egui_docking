@@ -16,8 +16,9 @@ use super::DockspacePersistenceError;
 use super::close::PreparedCloseRequest;
 use super::host_frame::DockspaceHostFrame;
 use super::{
-    DockPresentationConfig, DockspaceRuntimeError, NativePlatformError, NativeReceiverAnswer,
-    NativeReceiverQuery, NativeWindowPlacement, PreparedDockAction,
+    DockPresentationConfig, DockspacePresentationCommands, DockspaceRuntimeError,
+    NativePlatformError, NativeReceiverAnswer, NativeReceiverQuery, NativeWindowPlacement,
+    PreparedDockAction,
 };
 use super::{interaction, native, native_effect, presentation};
 
@@ -185,6 +186,19 @@ impl DockspaceSession {
         )
     }
 
+    /// Returns presentation commands for one stable root in the current published state.
+    ///
+    /// Each command is preflighted by the same core topology, policy, presentation, and native
+    /// capability authorities used during submission. A ready action remains revision-bound and
+    /// is revalidated when submitted to a host frame.
+    #[must_use]
+    pub const fn presentation_commands(
+        &self,
+        root: crate::ids::RootId,
+    ) -> DockspacePresentationCommands<'_> {
+        DockspacePresentationCommands::new(self, root)
+    }
+
     /// Prepares one revision-bound selection action from the published workspace.
     pub const fn prepare_select_item(&self, item: crate::ids::ItemId) -> PreparedDockAction {
         self.engine.prepare_select_item(item)
@@ -217,6 +231,12 @@ impl DockspaceSession {
         self.engine.prepare_dock_root(root, placement)
     }
 
+    /// Prepares one complete-root dock-back against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_dock_root_back(&self, root: crate::ids::RootId) -> PreparedDockAction {
+        self.engine.prepare_dock_root_back(root)
+    }
+
     /// Prepares one complete-root native tear-off against the current published version.
     #[must_use]
     pub const fn prepare_tear_off_root(
@@ -225,6 +245,37 @@ impl DockspaceSession {
         placement: NativeWindowPlacement,
     ) -> PreparedDockAction {
         self.engine.prepare_tear_off_root(root, placement)
+    }
+
+    /// Prepares one complete-root move to a native window against the published version.
+    #[must_use]
+    pub const fn prepare_move_root_to_new_window(
+        &self,
+        root: crate::ids::RootId,
+        placement: NativeWindowPlacement,
+    ) -> PreparedDockAction {
+        self.engine.prepare_move_root_to_new_window(root, placement)
+    }
+
+    /// Prepares one revision-bound complete-root contained-floating action.
+    #[must_use]
+    pub const fn prepare_float_root(
+        &self,
+        root: crate::ids::RootId,
+        surface: crate::ids::SurfaceId,
+    ) -> PreparedDockAction {
+        self.engine.prepare_float_root(root, surface)
+    }
+
+    /// Prepares one revision-bound complete-root contained-floating action with explicit bounds.
+    #[must_use]
+    pub const fn prepare_float_root_at(
+        &self,
+        root: crate::ids::RootId,
+        surface: crate::ids::SurfaceId,
+        rect: crate::geometry::LogicalRect,
+    ) -> PreparedDockAction {
+        self.engine.prepare_float_root_at(root, surface, rect)
     }
 
     /// Prepares one revision-bound contained-floating action.

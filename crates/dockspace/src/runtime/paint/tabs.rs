@@ -4,8 +4,8 @@ use crate::geometry::LogicalRect;
 use crate::ids::{ItemId, RootId};
 use crate::policy::TabBarInteraction;
 use crate::scene::{
-    PaneRecord, TabBarRecord, TabBarSceneId, TabRecord, TabStripMemberRecord,
-    TabStripMemberVisibility as CoreTabStripMemberVisibility,
+    PaneRecord, TabBarRecord, TabBarSceneId, TabGroupDragRegionKind, TabGroupDragRegionRecord,
+    TabRecord, TabStripMemberRecord, TabStripMemberVisibility as CoreTabStripMemberVisibility,
 };
 
 use super::{DockspacePaintLayer, DockspaceVisualId, VisualIdentity};
@@ -201,6 +201,36 @@ pub struct TabBarPaintRecord<'plan> {
     pub(super) record: &'plan TabBarRecord,
 }
 
+/// Read-only geometry and identity for one whole-group drag region.
+#[derive(Debug, Clone, Copy)]
+pub struct TabGroupDragRegionPaintRecord {
+    pub(super) bar: TabBarSceneId,
+    pub(super) record: TabGroupDragRegionRecord,
+}
+
+impl TabGroupDragRegionPaintRecord {
+    /// Returns a stable identity distinct from every other region of this bar.
+    #[must_use]
+    pub const fn visual_id(self) -> DockspaceVisualId {
+        DockspaceVisualId(VisualIdentity::TabGroupDragRegion {
+            bar: self.bar,
+            region: self.record.kind(),
+        })
+    }
+
+    /// Returns whether this is the leading grip or trailing empty region.
+    #[must_use]
+    pub const fn kind(self) -> TabGroupDragRegionKind {
+        self.record.kind()
+    }
+
+    /// Returns the exact core-owned draw and response bounds.
+    #[must_use]
+    pub const fn bounds(self) -> LogicalRect {
+        self.record.bounds()
+    }
+}
+
 impl<'plan> TabBarPaintRecord<'plan> {
     #[must_use]
     pub const fn visual_id(self) -> DockspaceVisualId {
@@ -258,6 +288,28 @@ impl<'plan> TabBarPaintRecord<'plan> {
     #[must_use]
     pub const fn group_grip_bounds(self) -> Option<LogicalRect> {
         self.record.group_grip_bounds()
+    }
+
+    /// Iterates every exact whole-group drag region in stable visual order.
+    pub fn group_drag_regions(self) -> impl Iterator<Item = TabGroupDragRegionPaintRecord> + 'plan {
+        let bar = *self.record.id();
+        self.record
+            .group_drag()
+            .into_iter()
+            .flat_map(|record| record.regions())
+            .map(move |record| TabGroupDragRegionPaintRecord { bar, record })
+    }
+
+    /// Returns one exact whole-group drag region by semantic role.
+    #[must_use]
+    pub fn group_drag_region(
+        self,
+        kind: TabGroupDragRegionKind,
+    ) -> Option<TabGroupDragRegionPaintRecord> {
+        Some(TabGroupDragRegionPaintRecord {
+            bar: *self.record.id(),
+            record: self.record.group_drag()?.region(kind)?,
+        })
     }
 
     #[must_use]

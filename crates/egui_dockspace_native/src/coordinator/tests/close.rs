@@ -1,7 +1,20 @@
+use dockspace::runtime::NativeSurfaceCloseAction;
 use eframe::egui::ViewportCommand;
 
 use super::*;
 use crate::close_control::{NativeViewportCloseCancellationRecord, NativeWindowClosePolicy};
+
+#[test]
+fn default_close_policy_recovers_children_and_accepts_the_external_root() {
+    assert_eq!(
+        NativeWindowClosePolicy::default().request(false),
+        Some(NativeSurfaceCloseAction::RecoverPresentation)
+    );
+    assert_eq!(
+        NativeWindowClosePolicy::default().request(true),
+        Some(NativeSurfaceCloseAction::RetainLayout)
+    );
+}
 
 pub(super) fn observe_close(
     native: &mut NativeCoordinator,
@@ -70,7 +83,7 @@ fn cancel_policy_waits_for_the_exact_child_viewport_callback_before_live_clear()
 
     assert!(
         native
-            .drive_close_policy(NativeWindowClosePolicy::Cancel)
+            .drive_close_policy(NativeWindowClosePolicy::Cancel, survivor.surface())
             .expect("the explicit cancellation policy commits")
     );
     assert_eq!(
@@ -124,7 +137,7 @@ fn destroyed_before_cancel_callback_retires_close_sidecar_and_allows_quiescence(
 
     assert!(
         native
-            .drive_close_policy(NativeWindowClosePolicy::Cancel)
+            .drive_close_policy(NativeWindowClosePolicy::Cancel, survivor.surface())
             .expect("the explicit cancellation policy commits")
     );
     assert_eq!(
@@ -218,7 +231,7 @@ fn retain_layout_accepts_close_and_retires_only_after_destroyed_acknowledgement(
 
     assert!(
         native
-            .drive_close_policy(NativeWindowClosePolicy::RetainLayout)
+            .drive_close_policy(NativeWindowClosePolicy::RetainLayout, binding.surface())
             .expect("the explicit retain-layout policy commits")
     );
     assert!(
@@ -294,7 +307,7 @@ fn accepted_close_rejects_destroyed_from_a_different_native_window() {
 
     assert!(
         native
-            .drive_close_policy(NativeWindowClosePolicy::RetainLayout)
+            .drive_close_policy(NativeWindowClosePolicy::RetainLayout, binding.surface())
             .expect("the explicit retain-layout policy commits")
     );
     native

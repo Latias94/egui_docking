@@ -357,6 +357,8 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
     native
         .bind_viewport(child, child_window, child_binding)
         .expect("child viewport binds");
+    let mut initially_presented = paint_and_present_all_surfaces(&mut native);
+    assert!(initially_presented.take_native_effects().is_empty());
 
     let started = NativeWindowEventRecord::for_test(
         9,
@@ -388,7 +390,12 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
     redock
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the child redock settles every surface");
-    let mut report = redock.commit().expect("the child redock commits");
+    let mut requested = redock.commit().expect("the child redock request commits");
+    assert!(
+        requested.take_native_effects().is_empty(),
+        "ReleaseChild waits for the target presentation"
+    );
+    let mut report = paint_and_present_all_surfaces(&mut native);
     let effects = report.take_native_effects();
     assert!(matches!(
         effects.as_slice(),
@@ -439,6 +446,8 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     native
         .bind_viewport(child, second_window, second)
         .expect("child viewport binds");
+    let mut initially_presented = paint_and_present_all_surfaces(&mut native);
+    assert!(initially_presented.take_native_effects().is_empty());
 
     let mut redock = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -453,7 +462,12 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     redock
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the child redock settles every surface");
-    let mut redocked = redock.commit().expect("the child redock commits");
+    let mut requested = redock.commit().expect("the child redock request commits");
+    assert!(
+        requested.take_native_effects().is_empty(),
+        "ReleaseChild waits for the target presentation"
+    );
+    let mut redocked = paint_and_present_all_surfaces(&mut native);
     let effects = redocked.take_native_effects();
     assert_eq!(
         effects.len(),
@@ -679,6 +693,8 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
     native
         .bind_viewport(child, child_window, child_binding)
         .expect("child viewport binds");
+    let mut initially_presented = paint_and_present_all_surfaces(&mut native);
+    assert!(initially_presented.take_native_effects().is_empty());
 
     let mut redock = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -693,7 +709,12 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
     redock
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the child redock settles every surface");
-    let mut report = redock.commit().expect("the child redock commits");
+    let mut requested = redock.commit().expect("the child redock request commits");
+    assert!(
+        requested.take_native_effects().is_empty(),
+        "ReleaseChild waits for the target presentation"
+    );
+    let mut report = paint_and_present_all_surfaces(&mut native);
     native
         .accept_native_effects(report.take_native_effects())
         .expect("the child release is accepted before shutdown");

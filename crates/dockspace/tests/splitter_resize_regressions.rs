@@ -1397,7 +1397,10 @@ fn disabled_vertical_policy_omits_corner_and_rejects_direct_batch_without_partia
         .expect("vertical splitter is present");
     assert!(horizontal.operable());
     assert!(!vertical.operable());
-    assert!(ready.plan().splitter_junction_records().is_empty());
+    let [junction] = ready.plan().splitter_junction_records() else {
+        panic!("the structural junction remains available for axis semantics");
+    };
+    assert!(!junction.operable());
 }
 
 #[test]

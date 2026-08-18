@@ -445,6 +445,12 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         capture_generations_before + 1,
         "the runtime sidecar retains the child stream generation",
     );
+    let _ = paint_and_present_all_native_surfaces(&mut session);
+    assert!(
+        session.engine.interaction_projection(SURFACE).is_some(),
+        "recovery scene after complete presentation: {:?}",
+        session.engine.scene().surface(SURFACE),
+    );
 
     let child_root = session
         .view()
@@ -464,7 +470,41 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the redock frame settles every surface");
     let mut redock_report = redock.commit().expect("the child redock commits");
-    let release = take_only_native_effect(&mut redock_report);
+    assert!(
+        matches!(
+            redock_report.inputs(),
+            [super::super::super::HostInputOutcome::ProductActionApplied(
+                crate::model::DockspaceActionOutcome::RootDockRequested { .. }
+            )]
+        ),
+        "actual redock inputs: {:?}",
+        redock_report.inputs()
+    );
+    assert!(redock_report.take_native_effects().is_empty());
+    assert_eq!(
+        session
+            .view()
+            .item(ITEM)
+            .expect("the item remains available before presentation")
+            .surface(),
+        child_binding.surface(),
+    );
+
+    let mut settled = paint_and_present_all_native_surfaces(&mut session);
+    assert!(
+        matches!(
+            settled.presentation_transitions(),
+            [transition]
+                if transition.root() == child_root
+                    && transition.source_surface() == child_binding.surface()
+                    && transition.target_surface() == SURFACE
+                    && transition.result()
+                        == crate::runtime::DockspacePresentationTransitionResult::Applied
+        ),
+        "actual presentation transitions: {:?}",
+        settled.presentation_transitions()
+    );
+    let release = take_only_native_effect(&mut settled);
     assert!(matches!(
         release.operation(),
         NativeEffectOperation::ReleaseChild { binding } if *binding == child_binding

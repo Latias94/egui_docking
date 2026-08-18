@@ -235,7 +235,7 @@ impl DockEngine {
                 )
                 .map(Some)
             }
-            PresentationHitRegionKind::TabGroupGrip(group) => {
+            PresentationHitRegionKind::TabGroupDrag { bar: group, .. } => {
                 let threshold_origin =
                     self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let source = TabGestureSource::Group(group);
@@ -257,6 +257,9 @@ impl DockEngine {
             }
             PresentationHitRegionKind::SplitterHandle(_)
             | PresentationHitRegionKind::SplitterJunction(_) => {
+                if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
+                    return Ok(Some(InteractionOutcome::Rejected(rejection)));
+                }
                 let start = match self.prepare_journal_splitter_gesture(
                     presentation,
                     region,
@@ -481,6 +484,10 @@ impl DockEngine {
                 .presentation_config
                 .pointer_drag_start_distance();
             if !Self::journal_drag_threshold_crossed(threshold_origin, edge, threshold) {
+                return Ok(outcomes);
+            }
+            if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
+                outcomes.push(InteractionOutcome::Rejected(rejection));
                 return Ok(outcomes);
             }
             let button = armed.button;
@@ -954,6 +961,13 @@ impl DockEngine {
             FrozenClickAction::Close(close) => {
                 self.finish_journal_close_click(cause, pressed, close, policy, interaction_events)
             }
+            FrozenClickAction::DockBack(dock_back) => self.finish_journal_contained_dock_back(
+                cause,
+                dock_back,
+                presentation.plan(),
+                policy,
+                events,
+            ),
             FrozenClickAction::TabStripControl(control) => {
                 self.finish_journal_tab_strip_control(cause, control, presentation.plan())
             }
@@ -1044,6 +1058,36 @@ impl DockEngine {
             plan,
             reused: false,
         })
+    }
+
+    fn finish_journal_contained_dock_back(
+        &mut self,
+        cause: ReductionCause,
+        frozen: &FrozenContainedDockBackClick,
+        plan: &PresentationPlan,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let target = CloseSceneTarget::Contained(frozen.floating);
+        let Some(record) = plan.contained_record(frozen.floating) else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::CloseSceneTargetUnavailable { target },
+            ));
+        };
+        if record.root() != frozen.root || record.close_bounds().is_none() {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::CloseSceneTargetUnavailable { target },
+            ));
+        }
+        match self.apply_journal_product_action(
+            cause,
+            ProductAction::DockBackRoot { root: frozen.root },
+            policy,
+            events,
+        )? {
+            Ok(outcome) => Ok(InteractionOutcome::ProductActionApplied(outcome)),
+            Err(reason) => Ok(InteractionOutcome::ProductActionRejected(reason)),
+        }
     }
 
     fn finish_journal_tab_list_menu_blocker(
@@ -1196,13 +1240,8 @@ impl DockEngine {
                 .freeze_journal_close_click(plan, point, policy, CloseSceneTarget::Tab(tab))
                 .map(FrozenClickAction::Close),
             PresentationHitRegionKind::ContainedClose(floating) => self
-                .freeze_journal_close_click(
-                    plan,
-                    point,
-                    policy,
-                    CloseSceneTarget::Contained(floating),
-                )
-                .map(FrozenClickAction::Close),
+                .freeze_journal_contained_dock_back(plan, point, floating)
+                .map(FrozenClickAction::DockBack),
             PresentationHitRegionKind::TabStripControl(control) => {
                 let record = plan
                     .tab_strip_control_records()
@@ -1402,6 +1441,31 @@ impl DockEngine {
         Ok(capture)
     }
 
+    fn freeze_journal_contained_dock_back(
+        &self,
+        plan: &PresentationPlan,
+        point: crate::geometry::LogicalPoint,
+        floating: FloatingPresentationId,
+    ) -> Result<FrozenContainedDockBackClick, InteractionRejection> {
+        let target = CloseSceneTarget::Contained(floating);
+        let Some(record) = plan.contained_record(floating) else {
+            return Err(InteractionRejection::CloseSceneTargetUnavailable { target });
+        };
+        let Some(close_bounds) = record.close_bounds() else {
+            return Err(InteractionRejection::CloseControlUnavailable { target });
+        };
+        if !close_bounds.contains(point) {
+            return Err(InteractionRejection::CloseActivationHitMismatch { target });
+        }
+        if !plan.point_is_on_authoritative_layer(point, record.layer()) {
+            return Err(InteractionRejection::CloseActivationOccluded { target });
+        }
+        Ok(FrozenContainedDockBackClick {
+            floating,
+            root: record.root(),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn defer_drag_release(
         &mut self,
@@ -1412,7 +1476,9 @@ impl DockEngine {
         release_decision: PreviewDecision,
         policy: &DockPolicySnapshot,
     ) -> Result<InteractionOutcome, EngineError> {
-        if self.pending_drag_release.is_some() || self.pending_contained_transform_release.is_some()
+        if self.pending_drag_release.is_some()
+            || self.pending_contained_transform_release.is_some()
+            || self.pending_presentation_rehome.is_some()
         {
             return Err(EngineError::PointerInteractionInvariant {
                 cause,
@@ -1617,6 +1683,11 @@ impl DockEngine {
                     policy,
                     interaction_events,
                 );
+            }
+            PreviewProof::PresentationRehome { .. } => {
+                return Err(EngineError::ReductionCauseInvariant {
+                    detail: "programmatic presentation rehome proof entered pointer delivery",
+                });
             }
         };
         let (outcome, changed) =
@@ -2326,7 +2397,7 @@ impl DockEngine {
                         .ok_or(InteractionRejection::TabGestureSourceUnavailable {
                             source: TabGestureSource::Group(source),
                         })?;
-                if !group.hit().contains(point) {
+                if !group.contains(point) {
                     return Err(InteractionRejection::TabGestureHitMismatch {
                         source: TabGestureSource::Group(source),
                     });
@@ -2467,6 +2538,60 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
+        if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
+            return Ok(InteractionOutcome::Rejected(rejection));
+        }
+        let source_payload = match prepared.source {
+            TabGestureSource::Item(source) => match self.workspace.nodes.get(source.tabs) {
+                Some(Node::Tabs { items, .. }) if items.contains(&source.item) => {
+                    Ok(MovePayload::Item(ItemSource {
+                        root: source.root,
+                        tabs: source.tabs,
+                        item: source.item,
+                        fingerprint: prepared.source_node.fingerprint.clone(),
+                    }))
+                }
+                Some(Node::Tabs { .. }) => Err(CommandError::ItemNotInTabs {
+                    tabs: source.tabs,
+                    item: source.item,
+                }),
+                Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: source.tabs }),
+                None => Err(CommandError::MissingNode {
+                    role: ReferenceRole::Source,
+                    node: source.tabs,
+                }),
+            },
+            TabGestureSource::Group(_) => {
+                if matches!(
+                    self.workspace.nodes.get(prepared.tabs),
+                    Some(Node::Tabs { .. })
+                ) {
+                    Ok(MovePayload::Tabs(prepared.source_node.clone()))
+                } else {
+                    Err(CommandError::NodeIsNotTabs {
+                        node: prepared.tabs,
+                    })
+                }
+            }
+            TabGestureSource::ContainedTitle { .. } => {
+                Ok(MovePayload::Subtree(prepared.source_node.clone()))
+            }
+        };
+        let source_payload = match source_payload {
+            Ok(payload) => payload,
+            Err(source) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(source),
+                ));
+            }
+        };
+        if let Err(source) =
+            authorize_captured_drag_source(&self.workspace, policy, &source_payload)
+        {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::CommandRejected(source),
+            ));
+        }
         let mut candidate_events = Vec::new();
         let mut commands = Vec::with_capacity(2);
         if !matches!(owner, GestureOwner::LocalResponse { .. })

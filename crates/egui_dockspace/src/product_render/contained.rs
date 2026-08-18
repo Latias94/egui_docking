@@ -4,7 +4,9 @@ use dockspace::runtime::{
     ContainedPaintRecord, ContainedResizeDirection, SurfaceContainedResizeAdjustment,
 };
 use egui::accesskit::{Action, Orientation, Role};
-use egui::{CursorIcon, EventFilter, Key, Sense, Stroke, StrokeKind, pos2};
+use egui::{CursorIcon, EventFilter, Key, Sense, pos2};
+
+use crate::style::ResolvedContainedWindowVisuals;
 
 use super::RenderContext;
 use super::actions::{button_activated, gesture_phase};
@@ -15,6 +17,7 @@ pub(crate) fn paint_background(
     context: &mut RenderContext<'_, '_, '_>,
     contained: ContainedPaintRecord<'_>,
     root: &RootPaintSchedule<'_>,
+    visuals: ResolvedContainedWindowVisuals,
 ) {
     let Some(outer) = egui_rect(contained.outer_bounds()) else {
         return;
@@ -22,23 +25,21 @@ pub(crate) fn paint_background(
     let Some(title) = egui_rect(contained.title_bounds()) else {
         return;
     };
-    context
-        .ui
-        .painter()
-        .rect_filled(outer, 3.0, context.visuals.floating_fill);
-    context
-        .ui
-        .painter()
-        .rect_filled(title, 3.0, context.visuals.floating_title_fill);
-    context.ui.painter().rect_stroke(
-        outer,
-        3.0,
-        Stroke::new(
-            context.style.floating_border_width,
-            context.visuals.floating_border_color,
-        ),
-        StrokeKind::Inside,
-    );
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(contained.visual_id()));
+    if !paint_omitted {
+        let content_rect = outer.shrink(visuals.frame.stroke.width);
+        context.ui.painter().add(visuals.frame.paint(content_rect));
+        let mut title_corner_radius = visuals.frame.corner_radius;
+        title_corner_radius.sw = 0;
+        title_corner_radius.se = 0;
+        context
+            .ui
+            .painter()
+            .rect_filled(title, title_corner_radius, visuals.title_fill);
+    }
 
     let scroll_id = context.ui.make_persistent_id((
         context.instance_id,
@@ -52,7 +53,7 @@ pub(crate) fn paint_background(
     // create widgets. Register both egui capture lanes before the pane widgets
     // so actual foreground content can supersede the blocker while background
     // widgets remain unreachable through the floating surface.
-    for (lane, sense) in [("click", Sense::click()), ("drag", Sense::drag())] {
+    for (lane, sense) in [("click", Sense::CLICK), ("drag", Sense::DRAG)] {
         let id = context.ui.make_persistent_id((
             context.instance_id,
             "contained-window-blocker",
@@ -67,17 +68,21 @@ pub(crate) fn paint_background(
         );
     }
 
-    let label = title_label(context, root);
-    context.ui.painter().text(
-        pos2(
-            title.min.x + context.style.tab_horizontal_padding,
-            title.center().y,
-        ),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::TextStyle::Button.resolve(context.ui.style()),
-        context.visuals.tab_active_text_color,
-    );
+    if !paint_omitted {
+        let label = title_label(context, root);
+        let title_text_bounds =
+            egui_rect(contained.title_drag_bounds()).map_or(title, |drag| drag.intersect(title));
+        context.ui.painter_at(title_text_bounds).text(
+            pos2(
+                title_text_bounds.min.x + f32::from(visuals.title_margin.left),
+                title_text_bounds.center().y,
+            ),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::TextStyle::Heading.resolve(context.ui.style()),
+            visuals.title_text_color,
+        );
+    }
 }
 
 pub(crate) fn paint_controls(
@@ -85,6 +90,10 @@ pub(crate) fn paint_controls(
     contained: ContainedPaintRecord<'_>,
     root: &RootPaintSchedule<'_>,
 ) {
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(contained.visual_id()));
     if let Some(title) = egui_rect(contained.title_drag_bounds()) {
         let id = context.ui.make_persistent_id((
             context.instance_id,
@@ -94,7 +103,7 @@ pub(crate) fn paint_controls(
         let response = context.interact_receiver(
             title,
             id,
-            Sense::drag(),
+            Sense::click_and_drag(),
             context
                 .ui
                 .is_enabled()
@@ -107,8 +116,9 @@ pub(crate) fn paint_controls(
             node.set_bounds(accesskit_bounds(title));
             node.set_label(label);
         });
-        if response.hovered() || response.dragged() {
-            context.ui.ctx().set_cursor_icon(if response.dragged() {
+        let locally_dragged = context.response_dragged_locally(&response);
+        if response.hovered() || locally_dragged {
+            context.ui.ctx().set_cursor_icon(if locally_dragged {
                 CursorIcon::Grabbing
             } else {
                 CursorIcon::Grab
@@ -119,6 +129,11 @@ pub(crate) fn paint_controls(
             && let Some(action) = context
                 .plan
                 .prepare_contained_title_gesture(contained.floating(), phase)
+            && context.accept_drag_phase_once(
+                response.id,
+                phase,
+                "egui_dockspace: settle contained drag decoration",
+            )
         {
             context.push_preview_gesture_action(action);
         }
@@ -146,27 +161,19 @@ pub(crate) fn paint_controls(
             node.set_bounds(accesskit_bounds(close));
             node.set_label(format!("Close floating {label}"));
         });
-        let color = if response.hovered() {
-            context.visuals.tab_active_text_color
-        } else {
-            context.visuals.tab_text_color
-        };
-        let inset = close.width().min(close.height()) * 0.28;
-        let stroke = Stroke::new(1.5, color);
-        context.ui.painter().line_segment(
-            [
-                close.left_top() + egui::vec2(inset, inset),
-                close.right_bottom() - egui::vec2(inset, inset),
-            ],
-            stroke,
-        );
-        context.ui.painter().line_segment(
-            [
-                close.right_top() + egui::vec2(-inset, inset),
-                close.left_bottom() + egui::vec2(inset, -inset),
-            ],
-            stroke,
-        );
+        if !paint_omitted {
+            let visuals = *context.ui.style().interact(&response);
+            let close = close.shrink(2.0).expand(visuals.expansion);
+            let stroke = visuals.fg_stroke;
+            context
+                .ui
+                .painter()
+                .line_segment([close.left_top(), close.right_bottom()], stroke);
+            context
+                .ui
+                .painter()
+                .line_segment([close.right_top(), close.left_bottom()], stroke);
+        }
         if button_activated(context.ui, &response, context.pointer_authority)
             && let Some(action) = context.plan.prepare_contained_close(contained.floating())
         {
@@ -240,7 +247,7 @@ pub(crate) fn paint_controls(
                 context.push_local_action(action);
             }
         }
-        if response.hovered() || response.dragged() {
+        if response.hovered() || context.response_dragged_locally(&response) {
             context
                 .ui
                 .ctx()

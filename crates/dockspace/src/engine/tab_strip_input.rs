@@ -553,22 +553,7 @@ impl DockEngine {
     ) -> Result<InputOutcome, EngineError> {
         let outcome = match self.resolve_prepared_tab_strip_scroll(prepared) {
             Err(rejection) => InteractionOutcome::Rejected(rejection),
-            Ok(offset) => {
-                let mut states = self.presentation_authority.tab_strip_states.clone();
-                let delta = states
-                    .set_tab_strip_scroll_offset(prepared.key, offset)
-                    .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
-                let changed = delta.state_changed();
-                if changed {
-                    self.presentation_authority.tab_strip_states = states;
-                    self.consume_tab_strip_state_delta(cause, &delta)?;
-                }
-                InteractionOutcome::TabStripScrolled {
-                    bar: prepared.key.bar(),
-                    offset,
-                    changed,
-                }
-            }
+            Ok(offset) => self.commit_tab_strip_scroll(cause, prepared.key, offset)?,
         };
         Ok(InputOutcome::InteractionProcessed {
             outcome,
@@ -745,29 +730,76 @@ impl DockEngine {
         })
     }
 
+    pub(super) fn finish_tab_strip_scroll(
+        &mut self,
+        cause: ReductionCause,
+        plan: &PresentationPlan,
+        key: TabStripStateKey,
+        expected_record: &TabBarRecord,
+        adjustment: &TabScrollAdjustment,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let offset = match self.resolve_tab_strip_scroll(plan, key, expected_record, adjustment) {
+            Ok(offset) => offset,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+        };
+        self.commit_tab_strip_scroll(cause, key, offset)
+    }
+
+    fn commit_tab_strip_scroll(
+        &mut self,
+        cause: ReductionCause,
+        key: TabStripStateKey,
+        offset: f64,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let mut states = self.presentation_authority.tab_strip_states.clone();
+        let delta = states
+            .set_tab_strip_scroll_offset(key, offset)
+            .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
+        let changed = delta.state_changed();
+        if changed {
+            self.presentation_authority.tab_strip_states = states;
+            self.consume_tab_strip_state_delta(cause, &delta)?;
+        }
+        Ok(InteractionOutcome::TabStripScrolled {
+            bar: key.bar(),
+            offset,
+            changed,
+        })
+    }
+
     fn resolve_prepared_tab_strip_scroll(
         &self,
         prepared: &PreparedTabStripScroll,
     ) -> Result<f64, InteractionRejection> {
         let plan = self.prepared_tab_strip_plan_ref(prepared.presentation)?;
+        self.resolve_tab_strip_scroll(plan, prepared.key, &prepared.record, &prepared.adjustment)
+    }
+
+    fn resolve_tab_strip_scroll(
+        &self,
+        plan: &PresentationPlan,
+        key: TabStripStateKey,
+        expected_record: &TabBarRecord,
+        adjustment: &TabScrollAdjustment,
+    ) -> Result<f64, InteractionRejection> {
         let record = plan
             .tab_bar_records()
             .iter()
-            .find(|record| *record.id() == prepared.key.bar())
-            .ok_or(InteractionRejection::TabStripSourceUnavailable { key: prepared.key })?;
-        if record != &prepared.record {
-            return Err(InteractionRejection::TabStripRecordChanged { key: prepared.key });
+            .find(|record| *record.id() == key.bar())
+            .ok_or(InteractionRejection::TabStripSourceUnavailable { key })?;
+        if record != expected_record {
+            return Err(InteractionRejection::TabStripRecordChanged { key });
         }
         if record.interaction() != TabBarInteraction::Enabled {
-            return Err(InteractionRejection::TabStripScrollDisabled { key: prepared.key });
+            return Err(InteractionRejection::TabStripScrollDisabled { key });
         }
         if self
             .presentation_authority
             .tab_strip_states
-            .state(prepared.key)
+            .state(key)
             .is_none()
         {
-            return Err(InteractionRejection::TabStripSourceUnavailable { key: prepared.key });
+            return Err(InteractionRejection::TabStripSourceUnavailable { key });
         }
         let member = |item: ItemId| {
             record
@@ -775,12 +807,9 @@ impl DockEngine {
                 .iter()
                 .find(|member| member.tab().item == item)
                 .copied()
-                .ok_or(InteractionRejection::TabStripScrollItemUnavailable {
-                    key: prepared.key,
-                    item,
-                })
+                .ok_or(InteractionRejection::TabStripScrollItemUnavailable { key, item })
         };
-        match &prepared.adjustment.0 {
+        match &adjustment.0 {
             TabScrollAdjustmentKind::RevealItem(item) => {
                 let member = member(*item)?;
                 Ok(reveal_scroll_offset(

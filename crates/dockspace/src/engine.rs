@@ -15,6 +15,7 @@ mod pointer_splitter;
 mod pointer_transaction;
 mod presentation_authority;
 mod presentation_identity;
+mod presentation_rehome;
 mod presentation_roster;
 mod product_action;
 mod provider_lifecycle;
@@ -94,8 +95,8 @@ use crate::close_plan::{
     SurfaceCloseRequest, SurfaceMainRehomeTarget, SurfaceRehomeTarget,
 };
 use crate::command::{
-    CloseCommitOutcome, CommandOutcome, ContainedPosition, ContentCloseTarget, MovePayload,
-    NodeFingerprint, NodeSource, RootContent, RootPresentationTarget, SplitResize,
+    CloseCommitOutcome, CommandOutcome, ContainedPosition, ContentCloseTarget, ItemSource,
+    MovePayload, NodeFingerprint, NodeSource, RootContent, RootPresentationTarget, SplitResize,
     WorkspaceCommand,
 };
 use crate::coordinates::{
@@ -132,22 +133,22 @@ use crate::interaction::{
     ContainedTransformGestureAuthority, ContainedTransformPaintAcknowledgement,
     ContainedTransformPlacement, ContainedTransformPreview, ContainedTransformSessionId,
     ContainedTransformStart, DragArmStart, DragGestureAuthority, EscapeDelivery, FrozenClickAction,
-    FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin, FrozenPresentationAuthority,
-    FrozenResizeHandle, FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick,
-    FrozenTabListMenuRowClick, FrozenTabStripControlClick, GestureOwner, InteractionCancelReason,
-    InteractionCounterError, InteractionDelivery, InteractionEvent, InteractionEventKind,
-    InteractionOutcome, InteractionRejection, InteractionState, InteractionStatus,
-    JournalDragSourceGeometry, JournalDragThresholdOrigin, PaintAcknowledgement, PreviewProof,
-    PreviewResolutionStatus, PreviewVisual, ResizeGestureAuthority, ResizeStart,
-    SceneGestureContinuation, SceneGestureContinuationDraft, SceneGestureContinuationSource,
-    SceneGestureSession, ScrollApplication, ScrollReductionOutcome, ScrollSessionId,
-    ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
+    FrozenCloseClick, FrozenContainedDockBackClick, FrozenContainedDragOrigin, FrozenDragOrigin,
+    FrozenPresentationAuthority, FrozenResizeHandle, FrozenTabListMenuBackdropClick,
+    FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
+    GestureOwner, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
+    InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
+    InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
+    PaintAcknowledgement, PreviewProof, PreviewResolutionStatus, PreviewVisual,
+    ResizeGestureAuthority, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
+    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
+    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
 use crate::operation::{
-    PreparedContentClose, PreparedSurfaceContentClose, prepare_content_close,
-    prepare_surface_content_close,
+    PreparedContentClose, PreparedSurfaceContentClose, authorize_captured_drag_source,
+    prepare_content_close, prepare_surface_content_close,
 };
 use crate::platform::{
     CloseEffectAcknowledgement, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
@@ -1504,6 +1505,7 @@ pub struct DockEngine {
     interaction: InteractionState,
     pending_drag_release: Option<PendingDragRelease>,
     pending_contained_transform_release: Option<PendingContainedTransformRelease>,
+    pending_presentation_rehome: Option<PendingPresentationRehome>,
     close: CloseCoordinator<PreparedCloseOperation>,
     viewport: ViewportCoordinator,
     viewport_focus: ViewportFocusCoordinator,
@@ -1568,6 +1570,21 @@ enum WorkspacePublicationAuthority {
         source_surface: crate::ids::SurfaceId,
         obligation: SurfaceRecoveryObligationId,
     },
+    PresentationRehome {
+        source_surface: crate::ids::SurfaceId,
+        obligation: SurfaceRecoveryObligationId,
+        root: crate::ids::RootId,
+        floating: crate::ids::FloatingPresentationId,
+    },
+    PendingPresentationRehome {
+        root: crate::ids::RootId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresentationRehomeCommitAuthority {
+    Ordinary,
+    BoundConvertedMain,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1709,6 +1726,30 @@ struct PendingContainedTransformRelease {
     transform: ActiveContainedTransform,
     placement: ContainedTransformPlacement,
     preview: crate::interaction::ContainedTransformPreviewToken,
+    presentation_outputs: BTreeSet<HostFrameKey>,
+    presented_output: Option<HostFrameKey>,
+    presentation_failed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingPresentationRehome {
+    source_version: WorkspaceVersion,
+    policy_revision: PolicyRevision,
+    cause: ReductionCause,
+    focus_causal: FocusCausalStamp,
+    root: RootId,
+    source: crate::command::NodeSource,
+    source_owner: crate::RootPresentationOwner,
+    source_surface: SurfaceId,
+    source_binding: crate::viewport::ViewportBinding,
+    source_recovery: SurfaceRecoveryObligationId,
+    source_presentation: PresentedSurfaceAuthority,
+    commit_authority: PresentationRehomeCommitAuthority,
+    target_surface: SurfaceId,
+    floating: Option<FloatingPresentationId>,
+    context: product_action::ProductCommandContext,
+    pane_focus: PaneFocusDisposition,
+    preview: crate::interaction::PublishedPreview,
     presentation_outputs: BTreeSet<HostFrameKey>,
     presented_output: Option<HostFrameKey>,
     presentation_failed: bool,
@@ -2043,6 +2084,7 @@ impl DockEngine {
             interaction,
             pending_drag_release: None,
             pending_contained_transform_release: None,
+            pending_presentation_rehome: None,
             close: CloseCoordinator::new(authority_domain),
             viewport: ViewportCoordinator::new(authority_domain),
             viewport_focus: ViewportFocusCoordinator::default(),
@@ -2687,7 +2729,9 @@ impl DockEngine {
                 &mut events,
                 &mut interaction_events,
             )?;
-        if drag_release_settled || contained_release_settled {
+        let presentation_rehome_settled =
+            candidate.settle_presented_pending_presentation_rehome(&mut events)?;
+        if drag_release_settled || contained_release_settled || presentation_rehome_settled {
             candidate.rebuild_presentation_requirements(candidate.last_input)?;
         }
         candidate.settle_retired_presentation_hosts()?;
@@ -2786,12 +2830,19 @@ impl DockEngine {
     /// presentation, including a release preview whose gesture is already idle.
     #[must_use]
     pub fn presentation_preview(&self) -> Option<&crate::interaction::InteractionPreview> {
-        self.interaction.preview().or_else(|| {
-            self.pending_drag_release
-                .as_ref()
-                .and_then(|pending| pending.drag.preview.as_ref())
-                .map(crate::interaction::PublishedPreview::public)
-        })
+        self.interaction
+            .preview()
+            .or_else(|| {
+                self.pending_drag_release
+                    .as_ref()
+                    .and_then(|pending| pending.drag.preview.as_ref())
+                    .map(crate::interaction::PublishedPreview::public)
+            })
+            .or_else(|| {
+                self.pending_presentation_rehome
+                    .as_ref()
+                    .map(|pending| pending.preview.public())
+            })
     }
 
     /// Returns the contained-transform preview which must be represented by the
@@ -3115,7 +3166,26 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Result<(CommandOutcome, bool), CommandError>, EngineError> {
-        let staged = match self.stage_journal_workspace_command(cause, command, policy)? {
+        self.apply_journal_workspace_command_with_authority(
+            cause,
+            command,
+            policy,
+            WorkspacePublicationAuthority::Ordinary,
+            events,
+        )
+    }
+
+    fn apply_journal_workspace_command_with_authority(
+        &mut self,
+        cause: ReductionCause,
+        command: &WorkspaceCommand,
+        policy: &DockPolicySnapshot,
+        authority: WorkspacePublicationAuthority,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<Result<(CommandOutcome, bool), CommandError>, EngineError> {
+        let staged = match self
+            .stage_journal_workspace_command_with_authority(cause, command, policy, authority)?
+        {
             Ok(staged) => staged,
             Err(source) => return Ok(Err(source)),
         };
@@ -3138,6 +3208,21 @@ impl DockEngine {
         command: &WorkspaceCommand,
         policy: &DockPolicySnapshot,
     ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
+        self.stage_journal_workspace_command_with_authority(
+            cause,
+            command,
+            policy,
+            WorkspacePublicationAuthority::Ordinary,
+        )
+    }
+
+    fn stage_journal_workspace_command_with_authority(
+        &self,
+        cause: ReductionCause,
+        command: &WorkspaceCommand,
+        policy: &DockPolicySnapshot,
+        authority: WorkspacePublicationAuthority,
+    ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
         let mut workspace = self.clone_workspace_candidate();
         let report = match WorkspaceTransaction::from_commands([command.clone()])
             .apply(&mut workspace, policy)
@@ -3155,6 +3240,11 @@ impl DockEngine {
                 });
             }
         };
+        if let Some(surface) =
+            self.first_pending_presentation_source_mismatch(&workspace, authority)
+        {
+            return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
+        }
         if let Some(surface) = self.first_workspace_publication_mismatch(&workspace, None, None) {
             return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
         }
@@ -3169,16 +3259,17 @@ impl DockEngine {
         let outcome = outcomes
             .pop()
             .expect("unit outcome roster was checked before extraction");
-        let publication = match self.stage_workspace_publication(workspace, policy) {
-            Ok(publication) => publication,
-            Err(source) if source.is_expected_rejection() => return Ok(Err(source)),
-            Err(source) => {
-                return Err(EngineError::PointerInteractionInvariant {
-                    cause,
-                    detail: source.to_string(),
-                });
-            }
-        };
+        let publication =
+            match self.stage_workspace_publication_with_authority(workspace, policy, authority) {
+                Ok(publication) => publication,
+                Err(source) if source.is_expected_rejection() => return Ok(Err(source)),
+                Err(source) => {
+                    return Err(EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: source.to_string(),
+                    });
+                }
+            };
         Ok(Ok(StagedJournalWorkspaceCommand {
             publication,
             outcome,
@@ -3545,6 +3636,25 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         self.reduce_versioned_interaction(expected, |engine| {
+            if engine
+                .pending_presentation_rehome
+                .as_ref()
+                .is_some_and(|pending| pending.preview.public().token() == acknowledgement.token())
+            {
+                let changed = engine
+                    .pending_presentation_rehome
+                    .as_mut()
+                    .expect("matched pending presentation rehome remains present")
+                    .preview
+                    .acknowledge(acknowledgement)
+                    .map_err(|_| EngineError::ReductionCauseInvariant {
+                        detail: "matched presentation rehome acknowledgement was rejected",
+                    })?;
+                return Ok(InteractionOutcome::PreviewAcknowledged {
+                    session: acknowledgement.token().session(),
+                    changed,
+                });
+            }
             if engine.pending_drag_release.as_ref().is_some_and(|pending| {
                 matches!(pending.drag.owner, GestureOwner::LocalResponse { .. })
             }) {
@@ -3760,6 +3870,47 @@ impl DockEngine {
         self.viewport
             .native_create_sagas()
             .any(|(_, saga)| saga.prepared().proposal().root() == root)
+    }
+
+    fn root_has_pending_presentation_transition(&self, root: crate::ids::RootId) -> bool {
+        self.pending_presentation_rehome.is_some() || self.native_create_reserves_root(root)
+    }
+
+    fn first_pending_presentation_source_mismatch(
+        &self,
+        candidate: &Workspace,
+        authority: WorkspacePublicationAuthority,
+    ) -> Option<SurfaceId> {
+        if let Some(pending) = self.pending_presentation_rehome.as_ref()
+            && !matches!(
+                authority,
+                WorkspacePublicationAuthority::PendingPresentationRehome { root }
+                    | WorkspacePublicationAuthority::PresentationRehome { root, .. }
+                    if root == pending.root
+            )
+            && candidate
+                .capture_node_source(pending.source.root(), pending.source.node())
+                .ok()
+                .as_ref()
+                != Some(&pending.source)
+        {
+            return Some(pending.source_surface);
+        }
+        self.viewport.native_create_sagas().find_map(|(saga_id, saga)| {
+            if matches!(authority, WorkspacePublicationAuthority::NativeCommit { saga } if saga == saga_id)
+            {
+                return None;
+            }
+            let WorkspaceCommand::RehomeRoot { source, .. } = saga.prepared().command() else {
+                return None;
+            };
+            (candidate
+                .capture_node_source(source.root(), source.node())
+                .ok()
+                .as_ref()
+                != Some(source))
+            .then_some(saga.prepared().source_surface())
+        })
     }
 
     fn native_create_reserves_floating(
@@ -4321,6 +4472,130 @@ impl DockEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn adjust_splitter_junction_resize(
+        &mut self,
+        input: InputSequence,
+        scene: SurfaceSceneStamp,
+        junction: crate::scene::SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let surface = scene.surface();
+        let axis = axis.into();
+        let handles = {
+            let painted = match self.local_response_candidate(scene) {
+                Ok(painted) => painted,
+                Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+            };
+            let Some(record) = painted
+                .plan()
+                .splitter_junction_records()
+                .iter()
+                .find(|record| record.id() == junction)
+            else {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            };
+
+            let directions = match axis {
+                crate::graph::Axis::Horizontal => [
+                    crate::scene::SplitterJunctionDirection::North,
+                    crate::scene::SplitterJunctionDirection::South,
+                ],
+                crate::graph::Axis::Vertical => [
+                    crate::scene::SplitterJunctionDirection::East,
+                    crate::scene::SplitterJunctionDirection::West,
+                ],
+            };
+            let mut ids = directions
+                .into_iter()
+                .filter_map(|direction| record.id().arm(direction))
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids.dedup();
+            if ids.is_empty() {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            }
+            let mut handles = Vec::with_capacity(ids.len());
+            for id in ids {
+                let Some(handle) = painted
+                    .plan()
+                    .splitter_record(id)
+                    .filter(|splitter| splitter.axis() == axis && splitter.operable())
+                else {
+                    return Ok(InteractionOutcome::Rejected(
+                        InteractionRejection::SplitterGestureHitUnavailable { surface },
+                    ));
+                };
+                handles.push(handle.clone());
+            }
+            handles
+        };
+
+        let mut sources = Vec::with_capacity(handles.len());
+        for record in handles {
+            let source = match self
+                .workspace
+                .capture_node_source(record.id().root, record.id().split)
+            {
+                Ok(source) => source,
+                Err(error) => {
+                    return Ok(InteractionOutcome::Rejected(
+                        InteractionRejection::ResizeRejected(error),
+                    ));
+                }
+            };
+            if let Err(error) = self.check_resize_policy(&source, policy) {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::ResizeRejected(error),
+                ));
+            }
+            sources.push((source, record));
+        }
+
+        let Some(group) = prepare_resize_axis_groups(sources)
+            .and_then(|groups| groups.into_iter().find(|group| group.axis == axis))
+        else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterResizeGeometryUnavailable,
+            ));
+        };
+        let shared_delta = delta.clamp(group.common_delta.minimum, group.common_delta.maximum);
+        let Some(updates) = group
+            .handles
+            .iter()
+            .map(|handle| split_resize_update(handle, shared_delta))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterResizeGeometryUnavailable,
+            ));
+        };
+        let command = WorkspaceCommand::ResizeSplits { splits: updates };
+        match self.apply_interaction_command_with_policy(input, policy, &command, events)? {
+            CommandApplication::Applied { outcome, changed } => {
+                if changed {
+                    self.invalidate_transient(
+                        input,
+                        InteractionCancelReason::WorkspaceChanged,
+                        interaction_events,
+                    )?;
+                }
+                Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
+            }
+            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
+                InteractionRejection::ResizeRejected(error),
+            )),
+        }
+    }
+
     fn cancel_resize(
         &mut self,
         input: InputSequence,
@@ -4788,8 +5063,38 @@ impl DockEngine {
                 obligation,
             } => Some((source_surface, obligation)),
             WorkspacePublicationAuthority::Ordinary
-            | WorkspacePublicationAuthority::NativeCommit { .. } => None,
+            | WorkspacePublicationAuthority::NativeCommit { .. }
+            | WorkspacePublicationAuthority::PresentationRehome { .. }
+            | WorkspacePublicationAuthority::PendingPresentationRehome { .. } => None,
         };
+        let presentation_rehome = match authority {
+            WorkspacePublicationAuthority::PresentationRehome {
+                source_surface,
+                obligation,
+                root,
+                floating,
+            } => Some((source_surface, obligation, root, floating)),
+            WorkspacePublicationAuthority::Ordinary
+            | WorkspacePublicationAuthority::NativeCommit { .. }
+            | WorkspacePublicationAuthority::RecoveryCommit { .. }
+            | WorkspacePublicationAuthority::PendingPresentationRehome { .. } => None,
+        };
+        if let Some((source_surface, obligation, root, floating)) = presentation_rehome
+            && !recoveries.get(&source_surface).is_some_and(|current| {
+                current.obligation.id() == obligation
+                    && current
+                        .obligation
+                        .target()
+                        .converted_main()
+                        .is_some_and(|converted| {
+                            converted.source_root() == root && converted.floating() == floating
+                        })
+            })
+        {
+            return Err(CommandError::SurfaceLifecycleFrozen {
+                surface: source_surface,
+            });
+        }
         if let Some((source_surface, obligation)) = recovery_commit
             && !recoveries
                 .get(&source_surface)
@@ -4848,7 +5153,20 @@ impl DockEngine {
                         surface: obligation.target().host_surface(),
                         floating: converted.floating(),
                     });
-                if !exact_recovery_consumption {
+                let exact_presentation_rehome = matches!(
+                    presentation_rehome,
+                    Some((source_surface, obligation_id, root, floating))
+                        if source_surface == *surface
+                            && obligation_id == obligation.id()
+                            && root == converted.source_root()
+                            && floating == converted.floating()
+                ) && candidate
+                    .presentation_for_root(converted.source_root())
+                    == Some(crate::RootPresentationOwner::Contained {
+                        surface: obligation.target().host_surface(),
+                        floating: converted.floating(),
+                    });
+                if !exact_recovery_consumption && !exact_presentation_rehome {
                     return Err(CommandError::SurfaceLifecycleFrozen { surface: *surface });
                 }
             }
@@ -4975,6 +5293,14 @@ impl DockEngine {
             }
             Err(source) => return Err(EngineError::Command { input, source }),
         };
+        if let Some(surface) =
+            self.first_pending_presentation_source_mismatch(&candidate, authority)
+        {
+            return Ok((
+                None,
+                CommandApplication::Rejected(CommandError::SurfaceLifecycleFrozen { surface }),
+            ));
+        }
         if let Some(surface) =
             self.first_workspace_publication_mismatch(&candidate, action_barrier, None)
         {
@@ -5213,6 +5539,7 @@ impl DockEngine {
             interaction: self.interaction.clone(),
             pending_drag_release: self.pending_drag_release.clone(),
             pending_contained_transform_release: self.pending_contained_transform_release.clone(),
+            pending_presentation_rehome: self.pending_presentation_rehome.clone(),
             close: self.close.clone(),
             viewport: self.viewport.clone(),
             viewport_focus: self.viewport_focus.clone(),

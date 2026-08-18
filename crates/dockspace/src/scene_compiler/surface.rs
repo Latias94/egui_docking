@@ -582,11 +582,6 @@ fn compile_tab_strip(
     } else {
         None
     };
-    let group_drag = if interaction == TabBarInteraction::Enabled {
-        group_grip_bounds.map(|grip| TabGroupDragRecord::new(grip, HitRegion::new(grip)))
-    } else {
-        None
-    };
     let leading_reserved = strip.leading_reserved();
     let mut desired_widths = Vec::with_capacity(items.len());
     let mut content_widths = Vec::with_capacity(items.len());
@@ -727,6 +722,20 @@ fn compile_tab_strip(
         full_tabs.push(full);
         cursor += width;
     }
+    let trailing_empty_bounds = if max_scroll == 0.0 {
+        let trailing_start = cursor.min(viewport.max().x());
+        let trailing_width = (viewport.max().x() - trailing_start).max(0.0);
+        (trailing_width > 0.0)
+            .then(|| LogicalRect::new(trailing_start, bar.y(), trailing_width, bar.height()))
+            .transpose()?
+    } else {
+        None
+    };
+    let group_drag = if interaction == TabBarInteraction::Enabled {
+        group_grip_bounds.map(|grip| TabGroupDragRecord::new(grip, trailing_empty_bounds))
+    } else {
+        None
+    };
     ready.push_tab_bar_record(TabBarRecord::new(
         bar_id,
         bar,
@@ -1567,8 +1576,8 @@ fn compile_contained_record(
         (durable_title.width() - 2.0 * title_inset_x).max(0.0),
         (durable_title.height() - 2.0 * title_inset_y).max(0.0),
     )?;
-    let close_allowed = root_allows_close(workspace, policy, surface, root)?;
-    let durable_close = close_allowed
+    let has_content = root_has_content(workspace, surface, root)?;
+    let durable_close = has_content
         .then(|| contained_close_rect(inner_title, config))
         .transpose()?
         .filter(|rect| rect_has_area(*rect));
@@ -1614,9 +1623,8 @@ fn compile_contained_record(
     ))
 }
 
-fn root_allows_close(
+fn root_has_content(
     workspace: &Workspace,
-    policy: &DockPolicySnapshot,
     surface: SurfaceId,
     root: RootId,
 ) -> Result<bool, SceneCompilationError> {
@@ -1644,11 +1652,6 @@ fn root_allows_close(
             })? {
             Node::Tabs { items, .. } => {
                 has_items |= !items.is_empty();
-                for item in items.iter().copied() {
-                    if !policy.pane_close_capability(item).allows_close() {
-                        return Ok(false);
-                    }
-                }
             }
             Node::Split { children, .. } => pending.extend(children.iter().copied()),
         }

@@ -198,28 +198,127 @@ impl TabRecord {
     }
 }
 
-/// Exact hit geometry for the whole-tab-stack gesture of one tab bar.
+/// Stable semantic identity of one whole-tab-stack drag region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TabGroupDragRegionKind {
+    /// Dedicated grip before the first tab.
+    LeadingGrip,
+    /// Unoccupied strip space after the final tab.
+    TrailingEmpty,
+}
+
+/// Exact draw and hit geometry for one whole-tab-stack drag region.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TabGroupDragRecord {
-    grip_bounds: LogicalRect,
+pub struct TabGroupDragRegionRecord {
+    kind: TabGroupDragRegionKind,
+    bounds: LogicalRect,
     hit: HitRegion,
 }
 
-impl TabGroupDragRecord {
-    pub(crate) const fn new(grip_bounds: LogicalRect, hit: HitRegion) -> Self {
-        Self { grip_bounds, hit }
+impl TabGroupDragRegionRecord {
+    const fn new(kind: TabGroupDragRegionKind, bounds: LogicalRect) -> Self {
+        Self {
+            kind,
+            bounds,
+            hit: HitRegion::new(bounds),
+        }
     }
 
-    /// Returns the exact rectangle which adapters paint as the group grip.
+    /// Returns the stable semantic role of this region.
     #[must_use]
-    pub const fn grip_bounds(self) -> LogicalRect {
-        self.grip_bounds
+    pub const fn kind(self) -> TabGroupDragRegionKind {
+        self.kind
+    }
+
+    /// Returns the exact rectangle which adapters may decorate.
+    #[must_use]
+    pub const fn bounds(self) -> LogicalRect {
+        self.bounds
     }
 
     /// Returns the exact half-open group gesture region.
     #[must_use]
     pub const fn hit(self) -> HitRegion {
         self.hit
+    }
+}
+
+/// Exact hit geometry for the whole-tab-stack gesture of one tab bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabGroupDragRecord {
+    leading_grip: TabGroupDragRegionRecord,
+    trailing_empty: Option<TabGroupDragRegionRecord>,
+}
+
+impl TabGroupDragRecord {
+    pub(crate) const fn new(
+        leading_grip: LogicalRect,
+        trailing_empty: Option<LogicalRect>,
+    ) -> Self {
+        Self {
+            leading_grip: TabGroupDragRegionRecord::new(
+                TabGroupDragRegionKind::LeadingGrip,
+                leading_grip,
+            ),
+            trailing_empty: match trailing_empty {
+                Some(bounds) => Some(TabGroupDragRegionRecord::new(
+                    TabGroupDragRegionKind::TrailingEmpty,
+                    bounds,
+                )),
+                None => None,
+            },
+        }
+    }
+
+    /// Returns the dedicated region before the first tab.
+    #[must_use]
+    pub const fn leading_grip(self) -> TabGroupDragRegionRecord {
+        self.leading_grip
+    }
+
+    /// Returns unoccupied strip space after the final tab, when present.
+    #[must_use]
+    pub const fn trailing_empty(self) -> Option<TabGroupDragRegionRecord> {
+        self.trailing_empty
+    }
+
+    /// Returns one exact region by semantic role.
+    #[must_use]
+    pub const fn region(self, kind: TabGroupDragRegionKind) -> Option<TabGroupDragRegionRecord> {
+        match kind {
+            TabGroupDragRegionKind::LeadingGrip => Some(self.leading_grip),
+            TabGroupDragRegionKind::TrailingEmpty => self.trailing_empty,
+        }
+    }
+
+    /// Iterates exact group-drag regions in stable visual order.
+    pub fn regions(self) -> impl Iterator<Item = TabGroupDragRegionRecord> {
+        [Some(self.leading_grip), self.trailing_empty]
+            .into_iter()
+            .flatten()
+    }
+
+    /// Returns whether either exact group-drag region contains the point.
+    #[must_use]
+    pub fn contains(self, point: crate::geometry::LogicalPoint) -> bool {
+        self.regions().any(|region| region.hit().contains(point))
+    }
+
+    /// Returns the dedicated leading grip bounds.
+    ///
+    /// This compatibility accessor is equivalent to
+    /// [`Self::leading_grip`]'s bounds.
+    #[must_use]
+    pub const fn grip_bounds(self) -> LogicalRect {
+        self.leading_grip.bounds()
+    }
+
+    /// Returns the dedicated leading grip hit region.
+    ///
+    /// This compatibility accessor does not include trailing empty space.
+    #[must_use]
+    pub const fn hit(self) -> HitRegion {
+        self.leading_grip.hit()
     }
 }
 

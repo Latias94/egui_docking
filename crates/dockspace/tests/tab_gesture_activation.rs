@@ -16,7 +16,7 @@ use dockspace::pointer_receiver::{
     PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
 };
 use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::scene::{SurfaceSceneStamp, TabBarSceneId};
+use dockspace::scene::{SurfaceSceneStamp, TabBarSceneId, TabGroupDragRegionKind};
 use dockspace::transition::EngineTransition;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -102,6 +102,7 @@ fn tab_press(
 fn group_press(
     engine: &DockEngine,
     root: RootId,
+    region: TabGroupDragRegionKind,
 ) -> (SurfaceSceneStamp, TabGestureSource, SurfacePointer) {
     let ready = engine
         .scene()
@@ -113,14 +114,19 @@ fn group_press(
         .iter()
         .find(|record| record.id().root == root)
         .expect("tab bar record exists");
-    let group = bar.group_drag().expect("non-empty tabs have a group grip");
+    let group = bar
+        .group_drag()
+        .expect("non-empty tabs have group drag regions");
+    let region = group
+        .region(region)
+        .expect("requested group drag region exists");
     (
         ready.stamp(),
         TabGestureSource::Group(TabBarSceneId {
             root,
             tabs: bar.id().tabs,
         }),
-        SurfacePointer::new(SURFACE, center(group.hit().rect())),
+        SurfacePointer::new(SURFACE, center(region.hit().rect())),
     )
 }
 
@@ -148,8 +154,8 @@ fn activate(
             }
             (
                 TabGestureSource::Group(expected),
-                PresentationHitRegionKind::TabGroupGrip(actual),
-            ) => actual == expected,
+                PresentationHitRegionKind::TabGroupDrag { bar: actual, .. },
+            ) => actual == expected && region.hit().contains(press.position()),
             _ => false,
         })
         .copied()
@@ -403,7 +409,8 @@ fn rear_contained_group_atomically_raises_and_arms_complete_tabs_payload() {
         rect(40.0, 40.0, 180.0, 140.0),
         rect(330.0, 220.0, 180.0, 140.0),
     );
-    let (scene, source, press) = group_press(&engine, REAR_ROOT);
+    let (scene, source, press) =
+        group_press(&engine, REAR_ROOT, TabGroupDragRegionKind::LeadingGrip);
     let transition = activate(&mut engine, &mut host, scene, source, press);
 
     assert!(matches!(
@@ -435,7 +442,8 @@ fn frontmost_group_arms_without_workspace_mutation() {
         rect(330.0, 220.0, 180.0, 140.0),
     );
     let before = engine.version();
-    let (scene, source, press) = group_press(&engine, FRONT_ROOT);
+    let (scene, source, press) =
+        group_press(&engine, FRONT_ROOT, TabGroupDragRegionKind::LeadingGrip);
     let transition = activate(&mut engine, &mut host, scene, source, press);
     assert!(matches!(
         interaction_outcome(&transition),
@@ -443,4 +451,29 @@ fn frontmost_group_arms_without_workspace_mutation() {
     ));
     assert_eq!(engine.version(), before);
     assert!(transition.events().is_empty());
+}
+
+#[test]
+fn trailing_empty_region_arms_the_same_complete_tabs_payload() {
+    let (mut engine, mut host) = engine(
+        rect(40.0, 40.0, 180.0, 140.0),
+        rect(330.0, 220.0, 180.0, 140.0),
+    );
+    let (scene, source, press) =
+        group_press(&engine, MAIN_ROOT, TabGroupDragRegionKind::TrailingEmpty);
+
+    let transition = activate(&mut engine, &mut host, scene, source, press);
+
+    assert!(matches!(
+        interaction_outcome(&transition),
+        InteractionOutcome::DragArmed { .. }
+    ));
+    assert!(matches!(
+        engine
+            .interaction()
+            .active_drag_view()
+            .expect("trailing empty gesture arms a drag")
+            .payload(),
+        MovePayload::Tabs(source) if source.root() == MAIN_ROOT
+    ));
 }

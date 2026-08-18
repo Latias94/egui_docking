@@ -553,7 +553,7 @@ fn prepare_transaction_inner(
     })
 }
 
-fn authorize_workspace_command(
+pub(crate) fn authorize_workspace_command(
     workspace: &Workspace,
     policy: &DockPolicySnapshot,
     command: &WorkspaceCommand,
@@ -875,6 +875,18 @@ fn authorize_move(
     target: &DockTarget,
 ) -> Result<(), CommandError> {
     DropCommandEligibility::new(workspace, policy, payload)?.check_target(target)
+}
+
+pub(crate) fn authorize_captured_drag_source(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
+    payload: &MovePayload,
+) -> Result<(), CommandError> {
+    let payload = move_payload_policy_facts_validated(workspace, payload, false)?;
+    match policy.evaluate_drag_source_facts(&payload) {
+        PolicyDecision::Allow => Ok(()),
+        PolicyDecision::Reject(reason) => Err(reason.into()),
+    }
 }
 
 fn authorize_tab_bar(policy: &DockPolicySnapshot, target: &DockTarget) -> Result<(), CommandError> {

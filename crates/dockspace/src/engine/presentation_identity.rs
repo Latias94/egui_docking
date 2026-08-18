@@ -400,12 +400,31 @@ impl DockEngine {
         let reservations = self.pending_native_identity_reservations();
         self.presentation_identity
             .observe_native_reservations(reservations);
+        if let Some(floating) = self.pending_presentation_rehome_floating() {
+            self.presentation_identity.observe_floating(floating);
+        }
+    }
+
+    fn pending_presentation_rehome_floating(&self) -> Option<FloatingPresentationId> {
+        self.pending_presentation_rehome
+            .as_ref()
+            .and_then(|pending| pending.floating)
+    }
+
+    fn observe_pending_presentation_rehome_identity(
+        &self,
+        authority: &mut PresentationIdentityAuthority,
+    ) {
+        if let Some(floating) = self.pending_presentation_rehome_floating() {
+            authority.observe_floating(floating);
+        }
     }
 
     pub(super) fn prepare_presentation_root_identity(&self) -> Option<RootId> {
         let mut authority = self.presentation_identity;
         authority.observe_workspace(&self.workspace);
         authority.observe_native_reservations(self.pending_native_identity_reservations());
+        self.observe_pending_presentation_rehome_identity(&mut authority);
         authority.prepare_root()
     }
 
@@ -413,6 +432,7 @@ impl DockEngine {
         let mut authority = self.presentation_identity;
         authority.observe_workspace(&self.workspace);
         authority.observe_native_reservations(self.pending_native_identity_reservations());
+        self.observe_pending_presentation_rehome_identity(&mut authority);
         authority.prepare_floating()
     }
 
@@ -423,6 +443,7 @@ impl DockEngine {
         let mut authority = self.presentation_identity;
         authority.observe_workspace(&self.workspace);
         authority.observe_native_reservations(self.pending_native_identity_reservations());
+        self.observe_pending_presentation_rehome_identity(&mut authority);
         authority.prepare_native_root_transfer(existing_floating)
     }
 

@@ -6,16 +6,23 @@ use crate::model::{
 };
 use crate::policy::{DockItemRule, DockPolicy, DockSourceRule, DockSurfaceRule};
 use crate::runtime::{
-    ContainedResizeDirection, DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin,
-    HostInputOutcome, PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
-    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfaceSplitterAdjustment,
-    SurfaceUnavailableReason, TabListMenuMetrics, TabStripControlKind, TabStripControlMetric,
-    TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
+    ContainedResizeDirection, DockspaceDragSourceKind, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceRuntimeErrorKind, DockspaceSession, DockspaceVisualId,
+    HostCloseRequestOrigin, HostInputOutcome, PreparedSurfaceAction,
+    SurfaceContainedResizeAdjustment, SurfaceGesturePhase, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
+    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabGroupDragRegionKind,
+    TabListMenuMetrics, TabStripControlKind, TabStripControlMetric, TabStripControlMetrics,
+    TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
+const TARGET_SURFACE: SurfaceId = SurfaceId::new(2);
 const ROOT: RootId = RootId::new(1);
 const FLOATING_ROOT: RootId = RootId::new(2);
+const TARGET_ROOT: RootId = RootId::new(3);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
@@ -30,6 +37,22 @@ fn session() -> DockspaceSession {
     .expect("surface-action test layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("surface-action test session initializes")
+}
+
+fn multiview_session() -> DockspaceSession {
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
+        ),
+        DockspaceSurfaceLayout::new(
+            TARGET_SURFACE,
+            DockspaceRootLayout::new(TARGET_ROOT, DockspaceNode::central_tabs([THIRD])),
+        ),
+    ])
+    .expect("multiview drag-decoration layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("multiview drag-decoration session initializes")
 }
 
 fn split_session() -> DockspaceSession {
@@ -48,6 +71,32 @@ fn split_session() -> DockspaceSession {
     .expect("surface-action split layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("surface-action split session initializes")
+}
+
+fn splitter_junction_session() -> DockspaceSession {
+    splitter_junction_session_with_policy(DockPolicy::default())
+}
+
+fn splitter_junction_session_with_policy(policy: DockPolicy) -> DockspaceSession {
+    let column = |top, bottom| {
+        DockspaceNode::equal_split(
+            DockspaceAxis::Vertical,
+            [DockspaceNode::tabs([top]), DockspaceNode::tabs([bottom])],
+        )
+        .expect("surface-action junction column validates")
+    };
+    let content = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [column(FIRST, SECOND), column(THIRD, FOURTH)],
+    )
+    .expect("surface-action junction validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, content),
+    )])
+    .expect("surface-action junction layout validates");
+    DockspaceSession::from_layout(layout, policy)
+        .expect("surface-action junction session initializes")
 }
 
 fn overflow_session() -> DockspaceSession {
@@ -92,6 +141,28 @@ fn split_weights(session: &DockspaceSession) -> Vec<f32> {
         .collect()
 }
 
+fn splitter_junction_weights(session: &DockspaceSession) -> (Vec<f32>, Vec<Vec<f32>>) {
+    let root = session
+        .view()
+        .surface(SURFACE)
+        .and_then(|surface| surface.main_root())
+        .and_then(|root| root.content())
+        .and_then(|content| content.split())
+        .expect("the test junction root remains split");
+    let root_weights = root.weights().collect();
+    let column_weights = root
+        .children()
+        .map(|child| {
+            child
+                .split()
+                .expect("each junction column remains split")
+                .weights()
+                .collect()
+        })
+        .collect();
+    (root_weights, column_weights)
+}
+
 fn contained_rect(session: &DockspaceSession) -> LogicalRect {
     session
         .view()
@@ -117,6 +188,103 @@ fn install_ready_candidate(session: &mut DockspaceSession) {
         .measure_surface(SURFACE, metrics())
         .expect("surface measurement succeeds");
     frame.commit().expect("ready candidate commits");
+}
+
+fn present_multiview_source_for_pointer(
+    session: &mut DockspaceSession,
+) -> (
+    DockspaceReceiverDescriptor,
+    DockspaceReceiverDescriptor,
+    DockspaceVisualId,
+    DockspaceVisualId,
+    LogicalPoint,
+    LogicalPoint,
+) {
+    let mut measure = session
+        .begin_host_frame()
+        .expect("multiview measurement frame begins");
+    measure
+        .measure_surface(SURFACE, metrics())
+        .expect("source surface measurement succeeds");
+    measure
+        .measure_surface(TARGET_SURFACE, metrics())
+        .expect("target surface measurement succeeds");
+    measure.commit().expect("multiview candidate commits");
+
+    let mut paint = session.begin_host_frame().expect("paint frame begins");
+    let (descriptor, hover_descriptor, source_visual, press, moved) = {
+        let plan = paint
+            .paint_plan(SURFACE)
+            .expect("paint plan lookup succeeds")
+            .expect("ready candidate is paintable");
+        let tab = plan
+            .tabs()
+            .find(|tab| tab.item() == FIRST)
+            .expect("the first tab is visible");
+        let descriptor = plan
+            .receiver_for_tab_body(tab)
+            .expect("the first tab has an exact body receiver");
+        let bounds = descriptor.bounds();
+        let press = LogicalPoint::new(
+            bounds.x() + bounds.width() / 2.0,
+            bounds.y() + bounds.height() / 2.0,
+        )
+        .expect("the tab-center point validates");
+        let hover_descriptor = plan
+            .receivers()
+            .filter(|receiver| receiver.role() == DockspaceReceiverRole::DropTarget)
+            .find(|receiver| {
+                let bounds = receiver.bounds();
+                (bounds.x() + bounds.width() / 2.0 - press.x()).abs() >= 12.0
+                    || (bounds.y() + bounds.height() / 2.0 - press.y()).abs() >= 12.0
+            })
+            .expect("the source surface exposes a threshold-crossing drop target");
+        let hover_bounds = hover_descriptor.bounds();
+        let moved = LogicalPoint::new(
+            hover_bounds.x() + hover_bounds.width() / 2.0,
+            hover_bounds.y() + hover_bounds.height() / 2.0,
+        )
+        .expect("the exact hover-target center validates");
+        (descriptor, hover_descriptor, tab.visual_id(), press, moved)
+    };
+    let target_visual = paint
+        .paint_plan(TARGET_SURFACE)
+        .expect("target paint plan lookup succeeds")
+        .expect("target candidate is paintable")
+        .tabs()
+        .find(|tab| tab.item() == THIRD)
+        .expect("the target tab is visible")
+        .visual_id();
+    paint
+        .confirm_surface_painted(SURFACE)
+        .expect("the exact surface output was painted");
+    paint
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the unpainted target retains its ready candidate");
+    let mut report = paint.commit().expect("paint frame commits");
+    let mut outputs = report.take_painted_outputs();
+    assert_eq!(outputs.len(), 1, "one exact surface output was painted");
+    let output = outputs.pop().expect("one output was asserted");
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .expect("the exact output reaches final presentation");
+
+    let mut settle = session
+        .begin_host_frame()
+        .expect("presentation settlement frame begins");
+    settle
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the settlement frame retains the ready surface");
+    settle.commit().expect("presentation authority settles");
+
+    (
+        descriptor,
+        hover_descriptor,
+        source_visual,
+        target_visual,
+        press,
+        moved,
+    )
 }
 
 fn overflow_measurement(request: SurfaceMeasurementRequest) -> SurfaceMeasurementAnswer {
@@ -200,6 +368,185 @@ fn prepare_tab_close(session: &mut DockspaceSession, item: ItemId) -> PreparedSu
         .expect("the unchanged candidate is retained");
     frame.commit().expect("paint pass commits");
     action
+}
+
+#[test]
+fn external_journal_drag_exposes_core_drag_decoration_without_local_response() {
+    let mut session = multiview_session();
+    let (descriptor, hover_descriptor, source_visual, target_visual, press, moved) =
+        present_multiview_source_for_pointer(&mut session);
+    let receiver = session
+        .bind_presented_receiver(&descriptor)
+        .expect("the descriptor binds to the exact presented output");
+    let hover_receiver = session
+        .bind_presented_receiver(&hover_descriptor)
+        .expect("the hover descriptor binds to the exact presented output");
+    session
+        .enable_surface_pointer(SURFACE)
+        .expect("the presented surface enables its pointer producer");
+
+    let pointer = SurfacePointerId::new(1);
+    let mut drag = session.begin_host_frame().expect("drag frame begins");
+    drag.submit_surface_pointer_batch([
+        SurfacePointerInput::new(
+            pointer,
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            SurfacePointerPosition::Known(press),
+            SurfacePointerCapture::ProviderEndpoint,
+            SurfacePointerReceiverFacts::delivery(&receiver),
+        ),
+        SurfacePointerInput::new(
+            pointer,
+            SurfacePointerEvent::Moved,
+            SurfacePointerPosition::Known(moved),
+            SurfacePointerCapture::ProviderEndpoint,
+            SurfacePointerReceiverFacts::hover(&hover_receiver),
+        ),
+    ])
+    .expect("the lossless journal crosses the core drag threshold");
+    {
+        let decoration = drag
+            .paint_plan(SURFACE)
+            .expect("source drag paint plan lookup succeeds")
+            .expect("the presented source candidate remains paintable")
+            .drag_decoration()
+            .expect("journal reduction owns the active source decoration");
+        assert_eq!(decoration.source_surface(), SURFACE);
+        assert_eq!(decoration.kind(), DockspaceDragSourceKind::Item);
+        assert_eq!(decoration.item(), Some(FIRST));
+        assert_eq!(decoration.source_visual(), source_visual);
+        assert!(decoration.omits_visual(source_visual));
+        let debug = format!("{decoration:?}");
+        assert!(!debug.contains("NodeId"));
+        assert!(!debug.contains("fingerprint"));
+    }
+    {
+        let decoration = drag
+            .paint_plan(TARGET_SURFACE)
+            .expect("target drag paint plan lookup succeeds")
+            .expect("the target candidate remains paintable")
+            .drag_decoration()
+            .expect("the same core decoration reaches the second ready surface");
+        assert_eq!(decoration.source_surface(), SURFACE);
+        assert_eq!(decoration.kind(), DockspaceDragSourceKind::Item);
+        assert_eq!(decoration.item(), Some(FIRST));
+        assert_eq!(decoration.source_visual(), source_visual);
+        assert!(decoration.omits_visual(source_visual));
+        assert!(
+            !decoration.omits_visual(target_visual),
+            "only the exact source visual is omitted on a target surface"
+        );
+    }
+    drag.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the unchanged candidate is retained");
+    drag.commit().expect("the drag frame commits");
+
+    let mut cancel = session
+        .begin_host_frame()
+        .expect("cancellation frame begins");
+    cancel
+        .submit_surface_pointer(SurfacePointerInput::new(
+            pointer,
+            SurfacePointerEvent::StreamCancelled(
+                SurfacePointerCancelReason::ExplicitPlatformCancellation,
+            ),
+            SurfacePointerPosition::Known(moved),
+            SurfacePointerCapture::None,
+            SurfacePointerReceiverFacts::unknown(),
+        ))
+        .expect("the provider explicitly cancels the active stream");
+    for surface in [SURFACE, TARGET_SURFACE] {
+        assert!(
+            cancel
+                .paint_plan(surface)
+                .expect("cancelled paint plan lookup succeeds")
+                .expect("the retained candidate remains paintable")
+                .drag_decoration()
+                .is_none(),
+            "the core decoration disappears from every cancellation record"
+        );
+    }
+    cancel
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the cancelled candidate is retained");
+    cancel.commit().expect("the cancellation frame commits");
+
+    let mut restart = session.begin_host_frame().expect("restart frame begins");
+    restart
+        .submit_surface_pointer_batch([
+            SurfacePointerInput::new(
+                pointer,
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                SurfacePointerPosition::Known(press),
+                SurfacePointerCapture::ProviderEndpoint,
+                SurfacePointerReceiverFacts::delivery(&receiver),
+            ),
+            SurfacePointerInput::new(
+                pointer,
+                SurfacePointerEvent::Moved,
+                SurfacePointerPosition::Known(moved),
+                SurfacePointerCapture::ProviderEndpoint,
+                SurfacePointerReceiverFacts::hover(&hover_receiver),
+            ),
+        ])
+        .expect("a fresh journal stream starts after explicit cancellation");
+    assert!(
+        restart
+            .paint_plan(SURFACE)
+            .expect("restarted paint plan lookup succeeds")
+            .expect("the retained source remains paintable")
+            .drag_decoration()
+            .is_some(),
+        "cancellation leaves no core or adapter owner blocking the next press"
+    );
+    restart
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the restarted candidate is retained");
+    restart.commit().expect("the restart frame commits");
+}
+
+#[test]
+fn paint_plan_exposes_distinct_group_drag_region_and_receiver_identities() {
+    let mut session = session();
+    install_ready_candidate(&mut session);
+    let mut frame = session.begin_host_frame().expect("paint frame begins");
+    let paint = frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("ready candidate is paintable");
+    let bar = paint
+        .tab_bars()
+        .next()
+        .expect("the surface has one tab bar");
+    let regions = bar.group_drag_regions().collect::<Vec<_>>();
+
+    assert_eq!(regions.len(), 2);
+    assert_eq!(regions[0].kind(), TabGroupDragRegionKind::LeadingGrip);
+    assert_eq!(regions[1].kind(), TabGroupDragRegionKind::TrailingEmpty);
+    assert_ne!(regions[0].visual_id(), regions[1].visual_id());
+
+    let receivers = regions
+        .iter()
+        .copied()
+        .map(|region| {
+            paint
+                .receiver_for_tab_group_drag_region(region)
+                .expect("each exact group region owns a receiver")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(receivers[0].role(), DockspaceReceiverRole::TabGroupGrip);
+    assert_eq!(
+        receivers[1].role(),
+        DockspaceReceiverRole::TabGroupTrailingEmpty
+    );
+    assert_eq!(receivers[0].bounds(), regions[0].bounds());
+    assert_eq!(receivers[1].bounds(), regions[1].bounds());
+    assert_ne!(receivers[0].visual_id(), receivers[1].visual_id());
+
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the unchanged candidate is retained");
+    frame.commit().expect("paint frame commits");
 }
 
 #[test]
@@ -449,6 +796,41 @@ fn exact_surface_close_action_opens_the_shared_close_workflow() {
 }
 
 #[test]
+fn exact_contained_close_action_docks_the_root_back_without_closing_content() {
+    let mut session = contained_session(DockPolicy::default());
+    install_ready_candidate(&mut session);
+
+    let mut frame = session.begin_host_frame().expect("dock-back frame begins");
+    let action = frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("contained candidate is paintable")
+        .prepare_contained_close(FLOATING)
+        .expect("contained close control prepares a dock-back action");
+    frame
+        .submit_surface_action(action)
+        .expect("same-frame dock-back action is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("post-dock-back surface measurement succeeds");
+    let report = frame.commit().expect("dock-back frame commits");
+
+    assert!(matches!(
+        report.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            crate::model::DockspaceActionOutcome::RootDocked {
+                root: FLOATING_ROOT,
+                items,
+                changed: true,
+                ..
+            }
+        )] if items == &[SECOND]
+    ));
+    assert!(session.view().contained(FLOATING).is_none());
+    assert!(session.view().item(SECOND).is_some());
+}
+
+#[test]
 fn stale_surface_action_is_inert_after_a_new_workspace_revision() {
     let mut session = session();
     install_ready_candidate(&mut session);
@@ -611,6 +993,106 @@ fn exact_surface_splitter_adjustment_uses_the_local_ready_candidate() {
     frame.commit().expect("the adjustment frame commits");
 
     assert!(split_weights(&session)[0] > before[0]);
+}
+
+#[test]
+fn exact_junction_axis_adjustment_updates_only_that_axis_in_one_revision() {
+    let mut session = splitter_junction_session();
+    install_ready_candidate(&mut session);
+    let before_version = session.version();
+    let (before_root, before_columns) = splitter_junction_weights(&session);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("junction adjustment frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("junction paint plan lookup succeeds")
+        .expect("junction candidate is paintable");
+    let junction = plan
+        .splitter_junctions()
+        .next()
+        .expect("the perpendicular fixture exposes one junction");
+    let debug = format!("{junction:?}");
+    assert!(!debug.contains("SplitterJunctionId"));
+    assert!(!debug.contains("NodeId"));
+    assert!(!debug.contains("north"));
+    assert!(junction.has_axis(DockspaceAxis::Horizontal));
+    assert!(junction.has_axis(DockspaceAxis::Vertical));
+    assert!(
+        plan.splitter_junction_axis_operable(junction, DockspaceAxis::Horizontal),
+        "the horizontal junction axis is independently operable"
+    );
+    let action = plan
+        .prepare_splitter_junction_adjustment(
+            junction.visual_id(),
+            DockspaceAxis::Horizontal,
+            SurfaceSplitterAdjustment::Increment,
+        )
+        .expect("the exact horizontal junction axis prepares an adjustment");
+    frame
+        .submit_surface_action(action)
+        .expect("the same-frame junction adjustment is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("the adjusted junction surface measures");
+    frame
+        .commit()
+        .expect("the junction adjustment frame commits");
+
+    let (after_root, after_columns) = splitter_junction_weights(&session);
+    assert!(after_root[0] > before_root[0]);
+    assert_eq!(after_columns, before_columns);
+    assert_eq!(
+        session.version().revision().get(),
+        before_version.revision().get() + 1,
+        "one axis-wide ResizeSplits command advances exactly one revision"
+    );
+}
+
+#[test]
+fn junction_axis_action_is_absent_when_that_axis_is_not_operable() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_resize_axis(DockspaceAxis::Vertical, false);
+    let mut session = splitter_junction_session_with_policy(policy);
+    install_ready_candidate(&mut session);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("axis-policy inspection frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("axis-policy plan lookup succeeds")
+        .expect("axis-policy candidate is paintable");
+    let junction = plan
+        .splitter_junctions()
+        .next()
+        .expect("the structural junction remains available for axis semantics");
+    assert!(!plan.splitter_junction_operable(junction));
+    assert!(plan.receiver_for_splitter_junction(junction).is_none());
+    assert!(plan.splitter_junction_axis_operable(junction, DockspaceAxis::Horizontal));
+    assert!(!plan.splitter_junction_axis_operable(junction, DockspaceAxis::Vertical));
+    assert!(
+        plan.prepare_splitter_junction_adjustment(
+            junction.visual_id(),
+            DockspaceAxis::Horizontal,
+            SurfaceSplitterAdjustment::Increment,
+        )
+        .is_some()
+    );
+    assert!(
+        plan.prepare_splitter_junction_adjustment(
+            junction.visual_id(),
+            DockspaceAxis::Vertical,
+            SurfaceSplitterAdjustment::Increment,
+        )
+        .is_none(),
+        "a denied axis must publish no semantic adjustment"
+    );
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the axis-policy inspection retains the candidate");
+    frame.commit().expect("the inspection frame commits");
 }
 
 #[test]

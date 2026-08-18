@@ -64,9 +64,9 @@ pub use self::records::{
     PaneRecord, PaneSceneId, SplitterGapPresentation, SplitterGapRecord, SplitterJunctionDirection,
     SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterResizeHitError,
     SplitterResizeTarget, SplitterSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord,
-    TabListMenuBackdropRecord, TabListMenuGeometryAvailability, TabListMenuRecord,
-    TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord, TabStripMemberRecord,
-    TabStripMemberVisibility,
+    TabGroupDragRegionKind, TabGroupDragRegionRecord, TabListMenuBackdropRecord,
+    TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
+    TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
 };
 pub(crate) use self::records::{PresentationLayoutFacts, RootLayoutFacts};
 pub use crate::drop_target::SceneLayerKey;
@@ -565,7 +565,12 @@ impl PresentationPlan {
             .find(|record| *record.id() == id)
     }
 
-    /// Returns core-compiled resize regions for structural splitter junctions.
+    /// Returns core-compiled structural splitter junctions.
+    ///
+    /// A record remains present when only one axis is operable so semantic
+    /// adapters can expose that axis without inventing junction topology.
+    /// [`SplitterJunctionRecord::operable`] separately reports whether the
+    /// complete junction accepts one atomic pointer resize.
     #[must_use]
     pub fn splitter_junction_records(&self) -> &[SplitterJunctionRecord] {
         &self.splitter_junction_records
@@ -597,10 +602,9 @@ impl PresentationPlan {
             .max()
             .unwrap_or_else(SceneLayerKey::surface_base);
 
-        let mut junctions = self
-            .splitter_junction_records
-            .iter()
-            .filter(|junction| junction.layer() == layer && junction.hit().contains(point));
+        let mut junctions = self.splitter_junction_records.iter().filter(|junction| {
+            junction.operable() && junction.layer() == layer && junction.hit().contains(point)
+        });
         let junction = junctions.next().map(SplitterJunctionRecord::id);
         let extra_junctions = junctions.count();
         if extra_junctions > 0 {
@@ -671,6 +675,24 @@ impl PresentationPlan {
     #[must_use]
     pub fn drop_targets(&self) -> &[DropTargetRecord] {
         &self.drop_targets
+    }
+
+    /// Returns one exact drop target regardless of its paint ownership.
+    ///
+    /// Surface backgrounds, unguided tab gaps, and guide-owned center or edge
+    /// targets share one validated identity namespace. Semantic consumers must
+    /// not infer which record collection owns a target from its kind.
+    #[must_use]
+    pub(crate) fn drop_target(&self, id: DropTargetId) -> Option<&DropTargetRecord> {
+        self.surface_background
+            .iter()
+            .chain(self.drop_targets.iter())
+            .chain(self.drop_guide_clusters.iter().flat_map(|cluster| {
+                cluster
+                    .targets()
+                    .map(|(_, guide_target)| guide_target.target())
+            }))
+            .find(|record| record.id() == id)
     }
 }
 

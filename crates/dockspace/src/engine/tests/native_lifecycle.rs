@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::model::{DockPlacement, DockspaceActionOutcome};
+use crate::model::{DockPlacement, DockspaceActionOutcome, DockspaceActionRejection};
 use crate::runtime::{DockspaceSession, SurfaceUnavailableReason};
 
 mod staging_resource;
@@ -2104,6 +2104,1354 @@ fn tick_final_runtime_child_vacancy_emits_one_release_before_effect_extraction()
 }
 
 #[test]
+fn product_native_root_to_contained_waits_for_presented_target_before_transfer() {
+    const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
+
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let root = RootId::new(94);
+    let request = install_pending_native_root_reservation(&mut fixture, root);
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let target_measurements =
+        surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        TARGET_SURFACE,
+        target_measurements,
+    );
+    let _ = fixture.engine.viewport.take_new_effects();
+    let target_projection = fixture
+        .engine
+        .interaction_projection(TARGET_SURFACE)
+        .expect("the target surface has exact local response authority");
+    let target_scene = target_projection.plan_stamp();
+    let target_tab = *target_projection
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|record| record.id().item == ItemId::new(3))
+        .expect("the background contained tab remains available")
+        .id();
+    let target_region = target_projection
+        .hit_manifest()
+        .regions()
+        .iter()
+        .find(|region| {
+            matches!(
+                region.id().kind(),
+                PresentationHitRegionKind::TabBody(tab) if tab.item == ItemId::new(3)
+            )
+        })
+        .expect("the target tab has an exact pointer receiver")
+        .id();
+    let target_point = region_center(
+        target_projection
+            .hit_manifest()
+            .region(target_region)
+            .expect("the target tab receiver remains present"),
+    );
+    let source_version = fixture.engine.version();
+
+    let staged = submit_test_batch(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        [
+            EngineInput::FloatRoot {
+                expected: source_version,
+                root,
+                surface: TARGET_SURFACE,
+                rect: None,
+            },
+            EngineInput::LocalTabGesture {
+                expected: source_version,
+                surface: TARGET_SURFACE,
+                source: TabGestureSource::Item(target_tab),
+                phase: LocalTabGesturePhase::Begin {
+                    scene: target_scene,
+                    initial: target_point,
+                    current: target_point,
+                },
+            },
+            EngineInput::LocalTabGesture {
+                expected: source_version,
+                surface: TARGET_SURFACE,
+                source: TabGestureSource::Item(target_tab),
+                phase: LocalTabGesturePhase::Release {
+                    scene: target_scene,
+                    current: target_point,
+                },
+            },
+        ],
+    )
+    .expect("native-to-contained product action stages");
+
+    assert!(
+        matches!(
+            staged.reduced_inputs()[0].outcome(),
+            InputOutcome::ProductActionProcessed {
+                outcome: DockspaceActionOutcome::RootFloatRequested {
+                    root: actual_root,
+                    source_surface: NATIVE_SURFACE,
+                    target_surface: TARGET_SURFACE,
+                    items,
+                },
+                version,
+            } if *actual_root == root && items == &[ItemId::new(1)] && *version == source_version
+        ),
+        "actual staged outcome: {:?}",
+        staged.reduced_inputs()[0].outcome()
+    );
+    assert_eq!(fixture.engine.version(), source_version);
+    assert!(matches!(
+        staged.reduced_inputs()[1].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::Rejected(
+                InteractionRejection::PresentationTransitionPending
+            ),
+            ..
+        }
+    ));
+    assert!(matches!(
+        staged.reduced_inputs()[2].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::Rejected(InteractionRejection::NoActiveGesture),
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Main {
+            surface: NATIVE_SURFACE,
+        }),
+        "staging must preserve native source ownership"
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .presentation_preview()
+            .map(|preview| preview.visual().surface()),
+        Some(TARGET_SURFACE),
+        "the target surface must receive one exact contained staging preview"
+    );
+    assert!(staged.platform_effects().iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+        )
+    }));
+
+    let pending = fixture
+        .engine
+        .pending_presentation_rehome
+        .as_ref()
+        .expect("the target presentation remains pending");
+    assert_eq!(pending.source_binding, request.binding());
+    assert_eq!(
+        pending.source_presentation.binding(),
+        Some(request.binding())
+    );
+    assert_ne!(
+        fixture
+            .engine
+            .prepare_presentation_floating_identity()
+            .expect("a later floating identity remains available"),
+        pending
+            .floating
+            .expect("contained rehome retains its floating identity"),
+        "a pending presentation rehome reserves its floating identity"
+    );
+    assert!(
+        fixture
+            .engine
+            .retained_presentation_emissions()
+            .contains(&pending.source_presentation.emission()),
+        "the exact source presentation remains retained until target settlement"
+    );
+    let pending_before = pending.clone();
+    let pending_cause = pending.cause;
+    let source_owner_before = fixture.engine.workspace().presentation_for_root(root);
+    let version_before_press = fixture.engine.version();
+    let provider = fixture
+        .engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                fixture.presentation_host,
+                SurfaceLocalPointerEndpoint::Logical(TARGET_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("the target surface pointer provider mints");
+    let mut press = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    press
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(
+                0,
+                [(
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    target_point,
+                )],
+            ),
+        )
+        .expect("the unrelated primary press stages");
+    let projection = press
+        .view()
+        .interaction_projection(TARGET_SURFACE)
+        .expect("the sealed frame retains target receiver authority");
+    let candidate = press
+        .pointer_receiver_candidates()
+        .expect("the primary press freezes a receiver candidate")
+        .candidates()[0]
+        .clone();
+    let delivery = PointerReceiverDelivery::new(
+        projection,
+        PointerReceiverDeliveryDisposition::Dock(target_region),
+    )
+    .expect("the target tab receiver accepts drag delivery");
+    press
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(delivery),
+                    ])
+                    .expect("the press receipt answers its delivery probe"),
+                ),
+            )])
+            .expect("the primary press receipt batch is exact"),
+        )
+        .expect("the primary press receipt stages");
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut press);
+    let press_transition = press
+        .finish(&mut fixture.engine)
+        .expect("the unrelated primary press commits");
+    assert!(matches!(
+        press_transition.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Rejected(
+            InteractionRejection::PresentationTransitionPending
+        )]
+    ));
+    assert_eq!(
+        fixture.engine.pending_presentation_rehome.as_ref(),
+        Some(&pending_before)
+    );
+    assert_eq!(fixture.engine.version(), version_before_press);
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        source_owner_before
+    );
+    assert!(press_transition.platform_effects().iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+        )
+    }));
+    assert!(press_transition.interaction_events().iter().all(|event| {
+        !matches!(
+            event.kind(),
+            InteractionEventKind::Cancelled {
+                reason: InteractionCancelReason::ReplacedByNewGesture,
+                ..
+            }
+        )
+    }));
+    let mut drain = provider
+        .drain()
+        .expect("the committed surface-local producer drains");
+    let retirement = fixture
+        .engine
+        .retire_quiesced_surface_local_pointer_provider(&mut drain)
+        .expect("the drained surface-local producer retires");
+    assert!(!retirement.interaction_changed());
+    assert!(retirement.repaint_required());
+    assert_eq!(
+        fixture.engine.pending_presentation_rehome.as_ref(),
+        Some(&pending_before)
+    );
+    let mut unrelated_interaction_events = Vec::new();
+    assert!(
+        fixture
+            .engine
+            .cancel_pending_release_obligations_caused(
+                pending_cause,
+                InteractionCancelReason::ReplacedByNewGesture,
+                &mut unrelated_interaction_events,
+            )
+            .is_empty(),
+        "a programmatic rehome is not a pointer release obligation"
+    );
+    assert!(fixture.engine.pending_presentation_rehome.is_some());
+    assert!(unrelated_interaction_events.is_empty());
+
+    let measurements = surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
+    let (_, _, transferred) = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        TARGET_SURFACE,
+        measurements,
+    );
+
+    assert!(matches!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Contained {
+            surface: TARGET_SURFACE,
+            ..
+        })
+    ));
+    assert!(fixture.engine.workspace().surface(NATIVE_SURFACE).is_none());
+    assert_eq!(
+        fixture.engine.version().revision(),
+        source_version
+            .revision()
+            .checked_next()
+            .expect("one ownership transfer advances exactly one revision")
+    );
+    assert_eq!(
+        transferred
+            .platform_effects()
+            .iter()
+            .filter(|effect| matches!(
+                effect.effect(),
+                PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+            ))
+            .count(),
+        1,
+        "presented target admission retires the native child exactly once"
+    );
+    assert!(transferred.events().iter().any(|event| matches!(
+        event.kind(),
+        WorkspaceEventKind::PresentationRehomeSettled {
+            root: actual_root,
+            source_surface: NATIVE_SURFACE,
+            target_surface: TARGET_SURFACE,
+            result: crate::event::PresentationRehomeResult::Applied,
+        } if *actual_root == root
+    )));
+}
+
+#[test]
+fn product_single_item_native_child_dock_waits_for_target_presentation() {
+    const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
+
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let root = RootId::new(94);
+    let request = install_pending_native_root_reservation(&mut fixture, root);
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let target_measurements =
+        surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        TARGET_SURFACE,
+        target_measurements,
+    );
+    let _ = fixture.engine.viewport.take_new_effects();
+    let source_version = fixture.engine.version();
+
+    let staged = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::DockItem {
+            expected: source_version,
+            item: ItemId::new(1),
+            placement: DockPlacement::Before(ItemId::new(3)),
+        },
+    )
+    .expect("single-item native root dock must stage");
+
+    assert!(
+        matches!(
+            staged.reduced_inputs()[0].outcome(),
+            InputOutcome::ProductActionProcessed {
+                outcome: DockspaceActionOutcome::RootDockRequested {
+                    root: actual_root,
+                    source_surface: NATIVE_SURFACE,
+                    target_root: TARGET_ROOT,
+                    items,
+                },
+                version,
+            } if *actual_root == root && items == &[ItemId::new(1)] && *version == source_version
+        ),
+        "actual outcome: {:?}",
+        staged.reduced_inputs()[0].outcome()
+    );
+    assert_eq!(fixture.engine.version(), source_version);
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Main {
+            surface: NATIVE_SURFACE,
+        })
+    );
+    assert!(fixture.engine.pending_presentation_rehome.is_some());
+    assert!(staged.platform_effects().iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+        )
+    }));
+    let pending_before = fixture
+        .engine
+        .pending_presentation_rehome
+        .clone()
+        .expect("the dock transition owns its source reservation");
+    let PreviewProof::PresentationRehome { command } = pending_before.preview.proof() else {
+        panic!("presentation rehome retains its exact frozen command");
+    };
+    assert!(matches!(
+        fixture
+            .engine
+            .stage_journal_workspace_command(
+                tab_strip_test_cause(),
+                command,
+                fixture.engine.policy_snapshot(),
+            )
+            .expect("pointer/local command staging reduces"),
+        Err(CommandError::SurfaceLifecycleFrozen {
+            surface: NATIVE_SURFACE,
+        })
+    ));
+    let public_rejection = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::WorkspaceCommand {
+            expected: source_version,
+            command: command.clone(),
+        },
+    )
+    .expect("public command reduces as a typed reservation rejection");
+    assert!(matches!(
+        public_rejection.reduced_inputs()[0].outcome(),
+        InputOutcome::CommandRejected {
+            error: CommandError::SurfaceLifecycleFrozen {
+                surface: NATIVE_SURFACE,
+            },
+            version,
+        } if *version == source_version
+    ));
+    assert_eq!(
+        fixture.engine.pending_presentation_rehome.as_ref(),
+        Some(&pending_before)
+    );
+
+    let measurements = surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
+    let (_, _, transferred) = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        TARGET_SURFACE,
+        measurements,
+    );
+
+    assert!(fixture.engine.workspace().root(root).is_none());
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .presentation_for_root(TARGET_ROOT),
+        Some(crate::RootPresentationOwner::Contained {
+            surface: TARGET_SURFACE,
+            floating: FloatingPresentationId::new(2),
+        })
+    );
+    assert_eq!(
+        transferred
+            .platform_effects()
+            .iter()
+            .filter(|effect| matches!(
+                effect.effect(),
+                PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn product_native_main_dock_back_uses_bound_recovery_after_target_presentation() {
+    const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
+
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let root = RootId::new(94);
+    let request = install_pending_native_root_reservation(&mut fixture, root);
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let bound = fixture
+        .engine
+        .bound_surface_recoveries
+        .get(&NATIVE_SURFACE)
+        .expect("first-live native surface retains its recovery obligation");
+    let target = bound.obligation.target();
+    let target_surface = target.host_surface();
+    let expected_floating = target
+        .converted_main()
+        .expect("a native main root reserves converted recovery")
+        .floating();
+    let target_measurements =
+        surface_measurements(&fixture.engine, target_surface, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        target_surface,
+        target_measurements,
+    );
+    let _ = fixture.engine.viewport.take_new_effects();
+    let source_version = fixture.engine.version();
+
+    let staged = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::DockBackRoot {
+            expected: source_version,
+            root,
+        },
+    )
+    .expect("native main dock-back must stage against its bound recovery");
+
+    assert!(matches!(
+        staged.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: DockspaceActionOutcome::RootFloatRequested {
+                root: actual_root,
+                source_surface: NATIVE_SURFACE,
+                target_surface: actual_target,
+                items,
+            },
+            version,
+        } if *actual_root == root
+            && *actual_target == target_surface
+            && items == &[ItemId::new(1)]
+            && *version == source_version
+    ));
+    assert_eq!(fixture.engine.version(), source_version);
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Main {
+            surface: NATIVE_SURFACE,
+        })
+    );
+    let pending = fixture
+        .engine
+        .pending_presentation_rehome
+        .as_ref()
+        .expect("dock-back waits for the exact recovery-host presentation");
+    assert_eq!(pending.target_surface, target_surface);
+    assert_eq!(pending.floating, Some(expected_floating));
+    assert_eq!(
+        pending.commit_authority,
+        PresentationRehomeCommitAuthority::BoundConvertedMain
+    );
+    assert!(staged.platform_effects().iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+        )
+    }));
+
+    let measurements = surface_measurements(&fixture.engine, target_surface, background_bounds());
+    let (_, _, transferred) = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        target_surface,
+        measurements,
+    );
+
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Contained {
+            surface: target_surface,
+            floating: expected_floating,
+        })
+    );
+    assert!(fixture.engine.workspace().surface(NATIVE_SURFACE).is_none());
+    assert_eq!(
+        transferred
+            .platform_effects()
+            .iter()
+            .filter(|effect| matches!(
+                effect.effect(),
+                PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+            ))
+            .count(),
+        1
+    );
+    assert!(transferred.events().iter().any(|event| matches!(
+        event.kind(),
+        WorkspaceEventKind::PresentationRehomeSettled {
+            root: actual_root,
+            source_surface: NATIVE_SURFACE,
+            target_surface: actual_target,
+            result: crate::event::PresentationRehomeResult::Applied,
+        } if *actual_root == root && *actual_target == target_surface
+    )));
+}
+
+#[test]
+fn root_presentation_transitions_share_one_pending_reservation() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut creating = background_fixture(policy.clone());
+    let root = RootId::new(94);
+    let request = install_pending_native_root_reservation(&mut creating, root);
+    let _ = creating.engine.viewport.take_new_effects();
+    let version = creating.engine.version();
+
+    let conflict = submit_test_input(
+        &mut creating.engine,
+        creating.presentation_host,
+        EngineInput::FloatRoot {
+            expected: version,
+            root,
+            surface: TARGET_SURFACE,
+            rect: None,
+        },
+    )
+    .expect("a competing contained transition must reduce as a typed conflict");
+    assert!(matches!(
+        conflict.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::Conflict,
+            version: actual,
+        } if *actual == version
+    ));
+    assert!(
+        creating
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .is_some()
+    );
+    assert!(creating.engine.pending_presentation_rehome.is_none());
+    assert!(conflict.platform_effects().is_empty());
+
+    let mut rehoming = background_fixture(policy);
+    let request = install_pending_native_root_reservation(&mut rehoming, root);
+    let _ = rehoming.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut rehoming, request);
+    let target_measurements =
+        surface_measurements(&rehoming.engine, TARGET_SURFACE, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut rehoming.engine,
+        rehoming.presentation_host,
+        TARGET_SURFACE,
+        target_measurements,
+    );
+    let _ = rehoming.engine.viewport.take_new_effects();
+    let version = rehoming.engine.version();
+    let staged = submit_test_input(
+        &mut rehoming.engine,
+        rehoming.presentation_host,
+        EngineInput::FloatRoot {
+            expected: version,
+            root,
+            surface: TARGET_SURFACE,
+            rect: None,
+        },
+    )
+    .expect("the first presentation transition stages");
+    assert!(matches!(
+        staged.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: DockspaceActionOutcome::RootFloatRequested { .. },
+            ..
+        }
+    ));
+    let pending = rehoming
+        .engine
+        .pending_presentation_rehome
+        .clone()
+        .expect("the first presentation transition owns the root reservation");
+    let tear_off = submit_test_input(
+        &mut rehoming.engine,
+        rehoming.presentation_host,
+        EngineInput::TearOffRoot {
+            expected: version,
+            root,
+            placement: crate::model::NativeWindowPlacement::new(
+                PhysicalRect::new(800.0, 120.0, 360.0, 260.0)
+                    .expect("native placement must validate"),
+            ),
+        },
+    )
+    .expect("a competing native transition must reduce as a typed conflict");
+    assert!(matches!(
+        tear_off.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::Conflict,
+            ..
+        }
+    ));
+    let dock = submit_test_input(
+        &mut rehoming.engine,
+        rehoming.presentation_host,
+        EngineInput::DockRoot {
+            expected: version,
+            root,
+            placement: crate::model::DockPlacement::Main(SOURCE_SURFACE),
+        },
+    )
+    .expect("a competing dock transition must reduce as a typed conflict");
+    assert!(matches!(
+        dock.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::Conflict,
+            ..
+        }
+    ));
+    assert_eq!(
+        rehoming.engine.pending_presentation_rehome.as_ref(),
+        Some(&pending)
+    );
+    let different_root = submit_test_input(
+        &mut rehoming.engine,
+        rehoming.presentation_host,
+        EngineInput::FloatRoot {
+            expected: version,
+            root: SOURCE_ROOT,
+            surface: TARGET_SURFACE,
+            rect: None,
+        },
+    )
+    .expect("the single rehome coordinator rejects a different root");
+    assert!(matches!(
+        different_root.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::Conflict,
+            ..
+        }
+    ));
+    assert_eq!(
+        rehoming.engine.pending_presentation_rehome.as_ref(),
+        Some(&pending)
+    );
+    assert!(tear_off.platform_effects().is_empty());
+    assert!(dock.platform_effects().is_empty());
+    assert!(different_root.platform_effects().is_empty());
+}
+
+#[test]
+fn active_local_drag_rejects_programmatic_native_tear_off_atomically() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let _ = publish_native_background_platform(&mut fixture);
+    let projection = fixture
+        .engine
+        .interaction_projection(SOURCE_SURFACE)
+        .expect("the source surface has exact local response authority");
+    let scene = projection.plan_stamp();
+    let tab = *projection
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|record| record.id().item == ItemId::new(1))
+        .expect("the source item has one exact tab")
+        .id();
+    let point = region_center(
+        projection
+            .hit_manifest()
+            .regions()
+            .iter()
+            .find(|region| {
+                matches!(
+                    region.id().kind(),
+                    PresentationHitRegionKind::TabBody(id) if id == tab
+                )
+            })
+            .expect("the source tab has one exact hit region"),
+    );
+    let version = fixture.engine.version();
+
+    let drag = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::LocalTabGesture {
+            expected: version,
+            surface: SOURCE_SURFACE,
+            source: TabGestureSource::Item(tab),
+            phase: LocalTabGesturePhase::Begin {
+                scene,
+                initial: point,
+                current: point,
+            },
+        },
+    )
+    .expect("the local drag begins from exact source authority");
+    assert!(matches!(
+        drag.reduced_inputs()[0].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::DragBegan { .. },
+            ..
+        }
+    ));
+
+    let rejected = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::TearOffRoot {
+            expected: version,
+            root: SOURCE_ROOT,
+            placement: crate::model::NativeWindowPlacement::new(
+                PhysicalRect::new(700.0, 100.0, 420.0, 320.0)
+                    .expect("native placement must validate"),
+            ),
+        },
+    )
+    .expect("the competing tear-off reduces as a typed rejection");
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::Conflict,
+            version: actual,
+        } if *actual == version
+    ));
+    assert!(rejected.platform_effects().is_empty());
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .next()
+            .is_none()
+    );
+    assert!(matches!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Dragging { .. }
+    ));
+}
+
+#[test]
+fn pending_native_create_reserves_complete_source_root_for_shared_and_public_commands() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let _ = publish_native_background_platform(&mut fixture);
+    fixture
+        .engine
+        .issue_root_recovery_anchors(InputSequence::new(94), [TARGET_SURFACE])
+        .expect("surviving target recovery anchor must issue");
+    let source_record = fixture
+        .engine
+        .workspace()
+        .root(SOURCE_ROOT)
+        .expect("source root remains live");
+    let source = fixture
+        .engine
+        .workspace()
+        .capture_node_source(SOURCE_ROOT, source_record.node)
+        .expect("complete source remains capturable");
+    let payload = MovePayload::Tabs(source.clone());
+    let native_surface = SurfaceId::new(93);
+    let command = WorkspaceCommand::RehomeRoot {
+        source,
+        target: RootPresentationTarget::NewSurface {
+            surface: native_surface,
+        },
+    };
+    let focus_causal = mint_test_focus_causal(&mut fixture.engine);
+    let source_presentation = fixture
+        .engine
+        .interaction_authority(SOURCE_SURFACE)
+        .expect("source presentation remains authoritative");
+    let converted = crate::surface_recovery::ConvertedMainRecovery::new(
+        SOURCE_ROOT,
+        FloatingPresentationId::new(93),
+        LogicalSize::new(0.0, 0.0).expect("minimum size validates"),
+    );
+    let proposal = crate::frame::NativeCreateProposal::new(
+        native_surface,
+        PhysicalRect::new(700.0, 100.0, 420.0, 320.0).expect("native placement must validate"),
+        converted,
+    );
+    let recovery_anchor = fixture
+        .engine
+        .root_recovery_anchor(TARGET_SURFACE)
+        .expect("surviving target surface owns a recovery anchor");
+    let recovery_target = SurfaceRecoveryTarget::with_converted_main(recovery_anchor, converted);
+    let mut future = fixture.engine.workspace().clone();
+    WorkspaceTransaction::from_commands([command.clone()])
+        .apply(&mut future, fixture.engine.policy_snapshot())
+        .expect("complete root native future validates");
+    let obligation_id = fixture
+        .engine
+        .next_surface_recovery_obligation_id(InputSequence::new(94))
+        .expect("recovery identity advances");
+    let obligation = fixture
+        .engine
+        .authorize_surface_recovery_obligation(
+            InputSequence::new(94),
+            obligation_id,
+            &future,
+            native_surface,
+            recovery_target,
+            fixture.engine.policy_snapshot(),
+        )
+        .expect("complete root recovery validates");
+    let prepared = crate::frame::PreparedNativeCreate::new(
+        source_presentation,
+        payload,
+        fixture.engine.version().epoch(),
+        command,
+        proposal,
+        obligation,
+        focus_causal,
+    );
+    let request = fixture
+        .engine
+        .viewport
+        .start_native_create(prepared)
+        .expect("complete source root native create must start");
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .is_some()
+    );
+    let (saga_id, saga_before) = fixture
+        .engine
+        .viewport()
+        .native_create_sagas()
+        .next()
+        .map(|(id, saga)| (id, saga.clone()))
+        .expect("native create saga remains pending");
+    let projection = fixture
+        .engine
+        .interaction_projection(SOURCE_SURFACE)
+        .expect("the source surface has exact local response authority");
+    let scene = projection.plan_stamp();
+    let tab = *projection
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|record| record.id().item == ItemId::new(1))
+        .expect("the source item has one exact tab")
+        .id();
+    let point = region_center(
+        projection
+            .hit_manifest()
+            .regions()
+            .iter()
+            .find(|region| {
+                matches!(
+                    region.id().kind(),
+                    PresentationHitRegionKind::TabBody(id) if id == tab
+                )
+            })
+            .expect("the source tab has one exact hit region"),
+    );
+    let gesture_version = fixture.engine.version();
+    let gesture = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::LocalTabGesture {
+            expected: gesture_version,
+            surface: SOURCE_SURFACE,
+            source: TabGestureSource::Item(tab),
+            phase: LocalTabGesturePhase::Begin {
+                scene,
+                initial: point,
+                current: point,
+            },
+        },
+    )
+    .expect("the competing local gesture reduces as a typed rejection");
+    assert!(matches!(
+        gesture.reduced_inputs()[0].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::Rejected(
+                InteractionRejection::PresentationTransitionPending
+            ),
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture.engine.viewport().native_create_saga(saga_id),
+        Some(&saga_before)
+    );
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Idle
+    );
+    let source_record = fixture
+        .engine
+        .workspace()
+        .root(SOURCE_ROOT)
+        .expect("source root remains live while native create is pending");
+    let source = fixture
+        .engine
+        .workspace()
+        .capture_node_source(SOURCE_ROOT, source_record.node)
+        .expect("complete source remains capturable");
+    let target_record = fixture
+        .engine
+        .workspace()
+        .root(TARGET_ROOT)
+        .expect("target root remains live");
+    let target = fixture
+        .engine
+        .workspace()
+        .capture_tab_target(TARGET_ROOT, target_record.node)
+        .expect("target tabs remain capturable");
+    let command = WorkspaceCommand::Move {
+        payload: MovePayload::Tabs(source),
+        target: crate::command::DockTarget::Center(target),
+    };
+    let expected = fixture.engine.version();
+
+    assert!(matches!(
+        fixture
+            .engine
+            .stage_journal_workspace_command(
+                tab_strip_test_cause(),
+                &command,
+                fixture.engine.policy_snapshot(),
+            )
+            .expect("shared pointer/local staging gate reduces"),
+        Err(CommandError::SurfaceLifecycleFrozen {
+            surface: SOURCE_SURFACE,
+        })
+    ));
+    assert_eq!(
+        fixture.engine.viewport().native_create_saga(saga_id),
+        Some(&saga_before)
+    );
+
+    let rejected = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::WorkspaceCommand { expected, command },
+    )
+    .expect("public workspace command reduces as an atomic rejection");
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::CommandRejected {
+            error: CommandError::SurfaceLifecycleFrozen {
+                surface: SOURCE_SURFACE,
+            },
+            version,
+        } if *version == expected
+    ));
+    assert_eq!(fixture.engine.version(), expected);
+    assert_eq!(
+        fixture.engine.viewport().native_create_saga(saga_id),
+        Some(&saga_before)
+    );
+}
+
+#[test]
+fn product_native_root_to_contained_settles_when_the_source_host_retires() {
+    const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
+
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let root = RootId::new(96);
+    let request = install_pending_native_root_reservation(&mut fixture, root);
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let target_measurements =
+        surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        TARGET_SURFACE,
+        target_measurements,
+    );
+    let _ = fixture.engine.viewport.take_new_effects();
+    let source_version = fixture.engine.version();
+
+    let staged = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::FloatRoot {
+            expected: source_version,
+            root,
+            surface: TARGET_SURFACE,
+            rect: None,
+        },
+    )
+    .expect("native-to-contained product action stages");
+    assert!(matches!(
+        staged.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: DockspaceActionOutcome::RootFloatRequested { .. },
+            ..
+        }
+    ));
+    let source_emission = fixture
+        .engine
+        .pending_presentation_rehome
+        .as_ref()
+        .expect("the target presentation remains pending")
+        .source_presentation
+        .emission();
+    assert!(
+        fixture
+            .engine
+            .retained_presentation_emissions()
+            .contains(&source_emission)
+    );
+
+    let retirement = fixture
+        .engine
+        .retire_presentation_host(
+            fixture.presentation_host,
+            PresentationHostRetirementReason::RuntimeDestroyed,
+        )
+        .expect("source presentation host retirement is atomic");
+    let transition = retirement
+        .transition()
+        .expect("the first source host retirement publishes a transition");
+
+    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Main {
+            surface: NATIVE_SURFACE,
+        })
+    );
+    assert!(transition.events().iter().any(|event| matches!(
+        event.kind(),
+        WorkspaceEventKind::PresentationRehomeSettled {
+            root: actual_root,
+            source_surface: NATIVE_SURFACE,
+            target_surface: TARGET_SURFACE,
+            result: crate::event::PresentationRehomeResult::SourceUnavailable,
+        } if *actual_root == root
+    )));
+    assert!(transition.platform_effects().iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+        )
+    }));
+    assert!(
+        !fixture
+            .engine
+            .retained_presentation_emissions()
+            .contains(&source_emission),
+        "terminal settlement releases the exact retired source emission"
+    );
+}
+
+#[test]
+fn product_native_root_rehome_terminates_on_exact_backend_failure() {
+    const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
+
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let root = RootId::new(94);
+    let request = install_pending_native_root_reservation(&mut fixture, root);
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let target_measurements =
+        surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        TARGET_SURFACE,
+        target_measurements,
+    );
+    let _ = fixture.engine.viewport.take_new_effects();
+    let source_version = fixture.engine.version();
+    let _ = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::FloatRoot {
+            expected: source_version,
+            root,
+            surface: TARGET_SURFACE,
+            rect: None,
+        },
+    )
+    .expect("native-to-contained transition must stage");
+    assert!(fixture.engine.pending_presentation_rehome.is_some());
+
+    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    for obligation in frame
+        .issue_presentation_obligations()
+        .expect("the failure frame issues its exact output roster")
+    {
+        let disposition = if obligation.slot().surface() == TARGET_SURFACE {
+            HostPresentationDisposition::Unavailable(
+                HostPresentationUnavailableReason::BackendFailure,
+            )
+        } else {
+            HostPresentationDisposition::Unavailable(
+                HostPresentationUnavailableReason::OutputNotProduced,
+            )
+        };
+        frame
+            .settle_presentation_obligation(obligation, disposition)
+            .expect("each exact output slot accepts one disposition");
+    }
+    complete_surface_contribution_roster(&mut frame);
+    let transition = frame
+        .finish(&mut fixture.engine)
+        .expect("an explicit backend failure settles without a core fatal error");
+
+    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Main {
+            surface: NATIVE_SURFACE,
+        })
+    );
+    assert!(transition.events().iter().any(|event| matches!(
+        event.kind(),
+        WorkspaceEventKind::PresentationRehomeSettled {
+            root: actual_root,
+            source_surface: NATIVE_SURFACE,
+            target_surface: TARGET_SURFACE,
+            result: crate::event::PresentationRehomeResult::TargetNotPresented,
+        } if *actual_root == root
+    )));
+    assert!(transition.platform_effects().iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::ReleaseChild { binding } if *binding == request.binding()
+        )
+    }));
+}
+
+#[test]
+fn product_native_root_rehome_terminates_on_target_failure_without_preview_token() {
+    const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
+
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let root = RootId::new(94);
+    let request = install_pending_native_root_reservation(&mut fixture, root);
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let target_measurements =
+        surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        TARGET_SURFACE,
+        target_measurements,
+    );
+    let source_version = fixture.engine.version();
+    let _ = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::FloatRoot {
+            expected: source_version,
+            root,
+            surface: TARGET_SURFACE,
+            rect: None,
+        },
+    )
+    .expect("native-to-contained transition must stage");
+
+    assert!(
+        fixture
+            .engine
+            .observe_pending_presentation_rehome_dispositions(&[
+                HostPresentationDispositionOutcome::new(
+                    HostPresentationSlot::Surface {
+                        surface: TARGET_SURFACE,
+                    },
+                    HostInteractionPresentation::default(),
+                    HostPresentationDisposition::Unavailable(
+                        HostPresentationUnavailableReason::BackendFailure,
+                    ),
+                ),
+            ])
+    );
+    let mut events = Vec::new();
+    assert!(
+        fixture
+            .engine
+            .settle_presented_pending_presentation_rehome(&mut events)
+            .expect("terminal target failure settles")
+    );
+    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Main {
+            surface: NATIVE_SURFACE,
+        })
+    );
+    assert!(events.iter().any(|event| matches!(
+        event.kind(),
+        WorkspaceEventKind::PresentationRehomeSettled {
+            root: actual_root,
+            result: crate::event::PresentationRehomeResult::TargetNotPresented,
+            ..
+        } if *actual_root == root
+    )));
+}
+
+#[test]
+fn native_presentation_close_compiles_its_bound_recovery_obligation() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let request = install_pending_native_root_reservation(&mut fixture, RootId::new(95));
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let recovery_host = fixture
+        .engine
+        .bound_surface_recoveries
+        .get(&request.binding().surface())
+        .expect("first-live native surface retains recovery authority")
+        .obligation
+        .target()
+        .host_surface();
+    let target_measurements =
+        surface_measurements(&fixture.engine, recovery_host, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        recovery_host,
+        target_measurements,
+    );
+    let edge = NativeCloseEdge::from_authoritative_requested(
+        fixture.engine.authority_domain,
+        request.binding(),
+        CloseObservationGeneration::new(1),
+        fixture.engine.viewport().registry().inventory_generation(),
+    );
+
+    let capture = fixture
+        .engine
+        .capture_surface_close(
+            edge,
+            &SurfaceCloseRequest::RecoverPresentation,
+            fixture.engine.policy_snapshot(),
+        )
+        .expect("bound presentation recovery must compile");
+
+    assert!(capture.requirements.is_empty());
+    assert!(matches!(
+        capture.prepared,
+        PreparedCloseOperation::SurfaceRehome { transaction, .. }
+            if transaction.target_surface() == recovery_host
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .presentation_for_root(RootId::new(95)),
+        Some(crate::RootPresentationOwner::Main {
+            surface: SurfaceId::new(93),
+        }),
+        "preparing close recovery must not move the live source"
+    );
+}
+
+#[test]
 fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_restore() {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
@@ -2500,6 +3848,224 @@ fn rootless_contained_surface_remains_focusable_routeable_and_registerable() {
         InputOutcome::ViewportRegistered { binding }
             if binding.surface() == rootless_surface
     ));
+}
+
+#[test]
+fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
+    let child_surface = SurfaceId::new(20);
+    let host_surface = SurfaceId::new(21);
+    let child_root = RootId::new(20);
+    let host_root = RootId::new(21);
+    let child_floating = FloatingPresentationId::new(20);
+    let child_item = ItemId::new(20);
+    let mut builder = Workspace::builder();
+    let child_tabs = builder.insert_node(Node::tabs([child_item]));
+    let host_tabs = builder.insert_node(Node::tabs([ItemId::new(21)]));
+    builder.set_root(child_root, RootRecord::new(child_tabs));
+    builder.set_root(host_root, RootRecord::new(host_tabs));
+    builder.set_surface(child_surface, SurfacePresentation::rootless());
+    builder.set_surface(host_surface, SurfacePresentation::with_main(host_root));
+    builder.set_contained_floating(
+        child_floating,
+        ContainedFloating::new(child_root, test_rect()),
+    );
+    builder
+        .attach_contained(child_surface, child_floating)
+        .expect("rootless child surface must exist");
+    let workspace = builder.build().expect("rootless workspace must be valid");
+    let mut engine =
+        DockEngine::new(workspace, DockPolicy::default()).expect("rootless engine must be valid");
+    let presentation_host = engine
+        .create_presentation_host()
+        .expect("rootless presentation host must mint");
+    let provider = test_platform_provider(&mut engine);
+
+    let expected = engine.version();
+    let host_registration = submit_test_input(
+        &mut engine,
+        presentation_host,
+        EngineInput::RegisterViewport {
+            provider,
+            expected,
+            surface: host_surface,
+            token: WindowToken::new(21),
+            role: ViewportRole::Root,
+            recovery_target: None,
+        },
+    )
+    .expect("recovery host registration must reduce");
+    let host_binding = match host_registration.reduced_inputs()[0].outcome() {
+        InputOutcome::ViewportRegistered { binding } => *binding,
+        outcome => panic!("expected host registration, got {outcome:?}"),
+    };
+    let expected = engine.version();
+    let child_registration = submit_test_input(
+        &mut engine,
+        presentation_host,
+        EngineInput::BootstrapChildViewport {
+            provider,
+            expected,
+            surface: child_surface,
+            token: WindowToken::new(20),
+            recovery: SurfaceRecoveryBootstrap::new(host_surface),
+        },
+    )
+    .expect("rootless child registration must reduce");
+    let child_binding = match child_registration.reduced_inputs()[0].outcome() {
+        InputOutcome::ViewportRegistered { binding } => *binding,
+        outcome => panic!("expected child registration, got {outcome:?}"),
+    };
+
+    let mut capabilities = PlatformCapabilities::default();
+    capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
+    capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+    capabilities.set_global_window_placement(PlatformCapability::Supported);
+    capabilities.set_work_area(PlatformCapability::Supported);
+    capabilities.set_global_focus_observation(PlatformCapability::Supported);
+    let observed = |binding: ViewportBinding, x: f64| {
+        ObservedWindow::new(binding)
+            .with_coordinate_observation(WindowCoordinateObservation::new(
+                binding,
+                CoordinateObservationGeneration::new(1),
+                Authority::Known(
+                    PhysicalRect::new(x, 0.0, 400.0, 300.0)
+                        .expect("native content bounds must be valid"),
+                ),
+                Authority::Known(
+                    PhysicalRect::new(x - 8.0, -30.0, 416.0, 338.0)
+                        .expect("native outer bounds must be valid"),
+                ),
+                Authority::Known(ScaleFactor::new(1.0).expect("content scale must be valid")),
+                Authority::Known(ScaleFactor::new(1.0).expect("presentation scale must be valid")),
+            ))
+            .with_presentation_observation(WindowPresentationObservation::new(
+                binding,
+                crate::viewport::PresentationObservationGeneration::new(1),
+                Authority::Known(WindowPresentationState::Visible),
+                PresentationEffectAcknowledgement::known(None),
+            ))
+    };
+    let snapshot = test_platform_snapshot(
+        capabilities,
+        FocusObservationEnvelope::new(
+            FocusObservationGeneration::new(1),
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(None),
+        ),
+        vec![observed(host_binding, 0.0), observed(child_binding, 500.0)],
+        Vec::new(),
+        known_work_area_observation(
+            1,
+            vec![ObservedWorkArea::new(
+                WorkAreaToken::new(20),
+                PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("work area must be valid"),
+                ScaleFactor::new(1.0).expect("work-area scale must be valid"),
+            )],
+        ),
+    )
+    .expect("the exact two-window snapshot must validate");
+    let expected_epoch = engine.version().epoch();
+    submit_test_input(
+        &mut engine,
+        presentation_host,
+        EngineInput::PublishPlatformSnapshot {
+            provider,
+            expected_epoch,
+            snapshot,
+        },
+    )
+    .expect("the exact two-window snapshot must reduce");
+    for surface in [host_surface, child_surface] {
+        let measurements = surface_measurements(&engine, surface, background_bounds());
+        let _ = publish_surface_projection_with_output(
+            &mut engine,
+            presentation_host,
+            surface,
+            measurements,
+        );
+    }
+    assert_eq!(
+        engine
+            .viewport()
+            .viewport(child_surface)
+            .map(crate::viewport_registry::ViewportRecord::admission),
+        Some(crate::viewport_registry::ViewportAdmission::Admitted)
+    );
+    let _ = engine.viewport.take_new_effects();
+    let source_version = engine.version();
+
+    let staged = submit_test_input(
+        &mut engine,
+        presentation_host,
+        EngineInput::FloatRoot {
+            expected: source_version,
+            root: child_root,
+            surface: host_surface,
+            rect: None,
+        },
+    )
+    .expect("rootless child rehome must stage");
+    assert!(matches!(
+        staged.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: DockspaceActionOutcome::RootFloatRequested {
+                root,
+                source_surface,
+                target_surface,
+                ..
+            },
+            ..
+        } if *root == child_root
+            && *source_surface == child_surface
+            && *target_surface == host_surface
+    ));
+    assert_eq!(
+        engine.workspace().presentation_for_root(child_root),
+        Some(crate::RootPresentationOwner::Contained {
+            surface: child_surface,
+            floating: child_floating,
+        })
+    );
+    assert!(engine.pending_presentation_rehome.is_some());
+    assert!(staged.platform_effects().iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::ReleaseChild { binding } if *binding == child_binding
+        )
+    }));
+
+    let measurements = surface_measurements(&engine, host_surface, background_bounds());
+    let (_, _, transferred) = publish_surface_projection_with_output(
+        &mut engine,
+        presentation_host,
+        host_surface,
+        measurements,
+    );
+    let final_owner = engine.workspace().presentation_for_root(child_root);
+    assert!(
+        matches!(
+            final_owner,
+        Some(crate::RootPresentationOwner::Contained {
+            surface,
+            floating,
+        }) if surface == host_surface && floating == child_floating
+        ),
+        "unexpected final owner {final_owner:?}, pending {:?}, events {:?}",
+        engine.pending_presentation_rehome,
+        transferred.events()
+    );
+    assert!(engine.workspace().surface(child_surface).is_none());
+    assert_eq!(
+        transferred
+            .platform_effects()
+            .iter()
+            .filter(|effect| matches!(
+                effect.effect(),
+                PlatformEffect::ReleaseChild { binding } if *binding == child_binding
+            ))
+            .count(),
+        1
+    );
 }
 
 #[test]

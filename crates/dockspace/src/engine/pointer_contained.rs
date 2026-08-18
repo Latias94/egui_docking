@@ -176,6 +176,9 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
+        if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
+            return Ok(InteractionOutcome::Rejected(rejection));
+        }
         let mut candidate_events = Vec::new();
         let mut activation_changed = false;
         // A local egui response already owns the current painted chrome. Do
@@ -618,7 +621,9 @@ impl DockEngine {
         placement: ContainedTransformPlacement,
         policy: &DockPolicySnapshot,
     ) -> Result<InteractionOutcome, EngineError> {
-        if self.pending_drag_release.is_some() || self.pending_contained_transform_release.is_some()
+        if self.pending_drag_release.is_some()
+            || self.pending_contained_transform_release.is_some()
+            || self.pending_presentation_rehome.is_some()
         {
             return Err(EngineError::PointerInteractionInvariant {
                 cause,

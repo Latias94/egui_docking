@@ -15,20 +15,23 @@ use crate::presentation_hit::{
     PresentationPointerLanes,
 };
 use crate::presentation_observation::SurfacePresentationOutputTicket;
+pub use crate::scene::TabGroupDragRegionKind;
 use crate::scene::{
     ContainedRecord, ContainedResizeRecord, PresentationPlan, SplitterGapPresentation,
-    SplitterGapRecord, SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId,
-    SurfaceScene, TabBarSceneId, TabSceneId,
+    SplitterGapRecord, SplitterJunctionDirection, SplitterJunctionId, SplitterJunctionRecord,
+    SplitterRecord, SplitterSceneId, SurfaceScene, TabBarSceneId, TabSceneId,
 };
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
 
 use super::{DockspaceHostFrame, DockspaceInteractionError, DockspaceRuntimeError};
 
 mod actions;
+mod drag_decoration;
 mod guides;
 mod tab_chrome;
 mod tabs;
 pub use actions::ContainedResizeDirection;
+pub use drag_decoration::{DockspaceDragDecoration, DockspaceDragSourceKind};
 pub use guides::{
     DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope,
     DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
@@ -39,8 +42,8 @@ pub use tab_chrome::{
     TabStripControlKind, TabStripControlPaintRecord,
 };
 pub use tabs::{
-    PanePaintRecord, TabBarPaintRecord, TabPaintRecord, TabStripMemberPaintRecord,
-    TabStripMemberVisibility,
+    PanePaintRecord, TabBarPaintRecord, TabGroupDragRegionPaintRecord, TabPaintRecord,
+    TabStripMemberPaintRecord, TabStripMemberVisibility,
 };
 
 /// Opaque identity for one exact semantic output supplied to a renderer.
@@ -78,6 +81,14 @@ enum VisualIdentity {
     Pane(crate::scene::PaneSceneId),
     Tab(TabSceneId),
     TabBar(TabBarSceneId),
+    TabGroupDragRegion {
+        bar: TabBarSceneId,
+        region: TabGroupDragRegionKind,
+    },
+    DragSource {
+        root: RootId,
+        node: crate::ids::NodeId,
+    },
     TabStripControl(TabStripControlId),
     TabListMenu(TabListMenuSessionId),
     TabListMenuRow {
@@ -107,6 +118,10 @@ pub enum DockspaceVisualKind {
     Tab,
     /// One tab strip.
     TabBar,
+    /// One exact empty tab-strip region which can drag the complete group.
+    TabGroupDragRegion,
+    /// One core-owned root or subtree drag source.
+    DragSource,
     /// One core-owned tab-strip scroll or menu control.
     TabStripControl,
     /// One open tab-list popup frame.
@@ -151,6 +166,8 @@ impl DockspaceVisualId {
             VisualIdentity::Pane(_) => DockspaceVisualKind::Pane,
             VisualIdentity::Tab(_) => DockspaceVisualKind::Tab,
             VisualIdentity::TabBar(_) => DockspaceVisualKind::TabBar,
+            VisualIdentity::TabGroupDragRegion { .. } => DockspaceVisualKind::TabGroupDragRegion,
+            VisualIdentity::DragSource { .. } => DockspaceVisualKind::DragSource,
             VisualIdentity::TabStripControl(_) => DockspaceVisualKind::TabStripControl,
             VisualIdentity::TabListMenu(_) => DockspaceVisualKind::TabListMenu,
             VisualIdentity::TabListMenuRow { .. } => DockspaceVisualKind::TabListMenuRow,
@@ -203,7 +220,10 @@ pub enum DockspaceReceiverRole {
     TabListMenuScroll,
     TabListMenuBlocker,
     TabListMenuBackdrop,
+    /// Dedicated whole-group grip before the first tab.
     TabGroupGrip,
+    /// Unoccupied strip space after the final tab.
+    TabGroupTrailingEmpty,
     Splitter,
     SplitterJunction,
     ContainedFrame,
@@ -486,9 +506,21 @@ impl SplitterPaintRecord<'_> {
 }
 
 /// Read-only atomic splitter-junction geometry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct SplitterJunctionPaintRecord<'plan> {
     record: &'plan SplitterJunctionRecord,
+}
+
+impl fmt::Debug for SplitterJunctionPaintRecord<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SplitterJunctionPaintRecord")
+            .field("root", &self.root())
+            .field("hit_bounds", &self.hit_bounds())
+            .field("arm_count", &self.arm_count())
+            .field("layer", &self.layer())
+            .finish_non_exhaustive()
+    }
 }
 
 impl SplitterJunctionPaintRecord<'_> {
@@ -511,6 +543,23 @@ impl SplitterJunctionPaintRecord<'_> {
     #[must_use]
     pub fn arm_count(self) -> usize {
         self.record.id().arm_count()
+    }
+
+    /// Returns whether this junction contains at least one incident splitter
+    /// which moves along `axis`.
+    #[must_use]
+    pub const fn has_axis(self, axis: DockspaceAxis) -> bool {
+        let id = self.record.id();
+        match axis {
+            DockspaceAxis::Horizontal => {
+                id.arm(SplitterJunctionDirection::North).is_some()
+                    || id.arm(SplitterJunctionDirection::South).is_some()
+            }
+            DockspaceAxis::Vertical => {
+                id.arm(SplitterJunctionDirection::East).is_some()
+                    || id.arm(SplitterJunctionDirection::West).is_some()
+            }
+        }
     }
 
     #[must_use]
@@ -636,6 +685,7 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) escape_available: bool,
     pub(super) drop_affordance: Option<&'frame DropAffordance>,
     pub(super) drag_preview: Option<&'frame InteractionPreview>,
+    pub(super) drag_decoration: Option<DockspaceDragDecoration<'frame>>,
     pub(super) contained_transform_preview: Option<&'frame ContainedTransformPreview>,
 }
 
@@ -659,6 +709,10 @@ impl DockspaceHostFrame<'_> {
         let drop_affordance = view.interaction().drop_affordance().filter(|affordance| {
             affordance.surface() == surface && affordance.scene() == candidate.stamp()
         });
+        let drag_decoration = view
+            .interaction()
+            .active_drag_view()
+            .and_then(|drag| drag_decoration::resolve(view.scene(), drag));
         Ok(Some(SurfacePaintPlan {
             surface,
             authority_domain: self.session.engine.authority_domain(),
@@ -671,6 +725,7 @@ impl DockspaceHostFrame<'_> {
             escape_available: view.interaction().local_response_gesture_surface() == Some(surface),
             drop_affordance,
             drag_preview: view.presentation_drag_preview(surface),
+            drag_decoration,
             contained_transform_preview: view.presentation_contained_transform_preview(surface),
         }))
     }
@@ -746,17 +801,27 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .contained_records()
             .iter()
             .find(|record| record.floating() == floating && record.close_bounds().is_some())?;
-        Some(super::PreparedSurfaceAction::close(
+        Some(super::PreparedSurfaceAction::dock_back(
             self.authority_domain,
             self.version,
             self.scene,
-            crate::intent::CloseSceneTarget::Contained(floating),
+            floating,
         ))
     }
 
     #[must_use]
     pub fn bounds(self) -> LogicalRect {
         self.plan.bounds()
+    }
+
+    /// Returns source decoration for the current core-owned drag.
+    ///
+    /// Unlike a docking preview, this record requires no presentation
+    /// acknowledgement. It exists only after the core enters its active
+    /// dragging phase and disappears with the terminal or cancelled gesture.
+    #[must_use]
+    pub const fn drag_decoration(self) -> Option<DockspaceDragDecoration<'frame>> {
+        self.drag_decoration
     }
 
     pub fn panes(self) -> impl ExactSizeIterator<Item = PanePaintRecord<'frame>> {
@@ -919,7 +984,35 @@ impl<'frame> SurfacePaintPlan<'frame> {
         bar: TabBarPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let bar_id = *bar.record.id();
-        self.receiver(PresentationHitRegionKind::TabGroupGrip(bar_id))
+        self.receiver(PresentationHitRegionKind::TabGroupDrag {
+            bar: bar_id,
+            region: TabGroupDragRegionKind::LeadingGrip,
+        })
+    }
+
+    /// Returns the exact receiver for one core-compiled group-drag region.
+    #[must_use]
+    pub fn receiver_for_tab_group_drag_region(
+        self,
+        region: TabGroupDragRegionPaintRecord,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        self.receiver(PresentationHitRegionKind::TabGroupDrag {
+            bar: region.bar,
+            region: region.record.kind(),
+        })
+    }
+
+    /// Returns the trailing-empty group receiver, when this bar has unused space.
+    #[must_use]
+    pub fn receiver_for_tab_group_trailing_empty(
+        self,
+        bar: TabBarPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let bar_id = *bar.record.id();
+        self.receiver(PresentationHitRegionKind::TabGroupDrag {
+            bar: bar_id,
+            region: TabGroupDragRegionKind::TrailingEmpty,
+        })
     }
 
     /// Returns the scroll receiver covering one overflowing tab-strip viewport.
@@ -1008,6 +1101,47 @@ impl<'frame> SurfacePaintPlan<'frame> {
     #[must_use]
     pub fn splitter_junction_operable(self, junction: SplitterJunctionPaintRecord<'frame>) -> bool {
         junction.record.operable()
+    }
+
+    /// Returns whether every incident splitter on one junction axis accepts a
+    /// scene-bound keyboard or accessibility adjustment.
+    #[must_use]
+    pub fn splitter_junction_axis_operable(
+        self,
+        junction: SplitterJunctionPaintRecord<'frame>,
+        axis: DockspaceAxis,
+    ) -> bool {
+        let axis: Axis = axis.into();
+        let Some(record) = self
+            .plan
+            .splitter_junction_records()
+            .iter()
+            .find(|record| record.id() == junction.record.id())
+        else {
+            return false;
+        };
+        let directions = match axis {
+            Axis::Horizontal => [
+                SplitterJunctionDirection::North,
+                SplitterJunctionDirection::South,
+            ],
+            Axis::Vertical => [
+                SplitterJunctionDirection::East,
+                SplitterJunctionDirection::West,
+            ],
+        };
+        let mut ids = directions
+            .into_iter()
+            .filter_map(|direction| record.id().arm(direction))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        !ids.is_empty()
+            && ids.into_iter().all(|id| {
+                self.plan
+                    .splitter_record(id)
+                    .is_some_and(|splitter| splitter.axis() == axis && splitter.operable())
+            })
     }
 
     pub(super) fn splitter_junction_id_operable(self, id: SplitterJunctionId) -> bool {
@@ -1138,7 +1272,14 @@ const fn receiver_role(kind: PresentationHitRegionKind) -> Option<DockspaceRecei
         PresentationHitRegionKind::TabListMenuBackdrop(_) => {
             DockspaceReceiverRole::TabListMenuBackdrop
         }
-        PresentationHitRegionKind::TabGroupGrip(_) => DockspaceReceiverRole::TabGroupGrip,
+        PresentationHitRegionKind::TabGroupDrag {
+            region: TabGroupDragRegionKind::LeadingGrip,
+            ..
+        } => DockspaceReceiverRole::TabGroupGrip,
+        PresentationHitRegionKind::TabGroupDrag {
+            region: TabGroupDragRegionKind::TrailingEmpty,
+            ..
+        } => DockspaceReceiverRole::TabGroupTrailingEmpty,
         PresentationHitRegionKind::SplitterHandle(_) => DockspaceReceiverRole::Splitter,
         PresentationHitRegionKind::SplitterJunction(_) => DockspaceReceiverRole::SplitterJunction,
         PresentationHitRegionKind::ContainedFrameBlocker(_) => {

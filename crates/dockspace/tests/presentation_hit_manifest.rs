@@ -94,11 +94,16 @@ fn expected_kinds(plan: &PresentationPlan) -> BTreeSet<PresentationHitRegionKind
         }
     }
     for bar in plan.tab_bar_records() {
-        if bar
-            .group_drag()
-            .is_some_and(|group| has_area(group.hit().rect()))
-        {
-            expected.insert(PresentationHitRegionKind::TabGroupGrip(*bar.id()));
+        if let Some(group) = bar.group_drag() {
+            for region in group
+                .regions()
+                .filter(|region| has_area(region.hit().rect()))
+            {
+                expected.insert(PresentationHitRegionKind::TabGroupDrag {
+                    bar: *bar.id(),
+                    region: region.kind(),
+                });
+            }
         }
     }
     for splitter in plan
@@ -111,7 +116,7 @@ fn expected_kinds(plan: &PresentationPlan) -> BTreeSet<PresentationHitRegionKind
     for junction in plan
         .splitter_junction_records()
         .iter()
-        .filter(|junction| has_area(junction.hit().rect()))
+        .filter(|junction| junction.operable() && has_area(junction.hit().rect()))
     {
         expected.insert(PresentationHitRegionKind::SplitterJunction(junction.id()));
     }
@@ -375,7 +380,10 @@ fn resize_policy_is_frozen_into_splitter_and_junction_hit_rosters() {
             .iter()
             .any(|splitter| splitter.axis() == Axis::Horizontal && !splitter.operable())
     );
-    assert!(plan.splitter_junction_records().is_empty());
+    let [junction] = plan.splitter_junction_records() else {
+        panic!("the structural junction remains available for axis semantics");
+    };
+    assert!(!junction.operable());
 
     for region in interaction.hit_manifest().regions() {
         match region.id().kind() {

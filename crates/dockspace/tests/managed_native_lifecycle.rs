@@ -59,9 +59,7 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
         .report_managed_native_snapshot([(root_binding, root_window_facts())], exact_work_areas())
         .expect("the exact root snapshot records");
     commit_native_frame(&mut session);
-    measure_all_surfaces(&mut session);
-    paint_and_present_surface(&mut session, ROOT_SURFACE);
-    commit_native_frame(&mut session);
+    let _ = paint_and_present_all_surfaces(&mut session);
 
     let requested_placement =
         PhysicalRect::new(900.0, 120.0, 420.0, 320.0).expect("the child placement validates");
@@ -168,6 +166,9 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
         item_surface(&session, CHILD_ITEM),
         Some(child_binding.surface())
     );
+    measure_all_surfaces(&mut session);
+    paint_and_present_surface(&mut session, ROOT_SURFACE);
+    commit_native_frame(&mut session);
 
     let mut redock = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -182,7 +183,38 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the redock frame retains current presentations");
     let mut redock_report = redock.commit().expect("the redock commits");
-    let release = take_only_effect(&mut redock_report);
+    assert!(
+        matches!(
+            redock_report.inputs(),
+            [dockspace::runtime::HostInputOutcome::ProductActionApplied(
+                dockspace::model::DockspaceActionOutcome::RootDockRequested { .. }
+            )]
+        ),
+        "actual redock inputs: {:?}",
+        redock_report.inputs()
+    );
+    assert!(redock_report.take_native_effects().is_empty());
+    assert_eq!(
+        item_surface(&session, CHILD_ITEM),
+        Some(child_binding.surface()),
+        "the child remains authoritative before the target output presents",
+    );
+
+    let mut settled = paint_and_present_all_surfaces(&mut session);
+    assert!(
+        matches!(
+            settled.presentation_transitions(),
+            [transition]
+                if transition.root() == CHILD_ROOT
+                    && transition.source_surface() == child_binding.surface()
+                    && transition.target_surface() == ROOT_SURFACE
+                    && transition.result()
+                        == dockspace::runtime::DockspacePresentationTransitionResult::Applied
+        ),
+        "actual presentation transitions: {:?}",
+        settled.presentation_transitions()
+    );
+    let release = take_only_effect(&mut settled);
     assert!(matches!(
         release.operation(),
         NativeEffectOperation::ReleaseChild { binding } if *binding == child_binding
@@ -327,6 +359,35 @@ fn paint_and_present_surface(session: &mut DockspaceSession, surface: SurfaceId)
     session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
         .expect("the exact surface output presents");
+}
+
+fn paint_and_present_all_surfaces(session: &mut DockspaceSession) -> HostFrameReport {
+    measure_all_surfaces(session);
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the complete paint frame begins");
+    let surfaces = frame.surfaces();
+    for surface in &surfaces {
+        assert!(
+            frame
+                .paint_plan(*surface)
+                .expect("the complete paint plan resolves")
+                .is_some(),
+            "surface {surface:?} must have a ready paint plan",
+        );
+        frame
+            .confirm_surface_painted(*surface)
+            .expect("the complete surface output is painted");
+    }
+    let mut report = frame.commit().expect("the complete paint frame commits");
+    let outputs = report.take_painted_outputs();
+    assert_eq!(outputs.len(), surfaces.len());
+    for output in outputs {
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the exact complete output presents");
+    }
+    commit_native_frame(session)
 }
 
 fn paint_staging(
