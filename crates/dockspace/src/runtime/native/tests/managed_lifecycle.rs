@@ -2,7 +2,7 @@ use super::*;
 
 use crate::geometry::PhysicalPoint;
 use crate::graph::ContainedFloating;
-use crate::model::FloatingPresentationId;
+use crate::model::{DockAnchor, DockPlacement, FloatingPresentationId};
 use crate::runtime::{
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
     NativeEffectOperation, NativeStagingPresentationPhase, NativeWindowPlacement,
@@ -609,6 +609,102 @@ struct PendingNativeCreate {
     placement: PhysicalRect,
     request: crate::runtime::NativeEffectRequest,
     restore_acknowledgement: crate::runtime::NativeInputEffectAcknowledgement,
+}
+
+#[test]
+fn tracked_application_action_ignores_an_earlier_pointer_product_outcome() {
+    const MAIN_ITEM: ItemId = ItemId::new(3);
+    const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
+
+    let (mut session, root_binding) = programmatic_tear_off_session();
+    let source_receiver = {
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the contained receiver inspection frame begins");
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the contained source plan resolves")
+            .expect("the contained source plan is ready");
+        let contained = plan
+            .contained()
+            .find(|contained| contained.floating() == FLOATING)
+            .expect("the contained floating is present");
+        plan.receiver_for_contained_close(contained)
+            .expect("the contained floating exposes its dock-back receiver")
+    };
+    let source_point = source_receiver.center();
+    let source_desktop = PhysicalPoint::new(
+        ROOT_ORIGIN_X + source_point.x(),
+        ROOT_ORIGIN_Y + source_point.y(),
+    )
+    .expect("the contained close desktop point is finite");
+    let pointer = NativePointerId::new(1);
+    let application =
+        session.prepare_dock_root(ROOT, DockPlacement::Center(DockAnchor::Item(MAIN_ITEM)));
+
+    session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(source_desktop),
+                NativePointerHover::Dock(root_binding),
+                None,
+            ),
+            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding),
+        ))
+        .expect("the exact contained close press records");
+    session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(source_desktop),
+                NativePointerHover::Dock(root_binding),
+                None,
+            ),
+            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::None,
+        ))
+        .expect("the exact contained close release records");
+    let mut release = session
+        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .expect("the joined pointer and application frame begins");
+    let application_request = release
+        .submit_prepared_action(application)
+        .expect("the application action receives an opaque request identity");
+    release
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the joined frame retains current surface authority");
+    let report = release.commit().expect("the joined frame commits");
+
+    assert!(
+        matches!(
+            report.inputs(),
+            [
+                super::super::super::HostInputOutcome::ProductActionApplied(
+                    crate::model::DockspaceActionOutcome::RootDocked {
+                        root: ROOT,
+                        target_root,
+                        changed: true,
+                        ..
+                    }
+                ),
+                super::super::super::HostInputOutcome::StaleRejected { .. },
+            ] if *target_root == RootId::new(2)
+        ),
+        "actual joined outcomes: {:?}",
+        report.inputs()
+    );
+    let application_outcome = report
+        .submitted_action_outcome(application_request)
+        .expect("the opaque request resolves its exact terminal");
+    assert!(matches!(
+        application_outcome,
+        super::super::super::HostInputOutcome::StaleRejected { .. }
+    ));
+    assert!(std::ptr::eq(application_outcome, &report.inputs()[1]));
 }
 
 fn request_native_create() -> PendingNativeCreate {

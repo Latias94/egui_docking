@@ -271,6 +271,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut painted_output_expected = false;
         let mut post_action_repaint = false;
         let mut discarded = false;
+        let mut submitted_application_action = None;
 
         let render_result = if retain_previous_output {
             pass_actions.abandon(token);
@@ -307,7 +308,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     let action = application_actions
                         .take()
                         .expect("a checked application action remains pending");
-                    host_frame.submit_prepared_action(action)?;
+                    submitted_application_action = Some(host_frame.submit_prepared_action(action)?);
                 }
                 for action in actions.into_ordered() {
                     host_frame.submit_surface_action(action)?;
@@ -345,8 +346,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
 
         let mut report = host_frame.commit()?;
+        let submitted_application_outcome = submitted_application_action
+            .and_then(|submitted| report.submitted_action_outcome(submitted));
         let mut application_action_settled = application_actions
-            .settle(report.inputs(), report.presentation_transitions())
+            .settle(
+                submitted_application_outcome,
+                report.presentation_transitions(),
+            )
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         let coordinator = &mut self.coordinator;
         let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
@@ -751,9 +757,9 @@ mod tests {
         state
             .application_actions
             .settle(
-                &[HostInputOutcome::ProductActionRejected(
+                Some(&HostInputOutcome::ProductActionRejected(
                     dockspace::model::DockspaceActionRejection::PolicyDenied,
-                )],
+                )),
                 &[],
             )
             .expect("the exact product result settles the action");
@@ -796,14 +802,14 @@ mod tests {
             state
                 .application_actions
                 .settle(
-                    &[HostInputOutcome::ProductActionApplied(
+                    Some(&HostInputOutcome::ProductActionApplied(
                         dockspace::model::DockspaceActionOutcome::RootDockRequested {
                             root: RootId::new(1),
                             source_surface: SURFACE,
                             target_root: RootId::new(1),
                             items: vec![ItemId::new(1)],
                         },
-                    )],
+                    )),
                     &[],
                 )
                 .is_err()
@@ -848,9 +854,9 @@ mod tests {
         state
             .application_actions
             .settle(
-                &[HostInputOutcome::ProductActionRejected(
+                Some(&HostInputOutcome::ProductActionRejected(
                     dockspace::model::DockspaceActionRejection::PolicyDenied,
-                )],
+                )),
                 &[],
             )
             .expect("the exact product result settles the action");

@@ -941,6 +941,10 @@ impl<'frame> HostFrameView<'frame> {
 }
 
 impl CoreHostFrame {
+    pub(crate) const fn presentation_attempt(&self) -> HostPresentationAttemptId {
+        self.presentation_obligations.attempt()
+    }
+
     pub(super) fn from_observed_candidate(
         prelude: CoreHostFramePrelude,
         candidate: DockEngine,

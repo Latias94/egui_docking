@@ -6,8 +6,8 @@ use super::{
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspacePresentationTransition,
     DockspacePresentationTransitionId, DockspacePresentationTransitionResult,
-    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommit,
-    NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
+    DockspaceSubmittedAction, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
+    HostSurfaceCommit, NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
     NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput, native_effect,
 };
 use crate::command::CloseCommitOutcome;
@@ -19,6 +19,7 @@ use crate::transition::InputOutcome;
 
 impl HostFrameReport {
     pub(super) fn from_transition(
+        frame_attempt: crate::ids::HostPresentationAttemptId,
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
         painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
@@ -47,6 +48,7 @@ impl HostFrameReport {
                 ordinal,
                 0,
                 0,
+                None,
                 HostInputOutcome::DocumentRestored { previous, current },
             ));
         } else {
@@ -163,10 +165,16 @@ impl HostFrameReport {
                     _ => None,
                 };
                 if let Some(outcome) = outcome {
+                    let submitted = (reduced.source()
+                        == super::host_frame::APPLICATION_INPUT_SOURCE)
+                        .then(|| {
+                            DockspaceSubmittedAction::new(frame_attempt, reduced.source_sequence())
+                        });
                     ordered_inputs.push((
                         reduced.causal_ordinal().get(),
                         0_usize,
                         0_usize,
+                        submitted,
                         outcome,
                     ));
                 }
@@ -178,13 +186,14 @@ impl HostFrameReport {
                             edge.causal_ordinal().get(),
                             edge_index,
                             outcome_index,
+                            None,
                             outcome,
                         ));
                     }
                 }
             }
         }
-        let inputs = finish_ordered_inputs(ordered_inputs);
+        let (inputs, submitted_actions) = finish_ordered_inputs(ordered_inputs);
         let presentation_transitions = transition
             .events()
             .iter()
@@ -253,6 +262,7 @@ impl HostFrameReport {
             affected_surfaces: repaint_surfaces.clone(),
             surface_commits,
             inputs,
+            submitted_actions,
             presentation_transitions,
             painted_outputs,
             painted_native_staging_outputs,
@@ -336,13 +346,28 @@ fn map_close_application(
 }
 
 fn finish_ordered_inputs(
-    mut ordered: Vec<(u64, usize, usize, HostInputOutcome)>,
-) -> Vec<HostInputOutcome> {
-    ordered.sort_by_key(|(ordinal, edge, outcome, _)| (*ordinal, *edge, *outcome));
-    ordered
-        .into_iter()
-        .map(|(_, _, _, outcome)| outcome)
-        .collect()
+    mut ordered: Vec<(
+        u64,
+        usize,
+        usize,
+        Option<DockspaceSubmittedAction>,
+        HostInputOutcome,
+    )>,
+) -> (
+    Vec<HostInputOutcome>,
+    Vec<(DockspaceSubmittedAction, usize)>,
+) {
+    ordered.sort_by_key(|(ordinal, edge, outcome, _, _)| (*ordinal, *edge, *outcome));
+    let mut inputs = Vec::with_capacity(ordered.len());
+    let mut submitted_actions = Vec::new();
+    for (_, _, _, submitted, outcome) in ordered {
+        let index = inputs.len();
+        inputs.push(outcome);
+        if let Some(submitted) = submitted {
+            submitted_actions.push((submitted, index));
+        }
+    }
+    (inputs, submitted_actions)
 }
 
 #[cfg(test)]
@@ -351,12 +376,13 @@ mod tests {
 
     #[test]
     fn shared_pointer_ordinal_preserves_edge_then_outcome_order() {
-        let outcomes = finish_ordered_inputs(vec![
-            (7, 1, 0, HostInputOutcome::NativePlatformSnapshotStale),
+        let (outcomes, submitted_actions) = finish_ordered_inputs(vec![
+            (7, 1, 0, None, HostInputOutcome::NativePlatformSnapshotStale),
             (
                 7,
                 0,
                 1,
+                None,
                 HostInputOutcome::NativeCloseObservationApplied {
                     close_requests: Vec::new(),
                 },
@@ -365,6 +391,7 @@ mod tests {
                 7,
                 0,
                 0,
+                None,
                 HostInputOutcome::NativePlatformSnapshotApplied {
                     close_requests: Vec::new(),
                 },
@@ -379,5 +406,6 @@ mod tests {
                 HostInputOutcome::NativePlatformSnapshotStale,
             ]
         ));
+        assert!(submitted_actions.is_empty());
     }
 }

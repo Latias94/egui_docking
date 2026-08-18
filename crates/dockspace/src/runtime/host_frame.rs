@@ -22,12 +22,12 @@ use super::local_action::PreparedSurfaceAction;
 use super::native::NativePlatformError;
 use super::presentation;
 use super::{
-    DockPresentationConfig, DockspaceRuntimeError, DockspaceSession, HostFrameReport,
-    NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowPlacement, PreparedDockAction,
-    SurfaceUnavailableReason,
+    DockPresentationConfig, DockspaceRuntimeError, DockspaceSession, DockspaceSubmittedAction,
+    HostFrameReport, NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowPlacement,
+    PreparedDockAction, SurfaceUnavailableReason,
 };
 
-const APPLICATION_INPUT_SOURCE: StableInputSourceId =
+pub(super) const APPLICATION_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(0x64_6f_63_6b_73_70_61_63);
 
 /// One affine, rollbackable application host frame.
@@ -265,13 +265,18 @@ impl DockspaceHostFrame<'_> {
     pub fn submit_prepared_action(
         &mut self,
         prepared: PreparedDockAction,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
         let input = self
             .session
             .engine
             .accept_prepared_action(prepared)
             .map_err(DockspaceRuntimeError::prepared_action_authority_mismatch)?;
-        self.append(input)
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(input)?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Submits one action prepared from an exact paintable surface candidate.
@@ -522,6 +527,7 @@ impl DockspaceHostFrame<'_> {
             #[cfg(feature = "serde")]
             document_restore,
         } = self;
+        let frame_attempt = frame.presentation_attempt();
         let mut frame = frame.into_presentation()?;
         let mut obligations = BTreeMap::new();
         for obligation in frame.take_presentation_obligations()? {
@@ -588,6 +594,7 @@ impl DockspaceHostFrame<'_> {
             .presentation
             .retain_emissions(transition.presentation_emissions());
         Ok(HostFrameReport::from_transition(
+            frame_attempt,
             &transition,
             painted_outputs,
             painted_native_staging_outputs,
@@ -597,11 +604,18 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn append(&mut self, input: EngineInput) -> Result<(), DockspaceRuntimeError> {
+        self.append_identified(input).map(|_| ())
+    }
+
+    fn append_identified(
+        &mut self,
+        input: EngineInput,
+    ) -> Result<SourceSequence, DockspaceRuntimeError> {
         self.ensure_semantic_input_allowed()?;
         let sequence = self.next_application_source_sequence()?;
         self.frame
             .append_input(APPLICATION_INPUT_SOURCE, sequence, input)?;
-        Ok(())
+        Ok(sequence)
     }
 
     fn begin_configuration_input(&mut self) -> Result<SourceSequence, DockspaceRuntimeError> {

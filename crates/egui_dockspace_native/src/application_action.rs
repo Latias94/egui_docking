@@ -86,7 +86,7 @@ impl NativeApplicationActions {
 
     pub(crate) fn settle(
         &mut self,
-        inputs: &[HostInputOutcome],
+        input: Option<&HostInputOutcome>,
         transitions: &[DockspacePresentationTransition],
     ) -> Result<bool, ()> {
         let Some(awaiting) = self.awaiting.as_ref() else {
@@ -94,34 +94,35 @@ impl NativeApplicationActions {
         };
         match awaiting {
             AwaitingApplicationAction::Reduction(expected) => {
-                let Some(settlement) = inputs.iter().find_map(|input| match input {
+                let Some(input) = input else {
+                    return Err(());
+                };
+                let settlement = match input {
                     HostInputOutcome::ProductActionApplied(outcome) => {
-                        Some(ReductionSettlement::Terminal(
-                            DockspaceActionStatus::Applied(outcome.clone()),
+                        ReductionSettlement::Terminal(DockspaceActionStatus::Applied(
+                            outcome.clone(),
                         ))
                     }
                     HostInputOutcome::ProductPresentationActionRequested {
                         outcome,
                         transition,
-                    } => Some(ReductionSettlement::Presentation {
+                    } => ReductionSettlement::Presentation {
                         requested: outcome.clone(),
                         transition: *transition,
-                    }),
-                    HostInputOutcome::ProductActionRejected(reason) => Some(
-                        ReductionSettlement::Terminal(DockspaceActionStatus::Rejected(*reason)),
-                    ),
+                    },
+                    HostInputOutcome::ProductActionRejected(reason) => {
+                        ReductionSettlement::Terminal(DockspaceActionStatus::Rejected(*reason))
+                    }
                     HostInputOutcome::StaleRejected {
                         expected: stale,
                         accepted,
-                    } if *stale == *expected => Some(ReductionSettlement::Terminal(
-                        DockspaceActionStatus::Stale {
+                    } if *stale == *expected => {
+                        ReductionSettlement::Terminal(DockspaceActionStatus::Stale {
                             expected: *stale,
                             accepted: *accepted,
-                        },
-                    )),
-                    _ => None,
-                }) else {
-                    return Err(());
+                        })
+                    }
+                    _ => return Err(()),
                 };
                 match settlement {
                     ReductionSettlement::Terminal(status) => {

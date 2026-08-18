@@ -111,7 +111,7 @@ use crate::close_plan::SurfaceCloseDisposition;
 use crate::engine::{
     CoreHostFrameError, EngineError, SurfaceContributionBeginError, SurfaceContributionPrepareError,
 };
-use crate::ids::{RootId, SurfaceId};
+use crate::ids::{HostPresentationAttemptId, RootId, SourceSequence, SurfaceId};
 use crate::model::{
     DockspaceActionOutcome, DockspaceActionRejection, PreparedDockActionAuthorityMismatch,
 };
@@ -410,6 +410,35 @@ impl std::fmt::Debug for DockspacePresentationTransitionId {
     }
 }
 
+/// Opaque identity of one product action submitted through a host frame.
+///
+/// The identity is scoped to the dockspace session which accepted the action.
+/// Hosts can use it only to retrieve that action's exact reduced outcome from
+/// the committed [`HostFrameReport`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DockspaceSubmittedAction {
+    frame_attempt: HostPresentationAttemptId,
+    source_sequence: SourceSequence,
+}
+
+impl DockspaceSubmittedAction {
+    pub(crate) const fn new(
+        frame_attempt: HostPresentationAttemptId,
+        source_sequence: SourceSequence,
+    ) -> Self {
+        Self {
+            frame_attempt,
+            source_sequence,
+        }
+    }
+}
+
+impl std::fmt::Debug for DockspaceSubmittedAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DockspaceSubmittedAction(..)")
+    }
+}
+
 /// Stable terminal category for a presentation-gated root transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockspacePresentationTransitionResult {
@@ -437,6 +466,7 @@ pub struct HostFrameReport {
     affected_surfaces: Vec<SurfaceId>,
     surface_commits: Vec<HostSurfaceCommit>,
     inputs: Vec<HostInputOutcome>,
+    submitted_actions: Vec<(DockspaceSubmittedAction, usize)>,
     presentation_transitions: Vec<DockspacePresentationTransition>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
     painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
@@ -491,6 +521,19 @@ impl HostFrameReport {
     #[must_use]
     pub fn inputs(&self) -> &[HostInputOutcome] {
         &self.inputs
+    }
+
+    /// Returns the exact reduced outcome for one action submitted through this frame.
+    ///
+    /// A token from another session or another committed frame returns `None`.
+    #[must_use]
+    pub fn submitted_action_outcome(
+        &self,
+        submitted: DockspaceSubmittedAction,
+    ) -> Option<&HostInputOutcome> {
+        self.submitted_actions
+            .iter()
+            .find_map(|(candidate, index)| (*candidate == submitted).then(|| &self.inputs[*index]))
     }
 
     /// Returns presentation-gated product transitions settled by this frame.

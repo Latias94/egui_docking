@@ -281,6 +281,35 @@ fn prepared_root_docking_rejects_a_newer_workspace_revision() {
 }
 
 #[test]
+fn submitted_action_token_does_not_cross_rollback_frame_attempts() {
+    let mut session = session();
+    let placement = DockPlacement::Center(DockAnchor::Item(FIRST));
+
+    let stale_token = {
+        let prepared = session.prepare_dock_root(CONTAINED_ROOT, placement);
+        let mut frame = session
+            .begin_host_frame()
+            .expect("the discarded action frame begins");
+        frame
+            .submit_prepared_action(prepared)
+            .expect("the discarded frame mints an opaque action token")
+    };
+
+    let prepared = session.prepare_dock_root(CONTAINED_ROOT, placement);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("the committed action frame begins");
+    let committed_token = frame
+        .submit_prepared_action(prepared)
+        .expect("the committed frame mints an opaque action token");
+    let report = commit(frame);
+
+    assert_ne!(stale_token, committed_token);
+    assert!(report.submitted_action_outcome(stale_token).is_none());
+    assert!(report.submitted_action_outcome(committed_token).is_some());
+}
+
+#[test]
 fn prepared_native_root_tear_off_rejects_a_newer_workspace_revision() {
     let mut session = session();
     let expected = session.version();
