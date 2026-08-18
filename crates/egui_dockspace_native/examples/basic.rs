@@ -39,7 +39,6 @@ fn main() -> eframe::Result {
     let native_host = dockspace.native_host_handler();
     let app = NativeExampleApp {
         dockspace,
-        auto_open: true,
         action: InspectorActionState::Idle,
         status: None,
     };
@@ -57,7 +56,6 @@ fn main() -> eframe::Result {
 
 struct NativeExampleApp {
     dockspace: NativeDockspaceApp<ExamplePanes>,
-    auto_open: bool,
     action: InspectorActionState,
     status: Option<String>,
 }
@@ -68,7 +66,7 @@ enum InspectorActionState {
     Idle,
     AwaitingTearOffOutcome,
     AwaitingFirstPresentation(SurfaceId),
-    AwaitingDockBackOutcome,
+    AwaitingDockBackOutcome(RootId),
 }
 
 impl InspectorActionState {
@@ -82,7 +80,7 @@ impl eframe::App for NativeExampleApp {
         if matches!(
             self.action,
             InspectorActionState::AwaitingTearOffOutcome
-                | InspectorActionState::AwaitingDockBackOutcome
+                | InspectorActionState::AwaitingDockBackOutcome(_)
         ) {
             self.collect_action_status();
         }
@@ -102,53 +100,42 @@ impl NativeExampleApp {
             self.show_pending_controls(ui);
             return;
         }
-        let (inspector_is_contained, inspector_is_detached) = self
+        let inspector = self
             .dockspace
-            .with_view(|view| {
-                let location = view.item(INSPECTOR);
-                (
-                    location.is_some_and(|item| {
-                        item.surface() == SURFACE && item.contained().is_some()
-                    }),
-                    location.is_some_and(|item| item.surface() != SURFACE),
-                )
-            })
-            .unwrap_or_default();
-        let root_presented = !inspector_is_detached && self.dockspace.is_surface_presented(SURFACE);
-        if self.auto_open && root_presented && inspector_is_contained {
-            self.auto_open = false;
-            self.request_inspector_window();
-        }
-        if self.action.is_pending() {
-            self.show_pending_controls(ui);
-            return;
-        }
+            .with_view(|view| view.item(INSPECTOR).map(InspectorLocation::from))
+            .flatten();
+        let root_presented = self.dockspace.is_surface_presented(SURFACE);
 
         ui.horizontal_wrapped(|ui| {
             ui.strong("Native multiview demo");
             ui.separator();
-            let enabled = root_presented && inspector_is_contained;
+            let contained_root = inspector.filter(|location| location.is_contained());
+            let enabled = root_presented && contained_root.is_some();
             if ui
-                .add_enabled(enabled, egui::Button::new("Open Inspector in New Window ↗"))
+                .add_enabled(
+                    enabled,
+                    egui::Button::new("Fallback: Move Inspector Group to Native Window ↗"),
+                )
+                .on_disabled_hover_text(
+                    "This fallback is available while the Inspector group is a live contained window.",
+                )
                 .clicked()
+                && let Some(location) = contained_root
             {
-                self.request_inspector_window();
+                self.request_inspector_window(location.root);
             }
-            if inspector_is_detached {
-                if ui.button("Dock Inspector Back").clicked() {
-                    self.request_inspector_dock_back();
+            if let Some(location) = inspector.filter(|location| location.is_native_child()) {
+                if ui.button("Fallback: Dock Inspector Root Back").clicked() {
+                    self.request_inspector_dock_back(location.root);
                 }
-                ui.label("Inspector is live in a second OS window; closing it also docks it back.");
             } else if !root_presented {
                 ui.label("Waiting for the root output to be presented…");
-            } else {
-                ui.label(
-                    "The demo opens one native child automatically; the button is the manual path.",
-                );
             }
         });
+        self.show_presentation_state(ui, inspector, root_presented);
+        self.show_walkthrough(ui);
         if let Some(status) = &self.status {
-            ui.small(status);
+            ui.small(format!("Last fallback action: {status}"));
         }
     }
 
@@ -158,7 +145,7 @@ impl NativeExampleApp {
             ui.separator();
             ui.spinner();
             match self.action {
-                InspectorActionState::AwaitingDockBackOutcome => {
+                InspectorActionState::AwaitingDockBackOutcome(_) => {
                     ui.label("Presenting Inspector back in the root dockspace…");
                 }
                 _ => {
@@ -167,19 +154,66 @@ impl NativeExampleApp {
             }
         });
         if let Some(status) = &self.status {
-            ui.small(status);
+            ui.small(format!("Last fallback action: {status}"));
         }
     }
 
-    fn request_inspector_window(&mut self) {
+    fn show_presentation_state(
+        &self,
+        ui: &mut egui::Ui,
+        inspector: Option<InspectorLocation>,
+        root_presented: bool,
+    ) {
+        let state = match inspector {
+            Some(location) if location.is_contained() && root_presented => {
+                "Inspector presentation: contained floating window in the root egui surface."
+            }
+            Some(location) if location.is_contained() => {
+                "Inspector presentation: contained, waiting for the root surface output."
+            }
+            Some(location) if location.is_native_child() => {
+                if self.dockspace.is_surface_presented(location.surface) {
+                    "Inspector presentation: live native child OS window; closing it recovers the previous presentation."
+                } else {
+                    "Inspector presentation: native child transition is not live yet."
+                }
+            }
+            Some(_) if root_presented => "Inspector presentation: docked in the root surface.",
+            Some(_) => "Inspector presentation: root surface output is not live yet.",
+            None => "Inspector presentation: pane is closed.",
+        };
+        ui.small(state);
+    }
+
+    fn show_walkthrough(&self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("How to try contained floating and native multiview")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.label(
+                    "1. Contained floating: the Inspector group starts as an egui-styled window. \
+                     Drag its title bar to move it, drag an edge to resize it, or open its ⋮ menu and choose Dock Back.",
+                );
+                ui.label(
+                    "2. Explicit native child: open the Inspector title bar's ⋮ menu and choose Move to New Window. \
+                     The toolbar button performs the same programmatic action only as a fallback.",
+                );
+                ui.label(
+                    "3. Physical multiview: on a capability-qualified backend, drag a tab or the contained title bar outside an OS window and release. \
+                     Drag a tab from the child back over a center or edge docking guide to dock it; releasing inside the target surface away from a guide creates a contained window.",
+                );
+                ui.small(
+                    "Physical promotion is intentionally fail-closed when the host cannot provide exact cross-window pointer facts. \
+                     In that case, use the ⋮ presentation menu or the explicit fallback controls above.",
+                );
+            });
+    }
+
+    fn request_inspector_window(&mut self, root: RootId) {
         let placement = NativeWindowPlacement::new(
             PhysicalRect::new(760.0, 120.0, 440.0, 340.0)
                 .expect("the static child placement is valid"),
         );
-        match self
-            .dockspace
-            .request_tear_off_root(INSPECTOR_ROOT, placement)
-        {
+        match self.dockspace.request_tear_off_root(root, placement) {
             Ok(()) => {
                 self.action = InspectorActionState::AwaitingTearOffOutcome;
                 self.status = None;
@@ -188,10 +222,10 @@ impl NativeExampleApp {
         }
     }
 
-    fn request_inspector_dock_back(&mut self) {
-        match self.dockspace.request_dock_root_back(INSPECTOR_ROOT) {
+    fn request_inspector_dock_back(&mut self, root: RootId) {
+        match self.dockspace.request_dock_root_back(root) {
             Ok(()) => {
-                self.action = InspectorActionState::AwaitingDockBackOutcome;
+                self.action = InspectorActionState::AwaitingDockBackOutcome(root);
                 self.status = None;
             }
             Err(error) => self.status = Some(format!("Could not dock Inspector back: {error}")),
@@ -216,13 +250,13 @@ impl NativeExampleApp {
                 );
             }
             (
-                InspectorActionState::AwaitingDockBackOutcome,
+                InspectorActionState::AwaitingDockBackOutcome(expected_root),
                 DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
-                    root: INSPECTOR_ROOT,
+                    root,
                     changed: true,
                     ..
                 }),
-            ) => {
+            ) if root == expected_root => {
                 self.action = InspectorActionState::Idle;
                 self.status =
                     Some("Inspector was presented back in the root dockspace.".to_owned());
@@ -258,6 +292,33 @@ impl NativeExampleApp {
         if self.dockspace.is_surface_presented(surface) {
             self.action = InspectorActionState::Idle;
             self.status = Some("Native child reached its first live presentation.".to_owned());
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InspectorLocation {
+    root: RootId,
+    surface: SurfaceId,
+    contained: bool,
+}
+
+impl InspectorLocation {
+    fn is_contained(self) -> bool {
+        self.surface == SURFACE && self.contained
+    }
+
+    fn is_native_child(self) -> bool {
+        self.surface != SURFACE
+    }
+}
+
+impl From<dockspace::model::DockspaceItemView<'_>> for InspectorLocation {
+    fn from(item: dockspace::model::DockspaceItemView<'_>) -> Self {
+        Self {
+            root: item.root(),
+            surface: item.surface(),
+            contained: item.contained().is_some(),
         }
     }
 }
@@ -318,14 +379,15 @@ impl ExamplePanes {
                     PREVIEW,
                     ExamplePane {
                         title: "Preview",
-                        text: "This contained root can become a native child window.".to_owned(),
+                        text: "This tab shares the initial contained Inspector group. Use the title bar's ⋮ menu for explicit presentation commands, or drag a tab to exercise the physical path."
+                            .to_owned(),
                     },
                 ),
                 (
                     INSPECTOR,
                     ExamplePane {
                         title: "Inspector",
-                        text: "This root opens automatically in a second OS window; the toolbar is the manual fallback."
+                        text: "Start here: move or resize this contained window, choose Move to New Window from the ⋮ menu, then drag a child tab back onto a docking guide. The toolbar action is only a programmatic fallback."
                             .to_owned(),
                     },
                 ),

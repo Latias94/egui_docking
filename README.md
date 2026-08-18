@@ -95,18 +95,24 @@ python3 scripts/run_egui_fork_harness.py
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example exercises the
 default interactive single-surface facade. To inspect the fork-backed native
-path, run the separate example. After the root output becomes live it opens the
-Inspector child automatically; the toolbar's **Open Inspector in New Window**
-control remains available as an explicit fallback:
+path, run the separate example. It starts with the Inspector group as an
+egui-styled contained window in the root surface; it does not open a child OS
+window automatically:
 
 ```text
 cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --locked -j1
 ```
 
-This is a bounded development demo of programmatic native tear-off and exact
-child-window lifecycle. Child close requests are cancelled so the demo keeps
-its layout intact. It does not claim that physical cross-window dragging is
-release-ready on every backend.
+The example exposes all three presentation paths without conflating their
+evidence. Use the contained title bar to move or resize the same-surface window,
+or open its **⋮** menu for **Dock Back** and **Move to New Window**. The toolbar
+duplicates the native move and dock-back commands as explicitly labelled
+programmatic fallbacks. On a capability-qualified backend, drag a tab or the
+contained title bar outside an OS window to request a physical native child,
+then drag a child tab onto a root-window docking guide to return it. The default
+child close policy recovers the previous presentation. Physical dragging
+remains fail-closed on backends without complete cross-window pointer facts, so
+the programmatic lifecycle demo is not described as physical-input evidence.
 
 ## Packaging and release order
 
