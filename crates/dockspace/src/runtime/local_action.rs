@@ -197,6 +197,20 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn presentation_command(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        action: crate::model::ProductAction,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::PresentationCommand { scene, action },
+        }
+    }
+
     pub(super) const fn local_tab_gesture(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -383,6 +397,7 @@ impl PreparedSurfaceAction {
             SurfaceAction::Close { .. }
             | SurfaceAction::DockBack { .. }
             | SurfaceAction::ActivateContained { .. }
+            | SurfaceAction::PresentationCommand { .. }
             | SurfaceAction::TabChrome { .. }
             | SurfaceAction::AdjustSplitter { .. }
             | SurfaceAction::AdjustSplitterJunction { .. }
@@ -429,6 +444,13 @@ impl PreparedSurfaceAction {
                 floating,
                 point,
             },
+            SurfaceAction::PresentationCommand { scene, action } => {
+                EngineInput::ApplyLocalPresentationCommand {
+                    expected: self.expected,
+                    scene,
+                    action,
+                }
+            }
             SurfaceAction::TabChrome { scene, action } => EngineInput::ApplyLocalTabChromeAction {
                 expected: self.expected,
                 scene,
@@ -543,6 +565,10 @@ enum SurfaceAction {
         floating: FloatingPresentationId,
         point: LogicalPoint,
     },
+    PresentationCommand {
+        scene: SurfaceSceneStamp,
+        action: crate::model::ProductAction,
+    },
     TabChrome {
         scene: SurfaceSceneStamp,
         action: LocalTabChromeAction,
@@ -593,6 +619,7 @@ impl SurfaceAction {
             Self::Close { .. } => "close",
             Self::DockBack { .. } => "dock-back",
             Self::ActivateContained { .. } => "activate-contained",
+            Self::PresentationCommand { .. } => "presentation-command",
             Self::TabChrome { .. } => "tab-chrome",
             Self::LocalTabGesture { .. } => "tab-gesture",
             Self::LocalSplitterGesture { .. } => "splitter-gesture",

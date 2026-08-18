@@ -654,6 +654,15 @@ pub enum EngineInput {
         /// Opaque control, row, dismissal, scroll, or navigation action.
         action: LocalTabChromeAction,
     },
+    /// Apply one root presentation command from an exact current-frame candidate.
+    ApplyLocalPresentationCommand {
+        /// Workspace version from which the command availability was derived.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate which exposed the command.
+        scene: SurfaceSceneStamp,
+        /// Core-minted product action hidden by the renderer-facing record.
+        action: crate::model::ProductAction,
+    },
     /// Deliver one keyboard or accessibility action to an exact presented receiver.
     ActivateSemanticReceiver {
         /// Workspace version current when the host captured the semantic event.
@@ -907,6 +916,7 @@ impl EngineInput {
             | Self::ActivateLocalContained { .. }
             | Self::SelectLocalSceneTab { .. }
             | Self::ApplyLocalTabChromeAction { .. }
+            | Self::ApplyLocalPresentationCommand { .. }
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
             | Self::AdjustLocalSplitterResize { .. }

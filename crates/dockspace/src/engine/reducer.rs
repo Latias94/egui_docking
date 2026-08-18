@@ -1596,6 +1596,21 @@ impl DockEngine {
                 tick_start.policy,
                 events,
             ),
+            EngineInput::ApplyLocalPresentationCommand {
+                expected,
+                scene,
+                action,
+            } => self.reduce_local_presentation_command(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                *scene,
+                *action,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::ActivateSemanticReceiver { expected, event } => self
                 .reduce_semantic_receiver_input(
                     input.sequence,

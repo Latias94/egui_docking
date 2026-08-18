@@ -9,7 +9,7 @@ use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::interaction::{ContainedTransformPreview, InteractionPreview, PreviewVisual};
-use crate::model::DockspaceAxis;
+use crate::model::{DockspaceActionRejection, DockspaceAxis, ProductAction};
 use crate::presentation_hit::{
     PresentationHitRegionId, PresentationHitRegionKind, PresentationPointerLane,
     PresentationPointerLanes,
@@ -681,8 +681,122 @@ impl<'plan> ContainedPaintRecord<'plan> {
     }
 }
 
+/// Stable root-level presentation command shown by renderer-owned menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DockspacePresentationCommandKind {
+    /// Present the root as contained floating content in its current logical surface.
+    Float,
+    /// Promote the root into a managed native child window.
+    MoveToNewWindow,
+    /// Recover the root into its current core-derived docking destination.
+    DockBack,
+}
+
+/// Why one exact presentation command is disabled in the current paint candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockspacePresentationCommandUnavailable {
+    /// The root is already presented as contained floating content.
+    AlreadyContained,
+    /// The root is already the main presentation of a managed native child.
+    AlreadyNative,
+    /// Core rejected the product action for its existing stable reason.
+    Action(DockspaceActionRejection),
+}
+
+/// One opaque root command frozen from an exact current paint candidate.
+#[derive(Clone, Copy, PartialEq)]
+pub struct PresentationCommandPaintRecord {
+    authority_domain: crate::ids::EngineAuthorityDomainId,
+    version: crate::model::WorkspaceVersion,
+    scene: crate::scene::SurfaceSceneStamp,
+    surface: SurfaceId,
+    root: RootId,
+    kind: DockspacePresentationCommandKind,
+    action: Option<ProductAction>,
+    unavailable: Option<DockspacePresentationCommandUnavailable>,
+}
+
+impl PresentationCommandPaintRecord {
+    fn ready(
+        authority_domain: crate::ids::EngineAuthorityDomainId,
+        version: crate::model::WorkspaceVersion,
+        scene: crate::scene::SurfaceSceneStamp,
+        root: RootId,
+        kind: DockspacePresentationCommandKind,
+        action: ProductAction,
+    ) -> Self {
+        Self {
+            authority_domain,
+            version,
+            scene,
+            surface: scene.surface(),
+            root,
+            kind,
+            action: Some(action),
+            unavailable: None,
+        }
+    }
+
+    fn unavailable(
+        authority_domain: crate::ids::EngineAuthorityDomainId,
+        version: crate::model::WorkspaceVersion,
+        scene: crate::scene::SurfaceSceneStamp,
+        root: RootId,
+        kind: DockspacePresentationCommandKind,
+        reason: DockspacePresentationCommandUnavailable,
+    ) -> Self {
+        Self {
+            authority_domain,
+            version,
+            scene,
+            surface: scene.surface(),
+            root,
+            kind,
+            action: None,
+            unavailable: Some(reason),
+        }
+    }
+
+    /// Returns the stable root addressed by this command.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    /// Returns this command's stable semantic kind.
+    #[must_use]
+    pub const fn kind(self) -> DockspacePresentationCommandKind {
+        self.kind
+    }
+
+    /// Returns whether core admitted this command for the exact paint candidate.
+    #[must_use]
+    pub const fn is_ready(self) -> bool {
+        self.action.is_some()
+    }
+
+    /// Returns the stable reason this command is disabled, if any.
+    #[must_use]
+    pub const fn unavailable_reason(self) -> Option<DockspacePresentationCommandUnavailable> {
+        self.unavailable
+    }
+}
+
+impl fmt::Debug for PresentationCommandPaintRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PresentationCommandPaintRecord")
+            .field("surface", &self.surface)
+            .field("root", &self.root)
+            .field("kind", &self.kind)
+            .field("ready", &self.is_ready())
+            .field("unavailable", &self.unavailable)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Read-only plan supplied before one exact renderer paint.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct SurfacePaintPlan<'frame> {
     pub(super) surface: SurfaceId,
     pub(super) authority_domain: crate::ids::EngineAuthorityDomainId,
@@ -698,6 +812,17 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) drag_decoration: Option<DockspaceDragDecoration<'frame>>,
     pub(super) contained_transform_preview: Option<&'frame ContainedTransformPreview>,
     pub(super) pane_focus_request: Option<DockspacePaneFocusRequest>,
+    pub(super) candidate: crate::engine::HostFrameView<'frame>,
+}
+
+impl fmt::Debug for SurfacePaintPlan<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SurfacePaintPlan")
+            .field("surface", &self.surface)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DockspaceHostFrame<'_> {
@@ -750,6 +875,7 @@ impl DockspaceHostFrame<'_> {
             drag_decoration,
             contained_transform_preview: view.presentation_contained_transform_preview(surface),
             pane_focus_request,
+            candidate: view,
         }))
     }
 
@@ -804,6 +930,129 @@ impl<'frame> SurfacePaintPlan<'frame> {
     ) -> Option<PreparedPaneFocusObservation> {
         (self.pane_focus_request == Some(request))
             .then(|| PreparedPaneFocusObservation::new(request, observation))
+    }
+
+    /// Returns one root-level presentation command frozen from this exact candidate.
+    ///
+    /// A root owned by another surface is not part of this plan and returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal runtime error only when core command preflight violates an invariant.
+    pub fn presentation_command(
+        self,
+        root: RootId,
+        kind: DockspacePresentationCommandKind,
+    ) -> Result<Option<PresentationCommandPaintRecord>, DockspaceRuntimeError> {
+        let owner = match self.candidate.workspace().presentation_for_root(root) {
+            Some(owner) => owner,
+            None => return Ok(None),
+        };
+        let owner_surface = match owner {
+            crate::RootPresentationOwner::Main { surface }
+            | crate::RootPresentationOwner::Contained { surface, .. } => surface,
+        };
+        if owner_surface != self.surface {
+            return Ok(None);
+        }
+
+        let unavailable = |reason| {
+            PresentationCommandPaintRecord::unavailable(
+                self.authority_domain,
+                self.version,
+                self.scene,
+                root,
+                kind,
+                reason,
+            )
+        };
+        if kind == DockspacePresentationCommandKind::Float
+            && matches!(owner, crate::RootPresentationOwner::Contained { .. })
+        {
+            return Ok(Some(unavailable(
+                DockspacePresentationCommandUnavailable::AlreadyContained,
+            )));
+        }
+        if kind == DockspacePresentationCommandKind::MoveToNewWindow
+            && self.candidate.root_is_bound_native_main(root)
+        {
+            return Ok(Some(unavailable(
+                DockspacePresentationCommandUnavailable::AlreadyNative,
+            )));
+        }
+
+        let action = match kind {
+            DockspacePresentationCommandKind::Float => {
+                let rect =
+                    match self
+                        .candidate
+                        .default_contained_float_rect(root, self.surface, self.plan)
+                    {
+                        Ok(rect) => rect,
+                        Err(reason) => {
+                            return Ok(Some(unavailable(
+                                DockspacePresentationCommandUnavailable::Action(reason),
+                            )));
+                        }
+                    };
+                ProductAction::FloatRoot {
+                    root,
+                    surface: self.surface,
+                    rect: Some(rect),
+                }
+            }
+            DockspacePresentationCommandKind::DockBack => ProductAction::DockBackRoot { root },
+            DockspacePresentationCommandKind::MoveToNewWindow => {
+                let placement = match self
+                    .candidate
+                    .default_native_window_placement(root, self.plan)
+                {
+                    Ok(placement) => placement,
+                    Err(reason) => {
+                        return Ok(Some(unavailable(
+                            DockspacePresentationCommandUnavailable::Action(reason),
+                        )));
+                    }
+                };
+                ProductAction::TearOffRoot { root, placement }
+            }
+        };
+        let record = match self.candidate.prepare_product_action_if_available(action)? {
+            Ok(prepared) => {
+                let (authority_domain, version, action) = prepared.into_parts();
+                debug_assert_eq!(authority_domain, self.authority_domain);
+                debug_assert_eq!(version, self.version);
+                PresentationCommandPaintRecord::ready(
+                    authority_domain,
+                    version,
+                    self.scene,
+                    root,
+                    kind,
+                    action,
+                )
+            }
+            Err(reason) => unavailable(DockspacePresentationCommandUnavailable::Action(reason)),
+        };
+        Ok(Some(record))
+    }
+
+    /// Prepares one exact scene-bound activation for a ready presentation command.
+    #[must_use]
+    pub fn prepare_presentation_command(
+        self,
+        record: PresentationCommandPaintRecord,
+    ) -> Option<super::PreparedSurfaceAction> {
+        (record.authority_domain == self.authority_domain
+            && record.version == self.version
+            && record.scene == self.scene
+            && record.surface == self.surface)
+            .then_some(())?;
+        Some(super::PreparedSurfaceAction::presentation_command(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            record.action?,
+        ))
     }
 
     /// Prepares a current-candidate tab selection without exposing scene identity.

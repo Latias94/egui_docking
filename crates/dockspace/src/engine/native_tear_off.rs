@@ -2,7 +2,10 @@
 
 use super::*;
 
+use crate::geometry::{PhysicalPoint, PhysicalRect};
 use crate::model::{DockspaceActionOutcome, DockspaceActionRejection, NativeWindowPlacement};
+
+const DEFAULT_NATIVE_WINDOW_CASCADE: f64 = 24.0;
 
 #[derive(Debug)]
 pub(super) enum NativeRootCreateRejection {
@@ -25,6 +28,91 @@ impl NativeRootCreateRejection {
 }
 
 impl DockEngine {
+    pub(super) fn root_is_bound_native_main(&self, root: RootId) -> bool {
+        matches!(
+            self.workspace.presentation_for_root(root),
+            Some(crate::RootPresentationOwner::Main { surface })
+                if self.bound_surface_recoveries.contains_key(&surface)
+        )
+    }
+
+    pub(super) fn derive_default_native_window_placement(
+        &self,
+        root: RootId,
+        plan: &crate::scene::PresentationPlan,
+    ) -> Result<NativeWindowPlacement, DockspaceActionRejection> {
+        if !self
+            .viewport
+            .native_exact_placement_create_capability()
+            .is_supported()
+        {
+            return Err(DockspaceActionRejection::NativeUnavailable);
+        }
+
+        let owner = self
+            .workspace
+            .presentation_for_root(root)
+            .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
+        let (surface, floating) = match owner {
+            crate::RootPresentationOwner::Main { surface } => (surface, None),
+            crate::RootPresentationOwner::Contained { surface, floating } => {
+                (surface, Some(floating))
+            }
+        };
+        if plan.surface() != surface {
+            return Err(DockspaceActionRejection::PresentationUnavailable { surface });
+        }
+        let coordinates = self
+            .viewport
+            .viewport(surface)
+            .and_then(crate::viewport_registry::ViewportRecord::coordinates)
+            .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
+        let source_outer = coordinates
+            .outer_bounds()
+            .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
+
+        let requested = match floating {
+            None => source_outer,
+            Some(floating) => {
+                let contained = plan
+                    .contained_record(floating)
+                    .filter(|record| record.root() == root)
+                    .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
+                let content = coordinates
+                    .surface_rect_to_desktop(contained.outer_bounds())
+                    .map_err(|_| DockspaceActionRejection::PresentationUnavailable { surface })?;
+                expand_content_rect_to_outer(content, coordinates.content_bounds(), source_outer)
+                    .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?
+            }
+        };
+
+        let center = PhysicalPoint::new(
+            requested.x() + requested.width() * 0.5,
+            requested.y() + requested.height() * 0.5,
+        )
+        .map_err(|_| DockspaceActionRejection::PresentationUnavailable { surface })?;
+        let mut matching_work_areas = self
+            .viewport
+            .work_areas()
+            .map(|(_, work_area)| work_area)
+            .filter(|work_area| work_area.bounds().contains(center));
+        let work_area = matching_work_areas
+            .next()
+            .filter(|_| matching_work_areas.next().is_none())
+            .ok_or(DockspaceActionRejection::NativeUnavailable)?;
+        let offset = DEFAULT_NATIVE_WINDOW_CASCADE * coordinates.native_scale_factor().get();
+        let cascaded = PhysicalRect::new(
+            requested.x() + offset,
+            requested.y() + offset,
+            requested.width(),
+            requested.height(),
+        )
+        .map_err(|_| DockspaceActionRejection::PresentationUnavailable { surface })?;
+        let clamped = clamp_native_window_rect(cascaded, work_area.bounds())
+            .ok_or(DockspaceActionRejection::NativeUnavailable)?;
+        Ok(NativeWindowPlacement::new(clamped))
+    }
+
     pub(super) fn validate_product_native_tear_off_availability(
         &self,
         root: RootId,
@@ -443,4 +531,45 @@ impl DockEngine {
             }),
         }
     }
+}
+
+fn expand_content_rect_to_outer(
+    requested_content: PhysicalRect,
+    source_content: PhysicalRect,
+    source_outer: PhysicalRect,
+) -> Option<PhysicalRect> {
+    let left = source_content.x() - source_outer.x();
+    let top = source_content.y() - source_outer.y();
+    let right = source_outer.max().x() - source_content.max().x();
+    let bottom = source_outer.max().y() - source_content.max().y();
+    if [left, top, right, bottom]
+        .into_iter()
+        .any(|inset| !inset.is_finite() || inset < 0.0)
+    {
+        return None;
+    }
+    PhysicalRect::new(
+        requested_content.x() - left,
+        requested_content.y() - top,
+        requested_content.width() + left + right,
+        requested_content.height() + top + bottom,
+    )
+    .ok()
+}
+
+fn clamp_native_window_rect(
+    requested: PhysicalRect,
+    work_area: PhysicalRect,
+) -> Option<PhysicalRect> {
+    let width = requested.width().min(work_area.width());
+    let height = requested.height().min(work_area.height());
+    let maximum_x = work_area.max().x() - width;
+    let maximum_y = work_area.max().y() - height;
+    PhysicalRect::new(
+        requested.x().clamp(work_area.x(), maximum_x),
+        requested.y().clamp(work_area.y(), maximum_y),
+        width,
+        height,
+    )
+    .ok()
 }

@@ -10,6 +10,7 @@ use crate::policy::{
 };
 use crate::runtime::{
     ContainedResizeDirection, DockspaceDragSourceKind, DockspacePaneFocusObservation,
+    DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceRuntimeErrorKind,
     DockspaceSession, DockspaceVisualId, HostCloseRequestOrigin, HostInputOutcome,
     PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
@@ -1400,6 +1401,114 @@ fn exact_contained_close_action_docks_the_root_back_without_closing_content() {
     ));
     assert!(session.view().contained(FLOATING).is_none());
     assert!(session.view().item(SECOND).is_some());
+}
+
+#[test]
+fn candidate_bound_presentation_commands_report_truthful_availability_and_execute() {
+    let mut session = contained_session(DockPolicy::default());
+    install_ready_candidate(&mut session);
+
+    let mut prepare = session
+        .begin_host_frame()
+        .expect("presentation-command paint frame begins");
+    let plan = prepare
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("contained candidate is paintable");
+
+    let float = plan
+        .presentation_command(ROOT, DockspacePresentationCommandKind::Float)
+        .expect("float availability is queryable")
+        .expect("the docked root belongs to this exact surface");
+    assert!(
+        float.is_ready(),
+        "float unexpectedly unavailable: {:?}",
+        float.unavailable_reason()
+    );
+    assert_eq!(float.root(), ROOT);
+    assert_eq!(float.kind(), DockspacePresentationCommandKind::Float);
+
+    let dock_back = plan
+        .presentation_command(ROOT, DockspacePresentationCommandKind::DockBack)
+        .expect("dock-back availability is queryable")
+        .expect("the docked root belongs to this exact surface");
+    assert_eq!(
+        dock_back.unavailable_reason(),
+        Some(DockspacePresentationCommandUnavailable::Action(
+            crate::model::DockspaceActionRejection::DockBackUnavailable { root: ROOT }
+        ))
+    );
+
+    let contained_float = plan
+        .presentation_command(FLOATING_ROOT, DockspacePresentationCommandKind::Float)
+        .expect("contained float availability is queryable")
+        .expect("the contained root belongs to this exact surface");
+    assert_eq!(
+        contained_float.unavailable_reason(),
+        Some(DockspacePresentationCommandUnavailable::AlreadyContained)
+    );
+
+    let contained_dock_back = plan
+        .presentation_command(FLOATING_ROOT, DockspacePresentationCommandKind::DockBack)
+        .expect("contained dock-back availability is queryable")
+        .expect("the contained root belongs to this exact surface");
+    assert!(contained_dock_back.is_ready());
+
+    let move_to_new_window = plan
+        .presentation_command(ROOT, DockspacePresentationCommandKind::MoveToNewWindow)
+        .expect("native promotion availability is queryable")
+        .expect("the docked root belongs to this exact surface");
+    assert_eq!(
+        move_to_new_window.unavailable_reason(),
+        Some(DockspacePresentationCommandUnavailable::Action(
+            crate::model::DockspaceActionRejection::NativeUnavailable
+        ))
+    );
+
+    let action = plan
+        .prepare_presentation_command(float)
+        .expect("the exact ready command prepares one opaque surface action");
+    assert!(
+        plan.prepare_presentation_command(dock_back).is_none(),
+        "an unavailable command cannot mint an action"
+    );
+    prepare
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the command preparation frame retains the ready candidate");
+    prepare
+        .commit()
+        .expect("the command preparation frame commits");
+
+    let mut execute = session
+        .begin_host_frame()
+        .expect("presentation-command execution frame begins");
+    execute
+        .submit_surface_action(action)
+        .expect("the exact scene-bound command is accepted");
+    execute
+        .measure_surface(SURFACE, metrics())
+        .expect("the floated surface is remeasured");
+    let report = execute.commit().expect("the presentation command commits");
+
+    assert!(matches!(
+        report.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            crate::model::DockspaceActionOutcome::RootFloated {
+                root: ROOT,
+                surface: SURFACE,
+                changed: true,
+                ..
+            }
+        )]
+    ));
+    assert!(
+        session
+            .view()
+            .surface(SURFACE)
+            .expect("the floated surface remains available")
+            .contained()
+            .any(|contained| contained.root().is_some_and(|root| root.id() == ROOT))
+    );
 }
 
 #[test]

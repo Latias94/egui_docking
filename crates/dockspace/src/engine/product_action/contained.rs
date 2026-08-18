@@ -24,7 +24,6 @@ impl DockEngine {
             .interaction_projection(surface)
             .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
         let bounds = target.plan().bounds();
-        let minimum = self.presentation_config().minimum_floating_size();
         let source = match self
             .workspace
             .presentation_for_root(root)
@@ -46,6 +45,58 @@ impl DockEngine {
                     surface: source_surface,
                 })?,
         };
+        self.derive_product_root_float_rect_from_bounds(surface, bounds, source)
+    }
+
+    pub(in crate::engine) fn derive_product_root_float_rect_from_plan(
+        &self,
+        root: RootId,
+        surface: SurfaceId,
+        plan: &crate::scene::PresentationPlan,
+    ) -> Result<LogicalRect, DockspaceActionRejection> {
+        self.require_product_surface(surface)?;
+        let source = match self
+            .workspace
+            .presentation_for_root(root)
+            .ok_or(DockspaceActionRejection::RootUnavailable { root })?
+        {
+            crate::RootPresentationOwner::Contained {
+                surface: owner_surface,
+                floating,
+            } if owner_surface == surface => plan
+                .contained_record(floating)
+                .filter(|record| record.root() == root)
+                .map(crate::scene::ContainedRecord::outer_bounds)
+                .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?,
+            crate::RootPresentationOwner::Main {
+                surface: owner_surface,
+            } if owner_surface == surface => plan
+                .layout_facts()
+                .and_then(|facts| facts.root(root))
+                .map(|facts| facts.bounds())
+                .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?,
+            crate::RootPresentationOwner::Main {
+                surface: owner_surface,
+            }
+            | crate::RootPresentationOwner::Contained {
+                surface: owner_surface,
+                ..
+            } => {
+                return Err(DockspaceActionRejection::PresentationUnavailable {
+                    surface: owner_surface,
+                });
+            }
+        };
+        self.derive_product_root_float_rect_from_bounds(surface, plan.bounds(), source)
+    }
+
+    fn derive_product_root_float_rect_from_bounds(
+        &self,
+        surface: SurfaceId,
+        bounds: LogicalRect,
+        source: LogicalRect,
+    ) -> Result<LogicalRect, DockspaceActionRejection> {
+        let minimum = self.presentation_config().minimum_floating_size();
         let width = source
             .width()
             .min(bounds.width() * 0.72)

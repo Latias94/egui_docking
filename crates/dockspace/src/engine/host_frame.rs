@@ -544,6 +544,39 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.presentation_config()
     }
 
+    pub(crate) fn prepare_product_action_if_available(
+        &self,
+        action: crate::model::ProductAction,
+    ) -> Result<
+        Result<crate::model::PreparedDockAction, crate::model::DockspaceActionRejection>,
+        EngineError,
+    > {
+        self.engine.prepare_product_action_if_available(action)
+    }
+
+    pub(crate) fn default_native_window_placement(
+        &self,
+        root: RootId,
+        plan: &crate::scene::PresentationPlan,
+    ) -> Result<crate::model::NativeWindowPlacement, crate::model::DockspaceActionRejection> {
+        self.engine
+            .derive_default_native_window_placement(root, plan)
+    }
+
+    pub(crate) fn default_contained_float_rect(
+        &self,
+        root: RootId,
+        surface: SurfaceId,
+        plan: &crate::scene::PresentationPlan,
+    ) -> Result<crate::geometry::LogicalRect, crate::model::DockspaceActionRejection> {
+        self.engine
+            .derive_product_root_float_rect_from_plan(root, surface, plan)
+    }
+
+    pub(crate) fn root_is_bound_native_main(&self, root: RootId) -> bool {
+        self.engine.root_is_bound_native_main(root)
+    }
+
     /// Returns the exact semantic requirement manifest visible to this frame.
     #[must_use]
     pub const fn presentation_requirements(&self) -> &'frame SceneRequirementManifest {

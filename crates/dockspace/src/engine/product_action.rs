@@ -113,6 +113,93 @@ pub(super) enum ProductCommandContext {
 }
 
 impl DockEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_local_presentation_command(
+        &mut self,
+        input: InputSequence,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        action: ProductAction,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        if let Err(error) = self.local_response_candidate(scene) {
+            return Ok(self.local_response_rejection(error));
+        }
+        let Some(root) = product_presentation_transition_root(action) else {
+            return Err(EngineError::ReductionCauseInvariant {
+                detail: "local presentation command carried a non-presentation product action",
+            });
+        };
+        let source_surface = match self.workspace.presentation_for_root(root) {
+            Some(
+                crate::RootPresentationOwner::Main { surface }
+                | crate::RootPresentationOwner::Contained { surface, .. },
+            ) => surface,
+            None => {
+                return Ok(InputOutcome::ProductActionRejected {
+                    reason: DockspaceActionRejection::RootUnavailable { root },
+                    version: self.version,
+                });
+            }
+        };
+        if source_surface != scene.surface() {
+            return Ok(InputOutcome::ProductActionRejected {
+                reason: DockspaceActionRejection::Conflict,
+                version: self.version,
+            });
+        }
+
+        match action {
+            ProductAction::FloatRoot {
+                root,
+                surface,
+                rect,
+            } => self.reduce_product_root_float(
+                input,
+                cause,
+                focus_causal,
+                expected,
+                root,
+                surface,
+                rect,
+                policy,
+                events,
+                interaction_events,
+            ),
+            ProductAction::DockBackRoot { root } => self.reduce_product_dock_back(
+                input,
+                cause,
+                focus_causal,
+                expected,
+                root,
+                policy,
+                events,
+                interaction_events,
+            ),
+            ProductAction::TearOffRoot { root, placement } => self.reduce_product_native_tear_off(
+                cause,
+                focus_causal,
+                expected,
+                root,
+                placement,
+                policy,
+            ),
+            _ => Err(EngineError::ReductionCauseInvariant {
+                detail: "local presentation command changed action class during reduction",
+            }),
+        }
+    }
+
     pub(crate) fn prepare_product_action_if_available(
         &self,
         action: ProductAction,
@@ -909,7 +996,7 @@ impl DockEngine {
     }
 }
 
-const fn product_presentation_transition_root(action: ProductAction) -> Option<RootId> {
+pub(super) const fn product_presentation_transition_root(action: ProductAction) -> Option<RootId> {
     match action {
         ProductAction::DockRoot { root, .. }
         | ProductAction::DockBackRoot { root }
