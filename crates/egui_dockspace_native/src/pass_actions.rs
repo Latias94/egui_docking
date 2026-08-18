@@ -46,6 +46,10 @@ impl NativePassDraft {
 }
 
 struct StagedPass {
+    semantic: Option<StagedSemanticPass>,
+}
+
+struct StagedSemanticPass {
     draft: NativePassDraft,
     output: Option<PaintedSurfaceOutput>,
 }
@@ -109,7 +113,23 @@ impl NativePassActions {
         if self.staged.contains_key(&token) {
             return Err(NativePassActionError::OutputChanged);
         }
-        self.staged.insert(token, StagedPass { draft, output });
+        self.staged.insert(
+            token,
+            StagedPass {
+                semantic: Some(StagedSemanticPass { draft, output }),
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn stage_retain_previous(
+        &mut self,
+        token: NativeOutputToken,
+    ) -> Result<(), NativePassActionError> {
+        if self.staged.contains_key(&token) {
+            return Err(NativePassActionError::OutputChanged);
+        }
+        self.staged.insert(token, StagedPass { semantic: None });
         Ok(())
     }
 
@@ -124,6 +144,9 @@ impl NativePassActions {
         let Some(staged) = self.staged.remove(&token) else {
             return Ok(());
         };
+        let Some(StagedSemanticPass { draft, output: _ }) = staged.semantic else {
+            return Ok(());
+        };
         // Presentation, focus, output, and the pass-local application-action
         // readiness fact die with `staged`. The bounded application queue is
         // sampled again by the next pass; only local UI actions survive here.
@@ -131,13 +154,13 @@ impl NativePassActions {
             .retained
             .entry(token)
             .or_insert_with(|| RetainedPassActions {
-                surface: staged.draft.surface,
+                surface: draft.surface,
                 local: Vec::new(),
             });
-        if retained.surface != staged.draft.surface {
+        if retained.surface != draft.surface {
             return Err(NativePassActionError::OutputChanged);
         }
-        merge_local_actions(&mut retained.local, staged.draft.local)
+        merge_local_actions(&mut retained.local, draft.local)
     }
 
     pub(crate) fn finish_pass(
@@ -147,22 +170,28 @@ impl NativePassActions {
         let Some(staged) = self.staged.remove(&token) else {
             return Ok(None);
         };
+        let Some(StagedSemanticPass { draft, output }) = staged.semantic else {
+            self.retained.remove(&token);
+            return Ok(Some(NativeFinalPass { semantic: None }));
+        };
         let mut local = if let Some(retained) = self.retained.remove(&token) {
-            if retained.surface != staged.draft.surface {
+            if retained.surface != draft.surface {
                 return Err(NativePassActionError::OutputChanged);
             }
             retained.local
         } else {
             Vec::new()
         };
-        merge_local_actions(&mut local, staged.draft.local)?;
+        merge_local_actions(&mut local, draft.local)?;
         Ok(Some(NativeFinalPass {
-            presentation: staged.draft.presentation,
-            pane_focus_observation: staged.draft.pane_focus_observation,
-            local,
-            application_action_ready: staged.draft.application_action_ready,
-            paint: staged.draft.paint,
-            output: staged.output,
+            semantic: Some(NativeSemanticFinalPass {
+                presentation: draft.presentation,
+                pane_focus_observation: draft.pane_focus_observation,
+                local,
+                application_action_ready: draft.application_action_ready,
+                paint: draft.paint,
+                output,
+            }),
         }))
     }
 
@@ -178,6 +207,16 @@ impl NativePassActions {
 }
 
 pub(crate) struct NativeFinalPass {
+    semantic: Option<NativeSemanticFinalPass>,
+}
+
+impl NativeFinalPass {
+    pub(crate) fn into_semantic(self) -> Option<NativeSemanticFinalPass> {
+        self.semantic
+    }
+}
+
+pub(crate) struct NativeSemanticFinalPass {
     presentation: Vec<PreparedSurfaceAction>,
     pane_focus_observation: Option<PreparedPaneFocusObservation>,
     local: Vec<PreparedSurfaceAction>,
@@ -186,7 +225,7 @@ pub(crate) struct NativeFinalPass {
     output: Option<PaintedSurfaceOutput>,
 }
 
-impl NativeFinalPass {
+impl NativeSemanticFinalPass {
     pub(crate) fn paint_surface(&self) -> SurfaceId {
         self.paint.surface()
     }

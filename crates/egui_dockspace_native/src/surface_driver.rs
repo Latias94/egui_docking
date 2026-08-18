@@ -273,7 +273,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut painted_output_expected = false;
 
         let render_result = if retain_previous_output {
-            pass_actions.abandon(token);
             host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         } else {
             (|| -> Result<(), NativeRuntimeError> {
@@ -286,6 +285,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     .prepare_pass(token, paint, application_action_ready)
                     .map_err(map_pass_action_error)?;
                 let has_actions = pass_actions.pass_has_actions(token, &draft);
+                // A frame that can mutate workspace or interaction authority
+                // cannot also publish paint captured against the pre-action
+                // workspace. Its terminal action frame schedules a fresh paint.
                 let disposition = surface_frame_disposition(
                     draft.had_ready_plan(),
                     draft.transient_visuals_complete(),
@@ -344,7 +346,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let native_effects = report.take_native_effects();
         let mut outputs = report.take_painted_outputs();
-        let painted_output = if painted_output_expected {
+        let mut painted_output = if painted_output_expected {
             if outputs.len() != 1 {
                 let actual = outputs.len();
                 drop(outputs);
@@ -367,23 +369,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
             None
         };
-        if retain_previous_output {
-            if matches!(
-                self.coordinator.abandon_output_token(token),
-                NativeHostWake::RepaintRoot
-            ) {
-                context.request_repaint_of(egui::ViewportId::ROOT);
-            }
-        } else {
-            self.pass_actions
-                .stage_pass(
-                    token,
-                    pass_draft.expect("a semantic surface owns pass paint metadata"),
-                    painted_output,
-                )
-                .map_err(map_pass_action_error)?;
-        }
-
         let coordinator = &mut self.coordinator;
         let native_effects_emitted = !native_effects.is_empty();
         coordinator.accept_native_effects(native_effects)?;
@@ -397,6 +382,28 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         }
         let native_close_progress = native_close_progress?;
+        if native_close_progress {
+            // Close policy commits a later core frame than the one that
+            // produced this paint. Dropping the old affine output forces the
+            // follow-up cycle to publish semantics from the new workspace.
+            painted_output = None;
+        }
+        if retain_previous_output {
+            // Eframe retains the previous visual immediately, but the newly
+            // announced output token is not abandoned until this egui pass is
+            // known to be terminal.
+            self.pass_actions
+                .stage_retain_previous(token)
+                .map_err(map_pass_action_error)?;
+        } else {
+            self.pass_actions
+                .stage_pass(
+                    token,
+                    pass_draft.expect("a semantic surface owns pass paint metadata"),
+                    painted_output,
+                )
+                .map_err(map_pass_action_error)?;
+        }
         for (viewport, command) in coordinator.take_viewport_commands() {
             context.send_viewport_cmd_to(viewport, command);
         }
@@ -463,6 +470,15 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .finish_pass(token)
             .map_err(map_pass_action_error)?
             .expect("a checked staged native pass remains available");
+        let Some(final_pass) = final_pass.into_semantic() else {
+            if matches!(
+                self.coordinator.abandon_output_token(token),
+                NativeHostWake::RepaintRoot
+            ) {
+                context.request_repaint_of(egui::ViewportId::ROOT);
+            }
+            return Ok(());
+        };
         let surface = final_pass.paint_surface();
         let has_application_action = final_pass.application_action_ready();
         let has_actions = final_pass.has_actions() || has_application_action;

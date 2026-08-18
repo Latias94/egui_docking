@@ -413,9 +413,12 @@ mod tests {
     fn output_hook_observes_a_discard_requested_after_native_ui_returns() {
         let context = egui::Context::default();
         let observations = Arc::new(Mutex::new(Vec::new()));
-        context.plugin_or_default::<PassProbe>().lock().observations = Arc::clone(&observations);
 
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.ctx()
+                .plugin_or_default::<PassProbe>()
+                .lock()
+                .observations = Arc::clone(&observations);
             ui.label("native dockspace ui has returned");
             if ui.ctx().current_pass_index() == 0 {
                 ui.ctx()
