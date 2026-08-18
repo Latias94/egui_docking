@@ -19,7 +19,15 @@ pub(crate) fn capabilities_for_backend(backend: NativeWindowingBackend) -> Nativ
             .with(NativeHostCapability::GlobalWindowPlacement)
             .with(NativeHostCapability::WorkArea)
             .with(NativeHostCapability::WindowActivationControl),
-        NativeWindowingBackend::MacOs | NativeWindowingBackend::X11 => controlled_hit_test
+        NativeWindowingBackend::MacOs => controlled_hit_test
+            .with(NativeHostCapability::NativeWindowLifecycle)
+            .with(NativeHostCapability::HoveredWindow)
+            .with(NativeHostCapability::DesktopPointerPosition)
+            .with(NativeHostCapability::AuthoritativeButtonState)
+            .with(NativeHostCapability::GlobalWindowPlacement)
+            .with(NativeHostCapability::WorkArea)
+            .with(NativeHostCapability::WindowActivationControl),
+        NativeWindowingBackend::X11 => controlled_hit_test
             .with(NativeHostCapability::NativeWindowLifecycle)
             .with(NativeHostCapability::DesktopPointerPosition)
             .with(NativeHostCapability::GlobalWindowPlacement)
@@ -41,6 +49,16 @@ mod tests {
         assert!(windows.supports(NativeHostCapability::HoveredWindow));
         assert!(windows.supports(NativeHostCapability::WorkArea));
         assert!(!windows.supports(NativeHostCapability::AuthoritativeButtonState));
+
+        let macos = capabilities_for_backend(NativeWindowingBackend::MacOs);
+        assert!(macos.supports(NativeHostCapability::NativeWindowLifecycle));
+        assert!(macos.supports(NativeHostCapability::HoveredWindow));
+        assert!(macos.supports(NativeHostCapability::DesktopPointerPosition));
+        assert!(macos.supports(NativeHostCapability::AuthoritativeButtonState));
+        assert!(macos.supports(NativeHostCapability::GlobalWindowPlacement));
+        assert!(macos.supports(NativeHostCapability::WorkArea));
+        assert!(macos.supports(NativeHostCapability::PointerHitTestObservation));
+        assert!(macos.supports(NativeHostCapability::PointerHitTestControl));
 
         let x11 = capabilities_for_backend(NativeWindowingBackend::X11);
         assert!(x11.supports(NativeHostCapability::NativeWindowLifecycle));
