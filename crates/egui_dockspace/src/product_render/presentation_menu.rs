@@ -45,6 +45,14 @@ pub(super) fn paint(
         .on_hover_text("Window actions");
     let ui_enabled = context.ui.is_enabled() && operable;
     let menu_open = Popup::is_id_open(context.ui.ctx(), popup_id);
+    let menu_open = if ui_enabled {
+        menu_open
+    } else {
+        if menu_open {
+            Popup::close_id(context.ui.ctx(), popup_id);
+        }
+        false
+    };
 
     let paint_omitted = context
         .plan

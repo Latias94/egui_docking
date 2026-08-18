@@ -1314,6 +1314,150 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
 }
 
 #[test]
+fn open_presentation_menu_closes_immediately_when_ui_becomes_disabled() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-open-disabled-presentation-menu", layout())
+        .build()
+        .expect("the presentation-menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (menu, _) = accesskit_node(&stable.output, Role::Button, "Presentation commands");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(menu, Action::Click)],
+    );
+    let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, opened_anchor) = accesskit_node(&opened.output, Role::Button, "Presentation commands");
+    assert_eq!(opened_anchor.is_expanded(), Some(true));
+    let _ = accesskit_node(&opened.output, Role::MenuItem, "Float");
+
+    let disabled = run_disabled_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, disabled_anchor) =
+        accesskit_node(&disabled.output, Role::Button, "Presentation commands");
+    assert!(disabled_anchor.is_disabled());
+    assert_eq!(
+        disabled_anchor.is_expanded(),
+        Some(false),
+        "the disabled anchor must synchronously report its popup as collapsed",
+    );
+    let tree = disabled
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    assert!(
+        tree.nodes
+            .iter()
+            .all(|(_, node)| node.role() != Role::MenuItem),
+        "the popup must stop rendering as soon as its anchor becomes disabled",
+    );
+}
+
+#[test]
+fn open_main_presentation_menu_closes_immediately_when_anchor_becomes_occluded() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let initial_rect = LogicalRect::new(40.0, 300.0, 180.0, 180.0)
+        .expect("the initial contained rectangle is valid");
+    let mut dockspace = Dockspace::builder(
+        "product-open-occluded-presentation-menu",
+        contained_layout_at(initial_rect),
+    )
+    .build()
+    .expect("the presentation-menu occlusion facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable_tree = stable
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let (main_menu, main_anchor) = stable_tree
+        .nodes
+        .iter()
+        .find_map(|(id, node)| {
+            let is_main_anchor = node.role() == Role::Button
+                && node.label() == Some("Presentation commands")
+                && node.bounds().is_some_and(|bounds| bounds.x0 > 600.0);
+            is_main_anchor.then_some((*id, node))
+        })
+        .expect("the unobscured main root exposes its presentation menu");
+    assert!(!main_anchor.is_disabled());
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(main_menu, Action::Click)],
+    );
+    let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let opened_tree = opened
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let opened_anchor = opened_tree
+        .nodes
+        .iter()
+        .find_map(|(id, node)| (*id == main_menu).then_some(node))
+        .expect("the opened main presentation anchor remains stable");
+    assert_eq!(opened_anchor.is_expanded(), Some(true));
+    let _ = accesskit_node(&opened.output, Role::MenuItem, "Float");
+
+    dockspace
+        .set_contained_rect_current(
+            SECOND,
+            LogicalRect::new(620.0, 0.0, 180.0, 180.0)
+                .expect("the occluding contained rectangle is valid"),
+        )
+        .expect("the contained window moves over the main presentation anchor");
+    let occluded = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let occluded_tree = occluded
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let occluded_anchor = occluded_tree
+        .nodes
+        .iter()
+        .find_map(|(id, node)| (*id == main_menu).then_some(node))
+        .expect("the occluded main presentation anchor remains described");
+    assert!(occluded_anchor.is_disabled());
+    assert_eq!(
+        occluded_anchor.is_expanded(),
+        Some(false),
+        "the occluded anchor must synchronously report its popup as collapsed",
+    );
+    assert!(
+        occluded_tree
+            .nodes
+            .iter()
+            .all(|(_, node)| node.role() != Role::MenuItem),
+        "the stale popup must not remain above or intercept the front contained window",
+    );
+    assert!(
+        occluded_tree.nodes.iter().any(|(id, node)| {
+            *id != main_menu
+                && node.role() == Role::Button
+                && node.label() == Some("Presentation commands")
+                && !node.is_disabled()
+        }),
+        "the front contained window keeps its own presentation anchor operable",
+    );
+}
+
+#[test]
 fn discarded_presentation_menu_activation_commits_exactly_once() {
     let context = Context::default();
     context.enable_accesskit();
