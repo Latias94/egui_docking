@@ -1,11 +1,145 @@
-//! Fixed geometry and color configuration for the egui adapter.
+//! Fixed geometry and egui-relative visual configuration for the adapter.
 
 use std::{error::Error, fmt};
 
 use dockspace::runtime::{DockPresentationConfig, DockPresentationConfigError};
-use egui::{Color32, Vec2};
+use egui::{Color32, Rgba, Vec2, Visuals};
 
-/// Configurable geometry and colors used to paint a docking scene.
+/// Optional visual overrides applied on top of the current egui theme.
+///
+/// Every field defaults to `None`, so dockspace follows the [`egui::Visuals`]
+/// active on the [`egui::Ui`] that paints it. Set only the colors that belong to
+/// an application-specific visual language; theme changes continue to affect
+/// every color left unspecified.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DockVisualOverrides {
+    /// Fill behind tiled docking content.
+    pub workspace_fill: Option<Color32>,
+    /// Fill behind tabs in a tab bar.
+    pub tab_bar_fill: Option<Color32>,
+    /// Fill of an inactive tab.
+    pub tab_fill: Option<Color32>,
+    /// Fill of a hovered inactive tab.
+    pub tab_hover_fill: Option<Color32>,
+    /// Fill of the selected tab.
+    pub tab_active_fill: Option<Color32>,
+    /// Text color of inactive tabs.
+    pub tab_text_color: Option<Color32>,
+    /// Text color of the selected tab.
+    pub tab_active_text_color: Option<Color32>,
+    /// Fill of an idle splitter.
+    pub splitter_color: Option<Color32>,
+    /// Fill of a hovered, dragged, or keyboard-focused splitter.
+    pub splitter_hover_color: Option<Color32>,
+    /// Translucent fill of the resolved drop target.
+    pub drop_fill: Option<Color32>,
+    /// Border color of the resolved drop target.
+    pub drop_border_color: Option<Color32>,
+    /// Fill of an available passive docking guide.
+    pub drop_guide_fill: Option<Color32>,
+    /// Fill of the exact active docking guide.
+    pub drop_guide_active_fill: Option<Color32>,
+    /// Border and directional cue color of a passive docking guide.
+    pub drop_guide_border_color: Option<Color32>,
+    /// Border and directional cue color of the exact active docking guide.
+    pub drop_guide_active_border_color: Option<Color32>,
+    /// Fill of contained-floating surfaces and menus.
+    pub floating_fill: Option<Color32>,
+    /// Fill of an inactive contained-floating title bar.
+    pub floating_title_fill: Option<Color32>,
+    /// Border color of contained-floating surfaces and menus.
+    pub floating_border_color: Option<Color32>,
+    /// Translucent fill of a drag ghost.
+    pub ghost_fill: Option<Color32>,
+    /// Border color of a drag ghost.
+    pub ghost_border_color: Option<Color32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ResolvedDockVisuals {
+    pub(crate) workspace_fill: Color32,
+    pub(crate) tab_bar_fill: Color32,
+    pub(crate) tab_fill: Color32,
+    pub(crate) tab_hover_fill: Color32,
+    pub(crate) tab_active_fill: Color32,
+    pub(crate) tab_text_color: Color32,
+    pub(crate) tab_active_text_color: Color32,
+    pub(crate) splitter_color: Color32,
+    pub(crate) splitter_hover_color: Color32,
+    pub(crate) drop_fill: Color32,
+    pub(crate) drop_border_color: Color32,
+    pub(crate) drop_guide_fill: Color32,
+    pub(crate) drop_guide_active_fill: Color32,
+    pub(crate) drop_guide_border_color: Color32,
+    pub(crate) drop_guide_active_border_color: Color32,
+    pub(crate) floating_fill: Color32,
+    pub(crate) floating_title_fill: Color32,
+    pub(crate) floating_border_color: Color32,
+    pub(crate) ghost_fill: Color32,
+    pub(crate) ghost_border_color: Color32,
+}
+
+impl DockVisualOverrides {
+    fn resolve(&self, visuals: &Visuals) -> ResolvedDockVisuals {
+        let tab_bar_fill = if visuals.dark_mode {
+            visuals.extreme_bg_color
+        } else {
+            (Rgba::from(visuals.panel_fill) * Rgba::from_gray(0.8)).into()
+        };
+        let selection = visuals.selection.bg_fill;
+        ResolvedDockVisuals {
+            workspace_fill: self.workspace_fill.unwrap_or(visuals.panel_fill),
+            tab_bar_fill: self.tab_bar_fill.unwrap_or(tab_bar_fill),
+            tab_fill: self.tab_fill.unwrap_or(Color32::TRANSPARENT),
+            tab_hover_fill: self
+                .tab_hover_fill
+                .unwrap_or(visuals.widgets.hovered.weak_bg_fill),
+            tab_active_fill: self.tab_active_fill.unwrap_or(visuals.panel_fill),
+            tab_text_color: self
+                .tab_text_color
+                .unwrap_or(visuals.widgets.inactive.fg_stroke.color),
+            tab_active_text_color: self
+                .tab_active_text_color
+                .unwrap_or(visuals.widgets.active.fg_stroke.color),
+            splitter_color: self.splitter_color.unwrap_or(tab_bar_fill),
+            splitter_hover_color: self
+                .splitter_hover_color
+                .unwrap_or(visuals.widgets.hovered.fg_stroke.color),
+            drop_fill: self.drop_fill.unwrap_or_else(|| with_alpha(selection, 72)),
+            drop_border_color: self
+                .drop_border_color
+                .unwrap_or(visuals.selection.stroke.color),
+            drop_guide_fill: self
+                .drop_guide_fill
+                .unwrap_or(visuals.widgets.inactive.bg_fill),
+            drop_guide_active_fill: self.drop_guide_active_fill.unwrap_or(selection),
+            drop_guide_border_color: self
+                .drop_guide_border_color
+                .unwrap_or(visuals.widgets.inactive.fg_stroke.color),
+            drop_guide_active_border_color: self
+                .drop_guide_active_border_color
+                .unwrap_or(visuals.selection.stroke.color),
+            floating_fill: self.floating_fill.unwrap_or_else(|| visuals.window_fill()),
+            floating_title_fill: self
+                .floating_title_fill
+                .unwrap_or(visuals.widgets.noninteractive.bg_fill),
+            floating_border_color: self
+                .floating_border_color
+                .unwrap_or(visuals.window_stroke.color),
+            ghost_fill: self.ghost_fill.unwrap_or_else(|| with_alpha(selection, 64)),
+            ghost_border_color: self
+                .ghost_border_color
+                .unwrap_or(visuals.selection.stroke.color),
+        }
+    }
+}
+
+fn with_alpha(color: Color32, alpha: u8) -> Color32 {
+    let [red, green, blue, _] = color.to_srgba_unmultiplied();
+    Color32::from_rgba_unmultiplied(red, green, blue, alpha)
+}
+
+/// Configurable geometry and visual overrides used to paint a docking scene.
 ///
 /// All geometry is expressed in egui points. Values are fixed for a frame and
 /// are never derived from viewport size, pointer velocity, elapsed time, or DPI.
@@ -51,51 +185,15 @@ pub struct DockStyle {
     pub minimum_floating_size: Vec2,
     /// Pointer-relative offset used to paint a drag ghost.
     pub ghost_offset: Vec2,
-    /// Fill behind tiled docking content.
-    pub workspace_fill: Color32,
-    /// Fill behind tabs in a tab bar.
-    pub tab_bar_fill: Color32,
-    /// Fill of an inactive tab.
-    pub tab_fill: Color32,
-    /// Fill of a hovered inactive tab.
-    pub tab_hover_fill: Color32,
-    /// Fill of the selected tab.
-    pub tab_active_fill: Color32,
-    /// Text color of inactive tabs.
-    pub tab_text_color: Color32,
-    /// Text color of the selected tab.
-    pub tab_active_text_color: Color32,
-    /// Fill of an idle splitter.
-    pub splitter_color: Color32,
-    /// Fill of a hovered or keyboard-focused splitter.
-    pub splitter_hover_color: Color32,
-    /// Translucent fill of the resolved drop target.
-    pub drop_fill: Color32,
-    /// Border color of the resolved drop target.
-    pub drop_border_color: Color32,
-    /// Fill of an available passive docking guide.
-    pub drop_guide_fill: Color32,
-    /// Fill of the exact active docking guide.
-    pub drop_guide_active_fill: Color32,
-    /// Border and directional cue color of a passive docking guide.
-    pub drop_guide_border_color: Color32,
-    /// Border and directional cue color of the exact active docking guide.
-    pub drop_guide_active_border_color: Color32,
-    /// Fill of contained-floating pane content.
-    pub floating_fill: Color32,
-    /// Fill of an inactive contained-floating title bar.
-    pub floating_title_fill: Color32,
-    /// Fill of the focused contained-floating title bar.
-    pub floating_title_active_fill: Color32,
-    /// Border color of contained-floating surfaces.
-    pub floating_border_color: Color32,
-    /// Translucent fill of a drag ghost.
-    pub ghost_fill: Color32,
-    /// Border color of a drag ghost.
-    pub ghost_border_color: Color32,
+    /// Per-color overrides layered over the current egui theme.
+    pub visuals: DockVisualOverrides,
 }
 
 impl DockStyle {
+    pub(crate) fn resolved_visuals(&self, visuals: &Visuals) -> ResolvedDockVisuals {
+        self.visuals.resolve(visuals)
+    }
+
     pub(crate) fn presentation_config(
         &self,
     ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
@@ -251,27 +349,7 @@ impl Default for DockStyle {
                 geometry.minimum_floating_size().height() as f32,
             ),
             ghost_offset: Vec2::new(12.0, 12.0),
-            workspace_fill: Color32::from_rgb(24, 26, 29),
-            tab_bar_fill: Color32::from_rgb(31, 34, 38),
-            tab_fill: Color32::from_rgb(39, 43, 48),
-            tab_hover_fill: Color32::from_rgb(48, 59, 68),
-            tab_active_fill: Color32::from_rgb(37, 102, 112),
-            tab_text_color: Color32::from_rgb(191, 197, 204),
-            tab_active_text_color: Color32::from_rgb(244, 247, 248),
-            splitter_color: Color32::from_rgb(69, 75, 82),
-            splitter_hover_color: Color32::from_rgb(89, 157, 165),
-            drop_fill: Color32::from_rgba_unmultiplied(49, 142, 154, 72),
-            drop_border_color: Color32::from_rgb(76, 174, 184),
-            drop_guide_fill: Color32::from_rgb(52, 57, 62),
-            drop_guide_active_fill: Color32::from_rgb(49, 142, 154),
-            drop_guide_border_color: Color32::from_rgb(111, 119, 127),
-            drop_guide_active_border_color: Color32::from_rgb(190, 235, 239),
-            floating_fill: Color32::from_rgb(29, 32, 36),
-            floating_title_fill: Color32::from_rgb(47, 51, 57),
-            floating_title_active_fill: Color32::from_rgb(83, 70, 119),
-            floating_border_color: Color32::from_rgb(91, 98, 106),
-            ghost_fill: Color32::from_rgba_unmultiplied(180, 132, 62, 64),
-            ghost_border_color: Color32::from_rgb(204, 157, 83),
+            visuals: DockVisualOverrides::default(),
         }
     }
 }
@@ -374,6 +452,60 @@ mod tests {
     #[test]
     fn default_style_is_valid() {
         assert_eq!(DockStyle::default().validate(), Ok(()));
+    }
+
+    #[test]
+    fn default_visuals_follow_egui_theme_tokens() {
+        let mut egui_visuals = Visuals::dark();
+        egui_visuals.panel_fill = Color32::from_rgb(11, 22, 33);
+        egui_visuals.extreme_bg_color = Color32::from_rgb(4, 5, 6);
+        egui_visuals.selection.bg_fill = Color32::from_rgb(44, 55, 66);
+        egui_visuals.window_fill = Color32::from_rgb(77, 88, 99);
+        let resolved = DockStyle::default().resolved_visuals(&egui_visuals);
+
+        assert_eq!(resolved.workspace_fill, egui_visuals.panel_fill);
+        assert_eq!(resolved.tab_active_fill, egui_visuals.panel_fill);
+        assert_eq!(resolved.tab_fill, Color32::TRANSPARENT);
+        assert_eq!(resolved.tab_bar_fill, egui_visuals.extreme_bg_color);
+        assert_eq!(resolved.floating_fill, egui_visuals.window_fill());
+        assert_eq!(
+            resolved.drop_guide_active_fill,
+            egui_visuals.selection.bg_fill
+        );
+
+        let light = DockStyle::default().resolved_visuals(&Visuals::light());
+        assert_eq!(light.tab_bar_fill.a(), 255);
+    }
+
+    #[test]
+    fn translucent_theme_tokens_keep_their_unmultiplied_color_channels() {
+        let mut egui_visuals = Visuals::dark();
+        let selection = Color32::from_rgba_unmultiplied(160, 96, 48, 128);
+        let [red, green, blue, _] = selection.to_srgba_unmultiplied();
+        egui_visuals.selection.bg_fill = selection;
+        let resolved = DockStyle::default().resolved_visuals(&egui_visuals);
+
+        assert_eq!(
+            resolved.drop_fill,
+            Color32::from_rgba_unmultiplied(red, green, blue, 72)
+        );
+        assert_eq!(
+            resolved.ghost_fill,
+            Color32::from_rgba_unmultiplied(red, green, blue, 64)
+        );
+    }
+
+    #[test]
+    fn visual_override_changes_only_its_named_token() {
+        let egui_visuals = Visuals::dark();
+        let mut style = DockStyle::default();
+        let override_fill = Color32::from_rgb(91, 73, 42);
+        style.visuals.workspace_fill = Some(override_fill);
+        let resolved = style.resolved_visuals(&egui_visuals);
+
+        assert_eq!(resolved.workspace_fill, override_fill);
+        assert_eq!(resolved.tab_active_fill, egui_visuals.panel_fill);
+        assert_eq!(resolved.tab_bar_fill, egui_visuals.extreme_bg_color);
     }
 
     #[test]

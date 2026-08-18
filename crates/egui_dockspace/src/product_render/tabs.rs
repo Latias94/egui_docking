@@ -8,7 +8,7 @@ use egui::{
     UiBuilder, pos2,
 };
 
-use crate::style::DockStyle;
+use crate::style::ResolvedDockVisuals;
 
 use super::RenderContext;
 use super::actions::{button_activated, gesture_phase};
@@ -30,7 +30,7 @@ fn paint_panes(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule
         context
             .ui
             .painter()
-            .rect_filled(bounds, 0.0, context.style.workspace_fill);
+            .rect_filled(bounds, 0.0, context.visuals.workspace_fill);
         let Some(pane_rect) = egui_rect(pane.content_bounds()) else {
             continue;
         };
@@ -74,7 +74,7 @@ fn paint_tab_bars(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSched
             context
                 .ui
                 .painter()
-                .rect_filled(bounds, 0.0, context.style.tab_bar_fill);
+                .rect_filled(bounds, 0.0, context.visuals.tab_bar_fill);
         }
         let id = context.ui.make_persistent_id((
             context.instance_id,
@@ -114,7 +114,7 @@ fn paint_group_grip(
             CursorIcon::Grab
         });
     }
-    paint_group_grip_icon(context.ui, grip, context.style, active);
+    paint_group_grip_icon(context.ui, grip, context.visuals, active);
     if context.pointer_authority.accepts_local_pointer_actions()
         && let Some(phase) = gesture_phase(&response)
         && let Some(action) = context
@@ -125,11 +125,11 @@ fn paint_group_grip(
     }
 }
 
-fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, style: &DockStyle, active: bool) {
+fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, visuals: ResolvedDockVisuals, active: bool) {
     let color = if active {
-        style.tab_active_text_color
+        visuals.tab_active_text_color
     } else {
-        style.tab_text_color
+        visuals.tab_text_color
     };
     let spacing = 3.5_f32.min(rect.width() * 0.18).min(rect.height() * 0.18);
     let radius = 1.0_f32.min(spacing * 0.32);
@@ -174,26 +174,26 @@ fn paint_tab(
     let selected = tab.selected();
     let focused = response.has_focus();
     let fill = if selected {
-        context.style.tab_active_fill
+        context.visuals.tab_active_fill
     } else if response.hovered() {
-        context.style.tab_hover_fill
+        context.visuals.tab_hover_fill
     } else {
-        context.style.tab_fill
+        context.visuals.tab_fill
     };
     context.ui.painter().rect_filled(visible, 0.0, fill);
     if focused {
         context.ui.painter().rect_stroke(
             visible.shrink(1.0),
             0.0,
-            Stroke::new(1.0, context.style.drop_border_color),
+            Stroke::new(1.0, context.visuals.drop_border_color),
             StrokeKind::Inside,
         );
     }
     if let Some(text) = egui_rect(tab.text_bounds()) {
         let color = if selected {
-            context.style.tab_active_text_color
+            context.visuals.tab_active_text_color
         } else {
-            context.style.tab_text_color
+            context.visuals.tab_text_color
         };
         context.ui.painter_at(text).galley_with_override_text_color(
             pos2(text.min.x, text.center().y - resource.galley.size().y * 0.5),
@@ -304,9 +304,9 @@ fn paint_close(
         .make_persistent_id((context.instance_id, "tab-close", item));
     let response = context.interact_receiver(rect, id, Sense::click(), receiver);
     let color = if response.hovered() {
-        context.style.tab_active_text_color
+        context.visuals.tab_active_text_color
     } else {
-        context.style.tab_text_color
+        context.visuals.tab_text_color
     };
     let inset = rect.width().min(rect.height()) * 0.28;
     let stroke = Stroke::new(1.5, color);

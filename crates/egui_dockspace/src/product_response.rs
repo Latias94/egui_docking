@@ -23,6 +23,16 @@ pub struct DockspaceMutation {
 }
 
 impl DockspaceMutation {
+    pub(crate) fn unchanged(version: WorkspaceVersion) -> Self {
+        Self {
+            before: version,
+            after: version,
+            workspace_changed: false,
+            published_state_changed: false,
+            affected_surfaces: Vec::new(),
+        }
+    }
+
     pub(crate) fn from_runtime_report(report: &HostFrameReport) -> Self {
         Self {
             before: report.before(),

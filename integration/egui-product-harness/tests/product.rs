@@ -21,6 +21,17 @@ const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
 const FOURTH: ItemId = ItemId::new(4);
 
+fn instrumented_style() -> DockStyle {
+    let mut style = DockStyle::default();
+    style.visuals.drop_guide_fill = Some(egui::Color32::from_rgb(52, 57, 62));
+    style.visuals.drop_guide_active_fill = Some(egui::Color32::from_rgb(49, 142, 154));
+    style.visuals.splitter_color = Some(egui::Color32::from_rgb(69, 75, 82));
+    style.visuals.splitter_hover_color = Some(egui::Color32::from_rgb(89, 157, 165));
+    style.visuals.drop_fill = Some(egui::Color32::from_rgba_unmultiplied(49, 142, 154, 72));
+    style.visuals.ghost_fill = Some(egui::Color32::from_rgba_unmultiplied(180, 132, 62, 64));
+    style
+}
+
 struct Panes;
 
 #[derive(Default)]
@@ -486,6 +497,65 @@ fn default_features_render_a_ready_product_surface() {
     let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = tab_center(&ready.output, "First");
     let _ = tab_center(&ready.output, "Second");
+}
+
+#[test]
+fn default_visuals_follow_the_current_egui_theme() {
+    let context = Context::default();
+    let dark_panel = egui::Color32::from_rgb(17, 23, 31);
+    let dark_bar = egui::Color32::from_rgb(5, 7, 11);
+    let mut dark = egui::Visuals::dark();
+    dark.panel_fill = dark_panel;
+    dark.extreme_bg_color = dark_bar;
+    context.set_visuals(dark);
+
+    let mut dockspace = Dockspace::builder("product-theme-following", layout())
+        .build()
+        .expect("the themed product facade initializes");
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let dark_output = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(rect_fill_count(&dark_output.output, dark_panel) > 0);
+    assert!(rect_fill_count(&dark_output.output, dark_bar) > 0);
+
+    let light_panel = egui::Color32::from_rgb(241, 244, 248);
+    let light_bar = egui::Color32::from_rgb(211, 217, 225);
+    let mut light = egui::Visuals::light();
+    light.panel_fill = light_panel;
+    light.extreme_bg_color = light_bar;
+    let expected_light_bar: egui::Color32 =
+        (egui::Rgba::from(light_panel) * egui::Rgba::from_gray(0.8)).into();
+    context.set_visuals(light);
+    let light_output = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(rect_fill_count(&light_output.output, light_panel) > 0);
+    assert!(rect_fill_count(&light_output.output, expected_light_bar) > 0);
+    assert_eq!(rect_fill_count(&light_output.output, dark_panel), 0);
+    assert_eq!(rect_fill_count(&light_output.output, dark_bar), 0);
+}
+
+#[test]
+fn visual_override_wins_without_detaching_unspecified_theme_tokens() {
+    let context = Context::default();
+    let panel = egui::Color32::from_rgb(36, 41, 47);
+    let bar = egui::Color32::from_rgb(9, 13, 17);
+    let workspace_override = egui::Color32::from_rgb(71, 37, 91);
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = panel;
+    visuals.extreme_bg_color = bar;
+    context.set_visuals(visuals);
+    let mut style = DockStyle::default();
+    style.visuals.workspace_fill = Some(workspace_override);
+    let mut dockspace = Dockspace::builder("product-theme-override", layout())
+        .style(style)
+        .build()
+        .expect("the overridden product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(rect_fill_count(&ready.output, workspace_override) > 0);
+    assert!(rect_fill_count(&ready.output, bar) > 0);
+    assert!(rect_fill_count(&ready.output, panel) > 0);
 }
 
 #[test]
@@ -1255,6 +1325,7 @@ fn default_features_paint_outer_guides_and_dock_each_edge() {
         let context = Context::default();
         context.enable_accesskit();
         let mut dockspace = Dockspace::builder(("product-guide", name), split_layout())
+            .style(instrumented_style())
             .build()
             .expect("the product guide facade initializes");
         let mut panes = Panes;
@@ -1262,8 +1333,16 @@ fn default_features_paint_outer_guides_and_dock_each_edge() {
         let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
         let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
         let source = tab_center(&stable.output, "Second");
-        let passive = dockspace.style().drop_guide_fill;
-        let active = dockspace.style().drop_guide_active_fill;
+        let passive = dockspace
+            .style()
+            .visuals
+            .drop_guide_fill
+            .expect("the fixture fixes its passive guide color");
+        let active = dockspace
+            .style()
+            .visuals
+            .drop_guide_active_fill
+            .expect("the fixture fixes its active guide color");
 
         let _ = run_frame(
             &context,
@@ -1320,6 +1399,7 @@ fn default_features_center_guide_merges_tabs() {
     let context = Context::default();
     context.enable_accesskit();
     let mut dockspace = Dockspace::builder("product-guide-center", split_layout())
+        .style(instrumented_style())
         .build()
         .expect("the product guide facade initializes");
     let mut panes = Panes;
@@ -1328,8 +1408,16 @@ fn default_features_center_guide_merges_tabs() {
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = tab_center(&stable.output, "Second");
     let first = tab_center(&stable.output, "First");
-    let passive = dockspace.style().drop_guide_fill;
-    let active = dockspace.style().drop_guide_active_fill;
+    let passive = dockspace
+        .style()
+        .visuals
+        .drop_guide_fill
+        .expect("the fixture fixes its passive guide color");
+    let active = dockspace
+        .style()
+        .visuals
+        .drop_guide_active_fill
+        .expect("the fixture fixes its active guide color");
 
     let _ = run_frame(
         &context,
@@ -1374,14 +1462,23 @@ fn default_features_center_guide_merges_tabs() {
 fn default_features_splitter_tracks_pointer_before_release() {
     let context = Context::default();
     let mut dockspace = Dockspace::builder("product-live-splitter", split_layout())
+        .style(instrumented_style())
         .build()
         .expect("the product splitter facade initializes");
     let mut panes = Panes;
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let idle = dockspace.style().splitter_color;
-    let active = dockspace.style().splitter_hover_color;
+    let idle = dockspace
+        .style()
+        .visuals
+        .splitter_color
+        .expect("the fixture fixes its idle splitter color");
+    let active = dockspace
+        .style()
+        .visuals
+        .splitter_hover_color
+        .expect("the fixture fixes its active splitter color");
     let initial_splitter = splitter_rect(&ready.output, idle, active);
     let initial_weights = root_weights(&dockspace).expect("the fixture root remains split");
     let source = initial_splitter.center();
@@ -1532,6 +1629,7 @@ fn default_features_escape_cancels_one_active_drag_and_clears_preview() {
     let context = Context::default();
     context.enable_accesskit();
     let mut dockspace = Dockspace::builder("product-escape", split_layout())
+        .style(instrumented_style())
         .build()
         .expect("the product drag facade initializes");
     let mut panes = Panes;
@@ -1540,8 +1638,16 @@ fn default_features_escape_cancels_one_active_drag_and_clears_preview() {
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = tab_center(&stable.output, "Second");
     let target = Pos2::new(400.0, 40.0);
-    let passive = dockspace.style().drop_guide_fill;
-    let active = dockspace.style().drop_guide_active_fill;
+    let passive = dockspace
+        .style()
+        .visuals
+        .drop_guide_fill
+        .expect("the fixture fixes its passive guide color");
+    let active = dockspace
+        .style()
+        .visuals
+        .drop_guide_active_fill
+        .expect("the fixture fixes its active guide color");
 
     let _ = run_frame(
         &context,
@@ -1627,6 +1733,21 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
         root_split(&dockspace).map(|(axis, _)| axis),
         Some(DockspaceAxis::Horizontal),
         "an unpainted release target must remain pending instead of committing invisibly",
+    );
+    let version_before_visual_update = dockspace.version();
+    let mut visual_only_style = dockspace.style().clone();
+    visual_only_style.visuals.tab_active_fill =
+        Some(egui::Color32::from_rgb(41, 83, 109));
+    let visual_mutation = dockspace
+        .set_style(visual_only_style)
+        .expect("visual-only styling does not disturb the pending release");
+    assert_eq!(dockspace.version(), version_before_visual_update);
+    assert!(visual_mutation.published_state_changed());
+    assert_eq!(visual_mutation.affected_surfaces(), &[SURFACE]);
+    assert_eq!(
+        root_split(&dockspace).map(|(axis, _)| axis),
+        Some(DockspaceAxis::Horizontal),
+        "adapter-only styling must not cancel the pending release",
     );
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
@@ -1774,6 +1895,7 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
 fn default_features_contained_resize_commits_a_painted_preview() {
     let context = Context::default();
     let mut dockspace = Dockspace::builder("product-contained-resize", contained_layout())
+        .style(instrumented_style())
         .build()
         .expect("the product contained facade initializes");
     let mut panes = Panes;
@@ -1820,7 +1942,14 @@ fn default_features_contained_resize_commits_a_painted_preview() {
         vec![Event::PointerMoved(moved), pointer_button(moved, false)],
     );
     assert!(
-        rect_fill_count(&released.output, dockspace.style().ghost_fill) > 0,
+        rect_fill_count(
+            &released.output,
+            dockspace
+                .style()
+                .visuals
+                .ghost_fill
+                .expect("the fixture fixes its ghost fill"),
+        ) > 0,
         "the exact contained transform preview must be painted before release settles",
     );
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
@@ -1837,6 +1966,7 @@ fn default_features_contained_resize_commits_a_painted_preview() {
 fn default_features_contained_title_moves_without_a_dock_target() {
     let context = Context::default();
     let mut dockspace = Dockspace::builder("product-contained-move", contained_layout())
+        .style(instrumented_style())
         .build()
         .expect("the product contained facade initializes");
     let mut panes = Panes;
@@ -1883,7 +2013,14 @@ fn default_features_contained_title_moves_without_a_dock_target() {
         ],
     );
     assert!(
-        rect_fill_count(&released.output, dockspace.style().drop_fill) > 0,
+        rect_fill_count(
+            &released.output,
+            dockspace
+                .style()
+                .visuals
+                .drop_fill
+                .expect("the fixture fixes its drop fill"),
+        ) > 0,
         "the contained move preview must be painted before release settles",
     );
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
@@ -1948,7 +2085,7 @@ fn default_features_replace_policy_and_style_atomically() {
     let initial_style = dockspace.style().clone();
     let mut replacement_style = initial_style.clone();
     replacement_style.tab_bar_height += 8.0;
-    replacement_style.tab_active_fill = egui::Color32::from_rgb(12, 34, 56);
+    replacement_style.visuals.tab_active_fill = Some(egui::Color32::from_rgb(12, 34, 56));
 
     let style_mutation = dockspace
         .set_style(replacement_style.clone())
@@ -1960,7 +2097,7 @@ fn default_features_replace_policy_and_style_atomically() {
 
     let version_before_visual_only_style = dockspace.version();
     let mut visual_only_style = replacement_style.clone();
-    visual_only_style.tab_active_fill = egui::Color32::from_rgb(78, 90, 123);
+    visual_only_style.visuals.tab_active_fill = Some(egui::Color32::from_rgb(78, 90, 123));
     let visual_only_mutation = dockspace
         .set_style(visual_only_style.clone())
         .expect("visual-only style replacement commits");

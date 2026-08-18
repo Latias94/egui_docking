@@ -21,7 +21,7 @@ use dockspace::runtime::{
 use egui::{Id, Key, Modifiers, Sense, Stroke, StrokeKind, Ui};
 
 use crate::pane::PaneView;
-use crate::style::DockStyle;
+use crate::style::{DockStyle, ResolvedDockVisuals};
 
 use measurement::PaintResources;
 pub(crate) use measurement::measure_surface;
@@ -49,6 +49,7 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     plan: SurfacePaintPlan<'plan>,
     panes: &'ui mut dyn PaneView,
     style: &'ui DockStyle,
+    visuals: ResolvedDockVisuals,
     resources: &'ui PaintResources,
     local_actions: &'ui mut Vec<PreparedSurfaceAction>,
     presentation_actions: &'ui mut Vec<PreparedSurfaceAction>,
@@ -156,6 +157,7 @@ pub(crate) fn paint_surface(
         &mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId),
     >,
 ) -> ProductPaintOutput {
+    let visuals = style.resolved_visuals(ui.visuals());
     let resources = PaintResources::from_plan(plan, ui, panes, style);
     let mut local_actions = Vec::new();
     let mut presentation_actions = Vec::new();
@@ -167,7 +169,8 @@ pub(crate) fn paint_surface(
     let mut transient_visuals_complete = true;
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
         ui.allocate_rect(bounds, Sense::hover());
-        ui.painter().rect_filled(bounds, 0.0, style.workspace_fill);
+        ui.painter()
+            .rect_filled(bounds, 0.0, visuals.workspace_fill);
     }
 
     let schedule = schedule::SurfacePaintSchedule::from_plan(plan);
@@ -179,6 +182,7 @@ pub(crate) fn paint_surface(
             plan,
             panes,
             style,
+            visuals,
             resources: &resources,
             local_actions: &mut local_actions,
             presentation_actions: &mut presentation_actions,
@@ -209,7 +213,7 @@ pub(crate) fn paint_surface(
         tab_chrome::paint(&mut context);
 
         let drag_preview_required = context.plan.drag_preview().is_some();
-        let drag_preview_painted = paint_preview(context.ui, context.plan, context.style);
+        let drag_preview_painted = paint_preview(context.ui, context.plan, context.visuals);
         transient_visuals_complete &= !drag_preview_required || drag_preview_painted;
         if context.pointer_authority.acknowledges_previews_locally()
             && drag_preview_painted
@@ -221,7 +225,7 @@ pub(crate) fn paint_surface(
         guides::paint(&mut context);
         let contained_preview_required = context.plan.contained_transform_preview().is_some();
         let contained_preview_painted =
-            paint_contained_transform_preview(context.ui, context.plan, context.style);
+            paint_contained_transform_preview(context.ui, context.plan, context.visuals);
         transient_visuals_complete &= !contained_preview_required || contained_preview_painted;
         if context.pointer_authority.acknowledges_previews_locally()
             && contained_preview_painted
@@ -254,7 +258,7 @@ pub(crate) fn paint_surface(
     }
 }
 
-fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, style: &DockStyle) -> bool {
+fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, visuals: ResolvedDockVisuals) -> bool {
     let Some(preview) = plan.drag_preview() else {
         return false;
     };
@@ -265,11 +269,11 @@ fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, style: &DockStyle) -> bool
         return false;
     };
     let painter = ui.painter_at(bounds);
-    painter.rect_filled(rect, 2.0, style.drop_fill);
+    painter.rect_filled(rect, 2.0, visuals.drop_fill);
     painter.rect_stroke(
         rect,
         2.0,
-        Stroke::new(1.0, style.drop_border_color),
+        Stroke::new(1.0, visuals.drop_border_color),
         StrokeKind::Inside,
     );
     true
@@ -300,7 +304,7 @@ fn preview_rect(
 fn paint_contained_transform_preview(
     ui: &Ui,
     plan: SurfacePaintPlan<'_>,
-    style: &DockStyle,
+    visuals: ResolvedDockVisuals,
 ) -> bool {
     let Some(preview) = plan.contained_transform_preview() else {
         return false;
@@ -314,8 +318,8 @@ fn paint_contained_transform_preview(
     ui.painter().rect(
         rect,
         0.0,
-        style.ghost_fill,
-        Stroke::new(1.0, style.ghost_border_color),
+        visuals.ghost_fill,
+        Stroke::new(1.0, visuals.ghost_border_color),
         StrokeKind::Inside,
     );
     true

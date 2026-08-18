@@ -237,8 +237,9 @@ pub fn paint_surface(
         .map_err(DockspaceError::from_detail)?
     else {
         ui.allocate_rect(dock_rect, egui::Sense::hover());
+        let visuals = style.resolved_visuals(ui.visuals());
         ui.painter()
-            .rect_filled(dock_rect, 0.0, style.workspace_fill);
+            .rect_filled(dock_rect, 0.0, visuals.workspace_fill);
         return Ok(NativeSurfacePaint {
             surface,
             viewport_id,

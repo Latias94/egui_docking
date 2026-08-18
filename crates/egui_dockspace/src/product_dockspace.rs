@@ -182,8 +182,10 @@ impl Dockspace {
 
     /// Replaces renderer geometry and visual styling atomically.
     ///
-    /// Core semantic geometry is committed before the adapter publishes the new visual style.
-    /// A failed validation or host-frame commit leaves both authorities unchanged.
+    /// Geometry changes commit through core before the adapter publishes the new style. A
+    /// visual-only change remains adapter-local, so it cannot disturb an in-flight gesture or
+    /// presentation settlement. Failed validation or geometry publication leaves both
+    /// authorities unchanged.
     ///
     /// # Errors
     ///
@@ -194,6 +196,17 @@ impl Dockspace {
             .presentation_config()
             .map_err(DockspaceError::from_detail)?;
         let style_changed = self.style != style;
+        let presentation_changed = self.session.presentation_config() != &presentation;
+        if !presentation_changed {
+            self.style = style;
+            let mut mutation = DockspaceMutation::unchanged(self.session.version());
+            if style_changed {
+                mutation.include_adapter_presentation_change(
+                    self.session.view().surfaces().map(|surface| surface.id()),
+                );
+            }
+            return Ok(mutation);
+        }
         let mut frame = self
             .session
             .begin_host_frame()
@@ -700,8 +713,9 @@ impl Dockspace {
             true
         } else {
             ui.allocate_rect(dock_rect, Sense::hover());
+            let visuals = self.style.resolved_visuals(ui.visuals());
             ui.painter()
-                .rect_filled(dock_rect, 0.0, self.style.workspace_fill);
+                .rect_filled(dock_rect, 0.0, visuals.workspace_fill);
             false
         };
 

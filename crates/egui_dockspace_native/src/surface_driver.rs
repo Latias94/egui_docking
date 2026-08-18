@@ -237,7 +237,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut post_action_repaint = false;
         let mut discarded = false;
 
-        let render_result = egui::CentralPanel::default().show(ui, |ui| {
+        let render_result = (|| -> Result<(), NativeRuntimeError> {
             let dock_rect = ui.available_rect_before_wrap();
             let popup_rect = context.input(egui::InputState::content_rect).round_ui();
             let mut paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
@@ -294,8 +294,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
             final_paint = Some(paint);
             Ok(())
-        });
-        render_result.inner?;
+        })();
+        render_result?;
         if discarded {
             return Ok(());
         }
@@ -539,7 +539,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
 
     pub(crate) fn render_error(&self, ui: &mut egui::Ui) {
         ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, self.style.workspace_fill);
+            .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
         ui.heading("Native dockspace stopped");
         if let Some(shutdown) = &self.shutdown {
             ui.label(shutdown.primary.to_string());

@@ -61,4 +61,4 @@ pub use response::{
     DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
     DockspaceUnavailableReason,
 };
-pub use style::{DockStyle, DockStyleError};
+pub use style::{DockStyle, DockStyleError, DockVisualOverrides};

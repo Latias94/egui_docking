@@ -46,7 +46,7 @@ impl DockspaceBuilder {
         self
     }
 
-    /// Replaces fixed renderer geometry and colors.
+    /// Replaces fixed renderer geometry and egui-relative visual overrides.
     #[must_use]
     pub fn style(mut self, style: DockStyle) -> Self {
         self.style = style;

@@ -28,6 +28,29 @@ Call `Dockspace::show_single_surface` from an egui UI and provide a `PaneView`
 implementation to measure and paint application panes. See the packaged
 `basic` and `workspace_persistence` examples for complete usage.
 
+## Styling
+
+The application owns the surrounding egui `Panel`, `Frame`, and margins.
+Dockspace consumes the available rectangle of the `Ui` it is given and does not
+insert another panel around the docking surface.
+
+`DockStyle::default()` resolves its colors from that `Ui`'s current
+`egui::Visuals` on every pass. Dark/light theme changes therefore update tabs,
+panes, splitters, menus, guides, and previews without replacing core layout
+state. Applications can override only the tokens that belong to their visual
+language:
+
+```rust
+use egui_dockspace::{DockStyle, Dockspace};
+
+let mut style = DockStyle::default();
+style.visuals.tab_active_fill = Some(egui::Color32::from_rgb(40, 100, 120));
+let dockspace = Dockspace::builder("my-dockspace", layout)
+    .style(style)
+    .build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## Features
 
 - `serde`: product document save and restore.

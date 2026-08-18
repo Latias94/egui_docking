@@ -64,14 +64,14 @@ fn paint_control(
     hovered: bool,
 ) {
     let fill = if hovered && control.enabled() {
-        context.style.tab_hover_fill
+        context.visuals.tab_hover_fill
     } else {
-        context.style.tab_bar_fill
+        context.visuals.tab_bar_fill
     };
     let color = if control.enabled() {
-        context.style.tab_text_color
+        context.visuals.tab_text_color
     } else {
-        context.style.tab_text_color.gamma_multiply(0.45)
+        context.visuals.tab_text_color.gamma_multiply(0.45)
     };
     context.ui.painter().rect_filled(bounds, 0.0, fill);
     match control.kind() {
@@ -204,8 +204,8 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
     context.ui.painter().rect(
         bounds,
         3.0,
-        context.style.floating_fill,
-        Stroke::new(1.0, context.style.floating_border_color),
+        context.visuals.floating_fill,
+        Stroke::new(1.0, context.visuals.floating_border_color),
         StrokeKind::Inside,
     );
     context.ui.ctx().accesskit_node_builder(frame_id, |node| {
@@ -253,11 +253,11 @@ fn paint_menu_row(
     });
     let hovered = response.as_ref().is_some_and(egui::Response::hovered);
     let fill = if row.focused() || hovered {
-        context.style.tab_hover_fill
+        context.visuals.tab_hover_fill
     } else if row.selected() {
-        context.style.tab_active_fill
+        context.visuals.tab_active_fill
     } else {
-        context.style.floating_fill
+        context.visuals.floating_fill
     };
     let painter = context.ui.painter_at(viewport);
     painter.rect_filled(bounds, 0.0, fill);
@@ -270,9 +270,9 @@ fn paint_menu_row(
             text_pos,
             resource.galley.clone(),
             if row.selected() {
-                context.style.tab_active_text_color
+                context.visuals.tab_active_text_color
             } else {
-                context.style.tab_text_color
+                context.visuals.tab_text_color
             },
         );
     }
@@ -341,7 +341,7 @@ fn paint_scrollbar(
     context
         .ui
         .painter()
-        .rect_filled(track, 2.0, context.style.tab_bar_fill);
+        .rect_filled(track, 2.0, context.visuals.tab_bar_fill);
     let content_extent = f64::from(viewport.height()) + menu.maximum_scroll_offset();
     let thumb_height = (f64::from(track.height()) * f64::from(viewport.height()) / content_extent)
         .max(12.0)
@@ -355,7 +355,7 @@ fn paint_scrollbar(
     context
         .ui
         .painter()
-        .rect_filled(thumb, 2.0, context.style.splitter_hover_color);
+        .rect_filled(thumb, 2.0, context.visuals.splitter_hover_color);
     context.ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(Role::ScrollBar);
         node.set_bounds(accesskit_bounds(track));

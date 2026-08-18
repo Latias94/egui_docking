@@ -2,7 +2,7 @@
 
 use egui::{Color32, Painter, Rect, Stroke, StrokeKind, vec2};
 
-use crate::style::DockStyle;
+use crate::style::ResolvedDockVisuals;
 
 const BUTTON_CORNER_RADIUS: f32 = 4.0;
 const CUE_INSET: f32 = 5.0;
@@ -40,17 +40,17 @@ pub(crate) fn describe_guide_button(
     direction: GuideCueDirection,
     active: bool,
     eligible: bool,
-    style: &DockStyle,
+    visuals: ResolvedDockVisuals,
 ) -> GuideButtonPaint {
     let base_fill = if active {
-        style.drop_guide_active_fill
+        visuals.drop_guide_active_fill
     } else {
-        style.drop_guide_fill
+        visuals.drop_guide_fill
     };
     let base_outline = if active {
-        style.drop_guide_active_border_color
+        visuals.drop_guide_active_border_color
     } else {
-        style.drop_guide_border_color
+        visuals.drop_guide_border_color
     };
     let fill = if eligible {
         base_fill

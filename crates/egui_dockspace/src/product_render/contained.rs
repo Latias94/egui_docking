@@ -25,17 +25,17 @@ pub(crate) fn paint_background(
     context
         .ui
         .painter()
-        .rect_filled(outer, 3.0, context.style.floating_fill);
+        .rect_filled(outer, 3.0, context.visuals.floating_fill);
     context
         .ui
         .painter()
-        .rect_filled(title, 3.0, context.style.floating_title_fill);
+        .rect_filled(title, 3.0, context.visuals.floating_title_fill);
     context.ui.painter().rect_stroke(
         outer,
         3.0,
         Stroke::new(
             context.style.floating_border_width,
-            context.style.floating_border_color,
+            context.visuals.floating_border_color,
         ),
         StrokeKind::Inside,
     );
@@ -76,7 +76,7 @@ pub(crate) fn paint_background(
         egui::Align2::LEFT_CENTER,
         label,
         egui::TextStyle::Button.resolve(context.ui.style()),
-        context.style.tab_active_text_color,
+        context.visuals.tab_active_text_color,
     );
 }
 
@@ -147,9 +147,9 @@ pub(crate) fn paint_controls(
             node.set_label(format!("Close floating {label}"));
         });
         let color = if response.hovered() {
-            context.style.tab_active_text_color
+            context.visuals.tab_active_text_color
         } else {
-            context.style.tab_text_color
+            context.visuals.tab_text_color
         };
         let inset = close.width().min(close.height()) * 0.28;
         let stroke = Stroke::new(1.5, color);

@@ -33,7 +33,7 @@ fn paint_target(
         guide_direction(target.direction()),
         target.is_active(),
         target.eligibility() != DockspaceDropEligibility::Rejected,
-        context.style,
+        context.visuals,
     );
     paint_guide_button(context.ui.painter(), paint);
     if let Some(receiver) = context.plan.receiver_for_drop_target(target)

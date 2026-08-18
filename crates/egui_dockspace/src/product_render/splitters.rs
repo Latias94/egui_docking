@@ -36,9 +36,9 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_, '_>, root: &RootPai
             draw,
             0.0,
             if emphasized {
-                context.style.splitter_hover_color
+                context.visuals.splitter_hover_color
             } else {
-                context.style.splitter_color
+                context.visuals.splitter_color
             },
         );
         if !splitter.operable() {
@@ -125,7 +125,7 @@ fn paint_junction(
         context
             .ui
             .painter()
-            .rect_filled(hit, 0.0, context.style.splitter_hover_color);
+            .rect_filled(hit, 0.0, context.visuals.splitter_hover_color);
     }
     if operable
         && context.pointer_authority.accepts_local_pointer_actions()
