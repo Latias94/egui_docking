@@ -200,6 +200,13 @@ pub enum HostInputOutcome {
     },
     /// One stable item- or root-centric product action committed or produced a valid no-op.
     ProductActionApplied(DockspaceActionOutcome),
+    /// One product action was accepted and is waiting for an exact presentation terminal.
+    ProductPresentationActionRequested {
+        /// Stable product result describing the retained source and intended target.
+        outcome: DockspaceActionOutcome,
+        /// Opaque causal identity shared with the eventual presentation terminal.
+        transition: DockspacePresentationTransitionId,
+    },
     /// One stable item- or root-centric product action was rejected without mutation.
     ProductActionRejected(DockspaceActionRejection),
     /// One content-close request opened or reused a plan.
@@ -340,33 +347,66 @@ impl HostSurfaceCommit {
 }
 
 /// One presentation-gated root transition settled by a host frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DockspacePresentationTransition {
+    id: DockspacePresentationTransitionId,
     root: RootId,
     source_surface: SurfaceId,
     target_surface: SurfaceId,
     result: DockspacePresentationTransitionResult,
+    outcome: Option<DockspaceActionOutcome>,
 }
 
 impl DockspacePresentationTransition {
+    /// Returns the opaque identity minted for the accepted presentation request.
     #[must_use]
-    pub const fn root(self) -> RootId {
+    pub const fn id(&self) -> DockspacePresentationTransitionId {
+        self.id
+    }
+
+    #[must_use]
+    pub const fn root(&self) -> RootId {
         self.root
     }
 
     #[must_use]
-    pub const fn source_surface(self) -> SurfaceId {
+    pub const fn source_surface(&self) -> SurfaceId {
         self.source_surface
     }
 
     #[must_use]
-    pub const fn target_surface(self) -> SurfaceId {
+    pub const fn target_surface(&self) -> SurfaceId {
         self.target_surface
     }
 
     #[must_use]
-    pub const fn result(self) -> DockspacePresentationTransitionResult {
+    pub const fn result(&self) -> DockspacePresentationTransitionResult {
         self.result
+    }
+
+    /// Returns the complete product outcome captured by an applied terminal.
+    #[must_use]
+    pub const fn outcome(&self) -> Option<&DockspaceActionOutcome> {
+        self.outcome.as_ref()
+    }
+}
+
+/// Opaque causal identity of one presentation-gated product transition.
+///
+/// Hosts may compare this value for equality, but cannot construct or inspect
+/// the core reducer authority encoded by it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DockspacePresentationTransitionId(crate::event::ReductionCause);
+
+impl DockspacePresentationTransitionId {
+    pub(crate) const fn from_cause(cause: crate::event::ReductionCause) -> Self {
+        Self(cause)
+    }
+}
+
+impl std::fmt::Debug for DockspacePresentationTransitionId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DockspacePresentationTransitionId(..)")
     }
 }
 

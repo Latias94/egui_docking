@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use super::{
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspacePresentationTransition,
-    DockspacePresentationTransitionResult, HostCloseRequestOrigin, HostFrameReport,
-    HostInputOutcome, HostSurfaceCommit, NativeEffectRequest, NativeSurfaceBinding,
-    NativeSurfaceCloseRejection, NativeSurfaceCloseRequest, PaintedNativeStagingOutput,
-    PaintedSurfaceOutput, native_effect,
+    DockspacePresentationTransitionId, DockspacePresentationTransitionResult,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommit,
+    NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
+    NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput, native_effect,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
@@ -53,7 +53,7 @@ impl HostFrameReport {
             for reduced in transition.reduced_inputs() {
                 let outcome = match reduced.outcome() {
                     InputOutcome::ProductActionProcessed { outcome, .. } => {
-                        Some(HostInputOutcome::ProductActionApplied(outcome.clone()))
+                        Some(product_action_host_outcome(outcome, reduced.cause()))
                     }
                     InputOutcome::ProductActionRejected { reason, .. } => {
                         Some(HostInputOutcome::ProductActionRejected(*reason))
@@ -158,7 +158,7 @@ impl HostFrameReport {
                         accepted: *accepted_base,
                     }),
                     InputOutcome::InteractionProcessed { outcome, .. } => {
-                        interaction_host_outcome(outcome)
+                        interaction_host_outcome(outcome, reduced.cause())
                     }
                     _ => None,
                 };
@@ -173,7 +173,7 @@ impl HostFrameReport {
             }
             for (edge_index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
                 for (outcome_index, outcome) in edge.interaction_outcomes().iter().enumerate() {
-                    if let Some(outcome) = interaction_host_outcome(outcome) {
+                    if let Some(outcome) = interaction_host_outcome(outcome, edge.cause()) {
                         ordered_inputs.push((
                             edge.causal_ordinal().get(),
                             edge_index,
@@ -194,11 +194,13 @@ impl HostFrameReport {
                     source_surface,
                     target_surface,
                     result,
+                    outcome,
                 } = event.kind()
                 else {
                     return None;
                 };
                 Some(DockspacePresentationTransition {
+                    id: DockspacePresentationTransitionId::from_cause(event.cause()),
                     root: *root,
                     source_surface: *source_surface,
                     target_surface: *target_surface,
@@ -222,6 +224,7 @@ impl HostFrameReport {
                             DockspacePresentationTransitionResult::CommandRejected
                         }
                     },
+                    outcome: outcome.clone(),
                 })
             })
             .collect();
@@ -261,10 +264,31 @@ impl HostFrameReport {
     }
 }
 
-fn interaction_host_outcome(outcome: &InteractionOutcome) -> Option<HostInputOutcome> {
+fn product_action_host_outcome(
+    outcome: &crate::model::DockspaceActionOutcome,
+    cause: crate::event::ReductionCause,
+) -> HostInputOutcome {
+    if matches!(
+        outcome,
+        crate::model::DockspaceActionOutcome::RootDockRequested { .. }
+            | crate::model::DockspaceActionOutcome::RootFloatRequested { .. }
+    ) {
+        HostInputOutcome::ProductPresentationActionRequested {
+            outcome: outcome.clone(),
+            transition: DockspacePresentationTransitionId::from_cause(cause),
+        }
+    } else {
+        HostInputOutcome::ProductActionApplied(outcome.clone())
+    }
+}
+
+fn interaction_host_outcome(
+    outcome: &InteractionOutcome,
+    cause: crate::event::ReductionCause,
+) -> Option<HostInputOutcome> {
     match outcome {
         InteractionOutcome::ProductActionApplied(outcome) => {
-            Some(HostInputOutcome::ProductActionApplied(outcome.clone()))
+            Some(product_action_host_outcome(outcome, cause))
         }
         InteractionOutcome::ProductActionRejected(reason) => {
             Some(HostInputOutcome::ProductActionRejected(*reason))

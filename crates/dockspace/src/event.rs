@@ -208,8 +208,12 @@ pub enum WorkspaceEventKind {
         source_surface: SurfaceId,
         /// Surface whose exact output gated the transition.
         target_surface: SurfaceId,
-        /// Terminal product-neutral result.
+        /// Stable terminal category.
         result: PresentationRehomeResult,
+        /// Complete product outcome captured at the ownership-transfer boundary.
+        ///
+        /// This is present exactly when `result` is [`PresentationRehomeResult::Applied`].
+        outcome: Option<crate::model::DockspaceActionOutcome>,
     },
     /// Application docking policy changed.
     PolicyReplaced,

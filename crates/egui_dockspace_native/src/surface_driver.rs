@@ -230,31 +230,25 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
-        let (pending_effect_reported, quiescence_recorded, reduced_callback, callback_error) = {
+        let prelude = {
             let coordinator = &mut self.coordinator;
-            let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
-            let quiescence_recorded =
-                surface == self.root_surface && coordinator.try_report_retirement_quiescence()?;
-            let reduced_callback = coordinator.reduce_callback_head()?;
-            let callback_error = coordinator.take_callback_error();
-            (
-                pending_effect_reported,
-                quiescence_recorded,
-                reduced_callback,
-                callback_error,
-            )
+            (|| {
+                let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
+                let quiescence_recorded = surface == self.root_surface
+                    && coordinator.try_report_retirement_quiescence()?;
+                let reduced_callback = coordinator.reduce_callback_head()?;
+                let callback_error = coordinator.take_callback_error();
+                Ok::<_, NativeRuntimeError>((
+                    pending_effect_reported,
+                    quiescence_recorded,
+                    reduced_callback,
+                    callback_error,
+                ))
+            })()
         };
-        let internal_transitions = self.coordinator.take_internal_presentation_transitions();
-        let internal_action_settled = if internal_transitions.is_empty() {
-            false
-        } else {
-            self.application_actions
-                .settle_presentation_transitions(
-                    &internal_transitions,
-                    self.coordinator.session().view(),
-                )
-                .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?
-        };
+        let internal_action_settled = self.settle_internal_application_transitions()?;
+        let (pending_effect_reported, quiescence_recorded, reduced_callback, callback_error) =
+            prelude?;
         if let Some(error) = callback_error {
             return Err(error);
         }
@@ -352,11 +346,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
 
         let mut report = host_frame.commit()?;
         let mut application_action_settled = application_actions
-            .settle(
-                report.inputs(),
-                report.presentation_transitions(),
-                self.coordinator.session().view(),
-            )
+            .settle(report.inputs(), report.presentation_transitions())
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         let coordinator = &mut self.coordinator;
         let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
@@ -416,16 +406,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let native_effects_emitted = !native_effects.is_empty();
         coordinator.accept_native_effects(native_effects)?;
         let native_close_progress =
-            coordinator.drive_close_policy(self.close_policy, self.root_surface)?;
+            coordinator.drive_close_policy(self.close_policy, self.root_surface);
         let internal_transitions = coordinator.take_internal_presentation_transitions();
         if !internal_transitions.is_empty() {
             application_action_settled |= application_actions
-                .settle_presentation_transitions(
-                    &internal_transitions,
-                    coordinator.session().view(),
-                )
+                .settle_presentation_transitions(&internal_transitions)
                 .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         }
+        let native_close_progress = native_close_progress?;
         for (viewport, command) in coordinator.take_viewport_commands() {
             context.send_viewport_cmd_to(viewport, command);
         }
@@ -502,6 +490,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if self.shutdown.is_some() {
             return;
         }
+        let _ = self.settle_internal_application_transitions();
         for token in self.coordinator.quarantine_after_fatal() {
             self.pass_actions.abandon(token);
         }
@@ -510,6 +499,16 @@ impl<P: PaneView> NativeRuntimeState<P> {
             primary: error,
             cleanup_errors: Vec::new(),
         });
+    }
+
+    fn settle_internal_application_transitions(&mut self) -> Result<bool, NativeRuntimeError> {
+        let transitions = self.coordinator.take_internal_presentation_transitions();
+        if transitions.is_empty() {
+            return Ok(false);
+        }
+        self.application_actions
+            .settle_presentation_transitions(&transitions)
+            .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing.into())
     }
 
     pub(crate) fn advance_shutdown(
@@ -756,7 +755,6 @@ mod tests {
                     dockspace::model::DockspaceActionRejection::PolicyDenied,
                 )],
                 &[],
-                state.coordinator.session().view(),
             )
             .expect("the exact product result settles the action");
         assert!(!state.application_actions.has_queued());
@@ -783,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_gated_action_remains_busy_after_its_request_is_accepted() {
+    fn presentation_gated_action_rejects_an_uncorrelated_legacy_outcome() {
         let mut state = test_state();
         let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
         state
@@ -807,9 +805,8 @@ mod tests {
                         },
                     )],
                     &[],
-                    state.coordinator.session().view(),
                 )
-                .expect("the accepted request advances to its presentation barrier")
+                .is_err()
         );
         assert!(state.application_actions.is_occupied());
         assert!(state.take_action_status().is_none());
@@ -855,7 +852,6 @@ mod tests {
                     dockspace::model::DockspaceActionRejection::PolicyDenied,
                 )],
                 &[],
-                state.coordinator.session().view(),
             )
             .expect("the exact product result settles the action");
 

@@ -1,9 +1,9 @@
 //! Bounded application-owned product action ingress.
 
-use dockspace::model::{DockspaceActionOutcome, DockspaceView, WorkspaceVersion};
+use dockspace::model::{DockspaceActionOutcome, WorkspaceVersion};
 use dockspace::runtime::{
-    DockspacePresentationTransition, DockspacePresentationTransitionResult, HostInputOutcome,
-    PreparedDockAction,
+    DockspacePresentationTransition, DockspacePresentationTransitionId,
+    DockspacePresentationTransitionResult, HostInputOutcome, PreparedDockAction,
 };
 use egui_dockspace::DockspaceActionStatus;
 
@@ -50,7 +50,10 @@ pub(crate) struct NativeApplicationActions {
 #[derive(Debug)]
 enum AwaitingApplicationAction {
     Reduction(WorkspaceVersion),
-    Presentation(DockspaceActionOutcome),
+    Presentation {
+        requested: DockspaceActionOutcome,
+        transition: DockspacePresentationTransitionId,
+    },
 }
 
 impl NativeApplicationActions {
@@ -85,82 +88,111 @@ impl NativeApplicationActions {
         &mut self,
         inputs: &[HostInputOutcome],
         transitions: &[DockspacePresentationTransition],
-        view: DockspaceView<'_>,
     ) -> Result<bool, ()> {
         let Some(awaiting) = self.awaiting.as_ref() else {
             return Ok(false);
         };
         match awaiting {
             AwaitingApplicationAction::Reduction(expected) => {
-                let Some(status) = inputs.iter().find_map(|input| match input {
+                let Some(settlement) = inputs.iter().find_map(|input| match input {
                     HostInputOutcome::ProductActionApplied(outcome) => {
-                        Some(DockspaceActionStatus::Applied(outcome.clone()))
+                        Some(ReductionSettlement::Terminal(
+                            DockspaceActionStatus::Applied(outcome.clone()),
+                        ))
                     }
-                    HostInputOutcome::ProductActionRejected(reason) => {
-                        Some(DockspaceActionStatus::Rejected(*reason))
-                    }
+                    HostInputOutcome::ProductPresentationActionRequested {
+                        outcome,
+                        transition,
+                    } => Some(ReductionSettlement::Presentation {
+                        requested: outcome.clone(),
+                        transition: *transition,
+                    }),
+                    HostInputOutcome::ProductActionRejected(reason) => Some(
+                        ReductionSettlement::Terminal(DockspaceActionStatus::Rejected(*reason)),
+                    ),
                     HostInputOutcome::StaleRejected {
                         expected: stale,
                         accepted,
-                    } if *stale == *expected => Some(DockspaceActionStatus::Stale {
-                        expected: *stale,
-                        accepted: *accepted,
-                    }),
+                    } if *stale == *expected => Some(ReductionSettlement::Terminal(
+                        DockspaceActionStatus::Stale {
+                            expected: *stale,
+                            accepted: *accepted,
+                        },
+                    )),
                     _ => None,
                 }) else {
                     return Err(());
                 };
-                let DockspaceActionStatus::Applied(
-                    requested @ (DockspaceActionOutcome::RootDockRequested { .. }
-                    | DockspaceActionOutcome::RootFloatRequested { .. }),
-                ) = status
-                else {
-                    self.awaiting = None;
-                    self.result = Some(status);
-                    return Ok(true);
-                };
-                self.awaiting = Some(AwaitingApplicationAction::Presentation(requested));
-                self.settle_presentation(transitions, view).map(|_| true)
+                match settlement {
+                    ReductionSettlement::Terminal(status) => {
+                        if matches!(
+                            status,
+                            DockspaceActionStatus::Applied(
+                                DockspaceActionOutcome::RootDockRequested { .. }
+                                    | DockspaceActionOutcome::RootFloatRequested { .. }
+                            )
+                        ) {
+                            return Err(());
+                        }
+                        self.awaiting = None;
+                        self.result = Some(status);
+                        Ok(true)
+                    }
+                    ReductionSettlement::Presentation {
+                        requested,
+                        transition,
+                    } => {
+                        if !matches!(
+                            requested,
+                            DockspaceActionOutcome::RootDockRequested { .. }
+                                | DockspaceActionOutcome::RootFloatRequested { .. }
+                        ) {
+                            return Err(());
+                        }
+                        self.awaiting = Some(AwaitingApplicationAction::Presentation {
+                            requested,
+                            transition,
+                        });
+                        self.settle_presentation(transitions).map(|_| true)
+                    }
+                }
             }
-            AwaitingApplicationAction::Presentation(_) => {
-                self.settle_presentation(transitions, view)
-            }
+            AwaitingApplicationAction::Presentation { .. } => self.settle_presentation(transitions),
         }
     }
 
     pub(crate) fn settle_presentation_transitions(
         &mut self,
         transitions: &[DockspacePresentationTransition],
-        view: DockspaceView<'_>,
     ) -> Result<bool, ()> {
         if !matches!(
             self.awaiting,
-            Some(AwaitingApplicationAction::Presentation(_))
+            Some(AwaitingApplicationAction::Presentation { .. })
         ) {
             return Ok(false);
         }
-        self.settle_presentation(transitions, view)
+        self.settle_presentation(transitions)
     }
 
     fn settle_presentation(
         &mut self,
         transitions: &[DockspacePresentationTransition],
-        view: DockspaceView<'_>,
     ) -> Result<bool, ()> {
-        let Some(AwaitingApplicationAction::Presentation(requested)) = self.awaiting.as_ref()
+        let Some(AwaitingApplicationAction::Presentation {
+            requested,
+            transition: requested_transition,
+        }) = self.awaiting.as_ref()
         else {
             return Ok(false);
         };
-        let Some(transition) = transitions
-            .iter()
-            .copied()
-            .find(|transition| transition_matches_request(*transition, requested))
-        else {
+        let Some(transition) = transitions.iter().find(|transition| {
+            transition_matches_request(transition, *requested_transition, requested)
+        }) else {
             return Ok(false);
         };
         let status = if transition.result() == DockspacePresentationTransitionResult::Applied {
             DockspaceActionStatus::Applied(
-                completed_presentation_outcome(requested, transition, view).ok_or(())?,
+                completed_presentation_outcome(requested, transition).ok_or(())?,
             )
         } else {
             DockspaceActionStatus::PresentationFailed {
@@ -185,10 +217,22 @@ impl NativeApplicationActions {
     }
 }
 
+enum ReductionSettlement {
+    Terminal(DockspaceActionStatus),
+    Presentation {
+        requested: DockspaceActionOutcome,
+        transition: DockspacePresentationTransitionId,
+    },
+}
+
 fn transition_matches_request(
-    transition: DockspacePresentationTransition,
+    transition: &DockspacePresentationTransition,
+    requested_transition: DockspacePresentationTransitionId,
     requested: &DockspaceActionOutcome,
 ) -> bool {
+    if transition.id() != requested_transition {
+        return false;
+    }
     match requested {
         DockspaceActionOutcome::RootDockRequested {
             root,
@@ -211,43 +255,42 @@ fn transition_matches_request(
 
 fn completed_presentation_outcome(
     requested: &DockspaceActionOutcome,
-    transition: DockspacePresentationTransition,
-    view: DockspaceView<'_>,
+    transition: &DockspacePresentationTransition,
 ) -> Option<DockspaceActionOutcome> {
-    match requested {
-        DockspaceActionOutcome::RootDockRequested {
-            root,
-            target_root,
-            items,
-            ..
-        } => Some(DockspaceActionOutcome::RootDocked {
-            root: *root,
-            target_root: *target_root,
-            items: items.clone(),
-            changed: true,
-        }),
-        DockspaceActionOutcome::RootFloatRequested { root, items, .. } => {
-            let first = view.item(*items.first()?)?;
-            let floating = first.contained()?;
-            if first.root() != *root
-                || first.surface() != transition.target_surface()
-                || !items.iter().copied().all(|item| {
-                    view.item(item).is_some_and(|location| {
-                        location.root() == *root
-                            && location.surface() == transition.target_surface()
-                            && location.contained() == Some(floating)
-                    })
-                })
-            {
-                return None;
-            }
-            Some(DockspaceActionOutcome::RootFloated {
-                root: *root,
-                surface: transition.target_surface(),
-                floating,
-                items: items.clone(),
-                changed: true,
-            })
+    let completed = transition.outcome()?;
+    match (requested, completed) {
+        (
+            DockspaceActionOutcome::RootDockRequested {
+                root,
+                target_root,
+                items,
+                ..
+            },
+            DockspaceActionOutcome::RootDocked {
+                root: completed_root,
+                target_root: completed_target,
+                items: completed_items,
+                ..
+            },
+        ) if completed_root == root
+            && completed_target == target_root
+            && completed_items == items =>
+        {
+            Some(completed.clone())
+        }
+        (
+            DockspaceActionOutcome::RootFloatRequested { root, items, .. },
+            DockspaceActionOutcome::RootFloated {
+                root: completed_root,
+                surface,
+                items: completed_items,
+                ..
+            },
+        ) if completed_root == root
+            && *surface == transition.target_surface()
+            && completed_items == items =>
+        {
+            Some(completed.clone())
         }
         _ => None,
     }

@@ -473,9 +473,12 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
     assert!(
         matches!(
             redock_report.inputs(),
-            [super::super::super::HostInputOutcome::ProductActionApplied(
-                crate::model::DockspaceActionOutcome::RootDockRequested { .. }
-            )]
+            [
+                super::super::super::HostInputOutcome::ProductPresentationActionRequested {
+                    outcome: crate::model::DockspaceActionOutcome::RootDockRequested { .. },
+                    ..
+                }
+            ]
         ),
         "actual redock inputs: {:?}",
         redock_report.inputs()

@@ -2428,6 +2428,7 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
             source_surface: NATIVE_SURFACE,
             target_surface: TARGET_SURFACE,
             result: crate::event::PresentationRehomeResult::Applied,
+            outcome: Some(DockspaceActionOutcome::RootFloated { .. }),
         } if *actual_root == root
     )));
 }
@@ -2688,6 +2689,7 @@ fn product_native_main_dock_back_uses_bound_recovery_after_target_presentation()
             source_surface: NATIVE_SURFACE,
             target_surface: actual_target,
             result: crate::event::PresentationRehomeResult::Applied,
+            outcome: Some(DockspaceActionOutcome::RootFloated { .. }),
         } if *actual_root == root && *actual_target == target_surface
     )));
 }
@@ -3224,6 +3226,7 @@ fn product_native_root_to_contained_settles_when_the_source_host_retires() {
             source_surface: NATIVE_SURFACE,
             target_surface: TARGET_SURFACE,
             result: crate::event::PresentationRehomeResult::SourceUnavailable,
+            outcome: None,
         } if *actual_root == root
     )));
     assert!(transition.platform_effects().iter().all(|effect| {
@@ -3312,6 +3315,7 @@ fn product_native_root_rehome_terminates_on_exact_backend_failure() {
             source_surface: NATIVE_SURFACE,
             target_surface: TARGET_SURFACE,
             result: crate::event::PresentationRehomeResult::TargetNotPresented,
+            outcome: None,
         } if *actual_root == root
     )));
     assert!(transition.platform_effects().iter().all(|effect| {
@@ -3323,7 +3327,7 @@ fn product_native_root_rehome_terminates_on_exact_backend_failure() {
 }
 
 #[test]
-fn product_native_root_rehome_terminates_on_target_failure_without_preview_token() {
+fn product_native_root_rehome_ignores_target_failure_without_preview_token() {
     const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
 
     let mut policy = DockPolicy::default();
@@ -3355,7 +3359,7 @@ fn product_native_root_rehome_terminates_on_target_failure_without_preview_token
     .expect("native-to-contained transition must stage");
 
     assert!(
-        fixture
+        !fixture
             .engine
             .observe_pending_presentation_rehome_dispositions(&[
                 HostPresentationDispositionOutcome::new(
@@ -3371,26 +3375,19 @@ fn product_native_root_rehome_terminates_on_target_failure_without_preview_token
     );
     let mut events = Vec::new();
     assert!(
-        fixture
+        !fixture
             .engine
             .settle_presented_pending_presentation_rehome(&mut events)
-            .expect("terminal target failure settles")
+            .expect("an unrelated target failure remains inert")
     );
-    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert!(fixture.engine.pending_presentation_rehome.is_some());
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
         Some(crate::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         })
     );
-    assert!(events.iter().any(|event| matches!(
-        event.kind(),
-        WorkspaceEventKind::PresentationRehomeSettled {
-            root: actual_root,
-            result: crate::event::PresentationRehomeResult::TargetNotPresented,
-            ..
-        } if *actual_root == root
-    )));
+    assert!(events.is_empty());
 }
 
 #[test]

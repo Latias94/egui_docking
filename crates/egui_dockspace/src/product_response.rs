@@ -125,6 +125,9 @@ impl DockspaceActionResult {
             HostInputOutcome::ProductActionApplied(outcome) => {
                 Some(DockspaceActionStatus::Applied(outcome.clone()))
             }
+            HostInputOutcome::ProductPresentationActionRequested { outcome, .. } => {
+                Some(DockspaceActionStatus::Applied(outcome.clone()))
+            }
             HostInputOutcome::ProductActionRejected(reason) => {
                 Some(DockspaceActionStatus::Rejected(*reason))
             }

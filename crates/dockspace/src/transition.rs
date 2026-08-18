@@ -550,6 +550,18 @@ impl ReducedInput {
         self.ordinal
     }
 
+    /// Returns the exact causal identity of this reduced semantic input.
+    #[must_use]
+    pub const fn cause(&self) -> crate::event::ReductionCause {
+        crate::event::ReductionCause::Input {
+            tick: self.tick,
+            ordinal: self.ordinal,
+            input: self.sequence,
+            source: self.source,
+            source_sequence: self.source_sequence,
+        }
+    }
+
     /// Returns the writer-assigned sequence.
     #[must_use]
     pub const fn sequence(&self) -> InputSequence {

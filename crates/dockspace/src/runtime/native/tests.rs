@@ -614,23 +614,26 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the owned child redock settles every surface");
     let mut report = redock.commit().expect("the owned child redock commits");
-    assert!(
-        matches!(
-            report.inputs(),
-            [super::super::HostInputOutcome::ProductActionApplied(
-                crate::model::DockspaceActionOutcome::RootDockRequested {
-                    root: actual_root,
-                    source_surface,
-                    target_root,
-                    ..
-                }
-            )] if *actual_root == child_root
-                && *source_surface == child_surface
-                && *target_root == ROOT
-        ),
-        "actual redock inputs: {:?}",
-        report.inputs()
-    );
+    let request_transition = match report.inputs() {
+        [
+            super::super::HostInputOutcome::ProductPresentationActionRequested {
+                outcome:
+                    crate::model::DockspaceActionOutcome::RootDockRequested {
+                        root: actual_root,
+                        source_surface,
+                        target_root,
+                        ..
+                    },
+                transition,
+            },
+        ] if *actual_root == child_root
+            && *source_surface == child_surface
+            && *target_root == ROOT =>
+        {
+            *transition
+        }
+        inputs => panic!("actual redock inputs: {inputs:?}"),
+    };
     assert_eq!(
         session
             .engine
@@ -655,11 +658,22 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
         matches!(
             report.presentation_transitions(),
             [transition]
-                if transition.root() == child_root
+                if transition.id() == request_transition
+                    && transition.root() == child_root
                     && transition.source_surface() == child_surface
                     && transition.target_surface() == SURFACE
                     && transition.result()
                         == super::super::DockspacePresentationTransitionResult::Applied
+                    && matches!(
+                        transition.outcome(),
+                        Some(crate::model::DockspaceActionOutcome::RootDocked {
+                            root: actual_root,
+                            target_root: ROOT,
+                            items,
+                            changed: true,
+                        }) if *actual_root == child_root
+                            && items == &[ItemId::new(2)]
+                    )
         ),
         "actual presentation transitions: {:?}",
         report.presentation_transitions()

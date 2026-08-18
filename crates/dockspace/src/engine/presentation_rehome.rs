@@ -484,6 +484,7 @@ impl DockEngine {
         };
         let failed = dispositions.iter().any(|outcome| {
             outcome.slot().surface() == pending.target_surface
+                && outcome.interaction().drag_preview() == Some(pending.preview.public().token())
                 && matches!(
                     outcome.disposition(),
                     HostPresentationDisposition::Unavailable(reason)
@@ -874,7 +875,13 @@ impl DockEngine {
             .take()
             .expect("checked pending presentation rehome remains present");
         if let Some(result) = rejection {
-            Self::record_presentation_rehome_settlement(&pending, result, self.version, events);
+            Self::record_presentation_rehome_settlement(
+                &pending,
+                result,
+                None,
+                self.version,
+                events,
+            );
             return Ok(true);
         }
         let PreviewProof::PresentationRehome { command } = pending.preview.proof() else {
@@ -911,22 +918,20 @@ impl DockEngine {
                 Self::record_presentation_rehome_settlement(
                     &pending,
                     crate::event::PresentationRehomeResult::CommandRejected,
+                    None,
                     self.version,
                     events,
                 );
                 return Ok(true);
             }
         };
-        if pending
+        let product_outcome = pending
             .context
             .clone()
             .map_outcome(outcome, changed)
-            .is_err()
-        {
-            return Err(EngineError::ReductionCauseInvariant {
+            .map_err(|_| EngineError::ReductionCauseInvariant {
                 detail: "presented product rehome produced an unrelated command outcome",
-            });
-        }
+            })?;
         if let Some(binding) = self
             .viewport
             .viewport(pending.target_surface)
@@ -942,6 +947,7 @@ impl DockEngine {
         Self::record_presentation_rehome_settlement(
             &pending,
             crate::event::PresentationRehomeResult::Applied,
+            Some(product_outcome),
             self.version,
             events,
         );
@@ -951,6 +957,7 @@ impl DockEngine {
     fn record_presentation_rehome_settlement(
         pending: &PendingPresentationRehome,
         result: crate::event::PresentationRehomeResult,
+        outcome: Option<DockspaceActionOutcome>,
         version: WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
     ) {
@@ -962,6 +969,7 @@ impl DockEngine {
                 source_surface: pending.source_surface,
                 target_surface: pending.target_surface,
                 result,
+                outcome,
             },
         ));
     }

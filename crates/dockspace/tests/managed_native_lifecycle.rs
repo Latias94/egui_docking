@@ -183,16 +183,15 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the redock frame retains current presentations");
     let mut redock_report = redock.commit().expect("the redock commits");
-    assert!(
-        matches!(
-            redock_report.inputs(),
-            [dockspace::runtime::HostInputOutcome::ProductActionApplied(
-                dockspace::model::DockspaceActionOutcome::RootDockRequested { .. }
-            )]
-        ),
-        "actual redock inputs: {:?}",
-        redock_report.inputs()
-    );
+    let request_transition = match redock_report.inputs() {
+        [
+            dockspace::runtime::HostInputOutcome::ProductPresentationActionRequested {
+                outcome: dockspace::model::DockspaceActionOutcome::RootDockRequested { .. },
+                transition,
+            },
+        ] => *transition,
+        inputs => panic!("actual redock inputs: {inputs:?}"),
+    };
     assert!(redock_report.take_native_effects().is_empty());
     assert_eq!(
         item_surface(&session, CHILD_ITEM),
@@ -205,11 +204,21 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
         matches!(
             settled.presentation_transitions(),
             [transition]
-                if transition.root() == CHILD_ROOT
+                if transition.id() == request_transition
+                    && transition.root() == CHILD_ROOT
                     && transition.source_surface() == child_binding.surface()
                     && transition.target_surface() == ROOT_SURFACE
                     && transition.result()
                         == dockspace::runtime::DockspacePresentationTransitionResult::Applied
+                    && matches!(
+                        transition.outcome(),
+                        Some(dockspace::model::DockspaceActionOutcome::RootDocked {
+                            root: CHILD_ROOT,
+                            target_root: MAIN_ROOT,
+                            items,
+                            changed: true,
+                        }) if items == &[CHILD_ITEM]
+                    )
         ),
         "actual presentation transitions: {:?}",
         settled.presentation_transitions()
