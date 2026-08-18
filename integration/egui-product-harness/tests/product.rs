@@ -5,12 +5,14 @@ use egui::{
 };
 use egui_dockspace::{
     CloseDecision, ClosePlanTarget, DockStyle, Dockspace, DockspaceActionOutcome,
-    DockspaceActionStatus, DockspaceAxis, DockspaceCloseRequest, DockspaceCloseRequestRejection,
-    DockspaceCloseRequestStatus, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
-    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
+    DockspaceActionStatus, DockspaceAxis, DockspaceCapability, DockspaceCloseRequest,
+    DockspaceCloseRequestRejection, DockspaceCloseRequestStatus, DockspaceContainedLayout,
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    DockspaceUnavailableReason, FloatingPresentationId, ItemId, LogicalRect, PaneFocusState,
     PaneView, RootId, SurfaceId,
 };
 use egui_kittest::{Harness, kittest::Queryable as _};
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -34,6 +36,26 @@ fn instrumented_style() -> DockStyle {
 }
 
 struct Panes;
+
+struct FocusPanes {
+    target: egui::Id,
+    expose_target: bool,
+    target_requests: Cell<usize>,
+}
+
+impl FocusPanes {
+    fn new(id_salt: &'static str, expose_target: bool) -> Self {
+        Self {
+            target: egui::Id::new((id_salt, "pane-focus-target")),
+            expose_target,
+            target_requests: Cell::new(0),
+        }
+    }
+
+    fn target_requests(&self) -> usize {
+        self.target_requests.get()
+    }
+}
 
 struct KittestProductState {
     dockspace: Dockspace,
@@ -83,6 +105,42 @@ impl PaneView for Panes {
 
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
         ui.label(format!("Pane {}", item.get()));
+    }
+}
+
+impl PaneView for FocusPanes {
+    fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+        Panes.title(item)
+    }
+
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        if item == SECOND {
+            let rect = Rect::from_min_size(ui.available_rect_before_wrap().min, vec2(120.0, 24.0));
+            let _ = ui.interact(rect, self.target, egui::Sense::click());
+        }
+        ui.label(format!("Pane {}", item.get()));
+    }
+
+    fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
+        if item != SECOND {
+            return None;
+        }
+        self.target_requests
+            .set(self.target_requests.get().saturating_add(1));
+        self.expose_target.then_some(self.target)
+    }
+
+    fn focus_state(&self, item: ItemId, context: &Context) -> PaneFocusState {
+        if item != SECOND || !self.expose_target {
+            return PaneFocusState::Unknown;
+        }
+        if context.input(|input| input.focused)
+            && context.memory(|memory| memory.has_focus(self.target))
+        {
+            PaneFocusState::Focused
+        } else {
+            PaneFocusState::Unfocused
+        }
     }
 }
 
@@ -272,7 +330,7 @@ fn run_frame_with_discard_after_dockspace(
 fn run_two_discarded_dockspace_passes(
     context: &Context,
     dockspace: &mut Dockspace,
-    panes: &mut Panes,
+    panes: &mut dyn PaneView,
     events: Vec<Event>,
 ) -> usize {
     let mut passes = 0;
@@ -288,6 +346,31 @@ fn run_two_discarded_dockspace_passes(
     });
     output.textures_delta.clear();
     passes
+}
+
+fn run_focus_frame(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut FocusPanes,
+    events: Vec<Event>,
+) -> (FrameOutput, DockspaceCapability) {
+    let mut close_requests = Vec::new();
+    let mut pane_focus_capability = None;
+    let mut output = context.run_ui(input(events), |ui| {
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, panes)
+            .expect("the pane-focus product frame advances");
+        close_requests.extend(response.close_request_events().iter().cloned());
+        pane_focus_capability = Some(response.pane_focus_capability());
+    });
+    output.textures_delta.clear();
+    (
+        FrameOutput {
+            output,
+            close_requests,
+        },
+        pane_focus_capability.expect("the pane-focus frame returns one capability"),
+    )
 }
 
 struct FrameOutput {
@@ -2563,6 +2646,118 @@ fn default_features_discarded_preview_cannot_release_a_drag() {
 }
 
 #[test]
+fn pane_focus_observation_settles_only_after_the_terminal_egui_pass() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-pane-focus", layout())
+        .build()
+        .expect("the pane-focus product facade initializes");
+    let mut panes = FocusPanes::new("product-pane-focus", true);
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (stable, _) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (second, _) = accesskit_node(&stable.output, Role::Tab, "Second");
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(second, Action::Click)],
+    );
+    assert_eq!(selected(&dockspace), Some(SECOND));
+    assert_eq!(panes.target_requests(), 0);
+
+    let (_, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(panes.target_requests(), 1);
+    assert_eq!(capability, DockspaceCapability::Supported);
+    assert!(context.memory(|memory| memory.has_focus(panes.target)));
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        panes.target_requests(),
+        1,
+        "the terminal Focused observation must complete the exact request",
+    );
+}
+
+#[test]
+fn unavailable_pane_focus_binding_terminates_without_guessing_a_target() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-pane-focus-unavailable", layout())
+        .build()
+        .expect("the unavailable-focus product facade initializes");
+    let mut panes = FocusPanes::new("product-pane-focus-unavailable", false);
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (stable, _) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (second, _) = accesskit_node(&stable.output, Role::Tab, "Second");
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(second, Action::Click)],
+    );
+
+    let (_, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(panes.target_requests(), 1);
+    assert_eq!(
+        capability,
+        DockspaceCapability::Unavailable(DockspaceUnavailableReason::PaneFocusBindingUnavailable,),
+    );
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        panes.target_requests(),
+        1,
+        "an unavailable terminal observation must not replay or guess a focus target",
+    );
+}
+
+#[test]
+fn discarded_pane_focus_observation_cannot_complete_the_request() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-discarded-pane-focus", layout())
+        .build()
+        .expect("the discarded-focus product facade initializes");
+    let mut panes = FocusPanes::new("product-discarded-pane-focus", true);
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (stable, _) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (second, _) = accesskit_node(&stable.output, Role::Tab, "Second");
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(second, Action::Click)],
+    );
+
+    context
+        .plugin_or_default::<LateDiscardPlugin>()
+        .lock()
+        .remaining = 2;
+    let passes =
+        run_two_discarded_dockspace_passes(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(passes, 3);
+    assert_eq!(panes.target_requests(), 2);
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        panes.target_requests(),
+        3,
+        "discarded Focused observations must leave the exact request pending",
+    );
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(panes.target_requests(), 3);
+}
+
+#[test]
 fn default_features_unfinished_egui_run_cannot_settle_preview() {
     let context = Context::default();
     context.enable_accesskit();
@@ -2883,6 +3078,57 @@ fn kittest_selects_and_closes_tabs_through_accessible_controls() {
 
     assert!(harness.state().dockspace.view().item(SECOND).is_none());
     assert_eq!(tab_items(&harness.state().dockspace), vec![FIRST]);
+}
+
+#[test]
+fn disabled_tab_bar_is_paint_only_for_pointer_keyboard_and_accessibility() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut policy = dockspace::policy::DockPolicy::default();
+    let mut target = dockspace::policy::DockTargetRule::default();
+    target.set_tab_bar(dockspace::policy::TabBarPolicy::new(
+        dockspace::policy::TabBarVisibility::Visible,
+        dockspace::policy::TabBarInteraction::Disabled,
+    ));
+    policy.set_target_rule(dockspace::policy::DockTargetRuleKey::Item(FIRST), target);
+    let mut dockspace = Dockspace::builder("product-disabled-tab-bar", layout())
+        .policy(policy)
+        .build()
+        .expect("the paint-only tab-bar facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(selected(&dockspace), Some(FIRST));
+    let (second_id, second_node) = accesskit_node(&stable.output, Role::Tab, "Second");
+    assert!(second_node.is_disabled());
+    assert!(!second_node.supports_action(Action::Focus));
+    assert!(!second_node.supports_action(Action::Click));
+    let second = node_rect(&stable.output, Role::Tab, "Second").center();
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(second),
+            pointer_button(second, true),
+            pointer_button(second, false),
+        ],
+    );
+    assert_eq!(selected(&dockspace), Some(FIRST));
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            accesskit_action(second_id, Action::Focus),
+            accesskit_action(second_id, Action::Click),
+        ],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Enter));
+    assert_eq!(selected(&dockspace), Some(FIRST));
 }
 
 #[test]

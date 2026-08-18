@@ -8,6 +8,7 @@
 
 mod close;
 mod error_kind;
+mod focus;
 mod host_frame;
 mod interaction;
 mod local_action;
@@ -39,6 +40,10 @@ use close::PreparedCloseRequestAuthorityMismatch;
 pub use close::{
     DockspaceCloseInertReason, DockspaceCloseItem, DockspaceClosePhase, DockspaceClosePlan,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, PreparedCloseRequest,
+};
+use focus::PreparedPaneFocusObservationAuthorityMismatch;
+pub use focus::{
+    DockspacePaneFocusObservation, DockspacePaneFocusRequest, PreparedPaneFocusObservation,
 };
 pub use interaction::{
     DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
@@ -645,7 +650,13 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PreparedSurfaceActionAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
+            DockspaceRuntimeErrorSource::PreparedPaneFocusObservationAuthorityMismatch(_) => {
+                DockspaceRuntimeErrorKind::OperationConflict
+            }
             DockspaceRuntimeErrorSource::SourceSequenceExhausted => {
+                DockspaceRuntimeErrorKind::Internal
+            }
+            DockspaceRuntimeErrorSource::PaneFocusObservationGenerationExhausted => {
                 DockspaceRuntimeErrorKind::Internal
             }
             #[cfg(feature = "serde")]
@@ -761,6 +772,22 @@ impl DockspaceRuntimeError {
             source: DockspaceRuntimeErrorSource::PreparedSurfaceActionAuthorityMismatch(error),
         }
     }
+
+    const fn prepared_pane_focus_observation_authority_mismatch(
+        error: PreparedPaneFocusObservationAuthorityMismatch,
+    ) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PreparedPaneFocusObservationAuthorityMismatch(
+                error,
+            ),
+        }
+    }
+
+    const fn pane_focus_observation_generation_exhausted() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PaneFocusObservationGenerationExhausted,
+        }
+    }
 }
 
 impl std::fmt::Display for DockspaceRuntimeError {
@@ -787,8 +814,12 @@ enum DockspaceRuntimeErrorSource {
     PreparedCloseRequestAuthorityMismatch(PreparedCloseRequestAuthorityMismatch),
     #[error(transparent)]
     PreparedSurfaceActionAuthorityMismatch(PreparedSurfaceActionAuthorityMismatch),
+    #[error(transparent)]
+    PreparedPaneFocusObservationAuthorityMismatch(PreparedPaneFocusObservationAuthorityMismatch),
     #[error("application input source sequence is exhausted")]
     SourceSequenceExhausted,
+    #[error("pane-focus observation generation is exhausted")]
+    PaneFocusObservationGenerationExhausted,
     #[cfg(feature = "serde")]
     #[error("document replacement is the final semantic mutation in its host frame")]
     DocumentRestoreAlreadySubmitted,

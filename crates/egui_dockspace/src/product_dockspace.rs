@@ -24,12 +24,12 @@ use crate::builder::DockspaceBuilder;
 use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
-use crate::pass_settlement::ProductPassSettlement;
+use crate::pass_settlement::{ProductPassSettlement, ProductPassSettlementBatch};
 use crate::product_render;
 use crate::response::DockspaceMutation;
 use crate::response::{
-    DockspaceActionResult, DockspaceCloseRequestResult, DockspaceCloseResult, DockspaceResponse,
-    DockspaceSurfaceStatus,
+    DockspaceActionResult, DockspaceCapability, DockspaceCloseRequestResult, DockspaceCloseResult,
+    DockspaceResponse, DockspaceSurfaceStatus, DockspaceUnavailableReason,
 };
 use crate::style::DockStyle;
 
@@ -679,15 +679,24 @@ impl Dockspace {
             return Err(DockspaceErrorSource::SurfaceOutsideRoster { surface }.into());
         }
 
-        for action in self.pass_settlement.take_ready(ui) {
+        let ready_settlement = self.pass_settlement.take_ready(ui);
+        for action in ready_settlement.presentation_actions {
             frame
                 .submit_surface_action(action)
+                .map_err(DockspaceError::from_detail)?;
+        }
+        if let Some(observation) = ready_settlement.pane_focus_observation {
+            frame
+                .submit_pane_focus_observation(observation)
                 .map_err(DockspaceError::from_detail)?;
         }
 
         let mut missing = BTreeSet::new();
         let mut defer_measurement = false;
         let mut presentation_actions = Vec::new();
+        let mut pane_focus_observation = None;
+        let mut pane_focus_capability =
+            DockspaceCapability::Unavailable(DockspaceUnavailableReason::SurfaceBoundsUnavailable);
         let had_plan = if let Some(plan) = frame
             .paint_plan(surface)
             .map_err(DockspaceError::from_detail)?
@@ -705,6 +714,8 @@ impl Dockspace {
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;
             presentation_actions = paint.presentation_actions;
+            pane_focus_observation = paint.pane_focus_observation;
+            pane_focus_capability = paint.pane_focus_capability;
             for action in paint.local_actions {
                 frame
                     .submit_surface_action(action)
@@ -735,15 +746,22 @@ impl Dockspace {
             )?);
         }
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
-        let needs_presentation_settlement = !presentation_actions.is_empty();
-        self.pass_settlement.stage(ui, presentation_actions);
+        let needs_presentation_settlement =
+            !presentation_actions.is_empty() || pane_focus_observation.is_some();
+        self.pass_settlement.stage(
+            ui,
+            ProductPassSettlementBatch {
+                presentation_actions,
+                pane_focus_observation,
+            },
+        );
         if needs_presentation_settlement {
             ui.ctx().request_repaint();
         }
         if !had_plan || report.repaint_surfaces().contains(&surface) {
             ui.ctx().request_repaint();
         }
-        product_response(&report, surface, missing, had_plan)
+        product_response(&report, surface, missing, had_plan, pane_focus_capability)
     }
 }
 
@@ -752,6 +770,7 @@ fn product_response(
     surface: SurfaceId,
     missing: BTreeSet<ItemId>,
     had_plan: bool,
+    pane_focus_capability: DockspaceCapability,
 ) -> Result<DockspaceResponse, DockspaceError> {
     DockspaceResponse::from_product_report(
         report,
@@ -763,6 +782,7 @@ fn product_response(
         } else {
             DockspaceSurfaceStatus::Bootstrap
         },
+        pane_focus_capability,
     )
     .ok_or(DockspaceErrorSource::ApplicationOutcomeUnavailable {
         operation: "surface contribution",

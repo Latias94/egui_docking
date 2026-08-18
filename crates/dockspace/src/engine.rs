@@ -242,9 +242,10 @@ use crate::viewport::{ViewportBinding, ViewportRole, WindowToken};
 use crate::viewport_focus::{
     ActivationStart, ActivationStartOutcome, FocusCausalStamp, FocusDelta,
     FocusObservationTransition, ObservedPlatformFocusEffect, PaneFocusDisposition, PaneFocusIntent,
-    PaneFocusIntentGeneration, PaneFocusObservation, PaneFocusRevealRejection, PanelFocusRecord,
-    PendingPlatformFocus, PlatformFocusEvidence, PlatformFocusRestoreGate,
-    ViewportActivationRequest, ViewportFocusCoordinator, ViewportFocusError,
+    PaneFocusIntentGeneration, PaneFocusObservation, PaneFocusRequestObservation,
+    PaneFocusRevealRejection, PanelFocusRecord, PendingPlatformFocus, PlatformFocusEvidence,
+    PlatformFocusRestoreGate, ViewportActivationRequest, ViewportFocusCoordinator,
+    ViewportFocusError,
 };
 use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission, ViewportOwnership};
 

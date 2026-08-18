@@ -46,7 +46,8 @@ use crate::viewport::{
 };
 use crate::viewport_focus::{
     FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
-    PaneFocusObservationGeneration, PaneFocusObservationTransition, PanelFocusRecord,
+    PaneFocusObservationGeneration, PaneFocusObservationTransition,
+    PaneFocusRequestObservationState, PanelFocusRecord,
 };
 
 const SOURCE_ROOT: RootId = RootId::new(1);

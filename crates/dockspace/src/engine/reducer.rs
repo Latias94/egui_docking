@@ -1313,6 +1313,10 @@ impl DockEngine {
                 expected_epoch,
                 observation,
             } => Ok(self.reduce_pane_focus_observation(*expected_epoch, *observation)),
+            EngineInput::PublishPaneFocusRequestObservation {
+                expected_epoch,
+                observation,
+            } => Ok(self.reduce_pane_focus_request_observation(*expected_epoch, *observation)),
             EngineInput::CancelNativeCreate { expected, saga } => {
                 self.reduce_native_create_cancellation(input.sequence, *expected, *saga)
             }
@@ -1552,6 +1556,7 @@ impl DockEngine {
                 tab,
             } => self.reduce_local_scene_tab_select(
                 input.sequence,
+                focus_causal,
                 *expected,
                 *application_base,
                 *scene,

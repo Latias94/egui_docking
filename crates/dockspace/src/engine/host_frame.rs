@@ -874,6 +874,15 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.viewport_focus.pending_pane_intent()
     }
 
+    /// Returns the pane-focus request admitted at this committed boundary.
+    ///
+    /// Unlike [`Self::pending_pane_focus_intent`], this never exposes an
+    /// obligation before the boundary that makes it observable to an adapter.
+    #[must_use]
+    pub fn published_pane_focus_intent(&self) -> Option<PaneFocusIntent> {
+        self.engine.viewport_focus.published_pane_intent()
+    }
+
     /// Produces deterministic contained placement from this frame's scene.
     pub fn contained_placement(
         &self,

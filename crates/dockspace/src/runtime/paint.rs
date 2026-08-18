@@ -23,7 +23,10 @@ use crate::scene::{
 };
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
 
-use super::{DockspaceHostFrame, DockspaceInteractionError, DockspaceRuntimeError};
+use super::{
+    DockspaceHostFrame, DockspaceInteractionError, DockspacePaneFocusObservation,
+    DockspacePaneFocusRequest, DockspaceRuntimeError, PreparedPaneFocusObservation,
+};
 
 mod actions;
 mod drag_decoration;
@@ -687,6 +690,7 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) drag_preview: Option<&'frame InteractionPreview>,
     pub(super) drag_decoration: Option<DockspaceDragDecoration<'frame>>,
     pub(super) contained_transform_preview: Option<&'frame ContainedTransformPreview>,
+    pub(super) pane_focus_request: Option<DockspacePaneFocusRequest>,
 }
 
 impl DockspaceHostFrame<'_> {
@@ -713,10 +717,21 @@ impl DockspaceHostFrame<'_> {
             .interaction()
             .active_drag_view()
             .and_then(|drag| drag_decoration::resolve(view.scene(), drag));
+        let version = view.version();
+        let pane_focus_request = view
+            .published_pane_focus_intent()
+            .filter(|intent| intent.surface() == surface)
+            .and_then(|intent| {
+                DockspacePaneFocusRequest::from_intent(
+                    self.session.engine.authority_domain(),
+                    version.epoch(),
+                    intent,
+                )
+            });
         Ok(Some(SurfacePaintPlan {
             surface,
             authority_domain: self.session.engine.authority_domain(),
-            version: view.version(),
+            version,
             scene: candidate.stamp(),
             output: candidate.output_ticket(),
             plan: candidate.plan(),
@@ -727,6 +742,7 @@ impl DockspaceHostFrame<'_> {
             drag_preview: view.presentation_drag_preview(surface),
             drag_decoration,
             contained_transform_preview: view.presentation_contained_transform_preview(surface),
+            pane_focus_request,
         }))
     }
 
@@ -766,10 +782,28 @@ impl<'frame> SurfacePaintPlan<'frame> {
         }
     }
 
+    /// Returns the exact pane-focus request admitted for this surface.
+    #[must_use]
+    pub const fn pane_focus_request(self) -> Option<DockspacePaneFocusRequest> {
+        self.pane_focus_request
+    }
+
+    /// Prepares one exact final-pass observation for this plan's focus request.
+    #[must_use]
+    pub fn prepare_pane_focus_observation(
+        self,
+        request: DockspacePaneFocusRequest,
+        observation: DockspacePaneFocusObservation,
+    ) -> Option<PreparedPaneFocusObservation> {
+        (self.pane_focus_request == Some(request))
+            .then(|| PreparedPaneFocusObservation::new(request, observation))
+    }
+
     /// Prepares a current-candidate tab selection without exposing scene identity.
     #[must_use]
     pub fn prepare_tab_select(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
         let tab = self.tab_record(item)?;
+        self.tab_is_operable(tab).then_some(())?;
         Some(super::PreparedSurfaceAction::select_tab(
             self.authority_domain,
             self.version,
@@ -835,7 +869,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.plan
             .tab_records()
             .iter()
-            .map(|record| TabPaintRecord { record })
+            .map(move |record| TabPaintRecord {
+                record,
+                operable: self.tab_is_operable(record),
+            })
     }
 
     pub fn tab_bars(self) -> impl ExactSizeIterator<Item = TabBarPaintRecord<'frame>> {
@@ -944,6 +981,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     #[must_use]
     pub fn tab_receiver(self, item: ItemId) -> Option<DockspaceReceiverDescriptor> {
         let tab = self.tab_record(item)?;
+        self.tab_is_operable(tab).then_some(())?;
         self.receiver(PresentationHitRegionKind::TabBody(*tab.id()))
     }
 
@@ -963,6 +1001,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         tab: TabPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
+        tab.operable().then_some(())?;
         let tab_id = *tab.record.id();
         self.receiver(PresentationHitRegionKind::TabBody(tab_id))
     }
@@ -1241,6 +1280,19 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .tab_records()
             .iter()
             .find(|record| record.id().item == item)
+    }
+
+    fn tab_is_operable(self, tab: &crate::scene::TabRecord) -> bool {
+        let bounds = tab.drag_hit().rect();
+        bounds.width() > 0.0
+            && bounds.height() > 0.0
+            && self
+                .plan
+                .tab_bar_records()
+                .iter()
+                .find(|bar| bar.id().root == tab.id().root && bar.id().tabs == tab.id().tabs)
+                .is_some_and(|bar| bar.interaction() == crate::policy::TabBarInteraction::Enabled)
+            && self.plan.region_is_operable(bounds, tab.layer())
     }
 
     fn receiver(self, kind: PresentationHitRegionKind) -> Option<DockspaceReceiverDescriptor> {

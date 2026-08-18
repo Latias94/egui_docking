@@ -62,6 +62,7 @@ impl PanePaintRecord<'_> {
 #[derive(Debug, Clone, Copy)]
 pub struct TabPaintRecord<'plan> {
     pub(super) record: &'plan TabRecord,
+    pub(super) operable: bool,
 }
 
 impl TabPaintRecord<'_> {
@@ -123,6 +124,12 @@ impl TabPaintRecord<'_> {
     #[must_use]
     pub const fn selected(self) -> bool {
         self.record.selected()
+    }
+
+    /// Returns whether the exact tab body may publish semantic actions.
+    #[must_use]
+    pub const fn operable(self) -> bool {
+        self.operable
     }
 
     #[must_use]

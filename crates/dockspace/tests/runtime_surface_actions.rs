@@ -4,18 +4,22 @@ use crate::model::{
     DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout,
 };
-use crate::policy::{DockItemRule, DockPolicy, DockSourceRule, DockSurfaceRule};
+use crate::policy::{
+    DockItemRule, DockPolicy, DockSourceRule, DockSurfaceRule, DockTargetRule, DockTargetRuleKey,
+    TabBarInteraction, TabBarPolicy, TabBarVisibility,
+};
 use crate::runtime::{
-    ContainedResizeDirection, DockspaceDragSourceKind, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceRuntimeErrorKind, DockspaceSession, DockspaceVisualId,
-    HostCloseRequestOrigin, HostInputOutcome, PreparedSurfaceAction,
-    SurfaceContainedResizeAdjustment, SurfaceGesturePhase, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabGroupDragRegionKind,
-    TabListMenuMetrics, TabStripControlKind, TabStripControlMetric, TabStripControlMetrics,
-    TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
+    ContainedResizeDirection, DockspaceDragSourceKind, DockspacePaneFocusObservation,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceRuntimeErrorKind,
+    DockspaceSession, DockspaceVisualId, HostCloseRequestOrigin, HostInputOutcome,
+    PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
+    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceSplitterAdjustment, SurfaceTabNavigation,
+    SurfaceUnavailableReason, TabGroupDragRegionKind, TabListMenuMetrics, TabStripControlKind,
+    TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
+    UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -37,6 +41,22 @@ fn session() -> DockspaceSession {
     .expect("surface-action test layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("surface-action test session initializes")
+}
+
+fn paint_only_tab_bar_session() -> DockspaceSession {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
+    )])
+    .expect("paint-only tab-bar layout validates");
+    let mut policy = DockPolicy::default();
+    let mut target = DockTargetRule::default();
+    target.set_tab_bar(TabBarPolicy::new(
+        TabBarVisibility::Visible,
+        TabBarInteraction::Disabled,
+    ));
+    policy.set_target_rule(DockTargetRuleKey::Item(FIRST), target);
+    DockspaceSession::from_layout(layout, policy).expect("paint-only tab-bar session initializes")
 }
 
 fn multiview_session() -> DockspaceSession {
@@ -768,6 +788,123 @@ fn exact_surface_tab_action_selects_without_exposing_scene_identity() {
             .expect("second item remains open")
             .is_selected()
     );
+}
+
+#[test]
+fn paint_only_tabs_expose_no_receiver_or_prepared_semantic_action() {
+    let mut session = paint_only_tab_bar_session();
+    install_ready_candidate(&mut session);
+
+    let mut frame = session.begin_host_frame().expect("paint frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("paint-only candidate remains paintable");
+    let tabs = plan.tabs().collect::<Vec<_>>();
+    assert_eq!(tabs.len(), 2);
+    assert!(tabs.iter().all(|tab| !tab.operable()));
+    assert!(
+        tabs.iter()
+            .all(|tab| plan.receiver_for_tab_body(*tab).is_none())
+    );
+    assert!(plan.prepare_tab_select(SECOND).is_none());
+    assert!(
+        plan.prepare_tab_navigation(FIRST, SurfaceTabNavigation::Next)
+            .is_none()
+    );
+    assert!(
+        plan.prepare_tab_gesture(
+            FIRST,
+            SurfaceGesturePhase::Begin {
+                initial: LogicalPoint::new(16.0, 16.0).expect("initial point validates"),
+                current: LogicalPoint::new(24.0, 16.0).expect("current point validates"),
+            },
+        )
+        .is_none()
+    );
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the paint-only candidate is retained");
+    frame.commit().expect("paint-only inspection frame commits");
+}
+
+#[test]
+fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
+    let mut session = session();
+    install_ready_candidate(&mut session);
+    let select = prepare_tab_select(&mut session, SECOND);
+
+    let mut select_frame = session.begin_host_frame().expect("selection frame begins");
+    select_frame
+        .submit_surface_action(select)
+        .expect("the exact tab selection is accepted");
+    select_frame
+        .measure_surface(SURFACE, metrics())
+        .expect("the selected surface measures");
+    select_frame.commit().expect("selection frame commits");
+
+    let mut not_focused_frame = session
+        .begin_host_frame()
+        .expect("not-focused observation frame begins");
+    let plan = not_focused_frame
+        .paint_plan(SURFACE)
+        .expect("focus paint plan lookup succeeds")
+        .expect("the focused surface remains paintable");
+    let request = plan
+        .pane_focus_request()
+        .expect("selection publishes an exact pane-focus request");
+    assert_eq!(request.surface(), SURFACE);
+    assert_eq!(request.item(), SECOND);
+    let not_focused = plan
+        .prepare_pane_focus_observation(request, DockspacePaneFocusObservation::NotFocused)
+        .expect("the exact request accepts a not-focused observation");
+    not_focused_frame
+        .submit_pane_focus_observation(not_focused)
+        .expect("the not-focused observation is accepted");
+    not_focused_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the unchanged focus surface is retained");
+    not_focused_frame
+        .commit()
+        .expect("not-focused observation commits");
+
+    let mut focused_frame = session
+        .begin_host_frame()
+        .expect("focused observation frame begins");
+    let plan = focused_frame
+        .paint_plan(SURFACE)
+        .expect("pending focus plan lookup succeeds")
+        .expect("the pending focus surface remains paintable");
+    let retained = plan
+        .pane_focus_request()
+        .expect("not-focused keeps the exact request pending");
+    assert_eq!(retained, request);
+    let focused = plan
+        .prepare_pane_focus_observation(retained, DockspacePaneFocusObservation::Focused)
+        .expect("the retained request accepts a focused observation");
+    focused_frame
+        .submit_pane_focus_observation(focused)
+        .expect("the focused observation is accepted");
+    focused_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the focused surface is retained");
+    focused_frame.commit().expect("focused observation commits");
+
+    let mut settled = session
+        .begin_host_frame()
+        .expect("settled focus inspection frame begins");
+    assert!(
+        settled
+            .paint_plan(SURFACE)
+            .expect("settled focus plan lookup succeeds")
+            .expect("the settled focus surface remains paintable")
+            .pane_focus_request()
+            .is_none()
+    );
+    settled
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the settled surface is retained");
+    settled.commit().expect("settled inspection frame commits");
 }
 
 #[test]

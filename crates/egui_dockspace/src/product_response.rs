@@ -438,6 +438,7 @@ impl DockspaceResponse {
         missing_panes: Vec<ItemId>,
         local_actions_current: bool,
         surface_status: DockspaceSurfaceStatus,
+        pane_focus_capability: DockspaceCapability,
     ) -> Option<Self> {
         let mut surface_commits = report
             .surface_commits()
@@ -476,9 +477,7 @@ impl DockspaceResponse {
                 contained_capability: DockspaceCapability::Unavailable(
                     DockspaceUnavailableReason::PresentationSettlementRequired,
                 ),
-                pane_focus_capability: DockspaceCapability::Unavailable(
-                    DockspaceUnavailableReason::PaneFocusBindingUnavailable,
-                ),
+                pane_focus_capability,
             },
             surface_commit_status: status,
             close_requests,

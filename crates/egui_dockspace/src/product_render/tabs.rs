@@ -90,6 +90,15 @@ fn paint_panes(
                 ui.label(format!("Missing pane {}", item.get()));
             });
         } else {
+            if context
+                .pane_focus_request
+                .is_some_and(|request| request.item() == item)
+                && !*context.pane_focus_target_requested
+                && let Some(target) = context.panes.focus_target(item)
+            {
+                context.ui.memory_mut(|memory| memory.request_focus(target));
+                *context.pane_focus_target_requested = true;
+            }
             context.panes.ui(item, &mut child);
         }
     }
@@ -225,14 +234,22 @@ fn paint_tab(
         return;
     };
     let id = tab_id(context.ui, context.instance_id, tab);
+    let operable = tab.operable() && context.ui.is_enabled();
+    let receiver = operable
+        .then(|| context.plan.receiver_for_tab_body(tab))
+        .flatten();
     let response = context.interact_receiver(
         drag,
         id,
-        Sense::click_and_drag(),
-        context.plan.receiver_for_tab_body(tab),
+        if operable {
+            Sense::click_and_drag()
+        } else {
+            Sense::hover()
+        },
+        receiver,
     );
     let locally_dragged = context.response_dragged_locally(&response);
-    if response.hovered() || locally_dragged {
+    if operable && (response.hovered() || locally_dragged) {
         context.ui.ctx().set_cursor_icon(if locally_dragged {
             CursorIcon::Grabbing
         } else {
@@ -279,8 +296,17 @@ fn paint_tab(
             );
         }
     }
-    configure_tab_accessibility(context.ui, id, visible, resource.title.as_str(), selected);
-    capture_tab_actions(context, tab, resource, &response, focused, !source_gap);
+    configure_tab_accessibility(
+        context.ui,
+        id,
+        visible,
+        resource.title.as_str(),
+        selected,
+        operable,
+    );
+    if operable {
+        capture_tab_actions(context, tab, resource, &response, focused, !source_gap);
+    }
 }
 
 fn tab_id(ui: &Ui, instance_id: Id, tab: TabPaintRecord<'_>) -> Id {
@@ -426,13 +452,24 @@ fn paint_close(
     }
 }
 
-fn configure_tab_accessibility(ui: &Ui, id: Id, rect: egui::Rect, title: &str, selected: bool) {
+fn configure_tab_accessibility(
+    ui: &Ui,
+    id: Id,
+    rect: egui::Rect,
+    title: &str,
+    selected: bool,
+    operable: bool,
+) {
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(Role::Tab);
         node.set_bounds(accesskit_bounds(rect));
         node.set_label(title);
-        node.add_action(Action::Focus);
-        node.add_action(Action::Click);
+        if operable {
+            node.add_action(Action::Focus);
+            node.add_action(Action::Click);
+        } else {
+            node.set_disabled();
+        }
         if selected {
             node.set_selected(true);
         } else {

@@ -2,8 +2,14 @@
 
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-use dockspace::runtime::PreparedSurfaceAction;
+use dockspace::runtime::{PreparedPaneFocusObservation, PreparedSurfaceAction};
 use egui::{Context, FullOutput, Ui, ViewportId};
+
+#[derive(Default)]
+pub(super) struct ProductPassSettlementBatch {
+    pub(super) presentation_actions: Vec<PreparedSurfaceAction>,
+    pub(super) pane_focus_observation: Option<PreparedPaneFocusObservation>,
+}
 
 #[derive(Default)]
 pub(super) struct ProductPassSettlement {
@@ -11,19 +17,19 @@ pub(super) struct ProductPassSettlement {
 }
 
 impl ProductPassSettlement {
-    pub(super) fn take_ready(&self, ui: &Ui) -> Vec<PreparedSurfaceAction> {
+    pub(super) fn take_ready(&self, ui: &Ui) -> ProductPassSettlementBatch {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.take_ready(ui.ctx(), ui.ctx().viewport_id())
     }
 
-    pub(super) fn stage(&self, ui: &Ui, actions: Vec<PreparedSurfaceAction>) {
+    pub(super) fn stage(&self, ui: &Ui, batch: ProductPassSettlementBatch) {
         let weak = Arc::downgrade(&self.state);
         ui.ctx()
             .plugin_or_default::<DockspacePassSettlementPlugin>()
             .lock()
             .register(weak);
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.stage(ui.ctx(), ui.ctx().viewport_id(), actions);
+        state.stage(ui.ctx(), ui.ctx().viewport_id(), batch);
     }
 }
 
@@ -38,7 +44,7 @@ impl PassSettlementState {
         &mut self,
         context: &Context,
         viewport: ViewportId,
-        actions: Vec<PreparedSurfaceAction>,
+        batch: ProductPassSettlementBatch,
     ) {
         let pass_index = context.current_pass_index();
         let frame_nr = context.cumulative_frame_nr_for(viewport);
@@ -53,7 +59,7 @@ impl PassSettlementState {
                 pass_index,
                 frame_nr,
                 observed_output: false,
-                actions,
+                batch,
             };
             return;
         }
@@ -64,7 +70,7 @@ impl PassSettlementState {
             pass_index,
             frame_nr,
             observed_output: false,
-            actions,
+            batch,
         });
     }
 
@@ -82,7 +88,7 @@ impl PassSettlementState {
                     self.ready.push(ReadyPass {
                         context: staged.context,
                         viewport: staged.viewport,
-                        actions: staged.actions,
+                        batch: staged.batch,
                     });
                 }
             } else {
@@ -121,18 +127,23 @@ impl PassSettlementState {
         &mut self,
         context: &Context,
         viewport: ViewportId,
-    ) -> Vec<PreparedSurfaceAction> {
-        let mut actions = Vec::new();
+    ) -> ProductPassSettlementBatch {
+        let mut batch = ProductPassSettlementBatch::default();
         let mut retained = Vec::with_capacity(self.ready.len());
         for ready in std::mem::take(&mut self.ready) {
             if ready.context == *context && ready.viewport == viewport {
-                actions.extend(ready.actions);
+                batch
+                    .presentation_actions
+                    .extend(ready.batch.presentation_actions);
+                if ready.batch.pane_focus_observation.is_some() {
+                    batch.pane_focus_observation = ready.batch.pane_focus_observation;
+                }
             } else {
                 retained.push(ready);
             }
         }
         self.ready = retained;
-        actions
+        batch
     }
 }
 
@@ -142,13 +153,13 @@ struct StagedPass {
     pass_index: usize,
     frame_nr: u64,
     observed_output: bool,
-    actions: Vec<PreparedSurfaceAction>,
+    batch: ProductPassSettlementBatch,
 }
 
 struct ReadyPass {
     context: Context,
     viewport: ViewportId,
-    actions: Vec<PreparedSurfaceAction>,
+    batch: ProductPassSettlementBatch,
 }
 
 #[derive(Default)]

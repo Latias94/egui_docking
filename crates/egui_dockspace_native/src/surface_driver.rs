@@ -310,7 +310,15 @@ impl<P: PaneView> NativeRuntimeState<P> {
                         .expect("a checked application action remains pending");
                     submitted_application_action = Some(host_frame.submit_prepared_action(action)?);
                 }
-                for action in actions.into_ordered() {
+                let (presentation_actions, pane_focus_observation, local_actions) =
+                    actions.into_parts();
+                for action in presentation_actions {
+                    host_frame.submit_surface_action(action)?;
+                }
+                if let Some(observation) = pane_focus_observation {
+                    host_frame.submit_pane_focus_observation(observation)?;
+                }
+                for action in local_actions {
                     host_frame.submit_surface_action(action)?;
                 }
 

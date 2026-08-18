@@ -559,8 +559,9 @@ pub struct PaneFocusIntent {
     id: PaneFocusIntentId,
     causal: FocusCausalStamp,
     activation: Option<ActivationGeneration>,
-    target: ViewportBinding,
-    focus: PanelFocus,
+    surface: SurfaceId,
+    item: Option<ItemId>,
+    native_guard: Option<ViewportBinding>,
     source: PaneFocusIntentSource,
     cause: Option<ViewportActivationCause>,
     focus_observation_baseline: FocusObservationGeneration,
@@ -589,13 +590,26 @@ impl PaneFocusIntent {
     }
 
     #[must_use]
-    pub const fn target(self) -> ViewportBinding {
-        self.target
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    #[must_use]
+    pub const fn item(self) -> Option<ItemId> {
+        self.item
+    }
+
+    #[must_use]
+    pub const fn native_guard(self) -> Option<ViewportBinding> {
+        self.native_guard
     }
 
     #[must_use]
     pub const fn focus(self) -> PanelFocus {
-        self.focus
+        match self.item {
+            Some(item) => PanelFocus::Item(item),
+            None => PanelFocus::None,
+        }
     }
 
     #[must_use]
@@ -1092,6 +1106,80 @@ pub struct PaneFocusObservation {
     acknowledges: Option<PaneFocusIntentId>,
 }
 
+/// Exact result of resolving one published pane-focus request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaneFocusRequestObservationState {
+    /// The requested pane target owns framework focus.
+    Focused,
+    /// The target is available but does not yet own framework focus.
+    NotFocused,
+    /// This request cannot bind to a framework focus target in its revision.
+    Unavailable,
+}
+
+/// One exact request-bound pane-focus observation.
+///
+/// The target identity is copied from the opaque request so an adapter cannot
+/// acknowledge a request while reporting a different surface, item, or native
+/// incarnation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneFocusRequestObservation {
+    generation: PaneFocusObservationGeneration,
+    intent: PaneFocusIntentId,
+    surface: SurfaceId,
+    item: Option<ItemId>,
+    native_guard: Option<ViewportBinding>,
+    state: PaneFocusRequestObservationState,
+}
+
+impl PaneFocusRequestObservation {
+    #[must_use]
+    pub const fn new(
+        generation: PaneFocusObservationGeneration,
+        intent: PaneFocusIntent,
+        state: PaneFocusRequestObservationState,
+    ) -> Self {
+        Self {
+            generation,
+            intent: intent.id,
+            surface: intent.surface,
+            item: intent.item,
+            native_guard: intent.native_guard,
+            state,
+        }
+    }
+
+    #[must_use]
+    pub const fn generation(self) -> PaneFocusObservationGeneration {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn intent(self) -> PaneFocusIntentId {
+        self.intent
+    }
+
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    #[must_use]
+    pub const fn item(self) -> Option<ItemId> {
+        self.item
+    }
+
+    #[must_use]
+    pub const fn native_guard(self) -> Option<ViewportBinding> {
+        self.native_guard
+    }
+
+    #[must_use]
+    pub const fn state(self) -> PaneFocusRequestObservationState {
+        self.state
+    }
+}
+
 impl PaneFocusObservation {
     #[must_use]
     pub const fn new(
@@ -1143,6 +1231,7 @@ pub enum PaneFocusObservationRejection {
     IntentNotPublished { intent: PaneFocusIntentId },
     IntentBindingMismatch,
     IntentFocusMismatch,
+    IntentTargetMismatch,
     ObservationPrecedesIntent,
 }
 
@@ -1159,6 +1248,15 @@ pub enum PaneFocusObservationTransition {
     EqualGenerationConflict {
         generation: PaneFocusObservationGeneration,
     },
+    Focused {
+        cleared_intent: PaneFocusIntentId,
+    },
+    NotFocused {
+        intent: PaneFocusIntentId,
+    },
+    Unavailable {
+        intent: PaneFocusIntentId,
+    },
     Rejected(PaneFocusObservationRejection),
 }
 
@@ -1168,11 +1266,17 @@ struct PanelFocusObservationRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PaneFocusRequestObservationRecord {
+    observation: PaneFocusRequestObservation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PaneIntentWatermark {
     causal: FocusCausalStamp,
     source: PaneFocusIntentSource,
-    target: ViewportBinding,
-    focus: PanelFocus,
+    surface: SurfaceId,
+    item: Option<ItemId>,
+    native_guard: Option<ViewportBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1199,6 +1303,7 @@ impl NativeActivationReservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusClaimTarget {
     Dock(ViewportBinding),
+    Surface(SurfaceId),
     Foreign,
     None,
 }
@@ -1215,7 +1320,7 @@ impl FocusClaimTarget {
     const fn dock(self) -> Option<ViewportBinding> {
         match self {
             Self::Dock(binding) => Some(binding),
-            Self::Foreign | Self::None => None,
+            Self::Surface(_) | Self::Foreign | Self::None => None,
         }
     }
 }
@@ -1235,7 +1340,10 @@ impl PaneCausalClaim {
         Self {
             causal: install.causal,
             source: install.source,
-            target: FocusClaimTarget::Dock(install.target),
+            target: install.native_guard.map_or(
+                FocusClaimTarget::Surface(install.surface),
+                FocusClaimTarget::Dock,
+            ),
             pane: PaneFocusDisposition::from_focus(install.focus),
             cause: install
                 .cause
@@ -1293,7 +1401,8 @@ struct FocusLane {
 struct PaneIntentInstall {
     causal: FocusCausalStamp,
     activation: Option<ActivationGeneration>,
-    target: ViewportBinding,
+    surface: SurfaceId,
+    native_guard: Option<ViewportBinding>,
     focus: PanelFocus,
     source: PaneFocusIntentSource,
     cause: Option<ViewportActivationCause>,
@@ -1604,6 +1713,7 @@ pub struct ViewportFocusCoordinator {
     admitted_pane_intent: Option<PaneFocusIntentId>,
     panel_focus_by_surface: BTreeMap<SurfaceId, PanelFocusRecord>,
     pane_observation_by_surface: BTreeMap<SurfaceId, PanelFocusObservationRecord>,
+    pane_request_observation_by_surface: BTreeMap<SurfaceId, PaneFocusRequestObservationRecord>,
 }
 
 impl ViewportFocusCoordinator {
@@ -1681,8 +1791,11 @@ impl ViewportFocusCoordinator {
         PaneCausalClaim {
             causal: intent.causal,
             source: intent.source,
-            target: FocusClaimTarget::Dock(intent.target),
-            pane: PaneFocusDisposition::from_focus(intent.focus),
+            target: intent.native_guard.map_or(
+                FocusClaimTarget::Surface(intent.surface),
+                FocusClaimTarget::Dock,
+            ),
+            pane: PaneFocusDisposition::from_focus(intent.focus()),
             cause: intent
                 .cause
                 .unwrap_or(ViewportActivationCause::PlatformObservation),
@@ -2045,6 +2158,15 @@ impl ViewportFocusCoordinator {
         self.pending_pane_intent
     }
 
+    /// Returns only the exact pane-focus request admitted at a committed boundary.
+    #[must_use]
+    pub fn published_pane_intent(&self) -> Option<PaneFocusIntent> {
+        match self.pending_pane_intent {
+            Some(intent) if self.admitted_pane_intent == Some(intent.id) => Some(intent),
+            Some(_) | None => None,
+        }
+    }
+
     #[must_use]
     pub fn panel_focus(&self, surface: SurfaceId) -> PanelFocusRecord {
         self.panel_focus_by_surface
@@ -2273,7 +2395,8 @@ impl ViewportFocusCoordinator {
             let intent = self.install_pane_intent(PaneIntentInstall {
                 causal,
                 activation: Some(generation),
-                target: request.target,
+                surface: request.target.surface(),
+                native_guard: Some(request.target),
                 focus,
                 source: request.cause.pane_source(),
                 cause: Some(request.cause),
@@ -2331,7 +2454,8 @@ impl ViewportFocusCoordinator {
             let intent = self.install_pane_intent(PaneIntentInstall {
                 causal,
                 activation: Some(generation),
-                target: request.target,
+                surface: request.target.surface(),
+                native_guard: Some(request.target),
                 focus,
                 source: request.cause.pane_source(),
                 cause: Some(request.cause),
@@ -2881,10 +3005,12 @@ impl ViewportFocusCoordinator {
         if !focused_is_isolated
             && self.pending_pane_intent.is_some_and(|intent| {
                 observation.generation > intent.focus_observation_baseline
+                    && intent.native_guard.is_some()
                     && matches!(
                         observation.focused,
                         Authority::Known(focused)
-                            if focused != GlobalFocusedWindow::Dock(intent.target)
+                            if Some(focused)
+                                != intent.native_guard.map(GlobalFocusedWindow::Dock)
                     )
             })
         {
@@ -2920,7 +3046,8 @@ impl ViewportFocusCoordinator {
                 applied.set_pane_intent(self.install_pane_intent(PaneIntentInstall {
                     causal,
                     activation: None,
-                    target: binding,
+                    surface: binding.surface(),
+                    native_guard: Some(binding),
                     focus,
                     source: PaneFocusIntentSource::PlatformActivation,
                     cause: None,
@@ -3014,7 +3141,8 @@ impl ViewportFocusCoordinator {
                 let intent = self.install_pane_intent(PaneIntentInstall {
                     causal: record.causal,
                     activation: Some(record.generation),
-                    target: request.target,
+                    surface: request.target.surface(),
+                    native_guard: Some(request.target),
                     focus,
                     source: request.cause.pane_source(),
                     cause: Some(request.cause),
@@ -3178,7 +3306,8 @@ impl ViewportFocusCoordinator {
             let intent = self.install_pane_intent(PaneIntentInstall {
                 causal: pending.causal,
                 activation: Some(pending.generation),
-                target: pending.request.target,
+                surface: pending.request.target.surface(),
+                native_guard: Some(pending.request.target),
                 focus,
                 source: pending.request.cause.pane_source(),
                 cause: Some(pending.request.cause),
@@ -3222,6 +3351,23 @@ impl ViewportFocusCoordinator {
         }
 
         let surface = observation.binding.surface();
+        if let Some(current) = self
+            .pane_request_observation_by_surface
+            .get(&surface)
+            .copied()
+        {
+            let current_generation = current.observation.generation;
+            if observation.generation < current_generation {
+                return PaneFocusObservationTransition::Stale {
+                    current: current_generation,
+                };
+            }
+            if observation.generation == current_generation {
+                return PaneFocusObservationTransition::EqualGenerationConflict {
+                    generation: observation.generation,
+                };
+            }
+        }
         if let Some(current) = self.pane_observation_by_surface.get(&surface).copied() {
             let current_generation = current.observation.generation;
             if observation.generation < current_generation {
@@ -3256,12 +3402,12 @@ impl ViewportFocusCoordinator {
                     PaneFocusObservationRejection::IntentNotPublished { intent: intent_id },
                 );
             }
-            if intent.target != observation.binding {
+            if intent.native_guard != Some(observation.binding) {
                 return PaneFocusObservationTransition::Rejected(
                     PaneFocusObservationRejection::IntentBindingMismatch,
                 );
             }
-            if intent.focus != observation.focus {
+            if intent.focus() != observation.focus {
                 return PaneFocusObservationTransition::Rejected(
                     PaneFocusObservationRejection::IntentFocusMismatch,
                 );
@@ -3278,17 +3424,6 @@ impl ViewportFocusCoordinator {
             self.clear_admitted_pane_intent(intent_id);
             Some(intent_id)
         } else {
-            if self.pending_pane_intent.is_some_and(|intent| {
-                intent.target == observation.binding
-                    && intent.focus != observation.focus
-                    && intent
-                        .pane_observation_baseline
-                        .is_none_or(|baseline| observation.generation > baseline)
-            }) {
-                if let Some(intent) = self.pending_pane_intent.take() {
-                    self.clear_admitted_pane_intent(intent.id);
-                }
-            }
             None
         };
 
@@ -3297,6 +3432,127 @@ impl ViewportFocusCoordinator {
         self.pane_observation_by_surface
             .insert(surface, PanelFocusObservationRecord { observation });
         PaneFocusObservationTransition::Applied { cleared_intent }
+    }
+
+    /// Resolves one exact request-bound pane-focus observation.
+    pub fn publish_pane_focus_request_observation(
+        &mut self,
+        observation: PaneFocusRequestObservation,
+        is_current_binding: impl FnOnce(ViewportBinding) -> bool,
+        item_is_on_surface: impl FnOnce(SurfaceId, ItemId) -> bool,
+    ) -> PaneFocusObservationTransition {
+        let Some(intent) = self.pending_pane_intent else {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::UnknownIntent {
+                    intent: observation.intent,
+                },
+            );
+        };
+        if intent.id != observation.intent {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::UnknownIntent {
+                    intent: observation.intent,
+                },
+            );
+        }
+        if self.admitted_pane_intent != Some(intent.id) {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::IntentNotPublished { intent: intent.id },
+            );
+        }
+        if intent.surface != observation.surface
+            || intent.item != observation.item
+            || intent.native_guard != observation.native_guard
+        {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::IntentTargetMismatch,
+            );
+        }
+        if observation
+            .native_guard
+            .is_some_and(|binding| !is_current_binding(binding))
+        {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::StaleBinding,
+            );
+        }
+        if let Some(item) = observation.item
+            && !item_is_on_surface(observation.surface, item)
+        {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::ItemUnavailable { item },
+            );
+        }
+        if intent
+            .pane_observation_baseline
+            .is_some_and(|baseline| observation.generation <= baseline)
+        {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::ObservationPrecedesIntent,
+            );
+        }
+        if let Some(current) = self
+            .pane_observation_by_surface
+            .get(&observation.surface)
+            .copied()
+        {
+            let current_generation = current.observation.generation;
+            if observation.generation < current_generation {
+                return PaneFocusObservationTransition::Stale {
+                    current: current_generation,
+                };
+            }
+            if observation.generation == current_generation {
+                return PaneFocusObservationTransition::EqualGenerationConflict {
+                    generation: observation.generation,
+                };
+            }
+        }
+        if let Some(current) = self
+            .pane_request_observation_by_surface
+            .get(&observation.surface)
+            .copied()
+        {
+            let current_generation = current.observation.generation;
+            if observation.generation < current_generation {
+                return PaneFocusObservationTransition::Stale {
+                    current: current_generation,
+                };
+            }
+            if observation.generation == current_generation {
+                return if observation == current.observation {
+                    PaneFocusObservationTransition::Duplicate
+                } else {
+                    PaneFocusObservationTransition::EqualGenerationConflict {
+                        generation: observation.generation,
+                    }
+                };
+            }
+        }
+
+        self.pane_request_observation_by_surface.insert(
+            observation.surface,
+            PaneFocusRequestObservationRecord { observation },
+        );
+        match observation.state {
+            PaneFocusRequestObservationState::NotFocused => {
+                PaneFocusObservationTransition::NotFocused { intent: intent.id }
+            }
+            PaneFocusRequestObservationState::Focused => {
+                self.pending_pane_intent = None;
+                self.clear_admitted_pane_intent(intent.id);
+                self.panel_focus_by_surface
+                    .insert(intent.surface, PanelFocusRecord::from_focus(intent.focus()));
+                PaneFocusObservationTransition::Focused {
+                    cleared_intent: intent.id,
+                }
+            }
+            PaneFocusRequestObservationState::Unavailable => {
+                self.pending_pane_intent = None;
+                self.clear_admitted_pane_intent(intent.id);
+                PaneFocusObservationTransition::Unavailable { intent: intent.id }
+            }
+        }
     }
 
     /// Removes binding-scoped pending state while preserving per-surface focus history.
@@ -3325,7 +3581,7 @@ impl ViewportFocusCoordinator {
         }
         if self
             .pending_pane_intent
-            .is_some_and(|intent| intent.target == binding)
+            .is_some_and(|intent| intent.native_guard == Some(binding))
         {
             cleanup.pending_intent_removed = self.pending_pane_intent.take().map(|intent| {
                 self.clear_admitted_pane_intent(intent.id);
@@ -3350,6 +3606,15 @@ impl ViewportFocusCoordinator {
             self.pane_observation_by_surface.remove(&binding.surface());
             cleanup.pane_observation_removed = true;
         }
+        if self
+            .pane_request_observation_by_surface
+            .get(&binding.surface())
+            .is_some_and(|record| record.observation.native_guard == Some(binding))
+        {
+            self.pane_request_observation_by_surface
+                .remove(&binding.surface());
+            cleanup.pane_observation_removed = true;
+        }
         cleanup
     }
 
@@ -3357,7 +3622,11 @@ impl ViewportFocusCoordinator {
     pub fn clear_surface(&mut self, surface: SurfaceId) -> ViewportFocusCleanup {
         let mut cleanup = ViewportFocusCleanup {
             panel_record_removed: self.panel_focus_by_surface.remove(&surface).is_some(),
-            pane_observation_removed: self.pane_observation_by_surface.remove(&surface).is_some(),
+            pane_observation_removed: self.pane_observation_by_surface.remove(&surface).is_some()
+                | self
+                    .pane_request_observation_by_surface
+                    .remove(&surface)
+                    .is_some(),
             ..ViewportFocusCleanup::default()
         };
         let reservation_count = self.focus_lane.native_reservations.len();
@@ -3385,7 +3654,7 @@ impl ViewportFocusCoordinator {
         }
         if self
             .pending_pane_intent
-            .is_some_and(|intent| intent.target.surface() == surface)
+            .is_some_and(|intent| intent.surface == surface)
         {
             cleanup.pending_intent_removed = self.pending_pane_intent.take().map(|intent| {
                 self.clear_admitted_pane_intent(intent.id);
@@ -3425,9 +3694,15 @@ impl ViewportFocusCoordinator {
         for surface in recorded_surfaces {
             self.panel_focus_by_surface.remove(&surface);
             self.pane_observation_by_surface.remove(&surface);
+            self.pane_request_observation_by_surface.remove(&surface);
             cleanup.panel_record_removed = true;
             cleanup.pane_observation_removed = true;
         }
+        let request_observation_count = self.pane_request_observation_by_surface.len();
+        self.pane_request_observation_by_surface
+            .retain(|_, record| record.observation.item != Some(item));
+        cleanup.pane_observation_removed |=
+            self.pane_request_observation_by_surface.len() != request_observation_count;
         if self
             .focus_lane
             .driving
@@ -3442,7 +3717,7 @@ impl ViewportFocusCoordinator {
         }
         if self
             .pending_pane_intent
-            .is_some_and(|intent| intent.focus == PanelFocus::Item(item))
+            .is_some_and(|intent| intent.item == Some(item))
         {
             cleanup.pending_intent_removed = self.pending_pane_intent.take().map(|intent| {
                 self.clear_admitted_pane_intent(intent.id);
@@ -3550,6 +3825,17 @@ impl ViewportFocusCoordinator {
             cleanup.pane_observation_removed |= !keep;
             keep
         });
+        self.pane_request_observation_by_surface
+            .retain(|surface, record| {
+                let observation = record.observation;
+                let keep = surface_exists(*surface)
+                    && observation.native_guard.is_none_or(can_observe_binding)
+                    && observation
+                        .item
+                        .is_none_or(|item| item_is_on_surface(*surface, item));
+                cleanup.pane_observation_removed |= !keep;
+                keep
+            });
 
         if let Some(pending) = self.focus_lane.driving {
             let binding_is_current = match pending.platform_focus {
@@ -3574,18 +3860,18 @@ impl ViewportFocusCoordinator {
             }
         }
         if let Some(intent) = self.pending_pane_intent {
-            let binding_is_current = if self.admitted_pane_intent == Some(intent.id) {
-                can_observe_binding(intent.target)
-            } else {
-                can_accept_activation(intent.target)
+            let binding_is_current = match intent.native_guard {
+                Some(binding) if self.admitted_pane_intent == Some(intent.id) => {
+                    can_observe_binding(binding)
+                }
+                Some(binding) => can_accept_activation(binding),
+                None => true,
             };
-            if !surface_exists(intent.target.surface())
+            if !surface_exists(intent.surface)
                 || !binding_is_current
-                || matches!(
-                    intent.focus,
-                    PanelFocus::Item(item)
-                        if !item_is_on_surface(intent.target.surface(), item)
-                )
+                || intent
+                    .item
+                    .is_some_and(|item| !item_is_on_surface(intent.surface, item))
             {
                 self.pending_pane_intent = None;
                 self.clear_admitted_pane_intent(intent.id);
@@ -3643,15 +3929,28 @@ impl ViewportFocusCoordinator {
                 ActivationCancellation::PlatformAuthorityRevoked,
             )
         });
-        let pending_intent_removed = self.pending_pane_intent.take().map(|intent| intent.id);
+        let pending_intent = self.pending_pane_intent.take();
+        let retained_pane_intent = pending_intent.filter(|intent| intent.native_guard.is_none());
+        let pending_intent_removed = pending_intent
+            .filter(|intent| intent.native_guard.is_some())
+            .map(|intent| intent.id);
+        let admitted_pane_intent = self
+            .admitted_pane_intent
+            .filter(|intent| retained_pane_intent.is_some_and(|retained| retained.id == *intent));
         let observe_only_activation_removed = self
             .recorded_observe_only_activation
             .take()
             .map(|record| record.generation);
         self.admitted_observe_only_activation = None;
-        self.admitted_pane_intent = None;
         self.destroyed_previous_focus = None;
         self.focus_lane = FocusLane::default();
+        self.pending_pane_intent = retained_pane_intent;
+        self.admitted_pane_intent = admitted_pane_intent;
+        if let Some(intent) = retained_pane_intent {
+            let claim = Self::pending_intent_claim(intent);
+            self.focus_lane.settled_winner = Some(claim);
+            self.focus_lane.winner = Some(claim);
+        }
         ViewportFocusCleanup {
             global_authority_removed,
             pending_activation_cancelled,
@@ -3673,6 +3972,7 @@ impl ViewportFocusCoordinator {
         self.admitted_pane_intent = None;
         self.panel_focus_by_surface.clear();
         self.pane_observation_by_surface.clear();
+        self.pane_request_observation_by_surface.clear();
     }
 
     fn validate_focus_target(
@@ -3719,6 +4019,48 @@ impl ViewportFocusCoordinator {
         )
     }
 
+    /// Installs one presentation-neutral item focus request.
+    pub(crate) fn request_local_pane_focus(
+        &mut self,
+        surface: SurfaceId,
+        item: ItemId,
+        native_guard: Option<ViewportBinding>,
+        causal: FocusCausalStamp,
+    ) -> Result<Option<PaneFocusIntent>, ViewportFocusError> {
+        let focus_observation_baseline = self
+            .focus_observations
+            .current()
+            .map_or_else(FocusObservationGeneration::default, |observation| {
+                observation.generation
+            });
+        self.install_pane_intent(PaneIntentInstall {
+            causal,
+            activation: None,
+            surface,
+            native_guard,
+            focus: PanelFocus::Item(item),
+            source: PaneFocusIntentSource::PointerTabGesture,
+            cause: Some(ViewportActivationCause::PointerTabGesture),
+            focus_observation_baseline,
+        })
+    }
+
+    fn pane_observation_generation(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<PaneFocusObservationGeneration> {
+        self.pane_observation_by_surface
+            .get(&surface)
+            .map(|record| record.observation.generation)
+            .into_iter()
+            .chain(
+                self.pane_request_observation_by_surface
+                    .get(&surface)
+                    .map(|record| record.observation.generation),
+            )
+            .max()
+    }
+
     fn install_pane_intent(
         &mut self,
         install: PaneIntentInstall,
@@ -3726,7 +4068,8 @@ impl ViewportFocusCoordinator {
         let PaneIntentInstall {
             causal,
             activation,
-            target,
+            surface,
+            native_guard,
             focus,
             source,
             cause,
@@ -3735,6 +4078,10 @@ impl ViewportFocusCoordinator {
         if !self.admit_pane_causal_claim(PaneCausalClaim::from_install(install)) {
             return Ok(None);
         }
+        let item = match focus {
+            PanelFocus::Item(item) => Some(item),
+            PanelFocus::None => None,
+        };
         if let Some(watermark) = self.pane_intent_watermark {
             if causal.generation() < watermark.causal.generation()
                 || (causal.generation() == watermark.causal.generation()
@@ -3744,17 +4091,19 @@ impl ViewportFocusCoordinator {
             }
             if causal.generation() == watermark.causal.generation()
                 && source == watermark.source
-                && (target != watermark.target || focus != watermark.focus)
+                && (surface != watermark.surface
+                    || item != watermark.item
+                    || native_guard != watermark.native_guard)
             {
                 return Ok(None);
             }
             if causal.generation() == watermark.causal.generation()
                 && source == watermark.source
-                && target == watermark.target
-                && focus == watermark.focus
-                && let Some(existing) = self.pending_pane_intent
+                && surface == watermark.surface
+                && item == watermark.item
+                && native_guard == watermark.native_guard
             {
-                return Ok(Some(existing));
+                return Ok(self.pending_pane_intent);
             }
         }
 
@@ -3762,16 +4111,14 @@ impl ViewportFocusCoordinator {
             .last_pane_intent
             .checked_next()
             .ok_or(ViewportFocusError::PaneFocusIntentIdExhausted)?;
-        let pane_observation_baseline = self
-            .pane_observation_by_surface
-            .get(&target.surface())
-            .map(|record| record.observation.generation);
+        let pane_observation_baseline = self.pane_observation_generation(surface);
         let intent = PaneFocusIntent {
             id,
             causal,
             activation,
-            target,
-            focus,
+            surface,
+            item,
+            native_guard,
             source,
             cause,
             focus_observation_baseline,
@@ -3781,8 +4128,9 @@ impl ViewportFocusCoordinator {
         self.pane_intent_watermark = Some(PaneIntentWatermark {
             causal,
             source,
-            target,
-            focus,
+            surface,
+            item,
+            native_guard,
         });
         self.admitted_pane_intent = None;
         self.pending_pane_intent = Some(intent);
@@ -5377,7 +5725,8 @@ mod tests {
         let ActivationStartOutcome::PaneFocusReady { intent } = admitted.outcome() else {
             panic!("the already-focused admitted target must install its exact pane intent");
         };
-        assert_eq!(intent.target(), staging);
+        assert_eq!(intent.surface(), staging.surface());
+        assert_eq!(intent.native_guard(), Some(staging));
         assert_eq!(intent.causal(), focus_stamp(2));
         assert_eq!(intent.focus(), PanelFocus::Item(ItemId::new(2)));
     }
@@ -5621,8 +5970,8 @@ mod tests {
             Some(successor.generation())
         );
         assert_eq!(
-            completed.pane_intent().map(PaneFocusIntent::target),
-            Some(new_winner)
+            completed.pane_intent().map(PaneFocusIntent::native_guard),
+            Some(Some(new_winner))
         );
         assert!(coordinator.suppressed_tear_off_bindings().is_empty());
     }
@@ -5931,6 +6280,25 @@ mod tests {
                 PaneFocusObservation::new(
                     PaneFocusObservationGeneration::new(3),
                     target,
+                    PanelFocus::None,
+                ),
+                binding_is_live,
+                item_is_live,
+            ),
+            PaneFocusObservationTransition::Applied {
+                cleared_intent: None,
+            }
+        );
+        assert_eq!(
+            coordinator.pending_pane_intent(),
+            Some(intent),
+            "an ambient not-focused fact cannot terminate an exact request"
+        );
+        assert_eq!(
+            coordinator.publish_pane_focus_observation(
+                PaneFocusObservation::new(
+                    PaneFocusObservationGeneration::new(4),
+                    target,
                     PanelFocus::Item(ItemId::new(1)),
                 )
                 .acknowledging(intent.id()),
@@ -5941,6 +6309,132 @@ mod tests {
                 cleared_intent: Some(intent.id()),
             }
         );
+    }
+
+    #[test]
+    fn exact_pane_focus_observation_keeps_not_focused_pending_until_focused() {
+        let target = binding().surface();
+        let item = ItemId::new(1);
+        let mut coordinator = ViewportFocusCoordinator::default();
+        let intent = coordinator
+            .request_local_pane_focus(target, item, None, focus_stamp(1))
+            .expect("local pane focus must allocate")
+            .expect("local pane focus must install an intent");
+
+        assert_eq!(intent.surface(), target);
+        assert_eq!(intent.item(), Some(item));
+        assert_eq!(intent.native_guard(), None);
+        assert_eq!(coordinator.published_pane_intent(), None);
+
+        coordinator.mark_boundary_published();
+        assert_eq!(coordinator.published_pane_intent(), Some(intent));
+        assert_eq!(
+            coordinator.publish_pane_focus_request_observation(
+                PaneFocusRequestObservation::new(
+                    PaneFocusObservationGeneration::new(1),
+                    intent,
+                    PaneFocusRequestObservationState::NotFocused,
+                ),
+                |_| false,
+                |surface, candidate| surface == target && candidate == item,
+            ),
+            PaneFocusObservationTransition::NotFocused {
+                intent: intent.id(),
+            }
+        );
+        assert_eq!(coordinator.pending_pane_intent(), Some(intent));
+        assert_eq!(coordinator.published_pane_intent(), Some(intent));
+
+        assert_eq!(
+            coordinator.publish_pane_focus_request_observation(
+                PaneFocusRequestObservation::new(
+                    PaneFocusObservationGeneration::new(2),
+                    intent,
+                    PaneFocusRequestObservationState::Focused,
+                ),
+                |_| false,
+                |surface, candidate| surface == target && candidate == item,
+            ),
+            PaneFocusObservationTransition::Focused {
+                cleared_intent: intent.id(),
+            }
+        );
+        assert_eq!(coordinator.pending_pane_intent(), None);
+        assert_eq!(coordinator.published_pane_intent(), None);
+        assert_eq!(
+            coordinator.panel_focus(target),
+            PanelFocusRecord::Item(item)
+        );
+    }
+
+    #[test]
+    fn unavailable_pane_focus_observation_terminates_only_its_exact_request() {
+        let target = binding().surface();
+        let item = ItemId::new(1);
+        let mut coordinator = ViewportFocusCoordinator::default();
+        let unavailable = coordinator
+            .request_local_pane_focus(target, item, None, focus_stamp(1))
+            .expect("local pane focus must allocate")
+            .expect("local pane focus must install an intent");
+        coordinator.mark_boundary_published();
+        let terminal = PaneFocusRequestObservation::new(
+            PaneFocusObservationGeneration::new(1),
+            unavailable,
+            PaneFocusRequestObservationState::Unavailable,
+        );
+
+        assert_eq!(
+            coordinator.publish_pane_focus_request_observation(
+                terminal,
+                |_| false,
+                |surface, candidate| surface == target && candidate == item,
+            ),
+            PaneFocusObservationTransition::Unavailable {
+                intent: unavailable.id(),
+            }
+        );
+        assert_eq!(coordinator.pending_pane_intent(), None);
+        assert_eq!(
+            coordinator.panel_focus(target),
+            PanelFocusRecord::NoHistory,
+            "unavailable focus must not guess a fallback pane"
+        );
+        assert_eq!(
+            coordinator.publish_pane_focus_request_observation(
+                terminal,
+                |_| false,
+                |surface, candidate| surface == target && candidate == item,
+            ),
+            PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::UnknownIntent {
+                    intent: unavailable.id(),
+                }
+            )
+        );
+
+        let replacement = coordinator
+            .request_local_pane_focus(target, item, None, focus_stamp(2))
+            .expect("a later local focus request must allocate")
+            .expect("a later causal generation must install a fresh request");
+        coordinator.mark_boundary_published();
+        assert_ne!(replacement.id(), unavailable.id());
+        assert_eq!(
+            coordinator.publish_pane_focus_request_observation(
+                PaneFocusRequestObservation::new(
+                    PaneFocusObservationGeneration::new(2),
+                    unavailable,
+                    PaneFocusRequestObservationState::Focused,
+                ),
+                |_| false,
+                |surface, candidate| surface == target && candidate == item,
+            ),
+            PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::UnknownIntent {
+                    intent: unavailable.id(),
+                }
+            )
+        );
+        assert_eq!(coordinator.pending_pane_intent(), Some(replacement));
     }
 
     #[test]

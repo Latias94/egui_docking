@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-    DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedSurfaceAction,
-    PresentedDockReceiver, SurfaceUnavailableReason,
+    DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedPaneFocusObservation,
+    PreparedSurfaceAction, PresentedDockReceiver, SurfaceUnavailableReason,
 };
 use egui::{Id, Ui};
 
@@ -35,6 +35,7 @@ pub struct NativeSurfacePaint {
     semantic_output: Option<DockspaceSemanticOutput>,
     local_actions: Vec<PreparedSurfaceAction>,
     presentation_actions: Vec<PreparedSurfaceAction>,
+    pane_focus_observation: Option<PreparedPaneFocusObservation>,
 }
 
 /// One egui widget identity bound to an exact core receiver in the same pass.
@@ -211,6 +212,11 @@ impl NativeSurfacePaint {
     pub fn take_presentation_actions(&mut self) -> Vec<PreparedSurfaceAction> {
         std::mem::take(&mut self.presentation_actions)
     }
+
+    /// Takes the pane-focus observation owned only by this exact pass.
+    pub fn take_pane_focus_observation(&mut self) -> Option<PreparedPaneFocusObservation> {
+        self.pane_focus_observation.take()
+    }
 }
 
 /// Paints one ready surface using the same renderer as the ordinary product
@@ -253,6 +259,7 @@ pub fn paint_surface(
             semantic_output: None,
             local_actions: Vec::new(),
             presentation_actions: Vec::new(),
+            pane_focus_observation: None,
         });
     };
 
@@ -299,6 +306,7 @@ pub fn paint_surface(
         semantic_output: Some(semantic_output),
         local_actions: painted.local_actions,
         presentation_actions: painted.presentation_actions,
+        pane_focus_observation: painted.pane_focus_observation,
     })
 }
 

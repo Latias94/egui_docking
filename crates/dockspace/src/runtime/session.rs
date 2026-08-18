@@ -31,6 +31,7 @@ pub struct DockspaceSession {
     pub(super) engine: DockEngine,
     pub(super) presentation_host: PresentationHostLease,
     pub(super) presentation: presentation::RuntimePresentationState,
+    pub(super) focus: super::focus::RuntimePaneFocusState,
     pub(super) pointer: Option<interaction::RuntimePointerState>,
     pub(super) native: Option<native::RuntimeNativeState>,
     #[cfg(feature = "serde")]
@@ -124,6 +125,7 @@ impl DockspaceSession {
             engine,
             presentation_host,
             presentation: presentation::RuntimePresentationState::default(),
+            focus: super::focus::RuntimePaneFocusState::default(),
             pointer: None,
             native: None,
             #[cfg(feature = "serde")]

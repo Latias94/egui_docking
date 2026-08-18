@@ -455,6 +455,13 @@ pub enum EngineInput {
         /// Provider-owned pane focus observation and optional intent acknowledgement.
         observation: PaneFocusObservation,
     },
+    /// Publish one exact result for a committed pane-focus request.
+    PublishPaneFocusRequestObservation {
+        /// Workspace epoch in which the request target was resolved.
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        /// Opaque request identity, target, native guard, and exact result.
+        observation: PaneFocusRequestObservation,
+    },
     /// Explicitly cancel one unresolved native-create saga.
     CancelNativeCreate {
         /// Workspace version against which the saga was inspected.
@@ -867,7 +874,8 @@ impl EngineInput {
             | Self::PublishNativeCloseObservation { .. }
             | Self::PublishGlobalFocusObservation { .. }
             | Self::ReportPlatformEffect { .. } => InputPriority::PlatformObservation,
-            Self::PublishPaneFocusObservation { .. } => InputPriority::PlatformObservation,
+            Self::PublishPaneFocusObservation { .. }
+            | Self::PublishPaneFocusRequestObservation { .. } => InputPriority::PlatformObservation,
             Self::ActivateViewport { .. }
             | Self::WorkspaceCommand { .. }
             | Self::SelectItem { .. }

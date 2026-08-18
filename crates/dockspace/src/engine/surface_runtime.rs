@@ -1150,7 +1150,7 @@ impl DockEngine {
             return Ok(None);
         };
         let Some(source) =
-            Self::capture_surface_item_source(&self.workspace, intent.target().surface(), item)
+            Self::capture_surface_item_source(&self.workspace, intent.surface(), item)
         else {
             return self.reject_pane_focus_reveal(
                 focus_causal,
@@ -1647,7 +1647,7 @@ impl DockEngine {
                     let focus_is_already_pending = self
                         .viewport_focus
                         .pending_pane_intent()
-                        .is_some_and(|intent| intent.target() == *replacement_binding);
+                        .is_some_and(|intent| intent.native_guard() == Some(*replacement_binding));
                     let recovery_activation = (replacement_is_focused && !focus_is_already_pending)
                         .then(|| {
                             (

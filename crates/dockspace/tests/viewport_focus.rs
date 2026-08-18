@@ -418,7 +418,8 @@ fn explicit_activation_waits_for_a_newer_exact_binding_observation() {
         .pane_intent()
         .expect("matching native focus must release pane focus");
     assert_eq!(intent.causal(), focus_stamp(11));
-    assert_eq!(intent.target(), binding_b);
+    assert_eq!(intent.surface(), binding_b.surface());
+    assert_eq!(intent.native_guard(), Some(binding_b));
     assert_eq!(intent.focus(), PanelFocus::Item(ITEM_B));
     assert_eq!(
         intent.source(),
@@ -716,7 +717,8 @@ fn superseding_activation_survives_a_late_predecessor_focus() {
     let intent = completed
         .pane_intent()
         .expect("only the successor may publish the final pane intent");
-    assert_eq!(intent.target(), binding_a);
+    assert_eq!(intent.surface(), binding_a.surface());
+    assert_eq!(intent.native_guard(), Some(binding_a));
     assert_eq!(intent.causal(), focus_stamp(3));
     assert_eq!(coordinator.pending_pane_intent(), Some(intent));
 }
@@ -817,7 +819,8 @@ fn foreign_focus_quarantines_a_late_explicit_focus_effect_until_reconfirmed() {
     let restored = later_user_focus
         .pane_intent()
         .expect("exact Foreign reconfirmation must release the stale-effect barrier");
-    assert_eq!(restored.target(), binding_b);
+    assert_eq!(restored.surface(), binding_b.surface());
+    assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
     assert_eq!(restored.source(), PaneFocusIntentSource::PlatformActivation);
 }
@@ -890,7 +893,8 @@ fn failed_superseded_focus_effect_releases_the_external_focus_barrier() {
     let restored = later_user_focus
         .pane_intent()
         .expect("the terminal failure must release the obsolete target quarantine");
-    assert_eq!(restored.target(), binding_b);
+    assert_eq!(restored.surface(), binding_b.surface());
+    assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
 }
 
@@ -981,7 +985,8 @@ fn newer_foreign_focus_supersedes_none_after_a_late_focus_hazard() {
     let restored = later_user_focus
         .pane_intent()
         .expect("the newer Foreign winner must release the stale-effect barrier");
-    assert_eq!(restored.target(), binding_b);
+    assert_eq!(restored.surface(), binding_b.surface());
+    assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
     assert_eq!(restored.source(), PaneFocusIntentSource::PlatformActivation);
 }
@@ -1058,7 +1063,8 @@ fn newer_dock_focus_releases_an_older_target_quarantine() {
     let restored = later_user_focus
         .pane_intent()
         .expect("the newer Dock winner must release the stale target quarantine");
-    assert_eq!(restored.target(), binding_b);
+    assert_eq!(restored.surface(), binding_b.surface());
+    assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
 }
 
@@ -1147,7 +1153,8 @@ fn pointer_winner_serializes_after_an_emitted_explicit_focus_hazard() {
     let intent = completed
         .pane_intent()
         .expect("the pointer winner must publish its exact pane intent");
-    assert_eq!(intent.target(), binding_a);
+    assert_eq!(intent.surface(), binding_a.surface());
+    assert_eq!(intent.native_guard(), Some(binding_a));
     assert_eq!(intent.causal(), focus_stamp(3));
     assert_eq!(intent.source(), PaneFocusIntentSource::PointerTabGesture);
 }

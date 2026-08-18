@@ -24,7 +24,7 @@ use super::presentation;
 use super::{
     DockPresentationConfig, DockspaceRuntimeError, DockspaceSession, DockspaceSubmittedAction,
     HostFrameReport, NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowPlacement,
-    PreparedDockAction, SurfaceUnavailableReason,
+    PreparedDockAction, PreparedPaneFocusObservation, SurfaceUnavailableReason,
 };
 
 pub(super) const APPLICATION_INPUT_SOURCE: StableInputSourceId =
@@ -297,6 +297,34 @@ impl DockspaceHostFrame<'_> {
         let input = prepared
             .into_engine_input(self.session.engine.authority_domain())
             .map_err(DockspaceRuntimeError::prepared_surface_action_authority_mismatch)?;
+        self.append(input)
+    }
+
+    /// Submits one observation prepared from an exact published pane-focus request.
+    ///
+    /// The runtime assigns a non-repeating provider generation only when the
+    /// terminal pass hands the affine observation back to a host frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation belongs to another session or the
+    /// provider generation space is exhausted.
+    pub fn submit_pane_focus_observation(
+        &mut self,
+        prepared: PreparedPaneFocusObservation,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let authority = self.session.engine.authority_domain();
+        prepared
+            .validate_authority(authority)
+            .map_err(DockspaceRuntimeError::prepared_pane_focus_observation_authority_mismatch)?;
+        let generation = self
+            .session
+            .focus
+            .next_generation(prepared.request())
+            .ok_or_else(DockspaceRuntimeError::pane_focus_observation_generation_exhausted)?;
+        let input = prepared
+            .into_engine_input(authority, generation)
+            .map_err(DockspaceRuntimeError::prepared_pane_focus_observation_authority_mismatch)?;
         self.append(input)
     }
 

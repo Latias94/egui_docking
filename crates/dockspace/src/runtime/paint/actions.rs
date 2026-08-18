@@ -299,6 +299,7 @@ impl SurfacePaintPlan<'_> {
             .tab_records()
             .iter()
             .find(|record| record.id().item == item)?;
+        self.tab_is_operable(current).then_some(())?;
         let selected = self
             .plan
             .tab_records()
@@ -315,6 +316,12 @@ impl SurfacePaintPlan<'_> {
             selected,
             navigation.into_core(),
         )?;
+        let destination_record = self
+            .plan
+            .tab_records()
+            .iter()
+            .find(|record| *record.id() == destination)?;
+        self.tab_is_operable(destination_record).then_some(())?;
         (destination != *current.id()).then(|| {
             PreparedSurfaceAction::select_tab(
                 self.authority_domain,
@@ -466,6 +473,7 @@ impl SurfacePaintPlan<'_> {
             .tab_records()
             .iter()
             .find(|record| record.id().item == item)?;
+        self.tab_is_operable(tab).then_some(())?;
         Some(PreparedSurfaceAction::local_tab_gesture(
             self.authority_domain,
             self.version,

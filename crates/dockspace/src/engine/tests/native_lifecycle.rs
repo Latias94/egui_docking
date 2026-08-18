@@ -1477,6 +1477,11 @@ fn auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
     )
     .expect("an exact auto-focused staging window must not deadlock admission");
     assert!(fixture.engine.workspace().surface(NATIVE_SURFACE).is_none());
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        None,
+        "staging focus must not publish pane focus before first-live admission"
+    );
     let post_show = current_native_staging_presentation(
         &fixture,
         request,
@@ -1515,9 +1520,14 @@ fn auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
         .viewport_focus()
         .pending_pane_intent()
         .expect("first-live admission must install the release-time pane claim");
-    assert_eq!(intent.target(), request.binding());
+    assert_eq!(intent.surface(), request.binding().surface());
+    assert_eq!(intent.native_guard(), Some(request.binding()));
     assert_eq!(intent.causal(), prepared.focus_causal());
     assert_eq!(intent.focus(), PanelFocus::None);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(intent)
+    );
     assert!(visible.platform_effects().iter().all(|effect| {
         !matches!(
             effect.effect(),

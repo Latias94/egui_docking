@@ -17,12 +17,14 @@ mod tabs;
 
 use dockspace::model::ItemId;
 use dockspace::runtime::{
-    DockspacePreviewVisual, DockspaceReceiverDescriptor, PreparedSurfaceAction,
+    DockspacePaneFocusObservation, DockspacePaneFocusRequest, DockspacePreviewVisual,
+    DockspaceReceiverDescriptor, PreparedPaneFocusObservation, PreparedSurfaceAction,
     SurfaceGesturePhase, SurfacePaintPlan,
 };
 use egui::{Color32, Id, Key, Modifiers, Response, Sense, Stroke, StrokeKind, Ui};
 
-use crate::pane::PaneView;
+use crate::pane::{PaneFocusState, PaneView};
+use crate::response::{DockspaceCapability, DockspaceUnavailableReason};
 use crate::style::{DockStyle, ResolvedDockVisuals};
 
 use measurement::PaintResources;
@@ -53,6 +55,8 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     style: &'ui DockStyle,
     visuals: ResolvedDockVisuals,
     resources: &'ui PaintResources,
+    pane_focus_request: Option<DockspacePaneFocusRequest>,
+    pane_focus_target_requested: &'ui mut bool,
     local_actions: &'ui mut Vec<PreparedSurfaceAction>,
     presentation_actions: &'ui mut Vec<PreparedSurfaceAction>,
     #[cfg(feature = "native-render-support")]
@@ -215,6 +219,8 @@ pub(crate) struct ProductScrollReceiverBinding {
 pub(crate) struct ProductPaintOutput {
     pub(crate) local_actions: Vec<PreparedSurfaceAction>,
     pub(crate) presentation_actions: Vec<PreparedSurfaceAction>,
+    pub(crate) pane_focus_observation: Option<PreparedPaneFocusObservation>,
+    pub(crate) pane_focus_capability: DockspaceCapability,
     pub(crate) missing_items: BTreeSet<ItemId>,
     #[cfg(feature = "native-render-support")]
     pub(crate) receivers: Vec<ProductReceiverBinding>,
@@ -238,6 +244,8 @@ pub(crate) fn paint_surface(
 ) -> ProductPaintOutput {
     let visuals = style.resolved_visuals(ui.visuals());
     let resources = PaintResources::from_plan(plan, ui, panes, style);
+    let pane_focus_request = plan.pane_focus_request();
+    let mut pane_focus_target_requested = false;
     let mut local_actions = Vec::new();
     let mut presentation_actions = Vec::new();
     #[cfg(feature = "native-render-support")]
@@ -263,6 +271,8 @@ pub(crate) fn paint_surface(
             style,
             visuals,
             resources: &resources,
+            pane_focus_request,
+            pane_focus_target_requested: &mut pane_focus_target_requested,
             local_actions: &mut local_actions,
             presentation_actions: &mut presentation_actions,
             #[cfg(feature = "native-render-support")]
@@ -330,11 +340,47 @@ pub(crate) fn paint_surface(
             context.push_local_action(action);
         }
     }
+    let (pane_focus_observation, pane_focus_capability) =
+        pane_focus_request.map_or((None, DockspaceCapability::Supported), |request| {
+            let (observation, capability) = if pane_focus_target_requested {
+                match panes.focus_state(request.item(), ui.ctx()) {
+                    PaneFocusState::Focused => (
+                        DockspacePaneFocusObservation::Focused,
+                        DockspaceCapability::Supported,
+                    ),
+                    PaneFocusState::Unfocused => (
+                        DockspacePaneFocusObservation::NotFocused,
+                        DockspaceCapability::Supported,
+                    ),
+                    PaneFocusState::Unknown => (
+                        DockspacePaneFocusObservation::Unavailable,
+                        DockspaceCapability::Unavailable(
+                            DockspaceUnavailableReason::PaneFocusStateUnknown {
+                                item: request.item(),
+                            },
+                        ),
+                    ),
+                }
+            } else {
+                (
+                    DockspacePaneFocusObservation::Unavailable,
+                    DockspaceCapability::Unavailable(
+                        DockspaceUnavailableReason::PaneFocusBindingUnavailable,
+                    ),
+                )
+            };
+            (
+                plan.prepare_pane_focus_observation(request, observation),
+                capability,
+            )
+        });
     #[cfg(not(feature = "native-render-support"))]
     let _ = transient_visuals_complete;
     ProductPaintOutput {
         local_actions,
         presentation_actions,
+        pane_focus_observation,
+        pane_focus_capability,
         missing_items: resources.missing_items().collect(),
         #[cfg(feature = "native-render-support")]
         receivers,

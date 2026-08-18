@@ -3,6 +3,27 @@
 use super::*;
 
 impl DockEngine {
+    pub(super) fn reduce_pane_focus_request_observation(
+        &mut self,
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        observation: PaneFocusRequestObservation,
+    ) -> InputOutcome {
+        if expected_epoch != self.version.epoch() {
+            return InputOutcome::PaneFocusObservationStale {
+                expected_epoch,
+                current_epoch: self.version.epoch(),
+            };
+        }
+        let current_binding = self.viewport_focus_binding(observation.surface());
+        let items = self.surface_items(observation.surface());
+        let transition = self.viewport_focus.publish_pane_focus_request_observation(
+            observation,
+            |binding| current_binding == Some(binding),
+            |surface, item| surface == observation.surface() && items.contains(&item),
+        );
+        InputOutcome::PaneFocusObservationPublished { transition }
+    }
+
     pub(super) fn local_response_candidate(
         &self,
         scene: SurfaceSceneStamp,
@@ -25,6 +46,7 @@ impl DockEngine {
     pub(super) fn reduce_local_scene_tab_select(
         &mut self,
         input: InputSequence,
+        focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
         application_base: WorkspaceVersion,
         scene: SurfaceSceneStamp,
@@ -82,7 +104,7 @@ impl DockEngine {
             }
         };
 
-        self.reduce_workspace_command(
+        let outcome = self.reduce_workspace_command(
             input,
             expected,
             application_base,
@@ -90,7 +112,18 @@ impl DockEngine {
             policy,
             events,
             interaction_events,
-        )
+        )?;
+        if matches!(&outcome, InputOutcome::CommandProcessed { .. }) {
+            let native_guard = self.viewport_focus_binding(scene.surface());
+            let _ = self
+                .viewport_focus
+                .request_local_pane_focus(scene.surface(), tab.item, native_guard, focus_causal)
+                .map_err(|source| EngineError::CausedViewportFocus {
+                    cause: focus_causal.cause(),
+                    source,
+                })?;
+        }
+        Ok(outcome)
     }
 
     #[allow(clippy::too_many_arguments)]

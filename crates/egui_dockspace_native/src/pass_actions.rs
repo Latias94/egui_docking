@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use dockspace::model::SurfaceId;
-use dockspace::runtime::PreparedSurfaceAction;
+use dockspace::runtime::{PreparedPaneFocusObservation, PreparedSurfaceAction};
 use eframe::NativeOutputToken;
 use egui_dockspace::native_support::NativeSurfacePaint;
 
@@ -67,6 +67,7 @@ impl NativePassActions {
         merge_local_actions(&mut local, current)?;
         Ok(NativeFinalPassActions {
             presentation: paint.take_presentation_actions(),
+            pane_focus_observation: paint.take_pane_focus_observation(),
             local,
         })
     }
@@ -78,16 +79,25 @@ impl NativePassActions {
 
 pub(crate) struct NativeFinalPassActions {
     presentation: Vec<PreparedSurfaceAction>,
+    pane_focus_observation: Option<PreparedPaneFocusObservation>,
     local: Vec<PreparedSurfaceAction>,
 }
 
 impl NativeFinalPassActions {
     pub(crate) fn has_actions(&self) -> bool {
-        !self.presentation.is_empty() || !self.local.is_empty()
+        !self.presentation.is_empty()
+            || self.pane_focus_observation.is_some()
+            || !self.local.is_empty()
     }
 
-    pub(crate) fn into_ordered(self) -> impl Iterator<Item = PreparedSurfaceAction> {
-        self.presentation.into_iter().chain(self.local)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<PreparedSurfaceAction>,
+        Option<PreparedPaneFocusObservation>,
+        Vec<PreparedSurfaceAction>,
+    ) {
+        (self.presentation, self.pane_focus_observation, self.local)
     }
 }
 

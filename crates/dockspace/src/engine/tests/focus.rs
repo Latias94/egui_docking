@@ -452,7 +452,8 @@ fn late_superseded_focus_ack_settles_only_its_effect_before_successor_completion
         .pending_pane_intent()
         .expect("successor target observation must install its pane intent");
     assert_eq!(intent.activation(), Some(activation_b));
-    assert_eq!(intent.target(), binding_b);
+    assert_eq!(intent.surface(), binding_b.surface());
+    assert_eq!(intent.native_guard(), Some(binding_b));
     assert_eq!(intent.focus(), PanelFocus::Item(ItemId::new(2)));
     assert_ne!(intent.activation(), Some(activation_a));
 }
@@ -497,7 +498,8 @@ fn one_envelope_can_settle_late_predecessor_and_complete_current_target() {
         .pending_pane_intent()
         .expect("current target evidence must complete the successor");
     assert_eq!(intent.activation(), Some(activation_b));
-    assert_eq!(intent.target(), binding_b);
+    assert_eq!(intent.surface(), binding_b.surface());
+    assert_eq!(intent.native_guard(), Some(binding_b));
 }
 
 #[test]
@@ -625,6 +627,118 @@ fn explicit_focus_atomically_reveals_hidden_item_without_acknowledging_it() {
         "selection and pane rendering cannot acknowledge focus"
     );
     assert!(transition.focus_delta().pane_intent().is_some());
+}
+
+#[test]
+fn local_tab_selection_without_a_native_binding_publishes_pane_focus() {
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
+    builder.set_root(SOURCE_ROOT, RootRecord::new(tabs));
+    builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+    let workspace = builder
+        .build()
+        .expect("local focus workspace must be valid");
+    let mut engine =
+        DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
+    let presentation_host = engine
+        .create_presentation_host()
+        .expect("local focus presentation host must mint");
+    let bounds =
+        LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("local focus surface bounds must be valid");
+    let scene = publish_surface_projection(&mut engine, presentation_host, SOURCE_SURFACE, bounds);
+    let tab = engine
+        .presentation_authority
+        .scene
+        .surface(SOURCE_SURFACE)
+        .and_then(SurfaceScene::ready)
+        .expect("the local focus surface must be ready")
+        .candidate()
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|record| record.id().item == ItemId::new(2))
+        .map(|record| *record.id())
+        .expect("the second tab must be presented");
+    assert_eq!(engine.viewport_focus_binding(SOURCE_SURFACE), None);
+
+    let expected = engine.version();
+    let transition = submit_test_input(
+        &mut engine,
+        presentation_host,
+        EngineInput::SelectLocalSceneTab {
+            expected,
+            scene,
+            tab,
+        },
+    )
+    .expect("local tab selection must reduce");
+
+    let Node::Tabs { selected, .. } = engine
+        .workspace()
+        .node(tabs)
+        .expect("local focus tabs must remain current")
+    else {
+        panic!("local focus fixture node must remain tabs");
+    };
+    assert_eq!(*selected, Some(ItemId::new(2)));
+    let request = engine
+        .viewport_focus()
+        .published_pane_intent()
+        .expect("the committed boundary must publish pane focus");
+    assert_eq!(request.surface(), SOURCE_SURFACE);
+    assert_eq!(request.item(), Some(ItemId::new(2)));
+    assert_eq!(request.native_guard(), None);
+    assert!(transition.focus_delta().pane_intent().is_some());
+
+    let expected_epoch = engine.version().epoch();
+    let not_focused = submit_test_input(
+        &mut engine,
+        presentation_host,
+        EngineInput::PublishPaneFocusRequestObservation {
+            expected_epoch,
+            observation: PaneFocusRequestObservation::new(
+                PaneFocusObservationGeneration::new(1),
+                request,
+                PaneFocusRequestObservationState::NotFocused,
+            ),
+        },
+    )
+    .expect("not-focused observation must reduce");
+    assert!(matches!(
+        not_focused.reduced_inputs()[0].outcome(),
+        InputOutcome::PaneFocusObservationPublished {
+            transition: PaneFocusObservationTransition::NotFocused { intent },
+        } if *intent == request.id()
+    ));
+    assert_eq!(
+        engine.viewport_focus().published_pane_intent(),
+        Some(request)
+    );
+
+    let focused = submit_test_input(
+        &mut engine,
+        presentation_host,
+        EngineInput::PublishPaneFocusRequestObservation {
+            expected_epoch,
+            observation: PaneFocusRequestObservation::new(
+                PaneFocusObservationGeneration::new(2),
+                request,
+                PaneFocusRequestObservationState::Focused,
+            ),
+        },
+    )
+    .expect("focused observation must reduce");
+    assert!(matches!(
+        focused.reduced_inputs()[0].outcome(),
+        InputOutcome::PaneFocusObservationPublished {
+            transition: PaneFocusObservationTransition::Focused { cleared_intent },
+        } if *cleared_intent == request.id()
+    ));
+    assert_eq!(engine.viewport_focus().published_pane_intent(), None);
+    assert_eq!(
+        engine.viewport_focus().panel_focus(SOURCE_SURFACE),
+        PanelFocusRecord::Item(ItemId::new(2))
+    );
 }
 
 #[test]
