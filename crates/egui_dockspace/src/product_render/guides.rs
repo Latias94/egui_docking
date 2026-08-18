@@ -4,11 +4,14 @@ use dockspace::runtime::{
     DockspaceDropDirection, DockspaceDropEligibility, DropAffordanceTargetPaintRecord,
 };
 use egui::Sense;
+use egui::accesskit::Role;
 
 use crate::guide_paint::{GuideCueDirection, describe_guide_button, paint_guide_button};
 
 use super::RenderContext;
-use super::geometry::egui_rect;
+use super::geometry::{accesskit_bounds, egui_rect};
+
+const CENTER_DROP_GUIDE_LABEL: &str = "Dockspace center drop guide";
 
 pub(crate) fn paint(context: &mut RenderContext<'_, '_, '_>) {
     let Some(affordance) = context.plan.drop_affordance() else {
@@ -44,6 +47,13 @@ fn paint_target(
                 .ui
                 .make_persistent_id((context.instance_id, "drop-target", target.visual_id()));
         let _ = context.interact_receiver(hit, id, Sense::hover(), Some(receiver));
+        if target.direction() == DockspaceDropDirection::Center {
+            context.ui.ctx().accesskit_node_builder(id, |node| {
+                node.set_role(Role::Label);
+                node.set_bounds(accesskit_bounds(hit));
+                node.set_label(CENTER_DROP_GUIDE_LABEL);
+            });
+        }
     }
 }
 

@@ -2728,7 +2728,14 @@ fn default_features_center_guide_merges_tabs() {
         &mut panes,
         vec![Event::PointerMoved(first)],
     );
-    let target = nearest_guide_center(&cluster.output, passive, active, Pos2::new(200.0, 314.0));
+    let (_, guide_node) =
+        accesskit_node(&cluster.output, Role::Label, "Dockspace center drop guide");
+    assert!(!guide_node.supports_action(Action::Click));
+    assert!(!guide_node.supports_action(Action::Focus));
+    let target = node_rect(&cluster.output, Role::Label, "Dockspace center drop guide").center();
+    let painted_center =
+        nearest_guide_center(&cluster.output, passive, active, Pos2::new(200.0, 314.0));
+    assert_eq!(target, painted_center);
     for _ in 0..2 {
         let _ = run_frame(
             &context,
