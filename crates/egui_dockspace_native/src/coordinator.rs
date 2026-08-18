@@ -1040,7 +1040,9 @@ impl NativeCoordinator {
         if self.reduce_next_viewport_focus()? {
             return Ok(true);
         }
-        if self.pointer_translator.can_coalesce_idle_cursor_moves() {
+        if !self.session.has_active_gesture()
+            && self.pointer_translator.can_coalesce_idle_cursor_moves()
+        {
             self.bridge.coalesce_idle_cursor_prefix();
         }
         let Some(record) = self.next_window_event()? else {

@@ -172,6 +172,19 @@ impl DockspaceSession {
         self.engine.presentation_config()
     }
 
+    /// Returns whether the published session still owns an active pointer gesture.
+    ///
+    /// Native adapters use this summary to preserve every motion edge while a
+    /// drag, resize, or press may still have semantic meaning. The underlying
+    /// gesture identity and authority remain private to the session.
+    #[must_use]
+    pub fn has_active_gesture(&self) -> bool {
+        !matches!(
+            self.engine.interaction().status(),
+            crate::interaction::InteractionStatus::Idle
+        )
+    }
+
     /// Prepares one revision-bound selection action from the published workspace.
     pub const fn prepare_select_item(&self, item: crate::ids::ItemId) -> PreparedDockAction {
         self.engine.prepare_select_item(item)

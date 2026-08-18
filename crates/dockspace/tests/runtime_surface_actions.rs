@@ -520,6 +520,7 @@ fn cross_session_surface_action_is_rejected_without_poisoning_the_frame() {
 fn opaque_splitter_actions_drive_the_core_resize_session() {
     let mut session = split_session();
     install_ready_candidate(&mut session);
+    assert!(!session.has_active_gesture());
     let before = split_weights(&session);
 
     let mut prepare = session.begin_host_frame().expect("paint frame begins");
@@ -567,6 +568,7 @@ fn opaque_splitter_actions_drive_the_core_resize_session() {
         .measure_surface(SURFACE, metrics())
         .expect("pressed surface measures");
     press_frame.commit().expect("splitter press commits");
+    assert!(session.has_active_gesture());
     assert_eq!(split_weights(&session), before);
 
     let mut release_frame = session.begin_host_frame().expect("release frame begins");
@@ -578,6 +580,7 @@ fn opaque_splitter_actions_drive_the_core_resize_session() {
         .expect("released surface measures");
     release_frame.commit().expect("splitter release commits");
 
+    assert!(!session.has_active_gesture());
     assert_ne!(split_weights(&session), before);
 }
 
