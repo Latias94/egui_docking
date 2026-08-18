@@ -2107,6 +2107,28 @@ fn tab_drag_uses_egui_grab_cursors() {
 }
 
 #[test]
+fn tab_accessibility_bounds_match_the_exact_drag_receiver() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-tab-accessibility-drag-bounds", layout())
+        .build()
+        .expect("the product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tab = node_rect(&stable.output, Role::Tab, "First");
+    let close = node_rect(&stable.output, Role::Button, "Close First");
+
+    assert!(tab.is_positive());
+    assert!(close.is_positive());
+    assert!(
+        !tab.intersect(close).is_positive(),
+        "the Tab semantic hit bounds must exclude its disjoint close receiver; tab={tab:?}, close={close:?}"
+    );
+}
+
+#[test]
 fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
     let context = Context::default();
     context.enable_accesskit();

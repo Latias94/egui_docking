@@ -335,7 +335,7 @@ fn paint_tab(
     configure_tab_accessibility(
         context.ui,
         id,
-        visible,
+        drag,
         resource.title.as_str(),
         selected,
         operable,
