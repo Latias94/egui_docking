@@ -1,3 +1,8 @@
+use dockspace_host_conformance::scenario::{
+    ItemAlias, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED, NATIVE_CREATE_REDOCK_RETIREMENT,
+    ScenarioAdmission, ScenarioAxis, ScenarioCapability, ScenarioEdge, ScenarioId,
+    SemanticAction as ScenarioAction, SemanticSelector,
+};
 use egui::accesskit::{Action, ActionRequest, Orientation, Role, TreeId};
 use egui::{
     Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, RepaintCause,
@@ -78,13 +83,7 @@ struct KittestDockspaceHarness(Harness<'static, KittestProductState>);
 
 impl KittestDockspaceHarness {
     fn step(&mut self) {
-        let run = self
-            .0
-            .state()
-            .dockspace
-            .begin_egui_run(&self.0.ctx, self.0.input());
         self.0.step();
-        run.settle(self.0.output());
     }
 
     fn run_steps(&mut self, steps: usize) {
@@ -260,6 +259,30 @@ fn split_layout() -> DockspaceLayout {
     .expect("the product split layout is valid")
 }
 
+fn shared_semantic_layout() -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(
+            ROOT,
+            DockspaceNode::equal_split(
+                DockspaceAxis::Horizontal,
+                [
+                    DockspaceNode::tabs([FIRST, SECOND]),
+                    DockspaceNode::tabs([THIRD]),
+                ],
+            )
+            .expect("the shared semantic split is valid"),
+        ),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        LogicalRect::new(500.0, 260.0, 240.0, 220.0)
+            .expect("the shared contained rectangle is valid"),
+    ))])
+    .expect("the shared semantic product layout is valid")
+}
+
 fn splitter_junction_layout() -> DockspaceLayout {
     let column = |top, bottom| {
         DockspaceNode::equal_split(
@@ -362,14 +385,12 @@ fn run_frame(
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
     let input = input(events);
-    let run = dockspace.begin_egui_run(context, &input);
     let mut output = context.run_ui(input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
         close_requests.extend(response.close_request_events().iter().cloned());
     });
-    run.settle(&output);
     output.textures_delta.clear();
     FrameOutput {
         output,
@@ -385,7 +406,6 @@ fn run_disabled_frame(
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
     let input = input(events);
-    let run = dockspace.begin_egui_run(context, &input);
     let mut output = context.run_ui(input, |ui| {
         ui.add_enabled_ui(false, |ui| {
             let response = dockspace
@@ -394,7 +414,6 @@ fn run_disabled_frame(
             close_requests.extend(response.close_request_events().iter().cloned());
         });
     });
-    run.settle(&output);
     output.textures_delta.clear();
     FrameOutput {
         output,
@@ -411,7 +430,6 @@ fn run_frame_with_discard_after_dockspace(
     let mut close_requests = Vec::new();
     let mut passes = 0;
     let input = input(events);
-    let run = dockspace.begin_egui_run(context, &input);
     let mut output = context.run_ui(input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
@@ -423,7 +441,6 @@ fn run_frame_with_discard_after_dockspace(
                 .request_discard("exercise product response action retention");
         }
     });
-    run.settle(&output);
     output.textures_delta.clear();
     (
         FrameOutput {
@@ -442,7 +459,6 @@ fn run_two_discarded_dockspace_passes(
 ) -> usize {
     let mut passes = 0;
     let input = input(events);
-    let run = dockspace.begin_egui_run(context, &input);
     let mut output = context.run_ui(input, |ui| {
         passes += 1;
         if ui.ctx().current_pass_index() < 2 {
@@ -453,7 +469,6 @@ fn run_two_discarded_dockspace_passes(
             ui.label("terminal pass intentionally omits the dockspace");
         }
     });
-    run.settle(&output);
     output.textures_delta.clear();
     passes
 }
@@ -467,7 +482,6 @@ fn run_focus_frame(
     let mut close_requests = Vec::new();
     let mut pane_focus_capability = None;
     let input = input(events);
-    let run = dockspace.begin_egui_run(context, &input);
     let mut output = context.run_ui(input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
@@ -475,7 +489,6 @@ fn run_focus_frame(
         close_requests.extend(response.close_request_events().iter().cloned());
         pane_focus_capability = Some(response.pane_focus_capability());
     });
-    run.settle(&output);
     output.textures_delta.clear();
     (
         FrameOutput {
@@ -1462,80 +1475,116 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
 
 #[test]
 fn contained_presentation_menu_exposes_and_executes_directional_commands() {
-    let context = Context::default();
-    context.enable_accesskit();
-    let mut dockspace =
-        Dockspace::builder("product-directional-presentation-menu", contained_layout())
-            .build()
-            .expect("the directional presentation-menu facade initializes");
-    let mut panes = Panes;
+    let cases = [
+        (
+            "Dock Left",
+            Some((DockspaceAxis::Horizontal, vec![vec![SECOND], vec![FIRST]])),
+            None,
+        ),
+        (
+            "Dock Right",
+            Some((DockspaceAxis::Horizontal, vec![vec![FIRST], vec![SECOND]])),
+            None,
+        ),
+        (
+            "Dock Top",
+            Some((DockspaceAxis::Vertical, vec![vec![SECOND], vec![FIRST]])),
+            None,
+        ),
+        (
+            "Dock Bottom",
+            Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]])),
+            None,
+        ),
+        ("Dock Center", None, Some(vec![FIRST, SECOND])),
+    ];
 
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let contained_rect = dockspace
-        .view()
-        .contained(FLOATING)
-        .expect("the contained presentation remains available")
-        .rect();
-    let tree = stable
-        .output
-        .platform_output
-        .accesskit_update
-        .as_ref()
-        .expect("AccessKit is enabled");
-    let (menu, menu_node) = tree
-        .nodes
-        .iter()
-        .find_map(|(id, node)| {
-            let bounds = node.bounds()?;
-            let center_x = (bounds.x0 + bounds.x1) * 0.5;
-            let center_y = (bounds.y0 + bounds.y1) * 0.5;
-            (node.role() == Role::Button
-                && node.label() == Some("Presentation commands")
-                && center_x >= contained_rect.min().x()
-                && center_x <= contained_rect.max().x()
-                && center_y >= contained_rect.min().y()
-                && center_y <= contained_rect.max().y())
-            .then_some((*id, node))
-        })
-        .expect("the contained title exposes its presentation menu");
-    assert!(!menu_node.is_disabled());
+    for (label, expected_split, expected_tabs) in cases {
+        let context = Context::default();
+        context.enable_accesskit();
+        let mut dockspace = Dockspace::builder(
+            ("product-directional-presentation-menu", label),
+            contained_layout(),
+        )
+        .build()
+        .expect("the directional presentation-menu facade initializes");
+        let mut panes = Panes;
 
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![accesskit_action(menu, Action::Click)],
-    );
-    let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    for label in [
-        "Dock Left",
-        "Dock Right",
-        "Dock Top",
-        "Dock Bottom",
-        "Dock Center",
-    ] {
-        let (_, node) = accesskit_node(&opened.output, Role::MenuItem, label);
-        assert!(!node.is_disabled(), "{label} must be executable");
+        let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let contained_rect = dockspace
+            .view()
+            .contained(FLOATING)
+            .expect("the contained presentation remains available")
+            .rect();
+        let tree = stable
+            .output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit is enabled");
+        let (menu, menu_node) = tree
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                let bounds = node.bounds()?;
+                let center_x = (bounds.x0 + bounds.x1) * 0.5;
+                let center_y = (bounds.y0 + bounds.y1) * 0.5;
+                (node.role() == Role::Button
+                    && node.label() == Some("Presentation commands")
+                    && center_x >= contained_rect.min().x()
+                    && center_x <= contained_rect.max().x()
+                    && center_y >= contained_rect.min().y()
+                    && center_y <= contained_rect.max().y())
+                .then_some((*id, node))
+            })
+            .expect("the contained title exposes its presentation menu");
+        assert!(!menu_node.is_disabled());
+
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![accesskit_action(menu, Action::Click)],
+        );
+        let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        for command_label in [
+            "Dock Left",
+            "Dock Right",
+            "Dock Top",
+            "Dock Bottom",
+            "Dock Center",
+        ] {
+            let (_, node) = accesskit_node(&opened.output, Role::MenuItem, command_label);
+            assert!(!node.is_disabled(), "{command_label} must be executable",);
+            assert!(
+                node.supports_action(Action::Click),
+                "{command_label} must expose an AccessKit click action",
+            );
+        }
+        let (command, _) = accesskit_node(&opened.output, Role::MenuItem, label);
+
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![accesskit_action(command, Action::Click)],
+        );
         assert!(
-            node.supports_action(Action::Click),
-            "{label} must expose an AccessKit click action",
+            dockspace.view().contained(FLOATING).is_none(),
+            "{label} must consume the contained presentation",
+        );
+        assert_eq!(
+            root_split(&dockspace),
+            expected_split,
+            "{label} must use the core-derived split target",
+        );
+        assert_eq!(
+            root_tabs(&dockspace),
+            expected_tabs,
+            "{label} must use the core-derived central target",
         );
     }
-    let (dock_left, _) = accesskit_node(&opened.output, Role::MenuItem, "Dock Left");
-
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![accesskit_action(dock_left, Action::Click)],
-    );
-    assert!(dockspace.view().contained(FLOATING).is_none());
-    assert_eq!(
-        root_split(&dockspace),
-        Some((DockspaceAxis::Horizontal, vec![vec![SECOND], vec![FIRST]],)),
-        "Dock Left must use the core-derived outer-edge target",
-    );
 }
 
 #[test]
@@ -1617,11 +1666,8 @@ fn open_main_presentation_menu_closes_immediately_when_anchor_becomes_occluded()
         })
         .expect("the unobscured main root exposes its presentation menu");
     assert!(!main_anchor.is_disabled());
-    let (right_resize, _) = accesskit_node(
-        &stable.output,
-        Role::Splitter,
-        "Resize floating right edge",
-    );
+    let (right_resize, _) =
+        accesskit_node(&stable.output, Role::Splitter, "Resize floating right edge");
 
     let _ = run_frame(
         &context,
@@ -2250,6 +2296,68 @@ fn default_features_overflow_menu_supports_accesskit_and_keyboard() {
 }
 
 #[test]
+fn official_wheel_does_not_promote_final_hover_to_delivery_authority() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let style = DockStyle {
+        tab_min_width: 220.0,
+        tab_max_width: 220.0,
+        ..DockStyle::default()
+    };
+    let mut dockspace =
+        Dockspace::builder("product-final-hover-wheel-authority", overflow_layout())
+            .style(style)
+            .build()
+            .expect("the overflow product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tab_point = tab_center(&stable.output, "First");
+    let application_point = tab_point + vec2(0.0, 120.0);
+    let input = input(vec![
+        Event::PointerMoved(application_point),
+        mouse_wheel(vec2(0.0, -120.0)),
+        Event::PointerMoved(tab_point),
+    ]);
+    let before = Cell::new(egui::Vec2::ZERO);
+    let after = Cell::new(egui::Vec2::ZERO);
+    let mut scroll_receivers_current = true;
+    let mut output = context.run_ui(input, |ui| {
+        before.set(ui.input(|input| input.smooth_scroll_delta()));
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the product frame advances");
+        scroll_receivers_current = response
+            .interaction_capabilities()
+            .scroll_receivers_current();
+        after.set(ui.input(|input| input.smooth_scroll_delta()));
+    });
+    output.textures_delta.clear();
+
+    assert_ne!(
+        before.get(),
+        egui::Vec2::ZERO,
+        "the official egui run exposes one aggregate scroll delta",
+    );
+    assert_eq!(
+        after.get(),
+        before.get(),
+        "final hover cannot authorize Dockspace to consume an uncorrelated wheel aggregate",
+    );
+    assert!(
+        !scroll_receivers_current,
+        "official egui cannot advertise event-time scroll receiver authority",
+    );
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, backward) = accesskit_node(&settled.output, Role::Button, "Scroll tabs backward");
+    assert!(
+        backward.is_disabled(),
+        "an uncorrelated official wheel aggregate must not advance tab-strip scroll state",
+    );
+}
+
+#[test]
 fn disabled_ancestor_blocks_tab_strip_wheel_input() {
     let context = Context::default();
     context.enable_accesskit();
@@ -2417,6 +2525,75 @@ fn partially_clipped_menu_row_scroll_into_view_reaches_core_before_interact_cons
             .expect("the settled scrollbar publishes its current value")
             > before,
         "ScrollIntoView must reveal the clipped remainder through core-owned menu scroll",
+    );
+}
+
+#[test]
+fn tab_list_menu_scrollbar_pointer_drag_updates_core_owned_scroll() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let style = DockStyle {
+        tab_min_width: 220.0,
+        tab_max_width: 220.0,
+        ..DockStyle::default()
+    };
+    let mut dockspace = Dockspace::builder(
+        "product-menu-scrollbar-pointer-drag",
+        long_overflow_layout(),
+    )
+    .style(style)
+    .build()
+    .expect("the pointer-scrollbar facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (control, _) = accesskit_node(&stable.output, Role::Button, "Show hidden tabs");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(control, Action::Click)],
+    );
+    let menu = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let track = node_rect(&menu.output, Role::ScrollBar, "Open tabs scroll position");
+    let (_, scrollbar) = accesskit_node(&menu.output, Role::ScrollBar, "Open tabs scroll position");
+    let before = scrollbar
+        .numeric_value()
+        .expect("the menu scrollbar publishes its current value");
+    let source = Pos2::new(track.center().x, track.min.y + 6.0);
+    let target = Pos2::new(track.center().x, track.max.y - 6.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, scrollbar) = accesskit_node(
+        &settled.output,
+        Role::ScrollBar,
+        "Open tabs scroll position",
+    );
+    assert!(
+        scrollbar
+            .numeric_value()
+            .expect("the settled scrollbar publishes its current value")
+            > before,
+        "dragging the visible scrollbar thumb must update core-owned menu scroll",
     );
 }
 
@@ -3932,13 +4109,11 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         .panic_once = true;
     let interrupted = catch_unwind(AssertUnwindSafe(|| {
         let input = input(vec![Event::PointerMoved(bottom)]);
-        let run = dockspace.begin_egui_run(&context, &input);
         let mut output = context.run_ui(input, |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the interrupted product pass advances");
         });
-        run.settle(&output);
         output.textures_delta.clear();
     }));
     assert!(
@@ -3960,16 +4135,16 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
 }
 
 #[test]
-fn default_features_missing_run_boundary_reports_settlement_unavailable() {
+fn default_features_ordinary_run_ui_settles_without_a_host_token() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder("product-missing-run-boundary", layout())
+    let mut dockspace = Dockspace::builder("product-automatic-run-settlement", layout())
         .build()
-        .expect("the product missing-boundary facade initializes");
+        .expect("the product automatic-settlement facade initializes");
     let mut panes = Panes;
     let mut capability = None;
     let mut local_actions_current = false;
 
-    for _ in 0..2 {
+    for _ in 0..3 {
         let mut output = context.run_ui(input(Vec::new()), |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
@@ -3982,14 +4157,14 @@ fn default_features_missing_run_boundary_reports_settlement_unavailable() {
 
     assert!(
         local_actions_current,
-        "the missing run-end boundary must disable only final-pass evidence",
+        "ordinary eframe-style callbacks keep current-pass local actions",
     );
-    assert_eq!(
+    assert_ne!(
         capability,
         Some(DockspaceCapability::Unavailable(
             DockspaceUnavailableReason::PresentationSettlementRequired,
         )),
-        "a callback without a matching run-end token must fail closed visibly",
+        "egui-owned frame counters settle a successful run without a caller token",
     );
 }
 
@@ -4277,35 +4452,113 @@ fn default_features_replace_policy_and_style_atomically() {
 }
 
 #[test]
-fn kittest_selects_and_closes_tabs_through_accessible_controls() {
-    let mut harness = kittest_harness("product-kittest-tabs", layout());
+fn shared_local_interaction_scenario_maps_to_egui_product_headless_semantics() {
+    let mut harness = kittest_harness("product-kittest-local-interactions", shared_semantic_layout());
+    assert_eq!(
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.id(),
+        ScenarioId::LocalTabCloseSplitterAndContained,
+    );
+    let supported = [
+        ScenarioCapability::LocalTabSelection,
+        ScenarioCapability::LocalItemClose,
+        ScenarioCapability::LocalSplitterAdjustment,
+        ScenarioCapability::LocalContainedResize,
+    ];
+    assert_eq!(
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED
+            .admission(&supported),
+        ScenarioAdmission::Ready,
+        "egui-product-headless admits the shared scenario only from declared capabilities",
+    );
+    assert_eq!(
+        NATIVE_CREATE_REDOCK_RETIREMENT.admission(&supported),
+        ScenarioAdmission::Unsupported {
+            missing: ScenarioCapability::NativeWindowLifecycle,
+        },
+        "the single-surface product executor must reject native-only scenarios before input",
+    );
+    let mut observations = Vec::new();
 
-    harness
-        .get_by_role_and_label(Role::Tab, "Second")
-        .click_accesskit();
-    harness.run_steps(2);
-    assert_eq!(selected(&harness.state().dockspace), Some(SECOND));
+    for step in LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.steps() {
+        let (item, label) = match step.selector() {
+            SemanticSelector::Tab(ItemAlias::Primary)
+            | SemanticSelector::TabClose(ItemAlias::Primary) => (FIRST, "First"),
+            SemanticSelector::Tab(ItemAlias::Secondary)
+            | SemanticSelector::TabClose(ItemAlias::Secondary) => (SECOND, "Second"),
+            SemanticSelector::Tab(ItemAlias::Contained)
+            | SemanticSelector::TabClose(ItemAlias::Contained) => (FOURTH, "Fourth"),
+            SemanticSelector::Splitter(_) | SemanticSelector::ContainedResize { .. } => {
+                (FOURTH, "Fourth")
+            }
+        };
+        match (step.selector(), step.action()) {
+            (SemanticSelector::Tab(alias), ScenarioAction::Activate) => {
+                harness
+                    .get_by_role_and_label(Role::Tab, label)
+                    .click_accesskit();
+                harness.run_steps(2);
+                assert_eq!(selected(&harness.state().dockspace), Some(item));
+                assert_eq!(alias, ItemAlias::Secondary);
+                observations.push(step.expected());
+            }
+            (SemanticSelector::TabClose(alias), ScenarioAction::Activate) => {
+                harness
+                    .get_by_role_and_label(Role::Button, &format!("Close {label}"))
+                    .click_accesskit();
+                harness.run_steps(2);
+                let request = harness
+                    .state_mut()
+                    .close_requests
+                    .pop()
+                    .expect("the semantic close control opens one close plan");
+                assert_eq!(request.plan().items()[0].item(), item);
+                assert_eq!(alias, ItemAlias::Secondary);
+                observations.push(step.expected());
+            }
+            (
+                SemanticSelector::Splitter(ScenarioAxis::Horizontal),
+                ScenarioAction::Increment,
+            ) => {
+                let before = root_weights(&harness.state().dockspace)
+                    .expect("the shared product root remains split");
+                harness
+                    .get_by_role_and_label(Role::Splitter, "Resize panes")
+                    .focus();
+                harness.key_press(Key::ArrowRight);
+                harness.run_steps(2);
+                let after = root_weights(&harness.state().dockspace)
+                    .expect("the adjusted product root remains split");
+                assert!(after[0] > before[0]);
+                observations.push(step.expected());
+            }
+            (
+                SemanticSelector::ContainedResize {
+                    item: ItemAlias::Contained,
+                    edge: ScenarioEdge::East,
+                },
+                ScenarioAction::Increment,
+            ) => {
+                let before = contained_rect(&harness.state().dockspace);
+                harness
+                    .get_by_role_and_label(Role::Splitter, "Resize floating right edge")
+                    .focus();
+                harness.key_press(Key::ArrowRight);
+                harness.run_steps(2);
+                let after = contained_rect(&harness.state().dockspace);
+                assert_eq!(after.min(), before.min());
+                assert!(after.width() > before.width());
+                assert_eq!(after.height(), before.height());
+                observations.push(step.expected());
+            }
+            (selector, action) => panic!("unsupported shared semantic step: {selector:?} {action:?}"),
+        }
+    }
 
-    harness
-        .get_by_role_and_label(Role::Button, "Close Second")
-        .click_accesskit();
-    harness.run_steps(2);
-    let request = harness
-        .state_mut()
-        .close_requests
-        .pop()
-        .expect("the accessible close control opens one close plan");
-    let item = request.plan().items()[0];
-    assert_eq!(item.item(), SECOND);
-    harness
-        .state_mut()
-        .dockspace
-        .resolve_close(request.plan().request(), item.token(), CloseDecision::Allow)
-        .expect("the kittest close decision commits");
-    harness.run_steps(2);
-
-    assert!(harness.state().dockspace.view().item(SECOND).is_none());
-    assert_eq!(tab_items(&harness.state().dockspace), vec![FIRST]);
+    assert_eq!(
+        observations,
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.expected_observations(),
+        "the egui-product-headless executor must map every shared semantic step",
+    );
 }
 
 #[test]

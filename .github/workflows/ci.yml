@@ -86,6 +86,27 @@ jobs:
           --manifest-path integration/egui-product-harness/Cargo.toml
           --features serde --test persistence --locked -j1
 
+  native-platform-check:
+    name: Native compile (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-${{ matrix.os }}
+
+      - name: Check native adapter library
+        run: >-
+          cargo check
+          --manifest-path integration/egui-fork-workspace/Cargo.toml
+          --package egui_dockspace_native --lib --locked -j1
+
   fork-native:
     name: Fork-backed native coordinator
     runs-on: ubuntu-latest
@@ -96,7 +117,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: 526486426971de293fbc42e6d9c63bdf2a6df153
+          ref: d74b86ad9b642655bc867263a10864575e32cc9f
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
@@ -121,9 +142,35 @@ jobs:
           --all -- --check
 
       - name: Run pinned egui output-settlement tests
-        run: >-
-          cargo test --manifest-path .ci/egui-fork/Cargo.toml
-          -p egui --lib output_pass_settlement --locked -j1
+        run: |
+          settlement_tests=(
+            context::test::output_pass_settlement_reports_terminal_root_run
+            context::test::manual_end_pass_settles_once_for_the_ended_viewport
+            context::test::non_root_run_reports_the_ended_child_viewport
+            context::test::late_discard_is_frozen_before_output_pass_settlement
+            context::test::late_output_hook_panic_skips_output_pass_settlement
+            context::test::denied_late_discard_settles_the_max_pass_as_terminal
+            context::test::host_finalizer_runs_after_all_output_hooks
+            context::test::output_hook_panic_skips_host_finalizer
+          )
+          if [ "${#settlement_tests[@]}" -ne 8 ]; then
+            echo "expected exactly 8 output-settlement tests" >&2
+            exit 1
+          fi
+          listed="$(
+            cargo test --manifest-path .ci/egui-fork/Cargo.toml \
+            -p egui --lib --locked -j1 -- --list
+          )"
+          for test_name in "${settlement_tests[@]}"; do
+            if ! grep -Fqx "$test_name: test" <<<"$listed"; then
+              echo "missing pinned output-settlement test: $test_name" >&2
+              exit 1
+            fi
+          done
+          for test_name in "${settlement_tests[@]}"; do
+            cargo test --manifest-path .ci/egui-fork/Cargo.toml \
+            -p egui --lib "$test_name" --locked -j1 -- --exact
+          done
 
       - name: Run pinned eframe host-seam tests
         run: >-
@@ -147,11 +194,22 @@ jobs:
           --locked -j1
 
       - name: Run pinned WGPU retained-overlay test
-        run: >-
-          cargo test --manifest-path .ci/egui-fork/Cargo.toml
-          -p egui-wgpu --lib --no-default-features
-          --features winit,native-host-seam,x11,wayland
-          retained_overlay_loads_the_existing_color_attachment --locked -j1
+        run: |
+          test_name=winit::tests::retained_overlay_loads_the_existing_color_attachment
+          listed="$(
+            cargo test --manifest-path .ci/egui-fork/Cargo.toml \
+            -p egui-wgpu --lib --no-default-features \
+            --features winit,native-host-seam,x11,wayland \
+            --locked -j1 -- --list
+          )"
+          if ! grep -Fqx "$test_name: test" <<<"$listed"; then
+            echo "missing pinned WGPU retained-overlay test: $test_name" >&2
+            exit 1
+          fi
+          cargo test --manifest-path .ci/egui-fork/Cargo.toml \
+            -p egui-wgpu --lib --no-default-features \
+            --features winit,native-host-seam,x11,wayland \
+            "$test_name" --locked -j1 -- --exact
 
       - name: Run pinned winit event-model tests
         run: >-

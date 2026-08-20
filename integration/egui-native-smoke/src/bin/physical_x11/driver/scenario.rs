@@ -20,9 +20,10 @@ use super::super::app::{
 use super::super::assertions::{
     LogicalBounds, PhysicalBounds, PhysicalPoint, SemanticLookupError, SemanticSelector,
     SemanticStabilitySample, SemanticText, choose_outside_point, desktop_to_viewport_logical,
-    point_towards, pointer_barrier_is_satisfied, pointer_observation_for_barrier,
-    semantic_baseline_after_missing, semantic_bounds, semantic_node, semantic_snapshot_is_stable,
-    semantic_tree_summary, tab_drag_point, two_stage_ingress_points, viewport_logical_to_desktop,
+    native_drag_preview_observation, point_towards, pointer_barrier_is_satisfied,
+    pointer_observation_for_barrier, semantic_baseline_after_missing, semantic_bounds,
+    semantic_node, semantic_snapshot_is_stable, semantic_tree_summary, tab_drag_point,
+    two_stage_ingress_points, viewport_logical_to_desktop,
 };
 use super::inspection::{InspectionClient, ViewportTreeSnapshot, viewport_retirement_is_observed};
 use super::x11::{DestroyWatcher, WindowRecord, X11Desktop, x11_window_is_retired};
@@ -763,7 +764,13 @@ fn inject_drag(
             &format!("{} routed target input", request.label),
         )?;
         if request.preview_viewport == request.source_viewport {
-            Ok(source_at_routed_target)
+            native_drag_preview_barrier(
+                shared,
+                inspection,
+                source_at_routed_target,
+                request.deadline,
+                &format!("{} production native preview", request.label),
+            )
         } else {
             viewport_barrier(
                 inspection,
@@ -791,6 +798,49 @@ fn inject_drag(
         &format!("{} physical release", request.label),
     )?;
     Ok(DragResult { preview, released })
+}
+
+fn native_drag_preview_barrier(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    mut snapshot: ViewportTreeSnapshot,
+    overall_deadline: Instant,
+    stage: &str,
+) -> Result<ViewportTreeSnapshot, String> {
+    let deadline = bounded_stage_deadline(overall_deadline, Duration::from_secs(3));
+    let mut attempts = 0_u32;
+    loop {
+        if let Some(error) = shared_fatal_error(shared) {
+            return Err(format!("{stage}: {error}"));
+        }
+        attempts = attempts.saturating_add(1);
+        match native_drag_preview_observation(&snapshot.tree) {
+            Ok(true) => {
+                eprintln!(
+                    "physical-smoke: {stage}: viewport={:?} step={} attempts={attempts}",
+                    snapshot.viewport, snapshot.step,
+                );
+                return Ok(snapshot);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return Err(format!(
+                    "{stage}: invalid production preview diagnostic at viewport={:?} step={}: {error}; tree={}",
+                    snapshot.viewport,
+                    snapshot.step,
+                    semantic_tree_summary(&snapshot.tree),
+                ));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{stage}: production renderer did not publish a native preview before release; last_step={} attempts={attempts} tree={}",
+                snapshot.step,
+                semantic_tree_summary(&snapshot.tree),
+            ));
+        }
+        snapshot = inspection.tree(snapshot.viewport, deadline)?;
+    }
 }
 
 fn inject_drag_to_center_guide(

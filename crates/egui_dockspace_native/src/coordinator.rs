@@ -1339,6 +1339,28 @@ impl NativeCoordinator {
         !self.bridge.output_prefix().is_empty()
     }
 
+    /// Returns exact renderer terminals whose egui pass never reached the
+    /// host-owned finalizer and therefore has no core output attachment.
+    ///
+    /// An unwind produces `NotPresented` for the reserved token. The adapter
+    /// must retire its staged pass before ordinary output-prefix reduction;
+    /// otherwise the coordinator would correctly reject the missing affine
+    /// output as `OutputAwaitingAttachment`.
+    pub(crate) fn unfinalized_not_presented_outputs(&self) -> Vec<NativeOutputToken> {
+        self.bridge
+            .output_prefix()
+            .into_iter()
+            .filter_map(|(result, submitted)| {
+                output_terminal_requires_adapter_abandonment(
+                    result.status(),
+                    submitted,
+                    self.pending_outputs.contains_key(&result.token()),
+                )
+                .then_some(result.token())
+            })
+            .collect()
+    }
+
     pub(crate) fn has_pending_callback_records(&self) -> bool {
         self.bridge.has_pending_callback_records()
     }
@@ -2464,6 +2486,14 @@ fn exact_i32(value: f64) -> Option<i32> {
 
 fn exact_non_zero_u32(value: f64) -> Option<u32> {
     (value.fract() == 0.0 && value >= 1.0 && value <= f64::from(u32::MAX)).then_some(value as u32)
+}
+
+const fn output_terminal_requires_adapter_abandonment(
+    status: NativeOutputStatus,
+    submitted: bool,
+    attached: bool,
+) -> bool {
+    !submitted && !attached && matches!(status, NativeOutputStatus::NotPresented)
 }
 
 impl Drop for NativeCoordinator {

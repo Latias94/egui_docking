@@ -1506,3 +1506,27 @@ fn pointer_reduction_acknowledges_only_after_core_acceptance() {
             .is_none()
     );
 }
+
+#[test]
+fn only_unattached_unsubmitted_not_presented_outputs_need_adapter_abandonment() {
+    assert!(output_terminal_requires_adapter_abandonment(
+        NativeOutputStatus::NotPresented,
+        false,
+        false,
+    ));
+    assert!(!output_terminal_requires_adapter_abandonment(
+        NativeOutputStatus::Presented,
+        false,
+        false,
+    ));
+    assert!(!output_terminal_requires_adapter_abandonment(
+        NativeOutputStatus::NotPresented,
+        true,
+        false,
+    ));
+    assert!(!output_terminal_requires_adapter_abandonment(
+        NativeOutputStatus::NotPresented,
+        false,
+        true,
+    ));
+}

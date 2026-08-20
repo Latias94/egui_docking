@@ -12,10 +12,7 @@ use egui::{
 };
 
 use super::RenderContext;
-use super::actions::{
-    LocalScrollAxis, button_activated, consume_local_scroll_input, effective_enabled,
-    gesture_phase, local_scroll_input,
-};
+use super::actions::{button_activated, effective_enabled, gesture_phase};
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
 use super::schedule::RootPaintSchedule;
@@ -148,18 +145,6 @@ fn paint_tab_bars(
             .then(|| context.plan.receiver_for_tab_strip_scroll(bar))
             .flatten();
         context.register_scroll_receiver(id, receiver);
-        if let Some(scroll) = local_scroll_input(
-            context.ui,
-            context.pointer_authority,
-            LocalScrollAxis::Horizontal,
-        ) && let Some(action) =
-            context
-                .plan
-                .prepare_tab_strip_scroll_at(bar, scroll.point(), scroll.offset_delta())
-        {
-            consume_local_scroll_input(context.ui, scroll);
-            context.push_local_action(action);
-        }
         paint_group_drag_regions(context, bar, contained);
     }
 }

@@ -31,6 +31,25 @@ use crate::style::{DockStyle, ResolvedDockVisuals};
 use measurement::PaintResources;
 pub(crate) use measurement::measure_surface;
 
+#[cfg(feature = "native-render-support")]
+fn native_drag_preview_diagnostic_id() -> Id {
+    Id::new("egui-dockspace-native-drag-preview-diagnostic")
+}
+
+#[cfg(feature = "native-render-support")]
+#[cfg(test)]
+fn enable_native_drag_preview_diagnostic(context: &egui::Context) {
+    context.data_mut(|data| data.insert_temp(native_drag_preview_diagnostic_id(), true));
+}
+
+#[cfg(feature = "native-render-support")]
+fn native_drag_preview_diagnostic_enabled(context: &egui::Context) -> bool {
+    context.data(|data| {
+        data.get_temp::<bool>(native_drag_preview_diagnostic_id())
+            .unwrap_or(false)
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PointerActionAuthority {
     LocalResponses,
@@ -75,12 +94,22 @@ struct RenderContext<'ui, 'plan, 'scroll> {
 }
 
 pub(crate) fn request_discard_once(ui: &Ui, marker: Id, reason: &'static str) -> bool {
-    let frame = ui.ctx().cumulative_frame_nr();
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct RunStamp {
+        frame: u64,
+        start_pass: u64,
+    }
+
+    let pass_index = u64::try_from(ui.ctx().current_pass_index()).unwrap_or(u64::MAX);
+    let stamp = RunStamp {
+        frame: ui.ctx().cumulative_frame_nr(),
+        start_pass: ui.ctx().cumulative_pass_nr().saturating_sub(pass_index),
+    };
     let first = ui.ctx().data_mut(|data| {
-        if data.get_temp::<u64>(marker) == Some(frame) {
+        if data.get_temp::<RunStamp>(marker) == Some(stamp) {
             false
         } else {
-            data.insert_temp(marker, frame);
+            data.insert_temp(marker, stamp);
             true
         }
     });
@@ -483,10 +512,11 @@ fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, visuals: ResolvedDockVisua
     let Some(preview) = plan.drag_preview() else {
         return false;
     };
+    let visual = preview.visual();
     let Some(bounds) = geometry::egui_rect(plan.bounds()) else {
         return false;
     };
-    let Some(rect) = preview_rect(plan.surface(), bounds, preview.visual()) else {
+    let Some(rect) = preview_rect(plan.surface(), bounds, visual) else {
         return false;
     };
     let painter = ui.painter_at(bounds);
@@ -497,7 +527,39 @@ fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, visuals: ResolvedDockVisua
         Stroke::new(1.0, visuals.drop_border_color),
         StrokeKind::Inside,
     );
+    #[cfg(feature = "native-render-support")]
+    publish_native_drag_preview_diagnostic(ui, plan.surface(), rect, visual);
     true
+}
+
+#[cfg(feature = "native-render-support")]
+fn publish_native_drag_preview_diagnostic(
+    ui: &Ui,
+    surface: dockspace::model::SurfaceId,
+    rect: egui::Rect,
+    visual: DockspacePreviewVisual,
+) {
+    if !native_drag_preview_diagnostic_enabled(ui.ctx()) {
+        return;
+    }
+    if !matches!(
+        visual,
+        DockspacePreviewVisual::Native { host_surface, .. } if host_surface == surface
+    ) {
+        return;
+    }
+    let id = ui.make_persistent_id(("dockspace-native-drag-preview-painted", surface));
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_role(egui::accesskit::Role::Label);
+        node.set_label("Dockspace native drag preview painted");
+        node.set_value("painted");
+        node.set_bounds(egui::accesskit::Rect::new(
+            f64::from(rect.min.x),
+            f64::from(rect.min.y),
+            f64::from(rect.max.x),
+            f64::from(rect.max.y),
+        ));
+    });
 }
 
 fn preview_rect(
@@ -546,13 +608,58 @@ fn paint_contained_transform_preview(
     true
 }
 
+#[cfg(test)]
+mod discard_tests {
+    use egui::{Context, Id, RawInput, Ui, UiBuilder};
+
+    use super::request_discard_once;
+
+    #[test]
+    fn manual_passes_each_receive_one_discard_request() {
+        let context = Context::default();
+        let marker = Id::new("dockspace-manual-discard-once");
+
+        for pass in 0..2 {
+            context.begin_pass(RawInput::default());
+            let ui = Ui::new(
+                context.clone(),
+                Id::new(("dockspace-manual-discard-ui", pass)),
+                UiBuilder::new().max_rect(context.viewport_rect()),
+            );
+            assert!(request_discard_once(&ui, marker, "manual pass discard"));
+            assert!(!request_discard_once(&ui, marker, "manual pass discard"));
+            context.end_pass().drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn multipass_run_receives_only_one_discard_request() {
+        let context = Context::default();
+        context.options_mut(|options| {
+            options.max_passes = 2.try_into().expect("two is non-zero");
+        });
+        let marker = Id::new("dockspace-run-discard-once");
+        let mut requested = Vec::new();
+
+        let output = context.run_ui(RawInput::default(), |ui| {
+            requested.push(request_discard_once(ui, marker, "multipass discard"));
+        });
+        output.drop_without_applying_deltas();
+
+        assert_eq!(requested, [true, false]);
+    }
+}
+
 #[cfg(all(test, feature = "native-render-support"))]
 mod tests {
     use dockspace::geometry::{LogicalRect, PhysicalRect};
     use dockspace::model::SurfaceId;
     use egui::{Rect, pos2, vec2};
 
-    use super::{DockspacePreviewVisual, PointerActionAuthority, preview_rect};
+    use super::{
+        DockspacePreviewVisual, PointerActionAuthority, enable_native_drag_preview_diagnostic,
+        native_drag_preview_diagnostic_enabled, preview_rect,
+    };
 
     #[test]
     fn external_journal_uses_renderer_settlement_for_preview_authority() {
@@ -597,5 +704,15 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn native_preview_diagnostic_requires_explicit_smoke_opt_in() {
+        let context = egui::Context::default();
+        assert!(!native_drag_preview_diagnostic_enabled(&context));
+
+        enable_native_drag_preview_diagnostic(&context);
+
+        assert!(native_drag_preview_diagnostic_enabled(&context));
     }
 }

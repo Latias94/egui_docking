@@ -1,17 +1,18 @@
 //! Ordered callback mailbox for the fork-backed native host.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
 use eframe::{
     NativeDeviceRemoval, NativeGlobalFocusObservation, NativeHostAttachment, NativeHostHandler,
-    NativeHostWake, NativeOutputResult, NativeOutputToken, NativePhysicalRect,
-    NativeViewportCloseRequest, NativeViewportCreateAdmission, NativeViewportCreateAttempt,
-    NativeViewportCreateFailure, NativeViewportFocusResult, NativeViewportPointerPassthroughResult,
-    NativeViewportRoster, NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot,
+    NativeHostWake, NativeOutputPassFinalization, NativeOutputPassFinalizer, NativeOutputResult,
+    NativeOutputToken, NativePhysicalRect, NativeViewportCloseRequest,
+    NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeViewportCreateFailure,
+    NativeViewportFocusResult, NativeViewportPointerPassthroughResult, NativeViewportRoster,
+    NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot,
     NativeWindowingBackend, egui::ViewportId,
 };
 
@@ -1825,10 +1826,10 @@ const fn is_next_output_ordinal(previous: u64, current: u64) -> bool {
     matches!(previous.checked_add(1), Some(expected) if expected == current)
 }
 
-#[derive(Debug)]
 pub(crate) struct NativeHostBridge {
     records: Mutex<HostRecords>,
     viewports: Arc<Mutex<NativeViewportMap>>,
+    output_pass_finalizer: OnceLock<Arc<dyn NativeOutputPassFinalizer>>,
 }
 
 #[must_use = "prepared route retirements must be committed or dropped"]
@@ -1868,6 +1869,7 @@ impl NativeHostBridge {
         Self {
             records: Mutex::new(HostRecords::active()),
             viewports,
+            output_pass_finalizer: OnceLock::new(),
         }
     }
 
@@ -2748,6 +2750,14 @@ impl NativeHostBridge {
 }
 
 impl NativeHostHandler for NativeHostBridge {
+    fn install_output_pass_finalizer(&self, finalizer: Arc<dyn NativeOutputPassFinalizer>) -> bool {
+        let records = self.lock();
+        if records.attachment != HostAttachmentState::Available {
+            return false;
+        }
+        self.output_pass_finalizer.set(finalizer).is_ok()
+    }
+
     fn try_attach(&self, _attachment: NativeHostAttachment) -> bool {
         self.lock().attachment.try_attach()
     }
@@ -2848,6 +2858,17 @@ impl NativeHostHandler for NativeHostBridge {
         root_roster: Option<NativeViewportRoster<'_>>,
     ) {
         self.reserve_output(token, window, root_roster);
+    }
+
+    fn on_output_pass_finalized(
+        &self,
+        finalization: NativeOutputPassFinalization<'_>,
+    ) -> NativeHostWake {
+        self.output_pass_finalizer
+            .get()
+            .map_or(NativeHostWake::Wait, |finalizer| {
+                finalizer.finalize(finalization)
+            })
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {

@@ -149,6 +149,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dockspace_host_conformance"
+version = "0.1.0"
+dependencies = [
+ "dockspace",
+]
+
+[[package]]
 name = "ecolor"
 version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -182,6 +189,7 @@ name = "egui-dockspace-product-harness"
 version = "0.0.0"
 dependencies = [
  "dockspace",
+ "dockspace_host_conformance",
  "egui",
  "egui_dockspace",
  "egui_kittest",

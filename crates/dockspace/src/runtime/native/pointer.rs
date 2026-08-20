@@ -614,6 +614,10 @@ impl RuntimeNativeState {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
         }
+        // Materialize the caller-owned iterator before opening a recorder
+        // transaction. An iterator may unwind while producing a later item;
+        // no runtime watermark may advance before iteration itself completes.
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
         let savepoint = self.recorder.savepoint();
         for input in inputs {
             if let Err(error) = self.record_pointer(input) {

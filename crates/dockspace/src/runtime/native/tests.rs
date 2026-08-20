@@ -1541,6 +1541,47 @@ fn native_pointer_batch_rolls_back_a_rejected_suffix_before_exact_retry() {
 }
 
 #[test]
+fn native_pointer_batch_does_not_publish_a_prefix_when_the_iterator_unwinds() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    struct PanickingBatch {
+        first: Option<NativePointerInput>,
+    }
+
+    impl Iterator for PanickingBatch {
+        type Item = NativePointerInput;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.first.is_some() {
+                return self.first.take();
+            }
+            panic!("the caller iterator unwound before producing its suffix");
+        }
+    }
+
+    let (mut session, _) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let native = session
+        .native
+        .as_ref()
+        .expect("managed state remains active");
+    let recorded_before = native.recorder.recorded_through();
+    let pointer_before = native.recorder.pointer_through();
+    let first = unknown_native_pointer_input(11, NativePointerEvent::Moved);
+
+    let interrupted = catch_unwind(AssertUnwindSafe(|| {
+        let _ = session.record_native_pointer_batch(PanickingBatch { first: Some(first) });
+    }));
+
+    assert!(interrupted.is_err());
+    let native = session
+        .native
+        .as_ref()
+        .expect("managed state remains active");
+    assert_eq!(native.recorder.recorded_through(), recorded_before);
+    assert_eq!(native.recorder.pointer_through(), pointer_before);
+}
+
+#[test]
 fn managed_pointer_enrollment_accepts_explicit_unknown_authority() {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ITEM]));

@@ -17,13 +17,15 @@ use dockspace::runtime::{
     SurfaceUnavailableReason, WorkspaceVersion,
 };
 use egui::emath::GuiRounding;
-use egui::{Context, Id, RawInput, Sense, Ui};
+use egui::{Id, Sense, Ui};
 
 use crate::builder::DockspaceBuilder;
 use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
-use crate::pass_settlement::{DockspaceEguiRun, ProductPassSettlement, ProductPassSettlementBatch};
+use crate::pass_settlement::{
+    PreviousPassSettlement, ProductPassSettlement, ProductPassSettlementBatch,
+};
 use crate::product_render;
 use crate::response::DockspaceMutation;
 use crate::response::{
@@ -133,19 +135,6 @@ impl Dockspace {
     #[must_use]
     pub const fn id(&self) -> Id {
         self.id
-    }
-
-    /// Begins one exact egui run for final-pass presentation settlement.
-    ///
-    /// Create the token immediately before passing `input` to
-    /// [`Context::run_ui`] or [`Context::begin_pass`]. After the matching call
-    /// returns, consume the token with [`DockspaceEguiRun::settle`] and the
-    /// returned `FullOutput`. This explicit run-end boundary is portable across
-    /// official egui integrations and keeps discarded or interrupted passes
-    /// from acknowledging presentation and pane-focus evidence.
-    #[must_use]
-    pub fn begin_egui_run(&self, context: &Context, input: &RawInput) -> DockspaceEguiRun {
-        self.pass_settlement.begin_run(context, input)
     }
 
     /// Returns the published item/surface-centric workspace view.
@@ -632,12 +621,12 @@ impl Dockspace {
     /// pointer authority from callback order.
     ///
     /// Local actions commit in the current call. Presentation acknowledgements
-    /// and pane-focus observations are retained only when the host surrounds
-    /// the exact egui run with [`Self::begin_egui_run`] and settles that token
-    /// with the returned terminal `FullOutput`. Without that host boundary,
-    /// local actions remain available but final-pass evidence fails closed and
-    /// [`DockspaceResponse::pane_focus_capability`] reports
-    /// [`DockspaceUnavailableReason::PresentationSettlementRequired`].
+    /// and pane-focus observations become eligible on the next successful
+    /// [`egui::Context::run_ui`] frame. Dockspace compares egui-owned frame and
+    /// pass counters, so discarded passes, interrupted runs, unrelated
+    /// contexts, and low-level manual passes cannot impersonate a terminal
+    /// output. This works inside ordinary `eframe::App::update` callbacks;
+    /// applications do not need access to `RawInput` or `FullOutput`.
     ///
     /// # Errors
     ///
@@ -667,12 +656,12 @@ impl Dockspace {
         }
 
         let ready_settlement = self.pass_settlement.take_ready(ui);
-        for action in ready_settlement.presentation_actions {
+        for action in ready_settlement.batch.presentation_actions {
             frame
                 .submit_surface_action(action)
                 .map_err(DockspaceError::from_detail)?;
         }
-        if let Some(observation) = ready_settlement.pane_focus_observation {
+        if let Some(observation) = ready_settlement.batch.pane_focus_observation {
             frame
                 .submit_pane_focus_observation(observation)
                 .map_err(DockspaceError::from_detail)?;
@@ -755,7 +744,7 @@ impl Dockspace {
                 pane_focus_observation,
             },
         );
-        if !settlement_staged {
+        if !settlement_staged || ready_settlement.previous == PreviousPassSettlement::Rejected {
             pane_focus_capability = DockspaceCapability::Unavailable(
                 DockspaceUnavailableReason::PresentationSettlementRequired,
             );

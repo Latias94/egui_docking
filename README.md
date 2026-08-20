@@ -5,8 +5,10 @@ docking core plus thin UI and platform adapters. There is no compatibility
 layer for the former `egui_docking`, `egui_tiles`, or pre-refactor persistence
 interfaces.
 
-The current design and implementation sequence live in
-[`docs/plans/2026-08-08-001-refactor-dockspace-product-boundary-plan.md`](docs/plans/2026-08-08-001-refactor-dockspace-product-boundary-plan.md).
+The current interaction and multiview conformance sequence lives in
+[`docs/plans/2026-08-18-001-interaction-floating-multiview-conformance-plan.md`](docs/plans/2026-08-18-001-interaction-floating-multiview-conformance-plan.md).
+The earlier product-boundary plan remains the authority for the underlying
+ownership and persistence model.
 
 ## Capability matrix
 
@@ -59,29 +61,26 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
 native workspace uses the reviewed egui/eframe fork revision
-`526486426971de293fbc42e6d9c63bdf2a6df153`, which contains every admitted native
+`d74b86ad9b642655bc867263a10864575e32cc9f`, which contains every admitted native
 seam. The event-time Winit fork is pinned at
 `c3fe740e090543e7afba525c111874d36e68948f`. The manifest, lockfile, CI, and
 this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 
-Hosts built against official crates.io egui must expose the exact run-end
-boundary when they need Dockspace preview or pane-focus settlement:
+Hosts built against official crates.io egui can call the product facade from an
+ordinary `eframe::App::ui` callback:
 
 ```rust,ignore
-let run = dockspace.begin_egui_run(&context, &input);
-let output = context.run_ui(input, |ui| {
-    dockspace
-        .show_single_surface(surface, ui, panes)
-        .expect("the Dockspace frame advances");
-});
-run.settle(&output);
+dockspace
+    .show_single_surface(surface, ui, panes)
+    .expect("the Dockspace frame advances");
 ```
 
-Calling `show_single_surface` without this boundary remains valid for painting
-and current-pass local actions, but final-pass evidence fails closed and the
-response reports `PresentationSettlementRequired` for pane focus.
+Final-pass evidence is accepted on the next successful egui frame by comparing
+egui-owned frame and pass counters. Discarded passes, interrupted runs, manual
+`begin_pass` / `end_pass` calls, unrelated contexts, and omitted terminal paints
+fail closed without a caller-provided output token.
 
 Dear ImGui and `dear-imgui-rs` are behavioral references for frame phases,
 viewport lifecycle, wakeups, geometry/DPI facts, and teardown coverage. Their

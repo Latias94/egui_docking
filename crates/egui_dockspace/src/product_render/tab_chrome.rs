@@ -8,10 +8,7 @@ use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
 use super::RenderContext;
-use super::actions::{
-    LocalScrollAxis, button_activated, consume_local_scroll_input, effective_enabled,
-    local_scroll_input,
-};
+use super::actions::{button_activated, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect};
 
 pub(crate) fn paint_controls(
@@ -268,18 +265,6 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
         .then(|| context.plan.receiver_for_tab_list_menu_scroll(menu))
         .flatten();
     context.register_scroll_receiver(scroll_id, scroll_receiver);
-    if let Some(scroll) = local_scroll_input(
-        context.ui,
-        context.pointer_authority,
-        LocalScrollAxis::Vertical,
-    ) && let Some(action) =
-        context
-            .plan
-            .prepare_tab_list_menu_scroll_at(menu, scroll.point(), scroll.offset_delta())
-    {
-        consume_local_scroll_input(context.ui, scroll);
-        context.push_local_action(action);
-    }
 
     let rows = menu.rows().collect::<Vec<_>>();
     for row in rows.iter().copied() {

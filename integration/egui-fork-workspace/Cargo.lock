@@ -438,7 +438,7 @@ source = "git+https://github.com/Latias94/winit.git?rev=c3fe740e090543e7afba525c
 [[package]]
 name = "ecolor"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "bytemuck",
  "emath",
@@ -448,7 +448,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -481,7 +481,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "accesskit",
  "ahash",
@@ -513,7 +513,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -532,7 +532,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -571,7 +571,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "bytemuck",
  "egui",
@@ -584,7 +584,7 @@ dependencies = [
 [[package]]
 name = "egui_inspection"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "egui",
  "image",
@@ -603,7 +603,7 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 [[package]]
 name = "emath"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "bytemuck",
  "serde",
@@ -623,7 +623,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -648,7 +648,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+source = "git+https://github.com/Latias94/egui?rev=d74b86ad9b642655bc867263a10864575e32cc9f#d74b86ad9b642655bc867263a10864575e32cc9f"
 
 [[package]]
 name = "equivalent"

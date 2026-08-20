@@ -3,6 +3,8 @@
 use eframe::egui::accesskit::{Role, TreeUpdate};
 
 pub(super) const POINTER_DIAGNOSTIC_LABEL: &str = "Physical smoke pointer input";
+pub(super) const NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL: &str =
+    "Dockspace native drag preview painted";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct LogicalBounds {
@@ -380,6 +382,36 @@ pub(super) fn pointer_observation_for_barrier(
     }))
 }
 
+pub(super) fn native_drag_preview_observation(tree: &TreeUpdate) -> Result<bool, String> {
+    let selector = SemanticSelector {
+        role: Role::Label,
+        text: SemanticText::Label(NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL),
+    };
+    let node = match semantic_node(tree, selector) {
+        Ok(node) => node,
+        Err(SemanticLookupError::Missing) => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "native drag-preview diagnostic selector is invalid: {error:?}"
+            ));
+        }
+    };
+    semantic_bounds(tree, selector)
+        .map_err(|error| format!("native drag-preview bounds are invalid: {error:?}"))?;
+    if node.value() != Some("painted") {
+        return Err(format!(
+            "native drag-preview diagnostic has unexpected value {:?}",
+            node.value()
+        ));
+    }
+    if node.supports_action(eframe::egui::accesskit::Action::Click)
+        || node.supports_action(eframe::egui::accesskit::Action::Focus)
+    {
+        return Err("native drag-preview diagnostic must remain non-interactive".to_owned());
+    }
+    Ok(true)
+}
+
 pub(super) fn pointer_observation_matches(
     observed: PointerObservation,
     expected_position: LogicalPoint,
@@ -527,6 +559,52 @@ mod tests {
                 max_y: 44.0,
             })
         );
+    }
+
+    #[test]
+    fn native_drag_preview_requires_an_exact_passive_renderer_fact() {
+        let without_preview = tree([(
+            NodeId::from(1_u64),
+            node(
+                Role::Window,
+                Some("Dockspace"),
+                None,
+                Rect::new(0.0, 0.0, 720.0, 520.0),
+            ),
+        )]);
+        assert_eq!(native_drag_preview_observation(&without_preview), Ok(false));
+
+        let preview = tree([
+            (
+                NodeId::from(1_u64),
+                node(
+                    Role::Window,
+                    Some("Dockspace"),
+                    None,
+                    Rect::new(0.0, 0.0, 720.0, 520.0),
+                ),
+            ),
+            (
+                NodeId::from(2_u64),
+                node(
+                    Role::Label,
+                    Some(NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL),
+                    Some("painted"),
+                    Rect::new(4.0, 4.0, 716.0, 516.0),
+                ),
+            ),
+        ]);
+        assert_eq!(native_drag_preview_observation(&preview), Ok(true));
+
+        let mut actionable = node(
+            Role::Label,
+            Some(NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL),
+            Some("painted"),
+            Rect::new(4.0, 4.0, 716.0, 516.0),
+        );
+        actionable.add_action(eframe::egui::accesskit::Action::Click);
+        let actionable = tree([(NodeId::from(1_u64), actionable)]);
+        assert!(native_drag_preview_observation(&actionable).is_err());
     }
 
     #[test]

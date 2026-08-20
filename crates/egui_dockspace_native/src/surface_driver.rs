@@ -367,9 +367,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
     pub(crate) fn stage_retain_previous(
         &mut self,
         token: NativeOutputToken,
+        surface: SurfaceId,
     ) -> Result<(), NativeRuntimeError> {
         self.pass_actions
-            .stage_retain_previous(token)
+            .stage_retain_previous(token, surface)
             .map_err(map_pass_action_error)
     }
 
@@ -393,6 +394,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
+        self.abandon_unfinalized_output_passes(&context)?;
         let prelude = {
             let coordinator = &mut self.coordinator;
             (|| {
@@ -476,7 +478,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 let draft = pass_actions
                     .prepare_pass(token, paint, application_action_ready)
                     .map_err(map_pass_action_error)?;
-                let has_actions = pass_actions.pass_has_actions(token, &draft);
+                let has_actions = pass_actions.pass_has_actions(&draft);
                 // A frame that can mutate workspace or interaction authority
                 // cannot also publish paint captured against the pre-action
                 // workspace. Its terminal action frame schedules a fresh paint.
@@ -531,7 +533,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let retirement_committed = prepared_retirements.is_some();
         if let Some(prepared_retirements) = prepared_retirements {
             for token in coordinator.commit_retirements(prepared_retirements) {
-                self.pass_actions.abandon(token);
+                self.pass_actions
+                    .abandon(token)
+                    .map_err(map_pass_action_error)?;
             }
         }
         if surface == self.root_surface {
@@ -589,7 +593,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             // announced output token is not abandoned until this egui pass is
             // known to be terminal.
             self.pass_actions
-                .stage_retain_previous(token)
+                .stage_retain_previous(token, surface)
                 .map_err(map_pass_action_error)?;
         } else {
             self.pass_actions
@@ -658,6 +662,31 @@ impl<P: PaneView> NativeRuntimeState<P> {
         })
     }
 
+    fn abandon_unfinalized_output_passes(
+        &mut self,
+        context: &egui::Context,
+    ) -> Result<(), NativeRuntimeError> {
+        for token in self.coordinator.unfinalized_not_presented_outputs() {
+            self.pass_actions
+                .abandon(token)
+                .map_err(map_pass_action_error)?;
+            let wake = self.coordinator.abandon_output_token(token);
+            debug_assert_eq!(
+                wake,
+                NativeHostWake::RepaintRoot,
+                "an unattached NotPresented terminal retains one exact reservation",
+            );
+            // The terminal root wake lets the coordinator consume its journal.
+            // A discarded child pass may also own durable local actions, so
+            // explicitly reschedule the viewport which produced that token.
+            if wake == NativeHostWake::RepaintRoot {
+                context.request_repaint_once_of(egui::ViewportId::ROOT);
+            }
+            context.request_repaint_once_of(token.viewport_id());
+        }
+        Ok(())
+    }
+
     pub(crate) fn settle_egui_pass(
         &mut self,
         context: &egui::Context,
@@ -681,7 +710,21 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .map_err(map_pass_action_error)?
             .expect("a checked staged native pass remains available");
         let final_pass = match final_pass {
-            NativeFinalPass::RetainPrevious => {
+            NativeFinalPass::RetainPrevious {
+                surface,
+                local_actions_ready,
+            } => {
+                if local_actions_ready {
+                    self.commit_terminal_actions(
+                        context,
+                        token,
+                        surface,
+                        Vec::new(),
+                        None,
+                        true,
+                        false,
+                    )?;
+                }
                 self.settle_retained_egui_output(context, output, token, RetainedOutputKind::Skip)?;
                 return Ok(());
             }
@@ -708,6 +751,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             output,
         ) = final_pass.into_parts();
         debug_assert_eq!(has_application_action, application_action_ready);
+        let local_actions_ready = self
+            .pass_actions
+            .retain_local_actions(surface, local_actions)
+            .map_err(map_pass_action_error)?;
         if has_actions && output.is_some() {
             return Err(NativeHostProtocolError::PaintedOutputCountMismatch {
                 expected: 0,
@@ -723,7 +770,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 surface,
                 presentation_actions,
                 pane_focus_observation,
-                local_actions,
+                local_actions_ready,
                 has_application_action,
             )?;
         }
@@ -779,7 +826,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         surface: SurfaceId,
         presentation_actions: Vec<PreparedSurfaceAction>,
         pane_focus_observation: Option<PreparedPaneFocusObservation>,
-        local_actions: Vec<PreparedSurfaceAction>,
+        local_actions_ready: bool,
         application_action_ready: bool,
     ) -> Result<(), NativeRuntimeError> {
         let mut host_frame = self.coordinator.begin_resolved_host_frame(context)?;
@@ -801,8 +848,34 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if let Some(observation) = pane_focus_observation {
             host_frame.submit_pane_focus_observation(observation)?;
         }
-        for action in local_actions {
-            host_frame.submit_surface_action(action)?;
+        if local_actions_ready {
+            let (local_actions, local_action_attempt) = self
+                .pass_actions
+                .begin_local_action_submission(surface)
+                .map_err(map_pass_action_error)?;
+            debug_assert_eq!(local_actions.surface(), surface);
+            let (_, actions) = local_actions.into_parts();
+            let core_result = (|| -> Result<HostFrameReport, NativeRuntimeError> {
+                for action in actions {
+                    host_frame.submit_surface_action(action)?;
+                }
+                host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+                host_frame.commit()
+            })();
+            let report = match local_action_attempt
+                .settle(core_result)
+                .map_err(map_pass_action_error)?
+            {
+                Ok(report) => report,
+                Err(error) => return Err(error),
+            };
+            return self.settle_terminal_action_report(
+                context,
+                token,
+                surface,
+                submitted_application_action,
+                report,
+            );
         }
         host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let report = host_frame.commit()?;
@@ -945,14 +1018,24 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let kind = error.kind();
         let internal_transition_error = self.settle_internal_application_transitions().err();
+        let mut cleanup_errors = internal_transition_error.into_iter().collect::<Vec<_>>();
         for token in self.coordinator.quarantine_after_fatal() {
-            self.pass_actions.abandon(token);
+            if let Err(error) = self.pass_actions.abandon(token) {
+                cleanup_errors.push(map_pass_action_error(error));
+            }
         }
-        self.pass_actions.clear();
+        cleanup_errors.extend(
+            self.pass_actions
+                .abandon_all_outputs()
+                .into_iter()
+                .map(map_pass_action_error),
+        );
+        // Durable local actions stay visible as unresolved work. A fatal
+        // output teardown is not a core action terminal.
         let _ = self.application_actions.begin_shutdown(kind);
         self.shutdown = Some(NativeShutdownState {
             primary: error,
-            cleanup_errors: internal_transition_error.into_iter().collect(),
+            cleanup_errors,
         });
     }
 
@@ -1020,7 +1103,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
         }
         for token in abandoned_outputs {
-            self.pass_actions.abandon(token);
+            if let Err(error) = self.pass_actions.abandon(token) {
+                errors.push(map_pass_action_error(error));
+            }
         }
         for viewport in repaint_viewports {
             context.request_repaint_once_of(viewport);

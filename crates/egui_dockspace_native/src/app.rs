@@ -4,8 +4,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use dockspace::model::{DockPlacement, DockspaceView, NativeWindowPlacement, RootId, SurfaceId};
 use dockspace::runtime::DockspaceSession;
-use eframe::NativeHostHandler;
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
+use eframe::{
+    NativeHostHandler, NativeHostWake, NativeOutputPassFinalization, NativeOutputPassFinalizer,
+};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 
 use crate::close_control::NativeWindowClosePolicy;
@@ -85,10 +87,15 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
             close_policy,
         )?;
         let native_host = state.native_host_handler();
-        Ok(Self {
-            state: Arc::new(Mutex::new(state)),
-            native_host,
-        })
+        let state = Arc::new(Mutex::new(state));
+        let finalizer: Arc<dyn NativeOutputPassFinalizer> = Arc::new(NativePassFinalizer {
+            state: Arc::downgrade(&state),
+        });
+        assert!(
+            native_host.install_output_pass_finalizer(finalizer),
+            "the Dockspace native host accepts exactly one output-pass finalizer"
+        );
+        Ok(Self { state, native_host })
     }
 
     /// Returns the one-shot host callback to install in [`eframe::NativeOptions::native_host`].
@@ -208,7 +215,6 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
 
     fn update_root(&self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
-        register_pass_settlement::<P>(&context, &self.state);
         let token = eframe::current_native_output_token();
         let (specs, request_repaint) = {
             let mut state = lock_state(&self.state);
@@ -260,7 +266,6 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
     ui: &mut egui::Ui,
     class: ViewportClass,
 ) {
-    register_pass_settlement::<P>(ui.ctx(), shared);
     let token = eframe::current_native_output_token();
     let mut state = lock_state(shared);
     if state.error().is_some() {
@@ -306,8 +311,8 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
         DeferredViewportPaint::Created | DeferredViewportPaint::Staging(_) => {
             paint_placeholder(ui, class, Some(disposition));
         }
-        DeferredViewportPaint::Retain(_) => {
-            if let Err(error) = state.stage_retain_previous(token) {
+        DeferredViewportPaint::Retain(binding) => {
+            if let Err(error) = state.stage_retain_previous(token, binding.surface()) {
                 state.stop_current_output(error);
                 ui.ctx().request_repaint_once_of(ViewportId::ROOT);
                 state.render_error(ui, NativeErrorPresentation::NoFrame);
@@ -349,79 +354,37 @@ fn lock_state<P>(state: &Arc<Mutex<P>>) -> MutexGuard<'_, P> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-struct NativePassSettlementPlugin<P> {
-    states: Vec<Weak<Mutex<NativeRuntimeState<P>>>>,
+struct NativePassFinalizer<P> {
+    state: Weak<Mutex<NativeRuntimeState<P>>>,
 }
 
-impl<P> Default for NativePassSettlementPlugin<P> {
-    fn default() -> Self {
-        Self { states: Vec::new() }
-    }
-}
-
-impl<P> NativePassSettlementPlugin<P> {
-    fn register(&mut self, state: Weak<Mutex<NativeRuntimeState<P>>>) {
-        if !self
-            .states
-            .iter()
-            .any(|registered| Weak::ptr_eq(registered, &state))
-        {
-            self.states.push(state);
-        }
-    }
-}
-
-impl<P: PaneView + Send + 'static> egui::plugin::Plugin for NativePassSettlementPlugin<P> {
-    fn debug_name(&self) -> &'static str {
-        "egui_dockspace_native::final_pass_settlement"
-    }
-
-    fn output_pass_settlement(
-        &mut self,
-        context: &egui::Context,
-        ended_viewport: ViewportId,
-        disposition: egui::OutputPassDisposition,
-        output: &mut egui::FullOutput,
-    ) {
-        let Some(token) = eframe::current_native_output_token() else {
-            return;
+impl<P: PaneView + Send + 'static> NativeOutputPassFinalizer for NativePassFinalizer<P> {
+    fn finalize(&self, finalization: NativeOutputPassFinalization<'_>) -> NativeHostWake {
+        let Some(state) = self.state.upgrade() else {
+            return NativeHostWake::Wait;
         };
-        self.states.retain(|state| {
-            let Some(state) = state.upgrade() else {
-                return false;
-            };
-            let mut state = lock_state(&state);
-            let result = if token.viewport_id() == ended_viewport {
-                state.settle_egui_pass(
-                    context,
-                    output,
-                    token,
-                    disposition == egui::OutputPassDisposition::Repeat,
-                )
+        let (context, token, ended_viewport, disposition, output) = finalization.into_parts();
+        let mut state = lock_state(&state);
+        let result = if token.viewport_id() == ended_viewport {
+            state.settle_egui_pass(
+                context,
+                output,
+                token,
+                disposition == egui::OutputPassDisposition::Repeat,
+            )
+        } else {
+            Err(NativeHostProtocolError::MultipassOutputChanged.into())
+        };
+        if let Err(error) = result {
+            if state.error().is_some() {
+                state.record_cleanup_error(error);
             } else {
-                Err(NativeHostProtocolError::MultipassOutputChanged.into())
-            };
-            if let Err(error) = result {
-                if state.error().is_some() {
-                    state.record_cleanup_error(error);
-                } else {
-                    state.stop_current_output(error);
-                    context.request_repaint_once_of(ViewportId::ROOT);
-                }
+                state.stop_current_output(error);
+                return NativeHostWake::RepaintRoot;
             }
-            true
-        });
+        }
+        NativeHostWake::Wait
     }
-}
-
-fn register_pass_settlement<P: PaneView + Send + 'static>(
-    context: &egui::Context,
-    state: &Arc<Mutex<NativeRuntimeState<P>>>,
-) {
-    context
-        .plugin_or_default::<NativePassSettlementPlugin<P>>()
-        .lock()
-        .register(Arc::downgrade(state));
 }
 
 fn paint_root_waiting(ui: &mut egui::Ui) {
@@ -437,30 +400,6 @@ mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
 
     use eframe::egui;
-
-    #[derive(Default)]
-    struct PassProbe {
-        observations: Arc<Mutex<Vec<egui::OutputPassDisposition>>>,
-    }
-
-    impl egui::plugin::Plugin for PassProbe {
-        fn debug_name(&self) -> &'static str {
-            "egui_dockspace_native::late_discard_probe"
-        }
-
-        fn output_pass_settlement(
-            &mut self,
-            _context: &egui::Context,
-            _ended_viewport: egui::ViewportId,
-            disposition: egui::OutputPassDisposition,
-            _output: &mut egui::FullOutput,
-        ) {
-            self.observations
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(disposition);
-        }
-    }
 
     #[derive(Default)]
     struct LateDiscardProbe {
@@ -490,15 +429,24 @@ mod tests {
     fn post_output_settlement_observes_a_late_discard() {
         let context = egui::Context::default();
         let observations = Arc::new(Mutex::new(Vec::new()));
-        context.plugin_or_default::<PassProbe>().lock().observations = Arc::clone(&observations);
         context
             .plugin_or_default::<LateDiscardProbe>()
             .lock()
             .remaining = 1;
 
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.label("native dockspace ui has returned");
-        });
+        let finalizer_observations = Arc::clone(&observations);
+        let mut output = context.run_ui_with_pass_finalizer(
+            egui::RawInput::default(),
+            |ui| {
+                ui.label("native dockspace ui has returned");
+            },
+            move |_context, _ended_viewport, disposition, _output| {
+                finalizer_observations
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(disposition);
+            },
+        );
         output.textures_delta.clear();
 
         assert_eq!(
@@ -518,15 +466,24 @@ mod tests {
             options.max_passes = std::num::NonZeroUsize::MIN;
         });
         let observations = Arc::new(Mutex::new(Vec::new()));
-        context.plugin_or_default::<PassProbe>().lock().observations = Arc::clone(&observations);
         context
             .plugin_or_default::<LateDiscardProbe>()
             .lock()
             .remaining = 1;
 
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.label("the configured pass limit denies the late request");
-        });
+        let finalizer_observations = Arc::clone(&observations);
+        let mut output = context.run_ui_with_pass_finalizer(
+            egui::RawInput::default(),
+            |ui| {
+                ui.label("the configured pass limit denies the late request");
+            },
+            move |_context, _ended_viewport, disposition, _output| {
+                finalizer_observations
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(disposition);
+            },
+        );
         output.textures_delta.clear();
 
         assert_eq!(

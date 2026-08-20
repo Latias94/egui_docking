@@ -8,25 +8,6 @@ use egui::{Event, Key, PointerButton, Pos2, Response, Ui};
 use super::PointerActionAuthority;
 use super::geometry::logical_point;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum LocalScrollAxis {
-    Horizontal,
-    Vertical,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum LocalScrollComponent {
-    Horizontal,
-    Vertical,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct LocalScrollInput {
-    point: LogicalPoint,
-    offset_delta: f64,
-    component: LocalScrollComponent,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(super) struct LocalPrimaryPress {
     ordinal: usize,
@@ -45,16 +26,6 @@ impl LocalPrimaryPress {
 
     pub(super) const fn point(self) -> LogicalPoint {
         self.point
-    }
-}
-
-impl LocalScrollInput {
-    pub(super) const fn point(self) -> LogicalPoint {
-        self.point
-    }
-
-    pub(super) const fn offset_delta(self) -> f64 {
-        self.offset_delta
     }
 }
 
@@ -131,41 +102,4 @@ pub(super) fn local_primary_presses(
             })
             .collect()
     })
-}
-
-pub(super) fn local_scroll_input(
-    ui: &Ui,
-    pointer_authority: PointerActionAuthority,
-    axis: LocalScrollAxis,
-) -> Option<LocalScrollInput> {
-    if !effective_enabled(ui, pointer_authority.accepts_local_pointer_actions())
-        || ui.ctx().dragged_id().is_some()
-    {
-        return None;
-    }
-    let point = ui
-        .input(|input| input.pointer.hover_pos())
-        .and_then(logical_point)?;
-    let delta = ui.input(|input| input.smooth_scroll_delta());
-    let (component, content_delta) = match axis {
-        LocalScrollAxis::Horizontal if delta.x != 0.0 => {
-            (LocalScrollComponent::Horizontal, delta.x)
-        }
-        LocalScrollAxis::Horizontal => (LocalScrollComponent::Vertical, delta.y),
-        LocalScrollAxis::Vertical if delta.y != 0.0 => (LocalScrollComponent::Vertical, delta.y),
-        LocalScrollAxis::Vertical => (LocalScrollComponent::Horizontal, delta.x),
-    };
-    let offset_delta = -f64::from(content_delta);
-    (offset_delta.is_finite() && offset_delta != 0.0).then_some(LocalScrollInput {
-        point,
-        offset_delta,
-        component,
-    })
-}
-
-pub(super) fn consume_local_scroll_input(ui: &Ui, scroll: LocalScrollInput) {
-    ui.input_mut(|input| match scroll.component {
-        LocalScrollComponent::Horizontal => input.smooth_scroll_delta.x = 0.0,
-        LocalScrollComponent::Vertical => input.smooth_scroll_delta.y = 0.0,
-    });
 }

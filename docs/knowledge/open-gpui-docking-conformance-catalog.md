@@ -65,6 +65,33 @@ below records partial progress without promoting an incomplete case.
 | `OGC-11` | `host_interaction_tests.rs::runtime_rendered_mouse_up_with_unknown_button_state_does_not_tear_off`; `host_viewport_matrix_tests.rs::source_only_known_viewport_release_rejects_overlapping_geometry_without_backend_route_selection` | `core-behavior`, `host-driver`, `native-physical-x11` | A global pointer edge plus current receiver/capture receipt is required; unknown or blocked facts cannot infer a release or target. | Planned |
 | `OGC-12` | `host_accessibility_tests.rs::accessibility_gpui_mapping_exposes_stable_roles_ids_and_final_tab_actions`; `host_transition_tests.rs::transition_executor_replaces_active_execution_and_completes_reduced_motion_immediately` | `core-behavior`, `host-driver`, `egui-single-surface` | Final presentation identity and geometry drive accessibility; motion retargets from the sampled state while hit testing remains final-plan based. | Planned |
 
+## Shared Semantic Scenario Evidence
+
+The internal conformance kit uses one bounded product scenario rather than a
+generic driver interface. The scenario carries only
+semantic item aliases, selectors, actions, expected observations, and required
+capabilities. Each executor owns its framework mapping.
+
+| Scenario | Executor | Evidence | Status |
+| --- | --- | --- | --- |
+| `LocalTabCloseSplitterAndContained` | `core-host` | `dockspace_host_conformance::tests::shared_local_interaction_scenario_maps_to_core_host_semantics` | Passing |
+| `LocalTabCloseSplitterAndContained` | `egui-product-headless` | `integration/egui-product-harness/tests/product.rs::shared_local_interaction_scenario_maps_to_egui_product_headless_semantics` | Passing |
+| `NativeCreateRedockRetirement` | `core-host` | `dockspace_host_conformance::tests::native_lifecycle_scenario_reports_terminality_presentation_first_live_and_quiescence` | Passing |
+| `NativeCreateRedockRetirement` | `egui-product-headless` | `integration/egui-product-harness/tests/product.rs::shared_local_interaction_scenario_maps_to_egui_product_headless_semantics` (capability-negative assertion) | Capability-negative passing |
+
+The private `core-host` transaction fixture freezes a complete two-surface
+roster for each mutation boundary; exact output capabilities settle later in
+their normal presentation boundaries. Its focused evidence is:
+
+| Required case | Evidence |
+| --- | --- |
+| Complete-roster commit/drop-abort | `dockspace_host_conformance::tests::private_multi_surface_fixture_commits_and_aborts_complete_rosters_atomically` |
+| Stale target without partial mutation | `dockspace_host_conformance::tests::private_multi_surface_fixture_rejects_a_stale_target_without_partial_commit` |
+| Superseded output isolation | `dockspace_host_conformance::tests::private_multi_surface_fixture_keeps_the_newer_output_when_an_older_one_is_abandoned` |
+| Unknown owner fails closed | `dockspace_host_conformance::tests::private_multi_surface_fixture_unknown_owner_cannot_start_a_drag` |
+| Target destruction preserves the source drag | `dockspace_host_conformance::tests::private_multi_surface_fixture_target_destruction_preserves_the_source_drag` |
+| First-live and lifecycle ordering | `dockspace_host_conformance::tests::native_lifecycle_scenario_reports_terminality_presentation_first_live_and_quiescence` |
+
 ## Executor Evidence
 
 | Case | Executor | Evidence | Status |
@@ -74,7 +101,7 @@ below records partial progress without promoting an incomplete case.
 | `OGC-03` | `host-driver` | `dockspace_host_conformance::tests::ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview`; `...::ogc_03_cached_or_stale_receiver_cannot_authorize_release`; `...::ogc_03_current_painted_preview_commits_exactly_once` | Passing |
 | `OGC-04` | `host-driver` | `dockspace_host_conformance::tests::ogc_04_stale_window_facts_clear_preview_and_require_repaint`; `...::ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding` | Passing |
 | `OGC-05` | `fork-native-programmatic` | `integration/egui-native-smoke/src/main.rs` proves hidden creation, PreShow/PostShow staging, exact first-live transfer, programmatic redock, and retirement. | Passing |
-| `OGC-05` | `native-physical-x11` | `egui-native-physical-smoke` proves a real XTest drag-out reaches native child first-live before input becomes routeable. | Passing |
+| `OGC-05` | `native-physical-x11` | `egui-native-physical-smoke` requires a passive fact emitted by the production renderer for the exact native drag preview before releasing the real XTest button, then proves the child reaches first-live before input becomes routeable. | Passing |
 | `OGC-06` | `fork-native-programmatic` | Native lifecycle and staging-resource tests reject unsupported, stale, unpainted, or not-yet-first-live children. | Passing |
 | `OGC-07` | `native-physical-x11` | `egui-native-physical-smoke` moves a child tab through the production Winit journal onto the exact root Center guide, then observes OS child destruction and quiescence. | Passing |
 | `OGC-10` | `native-physical-x11` | The physical smoke derives XTest points from current semantic bounds, window geometry, scale, and exact X11 work-area authority; it never uses fixed coordinates. | Passing |

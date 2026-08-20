@@ -4,35 +4,40 @@ use dockspace::geometry::{
 };
 use dockspace::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome, DockspaceAxis,
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceTabsView,
-    DockspaceView, ItemId, RootId, SurfaceId, WorkspaceVersion,
+    DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, DockspaceTabsView, DockspaceView, FloatingPresentationId, ItemId,
+    RootId, SurfaceId, WorkspaceVersion,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseResolution, DockspaceDropDirection,
-    DockspaceDropEligibility, DockspaceHostFrame, DockspaceInteractionError,
-    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
-    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, HostWorkAreaToken,
-    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostCapabilities,
-    NativeHostCapability, NativeHostErrorKind, NativePointerButton, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta,
-    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
-    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
-    NativeWorkAreaRoster, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    ContainedResizeDirection, DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseResolution,
+    DockspaceDropDirection, DockspaceDropEligibility, DockspaceHostFrame,
+    DockspaceInteractionError, DockspaceReceiverDescriptor, DockspaceReceiverRole,
+    DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin, HostFrameReport,
+    HostInputOutcome, HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken,
+    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
+    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativePointerButton,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPlacement, NativeWindowPresentationState,
+    NativeWorkAreaFacts, NativeWorkAreaRoster, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
+    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
+    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
     SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
     SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
-    SurfaceUnavailableReason, TabStripMetrics, UniformSurfaceMetrics,
+    SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);
 const ROOT: RootId = RootId::new(1);
 const SOURCE_ROOT: RootId = RootId::new(2);
+const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 const A: ItemId = ItemId::new(1);
 const B: ItemId = ItemId::new(2);
 const C: ItemId = ItemId::new(3);
@@ -180,12 +185,183 @@ impl DeterministicHost {
     }
 }
 
+/// Private complete-roster fixture for transactional multi-surface boundaries.
+///
+/// It deliberately stays test-local: each boundary runs every declared
+/// logical surface, and dropping the affine host frame is the only abort path.
+struct TransactionalMultiSurfaceFixture {
+    host: DeterministicHost,
+    metrics: UniformSurfaceMetrics,
+    source_tab: Option<DockspaceReceiverDescriptor>,
+}
+
+impl TransactionalMultiSurfaceFixture {
+    fn new() -> Self {
+        let layout = DockspaceLayout::new([
+            DockspaceSurfaceLayout::new(
+                SURFACE,
+                DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([A, B])),
+            ),
+            DockspaceSurfaceLayout::new(
+                SECOND_SURFACE,
+                DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::tabs([C])),
+            ),
+        ])
+        .expect("the transactional multi-surface layout is valid");
+        let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0)
+            .expect("the transactional surface bounds are valid");
+        let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
+        let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
+            .expect("the transactional measurements are valid");
+        Self {
+            host: DeterministicHost::new(layout),
+            metrics,
+            source_tab: None,
+        }
+    }
+
+    fn measure_complete_roster(frame: &mut DockspaceHostFrame<'_>, metrics: UniformSurfaceMetrics) {
+        for surface in [SURFACE, SECOND_SURFACE] {
+            frame
+                .measure_surface(surface, metrics)
+                .expect("every logical surface contributes to the same host boundary");
+        }
+    }
+
+    fn publish_complete_roster(&mut self) {
+        let metrics = self.metrics;
+        self.host
+            .run(|frame| Self::measure_complete_roster(frame, metrics));
+
+        let mut source_tab = None;
+        let mut report = self.host.run(|frame| {
+            for surface in [SURFACE, SECOND_SURFACE] {
+                let plan = frame
+                    .paint_plan(surface)
+                    .expect("complete-roster paint lookup succeeds")
+                    .expect("every measured surface is paintable");
+                if surface == SURFACE {
+                    source_tab = plan.tab_receiver(A);
+                }
+                frame
+                    .confirm_surface_painted(surface)
+                    .expect("every logical surface records its exact output");
+            }
+        });
+        self.source_tab = source_tab;
+        let outputs = report.take_painted_outputs();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|output| output.surface())
+                .collect::<Vec<_>>(),
+            [SURFACE, SECOND_SURFACE],
+            "the fixture settles outputs in declared production order",
+        );
+        for output in outputs {
+            self.host
+                .session
+                .report_surface_presentation(output, SurfacePresentationResult::Presented)
+                .expect("the fixture reports each exact output terminal");
+        }
+        self.host.run(|_| {});
+    }
+
+    fn current_source_tab(&self) -> PresentedDockReceiver {
+        self.host
+            .session
+            .bind_presented_receiver(
+                self.source_tab
+                    .as_ref()
+                    .expect("the complete-roster paint captures the source tab"),
+            )
+            .expect("the source tab belongs to the current presented output")
+    }
+
+    fn commit_selection(&mut self, item: ItemId) -> HostFrameReport {
+        let metrics = self.metrics;
+        self.host.run(|frame| {
+            assert_eq!(
+                frame.surfaces(),
+                [SURFACE, SECOND_SURFACE],
+                "the transaction freezes the complete declared roster",
+            );
+            frame
+                .select_item_current(item)
+                .expect("the selection joins the complete-roster boundary");
+            Self::measure_complete_roster(frame, metrics);
+        })
+    }
+
+    fn abort_selection(&mut self, item: ItemId) {
+        let version = self.host.version();
+        let selected = tabs_containing(self.host.view(), B)
+            .expect("the primary tabs exist before abort")
+            .selected();
+        {
+            let mut frame = self
+                .host
+                .session
+                .begin_host_frame()
+                .expect("the abort candidate begins");
+            assert_eq!(
+                frame.surfaces(),
+                [SURFACE, SECOND_SURFACE],
+                "the abort candidate freezes the complete declared roster",
+            );
+            frame
+                .select_item_current(item)
+                .expect("the abort candidate accepts its staged selection");
+            Self::measure_complete_roster(&mut frame, self.metrics);
+            assert_eq!(
+                tabs_containing(frame.view(), item)
+                    .expect("the staged selection remains visible inside the candidate")
+                    .selected(),
+                Some(item),
+            );
+            assert_eq!(
+                tabs_containing(frame.view(), C)
+                    .expect("the second surface remains inside the abort candidate")
+                    .selected(),
+                Some(C),
+            );
+        }
+        assert_eq!(self.host.version(), version);
+        assert_eq!(
+            tabs_containing(self.host.view(), B)
+                .expect("the primary tabs survive abort")
+                .selected(),
+            selected,
+        );
+    }
+}
+
 fn tabs_layout(items: impl IntoIterator<Item = ItemId>) -> DockspaceLayout {
     DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(ROOT, DockspaceNode::tabs(items)),
     )])
     .expect("the tabs layout is valid")
+}
+
+fn shared_semantic_layout() -> DockspaceLayout {
+    let split = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [DockspaceNode::tabs([A, B]), DockspaceNode::tabs([C])],
+    )
+    .expect("the shared semantic split is valid");
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, split),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::tabs([X])),
+        LogicalRect::new(360.0, 120.0, 220.0, 180.0)
+            .expect("the shared contained rectangle is valid"),
+    ))])
+    .expect("the shared semantic layout is valid")
 }
 
 fn tabs_containing(view: DockspaceView<'_>, item: ItemId) -> Option<DockspaceTabsView<'_>> {
@@ -203,6 +379,1195 @@ fn assert_product_dock_applied(report: &HostFrameReport, item: ItemId) {
             }
         )] if *moved == item
     ));
+}
+
+#[test]
+fn shared_local_interaction_scenario_maps_to_core_host_semantics() {
+    use crate::scenario::{
+        ItemAlias, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED, ScenarioAdmission, ScenarioAxis,
+        ScenarioCapability, ScenarioEdge, ScenarioId, SemanticAction, SemanticSelector,
+    };
+
+    assert_eq!(
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.id(),
+        ScenarioId::LocalTabCloseSplitterAndContained,
+    );
+    let supported = [
+        ScenarioCapability::LocalTabSelection,
+        ScenarioCapability::LocalItemClose,
+        ScenarioCapability::LocalSplitterAdjustment,
+        ScenarioCapability::LocalContainedResize,
+    ];
+    assert_eq!(
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.admission(&supported),
+        ScenarioAdmission::Ready,
+        "the core-host executor admits the shared scenario only from declared capabilities",
+    );
+    let mut host = DeterministicHost::new(shared_semantic_layout());
+    let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0)
+        .expect("the shared semantic surface bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the shared minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0).expect("the metrics are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the shared semantic fixture measures its complete surface");
+    });
+    let mut observations = Vec::new();
+
+    for step in LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.steps() {
+        let item = match step.selector() {
+            SemanticSelector::Tab(ItemAlias::Primary)
+            | SemanticSelector::TabClose(ItemAlias::Primary) => A,
+            SemanticSelector::Tab(ItemAlias::Secondary)
+            | SemanticSelector::TabClose(ItemAlias::Secondary) => B,
+            SemanticSelector::Tab(ItemAlias::Contained)
+            | SemanticSelector::TabClose(ItemAlias::Contained) => X,
+            SemanticSelector::Splitter(_) | SemanticSelector::ContainedResize { .. } => X,
+        };
+        match (step.selector(), step.action()) {
+            (SemanticSelector::Tab(alias), SemanticAction::Activate) => {
+                let report = host.run(|frame| {
+                    frame
+                        .select_item_current(item)
+                        .expect("the core-host executor maps semantic tab activation");
+                    frame
+                        .measure_surface(SURFACE, metrics)
+                        .expect("selection republishes the complete surface measurement");
+                });
+                assert!(matches!(
+                    report.inputs(),
+                    [HostInputOutcome::ProductActionApplied(
+                        DockspaceActionOutcome::Selected {
+                            item: selected,
+                            changed: true,
+                        }
+                    )] if *selected == item
+                ));
+                assert_eq!(alias, ItemAlias::Secondary);
+                observations.push(step.expected());
+            }
+            (SemanticSelector::TabClose(alias), SemanticAction::Activate) => {
+                let report = host.run(|frame| {
+                    frame
+                        .request_close_item_current(item)
+                        .expect("the core-host executor maps semantic close activation");
+                    frame
+                        .measure_surface(SURFACE, metrics)
+                        .expect("the close request retains a current surface measurement");
+                });
+                let requested_item = match report.inputs() {
+                    [
+                        HostInputOutcome::CloseRequested {
+                            plan,
+                            reused: false,
+                            origin: HostCloseRequestOrigin::Application,
+                        },
+                    ] => plan.items()[0].item(),
+                    outcomes => panic!("expected one semantic close request, got {outcomes:?}"),
+                };
+                assert_eq!(requested_item, item);
+                assert_eq!(alias, ItemAlias::Secondary);
+                observations.push(step.expected());
+            }
+            (SemanticSelector::Splitter(ScenarioAxis::Horizontal), SemanticAction::Increment) => {
+                let before = host
+                    .view()
+                    .root(ROOT)
+                    .and_then(|root| root.content())
+                    .and_then(|content| content.split())
+                    .expect("the shared root remains split")
+                    .weights()
+                    .collect::<Vec<_>>();
+                host.run(|frame| {
+                    let plan = frame
+                        .paint_plan(SURFACE)
+                        .expect("the shared splitter plan lookup succeeds")
+                        .expect("the shared splitter plan is ready");
+                    let splitter = plan
+                        .splitters()
+                        .find(|splitter| splitter.axis() == DockspaceAxis::Horizontal)
+                        .expect("the shared scenario exposes one horizontal splitter");
+                    let action = plan
+                        .prepare_splitter_adjustment(
+                            splitter.visual_id(),
+                            SurfaceSplitterAdjustment::Increment,
+                        )
+                        .expect("the horizontal splitter accepts a semantic increment");
+                    frame
+                        .submit_surface_action(action)
+                        .expect("the splitter adjustment joins the exact host frame");
+                    frame
+                        .measure_surface(SURFACE, metrics)
+                        .expect("the adjusted surface is remeasured");
+                });
+                let after = host
+                    .view()
+                    .root(ROOT)
+                    .and_then(|root| root.content())
+                    .and_then(|content| content.split())
+                    .expect("the adjusted root remains split")
+                    .weights()
+                    .collect::<Vec<_>>();
+                assert!(after[0] > before[0]);
+                observations.push(step.expected());
+            }
+            (
+                SemanticSelector::ContainedResize {
+                    item: ItemAlias::Contained,
+                    edge: ScenarioEdge::East,
+                },
+                SemanticAction::Increment,
+            ) => {
+                let before = host
+                    .view()
+                    .contained(FLOATING)
+                    .expect("the shared contained presentation exists")
+                    .rect();
+                host.run(|frame| {
+                    let plan = frame
+                        .paint_plan(SURFACE)
+                        .expect("the contained plan lookup succeeds")
+                        .expect("the contained plan is ready");
+                    let contained = plan
+                        .contained()
+                        .find(|contained| contained.floating() == FLOATING)
+                        .expect("the shared contained presentation is painted");
+                    let action = plan
+                        .prepare_contained_resize_adjustment(
+                            contained.floating(),
+                            ContainedResizeDirection::East,
+                            SurfaceContainedResizeAdjustment::Increment,
+                        )
+                        .expect("the contained east edge accepts a semantic increment");
+                    frame
+                        .submit_surface_action(action)
+                        .expect("the contained adjustment joins the exact host frame");
+                    frame
+                        .measure_surface(SURFACE, metrics)
+                        .expect("the resized surface is remeasured");
+                });
+                let after = host
+                    .view()
+                    .contained(FLOATING)
+                    .expect("the resized contained presentation exists")
+                    .rect();
+                assert_eq!(after.min(), before.min());
+                assert!(after.width() > before.width());
+                assert_eq!(after.height(), before.height());
+                observations.push(step.expected());
+            }
+            (selector, action) => {
+                panic!("unsupported shared semantic step: {selector:?} {action:?}")
+            }
+        }
+    }
+
+    assert_eq!(
+        observations,
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.expected_observations(),
+    );
+}
+
+#[test]
+fn private_multi_surface_fixture_commits_and_aborts_complete_rosters_atomically() {
+    let mut fixture = TransactionalMultiSurfaceFixture::new();
+    fixture.publish_complete_roster();
+    assert!(fixture.host.session.presented_surface(SURFACE).is_some());
+    assert!(
+        fixture
+            .host
+            .session
+            .presented_surface(SECOND_SURFACE)
+            .is_some(),
+    );
+
+    let before = fixture.host.version();
+    let committed = fixture.commit_selection(B);
+    assert!(matches!(
+        committed.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Selected {
+                item: B,
+                changed: true,
+            }
+        )]
+    ));
+    assert_eq!(
+        committed
+            .surface_commits()
+            .iter()
+            .map(|commit| (commit.surface(), commit.status()))
+            .collect::<Vec<_>>(),
+        [
+            (SURFACE, HostSurfaceCommitStatus::Ready),
+            (SECOND_SURFACE, HostSurfaceCommitStatus::Ready),
+        ],
+        "the commit boundary must contain one exact contribution for every frozen surface",
+    );
+    assert_ne!(fixture.host.version(), before);
+    assert_eq!(
+        tabs_containing(fixture.host.view(), B)
+            .expect("the committed primary tabs remain")
+            .selected(),
+        Some(B),
+    );
+    assert_eq!(
+        tabs_containing(fixture.host.view(), C)
+            .expect("the untouched target surface remains in the same transaction")
+            .selected(),
+        Some(C),
+    );
+
+    fixture.abort_selection(A);
+}
+
+#[test]
+fn private_multi_surface_fixture_rejects_a_stale_target_without_partial_commit() {
+    let mut fixture = TransactionalMultiSurfaceFixture::new();
+    fixture.publish_complete_roster();
+    let prepared = fixture
+        .host
+        .session
+        .prepare_dock_item(A, DockPlacement::Center(DockAnchor::Item(C)));
+    fixture.commit_selection(B);
+    let before = fixture.host.version();
+    let metrics = fixture.metrics;
+
+    let report = fixture.host.run(|frame| {
+        frame
+            .submit_prepared_action(prepared)
+            .expect("the stale action remains structurally valid");
+        TransactionalMultiSurfaceFixture::measure_complete_roster(frame, metrics);
+    });
+
+    assert!(matches!(
+        report.inputs(),
+        [HostInputOutcome::StaleRejected { .. }]
+    ));
+    assert_eq!(fixture.host.version(), before);
+    assert_eq!(
+        fixture.host.view().item(A).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+    assert_eq!(
+        fixture.host.view().item(C).map(|item| item.surface()),
+        Some(SECOND_SURFACE),
+    );
+}
+
+#[test]
+fn private_multi_surface_fixture_keeps_the_newer_output_when_an_older_one_is_abandoned() {
+    let mut fixture = TransactionalMultiSurfaceFixture::new();
+    fixture.publish_complete_roster();
+    let mut first = fixture.host.run(|frame| {
+        frame
+            .confirm_surface_painted(SECOND_SURFACE)
+            .expect("the first target output is painted");
+    });
+    let first = first
+        .take_painted_outputs()
+        .pop()
+        .expect("the first target output capability exists");
+    let mut second = fixture.host.run(|frame| {
+        frame
+            .confirm_surface_painted(SECOND_SURFACE)
+            .expect("the successor target output is painted");
+    });
+    let second = second
+        .take_painted_outputs()
+        .pop()
+        .expect("the successor target output capability exists");
+
+    fixture
+        .host
+        .session
+        .report_surface_presentation(second, SurfacePresentationResult::Presented)
+        .expect("the successor target output terminal records first");
+    drop(first);
+    fixture.host.run(|_| {});
+
+    assert!(
+        fixture
+            .host
+            .session
+            .presented_surface(SECOND_SURFACE)
+            .is_some(),
+        "abandoning a superseded output must not revoke its presented successor",
+    );
+    assert!(fixture.host.session.presented_surface(SURFACE).is_some());
+}
+
+#[test]
+fn native_lifecycle_scenario_names_capability_and_terminal_observations() {
+    use crate::scenario::{
+        NATIVE_CREATE_REDOCK_RETIREMENT, ScenarioActionTerminality, ScenarioAdmission,
+        ScenarioCapability, ScenarioId, ScenarioProductAction, SemanticObservation, SurfaceAlias,
+    };
+
+    assert_eq!(
+        NATIVE_CREATE_REDOCK_RETIREMENT.id(),
+        ScenarioId::NativeCreateRedockRetirement,
+    );
+    assert_eq!(
+        NATIVE_CREATE_REDOCK_RETIREMENT.admission(&[]),
+        ScenarioAdmission::Unsupported {
+            missing: ScenarioCapability::NativeWindowLifecycle,
+        },
+    );
+    assert_eq!(
+        NATIVE_CREATE_REDOCK_RETIREMENT.expected_observations(),
+        &[
+            SemanticObservation::ActionTerminal {
+                action: ScenarioProductAction::MoveToNewWindow,
+                terminality: ScenarioActionTerminality::Requested,
+            },
+            SemanticObservation::PresentationApplied(SurfaceAlias::Child),
+            SemanticObservation::FirstLive(SurfaceAlias::Child),
+            SemanticObservation::ActionTerminal {
+                action: ScenarioProductAction::DockBack,
+                terminality: ScenarioActionTerminality::Requested,
+            },
+            SemanticObservation::PresentationApplied(SurfaceAlias::Source),
+            SemanticObservation::Retired(SurfaceAlias::Child),
+            SemanticObservation::Quiescent,
+        ],
+    );
+}
+
+#[test]
+fn native_lifecycle_scenario_reports_terminality_presentation_first_live_and_quiescence() {
+    use crate::scenario::{
+        NATIVE_CREATE_REDOCK_RETIREMENT, ScenarioActionTerminality, ScenarioCapability, ScenarioId,
+        ScenarioProductAction, SemanticObservation, SurfaceAlias,
+    };
+
+    assert_eq!(
+        NATIVE_CREATE_REDOCK_RETIREMENT.id(),
+        ScenarioId::NativeCreateRedockRetirement,
+    );
+    assert_eq!(
+        NATIVE_CREATE_REDOCK_RETIREMENT.required_capabilities(),
+        &[
+            ScenarioCapability::NativeWindowLifecycle,
+            ScenarioCapability::NativeFirstLive,
+            ScenarioCapability::NativeRetirement,
+            ScenarioCapability::NativeQuiescence,
+        ],
+    );
+
+    let mut fixture = ManagedLifecycleScenarioFixture::new();
+    let mut observations = Vec::new();
+    let (child, create_acknowledgement) = fixture.request_child();
+    observations.push(SemanticObservation::ActionTerminal {
+        action: ScenarioProductAction::MoveToNewWindow,
+        terminality: ScenarioActionTerminality::Requested,
+    });
+
+    fixture.present_hidden_child(child, create_acknowledgement);
+    let show_acknowledgement =
+        fixture.present_staging_and_take_show(child, NativeStagingPresentationPhase::PreShow);
+    fixture.acknowledge_show_then_publish_visible(child, show_acknowledgement);
+    fixture.present_staging(child, NativeStagingPresentationPhase::PostShow);
+    fixture.commit();
+    assert_eq!(
+        fixture.host.view().item(X).map(|item| item.surface()),
+        Some(child.surface()),
+        "post-show ownership transfer publishes the child presentation before first-live",
+    );
+    observations.push(SemanticObservation::PresentationApplied(
+        SurfaceAlias::Child,
+    ));
+
+    fixture.present_first_live(child);
+    observations.push(SemanticObservation::FirstLive(SurfaceAlias::Child));
+
+    let release = fixture.request_redock(child);
+    observations.push(SemanticObservation::ActionTerminal {
+        action: ScenarioProductAction::DockBack,
+        terminality: ScenarioActionTerminality::Requested,
+    });
+    observations.push(SemanticObservation::PresentationApplied(
+        SurfaceAlias::Source,
+    ));
+    fixture.retire_child(child, release);
+    observations.push(SemanticObservation::Retired(SurfaceAlias::Child));
+    fixture.publish_quiescence(child);
+    observations.push(SemanticObservation::Quiescent);
+
+    assert_eq!(
+        observations,
+        NATIVE_CREATE_REDOCK_RETIREMENT.expected_observations(),
+    );
+}
+
+struct ManagedLifecycleScenarioFixture {
+    host: DeterministicHost,
+    root: NativeSurfaceBinding,
+    child_placement: PhysicalRect,
+    metrics: UniformSurfaceMetrics,
+    work_areas: NativeWorkAreaRoster,
+}
+
+impl ManagedLifecycleScenarioFixture {
+    fn new() -> Self {
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([A])),
+        )
+        .with_contained(DockspaceContainedLayout::new(
+            FLOATING,
+            DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::tabs([X])),
+            LogicalRect::new(320.0, 80.0, 240.0, 200.0)
+                .expect("the lifecycle contained rectangle is valid"),
+        ))])
+        .expect("the lifecycle layout is valid");
+        let mut policy = DockPolicy::default();
+        policy.set_allow_native_surfaces(true);
+        let mut host = DeterministicHost {
+            session: DockspaceSession::from_layout(layout, policy)
+                .expect("the lifecycle session initializes"),
+        };
+        host.session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .expect("the managed lifecycle provider enrolls");
+        host.session
+            .configure_managed_native_capabilities(full_managed_capabilities())
+            .expect("the managed lifecycle capabilities configure");
+        let registration = host.register_native_root(SURFACE, WINDOW);
+        let root = match registration.inputs() {
+            [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+            outcomes => panic!("expected one root registration, got {outcomes:?}"),
+        };
+        let scale = ScaleFactor::new(1.0).expect("the lifecycle scale is valid");
+        let work_areas = NativeWorkAreaRoster::Exact(vec![NativeWorkAreaFacts::new(
+            HostWorkAreaToken::new(1),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("the lifecycle work area is valid"),
+            scale,
+        )]);
+        host.report_managed_native_snapshot(
+            [(root, scenario_window_facts(100.0, 80.0, 640.0, 480.0))],
+            work_areas.clone(),
+        );
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0)
+                .expect("the lifecycle logical bounds are valid"),
+            LogicalSize::new(32.0, 24.0).expect("the lifecycle minimum is valid"),
+            80.0,
+        )
+        .expect("the lifecycle metrics are valid");
+        let child_placement = PhysicalRect::new(900.0, 120.0, 420.0, 320.0)
+            .expect("the lifecycle child placement is valid");
+        let mut fixture = Self {
+            host,
+            root,
+            child_placement,
+            metrics,
+            work_areas,
+        };
+        fixture.measure_all();
+        fixture.paint_and_present_all();
+        fixture
+    }
+
+    fn request_child(
+        &mut self,
+    ) -> (
+        NativeSurfaceBinding,
+        dockspace::runtime::NativePresentationEffectAcknowledgement,
+    ) {
+        let mut frame = self
+            .host
+            .session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the lifecycle tear-off frame begins");
+        frame
+            .move_root_to_new_window_current(
+                SOURCE_ROOT,
+                NativeWindowPlacement::new(self.child_placement),
+            )
+            .expect("the lifecycle root tear-off stages");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the source presentation remains retained");
+        let mut report = frame.commit().expect("the lifecycle tear-off commits");
+        assert!(matches!(
+            report.inputs(),
+            [HostInputOutcome::ProductActionApplied(
+                DockspaceActionOutcome::NativeRootTearOffRequested {
+                    root: SOURCE_ROOT,
+                    source_surface: SURFACE,
+                    ..
+                }
+            )]
+        ));
+        let effect = take_only_effect(&mut report);
+        let child = match effect.operation() {
+            NativeEffectOperation::CreateWindow {
+                binding, placement, ..
+            } if *placement == self.child_placement => *binding,
+            operation => panic!("expected one create-window effect, got {operation:?}"),
+        };
+        let acknowledgement = match effect.accepted() {
+            Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
+            acknowledgement => panic!("create returned {acknowledgement:?}"),
+        };
+        (child, acknowledgement)
+    }
+
+    fn present_hidden_child(
+        &mut self,
+        child: NativeSurfaceBinding,
+        acknowledgement: dockspace::runtime::NativePresentationEffectAcknowledgement,
+    ) {
+        self.host.report_managed_native_snapshot(
+            [
+                (self.root, scenario_window_facts(100.0, 80.0, 640.0, 480.0)),
+                (
+                    child,
+                    scenario_child_facts(
+                        self.child_placement,
+                        NativeWindowPresentationState::Hidden,
+                        Some(acknowledgement),
+                    ),
+                ),
+            ],
+            self.work_areas.clone(),
+        );
+    }
+
+    fn present_staging_and_take_show(
+        &mut self,
+        child: NativeSurfaceBinding,
+        phase: NativeStagingPresentationPhase,
+    ) -> dockspace::runtime::NativePresentationEffectAcknowledgement {
+        self.present_staging(child, phase);
+        let mut report = self.commit();
+        let effect = take_only_effect(&mut report);
+        assert!(matches!(
+            effect.operation(),
+            NativeEffectOperation::ShowWindow { binding } if *binding == child
+        ));
+        match effect.accepted() {
+            Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
+            acknowledgement => panic!("show returned {acknowledgement:?}"),
+        }
+    }
+
+    fn acknowledge_show_then_publish_visible(
+        &mut self,
+        child: NativeSurfaceBinding,
+        acknowledgement: dockspace::runtime::NativePresentationEffectAcknowledgement,
+    ) {
+        self.host.report_managed_native_snapshot(
+            [
+                (self.root, scenario_window_facts(100.0, 80.0, 640.0, 480.0)),
+                (
+                    child,
+                    scenario_child_facts(
+                        self.child_placement,
+                        NativeWindowPresentationState::Hidden,
+                        Some(acknowledgement),
+                    ),
+                ),
+            ],
+            self.work_areas.clone(),
+        );
+        self.host.report_managed_native_snapshot(
+            [
+                (self.root, scenario_window_facts(100.0, 80.0, 640.0, 480.0)),
+                (
+                    child,
+                    scenario_child_facts(
+                        self.child_placement,
+                        NativeWindowPresentationState::Visible,
+                        None,
+                    ),
+                ),
+            ],
+            self.work_areas.clone(),
+        );
+    }
+
+    fn present_staging(
+        &mut self,
+        child: NativeSurfaceBinding,
+        phase: NativeStagingPresentationPhase,
+    ) {
+        let mut frame = self
+            .host
+            .session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the lifecycle staging frame begins");
+        let request = frame
+            .native_staging_paints()
+            .into_iter()
+            .find(|request| request.binding() == child && request.phase() == phase)
+            .unwrap_or_else(|| panic!("the {phase:?} staging request must exist"));
+        frame
+            .confirm_native_staging_painted(request)
+            .expect("the exact staging placeholder is painted");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the staging frame retains semantic surfaces");
+        let mut report = frame.commit().expect("the staging frame commits");
+        let outputs = report.take_painted_native_staging_outputs();
+        let [output] = outputs.try_into().unwrap_or_else(|outputs: Vec<_>| {
+            panic!("expected one {phase:?} staging output, got {outputs:?}")
+        });
+        self.host
+            .session
+            .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the exact staging terminal records");
+    }
+
+    fn present_first_live(&mut self, child: NativeSurfaceBinding) {
+        self.measure_all();
+        let mut frame = self
+            .host
+            .session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the first-live frame begins");
+        assert!(
+            frame
+                .paint_plan(child.surface())
+                .expect("the child plan resolves")
+                .is_some(),
+        );
+        frame
+            .confirm_surface_painted(child.surface())
+            .expect("the exact child first-live output is painted");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the root retains its current presentation");
+        let mut report = frame.commit().expect("the first-live output commits");
+        self.present_outputs(&mut report);
+        let admitted = self.commit();
+        assert_eq!(admitted.native_admissions(), &[child]);
+    }
+
+    fn request_redock(&mut self, child: NativeSurfaceBinding) -> NativeEffectRequest {
+        self.paint_and_present_all();
+        let mut frame = self
+            .host
+            .session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the lifecycle redock frame begins");
+        frame
+            .dock_root_current(SOURCE_ROOT, DockPlacement::Center(DockAnchor::Item(A)))
+            .expect("the child root redocks into its recovery surface");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the redock frame settles every surface");
+        let report = frame.commit().expect("the redock request commits");
+        assert!(matches!(
+            report.inputs(),
+            [HostInputOutcome::ProductPresentationActionRequested {
+                outcome: DockspaceActionOutcome::RootDockRequested { .. },
+                ..
+            }]
+        ));
+        let mut settled = self.paint_and_present_all();
+        assert!(settled.presentation_transitions().iter().any(|transition| {
+            transition.root() == SOURCE_ROOT
+                && transition.source_surface() == child.surface()
+                && transition.target_surface() == SURFACE
+                && transition.result()
+                    == dockspace::runtime::DockspacePresentationTransitionResult::Applied
+        }));
+        assert_eq!(
+            self.host.view().item(X).map(|item| item.surface()),
+            Some(SURFACE),
+        );
+        take_only_effect(&mut settled)
+    }
+
+    fn retire_child(&mut self, child: NativeSurfaceBinding, release: NativeEffectRequest) {
+        let acknowledgement = match release.accepted() {
+            Some(NativeEffectAcknowledgement::Close(acknowledgement)) => acknowledgement,
+            acknowledgement => panic!("release returned {acknowledgement:?}"),
+        };
+        self.host.report_managed_native_snapshot(
+            [
+                (self.root, scenario_window_facts(100.0, 80.0, 640.0, 480.0)),
+                (child, NativeWindowFacts::destroyed_after(acknowledgement)),
+            ],
+            self.work_areas.clone(),
+        );
+        assert!(!self.host.session.is_current_native_binding(child));
+        assert!(self.host.session.recognizes_native_binding(child));
+    }
+
+    fn publish_quiescence(&mut self, child: NativeSurfaceBinding) {
+        self.host
+            .session
+            .report_native_binding_quiescence(child)
+            .expect("the retired child binding becomes externally quiescent");
+        self.commit();
+        self.commit();
+        assert!(!self.host.session.recognizes_native_binding(child));
+    }
+
+    fn measure_all(&mut self) {
+        let mut frame = self
+            .host
+            .session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the lifecycle measurement frame begins");
+        for surface in frame.surfaces() {
+            frame
+                .measure_surface(surface, self.metrics)
+                .expect("the complete lifecycle surface roster measures");
+        }
+        frame.commit().expect("the lifecycle measurements commit");
+    }
+
+    fn paint_and_present_all(&mut self) -> HostFrameReport {
+        self.measure_all();
+        let mut frame = self
+            .host
+            .session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the lifecycle paint frame begins");
+        for surface in frame.surfaces() {
+            assert!(
+                frame
+                    .paint_plan(surface)
+                    .expect("the lifecycle paint plan resolves")
+                    .is_some(),
+            );
+            frame
+                .confirm_surface_painted(surface)
+                .expect("the lifecycle surface output is painted");
+        }
+        let mut report = frame.commit().expect("the lifecycle paint frame commits");
+        self.present_outputs(&mut report);
+        self.commit()
+    }
+
+    fn present_outputs(&mut self, report: &mut HostFrameReport) {
+        let outputs = report.take_painted_outputs();
+        assert!(!outputs.is_empty());
+        for output in outputs {
+            self.host
+                .session
+                .report_surface_presentation(output, SurfacePresentationResult::Presented)
+                .expect("the exact lifecycle surface terminal records");
+        }
+    }
+
+    fn commit(&mut self) -> HostFrameReport {
+        self.host
+            .run_native(|_| NativeReceiverAnswer::Unknown, |_| {})
+    }
+}
+
+fn scenario_window_facts(x: f64, y: f64, width: f64, height: f64) -> NativeWindowFacts {
+    ready_window_facts(
+        PhysicalRect::new(x, y, width, height).expect("the scenario window bounds are valid"),
+        ScaleFactor::new(1.0).expect("the scenario scale is valid"),
+    )
+}
+
+fn scenario_child_facts(
+    bounds: PhysicalRect,
+    presentation: NativeWindowPresentationState,
+    acknowledgement: Option<dockspace::runtime::NativePresentationEffectAcknowledgement>,
+) -> NativeWindowFacts {
+    let scale = ScaleFactor::new(1.0).expect("the child scale is valid");
+    NativeWindowFacts::live()
+        .with_content_bounds(bounds)
+        .with_outer_bounds(bounds)
+        .with_native_scale_factor(scale)
+        .with_presentation_scale_factor(scale)
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_presentation(presentation, acknowledgement)
+        .with_close(NativeCloseState::Clear, None)
+}
+
+fn take_only_effect(report: &mut HostFrameReport) -> NativeEffectRequest {
+    let effects = report.take_native_effects();
+    let [effect] = effects
+        .try_into()
+        .unwrap_or_else(|effects: Vec<_>| panic!("expected one native effect, got {effects:?}"));
+    effect
+}
+
+#[test]
+fn private_multi_surface_fixture_unknown_owner_cannot_start_a_drag() {
+    let mut fixture = TransactionalMultiSurfaceFixture::new();
+    fixture.publish_complete_roster();
+    fixture
+        .host
+        .session
+        .enable_surface_pointer(SURFACE)
+        .expect("the presented source admits one surface-local pointer provider");
+    let source = fixture.current_source_tab();
+    let surface = fixture
+        .host
+        .session
+        .presented_surface(SURFACE)
+        .expect("the source surface remains presented");
+    let before = fixture.host.version();
+    fixture.host.run(|frame| {
+        frame
+            .submit_surface_pointer_batch([
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(42),
+                    SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                    SurfacePointerPosition::Known(source.center()),
+                    SurfacePointerCapture::Unknown,
+                    SurfacePointerReceiverFacts::delivery(&source),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(42),
+                    SurfacePointerEvent::Moved,
+                    SurfacePointerPosition::Known(source.center()),
+                    SurfacePointerCapture::Unknown,
+                    SurfacePointerReceiverFacts::no_hover(&surface),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(42),
+                    SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                    SurfacePointerPosition::Known(source.center()),
+                    SurfacePointerCapture::Unknown,
+                    SurfacePointerReceiverFacts::no_hover(&surface),
+                ),
+            ])
+            .expect("unknown capture is recorded as fail-closed owner evidence");
+    });
+    fixture.host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the unknown-owner plan resolves")
+            .expect("the source surface remains paintable");
+        assert!(plan.drag_preview().is_none());
+    });
+    assert_eq!(fixture.host.version(), before);
+    assert_eq!(
+        tabs_containing(fixture.host.view(), A)
+            .expect("the source tabs remain")
+            .items(),
+        &[A, B],
+    );
+    assert_eq!(
+        fixture.host.view().item(C).map(|item| item.surface()),
+        Some(SECOND_SURFACE),
+        "the complete target-surface roster must remain unchanged",
+    );
+}
+
+#[test]
+fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() {
+    let source_split = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [DockspaceNode::tabs([A]), DockspaceNode::tabs([B])],
+    )
+    .expect("the source split is valid");
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(SURFACE, DockspaceRootLayout::new(ROOT, source_split)),
+        DockspaceSurfaceLayout::new(
+            SECOND_SURFACE,
+            DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::tabs([C])),
+        ),
+    ])
+    .expect("the target-destruction layout is valid");
+    let mut host = DeterministicHost::new(layout);
+    host.session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the deterministic managed-native provider enrolls");
+    host.session
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed-native capabilities configure");
+
+    let source_binding = match host.register_native_root(SURFACE, WINDOW).inputs() {
+        [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+        outcomes => panic!("expected the source registration, got {outcomes:?}"),
+    };
+    let target_binding = match host
+        .register_native_root(SECOND_SURFACE, SECOND_WINDOW)
+        .inputs()
+    {
+        [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+        outcomes => panic!("expected the target registration, got {outcomes:?}"),
+    };
+    let scale = ScaleFactor::new(1.0).expect("the native scale is valid");
+    let source_bounds =
+        PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the source bounds are valid");
+    let target_bounds =
+        PhysicalRect::new(720.0, 0.0, 640.0, 360.0).expect("the target bounds are valid");
+    let work_areas = NativeWorkAreaRoster::Exact(vec![NativeWorkAreaFacts::new(
+        HostWorkAreaToken::new(1),
+        PhysicalRect::new(0.0, 0.0, 1_920.0, 1_080.0).expect("the work area is valid"),
+        scale,
+    )]);
+    host.report_managed_native_snapshot(
+        [
+            (source_binding, ready_window_facts(source_bounds, scale)),
+            (target_binding, ready_window_facts(target_bounds, scale)),
+        ],
+        work_areas.clone(),
+    );
+
+    let logical_bounds =
+        LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the logical bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(logical_bounds, minimum, 72.0)
+        .expect("the target-destruction metrics are valid");
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            for surface in frame.surfaces() {
+                frame
+                    .measure_surface(surface, metrics)
+                    .expect("the complete native roster is measured");
+            }
+        },
+    );
+
+    let mut source_tab = None;
+    let mut target_drop = None;
+    let mut painted = host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            for surface in frame.surfaces() {
+                let plan = frame
+                    .paint_plan(surface)
+                    .expect("the complete native paint lookup succeeds")
+                    .expect("every native surface is paintable");
+                if surface == SURFACE {
+                    source_tab = plan.tab_receiver(A);
+                } else if surface == SECOND_SURFACE {
+                    target_drop = plan.center_drop_receiver_for_item(C);
+                }
+                frame
+                    .confirm_surface_painted(surface)
+                    .expect("the complete native roster records its output");
+            }
+        },
+    );
+    for output in painted.take_painted_outputs() {
+        host.session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the initial native output terminal records");
+    }
+    host.run_native(|_| NativeReceiverAnswer::Unknown, |_| {});
+
+    let source_tab_descriptor = source_tab.expect("the source tab is painted");
+    let target_drop_descriptor = target_drop.expect("the target drop is painted");
+    let source_tab = host
+        .session
+        .bind_presented_receiver(&source_tab_descriptor)
+        .expect("the source tab belongs to the current output");
+    let target_drop = host
+        .session
+        .bind_presented_receiver(&target_drop_descriptor)
+        .expect("the target drop belongs to the current output");
+    let source_point = source_tab.center();
+    let target_point = target_drop.center();
+    let source_desktop = PhysicalPoint::new(
+        source_bounds.x() + source_point.x(),
+        source_bounds.y() + source_point.y(),
+    )
+    .expect("the source desktop point is valid");
+    let target_desktop = PhysicalPoint::new(
+        target_bounds.x() + target_point.x(),
+        target_bounds.y() + target_point.y(),
+    )
+    .expect("the target desktop point is valid");
+    let pointer = NativePointerId::new(77);
+    host.session
+        .record_native_pointer_batch([
+            NativePointerInput::new(
+                pointer,
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                NativeDesktopPointerLocation::new(
+                    NativeDesktopPosition::Exact(source_desktop),
+                    NativePointerHover::Dock(source_binding),
+                    None,
+                ),
+                NativePointerOwner::Native(source_binding),
+                NativePointerOwner::Native(source_binding),
+            ),
+            NativePointerInput::new(
+                pointer,
+                NativePointerEvent::Moved,
+                NativeDesktopPointerLocation::new(
+                    NativeDesktopPosition::Exact(target_desktop),
+                    NativePointerHover::Dock(target_binding),
+                    None,
+                ),
+                NativePointerOwner::Native(source_binding),
+                NativePointerOwner::Native(source_binding),
+            ),
+        ])
+        .expect("the exact cross-surface drag prefix records atomically");
+    let mut routed_source_tab = None;
+    let mut routed_target_drop = None;
+    let mut route = host.run_native(
+        |query| {
+            let descriptor = match query.surface() {
+                SURFACE => &source_tab_descriptor,
+                SECOND_SURFACE => &target_drop_descriptor,
+                _ => return NativeReceiverAnswer::Unknown,
+            };
+            query
+                .bind_receiver(descriptor)
+                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+        },
+        |frame| {
+            for surface in frame.surfaces() {
+                if let Some(plan) = frame
+                    .paint_plan(surface)
+                    .expect("the route-request plan resolves")
+                {
+                    assert!(
+                        plan.drag_preview().is_none(),
+                        "an unconfirmed physical route cannot publish a preview",
+                    );
+                    if surface == SURFACE {
+                        routed_source_tab = plan.tab_receiver(A);
+                    } else if surface == SECOND_SURFACE {
+                        routed_target_drop = plan.center_drop_receiver_for_item(C);
+                    }
+                    frame
+                        .confirm_surface_painted(surface)
+                        .expect("the route-request output is painted");
+                }
+            }
+        },
+    );
+    let enable = take_only_effect(&mut route);
+    assert!(matches!(
+        enable.operation(),
+        NativeEffectOperation::SetPointerPassthrough {
+            binding,
+            enabled: true,
+        } if *binding == source_binding
+    ));
+    let enable_acknowledgement = match enable.accepted() {
+        Some(NativeEffectAcknowledgement::Input(acknowledgement)) => acknowledgement,
+        acknowledgement => panic!("pointer pass-through returned {acknowledgement:?}"),
+    };
+    for output in route.take_painted_outputs() {
+        host.session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the route-request output terminal records");
+    }
+    let routed_source_tab = routed_source_tab.expect("the routed source tab is painted");
+    let routed_target_drop = routed_target_drop.expect("the routed target drop is painted");
+    host.report_managed_native_snapshot(
+        [
+            (
+                source_binding,
+                ready_window_facts(source_bounds, scale).with_input(
+                    NativeWindowInputState::PassThrough,
+                    Some(enable_acknowledgement),
+                ),
+            ),
+            (target_binding, ready_window_facts(target_bounds, scale)),
+        ],
+        work_areas.clone(),
+    );
+
+    host.session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::Moved,
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(target_desktop),
+                NativePointerHover::Dock(target_binding),
+                None,
+            ),
+            NativePointerOwner::Native(source_binding),
+            NativePointerOwner::Native(source_binding),
+        ))
+        .expect("the confirmed cross-surface move records");
+    let mut previewed = false;
+    let mut preview = host.run_native(
+        |query| {
+            let descriptor = match query.surface() {
+                SURFACE => &routed_source_tab,
+                SECOND_SURFACE => &routed_target_drop,
+                _ => return NativeReceiverAnswer::Unknown,
+            };
+            query
+                .bind_receiver(descriptor)
+                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+        },
+        |frame| {
+            for surface in frame.surfaces() {
+                if let Some(plan) = frame
+                    .paint_plan(surface)
+                    .expect("the confirmed drag plan resolves")
+                {
+                    previewed |= plan.drag_preview().is_some();
+                    frame
+                        .confirm_surface_painted(surface)
+                        .expect("the confirmed preview output is painted");
+                }
+            }
+        },
+    );
+    assert!(
+        previewed,
+        "the target surface must publish a real drag preview"
+    );
+    for output in preview.take_painted_outputs() {
+        host.session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the preview output terminal records");
+    }
+    host.run_native(|_| NativeReceiverAnswer::Unknown, |_| {});
+
+    host.report_managed_native_snapshot(
+        [
+            (
+                source_binding,
+                ready_window_facts(source_bounds, scale)
+                    .with_input(NativeWindowInputState::PassThrough, None),
+            ),
+            (target_binding, NativeWindowFacts::destroyed()),
+        ],
+        work_areas,
+    );
+    assert!(
+        !host.session.is_current_native_binding(target_binding),
+        "the authoritative inventory must retire the closed target binding",
+    );
+    assert!(
+        host.session
+            .bind_presented_receiver(&target_drop_descriptor)
+            .is_none(),
+        "the closed target window cannot regain receiver authority",
+    );
+
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the surviving source surface is remeasured");
+        },
+    );
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the surviving source plan resolves")
+                .expect("the surviving source remains paintable");
+            assert!(
+                plan.drag_preview().is_none(),
+                "closing the target window must clear its preview",
+            );
+            let decoration = plan
+                .drag_decoration()
+                .expect("the source-owned drag must survive target-window close");
+            assert_eq!(decoration.source_surface(), SURFACE);
+            assert_eq!(decoration.item(), Some(A));
+        },
+    );
 }
 
 fn pointer_close_host() -> (DeterministicHost, DockspaceReceiverDescriptor) {

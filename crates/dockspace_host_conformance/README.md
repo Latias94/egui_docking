@@ -19,8 +19,27 @@ The OGC-03 driver captures opaque receiver descriptors while painting, consumes
 affine output capabilities only after an exact final-presentation result, and
 then reports framework delivery or hover facts through the public runtime
 facade. It does not import a core hit resolver or construct provider receipts.
-This is host-driver evidence only; it does not claim egui or native-window
-coverage.
+
+The crate also owns the private-workspace semantic description for
+`LocalTabCloseSplitterAndContained`. The `core-host` test in this crate and the
+`egui-product-headless` kittest harness both map the same tab selection, close,
+splitter adjustment, and contained-resize steps without sharing runtime IDs,
+coordinates, or output authority. The OGC cases above remain host-driver
+evidence only and do not claim native-window coverage.
+
+The test crate also keeps a private two-surface transaction fixture. Each
+mutation boundary freezes the complete logical roster and records one exact
+contribution for every surface; output capabilities then settle in their normal
+affine presentation boundaries. The fixture proves complete-roster
+commit/drop-abort, stale-target rejection, superseded-output isolation, and
+unknown-owner failure without minting presentation or native-window evidence.
+
+The managed lifecycle fixture separately proves action terminality, ownership
+publication, first-live, redock, retirement, and quiescence. The private
+two-surface managed-native fixture also destroys the exact target window during
+a source-owned drag and proves that the target preview is cleared without
+canceling the source gesture. These fixtures exercise public runtime authority;
+they do not claim real operating-system window evidence.
 
 Run with:
 

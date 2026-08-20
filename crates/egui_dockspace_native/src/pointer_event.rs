@@ -30,6 +30,7 @@ pub(crate) struct NativePointerTranslator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NativeInputDeviceKey {
     Mouse(NativePhysicalDeviceKey),
+    Scroll(NativePhysicalDeviceKey),
     Touch {
         device: NativePhysicalDeviceKey,
         contact: u64,
@@ -396,7 +397,6 @@ impl NativePointerTranslator {
             // so it cannot mutate or terminate the current sequence.
             return NativePointerTranslation::Ignored;
         }
-        device.mouse.observe_routes(routes);
         let Some((phase, next_state)) =
             translate_scroll_phase(device.scroll, phase, delta, delivery, next_scroll_sequence)
         else {
@@ -838,9 +838,10 @@ fn pointer_device_for_physical(
     match event {
         WindowEvent::CursorMoved { .. }
         | WindowEvent::MouseInput { .. }
-        | WindowEvent::MouseWheel { .. }
-        | WindowEvent::PointerCaptureChanged { .. }
-        | WindowEvent::PanGesture { .. } => Some(NativeInputDeviceKey::Mouse(device)),
+        | WindowEvent::PointerCaptureChanged { .. } => Some(NativeInputDeviceKey::Mouse(device)),
+        WindowEvent::MouseWheel { .. } | WindowEvent::PanGesture { .. } => {
+            Some(NativeInputDeviceKey::Scroll(device))
+        }
         WindowEvent::Touch(touch) => Some(NativeInputDeviceKey::Touch {
             device,
             contact: touch.id,

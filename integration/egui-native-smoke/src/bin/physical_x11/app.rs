@@ -131,7 +131,9 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                     ROOT_WINDOW_TITLE.to_owned(),
                 )));
             egui_inspection::serve(&creation.egui_ctx, &inspection_endpoint.to_string())?;
-            creation.egui_ctx.add_plugin(PhysicalSemanticProbe);
+            creation
+                .egui_ctx
+                .add_plugin(PhysicalSemanticProbe::default());
             let driver_context = creation.egui_ctx.clone();
             let driver_shared = Arc::clone(&app_shared);
             std::thread::Builder::new()
@@ -194,7 +196,10 @@ fn inspection_endpoint_from_env() -> io::Result<SocketAddr> {
     Ok(*endpoint)
 }
 
-struct PhysicalSemanticProbe;
+#[derive(Default)]
+struct PhysicalSemanticProbe {
+    diagnostic_enabled: bool,
+}
 
 impl egui::Plugin for PhysicalSemanticProbe {
     fn debug_name(&self) -> &'static str {
@@ -202,6 +207,18 @@ impl egui::Plugin for PhysicalSemanticProbe {
     }
 
     fn on_begin_pass(&mut self, ui: &mut egui::Ui) {
+        if !self.diagnostic_enabled {
+            // This is a private smoke-only handshake with the renderer. It is
+            // intentionally not exposed by the product facade as a supported
+            // application API.
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(
+                    egui::Id::new("egui-dockspace-native-drag-preview-diagnostic"),
+                    true,
+                );
+            });
+            self.diagnostic_enabled = true;
+        }
         publish_pointer_diagnostic(ui);
     }
 }
@@ -212,6 +229,13 @@ struct DiagnosticNativeHost {
 }
 
 impl eframe::NativeHostHandler for DiagnosticNativeHost {
+    fn install_output_pass_finalizer(
+        &self,
+        finalizer: Arc<dyn eframe::NativeOutputPassFinalizer>,
+    ) -> bool {
+        self.inner.install_output_pass_finalizer(finalizer)
+    }
+
     fn try_attach(&self, attachment: eframe::NativeHostAttachment) -> bool {
         self.inner.try_attach(attachment)
     }
@@ -233,6 +257,10 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
 
     fn on_window_event(&self, event: eframe::NativeWindowEvent<'_>) {
         self.inner.on_window_event(event);
+    }
+
+    fn on_device_removed(&self, removal: eframe::NativeDeviceRemoval) {
+        self.inner.on_device_removed(removal);
     }
 
     fn on_global_focus(
@@ -298,6 +326,13 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
             }
         }
         self.inner.on_output_begin(token, window, root_roster);
+    }
+
+    fn on_output_pass_finalized(
+        &self,
+        finalization: eframe::NativeOutputPassFinalization<'_>,
+    ) -> eframe::NativeHostWake {
+        self.inner.on_output_pass_finalized(finalization)
     }
 
     fn on_output(&self, result: eframe::NativeOutputResult) -> eframe::NativeHostWake {

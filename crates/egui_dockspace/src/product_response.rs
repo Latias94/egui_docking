@@ -383,6 +383,7 @@ pub struct DockspaceInteractionCapabilities {
     local_actions_current: bool,
     retained_presentation_current: bool,
     pointer_receivers_current: bool,
+    scroll_receivers_current: bool,
 }
 
 impl DockspaceInteractionCapabilities {
@@ -391,6 +392,7 @@ impl DockspaceInteractionCapabilities {
             local_actions_current,
             retained_presentation_current: false,
             pointer_receivers_current: false,
+            scroll_receivers_current: false,
         }
     }
 
@@ -410,6 +412,16 @@ impl DockspaceInteractionCapabilities {
     #[must_use]
     pub const fn pointer_receivers_current(self) -> bool {
         self.pointer_receivers_current
+    }
+
+    /// Returns whether ordered scroll events have an exact delivery receiver.
+    ///
+    /// Official egui 0.36 exposes only a frame aggregate and final hover
+    /// position, so this remains `false` on the callback-only product path.
+    /// Native hosts may use their separate event journal and receiver reports.
+    #[must_use]
+    pub const fn scroll_receivers_current(self) -> bool {
+        self.scroll_receivers_current
     }
 }
 
