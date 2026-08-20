@@ -2,7 +2,8 @@ use dockspace::policy::DockPolicy;
 use egui::{Context, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{
     Dockspace, DockspaceActionOutcome, DockspaceActionStatus, DockspaceAxis, DockspaceLayout,
-    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView, RootId, SurfaceId,
+    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView, RootId,
+    SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -76,13 +77,16 @@ fn official_egui_consumes_the_default_product_facade() {
     let mut panes = SmokePanes::default();
     let mut local_actions_current = false;
     for _ in 0..4 {
-        let mut output = context.run_ui(raw_input(), |ui| {
+        let input = raw_input();
+        let run = dockspace.begin_egui_run(&context, &input);
+        let mut output = context.run_ui(input, |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the public facade advances an official-egui frame");
             assert!(response.missing_panes().is_empty());
             local_actions_current |= response.interaction_capabilities().local_actions_current();
         });
+        run.settle(&output);
         output.textures_delta.clear();
     }
 

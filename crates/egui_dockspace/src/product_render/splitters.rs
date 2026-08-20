@@ -6,7 +6,7 @@ use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense, UiBuilder};
 
 use super::RenderContext;
-use super::actions::gesture_phase;
+use super::actions::{effective_enabled, gesture_phase};
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::schedule::RootPaintSchedule;
 
@@ -22,17 +22,20 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_, '_>, root: &RootPai
             context
                 .ui
                 .make_persistent_id((context.instance_id, "splitter", splitter.visual_id()));
-        let sense = if splitter.operable() {
+        let enabled = effective_enabled(context.ui, splitter.operable());
+        let sense = if enabled {
             Sense::drag()
         } else {
             Sense::hover()
         };
-        let receiver = context.plan.receiver_for_splitter(splitter);
+        let receiver = enabled
+            .then(|| context.plan.receiver_for_splitter(splitter))
+            .flatten();
         let response = context.interact_receiver(hit, id, sense, receiver);
-        configure_accessibility(context.ui, &response, splitter);
-        let focused = response.has_focus();
-        let emphasized =
-            response.hovered() || context.response_dragged_locally(&response) || focused;
+        configure_accessibility(context.ui, &response, splitter, enabled);
+        let focused = enabled && response.has_focus();
+        let emphasized = enabled
+            && (response.hovered() || context.response_dragged_locally(&response) || focused);
         let paint_omitted = context
             .plan
             .drag_decoration()
@@ -44,7 +47,7 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_, '_>, root: &RootPai
                 context.splitter_fill(&response, emphasized),
             );
         }
-        if !splitter.operable() {
+        if !enabled {
             continue;
         }
         let horizontal = splitter.axis() == DockspaceAxis::Horizontal;
@@ -100,14 +103,20 @@ fn paint_junction(
         "splitter-junction",
         junction.visual_id(),
     ));
-    let operable = context.plan.splitter_junction_operable(junction);
+    let core_operable = context.plan.splitter_junction_operable(junction);
+    let operable = effective_enabled(context.ui, core_operable);
     let axis_operability = [DockspaceAxis::Horizontal, DockspaceAxis::Vertical].map(|axis| {
+        let core_operable =
+            junction.has_axis(axis) && context.plan.splitter_junction_axis_operable(junction, axis);
         (
             axis,
-            junction.has_axis(axis) && context.plan.splitter_junction_axis_operable(junction, axis),
+            core_operable,
+            effective_enabled(context.ui, core_operable),
         )
     });
-    let receiver = context.plan.receiver_for_splitter_junction(junction);
+    let receiver = operable
+        .then(|| context.plan.receiver_for_splitter_junction(junction))
+        .flatten();
     let response = context.interact_receiver(
         hit,
         id,
@@ -126,15 +135,19 @@ fn paint_junction(
             node.set_label("Resize pane grid");
             node.set_description("Drag to resize rows and columns");
             node.set_bounds(accesskit_bounds(hit));
-            if !operable && axis_operability.iter().all(|(_, operable)| !operable) {
+            if !operable && axis_operability.iter().all(|(_, _, operable)| !operable) {
                 node.set_disabled();
             }
         });
-    for (axis, axis_operable) in axis_operability {
+    for (axis, core_axis_operable, axis_operable) in axis_operability {
+        if !core_axis_operable {
+            continue;
+        }
+        let axis_response =
+            junction_axis_response(context.ui, hit, response.id, id, axis, axis_operable);
         if !axis_operable {
             continue;
         }
-        let axis_response = junction_axis_response(context.ui, hit, response.id, id, axis);
         let horizontal = axis == DockspaceAxis::Horizontal;
         if axis_response.has_focus() {
             context.ui.memory_mut(|memory| {
@@ -195,12 +208,17 @@ fn junction_axis_response(
     parent_id: egui::Id,
     junction_id: egui::Id,
     axis: DockspaceAxis,
+    enabled: bool,
 ) -> egui::Response {
     let mut axis_ui = ui.new_child(
         UiBuilder::new()
             .id_salt((junction_id, "axis", axis))
             .max_rect(hit)
-            .sense(Sense::focusable_noninteractive())
+            .sense(if enabled {
+                Sense::focusable_noninteractive()
+            } else {
+                Sense::hover()
+            })
             .accessibility_parent(parent_id),
     );
     axis_ui.expand_to_include_rect(hit);
@@ -220,8 +238,12 @@ fn junction_axis_response(
                 node.set_orientation(Orientation::Horizontal);
             }
         }
-        node.add_action(Action::Increment);
-        node.add_action(Action::Decrement);
+        if enabled {
+            node.add_action(Action::Increment);
+            node.add_action(Action::Decrement);
+        } else {
+            node.set_disabled();
+        }
     });
     drop(axis_ui);
     response
@@ -233,6 +255,9 @@ fn splitter_adjustment(
     horizontal: bool,
     focused: bool,
 ) -> Option<SurfaceSplitterAdjustment> {
+    if !effective_enabled(ui, true) {
+        return None;
+    }
     if focused {
         let keyboard = ui.input_mut(|input| {
             let decrement = if horizontal {
@@ -272,6 +297,7 @@ fn configure_accessibility(
     ui: &egui::Ui,
     response: &egui::Response,
     splitter: dockspace::runtime::SplitterPaintRecord<'_>,
+    enabled: bool,
 ) {
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_role(Role::Splitter);
@@ -280,7 +306,7 @@ fn configure_accessibility(
             DockspaceAxis::Horizontal => Orientation::Vertical,
             DockspaceAxis::Vertical => Orientation::Horizontal,
         });
-        if splitter.operable() {
+        if enabled {
             node.add_action(Action::Increment);
             node.add_action(Action::Decrement);
         } else {

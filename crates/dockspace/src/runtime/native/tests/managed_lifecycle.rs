@@ -130,7 +130,7 @@ fn programmatic_native_root_tear_off_starts_the_shared_create_saga() {
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the programmatic tear-off frame begins");
     frame
-        .tear_off_root_current(ROOT, NativeWindowPlacement::new(placement))
+        .move_root_to_new_window_current(ROOT, NativeWindowPlacement::new(placement))
         .expect("the revision-bound root tear-off stages");
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -188,7 +188,7 @@ fn duplicate_programmatic_native_root_tear_off_is_rejected_atomically() {
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the first programmatic tear-off frame begins");
     first
-        .tear_off_root_current(ROOT, placement)
+        .move_root_to_new_window_current(ROOT, placement)
         .expect("the first programmatic tear-off stages");
     first
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -204,7 +204,7 @@ fn duplicate_programmatic_native_root_tear_off_is_rejected_atomically() {
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the duplicate programmatic tear-off frame begins");
     duplicate
-        .tear_off_root_current(ROOT, placement)
+        .move_root_to_new_window_current(ROOT, placement)
         .expect("the duplicate programmatic tear-off stages structurally");
     duplicate
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -248,7 +248,7 @@ fn programmatic_native_root_tear_off_rejects_when_it_would_remove_the_recovery_h
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the programmatic tear-off frame begins");
     frame
-        .tear_off_root_current(ROOT, placement)
+        .move_root_to_new_window_current(ROOT, placement)
         .expect("the revision-bound root tear-off stages structurally");
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

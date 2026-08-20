@@ -29,8 +29,11 @@ pub(crate) fn capabilities_for_backend(backend: NativeWindowingBackend) -> Nativ
             .with(NativeHostCapability::WindowActivationControl),
         NativeWindowingBackend::X11 => controlled_hit_test
             .with(NativeHostCapability::NativeWindowLifecycle)
+            .with(NativeHostCapability::HoveredWindow)
             .with(NativeHostCapability::DesktopPointerPosition)
+            .with(NativeHostCapability::AuthoritativeButtonState)
             .with(NativeHostCapability::GlobalWindowPlacement)
+            .with(NativeHostCapability::WorkArea)
             .with(NativeHostCapability::WindowActivationControl),
         NativeWindowingBackend::Wayland => controlled_hit_test,
         NativeWindowingBackend::Other => common,
@@ -62,9 +65,10 @@ mod tests {
 
         let x11 = capabilities_for_backend(NativeWindowingBackend::X11);
         assert!(x11.supports(NativeHostCapability::NativeWindowLifecycle));
+        assert!(x11.supports(NativeHostCapability::HoveredWindow));
+        assert!(x11.supports(NativeHostCapability::AuthoritativeButtonState));
         assert!(x11.supports(NativeHostCapability::GlobalWindowPlacement));
-        assert!(!x11.supports(NativeHostCapability::HoveredWindow));
-        assert!(!x11.supports(NativeHostCapability::WorkArea));
+        assert!(x11.supports(NativeHostCapability::WorkArea));
 
         let wayland = capabilities_for_backend(NativeWindowingBackend::Wayland);
         assert!(wayland.supports(NativeHostCapability::AuthoritativeInventory));

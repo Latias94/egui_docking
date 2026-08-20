@@ -1721,6 +1721,148 @@ fn candidate_bound_presentation_commands_report_truthful_availability_and_execut
 }
 
 #[test]
+fn directional_presentation_commands_are_core_derived_and_execute() {
+    let directions = [
+        DockspacePresentationCommandKind::DockLeft,
+        DockspacePresentationCommandKind::DockRight,
+        DockspacePresentationCommandKind::DockTop,
+        DockspacePresentationCommandKind::DockBottom,
+        DockspacePresentationCommandKind::DockCenter,
+    ];
+
+    for kind in directions {
+        let mut session = contained_session(DockPolicy::default());
+        install_ready_candidate(&mut session);
+        let mut prepare = session
+            .begin_host_frame()
+            .expect("directional-command paint frame begins");
+        let plan = prepare
+            .paint_plan(SURFACE)
+            .expect("paint plan lookup succeeds")
+            .expect("contained candidate is paintable");
+        let docked = plan
+            .presentation_command(ROOT, kind)
+            .expect("docked directional availability is queryable")
+            .expect("the docked root belongs to this exact surface");
+        assert_eq!(
+            docked.unavailable_reason(),
+            Some(DockspacePresentationCommandUnavailable::Action(
+                crate::model::DockspaceActionRejection::DockBackUnavailable { root: ROOT }
+            )),
+            "a main root cannot fabricate a second target for {kind:?}",
+        );
+
+        let floating = plan
+            .presentation_command(FLOATING_ROOT, kind)
+            .expect("contained directional availability is queryable")
+            .expect("the contained root belongs to this exact surface");
+        assert!(
+            floating.is_ready(),
+            "contained {kind:?} unexpectedly unavailable: {:?}",
+            floating.unavailable_reason(),
+        );
+        let action = plan
+            .prepare_presentation_command(floating)
+            .expect("the exact directional command prepares one opaque action");
+        prepare
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("directional command preparation retains the current candidate");
+        prepare
+            .commit()
+            .expect("directional command preparation commits");
+
+        let mut execute = session
+            .begin_host_frame()
+            .expect("directional-command execution frame begins");
+        execute
+            .submit_surface_action(action)
+            .expect("the exact directional command is accepted");
+        execute
+            .measure_surface(SURFACE, metrics())
+            .expect("the directionally docked surface is remeasured");
+        let report = execute
+            .commit()
+            .expect("the directional docking command commits");
+
+        assert!(matches!(
+            report.inputs(),
+            [HostInputOutcome::ProductActionApplied(
+                crate::model::DockspaceActionOutcome::RootDocked {
+                    root: FLOATING_ROOT,
+                    target_root: ROOT,
+                    items,
+                    changed: true,
+                }
+            )] if items == &[SECOND]
+        ));
+        assert!(session.view().contained(FLOATING).is_none());
+        let content = session
+            .view()
+            .root(ROOT)
+            .and_then(|root| root.content())
+            .expect("directional docking preserves the target root");
+        match kind {
+            DockspacePresentationCommandKind::DockLeft => {
+                let split = content.split().expect("Dock Left creates a split");
+                assert_eq!(split.axis(), DockspaceAxis::Horizontal);
+                assert_eq!(
+                    split
+                        .children()
+                        .map(|child| child.tabs().unwrap().items().to_vec())
+                        .collect::<Vec<_>>(),
+                    vec![vec![SECOND], vec![FIRST, THIRD]],
+                );
+            }
+            DockspacePresentationCommandKind::DockRight => {
+                let split = content.split().expect("Dock Right creates a split");
+                assert_eq!(split.axis(), DockspaceAxis::Horizontal);
+                assert_eq!(
+                    split
+                        .children()
+                        .map(|child| child.tabs().unwrap().items().to_vec())
+                        .collect::<Vec<_>>(),
+                    vec![vec![FIRST, THIRD], vec![SECOND]],
+                );
+            }
+            DockspacePresentationCommandKind::DockTop => {
+                let split = content.split().expect("Dock Top creates a split");
+                assert_eq!(split.axis(), DockspaceAxis::Vertical);
+                assert_eq!(
+                    split
+                        .children()
+                        .map(|child| child.tabs().unwrap().items().to_vec())
+                        .collect::<Vec<_>>(),
+                    vec![vec![SECOND], vec![FIRST, THIRD]],
+                );
+            }
+            DockspacePresentationCommandKind::DockBottom => {
+                let split = content.split().expect("Dock Bottom creates a split");
+                assert_eq!(split.axis(), DockspaceAxis::Vertical);
+                assert_eq!(
+                    split
+                        .children()
+                        .map(|child| child.tabs().unwrap().items().to_vec())
+                        .collect::<Vec<_>>(),
+                    vec![vec![FIRST, THIRD], vec![SECOND]],
+                );
+            }
+            DockspacePresentationCommandKind::DockCenter => assert_eq!(
+                content
+                    .tabs()
+                    .expect("Dock Center merges into the central tab group")
+                    .items(),
+                &[FIRST, THIRD, SECOND],
+            ),
+            DockspacePresentationCommandKind::Float
+            | DockspacePresentationCommandKind::MoveToNewWindow
+            | DockspacePresentationCommandKind::DockBack => {
+                unreachable!("the table contains only directional commands")
+            }
+        }
+    }
+}
+
+#[test]
 fn stale_surface_action_is_inert_after_a_new_workspace_revision() {
     let mut session = session();
     install_ready_candidate(&mut session);

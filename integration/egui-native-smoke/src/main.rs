@@ -151,7 +151,10 @@ impl SmokeApp {
             PhysicalRect::new(760.0, 100.0, 420.0, 320.0)
                 .expect("the smoke child placement is valid"),
         );
-        match self.dockspace.request_tear_off_root(CHILD_ROOT, placement) {
+        match self
+            .dockspace
+            .request_move_root_to_new_window(CHILD_ROOT, placement)
+        {
             Ok(()) => self.transition(SmokePhase::AwaitTearOff),
             Err(error) => self.finish(context, Err(action_request_message(error))),
         }
@@ -162,20 +165,20 @@ impl SmokeApp {
             return;
         };
         match status {
-            DockspaceActionStatus::Applied(
+            Ok(DockspaceActionStatus::Applied(
                 DockspaceActionOutcome::NativeRootTearOffRequested {
                     root,
                     source_surface,
                     target_surface,
                     items,
                 },
-            ) if root == CHILD_ROOT
+            )) if root == CHILD_ROOT
                 && source_surface == ROOT_SURFACE
                 && items == [CHILD_ITEM, CHILD_DETAIL] =>
             {
                 self.transition(SmokePhase::AwaitFirstLive { target_surface });
             }
-            DockspaceActionStatus::Stale { .. } => {
+            Ok(DockspaceActionStatus::Stale { .. }) => {
                 self.queue_tear_off(context);
             }
             status => self.fail_without_context(format!(
@@ -226,12 +229,12 @@ impl SmokeApp {
             return;
         };
         match status {
-            DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
+            Ok(DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
                 root,
                 target_root,
                 items,
                 changed: true,
-            }) if root == CHILD_ROOT
+            })) if root == CHILD_ROOT
                 && target_root == MAIN_ROOT
                 && items == [CHILD_ITEM, CHILD_DETAIL] =>
             {
@@ -251,7 +254,7 @@ impl SmokeApp {
                     );
                 }
             }
-            DockspaceActionStatus::Stale { .. } => {
+            Ok(DockspaceActionStatus::Stale { .. }) => {
                 self.queue_redock(context, target_surface);
             }
             status => self.fail_without_context(format!(

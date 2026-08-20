@@ -455,18 +455,24 @@ impl NativeCoordinator {
         error: NativeEffectSubmissionError,
     ) -> Result<(), NativeRuntimeError> {
         let (kind, result) = error.into_parts();
+        if kind == NativeHostErrorKind::StaleBinding
+            && !self.session.recognizes_native_binding(result.binding())
+        {
+            // A superseded core lifetime cannot accept a later cleanup relay.
+            return Ok(());
+        }
         if !result.binding().same_window_lifetime(binding)
             || !result.can_be_correlated_by_cleanup()
             || !matches!(kind, NativeHostErrorKind::StaleBinding)
         {
-            return Err(self.retain_rejected_effect_result(kind, result));
+            return self.retain_rejected_effect_result(kind, result);
         }
         if self.retirements.cleanup_is_terminal(binding) {
             drop(result);
             return Ok(());
         }
         if !self.retirements.can_accept_cleanup_result(binding) {
-            return Err(self.retain_rejected_effect_result(kind, result));
+            return self.retain_rejected_effect_result(kind, result);
         }
         match self.retirements.retain_cleanup_result(binding, result) {
             Ok(Some(correlated)) => self.report_cleanup_result(binding, correlated),
@@ -475,7 +481,7 @@ impl NativeCoordinator {
                 Err(NativeHostProtocolError::CleanupRelayConflict.into())
             }
             Err(CleanupResultRetentionError::Occupied(result)) => {
-                Err(self.retain_rejected_effect_result(kind, result))
+                self.retain_rejected_effect_result(kind, result)
             }
         }
     }
@@ -484,9 +490,22 @@ impl NativeCoordinator {
         &mut self,
         kind: NativeHostErrorKind,
         result: NativeEffectResult,
-    ) -> NativeRuntimeError {
+    ) -> Result<(), NativeRuntimeError> {
+        if kind == NativeHostErrorKind::StaleBinding
+            && !self.session.recognizes_native_binding(result.binding())
+        {
+            // Core has already retired this exact lifetime. The callback-side
+            // owner was consumed before submission, so only this stale result
+            // retires; a successor binding for the same surface is untouched.
+            drop(result);
+            return Ok(());
+        }
         self.queue_pending_effect_result(result, Some(kind));
-        NativeHostProtocolError::NativeEffectResultRejected(kind).into()
+        if native_effect_submission_rejection_is_recoverable(kind) {
+            Ok(())
+        } else {
+            Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into())
+        }
     }
 
     /// Retains one core-emitted deferred viewport effect until eframe reports

@@ -1,6 +1,6 @@
 //! Translation from callback-time winit pointer facts into core native input.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
@@ -10,21 +10,46 @@ use dockspace::runtime::{
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
     NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding, NativeWorkAreaBinding,
 };
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{
+    DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 
 use crate::event::{
     NativePointerRouteSnapshot, NativePointerRoutes, NativeWindowEventClass,
     NativeWindowEventRecord,
 };
 
-const POINTER_ID: NativePointerId = NativePointerId::new(1);
-const SCROLL_DEVICE_ID: NativeScrollDeviceId = NativeScrollDeviceId::new(1);
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NativePointerTranslator {
+    devices: BTreeMap<NativeInputDeviceKey, NativePointerDeviceState>,
+    removed_inputs: BTreeSet<NativeInputDeviceKey>,
+    next_device_identity: u64,
+    next_scroll_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NativeInputDeviceKey {
+    Mouse(NativePhysicalDeviceKey),
+    Touch {
+        device: NativePhysicalDeviceKey,
+        contact: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NativePhysicalDeviceKey {
+    Winit(DeviceId),
+    #[cfg(test)]
+    Test(u64),
+}
+
+#[derive(Debug, Clone)]
+struct NativePointerDeviceState {
+    pointer: NativePointerId,
+    scroll_device: NativeScrollDeviceId,
+    stream_live: bool,
     mouse: NativeMouseState,
     scroll: NativeScrollState,
-    next_scroll_sequence: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,11 +87,455 @@ pub(crate) enum NativePointerTranslation {
 
 impl NativePointerTranslator {
     pub(crate) fn can_coalesce_idle_cursor_moves(&self) -> bool {
-        self.mouse.is_idle() && matches!(self.scroll, NativeScrollState::Idle)
+        self.devices.values().all(NativePointerDeviceState::is_idle)
     }
 
     /// Terminates the semantic owner while preserving provider-tail correlation.
+    ///
+    /// Mouse and scroll identities retain their explicit tail state. Touch
+    /// contacts instead retire into the input tombstone set because a contact
+    /// has no independent reset callback after its delivery binding disappears.
     pub(crate) fn cancel_destroyed_binding(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Vec<NativePointerInput> {
+        let mut terminals = Vec::new();
+        let mut retired_touches = Vec::new();
+        for (key, device) in &mut self.devices {
+            let Some(input) = device.cancel_destroyed_binding(binding) else {
+                continue;
+            };
+            terminals.push((device.pointer, input));
+            if matches!(key, NativeInputDeviceKey::Touch { .. }) {
+                retired_touches.push(*key);
+            }
+        }
+        for key in retired_touches {
+            let removed = self.devices.remove(&key);
+            debug_assert!(removed.is_some());
+            let _ = self.removed_inputs.insert(key);
+        }
+        terminals.sort_by_key(|(pointer, _)| *pointer);
+        terminals.into_iter().map(|(_, input)| input).collect()
+    }
+
+    /// Conservatively terminates every adapter-owned input identity.
+    ///
+    /// Winit raw-device identifiers are not correlated with the virtual
+    /// identifiers carried by window input, so one raw removal cannot safely
+    /// target a subset of these states.
+    pub(crate) fn remove_all_devices(&mut self) -> Vec<NativePointerInput> {
+        self.removed_inputs.extend(self.devices.keys().copied());
+        let mut devices = std::mem::take(&mut self.devices)
+            .into_values()
+            .collect::<Vec<_>>();
+        devices.sort_by_key(|device| device.pointer);
+        devices
+            .into_iter()
+            .flat_map(NativePointerDeviceState::device_removed_terminals)
+            .collect()
+    }
+
+    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.devices
+            .values()
+            .any(|device| device.references_binding(binding))
+    }
+
+    pub(crate) fn has_pending_provider_tail(&self) -> bool {
+        self.devices
+            .values()
+            .any(NativePointerDeviceState::has_pending_provider_tail)
+    }
+
+    /// Closes retired provider tails at the next causal boundary.
+    pub(crate) fn reset_destroyed_binding(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Vec<NativePointerInput> {
+        let mut terminals = self
+            .devices
+            .values_mut()
+            .filter_map(|device| {
+                device
+                    .reset_destroyed_binding(binding)
+                    .map(|input| (device.pointer, input))
+            })
+            .collect::<Vec<_>>();
+        terminals.sort_by_key(|(pointer, _)| *pointer);
+        terminals.into_iter().map(|(_, input)| input).collect()
+    }
+
+    pub(crate) fn translate(
+        &mut self,
+        record: &NativeWindowEventRecord,
+        resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        if NativeWindowEventClass::classify(record.event()) != NativeWindowEventClass::Pointer {
+            return NativePointerTranslation::NotPointer;
+        }
+        let device = pointer_device(record.event())
+            .expect("pointer event classification and device extraction must stay aligned");
+        self.translate_for_device(record, device, resolve_work_area)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn translate_for_test_device(
+        &mut self,
+        record: &NativeWindowEventRecord,
+        device: u64,
+        resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        if NativeWindowEventClass::classify(record.event()) != NativeWindowEventClass::Pointer {
+            return NativePointerTranslation::NotPointer;
+        }
+        let device =
+            pointer_device_for_physical(record.event(), NativePhysicalDeviceKey::Test(device))
+                .expect(
+                    "pointer event classification and test-device extraction must stay aligned",
+                );
+        self.translate_for_device(record, device, resolve_work_area)
+    }
+
+    fn translate_for_device(
+        &mut self,
+        record: &NativeWindowEventRecord,
+        device: NativeInputDeviceKey,
+        mut resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        let routes = record
+            .pointer_routes()
+            .unwrap_or_else(|| NativePointerRoutes::from_binding(record.binding()));
+        if self.removed_inputs.contains(&device) {
+            if starts_reused_device_stream(record.event()) {
+                let _ = self.removed_inputs.remove(&device);
+            } else {
+                return NativePointerTranslation::Ignored;
+            }
+        }
+
+        match record.event() {
+            WindowEvent::CursorMoved { facts, .. } => self.input(
+                device,
+                NativePointerEvent::Moved,
+                facts.desktop_position,
+                routes,
+                &mut resolve_work_area,
+            ),
+            WindowEvent::MouseInput {
+                state,
+                button,
+                facts,
+                ..
+            } => {
+                let button = native_button(*button);
+                let event = match state {
+                    ElementState::Pressed => NativePointerEvent::ButtonPressed(button),
+                    ElementState::Released => NativePointerEvent::ButtonReleased(button),
+                };
+                self.input(
+                    device,
+                    event,
+                    facts.desktop_position,
+                    routes,
+                    &mut resolve_work_area,
+                )
+            }
+            WindowEvent::PointerCaptureChanged { .. } => self.input(
+                device,
+                NativePointerEvent::CaptureChanged,
+                None,
+                routes,
+                &mut resolve_work_area,
+            ),
+            WindowEvent::MouseWheel {
+                delta,
+                phase,
+                facts,
+                ..
+            } => {
+                let Some(delta) = delta_value(delta) else {
+                    return NativePointerTranslation::Ignored;
+                };
+                self.scroll(device, delta, *phase, facts, routes, &mut resolve_work_area)
+            }
+            WindowEvent::PanGesture { delta, phase, .. } => {
+                let delta = NativeScrollDelta::PhysicalPixels {
+                    x: f64::from(delta.x),
+                    y: f64::from(delta.y),
+                };
+                if !scroll_delta_is_finite(delta) {
+                    return NativePointerTranslation::Ignored;
+                }
+                let facts = winit::event::PointerEventFacts::default();
+                self.scroll(
+                    device,
+                    delta,
+                    *phase,
+                    &facts,
+                    routes,
+                    &mut resolve_work_area,
+                )
+            }
+            WindowEvent::Touch(touch) => self.touch(device, *touch, routes, &mut resolve_work_area),
+            _ => unreachable!("pointer event classification and translation must stay aligned"),
+        }
+    }
+
+    fn touch(
+        &mut self,
+        device: NativeInputDeviceKey,
+        touch: winit::event::Touch,
+        routes: NativePointerRoutes,
+        resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        let enrolled = self.devices.contains_key(&device);
+        if matches!(touch.phase, TouchPhase::Started) == enrolled {
+            return NativePointerTranslation::Ignored;
+        }
+        if matches!(touch.phase, TouchPhase::Moved)
+            && self
+                .devices
+                .get(&device)
+                .is_some_and(|state| state.mouse.active_origin_mismatch(routes))
+        {
+            return NativePointerTranslation::Ignored;
+        }
+        let routes = if matches!(touch.phase, TouchPhase::Cancelled)
+            || matches!(touch.phase, TouchPhase::Ended)
+                && self
+                    .devices
+                    .get(&device)
+                    .is_some_and(|state| state.mouse.active_origin_mismatch(routes))
+        {
+            NativePointerRoutes::from_binding(None)
+        } else {
+            routes
+        };
+        let event = match touch.phase {
+            TouchPhase::Started => NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            TouchPhase::Moved => NativePointerEvent::Moved,
+            TouchPhase::Ended => NativePointerEvent::ContactEnded(NativePointerButton::Primary),
+            TouchPhase::Cancelled => NativePointerEvent::StreamCancelled(
+                NativePointerCancelReason::ExplicitPlatformCancellation,
+            ),
+        };
+        let translation = self.input(device, event, None, routes, resolve_work_area);
+        if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled)
+            && matches!(translation, NativePointerTranslation::Input(_))
+        {
+            let _ = self.devices.remove(&device);
+        }
+        translation
+    }
+
+    fn input(
+        &mut self,
+        device: NativeInputDeviceKey,
+        event: NativePointerEvent,
+        desktop_position: Option<winit::dpi::PhysicalPosition<f64>>,
+        routes: NativePointerRoutes,
+        resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        let Some(device) = self.device_mut(device) else {
+            return NativePointerTranslation::Ignored;
+        };
+        if !device.mouse.observe(event, routes) {
+            return NativePointerTranslation::Ignored;
+        }
+        device.stream_live = !matches!(
+            event,
+            NativePointerEvent::ContactEnded(_)
+                | NativePointerEvent::StreamEnded
+                | NativePointerEvent::StreamCancelled(_)
+        );
+        let position = native_position(desktop_position);
+        let hover = native_hover(routes.hover());
+        NativePointerTranslation::Input(NativePointerInput::new(
+            device.pointer,
+            event,
+            NativeDesktopPointerLocation::new(
+                position,
+                hover,
+                native_work_area(position, hover, resolve_work_area),
+            ),
+            native_owner(routes.delivery()),
+            native_owner(routes.capture()),
+        ))
+    }
+
+    fn scroll(
+        &mut self,
+        device: NativeInputDeviceKey,
+        delta: NativeScrollDelta,
+        phase: TouchPhase,
+        facts: &winit::event::PointerEventFacts,
+        routes: NativePointerRoutes,
+        resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        if self.device_mut(device).is_none() {
+            return NativePointerTranslation::Ignored;
+        }
+        let Self {
+            devices,
+            next_scroll_sequence,
+            ..
+        } = self;
+        let device = devices
+            .get_mut(&device)
+            .expect("a successfully enrolled device remains in the adapter map");
+        let delivery = exact_delivery_binding(routes.delivery());
+        if let NativeScrollState::Live {
+            delivery: Some(active),
+            ..
+        } = device.scroll
+            && delivery != Some(active)
+        {
+            // Winit does not carry a scroll sequence token. A callback routed
+            // through another exact binding may be a delayed predecessor tail,
+            // so it cannot mutate or terminate the current sequence.
+            return NativePointerTranslation::Ignored;
+        }
+        device.mouse.observe_routes(routes);
+        let Some((phase, next_state)) =
+            translate_scroll_phase(device.scroll, phase, delta, delivery, next_scroll_sequence)
+        else {
+            return NativePointerTranslation::Ignored;
+        };
+        device.scroll = next_state;
+
+        let event = NativeScrollEvent::new(
+            device.scroll_device,
+            phase,
+            NativeScrollMomentum::Unknown,
+            native_modifiers(facts),
+        );
+        let position = native_position(facts.desktop_position);
+        let hover = native_hover(routes.hover());
+        device.stream_live = true;
+        NativePointerTranslation::Input(NativePointerInput::new(
+            device.pointer,
+            NativePointerEvent::Scrolled(event),
+            NativeDesktopPointerLocation::new(
+                position,
+                hover,
+                native_work_area(position, hover, resolve_work_area),
+            ),
+            native_owner(routes.delivery()),
+            native_owner(routes.capture()),
+        ))
+    }
+
+    fn device_mut(&mut self, key: NativeInputDeviceKey) -> Option<&mut NativePointerDeviceState> {
+        let Self {
+            devices,
+            next_device_identity,
+            ..
+        } = self;
+        match devices.entry(key) {
+            Entry::Occupied(entry) => Some(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let next = allocate_device_identity(next_device_identity)?;
+                Some(entry.insert(NativePointerDeviceState::new(next)))
+            }
+        }
+    }
+}
+
+fn translate_scroll_phase(
+    state: NativeScrollState,
+    phase: TouchPhase,
+    delta: NativeScrollDelta,
+    event_delivery: Option<NativeSurfaceBinding>,
+    next_scroll_sequence: &mut u64,
+) -> Option<(NativeScrollPhase, NativeScrollState)> {
+    match (state, phase) {
+        (NativeScrollState::Idle, TouchPhase::Started) => {
+            let sequence = allocate_scroll_sequence(next_scroll_sequence)?;
+            Some((
+                NativeScrollPhase::Begin {
+                    sequence,
+                    delta: Some(delta),
+                },
+                NativeScrollState::Live {
+                    sequence,
+                    delivery: event_delivery,
+                },
+            ))
+        }
+        (
+            NativeScrollState::Live { sequence, delivery },
+            TouchPhase::Started | TouchPhase::Moved,
+        ) => Some((
+            NativeScrollPhase::Update { sequence, delta },
+            NativeScrollState::Live { sequence, delivery },
+        )),
+        (
+            NativeScrollState::Live { sequence, .. }
+            | NativeScrollState::RetiredTail { sequence, .. },
+            TouchPhase::Ended,
+        ) => Some((
+            NativeScrollPhase::End {
+                sequence,
+                delta: Some(delta),
+            },
+            NativeScrollState::Idle,
+        )),
+        (
+            NativeScrollState::Live { sequence, .. }
+            | NativeScrollState::RetiredTail { sequence, .. },
+            TouchPhase::Cancelled,
+        ) => Some((
+            NativeScrollPhase::Cancel {
+                sequence,
+                reason: NativeScrollCancelReason::PlatformCancelled,
+            },
+            NativeScrollState::Idle,
+        )),
+        (
+            NativeScrollState::RetiredTail { sequence, .. },
+            TouchPhase::Started | TouchPhase::Moved,
+        ) => Some((
+            NativeScrollPhase::Cancel {
+                sequence,
+                reason: NativeScrollCancelReason::ProviderReset,
+            },
+            NativeScrollState::Idle,
+        )),
+        (NativeScrollState::Idle, TouchPhase::Moved) => Some((
+            NativeScrollPhase::Discrete { delta },
+            NativeScrollState::Idle,
+        )),
+        (NativeScrollState::Idle, TouchPhase::Ended) => (!is_zero_delta(delta)).then_some((
+            NativeScrollPhase::Discrete { delta },
+            NativeScrollState::Idle,
+        )),
+        (NativeScrollState::Idle, TouchPhase::Cancelled) => None,
+    }
+}
+
+fn allocate_device_identity(next_device_identity: &mut u64) -> Option<u64> {
+    let next = next_device_identity.checked_add(1)?;
+    *next_device_identity = next;
+    Some(next)
+}
+
+impl NativePointerDeviceState {
+    fn new(identity: u64) -> Self {
+        Self {
+            pointer: NativePointerId::new(identity),
+            scroll_device: NativeScrollDeviceId::new(identity),
+            stream_live: false,
+            mouse: NativeMouseState::default(),
+            scroll: NativeScrollState::Idle,
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        self.mouse.is_idle() && matches!(self.scroll, NativeScrollState::Idle)
+    }
+
+    fn cancel_destroyed_binding(
         &mut self,
         binding: NativeSurfaceBinding,
     ) -> Option<NativePointerInput> {
@@ -78,7 +547,12 @@ impl NativePointerTranslator {
                     semantic_cancelled_by_pointer: true,
                 };
             }
+            if !self.stream_live {
+                return None;
+            }
+            self.stream_live = false;
             return Some(pointer_cancel_input(
+                self.pointer,
                 NativePointerCancelReason::BindingRetired,
             ));
         }
@@ -98,36 +572,14 @@ impl NativePointerTranslator {
             semantic_cancelled_by_pointer: false,
         };
         Some(scroll_cancel_input(
+            self.pointer,
+            self.scroll_device,
             sequence,
             NativeScrollCancelReason::BindingRetired,
         ))
     }
 
-    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        self.mouse.references_binding(binding)
-            || matches!(
-                self.scroll,
-                NativeScrollState::Live {
-                    delivery: Some(delivery),
-                    ..
-                } if delivery == binding
-            )
-            || matches!(
-                self.scroll,
-                NativeScrollState::RetiredTail {
-                    binding: retired,
-                    ..
-                } if retired == binding
-            )
-    }
-
-    pub(crate) const fn has_pending_provider_tail(&self) -> bool {
-        self.mouse.has_pending_provider_tail()
-            || matches!(self.scroll, NativeScrollState::RetiredTail { .. })
-    }
-
-    /// Closes one retired provider tail at the next causal boundary.
-    pub(crate) fn reset_destroyed_binding(
+    fn reset_destroyed_binding(
         &mut self,
         binding: NativeSurfaceBinding,
     ) -> Option<NativePointerInput> {
@@ -148,236 +600,60 @@ impl NativePointerTranslator {
             return None;
         }
         Some(scroll_cancel_input(
+            self.pointer,
+            self.scroll_device,
             sequence,
             NativeScrollCancelReason::ProviderReset,
         ))
     }
 
-    pub(crate) fn translate(
-        &mut self,
-        record: &NativeWindowEventRecord,
-        mut resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
-    ) -> NativePointerTranslation {
-        if NativeWindowEventClass::classify(record.event()) != NativeWindowEventClass::Pointer {
-            return NativePointerTranslation::NotPointer;
-        }
-        let routes = record
-            .pointer_routes()
-            .unwrap_or_else(|| NativePointerRoutes::from_binding(record.binding()));
-
-        match record.event() {
-            WindowEvent::CursorMoved { facts, .. } => self.input(
-                NativePointerEvent::Moved,
-                facts.desktop_position,
-                routes,
-                &mut resolve_work_area,
-            ),
-            WindowEvent::MouseInput {
-                state,
-                button,
-                facts,
-                ..
-            } => {
-                let button = native_button(*button);
-                let event = match state {
-                    ElementState::Pressed => NativePointerEvent::ButtonPressed(button),
-                    ElementState::Released => NativePointerEvent::ButtonReleased(button),
-                };
-                self.input(
-                    event,
-                    facts.desktop_position,
-                    routes,
-                    &mut resolve_work_area,
-                )
-            }
-            WindowEvent::PointerCaptureChanged { .. } => self.input(
-                NativePointerEvent::CaptureChanged,
-                None,
-                routes,
-                &mut resolve_work_area,
-            ),
-            WindowEvent::MouseWheel {
-                delta,
-                phase,
-                facts,
-                ..
-            } => {
-                let delta = match delta_value(delta) {
-                    Some(delta) => delta,
-                    None => return NativePointerTranslation::Ignored,
-                };
-                self.scroll(delta, *phase, facts, routes, &mut resolve_work_area)
-            }
-            WindowEvent::PanGesture { delta, phase, .. } => {
-                let delta = NativeScrollDelta::PhysicalPixels {
-                    x: f64::from(delta.x),
-                    y: f64::from(delta.y),
-                };
-                let finite = match delta {
-                    NativeScrollDelta::PhysicalPixels { x, y } => x.is_finite() && y.is_finite(),
-                    _ => true,
-                };
-                if !finite {
-                    return NativePointerTranslation::Ignored;
-                }
-                let facts = winit::event::PointerEventFacts::default();
-                self.scroll(delta, *phase, &facts, routes, &mut resolve_work_area)
-            }
-            _ => unreachable!("pointer event classification and translation must stay aligned"),
-        }
+    fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.mouse.references_binding(binding)
+            || matches!(
+                self.scroll,
+                NativeScrollState::Live {
+                    delivery: Some(delivery),
+                    ..
+                } if delivery == binding
+            )
+            || matches!(
+                self.scroll,
+                NativeScrollState::RetiredTail {
+                    binding: retired,
+                    ..
+                } if retired == binding
+            )
     }
 
-    fn input(
-        &mut self,
-        event: NativePointerEvent,
-        desktop_position: Option<winit::dpi::PhysicalPosition<f64>>,
-        routes: NativePointerRoutes,
-        resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
-    ) -> NativePointerTranslation {
-        if !self.mouse.observe(event, routes) {
-            return NativePointerTranslation::Ignored;
+    const fn has_pending_provider_tail(&self) -> bool {
+        self.mouse.has_pending_provider_tail()
+            || matches!(self.scroll, NativeScrollState::RetiredTail { .. })
+    }
+
+    fn device_removed_terminals(self) -> Vec<NativePointerInput> {
+        let mut terminals = Vec::with_capacity(2);
+        if let NativeScrollState::Live { sequence, .. } = self.scroll {
+            terminals.push(scroll_cancel_input(
+                self.pointer,
+                self.scroll_device,
+                sequence,
+                NativeScrollCancelReason::DeviceRemoved,
+            ));
         }
-        let position = native_position(desktop_position);
-        let hover = native_hover(routes.hover());
-        NativePointerTranslation::Input(NativePointerInput::new(
-            POINTER_ID,
-            event,
-            NativeDesktopPointerLocation::new(
-                position,
-                hover,
-                native_work_area(position, hover, resolve_work_area),
-            ),
-            native_owner(routes.delivery()),
-            native_owner(routes.capture()),
-        ))
-    }
-
-    fn scroll(
-        &mut self,
-        delta: NativeScrollDelta,
-        phase: TouchPhase,
-        facts: &winit::event::PointerEventFacts,
-        routes: NativePointerRoutes,
-        resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
-    ) -> NativePointerTranslation {
-        let delivery = exact_delivery_binding(routes.delivery());
-        if let NativeScrollState::Live {
-            delivery: Some(active),
-            ..
-        } = self.scroll
-            && delivery != Some(active)
-        {
-            // Winit does not carry a scroll sequence token. A callback routed
-            // through another exact binding may be a delayed predecessor tail,
-            // so it cannot mutate or terminate the current sequence.
-            return NativePointerTranslation::Ignored;
+        if self.stream_live {
+            terminals.push(pointer_cancel_input(
+                self.pointer,
+                NativePointerCancelReason::DeviceRemoved,
+            ));
         }
-        self.mouse.observe_routes(routes);
-        let (phase, next_state) = match (self.scroll, phase) {
-            (NativeScrollState::Idle, TouchPhase::Started) => {
-                let Some(sequence) = self.allocate_scroll_sequence() else {
-                    return NativePointerTranslation::Ignored;
-                };
-                (
-                    Some(NativeScrollPhase::Begin {
-                        sequence,
-                        delta: Some(delta),
-                    }),
-                    NativeScrollState::Live { sequence, delivery },
-                )
-            }
-            (
-                NativeScrollState::Live { sequence, delivery },
-                TouchPhase::Started | TouchPhase::Moved,
-            ) => (
-                Some(NativeScrollPhase::Update { sequence, delta }),
-                NativeScrollState::Live { sequence, delivery },
-            ),
-            (NativeScrollState::Live { sequence, .. }, TouchPhase::Ended) => (
-                Some(NativeScrollPhase::End {
-                    sequence,
-                    delta: Some(delta),
-                }),
-                NativeScrollState::Idle,
-            ),
-            (NativeScrollState::Live { sequence, .. }, TouchPhase::Cancelled) => (
-                Some(NativeScrollPhase::Cancel {
-                    sequence,
-                    reason: NativeScrollCancelReason::PlatformCancelled,
-                }),
-                NativeScrollState::Idle,
-            ),
-            (
-                NativeScrollState::RetiredTail { sequence, .. },
-                TouchPhase::Started | TouchPhase::Moved,
-            ) => (
-                Some(NativeScrollPhase::Cancel {
-                    sequence,
-                    reason: NativeScrollCancelReason::ProviderReset,
-                }),
-                NativeScrollState::Idle,
-            ),
-            (NativeScrollState::RetiredTail { sequence, .. }, TouchPhase::Ended) => (
-                Some(NativeScrollPhase::End {
-                    sequence,
-                    delta: Some(delta),
-                }),
-                NativeScrollState::Idle,
-            ),
-            (NativeScrollState::RetiredTail { sequence, .. }, TouchPhase::Cancelled) => (
-                Some(NativeScrollPhase::Cancel {
-                    sequence,
-                    reason: NativeScrollCancelReason::PlatformCancelled,
-                }),
-                NativeScrollState::Idle,
-            ),
-            (NativeScrollState::Idle, TouchPhase::Moved) => (
-                Some(NativeScrollPhase::Discrete { delta }),
-                NativeScrollState::Idle,
-            ),
-            (NativeScrollState::Idle, TouchPhase::Ended) => {
-                if is_zero_delta(delta) {
-                    (None, NativeScrollState::Idle)
-                } else {
-                    (
-                        Some(NativeScrollPhase::Discrete { delta }),
-                        NativeScrollState::Idle,
-                    )
-                }
-            }
-            (NativeScrollState::Idle, TouchPhase::Cancelled) => (None, NativeScrollState::Idle),
-        };
-        self.scroll = next_state;
-        let Some(phase) = phase else {
-            return NativePointerTranslation::Ignored;
-        };
-
-        let event = NativeScrollEvent::new(
-            SCROLL_DEVICE_ID,
-            phase,
-            NativeScrollMomentum::Unknown,
-            native_modifiers(facts),
-        );
-        let position = native_position(facts.desktop_position);
-        let hover = native_hover(routes.hover());
-        NativePointerTranslation::Input(NativePointerInput::new(
-            POINTER_ID,
-            NativePointerEvent::Scrolled(event),
-            NativeDesktopPointerLocation::new(
-                position,
-                hover,
-                native_work_area(position, hover, resolve_work_area),
-            ),
-            native_owner(routes.delivery()),
-            native_owner(routes.capture()),
-        ))
+        terminals
     }
+}
 
-    fn allocate_scroll_sequence(&mut self) -> Option<NativeScrollSequenceId> {
-        let next = self.next_scroll_sequence.checked_add(1)?;
-        self.next_scroll_sequence = next;
-        Some(NativeScrollSequenceId::new(next))
-    }
+fn allocate_scroll_sequence(next_scroll_sequence: &mut u64) -> Option<NativeScrollSequenceId> {
+    let next = next_scroll_sequence.checked_add(1)?;
+    *next_scroll_sequence = next;
+    Some(NativeScrollSequenceId::new(next))
 }
 
 impl NativeMouseState {
@@ -390,6 +666,9 @@ impl NativeMouseState {
     }
 
     fn observe(&mut self, event: NativePointerEvent, routes: NativePointerRoutes) -> bool {
+        if self.should_ignore_captured_move(event, routes) {
+            return false;
+        }
         self.observe_routes(routes);
         if matches!(
             event,
@@ -427,6 +706,26 @@ impl NativeMouseState {
             | NativePointerEvent::Scrolled(_) => {}
         }
         true
+    }
+
+    fn should_ignore_captured_move(
+        &self,
+        event: NativePointerEvent,
+        routes: NativePointerRoutes,
+    ) -> bool {
+        // A backend may notify the hovered window before delivering the same
+        // motion through the capture owner. Preserve both callback facts by
+        // waiting for the exact capture-owner delivery instead of rewriting it.
+        matches!(event, NativePointerEvent::Moved)
+            && !self.active_buttons.is_empty()
+            && exact_delivery_binding(routes.capture())
+                .is_some_and(|capture| exact_delivery_binding(routes.delivery()) != Some(capture))
+    }
+
+    fn active_origin_mismatch(&self, routes: NativePointerRoutes) -> bool {
+        self.button_origins
+            .get(&NativePointerButton::Primary)
+            .is_some_and(|origin| exact_delivery_binding(routes.delivery()) != Some(*origin))
     }
 
     fn observe_routes(&mut self, routes: NativePointerRoutes) {
@@ -478,9 +777,12 @@ fn updated_binding(
     }
 }
 
-fn pointer_cancel_input(reason: NativePointerCancelReason) -> NativePointerInput {
+fn pointer_cancel_input(
+    pointer: NativePointerId,
+    reason: NativePointerCancelReason,
+) -> NativePointerInput {
     NativePointerInput::new(
-        POINTER_ID,
+        pointer,
         NativePointerEvent::StreamCancelled(reason),
         NativeDesktopPointerLocation::new(
             NativeDesktopPosition::Unknown,
@@ -493,13 +795,15 @@ fn pointer_cancel_input(reason: NativePointerCancelReason) -> NativePointerInput
 }
 
 fn scroll_cancel_input(
+    pointer: NativePointerId,
+    device: NativeScrollDeviceId,
     sequence: NativeScrollSequenceId,
     reason: NativeScrollCancelReason,
 ) -> NativePointerInput {
     NativePointerInput::new(
-        POINTER_ID,
+        pointer,
         NativePointerEvent::Scrolled(NativeScrollEvent::new(
-            SCROLL_DEVICE_ID,
+            device,
             NativeScrollPhase::Cancel { sequence, reason },
             NativeScrollMomentum::Unknown,
             NativeScrollModifiers::Unknown,
@@ -511,6 +815,56 @@ fn scroll_cancel_input(
         ),
         NativePointerOwner::Unknown,
         NativePointerOwner::Unknown,
+    )
+}
+
+fn pointer_device(event: &WindowEvent) -> Option<NativeInputDeviceKey> {
+    let device = match event {
+        WindowEvent::CursorMoved { device_id, .. }
+        | WindowEvent::MouseInput { device_id, .. }
+        | WindowEvent::MouseWheel { device_id, .. }
+        | WindowEvent::PointerCaptureChanged { device_id, .. }
+        | WindowEvent::PanGesture { device_id, .. } => *device_id,
+        WindowEvent::Touch(touch) => touch.device_id,
+        _ => return None,
+    };
+    pointer_device_for_physical(event, NativePhysicalDeviceKey::Winit(device))
+}
+
+fn pointer_device_for_physical(
+    event: &WindowEvent,
+    device: NativePhysicalDeviceKey,
+) -> Option<NativeInputDeviceKey> {
+    match event {
+        WindowEvent::CursorMoved { .. }
+        | WindowEvent::MouseInput { .. }
+        | WindowEvent::MouseWheel { .. }
+        | WindowEvent::PointerCaptureChanged { .. }
+        | WindowEvent::PanGesture { .. } => Some(NativeInputDeviceKey::Mouse(device)),
+        WindowEvent::Touch(touch) => Some(NativeInputDeviceKey::Touch {
+            device,
+            contact: touch.id,
+        }),
+        _ => None,
+    }
+}
+
+fn starts_reused_device_stream(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } | WindowEvent::Touch(winit::event::Touch {
+            phase: TouchPhase::Started,
+            ..
+        }) | WindowEvent::MouseWheel {
+            phase: TouchPhase::Started,
+            ..
+        } | WindowEvent::PanGesture {
+            phase: TouchPhase::Started,
+            ..
+        }
     )
 }
 
@@ -580,13 +934,16 @@ fn delta_value(delta: &MouseScrollDelta) -> Option<NativeScrollDelta> {
             y: position.y,
         },
     };
-    let finite = match delta {
+    scroll_delta_is_finite(delta).then_some(delta)
+}
+
+fn scroll_delta_is_finite(delta: NativeScrollDelta) -> bool {
+    match delta {
         NativeScrollDelta::PhysicalPixels { x, y }
         | NativeScrollDelta::LogicalPoints { x, y }
         | NativeScrollDelta::Lines { x, y }
         | NativeScrollDelta::Pages { x, y } => x.is_finite() && y.is_finite(),
-    };
-    finite.then_some(delta)
+    }
 }
 
 fn is_zero_delta(delta: NativeScrollDelta) -> bool {
@@ -621,19 +978,35 @@ mod tests {
         let mut translator = NativePointerTranslator::default();
         assert!(translator.can_coalesce_idle_cursor_moves());
 
-        assert!(translator.mouse.observe(
-            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
-            routes
-        ));
+        let device = NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Test(1));
+        assert!(
+            translator
+                .device_mut(device)
+                .expect("test device enrolls")
+                .mouse
+                .observe(
+                    NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                    routes,
+                )
+        );
         assert!(!translator.can_coalesce_idle_cursor_moves());
 
-        assert!(translator.mouse.observe(
-            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
-            routes
-        ));
+        assert!(
+            translator
+                .device_mut(device)
+                .expect("test device remains enrolled")
+                .mouse
+                .observe(
+                    NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+                    routes,
+                )
+        );
         assert!(translator.can_coalesce_idle_cursor_moves());
 
-        translator.scroll = NativeScrollState::Live {
+        translator
+            .device_mut(device)
+            .expect("test device remains enrolled")
+            .scroll = NativeScrollState::Live {
             sequence: NativeScrollSequenceId::new(1),
             delivery: None,
         };

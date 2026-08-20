@@ -33,6 +33,8 @@ mod window_snapshot;
 mod work_area;
 
 pub use app::NativeDockspaceApp;
-pub use application_action::NativeActionRequestError;
+pub use application_action::{
+    NativeActionFailure, NativeActionInterruption, NativeActionRequestError,
+};
 pub use close_control::NativeWindowClosePolicy;
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};

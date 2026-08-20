@@ -8,6 +8,8 @@ version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3b7f7f85a7e5f68090000ed7622545829afd484d210358702ae4cb97dd0c320"
 dependencies = [
+ "enumn",
+ "serde",
  "uuid",
 ]
 
@@ -26,6 +28,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -430,21 +433,22 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/Latias94/winit.git?rev=6105ef864c93c231cad2d76be94054eaf707375a#6105ef864c93c231cad2d76be94054eaf707375a"
+source = "git+https://github.com/Latias94/winit.git?rev=c3fe740e090543e7afba525c111874d36e68948f#c3fe740e090543e7afba525c111874d36e68948f"
 
 [[package]]
 name = "ecolor"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "bytemuck",
  "emath",
+ "serde",
 ]
 
 [[package]]
 name = "eframe"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -477,7 +481,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "accesskit",
  "ahash",
@@ -488,6 +492,7 @@ dependencies = [
  "log",
  "nohash-hasher",
  "profiling",
+ "serde",
  "smallvec",
  "unicode-segmentation",
  "web-sys",
@@ -501,12 +506,14 @@ dependencies = [
  "eframe",
  "egui_dockspace",
  "egui_dockspace_native",
+ "egui_inspection",
+ "x11rb",
 ]
 
 [[package]]
 name = "egui-wgpu"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -525,7 +532,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -564,7 +571,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "bytemuck",
  "egui",
@@ -572,6 +579,19 @@ dependencies = [
  "log",
  "profiling",
  "winit",
+]
+
+[[package]]
+name = "egui_inspection"
+version = "0.36.1"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
+dependencies = [
+ "egui",
+ "image",
+ "log",
+ "rmp-serde",
+ "serde",
+ "serde_bytes",
 ]
 
 [[package]]
@@ -583,15 +603,27 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 [[package]]
 name = "emath"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "bytemuck",
+ "serde",
+]
+
+[[package]]
+name = "enumn"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9ed6b3789237c8a0c1c505af1c7eb2c560df6186f01b098c3a1064ea532f38"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
 name = "epaint"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -605,6 +637,7 @@ dependencies = [
  "parking_lot",
  "profiling",
  "self_cell",
+ "serde",
  "skrifa",
  "smallvec",
  "unicode-general-category",
@@ -615,7 +648,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4f86e8daa16265e6ca0593622969958c2f50b31f#4f86e8daa16265e6ca0593622969958c2f50b31f"
+source = "git+https://github.com/Latias94/egui?rev=526486426971de293fbc42e6d9c63bdf2a6df153#526486426971de293fbc42e6d9c63bdf2a6df153"
 
 [[package]]
 name = "equivalent"
@@ -698,6 +731,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75382bc7392ef10aad10935f92fc3db36d2d4dad0e5d96d8d65e04f89a07ec39"
 dependencies = [
  "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -1828,6 +1862,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1920,6 +1973,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2000,6 +2064,9 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smithay-client-toolkit"
@@ -2240,6 +2307,9 @@ name = "uuid"
 version = "1.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2cefc03fd367c0c6d4305de1b312cf00248c4114f4a0418ce6a6af769e3b0bd9"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "vello_common"
@@ -2811,7 +2881,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/Latias94/winit.git?rev=6105ef864c93c231cad2d76be94054eaf707375a#6105ef864c93c231cad2d76be94054eaf707375a"
+source = "git+https://github.com/Latias94/winit.git?rev=c3fe740e090543e7afba525c111874d36e68948f#c3fe740e090543e7afba525c111874d36e68948f"
 dependencies = [
  "ahash",
  "android-activity",
@@ -2826,6 +2896,7 @@ dependencies = [
  "core-graphics",
  "cursor-icon",
  "dpi",
+ "gethostname",
  "js-sys",
  "libc",
  "memmap2",

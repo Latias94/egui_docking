@@ -45,8 +45,10 @@ impl NativePassDraft {
     }
 }
 
-struct StagedPass {
-    semantic: Option<StagedSemanticPass>,
+enum StagedPass {
+    RetainPrevious,
+    RetainedOverlay,
+    Semantic(StagedSemanticPass),
 }
 
 struct StagedSemanticPass {
@@ -61,8 +63,17 @@ pub(crate) struct NativePassActions {
 }
 
 impl NativePassActions {
-    pub(crate) fn has_pending_work(&self) -> bool {
-        !self.retained.is_empty() || !self.staged.is_empty()
+    /// Returns work which survives the current egui pass and therefore belongs
+    /// to the last committed runtime boundary.
+    ///
+    /// A staged output token is settled by the current output hook. Its mere
+    /// presence must not make an otherwise stable runtime appear busy. Local
+    /// actions retained from a discarded pass are different: they are durable
+    /// obligations which must reach a later terminal pass.
+    pub(crate) fn has_retained_action_work(&self) -> bool {
+        self.retained
+            .values()
+            .any(|retained| retained_actions_block_quiescence(&retained.local))
     }
 
     pub(crate) fn prepare_pass(
@@ -115,9 +126,7 @@ impl NativePassActions {
         }
         self.staged.insert(
             token,
-            StagedPass {
-                semantic: Some(StagedSemanticPass { draft, output }),
-            },
+            StagedPass::Semantic(StagedSemanticPass { draft, output }),
         );
         Ok(())
     }
@@ -129,7 +138,18 @@ impl NativePassActions {
         if self.staged.contains_key(&token) {
             return Err(NativePassActionError::OutputChanged);
         }
-        self.staged.insert(token, StagedPass { semantic: None });
+        self.staged.insert(token, StagedPass::RetainPrevious);
+        Ok(())
+    }
+
+    pub(crate) fn stage_retained_overlay(
+        &mut self,
+        token: NativeOutputToken,
+    ) -> Result<(), NativePassActionError> {
+        if self.staged.contains_key(&token) {
+            return Err(NativePassActionError::OutputChanged);
+        }
+        self.staged.insert(token, StagedPass::RetainedOverlay);
         Ok(())
     }
 
@@ -144,7 +164,7 @@ impl NativePassActions {
         let Some(staged) = self.staged.remove(&token) else {
             return Ok(());
         };
-        let Some(StagedSemanticPass { draft, output: _ }) = staged.semantic else {
+        let StagedPass::Semantic(StagedSemanticPass { draft, output: _ }) = staged else {
             return Ok(());
         };
         // Presentation, focus, output, and the pass-local application-action
@@ -170,9 +190,16 @@ impl NativePassActions {
         let Some(staged) = self.staged.remove(&token) else {
             return Ok(None);
         };
-        let Some(StagedSemanticPass { draft, output }) = staged.semantic else {
-            self.retained.remove(&token);
-            return Ok(Some(NativeFinalPass { semantic: None }));
+        let StagedSemanticPass { draft, output } = match staged {
+            StagedPass::RetainPrevious => {
+                self.retained.remove(&token);
+                return Ok(Some(NativeFinalPass::RetainPrevious));
+            }
+            StagedPass::RetainedOverlay => {
+                self.retained.remove(&token);
+                return Ok(Some(NativeFinalPass::RetainedOverlay));
+            }
+            StagedPass::Semantic(semantic) => semantic,
         };
         let mut local = if let Some(retained) = self.retained.remove(&token) {
             if retained.surface != draft.surface {
@@ -183,16 +210,14 @@ impl NativePassActions {
             Vec::new()
         };
         merge_local_actions(&mut local, draft.local)?;
-        Ok(Some(NativeFinalPass {
-            semantic: Some(NativeSemanticFinalPass {
-                presentation: draft.presentation,
-                pane_focus_observation: draft.pane_focus_observation,
-                local,
-                application_action_ready: draft.application_action_ready,
-                paint: draft.paint,
-                output,
-            }),
-        }))
+        Ok(Some(NativeFinalPass::Semantic(NativeSemanticFinalPass {
+            presentation: draft.presentation,
+            pane_focus_observation: draft.pane_focus_observation,
+            local,
+            application_action_ready: draft.application_action_ready,
+            paint: draft.paint,
+            output,
+        })))
     }
 
     pub(crate) fn abandon(&mut self, token: NativeOutputToken) {
@@ -206,14 +231,10 @@ impl NativePassActions {
     }
 }
 
-pub(crate) struct NativeFinalPass {
-    semantic: Option<NativeSemanticFinalPass>,
-}
-
-impl NativeFinalPass {
-    pub(crate) fn into_semantic(self) -> Option<NativeSemanticFinalPass> {
-        self.semantic
-    }
+pub(crate) enum NativeFinalPass {
+    RetainPrevious,
+    RetainedOverlay,
+    Semantic(NativeSemanticFinalPass),
 }
 
 pub(crate) struct NativeSemanticFinalPass {
@@ -278,6 +299,10 @@ fn merge_local_actions<T: PartialEq>(
     Err(NativePassActionError::LocalActionConflict)
 }
 
+fn retained_actions_block_quiescence<T>(actions: &[T]) -> bool {
+    !actions.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,7 +310,9 @@ mod tests {
     #[test]
     fn local_actions_are_retained_deduplicated_and_conflict_closed() {
         let mut retained = Vec::new();
+        assert!(!retained_actions_block_quiescence(&retained));
         merge_local_actions(&mut retained, vec![1, 2]).expect("first pass is retained");
+        assert!(retained_actions_block_quiescence(&retained));
         merge_local_actions(&mut retained, Vec::new()).expect("missing final action preserves it");
         merge_local_actions(&mut retained, vec![1, 2]).expect("same final action deduplicates");
         assert_eq!(retained, vec![1, 2]);
@@ -293,5 +320,10 @@ mod tests {
             merge_local_actions(&mut retained, vec![2, 1]),
             Err(NativePassActionError::LocalActionConflict)
         );
+    }
+
+    #[test]
+    fn an_empty_current_output_scope_is_not_committed_boundary_work() {
+        assert!(!NativePassActions::default().has_retained_action_work());
     }
 }

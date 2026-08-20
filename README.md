@@ -14,7 +14,7 @@ The current design and implementation sequence live in
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Interactive official-egui single-surface docking: tab select/close/reorder, center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | Does not expose native multi-viewport ownership |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example and one bounded CI real-window Glow smoke covering hidden child creation through exact retirement | The example uses an explicit product action for tear-off; broader platform capability coverage and physical cross-window input evidence remain before native multiview is release-ready |
+| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Physical cross-window drag is certified only for capability-complete backends; the automated reference lane is X11 on the first X screen with one exact active-CRTC work-area authority |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
 The repository should therefore be described as a high-correctness docking core
@@ -59,12 +59,29 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
 native workspace uses the reviewed egui/eframe fork revision
-`4f86e8daa16265e6ca0593622969958c2f50b31f`, which contains every admitted native
+`526486426971de293fbc42e6d9c63bdf2a6df153`, which contains every admitted native
 seam. The event-time Winit fork is pinned at
-`6105ef864c93c231cad2d76be94054eaf707375a`. The manifest, lockfile, CI, and
+`c3fe740e090543e7afba525c111874d36e68948f`. The manifest, lockfile, CI, and
 this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
+
+Hosts built against official crates.io egui must expose the exact run-end
+boundary when they need Dockspace preview or pane-focus settlement:
+
+```rust,ignore
+let run = dockspace.begin_egui_run(&context, &input);
+let output = context.run_ui(input, |ui| {
+    dockspace
+        .show_single_surface(surface, ui, panes)
+        .expect("the Dockspace frame advances");
+});
+run.settle(&output);
+```
+
+Calling `show_single_surface` without this boundary remains valid for painting
+and current-pass local actions, but final-pass evidence fails closed and the
+response reports `PresentationSettlementRequired` for pane focus.
 
 Dear ImGui and `dear-imgui-rs` are behavioral references for frame phases,
 viewport lifecycle, wakeups, geometry/DPI facts, and teardown coverage. Their
@@ -113,6 +130,13 @@ then drag a child tab onto a root-window docking guide to return it. The default
 child close policy recovers the previous presentation. Physical dragging
 remains fail-closed on backends without complete cross-window pointer facts, so
 the programmatic lifecycle demo is not described as physical-input evidence.
+
+CI keeps those claims separate. The programmatic Glow smoke proves hidden
+creation, staging, first-live transfer, redock, and retirement through product
+commands. The X11/XTest smoke locates only read-only semantic receivers, injects
+real OS pointer events through Winit, and proves drag-out, first-live, the exact
+Center guide, drag-back, OS-window destruction, and retirement quiescence. It
+does not expose core geometry or provide a reusable GUI test engine.
 
 ## Packaging and release order
 

@@ -67,7 +67,10 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the tear-off frame begins");
     tear_off
-        .tear_off_root_current(CHILD_ROOT, NativeWindowPlacement::new(requested_placement))
+        .move_root_to_new_window_current(
+            CHILD_ROOT,
+            NativeWindowPlacement::new(requested_placement),
+        )
         .expect("the contained root tear-off stages");
     tear_off
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

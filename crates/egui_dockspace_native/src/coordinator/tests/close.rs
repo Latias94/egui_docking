@@ -291,6 +291,34 @@ fn retain_layout_accepts_close_and_retires_only_after_destroyed_acknowledgement(
 }
 
 #[test]
+fn quarantined_shutdown_still_drives_the_configured_close_policy() {
+    let mut native = coordinator();
+    let (binding, survivor) = register_roots(&mut native);
+    observe_close(
+        &mut native,
+        binding,
+        [binding, survivor],
+        ViewportId::ROOT,
+        WindowId::from(55),
+        27,
+    );
+    let _ = native.quarantine_after_fatal();
+
+    let advance = native.advance_shutdown_boundary_with_close_policy(
+        NativeWindowClosePolicy::RetainLayout,
+        survivor.surface(),
+    );
+
+    assert!(advance.progress);
+    assert!(advance.errors.is_empty());
+    assert!(
+        native.close_control.unresolved_requests().next().is_none(),
+        "fatal mode permits the exact close request to reach its configured terminal policy"
+    );
+    assert!(native.close_control.references_binding(binding));
+}
+
+#[test]
 fn accepted_close_rejects_destroyed_from_a_different_native_window() {
     let mut native = coordinator();
     let (binding, survivor) = register_roots(&mut native);

@@ -10,8 +10,9 @@ This split preserves the core rule that Dockspace owns topology, revisions, hit 
 
 ## Scope and source pins
 
-This is a source-based design note, not a claim that physical multiview drag is
-already shipping. The repository snapshot is 2026-08-18. The ordinary egui
+This is a source-based design note. The repository snapshot is 2026-08-18; an
+evidence update on 2026-08-19 records the completed X11 physical reference
+lane without changing the original source comparison. The ordinary egui
 0.36.1 reference is `repo-ref/egui-release`; the hosted-cycle/native fork is
 `repo-ref/egui-release-split` (its current fork commits are visible with
 `git -C repo-ref/egui-release-split log`). The Dear ImGui Rust comparison uses
@@ -203,7 +204,8 @@ The repository already has the beginnings of the right separation:
 | `dockspace_host_conformance` | public runtime timing, receiver freshness, native protocol facts | egui response behavior or real compositor input |
 | Product harness | egui tabs, guides, splitters, contained controls, multipass behavior | OS child windows and desktop routing |
 | Native coordinator tests | production-shaped Winit event ordering and lifecycle effects | facts emitted by a real window manager |
-| Native smoke | real root/child windows, first-live, ownership transfer, redock, retirement | physical mouse drag; the current tear-off is programmatic (`integration/egui-native-smoke/src/main.rs:126-277`) |
+| Native programmatic smoke | real root/child windows, first-live, ownership transfer, redock, retirement | physical mouse routing; the transition is driven by product commands |
+| Native physical X11 smoke | real XTest pointer input, production Winit journal, drag-out, first-live, exact Center guide, drag-back, OS destruction, quiescence | unsupported platform topologies and non-X11 backend claims |
 
 This is stronger than a single universal test runner because each layer has an honest authority boundary.
 
@@ -220,8 +222,9 @@ The current fixture details are worth preserving:
 - Host conformance deliberately consumes the public session/frame facade and
   checks stale output, receiver freshness, and native facts
   (`crates/dockspace_host_conformance/src/tests.rs:76-137,903-1040`).
-- The CI native gate is one bounded Xvfb/Glow lifecycle smoke; it is not an OS
-  pointer injector (`.github/workflows/ci.yml:89-163`).
+- CI runs separate bounded Xvfb/Glow programmatic and X11/XTest physical
+  smokes. The physical lane uses a real window manager and remains scoped to
+  the capability-complete X11 reference topology.
 
 This means a product harness can be green while native multiview remains
 unproven, and a native lifecycle smoke can be green while physical drag remains
@@ -230,19 +233,18 @@ separate.
 
 ## Physical Multiview Finding
 
-The example's second window is intentionally created by `request_tear_off_root`;
-a physical tab drag is not wired through to a real child-window creation path
-(`crates/egui_dockspace_native/examples/basic.rs:149-169`). The native smoke
-uses the same programmatic request and then checks first-live, redock, and
-retirement (`integration/egui-native-smoke/src/main.rs:126-277`). It is a
-valuable lifecycle test, but it must not be described as physical drag E2E.
+The example and ordinary native smoke intentionally keep
+`Move to New Window` as programmatic lifecycle evidence. A separate physical
+binary now locates read-only semantic receivers, derives coordinates from
+current window/work-area facts, injects XTest events, and drives the production
+Winit journal through drag-out and drag-back. It never calls the programmatic
+move command as a fallback.
 
-On macOS, the pinned winit motion path currently lacks the exact desktop
-position needed to cross the core drag threshold, and the platform does not
-yet provide the complete hovered-window/work-area facts required for an
-outside-all release. Windows' declared managed profile also needs its
-capture-time hover facts reconciled. Wayland correctly remains unsupported for
-this desktop-global contract (`crates/egui_dockspace_native/src/capabilities.rs:14-59`).
+X11 is the first automated physical reference lane. Its exact work-area claim
+is limited to the first X screen with one identity-transformed active CRTC and
+complete EWMH/XSettings authority; other X11 topologies and Wayland fail
+closed. Other native backends require their own platform evidence before the
+repository may extend the physical claim.
 
 The honest production chain is:
 
@@ -352,7 +354,7 @@ out of scope:
   window handles merely to make a test selector convenient.
 - Do not use fixed-coordinate `xdotool`/screen macros as a cross-platform proof;
   they bypass event-time hover/capture/work-area facts.
-- Do not call `request_tear_off_root` from a physical-input test as a fallback;
+- Do not call `request_move_root_to_new_window` from a physical-input test as a fallback;
   that proves a programmatic lifecycle, not a drag.
 
 ## Scenario Matrix
@@ -363,10 +365,10 @@ out of scope:
 | splitter/junction and contained move/resize | egui product harness plus core conformance |
 | guide hover/active density and exact preview acknowledgement | egui product harness plus core conformance |
 | click/drag/scroll lane separation and Unknown fail-closed | host conformance plus native coordinator tests |
-| outside-all release and child creation | native coordinator plus real-window smoke |
+| outside-all release and child creation | native coordinator plus the X11/XTest physical smoke |
 | first-live barrier and ownership transfer | host conformance plus real-window smoke |
 | cross-window redock, close during drag, ABA, scale/work-area staleness | host conformance plus native coordinator tests |
-| compositor-generated physical pointer drag | separate, platform-specific pointer smoke only where capabilities are complete |
+| compositor-generated physical pointer drag | X11/XTest physical smoke on the certified reference topology; separate evidence for any additional backend |
 
 ### Proposed Test Tiers
 
@@ -384,8 +386,9 @@ Tier 3 should remain the default product acceptance path. The follow-on plan
 adopts `egui_kittest` selectively for semantic lookup and deterministic event
 stepping while retaining the current direct multipass hooks; it does not replace
 the harness wholesale. Tier 4 is the missing automated multiview proof.
-Tier 5 must keep its current narrow name, and Tier 6 must be opt-in per platform
-until the capability matrix is truthful.
+Tier 5 must keep its current narrow name. Tier 6 is now a required X11 release
+gate for the certified reference topology and remains opt-in for every other
+platform until that platform's capability matrix and physical evidence agree.
 
 ## Decision and Plan Trigger
 

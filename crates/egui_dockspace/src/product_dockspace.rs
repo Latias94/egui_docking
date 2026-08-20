@@ -6,7 +6,6 @@ use std::{fmt::Debug, hash::Hash};
 use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
-use dockspace::geometry::LogicalRect;
 use dockspace::model::{
     DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction, RootId, SurfaceId,
 };
@@ -18,13 +17,13 @@ use dockspace::runtime::{
     SurfaceUnavailableReason, WorkspaceVersion,
 };
 use egui::emath::GuiRounding;
-use egui::{Id, Sense, Ui};
+use egui::{Context, Id, RawInput, Sense, Ui};
 
 use crate::builder::DockspaceBuilder;
 use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
-use crate::pass_settlement::{ProductPassSettlement, ProductPassSettlementBatch};
+use crate::pass_settlement::{DockspaceEguiRun, ProductPassSettlement, ProductPassSettlementBatch};
 use crate::product_render;
 use crate::response::DockspaceMutation;
 use crate::response::{
@@ -134,6 +133,19 @@ impl Dockspace {
     #[must_use]
     pub const fn id(&self) -> Id {
         self.id
+    }
+
+    /// Begins one exact egui run for final-pass presentation settlement.
+    ///
+    /// Create the token immediately before passing `input` to
+    /// [`Context::run_ui`] or [`Context::begin_pass`]. After the matching call
+    /// returns, consume the token with [`DockspaceEguiRun::settle`] and the
+    /// returned `FullOutput`. This explicit run-end boundary is portable across
+    /// official egui integrations and keeps discarded or interrupted passes
+    /// from acknowledging presentation and pane-focus evidence.
+    #[must_use]
+    pub fn begin_egui_run(&self, context: &Context, input: &RawInput) -> DockspaceEguiRun {
+        self.pass_settlement.begin_run(context, input)
     }
 
     /// Returns the published item/surface-centric workspace view.
@@ -349,22 +361,8 @@ impl Dockspace {
     }
 
     /// Prepares a revision-bound action that moves one item into contained floating content.
-    pub const fn prepare_float_item(
-        &self,
-        item: ItemId,
-        surface: SurfaceId,
-        rect: LogicalRect,
-    ) -> PreparedDockAction {
-        self.session.prepare_float_item(item, surface, rect)
-    }
-
-    /// Prepares a revision-bound contained-bounds update addressed by item identity.
-    pub const fn prepare_set_contained_rect(
-        &self,
-        item: ItemId,
-        rect: LogicalRect,
-    ) -> PreparedDockAction {
-        self.session.prepare_set_contained_rect(item, rect)
+    pub const fn prepare_float_item(&self, item: ItemId, surface: SurfaceId) -> PreparedDockAction {
+        self.session.prepare_float_item(item, surface)
     }
 
     /// Prepares a revision-bound contained raise addressed by item identity.
@@ -482,23 +480,8 @@ impl Dockspace {
         &mut self,
         item: ItemId,
         surface: SurfaceId,
-        rect: LogicalRect,
     ) -> Result<DockspaceActionResult, DockspaceError> {
-        self.submit_prepared_action(self.prepare_float_item(item, surface, rect))
-    }
-
-    /// Updates the durable bounds of the contained presentation owning one item.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the item is not contained, current policy rejects
-    /// the update, or the action cannot be reduced atomically.
-    pub fn set_contained_rect_current(
-        &mut self,
-        item: ItemId,
-        rect: LogicalRect,
-    ) -> Result<DockspaceActionResult, DockspaceError> {
-        self.submit_prepared_action(self.prepare_set_contained_rect(item, rect))
+        self.submit_prepared_action(self.prepare_float_item(item, surface))
     }
 
     /// Raises the contained presentation owning one item to the front.
@@ -649,8 +632,12 @@ impl Dockspace {
     /// pointer authority from callback order.
     ///
     /// Local actions commit in the current call. Presentation acknowledgements
-    /// are retained only for egui's terminal logical pass and are submitted by
-    /// the next call for the same context and viewport.
+    /// and pane-focus observations are retained only when the host surrounds
+    /// the exact egui run with [`Self::begin_egui_run`] and settles that token
+    /// with the returned terminal `FullOutput`. Without that host boundary,
+    /// local actions remain available but final-pass evidence fails closed and
+    /// [`DockspaceResponse::pane_focus_capability`] reports
+    /// [`DockspaceUnavailableReason::PresentationSettlementRequired`].
     ///
     /// # Errors
     ///
@@ -761,14 +748,19 @@ impl Dockspace {
         }
         let needs_presentation_settlement =
             !presentation_actions.is_empty() || pane_focus_observation.is_some();
-        self.pass_settlement.stage(
+        let settlement_staged = self.pass_settlement.stage(
             ui,
             ProductPassSettlementBatch {
                 presentation_actions,
                 pane_focus_observation,
             },
         );
-        if needs_presentation_settlement {
+        if !settlement_staged {
+            pane_focus_capability = DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PresentationSettlementRequired,
+            );
+        }
+        if needs_presentation_settlement && settlement_staged {
             ui.ctx().request_repaint();
         }
         if !had_plan || report.repaint_surfaces().contains(&surface) {

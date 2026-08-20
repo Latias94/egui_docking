@@ -84,6 +84,16 @@ impl<'session> NativeHostFrame<'session> {
             .map_err(Into::into)
     }
 
+    pub(crate) fn defer_surface(
+        &mut self,
+        surface: SurfaceId,
+        reason: SurfaceUnavailableReason,
+    ) -> Result<(), NativeRuntimeError> {
+        self.frame
+            .defer_surface(surface, reason)
+            .map_err(Into::into)
+    }
+
     pub(crate) fn paint_surface(
         &mut self,
         instance_id: egui::Id,
@@ -191,7 +201,6 @@ impl<'session> NativeHostFrame<'session> {
     /// core rejects the candidate frame.
     pub fn commit(self) -> Result<HostFrameReport, NativeRuntimeError> {
         let staging_requests = self.compile_staging_requests()?;
-        let staging_viewports = staging_requests.keys().copied().collect::<Vec<_>>();
         let Self {
             frame,
             bridge,
@@ -199,16 +208,15 @@ impl<'session> NativeHostFrame<'session> {
             repaint_context,
         } = self;
         let report = frame.commit()?;
-        bridge.replace_staging_requests(staging_requests);
+        let staging_viewports = bridge.publish_staging_requests(staging_requests);
         bridge.commit_frame_boundary();
-        let mut repaint_viewports = staging_viewports;
-        repaint_viewports.extend(bridge.take_ready_semantic_viewports());
-        repaint_viewports.sort_unstable();
-        repaint_viewports.dedup();
         if let Some(context) = repaint_context {
-            for viewport in repaint_viewports {
-                context.request_repaint_of(viewport);
-            }
+            let ready_semantic_viewports = bridge.take_ready_semantic_viewports();
+            request_native_viewport_repaints(
+                &context,
+                &staging_viewports,
+                &ready_semantic_viewports,
+            );
         }
         Ok(report)
     }
@@ -232,5 +240,74 @@ impl<'session> NativeHostFrame<'session> {
             }
         }
         Ok(requests)
+    }
+}
+
+fn request_native_viewport_repaints(
+    context: &egui::Context,
+    staging_viewports: &[egui::ViewportId],
+    ready_semantic_viewports: &[egui::ViewportId],
+) {
+    for &viewport in staging_viewports {
+        // A staging request is a new durable paint obligation. It must survive
+        // an already queued creation/stabilization pass for the same hidden
+        // viewport, so arm egui's one extra repaint instead of coalescing into
+        // the pass which is already in flight.
+        context.request_repaint_of(viewport);
+    }
+    for &viewport in ready_semantic_viewports {
+        if !staging_viewports.contains(&viewport) {
+            context.request_repaint_once_of(viewport);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn staging_repaint_survives_an_already_queued_child_cycle() {
+        let context = egui::Context::default();
+        let child = egui::ViewportId::from_hash_of("staging-repaint-child");
+        let repaint_count = Arc::new(AtomicUsize::new(0));
+        context.set_request_repaint_callback({
+            let repaint_count = Arc::clone(&repaint_count);
+            move |info| {
+                if info.viewport_id == child {
+                    repaint_count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        context.request_repaint_once_of(child);
+        assert_eq!(repaint_count.load(Ordering::Relaxed), 1);
+
+        request_native_viewport_repaints(&context, &[child], &[]);
+        assert_eq!(
+            repaint_count.load(Ordering::Relaxed),
+            1,
+            "the already queued callback is not duplicated immediately"
+        );
+
+        let mut input = egui::RawInput::default();
+        input.viewport_id = child;
+        input.viewports.insert(
+            child,
+            egui::ViewportInfo {
+                parent: Some(egui::ViewportId::ROOT),
+                ..Default::default()
+            },
+        );
+        let mut output = context.run_ui(input, |_| {});
+        output.textures_delta.clear();
+        assert_eq!(
+            repaint_count.load(Ordering::Relaxed),
+            2,
+            "servicing the queued pass must reveal the retained staging obligation"
+        );
     }
 }

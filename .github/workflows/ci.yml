@@ -89,21 +89,21 @@ jobs:
   fork-native:
     name: Fork-backed native coordinator
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Check out pinned egui fork
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: 4f86e8daa16265e6ca0593622969958c2f50b31f
+          ref: 526486426971de293fbc42e6d9c63bdf2a6df153
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
         uses: actions/checkout@v4
         with:
           repository: Latias94/winit
-          ref: 6105ef864c93c231cad2d76be94054eaf707375a
+          ref: c3fe740e090543e7afba525c111874d36e68948f
           path: .ci/winit-fork
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -120,12 +120,24 @@ jobs:
           --manifest-path integration/egui-fork-workspace/Cargo.toml
           --all -- --check
 
+      - name: Run pinned egui output-settlement tests
+        run: >-
+          cargo test --manifest-path .ci/egui-fork/Cargo.toml
+          -p egui --lib output_pass_settlement --locked -j1
+
       - name: Run pinned eframe host-seam tests
         run: >-
           cargo test --manifest-path .ci/egui-fork/Cargo.toml
           -p eframe --lib --no-default-features
           --features glow,native-host-seam,x11,wayland
           native::host_seam::tests --locked -j1
+
+      - name: Run pinned eframe deferred-clear tests
+        run: >-
+          cargo test --manifest-path .ci/egui-fork/Cargo.toml
+          -p eframe --lib --no-default-features
+          --features glow,native-host-seam,x11,wayland
+          native::glow_integration::tests --locked -j1
 
       - name: Check pinned eframe WGPU host seam
         run: >-
@@ -134,11 +146,24 @@ jobs:
           --features wgpu,native-host-seam,x11,wayland
           --locked -j1
 
+      - name: Run pinned WGPU retained-overlay test
+        run: >-
+          cargo test --manifest-path .ci/egui-fork/Cargo.toml
+          -p egui-wgpu --lib --no-default-features
+          --features winit,native-host-seam,x11,wayland
+          retained_overlay_loads_the_existing_color_attachment --locked -j1
+
       - name: Run pinned winit event-model tests
         run: >-
           cargo test --manifest-path .ci/winit-fork/Cargo.toml
           -p winit --lib --no-default-features
-          --features x11,wayland event::tests -j1
+          --features x11,wayland event::tests --locked -j1
+
+      - name: Run pinned X11 work-area authority tests
+        run: >-
+          cargo test --manifest-path .ci/winit-fork/Cargo.toml
+          -p winit --lib --no-default-features
+          --features x11,wayland work_area::tests --locked -j1
 
       - name: Run pinned native workspace tests
         run: python3 scripts/run_egui_fork_harness.py
@@ -147,17 +172,49 @@ jobs:
         run: >-
           sudo apt-get update &&
           sudo apt-get install --no-install-recommends -y
-          libxkbcommon-x11-0 xvfb
+          libxkbcommon-x11-0 openbox x11-utils xauth xvfb
 
-      - name: Build one real-window Glow smoke
+      - name: Build real-window Glow smokes
         run: >-
           cargo build --manifest-path integration/egui-native-smoke/Cargo.toml
-          --locked -j1
+          --bins --locked -j1
 
-      - name: Run one real-window Glow smoke
+      - name: Run physical X11 smoke unit tests
+        run: >-
+          cargo test --manifest-path integration/egui-native-smoke/Cargo.toml
+          --bin egui-native-physical-smoke --locked -j1
+
+      - name: Run programmatic real-window Glow smoke
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: >-
           timeout --kill-after=5s 45s xvfb-run -a
           --server-args="-screen 0 1280x1024x24"
           integration/egui-fork-workspace/target/debug/egui-native-smoke
+
+      - name: Run physical X11/XTest docking smoke
+        env:
+          EGUI_INSPECTION: "127.0.0.1:5719"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          WINIT_UNIX_BACKEND: x11
+          WINIT_X11_SCALE_FACTOR: "1"
+        run: |
+          run_physical_smoke() {
+            openbox --sm-disable >/tmp/openbox.log 2>&1 &
+            wm_pid=$!
+            trap 'kill "$wm_pid" 2>/dev/null || true' EXIT
+            wm_attempts=0
+            until xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1; do
+              wm_attempts=$((wm_attempts + 1))
+              if [ "$wm_attempts" -ge 200 ]; then
+                cat /tmp/openbox.log
+                return 1
+              fi
+              sleep 0.05
+            done
+            integration/egui-fork-workspace/target/debug/egui-native-physical-smoke
+          }
+          export -f run_physical_smoke
+          timeout --kill-after=5s 55s xvfb-run -a \
+            --server-args="-screen 0 1280x800x24 +extension RANDR +extension XTEST" \
+            bash -euo pipefail -c run_physical_smoke

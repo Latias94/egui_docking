@@ -242,8 +242,11 @@ impl HostFrameReport {
             .iter()
             .map(HostSurfaceCommit::from_outcome)
             .collect();
+        let affected_surfaces = transition.affected_surfaces().collect();
         let repaint_surfaces: Vec<SurfaceId> = transition
-            .affected_surfaces()
+            .surface_scene_deltas()
+            .iter()
+            .filter_map(|delta| delta.requires_repaint().then_some(delta.surface()))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -259,7 +262,7 @@ impl HostFrameReport {
             after: transition.after(),
             workspace_changed: transition.changed(),
             published_state_changed: transition.published_state_changed(),
-            affected_surfaces: repaint_surfaces.clone(),
+            affected_surfaces,
             surface_commits,
             inputs,
             submitted_actions,

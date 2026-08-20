@@ -13,6 +13,7 @@ use egui_dockspace::{
 };
 use egui_kittest::{Harness, kittest::Queryable as _};
 use std::cell::Cell;
+use std::ops::{Deref, DerefMut};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -71,6 +72,40 @@ struct KittestProductState {
     dockspace: Dockspace,
     panes: Panes,
     close_requests: Vec<DockspaceCloseRequest>,
+}
+
+struct KittestDockspaceHarness(Harness<'static, KittestProductState>);
+
+impl KittestDockspaceHarness {
+    fn step(&mut self) {
+        let run = self
+            .0
+            .state()
+            .dockspace
+            .begin_egui_run(&self.0.ctx, self.0.input());
+        self.0.step();
+        run.settle(self.0.output());
+    }
+
+    fn run_steps(&mut self, steps: usize) {
+        for _ in 0..steps {
+            self.step();
+        }
+    }
+}
+
+impl Deref for KittestDockspaceHarness {
+    type Target = Harness<'static, KittestProductState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for KittestDockspaceHarness {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 #[derive(Default)]
@@ -155,14 +190,11 @@ impl PaneView for FocusPanes {
     }
 }
 
-fn kittest_harness(
-    id: &'static str,
-    layout: DockspaceLayout,
-) -> Harness<'static, KittestProductState> {
+fn kittest_harness(id: &'static str, layout: DockspaceLayout) -> KittestDockspaceHarness {
     let dockspace = Dockspace::builder(id, layout)
         .build()
         .expect("the kittest product facade initializes");
-    Harness::builder()
+    let harness = Harness::builder()
         .with_size(vec2(800.0, 600.0))
         .with_max_steps(8)
         .build_ui_state(
@@ -180,7 +212,10 @@ fn kittest_harness(
                 panes: Panes,
                 close_requests: Vec::new(),
             },
-        )
+        );
+    let mut harness = KittestDockspaceHarness(harness);
+    harness.run_steps(2);
+    harness
 }
 
 fn layout() -> DockspaceLayout {
@@ -200,6 +235,14 @@ fn overflow_layout() -> DockspaceLayout {
         ),
     )])
     .expect("the overflow product fixture is valid")
+}
+
+fn long_overflow_layout() -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs((1..=40).map(ItemId::new))),
+    )])
+    .expect("the long overflow product fixture is valid")
 }
 
 fn split_layout() -> DockspaceLayout {
@@ -318,12 +361,15 @@ fn run_frame(
     events: Vec<Event>,
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
-    let mut output = context.run_ui(input(events), |ui| {
+    let input = input(events);
+    let run = dockspace.begin_egui_run(context, &input);
+    let mut output = context.run_ui(input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
         close_requests.extend(response.close_request_events().iter().cloned());
     });
+    run.settle(&output);
     output.textures_delta.clear();
     FrameOutput {
         output,
@@ -338,7 +384,9 @@ fn run_disabled_frame(
     events: Vec<Event>,
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
-    let mut output = context.run_ui(input(events), |ui| {
+    let input = input(events);
+    let run = dockspace.begin_egui_run(context, &input);
+    let mut output = context.run_ui(input, |ui| {
         ui.add_enabled_ui(false, |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, panes)
@@ -346,6 +394,7 @@ fn run_disabled_frame(
             close_requests.extend(response.close_request_events().iter().cloned());
         });
     });
+    run.settle(&output);
     output.textures_delta.clear();
     FrameOutput {
         output,
@@ -361,7 +410,9 @@ fn run_frame_with_discard_after_dockspace(
 ) -> (FrameOutput, usize) {
     let mut close_requests = Vec::new();
     let mut passes = 0;
-    let mut output = context.run_ui(input(events), |ui| {
+    let input = input(events);
+    let run = dockspace.begin_egui_run(context, &input);
+    let mut output = context.run_ui(input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product multipass frame advances");
@@ -372,6 +423,7 @@ fn run_frame_with_discard_after_dockspace(
                 .request_discard("exercise product response action retention");
         }
     });
+    run.settle(&output);
     output.textures_delta.clear();
     (
         FrameOutput {
@@ -389,7 +441,9 @@ fn run_two_discarded_dockspace_passes(
     events: Vec<Event>,
 ) -> usize {
     let mut passes = 0;
-    let mut output = context.run_ui(input(events), |ui| {
+    let input = input(events);
+    let run = dockspace.begin_egui_run(context, &input);
+    let mut output = context.run_ui(input, |ui| {
         passes += 1;
         if ui.ctx().current_pass_index() < 2 {
             dockspace
@@ -399,6 +453,7 @@ fn run_two_discarded_dockspace_passes(
             ui.label("terminal pass intentionally omits the dockspace");
         }
     });
+    run.settle(&output);
     output.textures_delta.clear();
     passes
 }
@@ -411,13 +466,16 @@ fn run_focus_frame(
 ) -> (FrameOutput, DockspaceCapability) {
     let mut close_requests = Vec::new();
     let mut pane_focus_capability = None;
-    let mut output = context.run_ui(input(events), |ui| {
+    let input = input(events);
+    let run = dockspace.begin_egui_run(context, &input);
+    let mut output = context.run_ui(input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the pane-focus product frame advances");
         close_requests.extend(response.close_request_events().iter().cloned());
         pane_focus_capability = Some(response.pane_focus_capability());
     });
+    run.settle(&output);
     output.textures_delta.clear();
     (
         FrameOutput {
@@ -439,6 +497,10 @@ fn node_center(output: &egui::FullOutput, role: Role, label: &str) -> Pos2 {
 
 fn node_rect(output: &egui::FullOutput, role: Role, label: &str) -> Rect {
     let (_, node) = accesskit_node(output, role, label);
+    accesskit_node_rect(node)
+}
+
+fn accesskit_node_rect(node: &egui::accesskit::Node) -> Rect {
     let bounds = node.bounds().expect("the control exposes bounds");
     Rect::from_min_max(
         Pos2::new(bounds.x0 as f32, bounds.y0 as f32),
@@ -574,6 +636,15 @@ fn pointer_button(pos: Pos2, pressed: bool) -> Event {
         pos,
         button: PointerButton::Primary,
         pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+fn mouse_wheel(delta: egui::Vec2) -> Event {
+    Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta,
+        phase: egui::TouchPhase::Move,
         modifiers: Modifiers::NONE,
     }
 }
@@ -1022,29 +1093,95 @@ fn inactive_tab_close_hides_only_its_paint_until_emphasized() {
 }
 
 #[test]
+fn tab_close_semantics_follow_the_exact_close_region_occlusion() {
+    let base_context = Context::default();
+    base_context.enable_accesskit();
+    let mut base = Dockspace::builder("product-close-occlusion-basis", layout())
+        .build()
+        .expect("the close-occlusion basis initializes");
+    let mut base_panes = Panes;
+    let _ = run_frame(&base_context, &mut base, &mut base_panes, Vec::new());
+    let stable = run_frame(&base_context, &mut base, &mut base_panes, Vec::new());
+    let close = node_rect(&stable.output, Role::Button, "Close Second");
+    let occluder = LogicalRect::new(f64::from((close.min.x - 2.0).max(0.0)), 0.0, 180.0, 160.0)
+        .expect("the close-region occluder is valid");
+    let occluded_layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        occluder,
+    ))])
+    .expect("the close-region occlusion layout is valid");
+
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-close-exact-occlusion", occluded_layout)
+        .build()
+        .expect("the close-region occlusion facade initializes");
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, tab) = accesskit_node(&stable.output, Role::Tab, "Second");
+    assert!(!tab.is_disabled());
+    assert!(tab.supports_action(Action::Click));
+    let (close, close_node) = accesskit_node(&stable.output, Role::Button, "Close Second");
+    assert!(close_node.is_disabled());
+    assert!(!close_node.supports_action(Action::Click));
+
+    let attempted = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(close, Action::Click)],
+    );
+    assert!(
+        attempted.close_requests.is_empty(),
+        "an occluded exact close region must not publish an executable close request",
+    );
+}
+
+#[test]
 fn default_features_expose_item_centric_contained_actions() {
-    let first_rect =
-        LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("the first contained rectangle is valid");
-    let second_rect = LogicalRect::new(340.0, 80.0, 280.0, 200.0)
-        .expect("the second contained rectangle is valid");
-    let updated_rect = LogicalRect::new(90.0, 120.0, 300.0, 240.0)
-        .expect("the updated contained rectangle is valid");
+    let context = Context::default();
     let mut dockspace = Dockspace::builder("product-contained-actions", layout())
         .build()
         .expect("the product facade initializes");
+    let mut panes = Panes;
 
-    dockspace
-        .float_item_current(SECOND, SURFACE, first_rect)
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+
+    let first_float = dockspace
+        .float_item_current(SECOND, SURFACE)
         .expect("the first item floats through the product facade");
+    assert!(
+        matches!(
+            first_float.status(),
+            DockspaceActionStatus::Applied(DockspaceActionOutcome::Floated { item: SECOND, .. })
+        ),
+        "the core-derived item float must apply: {first_float:?}",
+    );
     let second_floating = dockspace
         .view()
         .item(SECOND)
         .and_then(|item| item.contained())
         .expect("the floated item owns a contained presentation");
 
-    dockspace
-        .float_item_current(FIRST, SURFACE, second_rect)
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let second_float = dockspace
+        .float_item_current(FIRST, SURFACE)
         .expect("the singleton main root floats through the product facade");
+    assert!(
+        matches!(
+            second_float.status(),
+            DockspaceActionStatus::Applied(DockspaceActionOutcome::Floated { item: FIRST, .. })
+        ),
+        "the second core-derived item float must apply: {second_float:?}",
+    );
     let first_floating = dockspace
         .view()
         .item(FIRST)
@@ -1059,18 +1196,6 @@ fn default_features_expose_item_centric_contained_actions() {
             .map(|contained| contained.id())
             .collect::<Vec<_>>(),
         vec![second_floating, first_floating],
-    );
-
-    dockspace
-        .set_contained_rect_current(SECOND, updated_rect)
-        .expect("contained bounds update through the product facade");
-    assert_eq!(
-        dockspace
-            .view()
-            .contained(second_floating)
-            .expect("the updated contained presentation remains available")
-            .rect(),
-        updated_rect,
     );
 
     dockspace
@@ -1336,6 +1461,84 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
 }
 
 #[test]
+fn contained_presentation_menu_exposes_and_executes_directional_commands() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace =
+        Dockspace::builder("product-directional-presentation-menu", contained_layout())
+            .build()
+            .expect("the directional presentation-menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let contained_rect = dockspace
+        .view()
+        .contained(FLOATING)
+        .expect("the contained presentation remains available")
+        .rect();
+    let tree = stable
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let (menu, menu_node) = tree
+        .nodes
+        .iter()
+        .find_map(|(id, node)| {
+            let bounds = node.bounds()?;
+            let center_x = (bounds.x0 + bounds.x1) * 0.5;
+            let center_y = (bounds.y0 + bounds.y1) * 0.5;
+            (node.role() == Role::Button
+                && node.label() == Some("Presentation commands")
+                && center_x >= contained_rect.min().x()
+                && center_x <= contained_rect.max().x()
+                && center_y >= contained_rect.min().y()
+                && center_y <= contained_rect.max().y())
+            .then_some((*id, node))
+        })
+        .expect("the contained title exposes its presentation menu");
+    assert!(!menu_node.is_disabled());
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(menu, Action::Click)],
+    );
+    let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    for label in [
+        "Dock Left",
+        "Dock Right",
+        "Dock Top",
+        "Dock Bottom",
+        "Dock Center",
+    ] {
+        let (_, node) = accesskit_node(&opened.output, Role::MenuItem, label);
+        assert!(!node.is_disabled(), "{label} must be executable");
+        assert!(
+            node.supports_action(Action::Click),
+            "{label} must expose an AccessKit click action",
+        );
+    }
+    let (dock_left, _) = accesskit_node(&opened.output, Role::MenuItem, "Dock Left");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(dock_left, Action::Click)],
+    );
+    assert!(dockspace.view().contained(FLOATING).is_none());
+    assert_eq!(
+        root_split(&dockspace),
+        Some((DockspaceAxis::Horizontal, vec![vec![SECOND], vec![FIRST]],)),
+        "Dock Left must use the core-derived outer-edge target",
+    );
+}
+
+#[test]
 fn open_presentation_menu_closes_immediately_when_ui_becomes_disabled() {
     let context = Context::default();
     context.enable_accesskit();
@@ -1385,7 +1588,7 @@ fn open_presentation_menu_closes_immediately_when_ui_becomes_disabled() {
 fn open_main_presentation_menu_closes_immediately_when_anchor_becomes_occluded() {
     let context = Context::default();
     context.enable_accesskit();
-    let initial_rect = LogicalRect::new(40.0, 300.0, 180.0, 180.0)
+    let initial_rect = LogicalRect::new(40.0, 0.0, 180.0, 180.0)
         .expect("the initial contained rectangle is valid");
     let mut dockspace = Dockspace::builder(
         "product-open-occluded-presentation-menu",
@@ -1414,6 +1617,11 @@ fn open_main_presentation_menu_closes_immediately_when_anchor_becomes_occluded()
         })
         .expect("the unobscured main root exposes its presentation menu");
     assert!(!main_anchor.is_disabled());
+    let (right_resize, _) = accesskit_node(
+        &stable.output,
+        Role::Splitter,
+        "Resize floating right edge",
+    );
 
     let _ = run_frame(
         &context,
@@ -1436,14 +1644,31 @@ fn open_main_presentation_menu_closes_immediately_when_anchor_becomes_occluded()
     assert_eq!(opened_anchor.is_expanded(), Some(true));
     let _ = accesskit_node(&opened.output, Role::MenuItem, "Float");
 
-    dockspace
-        .set_contained_rect_current(
-            SECOND,
-            LogicalRect::new(620.0, 0.0, 180.0, 180.0)
-                .expect("the occluding contained rectangle is valid"),
-        )
-        .expect("the contained window moves over the main presentation anchor");
-    let occluded = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let mut occluded = None;
+    for _ in 0..64 {
+        let output = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![accesskit_action(right_resize, Action::Increment)],
+        );
+        let tree = output
+            .output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit is enabled");
+        let anchor_disabled = tree
+            .nodes
+            .iter()
+            .find_map(|(id, node)| (*id == main_menu).then_some(node.is_disabled()))
+            .expect("the main presentation anchor remains described");
+        if anchor_disabled {
+            occluded = Some(output);
+            break;
+        }
+    }
+    let occluded = occluded.expect("semantic resizing eventually occludes the main menu anchor");
     let occluded_tree = occluded
         .output
         .platform_output
@@ -2021,6 +2246,177 @@ fn default_features_overflow_menu_supports_accesskit_and_keyboard() {
             .expect("fourth item remains open")
             .is_selected(),
         "keyboard activation selects the focused hidden item"
+    );
+}
+
+#[test]
+fn disabled_ancestor_blocks_tab_strip_wheel_input() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let style = DockStyle {
+        tab_min_width: 220.0,
+        tab_max_width: 220.0,
+        ..DockStyle::default()
+    };
+    let mut dockspace =
+        Dockspace::builder("product-disabled-ancestor-tab-wheel", overflow_layout())
+            .style(style)
+            .build()
+            .expect("the disabled-ancestor tab-wheel facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let pointer = tab_center(&stable.output, "First");
+    let (_, backward) = accesskit_node(&stable.output, Role::Button, "Scroll tabs backward");
+    assert!(backward.is_disabled());
+
+    let disabled = run_disabled_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(pointer), mouse_wheel(vec2(0.0, -120.0))],
+    );
+    let (_, menu) = accesskit_node(&disabled.output, Role::Button, "Show hidden tabs");
+    assert!(menu.is_disabled());
+    assert!(!menu.supports_action(Action::Click));
+
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, backward) = accesskit_node(&settled.output, Role::Button, "Scroll tabs backward");
+    assert!(
+        backward.is_disabled(),
+        "wheel input under a disabled ancestor must not advance tab-strip scroll state",
+    );
+}
+
+#[test]
+fn disabled_ancestor_suppresses_tab_list_menu_semantics_and_keyboard() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let style = DockStyle {
+        tab_min_width: 220.0,
+        tab_max_width: 220.0,
+        ..DockStyle::default()
+    };
+    let mut dockspace = Dockspace::builder("product-disabled-ancestor-tab-menu", overflow_layout())
+        .style(style)
+        .build()
+        .expect("the disabled-ancestor tab-menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (control, _) = accesskit_node(&stable.output, Role::Button, "Show hidden tabs");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(control, Action::Click)],
+    );
+    let menu = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (fourth, _) = accesskit_node(&menu.output, Role::MenuItem, "Fourth");
+
+    let disabled = run_disabled_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            accesskit_action(fourth, Action::Focus),
+            accesskit_action(fourth, Action::ScrollIntoView),
+        ],
+    );
+    let (_, row) = accesskit_node(&disabled.output, Role::MenuItem, "Fourth");
+    assert!(row.is_disabled());
+    assert!(!row.supports_action(Action::Click));
+    assert!(!row.supports_action(Action::Focus));
+    assert!(!row.supports_action(Action::ScrollIntoView));
+
+    let _ = run_disabled_frame(&context, &mut dockspace, &mut panes, key_press(Key::Enter));
+    assert_eq!(
+        selected(&dockspace),
+        Some(FIRST),
+        "disabled menu focus and keyboard activation must not select another tab",
+    );
+}
+
+#[test]
+fn partially_clipped_menu_row_scroll_into_view_reaches_core_before_interact_consumes_it() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.all_styles_mut(|style| {
+        style.spacing.item_spacing.y = 0.0;
+    });
+    let style = DockStyle {
+        tab_min_width: 220.0,
+        tab_max_width: 220.0,
+        ..DockStyle::default()
+    };
+    let mut dockspace = Dockspace::builder(
+        "product-partially-clipped-menu-reveal",
+        long_overflow_layout(),
+    )
+    .style(style)
+    .build()
+    .expect("the partially clipped menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (control, _) = accesskit_node(&stable.output, Role::Button, "Show hidden tabs");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(control, Action::Click)],
+    );
+    let menu = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let menu_rect = node_rect(&menu.output, Role::Menu, "Open tabs");
+    let tree = menu
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let mut rows = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == Role::MenuItem)
+        .map(|(id, node)| (*id, accesskit_node_rect(node)))
+        .collect::<Vec<_>>();
+    rows.sort_by(|(_, left), (_, right)| left.min.y.total_cmp(&right.min.y));
+    let first_row = rows.first().expect("the long menu exposes its first row").1;
+    let vertical_padding = first_row.min.y - menu_rect.min.y;
+    let viewport_max_y = menu_rect.max.y - vertical_padding;
+    let (partial_row, partial_rect) = rows
+        .iter()
+        .copied()
+        .find(|(_, rect)| rect.min.y < viewport_max_y && rect.max.y > viewport_max_y)
+        .expect("the long menu has one bottom-edge partially clipped row");
+    assert!(partial_rect.min.y < viewport_max_y);
+    assert!(partial_rect.max.y > viewport_max_y);
+    let (_, scrollbar) = accesskit_node(&menu.output, Role::ScrollBar, "Open tabs scroll position");
+    let before = scrollbar
+        .numeric_value()
+        .expect("the menu scrollbar publishes its current value");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(partial_row, Action::ScrollIntoView)],
+    );
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, scrollbar) = accesskit_node(
+        &settled.output,
+        Role::ScrollBar,
+        "Open tabs scroll position",
+    );
+    assert!(
+        scrollbar
+            .numeric_value()
+            .expect("the settled scrollbar publishes its current value")
+            > before,
+        "ScrollIntoView must reveal the clipped remainder through core-owned menu scroll",
     );
 }
 
@@ -3142,6 +3538,42 @@ fn default_features_splitter_supports_accesskit_and_keyboard_adjustment() {
 }
 
 #[test]
+fn disabled_ancestor_suppresses_splitter_keyboard_and_accesskit_adjustment() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-disabled-ancestor-splitter", split_layout())
+        .build()
+        .expect("the disabled-ancestor splitter facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (splitter, _) = accesskit_node(&stable.output, Role::Splitter, "Resize panes");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(splitter, Action::Focus)],
+    );
+    let before = root_weights(&dockspace).expect("the disabled fixture root remains split");
+    let mut events = vec![accesskit_action(splitter, Action::Increment)];
+    events.extend(key_press(Key::ArrowRight));
+
+    let disabled = run_disabled_frame(&context, &mut dockspace, &mut panes, events);
+    let (_, node) = accesskit_node(&disabled.output, Role::Splitter, "Resize panes");
+
+    assert!(node.is_disabled());
+    assert!(!node.supports_action(Action::Focus));
+    assert!(!node.supports_action(Action::Increment));
+    assert!(!node.supports_action(Action::Decrement));
+    assert_eq!(
+        root_weights(&dockspace),
+        Some(before),
+        "a disabled ancestor must suppress delayed semantic and keyboard adjustment",
+    );
+}
+
+#[test]
 fn default_features_escape_cancels_one_active_drag_and_clears_preview() {
     let context = Context::default();
     context.enable_accesskit();
@@ -3499,11 +3931,14 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         .lock()
         .panic_once = true;
     let interrupted = catch_unwind(AssertUnwindSafe(|| {
-        let mut output = context.run_ui(input(vec![Event::PointerMoved(bottom)]), |ui| {
+        let input = input(vec![Event::PointerMoved(bottom)]);
+        let run = dockspace.begin_egui_run(&context, &input);
+        let mut output = context.run_ui(input, |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the interrupted product pass advances");
         });
+        run.settle(&output);
         output.textures_delta.clear();
     }));
     assert!(
@@ -3521,6 +3956,40 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         root_split(&dockspace).map(|(axis, _)| axis),
         Some(DockspaceAxis::Horizontal),
         "a preview from an unfinished egui run cannot release the drag",
+    );
+}
+
+#[test]
+fn default_features_missing_run_boundary_reports_settlement_unavailable() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder("product-missing-run-boundary", layout())
+        .build()
+        .expect("the product missing-boundary facade initializes");
+    let mut panes = Panes;
+    let mut capability = None;
+    let mut local_actions_current = false;
+
+    for _ in 0..2 {
+        let mut output = context.run_ui(input(Vec::new()), |ui| {
+            let response = dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the paint-only product frame advances");
+            capability = Some(response.pane_focus_capability());
+            local_actions_current |= response.interaction_capabilities().local_actions_current();
+        });
+        output.textures_delta.clear();
+    }
+
+    assert!(
+        local_actions_current,
+        "the missing run-end boundary must disable only final-pass evidence",
+    );
+    assert_eq!(
+        capability,
+        Some(DockspaceCapability::Unavailable(
+            DockspaceUnavailableReason::PresentationSettlementRequired,
+        )),
+        "a callback without a matching run-end token must fail closed visibly",
     );
 }
 

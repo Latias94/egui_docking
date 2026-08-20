@@ -1136,6 +1136,60 @@ fn narrow_close_and_complete_snapshots_advance_independent_generations() {
 }
 
 #[test]
+fn unknown_inventory_does_not_skip_per_binding_window_observations() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let bounds =
+        PhysicalRect::new(20.0, 30.0, 640.0, 480.0).expect("the exact window bounds validate");
+    let scale = ScaleFactor::new(1.0).expect("the exact window scale validates");
+    let facts = NativeWindowFacts::live()
+        .with_content_bounds(bounds)
+        .with_native_scale_factor(scale)
+        .with_presentation_scale_factor(scale)
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_presentation(NativeWindowPresentationState::Visible, None);
+
+    session
+        .report_managed_native_snapshot(
+            [(binding, facts)],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("the first exact window observation records");
+    commit_managed_frame(&mut session);
+    assert!(
+        session
+            .engine
+            .viewport()
+            .registry()
+            .record(SURFACE)
+            .is_some_and(crate::viewport_registry::ViewportRecord::is_ready)
+    );
+
+    session
+        .report_native_inventory_unknown()
+        .expect("the independent inventory tombstone records");
+    commit_managed_frame(&mut session);
+
+    session
+        .report_managed_native_snapshot(
+            [(binding, facts)],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("the next exact window observation records");
+    commit_managed_frame(&mut session);
+
+    assert!(
+        session
+            .engine
+            .viewport()
+            .registry()
+            .record(SURFACE)
+            .is_some_and(crate::viewport_registry::ViewportRecord::is_ready),
+        "an inventory-only generation must not create a gap in the binding-local coordinate stream"
+    );
+}
+
+#[test]
 fn narrow_focus_lane_is_ordered_and_does_not_advance_with_unchanged_snapshots() {
     let (mut session, binding) =
         native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
@@ -1376,6 +1430,114 @@ fn empty_managed_frame_does_not_synthesize_pointer_or_backend_input() {
         .expect("managed state remains active");
     assert_eq!(native.recorder.recorded_through(), recorded_before);
     assert_eq!(native.recorder.pointer_through(), pointer_before);
+}
+
+fn unknown_native_pointer_input(pointer: u64, event: NativePointerEvent) -> NativePointerInput {
+    NativePointerInput::new(
+        NativePointerId::new(pointer),
+        event,
+        NativeDesktopPointerLocation::new(
+            NativeDesktopPosition::Unknown,
+            NativePointerHover::Unknown,
+            None,
+        ),
+        NativePointerOwner::Unknown,
+        NativePointerOwner::Unknown,
+    )
+}
+
+#[test]
+fn native_pointer_batch_rolls_back_a_rejected_suffix_before_exact_retry() {
+    let (mut session, _) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let first = unknown_native_pointer_input(11, NativePointerEvent::Moved);
+    let invalid_second = unknown_native_pointer_input(
+        12,
+        NativePointerEvent::Scrolled(NativeScrollEvent::new(
+            NativeScrollDeviceId::new(5),
+            NativeScrollPhase::Discrete {
+                delta: NativeScrollDelta::Lines {
+                    x: f64::NAN,
+                    y: 1.0,
+                },
+            },
+            NativeScrollMomentum::Direct,
+            NativeScrollModifiers::Unknown,
+        )),
+    );
+    let valid_second = unknown_native_pointer_input(12, NativePointerEvent::StreamEnded);
+    let native = session
+        .native
+        .as_ref()
+        .expect("managed state remains active");
+    let recorded_before = native.recorder.recorded_through();
+    let pointer_before = native.recorder.pointer_through();
+
+    let error = session
+        .record_native_pointer_batch([first, invalid_second])
+        .expect_err("a malformed second edge rejects the complete callback batch");
+    assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
+    let native = session
+        .native
+        .as_ref()
+        .expect("managed state remains active");
+    assert_eq!(native.recorder.recorded_through(), recorded_before);
+    assert_eq!(native.recorder.pointer_through(), pointer_before);
+
+    session
+        .record_native_pointer_batch([first, valid_second])
+        .expect("retry starts from the exact pre-callback boundary");
+    let retry = session
+        .native
+        .as_ref()
+        .expect("managed state remains active")
+        .recorder
+        .batch_after(recorded_before)
+        .expect("the retried suffix freezes");
+    // Rollback deliberately does not reuse private anti-ABA record identities;
+    // the adapter-visible ingress and pointer sequences must still retry exactly.
+    let sequence = retry
+        .records()
+        .iter()
+        .map(|record| {
+            let crate::backend_ingress::BackendIngressPayload::PointerSegment(journal) =
+                record.payload()
+            else {
+                panic!("the retry must contain only pointer segments");
+            };
+            let [edge] = journal.edges() else {
+                panic!("each native input must mint exactly one pointer edge");
+            };
+            (
+                record.ordinal().get(),
+                journal.previous().get(),
+                journal.through().get(),
+                edge.sequence().get(),
+                edge.pointer().get(),
+                edge.kind(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequence,
+        vec![
+            (
+                recorded_before.get() + 1,
+                pointer_before.get(),
+                pointer_before.get() + 1,
+                pointer_before.get() + 1,
+                11,
+                crate::pointer_journal::PointerEdgeKind::Moved,
+            ),
+            (
+                recorded_before.get() + 2,
+                pointer_before.get() + 1,
+                pointer_before.get() + 2,
+                pointer_before.get() + 2,
+                12,
+                crate::pointer_journal::PointerEdgeKind::StreamEnded,
+            ),
+        ]
+    );
 }
 
 #[test]

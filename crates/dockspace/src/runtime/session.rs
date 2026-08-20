@@ -239,16 +239,6 @@ impl DockspaceSession {
         self.engine.prepare_dock_root_back(root)
     }
 
-    /// Prepares one complete-root native tear-off against the current published version.
-    #[must_use]
-    pub const fn prepare_tear_off_root(
-        &self,
-        root: crate::ids::RootId,
-        placement: NativeWindowPlacement,
-    ) -> PreparedDockAction {
-        self.engine.prepare_tear_off_root(root, placement)
-    }
-
     /// Prepares one complete-root move to a native window against the published version.
     #[must_use]
     pub const fn prepare_move_root_to_new_window(
@@ -269,34 +259,13 @@ impl DockspaceSession {
         self.engine.prepare_float_root(root, surface)
     }
 
-    /// Prepares one revision-bound complete-root contained-floating action with explicit bounds.
-    #[must_use]
-    pub const fn prepare_float_root_at(
-        &self,
-        root: crate::ids::RootId,
-        surface: crate::ids::SurfaceId,
-        rect: crate::geometry::LogicalRect,
-    ) -> PreparedDockAction {
-        self.engine.prepare_float_root_at(root, surface, rect)
-    }
-
     /// Prepares one revision-bound contained-floating action.
     pub const fn prepare_float_item(
         &self,
         item: crate::ids::ItemId,
         surface: crate::ids::SurfaceId,
-        rect: crate::geometry::LogicalRect,
     ) -> PreparedDockAction {
-        self.engine.prepare_float_item(item, surface, rect)
-    }
-
-    /// Prepares one revision-bound contained-bounds update addressed by item identity.
-    pub const fn prepare_set_contained_rect(
-        &self,
-        item: crate::ids::ItemId,
-        rect: crate::geometry::LogicalRect,
-    ) -> PreparedDockAction {
-        self.engine.prepare_set_contained_rect(item, rect)
+        self.engine.prepare_float_item(item, surface)
     }
 
     /// Prepares one revision-bound contained raise addressed by item identity.

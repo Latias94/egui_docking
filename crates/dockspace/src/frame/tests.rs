@@ -1884,7 +1884,14 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
         .expect("first vacancy edge must revoke logical authority");
     assert_eq!(first.logical_vacated_bindings(), &[binding]);
     assert!(first.effects().is_empty());
-    assert!(coordinator.registry.record(binding.surface()).is_none());
+    assert_eq!(
+        coordinator
+            .registry
+            .record(binding.surface())
+            .map(ViewportRecord::admission),
+        Some(ViewportAdmission::Retiring),
+        "the exact live binding must remain observable until input restoration settles"
+    );
     assert!(matches!(
         coordinator
             .binding_cleanup
@@ -1907,6 +1914,7 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
         .expect("late enable acknowledgement must remain observable while vacating");
     assert!(coordinator.pointer_passthrough.contains_binding(binding));
     assert!(coordinator.binding_cleanup.contains_key(&binding));
+    assert!(coordinator.registry.record(binding.surface()).is_some());
 
     coordinator
         .publish_snapshot(&routing_snapshot(
@@ -1947,6 +1955,88 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
         ))
         .expect("exact destruction must release the external token quarantine");
     assert!(!coordinator.binding_cleanup.contains_key(&binding));
+}
+
+#[test]
+fn runtime_vacancy_detaches_only_after_exact_input_restore() {
+    let (mut coordinator, binding) = runtime_child_routing_coordinator();
+    let pointer = PointerId::new(1);
+    let enable = coordinator
+        .begin_drag_routing(pointer, binding.surface())
+        .expect("runtime child drag route must begin")
+        .expect("receiving input must request pass-through");
+    let _ = coordinator.take_new_effects();
+    coordinator
+        .publish_snapshot(&routing_snapshot(
+            binding,
+            2,
+            WindowInputState::PassThrough,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(Some(enable)),
+        ))
+        .expect("pass-through acknowledgement must publish");
+    let restore = coordinator
+        .end_drag_routing(pointer)
+        .expect("drag release must preserve restoration")
+        .expect("drag release must request exact input restoration");
+    let authority = coordinator.capture_surface_vacancy_authority(binding.surface());
+
+    let vacancy = coordinator
+        .settle_surface_vacancies(&[authority], &BTreeSet::new())
+        .expect("vacancy must retain the exact binding while restoration is pending");
+    assert!(vacancy.effects().is_empty());
+    assert_eq!(
+        coordinator
+            .registry
+            .record(binding.surface())
+            .map(ViewportRecord::admission),
+        Some(ViewportAdmission::Retiring),
+        "the runtime facade must still recognize the binding that owns the restore effect"
+    );
+    assert!(matches!(
+        coordinator
+            .binding_cleanup
+            .get(&binding)
+            .map(BindingRetirement::status),
+        Some(BindingRetirementStatus::AwaitingInputRestore)
+    ));
+    assert!(matches!(
+        coordinator.take_new_effects().as_slice(),
+        [request]
+            if request.id() == restore
+                && matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough {
+                        binding: actual,
+                        enabled: false,
+                        ..
+                    } if *actual == binding
+                )
+    ));
+
+    coordinator
+        .publish_snapshot(&routing_snapshot(
+            binding,
+            3,
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(Some(restore)),
+        ))
+        .expect("exact restore acknowledgement must settle before detachment");
+
+    assert!(!coordinator.pointer_passthrough.contains_binding(binding));
+    assert!(coordinator.registry.record(binding.surface()).is_none());
+    assert!(matches!(
+        coordinator.take_new_effects().as_slice(),
+        [request]
+            if matches!(
+                request.effect(),
+                PlatformEffect::ReleaseChild { binding: actual }
+                    if *actual == binding
+            )
+    ));
 }
 
 #[test]

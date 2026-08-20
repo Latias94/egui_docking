@@ -638,7 +638,7 @@ pub enum PointerAuthorityCheckpointError {
 /// Typed reason why a provider ended one pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerStreamCancelReason {
-    /// The physical or virtual input device was removed.
+    /// The provider observed a device-removal boundary and invalidated this stream.
     DeviceRemoved,
     /// The platform explicitly cancelled this stream.
     ExplicitPlatformCancellation,
@@ -717,7 +717,7 @@ pub enum ScrollCancelReason {
     PlatformCancelled,
     /// The delivery binding retired while the physical sequence may still emit a terminal tail.
     BindingRetired,
-    /// The scroll device was removed.
+    /// The provider observed a device-removal boundary and invalidated this sequence.
     DeviceRemoved,
     /// The provider reset its sequence namespace.
     ProviderReset,

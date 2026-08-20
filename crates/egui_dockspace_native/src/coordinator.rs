@@ -18,7 +18,7 @@ use dockspace::runtime::{
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
-    NativeViewportCreateFailureKind, NativeViewportFocusStatus,
+    NativeViewportCreateAttempt, NativeViewportCreateFailureKind, NativeViewportFocusStatus,
     NativeViewportPointerPassthroughCommandToken, NativeViewportPointerPassthroughStatus,
     NativeViewportVisibilityStatus,
     egui::{ViewportCommand, ViewportId},
@@ -36,7 +36,7 @@ use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
     NativeViewportBindingError,
 };
-use crate::event::NativeWindowEventRecord;
+use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventRecord};
 use crate::focus_control::{
     NativeFocusControl, NativeFocusResultDisposition, NativeFocusTermination,
 };
@@ -46,8 +46,9 @@ use crate::input_control::{
 };
 use crate::lifecycle_progress::NativeLifecycleProgress;
 use crate::mailbox::{
-    DeferredViewportPaint, NativeHostBridge, NativeViewportRosterEnvelope,
-    NativeViewportRosterRecord, PreparedRouteRetirements,
+    DeferredViewportPaint, NativeHostBridge, NativeStagingPaintRecord,
+    NativeViewportRosterEnvelope, NativeViewportRosterRecord, OutputAbandonment,
+    PreparedRouteRetirements,
 };
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
@@ -67,6 +68,21 @@ mod shutdown;
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StagingPaintFailureDisposition {
+    Obsolete,
+    Fatal,
+}
+
+const fn staging_paint_failure_disposition(
+    kind: Option<NativeHostErrorKind>,
+) -> StagingPaintFailureDisposition {
+    match kind {
+        Some(NativeHostErrorKind::StaleBinding) => StagingPaintFailureDisposition::Obsolete,
+        _ => StagingPaintFailureDisposition::Fatal,
+    }
+}
+
 /// Sole native coordinator for one renderer-neutral docking session.
 ///
 /// Native callbacks only append immutable records. Application code reduces
@@ -78,6 +94,7 @@ pub(crate) struct NativeCoordinator {
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
     pending_outputs: BTreeMap<NativeOutputToken, PendingNativeOutput>,
+    pending_no_frame_invalidations: BTreeMap<NativeSurfaceBinding, PendingNoFrameInvalidation>,
     pending_presentation_acknowledgements:
         BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
     queued_snapshot: Option<QueuedNativeSnapshot>,
@@ -97,8 +114,109 @@ pub(crate) struct NativeCoordinator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingNoFrameInvalidation {
+    terminal: NoFrameTerminal,
+    viewport: ViewportId,
+    window: WindowId,
+    create_attempt: Option<NativeViewportCreateAttempt>,
+    binding: NativeSurfaceBinding,
+}
+
+impl PendingNoFrameInvalidation {
+    fn awaiting_terminal(token: NativeOutputToken, binding: NativeSurfaceBinding) -> Self {
+        Self {
+            terminal: NoFrameTerminal::Awaiting(token),
+            viewport: token.viewport_id(),
+            window: token.window_id(),
+            create_attempt: token.create_attempt(),
+            binding,
+        }
+    }
+
+    pub(crate) const fn surface(self) -> SurfaceId {
+        self.binding.surface()
+    }
+
+    pub(crate) const fn viewport(self) -> ViewportId {
+        self.viewport
+    }
+
+    fn observe_terminal(&mut self, bridge: &NativeHostBridge) -> bool {
+        match self.terminal {
+            NoFrameTerminal::Awaiting(token) if bridge.output_reservation(token).is_some() => true,
+            NoFrameTerminal::Awaiting(_) => {
+                self.terminal = NoFrameTerminal::Observed;
+                false
+            }
+            NoFrameTerminal::Observed => false,
+        }
+    }
+
+    #[cfg(test)]
+    const fn terminal_observed_for_test(
+        viewport: ViewportId,
+        window: WindowId,
+        binding: NativeSurfaceBinding,
+    ) -> Self {
+        Self {
+            terminal: NoFrameTerminal::Observed,
+            viewport,
+            window,
+            create_attempt: None,
+            binding,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoFrameTerminal {
+    Awaiting(NativeOutputToken),
+    Observed,
+}
+
+pub(crate) fn split_no_frame_invalidations_for_frame<T>(
+    frame_surfaces: &[SurfaceId],
+    ready: impl IntoIterator<Item = T>,
+    surface: impl Fn(&T) -> SurfaceId,
+    viewport: impl Fn(&T) -> ViewportId,
+) -> (Vec<T>, Vec<ViewportId>) {
+    let mut accepted = Vec::new();
+    let mut repaint_viewports = Vec::new();
+    for invalidation in ready {
+        if frame_surfaces.contains(&surface(&invalidation)) {
+            accepted.push(invalidation);
+        } else if !repaint_viewports.contains(&viewport(&invalidation)) {
+            repaint_viewports.push(viewport(&invalidation));
+        }
+    }
+    (accepted, repaint_viewports)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoFrameInvalidationReadiness {
+    WaitingForTerminal,
+    Ready,
+    Stale,
+}
+
+const fn no_frame_invalidation_readiness(
+    terminal_pending: bool,
+    route_is_current: bool,
+    binding_is_current: bool,
+) -> NoFrameInvalidationReadiness {
+    if terminal_pending {
+        NoFrameInvalidationReadiness::WaitingForTerminal
+    } else if route_is_current && binding_is_current {
+        NoFrameInvalidationReadiness::Ready
+    } else {
+        NoFrameInvalidationReadiness::Stale
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeferredBindingAuthority {
     CurrentSurface,
+    AwaitingFirstLive,
     Retiring,
     Invalid,
 }
@@ -113,9 +231,19 @@ fn deferred_binding_authority(
         DeferredBindingAuthority::Invalid
     } else if binding_is_current && surface_is_present {
         DeferredBindingAuthority::CurrentSurface
+    } else if binding_is_current {
+        DeferredBindingAuthority::AwaitingFirstLive
     } else {
         DeferredBindingAuthority::Retiring
     }
+}
+
+const fn should_record_no_frame_invalidation(
+    accepts_invalidation: bool,
+    binding_is_current: bool,
+    surface_is_presented: bool,
+) -> bool {
+    accepts_invalidation && binding_is_current && surface_is_presented
 }
 
 /// One terminal result which still needs a causal boundary in the core.
@@ -139,6 +267,15 @@ impl PendingNativeEffectResult {
         self.result.binding().same_window_lifetime(binding)
             && self.last_rejection == Some(NativeHostErrorKind::StaleBinding)
     }
+}
+
+const fn native_effect_submission_rejection_is_recoverable(kind: NativeHostErrorKind) -> bool {
+    // These failures describe a causal state race. The affine result remains
+    // owned by this coordinator until the exact retry or retirement boundary.
+    matches!(
+        kind,
+        NativeHostErrorKind::StaleBinding | NativeHostErrorKind::OperationConflict
+    )
 }
 
 #[derive(Debug)]
@@ -198,6 +335,10 @@ impl std::fmt::Debug for NativeCoordinator {
                     .unwrap_or_else(PoisonError::into_inner),
             )
             .field("pending_outputs", &self.pending_outputs.len())
+            .field(
+                "pending_no_frame_invalidations",
+                &self.pending_no_frame_invalidations.len(),
+            )
             .field(
                 "pending_presentation_acknowledgements",
                 &self.pending_presentation_acknowledgements.len(),
@@ -261,6 +402,7 @@ impl NativeCoordinator {
             bridge: Arc::new(NativeHostBridge::new(viewports.clone())),
             viewports,
             pending_outputs: BTreeMap::new(),
+            pending_no_frame_invalidations: BTreeMap::new(),
             pending_presentation_acknowledgements: BTreeMap::new(),
             queued_snapshot: None,
             deferred_viewports: DeferredViewportDriver::default(),
@@ -302,6 +444,7 @@ impl NativeCoordinator {
                 .pending_outputs
                 .values()
                 .all(|output| !output.requires_lifecycle_settlement(&self.session))
+            && self.pending_no_frame_invalidations.is_empty()
             && self.pending_presentation_acknowledgements.is_empty()
             && self.queued_snapshot.is_none()
             && !self.deferred_viewports.has_transitional_viewport()
@@ -567,11 +710,15 @@ impl NativeCoordinator {
             }
             (
                 DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
-                DeferredBindingAuthority::Retiring,
+                DeferredBindingAuthority::AwaitingFirstLive,
             ) => {
-                self.bridge.abandon_output(token);
+                self.bridge.block_semantic_viewport(token.viewport_id());
                 DeferredViewportPaint::Retain(binding)
             }
+            (
+                DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
+                DeferredBindingAuthority::Retiring,
+            ) => DeferredViewportPaint::Retain(binding),
             (
                 DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
                 DeferredBindingAuthority::Invalid,
@@ -669,8 +816,12 @@ impl NativeCoordinator {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .set_focus_reportable(queued.focus_reportable);
+            let presentation_acknowledged = !queued.presentation_acknowledgements.is_empty();
             for binding in queued.presentation_acknowledgements {
                 self.pending_presentation_acknowledgements.remove(&binding);
+            }
+            if presentation_acknowledged {
+                self.bridge.invalidate_viewport_roster();
             }
             self.input_control
                 .settle_snapshot(queued.input_acknowledgement);
@@ -841,30 +992,35 @@ impl NativeCoordinator {
                 break;
             };
             let binding = pending.result.binding();
-            if pending.last_rejection == Some(NativeHostErrorKind::StaleBinding)
-                && self.retirements.is_quiescence_candidate(binding)
-            {
-                deferred_stale.push_back(pending);
-                continue;
+            if pending.last_rejection == Some(NativeHostErrorKind::StaleBinding) {
+                if !self.session.recognizes_native_binding(binding) {
+                    continue;
+                }
+                if self.retirements.is_quiescence_candidate(binding) {
+                    deferred_stale.push_back(pending);
+                    continue;
+                }
             }
             if let Err(error) = self.session.report_native_effect_result(pending.result) {
                 let (kind, result) = error.into_parts();
                 pending.result = result;
                 pending.last_rejection = Some(kind);
-                if kind == NativeHostErrorKind::StaleBinding
-                    && self.retirements.is_quiescence_candidate(binding)
-                {
-                    deferred_stale.push_back(pending);
-                    continue;
+                if kind == NativeHostErrorKind::StaleBinding {
+                    if !self.session.recognizes_native_binding(binding) {
+                        continue;
+                    }
+                    if self.retirements.is_quiescence_candidate(binding) {
+                        deferred_stale.push_back(pending);
+                        continue;
+                    }
                 }
                 self.pending_effect_results.push_front(pending);
                 while let Some(stale) = deferred_stale.pop_back() {
                     self.pending_effect_results.push_front(stale);
                 }
-                return (
-                    reported,
-                    Some(NativeHostProtocolError::NativeEffectResultRejected(kind).into()),
-                );
+                let error = (!native_effect_submission_rejection_is_recoverable(kind))
+                    .then(|| NativeHostProtocolError::NativeEffectResultRejected(kind).into());
+                return (reported, error);
             }
             reported = true;
         }
@@ -949,10 +1105,7 @@ impl NativeCoordinator {
         };
         let callback_error = self.report_callback_terminal_result(result);
         self.acknowledge_viewport_create_failure(failure)?;
-        if let Some((kind, error)) = callback_error
-            && !(kind == NativeHostErrorKind::StaleBinding
-                && self.retirements.is_quiescence_candidate(failure.binding()))
-        {
+        if let Some(error) = callback_error {
             self.callback_errors.push_back(error);
         }
         Ok(true)
@@ -990,6 +1143,24 @@ impl NativeCoordinator {
             Ok(())
         } else {
             Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into())
+        }
+    }
+
+    fn next_device_removal(
+        &mut self,
+    ) -> Result<Option<NativeDeviceRemovalRecord>, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        Ok(self.bridge.front_device_removal())
+    }
+
+    fn acknowledge_device_removal(
+        &self,
+        removal: NativeDeviceRemovalRecord,
+    ) -> Result<(), NativeRuntimeError> {
+        if self.bridge.acknowledge_device_removal(removal) {
+            Ok(())
+        } else {
+            Err(NativeHostProtocolError::DeviceRemovalAcknowledgementMismatch.into())
         }
     }
 
@@ -1107,6 +1278,19 @@ impl NativeCoordinator {
         if self.reduce_next_viewport_focus()? {
             return Ok(true);
         }
+        if let Some(removal) = self.next_device_removal()? {
+            let mut candidate = self.pointer_translator.clone();
+            // Winit does not correlate raw-device IDs with window-input IDs.
+            // Fail closed by terminating the complete adapter-owned roster in
+            // the same atomic host boundary instead of inventing a match.
+            let terminals = candidate.remove_all_devices();
+            if !terminals.is_empty() {
+                self.record_pointer_batch(terminals)?;
+            }
+            self.acknowledge_device_removal(removal)?;
+            self.pointer_translator = candidate;
+            return Ok(true);
+        }
         if !self.session.has_active_gesture()
             && self.pointer_translator.can_coalesce_idle_cursor_moves()
         {
@@ -1119,8 +1303,9 @@ impl NativeCoordinator {
         if matches!(record.event(), winit::event::WindowEvent::Destroyed)
             && let Some(binding) = record.binding()
         {
-            if let Some(cancel) = candidate.cancel_destroyed_binding(binding) {
-                self.record_pointer(cancel)?;
+            let cancellations = candidate.cancel_destroyed_binding(binding);
+            if !cancellations.is_empty() {
+                self.record_pointer_batch(cancellations)?;
                 // Keep the raw callback at the mailbox head while this first
                 // causal boundary commits. Core intentionally requires the
                 // provider reset to arrive in a later pointer prefix.
@@ -1130,8 +1315,9 @@ impl NativeCoordinator {
                 }
                 return Ok(true);
             }
-            if let Some(reset) = candidate.reset_destroyed_binding(binding) {
-                self.record_pointer(reset)?;
+            let resets = candidate.reset_destroyed_binding(binding);
+            if !resets.is_empty() {
+                self.record_pointer_batch(resets)?;
                 // The recorder now owns the replayable reset. Publish it before
                 // later destroyed-sidecar work can fail, so retrying the raw
                 // callback cannot enqueue the same edge twice.
@@ -1147,6 +1333,18 @@ impl NativeCoordinator {
         self.acknowledge_window_event(record.ordinal())?;
         self.pointer_translator = candidate;
         Ok(true)
+    }
+
+    pub(crate) fn has_pending_output_prefix(&self) -> bool {
+        !self.bridge.output_prefix().is_empty()
+    }
+
+    pub(crate) fn has_pending_callback_records(&self) -> bool {
+        self.bridge.has_pending_callback_records()
+    }
+
+    pub(crate) fn require_output_wake_after_current(&self, token: NativeOutputToken) -> bool {
+        self.bridge.require_output_wake_after_current(token)
     }
 
     fn reduce_next_viewport_pointer_passthrough(&mut self) -> Result<bool, NativeRuntimeError> {
@@ -1223,7 +1421,7 @@ impl NativeCoordinator {
                 NativeHostProtocolError::ViewportPointerPassthroughAcknowledgementMismatch.into(),
             );
         }
-        if let Some((_, error)) = callback_error {
+        if let Some(error) = callback_error {
             self.callback_errors.push_back(error);
         }
         Ok(true)
@@ -1232,11 +1430,10 @@ impl NativeCoordinator {
     fn report_callback_terminal_result(
         &mut self,
         result: NativeEffectResult,
-    ) -> Option<(NativeHostErrorKind, NativeRuntimeError)> {
+    ) -> Option<NativeRuntimeError> {
         if let Err(error) = self.session.report_native_effect_result(result) {
             let (kind, result) = error.into_parts();
-            let error = self.retain_rejected_effect_result(kind, result);
-            Some((kind, error))
+            self.retain_rejected_effect_result(kind, result).err()
         } else {
             None
         }
@@ -1334,7 +1531,7 @@ impl NativeCoordinator {
         if !self.bridge.acknowledge_viewport_focus(record) {
             return Err(NativeHostProtocolError::ViewportFocusAcknowledgementMismatch.into());
         }
-        if let Some((_, error)) = callback_error {
+        if let Some(error) = callback_error {
             self.callback_errors.push_back(error);
         }
         Ok(true)
@@ -1384,7 +1581,7 @@ impl NativeCoordinator {
                     )
                 });
             self.acknowledge_viewport_visibility(record)?;
-            if let Some((_, error)) = callback_error {
+            if let Some(error) = callback_error {
                 self.callback_errors.push_back(error);
             }
             return Ok(true);
@@ -1417,7 +1614,7 @@ impl NativeCoordinator {
             }
         };
         self.acknowledge_viewport_visibility(record)?;
-        if let Some((_, error)) = callback_error {
+        if let Some(error) = callback_error {
             self.callback_errors.push_back(error);
         }
         Ok(true)
@@ -1485,7 +1682,16 @@ impl NativeCoordinator {
         let mut frame = self
             .session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)?;
-        frame.confirm_native_staging_painted(staging.request())?;
+        if let Err(error) = frame.confirm_native_staging_painted(staging.request()) {
+            if staging_paint_failure_disposition(error.native_kind())
+                == StagingPaintFailureDisposition::Fatal
+            {
+                return Err(error.into());
+            }
+            drop(frame);
+            self.discard_obsolete_staging_paint(staging)?;
+            return Ok(true);
+        }
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let mut report = frame.commit()?;
         self.retain_internal_presentation_transitions(&report);
@@ -1504,6 +1710,9 @@ impl NativeCoordinator {
             || !self
                 .bridge
                 .attach_output_binding(staging.token(), output.binding())
+            || !self
+                .bridge
+                .require_output_wake_after_current(staging.token())
         {
             drop(output);
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
@@ -1516,6 +1725,20 @@ impl NativeCoordinator {
         self.accept_native_effects(report.take_native_effects())?;
         self.bridge.commit_frame_boundary();
         Ok(true)
+    }
+
+    fn discard_obsolete_staging_paint(
+        &mut self,
+        staging: NativeStagingPaintRecord,
+    ) -> Result<(), NativeRuntimeError> {
+        if !self.bridge.acknowledge_staging_painted(staging) {
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+        }
+        let wake = self.abandon_output_token(staging.token());
+        if !matches!(wake, NativeHostWake::RepaintRoot) {
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+        }
+        Ok(())
     }
 
     fn reduce_non_pointer_event(
@@ -1791,6 +2014,14 @@ impl NativeCoordinator {
         Ok(())
     }
 
+    fn record_pointer_batch(
+        &mut self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+    ) -> Result<(), NativeRuntimeError> {
+        self.session.record_native_pointer_batch(inputs)?;
+        Ok(())
+    }
+
     /// Publishes one exact native close edge.
     ///
     /// # Errors
@@ -1814,7 +2045,9 @@ impl NativeCoordinator {
     ///
     /// # Errors
     ///
-    /// Returns an error retaining the result when its provider or binding is stale.
+    /// Returns an error only when a retained rejection is not retryable.
+    /// Stale-binding and operation-conflict results remain pending for an exact
+    /// retry or binding retirement boundary.
     pub fn report_effect_result(
         &mut self,
         result: NativeEffectResult,
@@ -1875,7 +2108,7 @@ impl NativeCoordinator {
         let receivers = &self.receivers;
         let frame = self
             .session
-            .begin_native_host_frame(|query| receivers.resolve(context, query))?;
+            .begin_native_host_frame(|query| receivers.resolve(query))?;
         Ok(NativeHostFrame::new(
             frame,
             bridge,
@@ -1893,6 +2126,7 @@ impl NativeCoordinator {
     /// the exact native binding differs, or the token is already pending.
     pub fn bind_painted_surface(
         &mut self,
+        context: &eframe::egui::Context,
         token: NativeOutputToken,
         output: PaintedSurfaceOutput,
         paint: &crate::host_frame::NativeSurfacePaint,
@@ -1942,9 +2176,10 @@ impl NativeCoordinator {
                 output,
             ));
         }
+        let requires_lifecycle_wake = self.session.presented_surface(output.surface()).is_none();
         if self
             .receivers
-            .stage(token, binding, &output, paint)
+            .stage(context, token, binding, &output, paint)
             .is_err()
         {
             return Err(NativeOutputBindingError::new(
@@ -1954,6 +2189,14 @@ impl NativeCoordinator {
             ));
         }
         if !self.bridge.attach_output_binding(token, binding) {
+            self.receivers.abandon(token);
+            return Err(NativeOutputBindingError::new(
+                NativeOutputBindingErrorKind::BindingMismatch,
+                token,
+                output,
+            ));
+        }
+        if requires_lifecycle_wake && !self.bridge.require_output_wake_after_current(token) {
             self.receivers.abandon(token);
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::BindingMismatch,
@@ -1985,6 +2228,99 @@ impl NativeCoordinator {
         self.receivers.abandon(token);
         self.pending_outputs.remove(&token);
         NativeHostWake::RepaintRoot
+    }
+
+    pub(crate) fn settle_retained_output_token(
+        &mut self,
+        token: NativeOutputToken,
+        retained: bool,
+    ) -> Result<NativeHostWake, NativeOutputBindingErrorKind> {
+        let reservation = self
+            .bridge
+            .output_reservation(token)
+            .ok_or(NativeOutputBindingErrorKind::TokenNotReserved)?;
+        if self.pending_outputs.contains_key(&token) {
+            return Err(NativeOutputBindingErrorKind::OutputAlreadyBound);
+        }
+        let wake_on_terminal = !retained;
+        if !matches!(
+            self.bridge
+                .settle_output_abandonment(token, wake_on_terminal),
+            OutputAbandonment::NewlyAbandoned | OutputAbandonment::AlreadyAbandonedAwaitingTerminal
+        ) {
+            return Err(NativeOutputBindingErrorKind::TokenNotReserved);
+        }
+        if !retained && let Some(binding) = reservation.binding() {
+            self.receivers.retire_binding(binding);
+            if should_record_no_frame_invalidation(
+                self.bridge.accepts_no_frame_invalidation(),
+                self.session.is_current_native_binding(binding),
+                self.session.presented_surface(binding.surface()).is_some(),
+            ) {
+                self.pending_no_frame_invalidations
+                    .entry(binding)
+                    .or_insert_with(|| {
+                        PendingNoFrameInvalidation::awaiting_terminal(token, binding)
+                    });
+            }
+        }
+        // A retained output needs no follow-up. A NoFrame fallback is allowed
+        // to wake only from its physical terminal callback, after the window
+        // has actually replaced the old framebuffer.
+        Ok(NativeHostWake::Wait)
+    }
+
+    pub(crate) fn prepare_no_frame_invalidations(&mut self) -> Vec<PendingNoFrameInvalidation> {
+        let viewports = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut ready = Vec::new();
+        let mut stale = Vec::new();
+        for invalidation in self.pending_no_frame_invalidations.values_mut() {
+            let terminal_pending = invalidation.observe_terminal(&self.bridge);
+            let route_is_current = viewports.binding_for_output(
+                invalidation.viewport,
+                invalidation.window,
+                invalidation.create_attempt,
+            ) == Some(invalidation.binding);
+            match no_frame_invalidation_readiness(
+                terminal_pending,
+                route_is_current,
+                self.session.is_current_native_binding(invalidation.binding),
+            ) {
+                NoFrameInvalidationReadiness::WaitingForTerminal => {}
+                NoFrameInvalidationReadiness::Ready => ready.push(*invalidation),
+                NoFrameInvalidationReadiness::Stale => stale.push(invalidation.binding),
+            }
+        }
+        drop(viewports);
+        for binding in stale {
+            self.pending_no_frame_invalidations.remove(&binding);
+        }
+        ready
+    }
+
+    pub(crate) fn has_pending_no_frame_invalidation(&self, surface: SurfaceId) -> bool {
+        self.pending_no_frame_invalidations
+            .keys()
+            .any(|binding| binding.surface() == surface)
+    }
+
+    pub(crate) fn finish_no_frame_invalidations(
+        &mut self,
+        committed: &[PendingNoFrameInvalidation],
+    ) {
+        for invalidation in committed {
+            if self
+                .pending_no_frame_invalidations
+                .get(&invalidation.binding)
+                == Some(invalidation)
+            {
+                self.pending_no_frame_invalidations
+                    .remove(&invalidation.binding);
+            }
+        }
     }
 
     pub(crate) fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {

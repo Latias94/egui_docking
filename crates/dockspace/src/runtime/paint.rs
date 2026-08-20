@@ -816,6 +816,16 @@ pub enum DockspacePresentationCommandKind {
     MoveToNewWindow,
     /// Recover the root into its current core-derived docking destination.
     DockBack,
+    /// Dock the root at the left edge of its core-derived recovery target.
+    DockLeft,
+    /// Dock the root at the right edge of its core-derived recovery target.
+    DockRight,
+    /// Dock the root at the top edge of its core-derived recovery target.
+    DockTop,
+    /// Dock the root at the bottom edge of its core-derived recovery target.
+    DockBottom,
+    /// Merge the root into the center of its core-derived recovery target.
+    DockCenter,
 }
 
 /// Why one exact presentation command is disabled in the current paint candidate.
@@ -1142,6 +1152,39 @@ impl<'frame> SurfacePaintPlan<'frame> {
                 }
             }
             DockspacePresentationCommandKind::DockBack => ProductAction::DockBackRoot { root },
+            DockspacePresentationCommandKind::DockLeft
+            | DockspacePresentationCommandKind::DockRight
+            | DockspacePresentationCommandKind::DockTop
+            | DockspacePresentationCommandKind::DockBottom
+            | DockspacePresentationCommandKind::DockCenter => {
+                let edge = match kind {
+                    DockspacePresentationCommandKind::DockLeft => {
+                        Some(crate::model::DockEdge::Left)
+                    }
+                    DockspacePresentationCommandKind::DockRight => {
+                        Some(crate::model::DockEdge::Right)
+                    }
+                    DockspacePresentationCommandKind::DockTop => Some(crate::model::DockEdge::Top),
+                    DockspacePresentationCommandKind::DockBottom => {
+                        Some(crate::model::DockEdge::Bottom)
+                    }
+                    DockspacePresentationCommandKind::DockCenter => None,
+                    DockspacePresentationCommandKind::Float
+                    | DockspacePresentationCommandKind::MoveToNewWindow
+                    | DockspacePresentationCommandKind::DockBack => unreachable!(
+                        "directional presentation commands are matched by the outer branch"
+                    ),
+                };
+                let placement = match self.candidate.directional_dock_placement(root, edge) {
+                    Ok(placement) => placement,
+                    Err(reason) => {
+                        return Ok(Some(unavailable(
+                            DockspacePresentationCommandUnavailable::Action(reason),
+                        )));
+                    }
+                };
+                ProductAction::DockRoot { root, placement }
+            }
             DockspacePresentationCommandKind::MoveToNewWindow => {
                 let placement = match self
                     .candidate
@@ -1212,7 +1255,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
     #[must_use]
     pub fn prepare_tab_close(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
         let tab = self.tab_record(item)?;
-        tab.close_bounds()?;
+        let close_bounds = tab.close_bounds()?;
+        self.plan
+            .region_is_operable(close_bounds, tab.layer())
+            .then_some(())?;
         Some(super::PreparedSurfaceAction::close(
             self.authority_domain,
             self.version,
@@ -1464,6 +1510,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         tab: TabPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
+        let close_bounds = tab.record.close_bounds()?;
+        self.plan
+            .region_is_operable(close_bounds, tab.record.layer())
+            .then_some(())?;
         let tab_id = *tab.record.id();
         self.receiver(PresentationHitRegionKind::TabClose(tab_id))
     }

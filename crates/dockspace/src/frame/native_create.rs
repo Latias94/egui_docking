@@ -911,7 +911,13 @@ impl ViewportCoordinator {
             create_phase,
             Some(EffectPhase::ObservedApplied {
                 inventory_generation
-            }) if inventory_generation == visibility.hidden_inventory_generation
+            // A create acknowledgement is affine, while a later compatible
+            // hidden observation may reissue the exact staging basis without
+            // repeating that acknowledgement. The applied generation must
+            // therefore precede or equal the retained hidden proof; requiring
+            // equality would make every legitimate reissue uncompilable at
+            // ownership transfer.
+            }) if inventory_generation <= visibility.hidden_inventory_generation
         ) || !matches!(
             show_phase,
             Some(EffectPhase::ObservedApplied {

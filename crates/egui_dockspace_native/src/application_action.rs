@@ -7,6 +7,8 @@ use dockspace::runtime::{
 };
 use egui_dockspace::DockspaceActionStatus;
 
+use crate::NativeRuntimeErrorKind;
+
 /// Failure to queue one application-owned product action.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,21 +41,89 @@ impl std::fmt::Display for NativeActionRequestError {
 
 impl std::error::Error for NativeActionRequestError {}
 
+/// Stage at which one accepted native application action was interrupted.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeActionInterruption {
+    /// The action never committed one core host-frame boundary.
+    NotCommitted,
+    /// The core frame committed without the exact submitted-action outcome.
+    CommittedOutcomeUnavailable,
+    /// Shutdown drained without the exact presentation transition terminal.
+    PresentationUnresolved,
+}
+
+/// Terminal native-host failure of one previously accepted application action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeActionFailure {
+    kind: NativeRuntimeErrorKind,
+    interruption: NativeActionInterruption,
+}
+
+impl NativeActionFailure {
+    const fn new(kind: NativeRuntimeErrorKind, interruption: NativeActionInterruption) -> Self {
+        Self { kind, interruption }
+    }
+
+    /// Returns the stable native runtime failure category.
+    #[must_use]
+    pub const fn kind(self) -> NativeRuntimeErrorKind {
+        self.kind
+    }
+
+    /// Returns the exact action stage interrupted by the native failure.
+    #[must_use]
+    pub const fn interruption(self) -> NativeActionInterruption {
+        self.interruption
+    }
+}
+
+impl std::fmt::Display for NativeActionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let stage = match self.interruption {
+            NativeActionInterruption::NotCommitted => "before the action committed",
+            NativeActionInterruption::CommittedOutcomeUnavailable => {
+                "after commit omitted the exact action outcome"
+            }
+            NativeActionInterruption::PresentationUnresolved => {
+                "while the presentation transition remained unresolved"
+            }
+        };
+        write!(
+            formatter,
+            "native dockspace action stopped {stage} ({:?})",
+            self.kind
+        )
+    }
+}
+
+impl std::error::Error for NativeActionFailure {}
+
+pub(crate) type NativeActionTerminal = Result<DockspaceActionStatus, NativeActionFailure>;
+
 /// Single-slot queue consumed only by the final root pass.
 #[derive(Debug, Default)]
 pub(crate) struct NativeApplicationActions {
-    pending: Option<PreparedDockAction>,
-    awaiting: Option<AwaitingApplicationAction>,
-    result: Option<DockspaceActionStatus>,
+    state: NativeApplicationActionState,
 }
 
 #[derive(Debug)]
-enum AwaitingApplicationAction {
-    Reduction(WorkspaceVersion),
-    Presentation {
+enum NativeApplicationActionState {
+    Vacant,
+    Queued(PreparedDockAction),
+    UncommittedFrame(WorkspaceVersion),
+    AwaitingPresentation {
         requested: DockspaceActionOutcome,
         transition: DockspacePresentationTransitionId,
+        shutdown_kind: Option<NativeRuntimeErrorKind>,
     },
+    Terminal(NativeActionTerminal),
+}
+
+impl Default for NativeApplicationActionState {
+    fn default() -> Self {
+        Self::Vacant
+    }
 }
 
 impl NativeApplicationActions {
@@ -64,23 +134,25 @@ impl NativeApplicationActions {
         if self.is_occupied() {
             return Err(NativeActionRequestError::busy());
         }
-        self.pending = Some(action);
+        self.state = NativeApplicationActionState::Queued(action);
         Ok(())
     }
 
     pub(crate) const fn is_occupied(&self) -> bool {
-        self.pending.is_some() || self.awaiting.is_some() || self.result.is_some()
+        !matches!(self.state, NativeApplicationActionState::Vacant)
     }
 
     pub(crate) const fn has_queued(&self) -> bool {
-        self.pending.is_some()
+        matches!(self.state, NativeApplicationActionState::Queued(_))
     }
 
     pub(crate) fn take(&mut self) -> Option<PreparedDockAction> {
-        let action = self.pending.take()?;
-        self.awaiting = Some(AwaitingApplicationAction::Reduction(
-            action.expected_version(),
-        ));
+        let state = std::mem::take(&mut self.state);
+        let NativeApplicationActionState::Queued(action) = state else {
+            self.state = state;
+            return None;
+        };
+        self.state = NativeApplicationActionState::UncommittedFrame(action.expected_version());
         Some(action)
     }
 
@@ -89,12 +161,16 @@ impl NativeApplicationActions {
         input: Option<&HostInputOutcome>,
         transitions: &[DockspacePresentationTransition],
     ) -> Result<bool, ()> {
-        let Some(awaiting) = self.awaiting.as_ref() else {
-            return Ok(false);
-        };
-        match awaiting {
-            AwaitingApplicationAction::Reduction(expected) => {
+        match &self.state {
+            NativeApplicationActionState::Vacant
+            | NativeApplicationActionState::Queued(_)
+            | NativeApplicationActionState::Terminal(_) => Ok(false),
+            NativeApplicationActionState::UncommittedFrame(expected) => {
                 let Some(input) = input else {
+                    self.set_terminal_failure(
+                        NativeRuntimeErrorKind::Internal,
+                        NativeActionInterruption::CommittedOutcomeUnavailable,
+                    );
                     return Err(());
                 };
                 let settlement = match input {
@@ -122,7 +198,13 @@ impl NativeApplicationActions {
                             accepted: *accepted,
                         })
                     }
-                    _ => return Err(()),
+                    _ => {
+                        self.set_terminal_failure(
+                            NativeRuntimeErrorKind::Internal,
+                            NativeActionInterruption::CommittedOutcomeUnavailable,
+                        );
+                        return Err(());
+                    }
                 };
                 match settlement {
                     ReductionSettlement::Terminal(status) => {
@@ -133,10 +215,13 @@ impl NativeApplicationActions {
                                     | DockspaceActionOutcome::RootFloatRequested { .. }
                             )
                         ) {
+                            self.set_terminal_failure(
+                                NativeRuntimeErrorKind::Internal,
+                                NativeActionInterruption::CommittedOutcomeUnavailable,
+                            );
                             return Err(());
                         }
-                        self.awaiting = None;
-                        self.result = Some(status);
+                        self.state = NativeApplicationActionState::Terminal(Ok(status));
                         Ok(true)
                     }
                     ReductionSettlement::Presentation {
@@ -148,17 +233,24 @@ impl NativeApplicationActions {
                             DockspaceActionOutcome::RootDockRequested { .. }
                                 | DockspaceActionOutcome::RootFloatRequested { .. }
                         ) {
+                            self.set_terminal_failure(
+                                NativeRuntimeErrorKind::Internal,
+                                NativeActionInterruption::CommittedOutcomeUnavailable,
+                            );
                             return Err(());
                         }
-                        self.awaiting = Some(AwaitingApplicationAction::Presentation {
+                        self.state = NativeApplicationActionState::AwaitingPresentation {
                             requested,
                             transition,
-                        });
+                            shutdown_kind: None,
+                        };
                         self.settle_presentation(transitions).map(|_| true)
                     }
                 }
             }
-            AwaitingApplicationAction::Presentation { .. } => self.settle_presentation(transitions),
+            NativeApplicationActionState::AwaitingPresentation { .. } => {
+                self.settle_presentation(transitions)
+            }
         }
     }
 
@@ -167,8 +259,8 @@ impl NativeApplicationActions {
         transitions: &[DockspacePresentationTransition],
     ) -> Result<bool, ()> {
         if !matches!(
-            self.awaiting,
-            Some(AwaitingApplicationAction::Presentation { .. })
+            self.state,
+            NativeApplicationActionState::AwaitingPresentation { .. }
         ) {
             return Ok(false);
         }
@@ -179,10 +271,11 @@ impl NativeApplicationActions {
         &mut self,
         transitions: &[DockspacePresentationTransition],
     ) -> Result<bool, ()> {
-        let Some(AwaitingApplicationAction::Presentation {
+        let NativeApplicationActionState::AwaitingPresentation {
             requested,
             transition: requested_transition,
-        }) = self.awaiting.as_ref()
+            ..
+        } = &self.state
         else {
             return Ok(false);
         };
@@ -192,9 +285,14 @@ impl NativeApplicationActions {
             return Ok(false);
         };
         let status = if transition.result() == DockspacePresentationTransitionResult::Applied {
-            DockspaceActionStatus::Applied(
-                completed_presentation_outcome(requested, transition).ok_or(())?,
-            )
+            let Some(outcome) = completed_presentation_outcome(requested, transition) else {
+                self.set_terminal_failure(
+                    NativeRuntimeErrorKind::Internal,
+                    NativeActionInterruption::CommittedOutcomeUnavailable,
+                );
+                return Err(());
+            };
+            DockspaceActionStatus::Applied(outcome)
         } else {
             DockspaceActionStatus::PresentationFailed {
                 root: transition.root(),
@@ -203,18 +301,69 @@ impl NativeApplicationActions {
                 reason: transition.result(),
             }
         };
-        self.awaiting = None;
-        self.result = Some(status);
+        self.state = NativeApplicationActionState::Terminal(Ok(status));
         Ok(true)
     }
 
-    pub(crate) fn take_result(&mut self) -> Option<DockspaceActionStatus> {
-        self.result.take()
+    pub(crate) fn take_result(&mut self) -> Option<NativeActionTerminal> {
+        let state = std::mem::take(&mut self.state);
+        let NativeApplicationActionState::Terminal(result) = state else {
+            self.state = state;
+            return None;
+        };
+        Some(result)
     }
 
-    pub(crate) fn abandon_unsettled(&mut self) {
-        self.pending = None;
-        self.awaiting = None;
+    pub(crate) fn begin_shutdown(&mut self, kind: NativeRuntimeErrorKind) -> bool {
+        if let NativeApplicationActionState::AwaitingPresentation { shutdown_kind, .. } =
+            &mut self.state
+        {
+            if shutdown_kind.is_none() {
+                *shutdown_kind = Some(kind);
+                return true;
+            }
+            return false;
+        }
+        match self.state {
+            NativeApplicationActionState::Queued(_)
+            | NativeApplicationActionState::UncommittedFrame(_) => {
+                self.set_terminal_failure(kind, NativeActionInterruption::NotCommitted);
+                true
+            }
+            NativeApplicationActionState::AwaitingPresentation { .. } => unreachable!(
+                "awaiting presentation shutdown state is handled before terminalization"
+            ),
+            NativeApplicationActionState::Vacant | NativeApplicationActionState::Terminal(_) => {
+                false
+            }
+        }
+    }
+
+    pub(crate) fn finish_shutdown_exhausted(&mut self) -> bool {
+        let kind = match &self.state {
+            NativeApplicationActionState::AwaitingPresentation {
+                shutdown_kind: Some(kind),
+                ..
+            } => *kind,
+            _ => return false,
+        };
+        self.set_terminal_failure(kind, NativeActionInterruption::PresentationUnresolved);
+        true
+    }
+
+    fn set_terminal_failure(
+        &mut self,
+        kind: NativeRuntimeErrorKind,
+        interruption: NativeActionInterruption,
+    ) {
+        debug_assert!(!matches!(
+            self.state,
+            NativeApplicationActionState::Terminal(_)
+        ));
+        self.state = NativeApplicationActionState::Terminal(Err(NativeActionFailure::new(
+            kind,
+            interruption,
+        )));
     }
 }
 

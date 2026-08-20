@@ -8,7 +8,10 @@ use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
 use super::RenderContext;
-use super::actions::{LocalScrollAxis, consume_local_scroll_input, local_scroll_input};
+use super::actions::{
+    LocalScrollAxis, button_activated, consume_local_scroll_input, effective_enabled,
+    local_scroll_input,
+};
 use super::geometry::{accesskit_bounds, egui_rect};
 
 pub(crate) fn paint_controls(
@@ -38,37 +41,30 @@ fn paint_control_records(
             "tab-strip-control",
             control.visual_id(),
         ));
+        let enabled = effective_enabled(context.ui, control.enabled());
         let response = context.interact_receiver(
             hit,
             id,
-            if control.enabled() {
+            if enabled {
                 Sense::click()
             } else {
                 Sense::hover()
             },
-            context.plan.receiver_for_tab_strip_control(control),
+            enabled
+                .then(|| context.plan.receiver_for_tab_strip_control(control))
+                .flatten(),
         );
         let paint_omitted = context
             .plan
             .drag_decoration()
             .is_some_and(|decoration| decoration.omits_visual(control.visual_id()));
         if !paint_omitted {
-            paint_control(context, control, bounds, &response);
+            paint_control(context, control, bounds, &response, enabled);
         }
-        configure_control_accessibility(context, control, id, bounds);
+        configure_control_accessibility(context, control, id, bounds, enabled);
 
-        let keyboard = response.has_focus()
-            && context.ui.input_mut(|input| {
-                input.consume_key(egui::Modifiers::NONE, Key::Enter)
-                    || input.consume_key(egui::Modifiers::NONE, Key::Space)
-            });
-        let accesskit = context
-            .ui
-            .input(|input| input.has_accesskit_action_request(id, Action::Click));
-        let pointer = context.pointer_authority.accepts_local_pointer_actions()
-            && response.clicked_by(PointerButton::Primary);
-        if control.enabled()
-            && (pointer || keyboard || accesskit)
+        if enabled
+            && button_activated(context.ui, &response, context.pointer_authority)
             && let Some(action) = context.plan.prepare_tab_strip_control_activation(control)
         {
             context.push_local_action(action);
@@ -81,14 +77,15 @@ fn paint_control(
     control: TabStripControlPaintRecord,
     bounds: Rect,
     response: &egui::Response,
+    enabled: bool,
 ) {
-    let emphasized = control.enabled() && RenderContext::response_emphasized(response);
+    let emphasized = enabled && RenderContext::response_emphasized(response);
     let fill = if emphasized {
         context.interaction_fill(response)
     } else {
         context.visuals.tab_bar_fill
     };
-    let color = if control.enabled() {
+    let color = if enabled {
         context
             .interaction_stroke(response, context.style.visuals.tab_text_color)
             .color
@@ -138,6 +135,7 @@ fn configure_control_accessibility(
     control: TabStripControlPaintRecord,
     id: Id,
     bounds: Rect,
+    enabled: bool,
 ) {
     let menu_open = control.kind() == TabStripControlKind::TabListMenu
         && context
@@ -156,7 +154,7 @@ fn configure_control_accessibility(
             node.set_has_popup(HasPopup::Menu);
             node.set_expanded(menu_open);
         }
-        if control.enabled() {
+        if enabled {
             node.add_action(Action::Click);
         } else {
             node.set_disabled();
@@ -188,15 +186,28 @@ fn paint_backdrop(
         "tab-list-menu-backdrop",
         backdrop.visual_id(),
     ));
-    let receiver = context.plan.receiver_for_tab_list_menu_backdrop(backdrop);
+    let enabled = effective_enabled(context.ui, true);
+    let receiver = enabled
+        .then(|| context.plan.receiver_for_tab_list_menu_backdrop(backdrop))
+        .flatten();
     let scroll_id = context.ui.make_persistent_id((
         context.instance_id,
         "tab-list-menu-backdrop-scroll",
         backdrop.visual_id(),
     ));
     context.register_scroll_receiver(scroll_id, receiver);
-    let response = context.interact_receiver(bounds, id, Sense::click(), receiver);
-    if context.pointer_authority.accepts_local_pointer_actions()
+    let response = context.interact_receiver(
+        bounds,
+        id,
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+        receiver,
+    );
+    if enabled
+        && context.pointer_authority.accepts_local_pointer_actions()
         && response.clicked_by(PointerButton::Primary)
         && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(backdrop)
     {
@@ -215,7 +226,10 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
         context
             .ui
             .make_persistent_id((context.instance_id, "tab-list-menu", menu.visual_id()));
-    let frame_receiver = context.plan.receiver_for_tab_list_menu_frame(menu);
+    let enabled = effective_enabled(context.ui, true);
+    let frame_receiver = enabled
+        .then(|| context.plan.receiver_for_tab_list_menu_frame(menu))
+        .flatten();
     let frame_scroll_id = context.ui.make_persistent_id((
         context.instance_id,
         "tab-list-menu-frame-scroll-blocker",
@@ -240,6 +254,9 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
         node.set_role(Role::Menu);
         node.set_bounds(accesskit_bounds(bounds));
         node.set_label("Open tabs");
+        if !enabled {
+            node.set_disabled();
+        }
     });
 
     let scroll_id = context.ui.make_persistent_id((
@@ -247,7 +264,9 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
         "tab-list-menu-scroll",
         menu.visual_id(),
     ));
-    let scroll_receiver = context.plan.receiver_for_tab_list_menu_scroll(menu);
+    let scroll_receiver = enabled
+        .then(|| context.plan.receiver_for_tab_list_menu_scroll(menu))
+        .flatten();
     context.register_scroll_receiver(scroll_id, scroll_receiver);
     if let Some(scroll) = local_scroll_input(
         context.ui,
@@ -283,12 +302,32 @@ fn paint_menu_row(
         context
             .ui
             .make_persistent_id((context.instance_id, "tab-list-menu-row", row.visual_id()));
+    let enabled = effective_enabled(context.ui, true);
+    let (click, focus, reveal) = if enabled {
+        context.ui.input(|input| {
+            (
+                input.has_accesskit_action_request(id, Action::Click),
+                input.has_accesskit_action_request(id, Action::Focus),
+                input.has_accesskit_action_request(id, Action::ScrollIntoView),
+            )
+        })
+    } else {
+        (false, false, false)
+    };
+    let receiver = enabled
+        .then(|| context.plan.receiver_for_tab_list_menu_row(row))
+        .flatten();
+    let pointer_operable = receiver.is_some();
     let response = row.interaction_bounds().and_then(egui_rect).map(|hit| {
         context.interact_receiver(
             hit,
             id,
-            Sense::click(),
-            context.plan.receiver_for_tab_list_menu_row(row),
+            if pointer_operable {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+            receiver,
         )
     });
     let paint_omitted = context
@@ -303,7 +342,7 @@ fn paint_menu_row(
             .unwrap_or(context.ui.visuals().widgets.active.weak_bg_fill)
     } else if let Some(response) = response
         .as_ref()
-        .filter(|response| RenderContext::response_emphasized(response))
+        .filter(|response| enabled && RenderContext::response_emphasized(response))
     {
         context.interaction_fill(response)
     } else if row.selected() {
@@ -327,7 +366,7 @@ fn paint_menu_row(
                 context.visuals.tab_active_text_color
             } else if let Some(response) = response
                 .as_ref()
-                .filter(|response| RenderContext::response_emphasized(response))
+                .filter(|response| enabled && RenderContext::response_emphasized(response))
             {
                 context
                     .interaction_stroke(response, context.style.visuals.tab_text_color)
@@ -345,36 +384,32 @@ fn paint_menu_row(
             |item| item.title.clone(),
         ));
         node.set_selected(row.selected());
-        node.add_action(Action::Click);
-        node.add_action(Action::Focus);
-        node.add_action(Action::ScrollIntoView);
+        if enabled {
+            node.add_action(Action::Click);
+            node.add_action(Action::Focus);
+            node.add_action(Action::ScrollIntoView);
+        } else {
+            node.set_disabled();
+        }
     });
-    if row.focused() {
+    if enabled && row.focused() {
         context.ui.memory_mut(|memory| memory.request_focus(id));
     }
 
-    let pointer = context.pointer_authority.accepts_local_pointer_actions()
+    let pointer = pointer_operable
+        && context.pointer_authority.accepts_local_pointer_actions()
         && response
             .as_ref()
             .is_some_and(|response| response.clicked_by(PointerButton::Primary));
-    let click = context
-        .ui
-        .input(|input| input.has_accesskit_action_request(id, Action::Click));
     if pointer || click {
         if let Some(action) = context.plan.prepare_tab_list_menu_row_activation(row) {
             context.push_local_action(action);
         }
         return;
     }
-    let focus = context
-        .ui
-        .input(|input| input.has_accesskit_action_request(id, Action::Focus));
     if focus && let Some(action) = context.plan.prepare_tab_list_menu_focus(menu, row.item()) {
         context.push_local_action(action);
     }
-    let reveal = context
-        .ui
-        .input(|input| input.has_accesskit_action_request(id, Action::ScrollIntoView));
     if reveal && let Some(action) = context.plan.prepare_tab_list_menu_reveal(row) {
         context.push_local_action(action);
     }
@@ -398,15 +433,19 @@ fn paint_scrollbar(
         "tab-list-menu-scrollbar",
         menu.visual_id(),
     ));
+    let enabled = effective_enabled(context.ui, true);
+    let receiver = enabled
+        .then(|| context.plan.receiver_for_tab_list_menu_frame(menu))
+        .flatten();
     let response = context.interact_receiver(
         track,
         id,
-        if context.pointer_authority.accepts_local_pointer_actions() {
+        if enabled && context.pointer_authority.accepts_local_pointer_actions() {
             Sense::click_and_drag()
         } else {
             Sense::hover()
         },
-        context.plan.receiver_for_tab_list_menu_frame(menu),
+        receiver,
     );
     let paint_omitted = context
         .plan
@@ -441,18 +480,26 @@ fn paint_scrollbar(
         node.set_numeric_value(menu.scroll_offset());
         node.set_min_numeric_value(0.0);
         node.set_max_numeric_value(menu.maximum_scroll_offset());
-        node.add_action(Action::Increment);
-        node.add_action(Action::Decrement);
-    });
-    let adjustment = context.ui.input(|input| {
-        if input.has_accesskit_action_request(id, Action::Increment) {
-            Some(1.0)
-        } else if input.has_accesskit_action_request(id, Action::Decrement) {
-            Some(-1.0)
+        if enabled {
+            node.add_action(Action::Increment);
+            node.add_action(Action::Decrement);
         } else {
-            None
+            node.set_disabled();
         }
     });
+    let adjustment = enabled
+        .then(|| {
+            context.ui.input(|input| {
+                if input.has_accesskit_action_request(id, Action::Increment) {
+                    Some(1.0)
+                } else if input.has_accesskit_action_request(id, Action::Decrement) {
+                    Some(-1.0)
+                } else {
+                    None
+                }
+            })
+        })
+        .flatten();
     if let Some(direction) = adjustment {
         let step = menu
             .rows()
@@ -475,7 +522,10 @@ fn capture_scrollbar_pointer(
     thumb: Rect,
     response: &egui::Response,
 ) {
-    if !context.pointer_authority.accepts_local_pointer_actions() {
+    if !effective_enabled(
+        context.ui,
+        context.pointer_authority.accepts_local_pointer_actions(),
+    ) {
         return;
     }
 
@@ -553,6 +603,9 @@ fn capture_menu_keyboard(
     menu: TabListMenuPaintRecord<'_>,
     rows: &[TabListMenuRowPaintRecord],
 ) {
+    if !effective_enabled(context.ui, true) {
+        return;
+    }
     let navigation = context.ui.input_mut(|input| {
         if input.consume_key(egui::Modifiers::NONE, Key::ArrowUp) {
             Some(SurfaceTabListNavigation::Previous)

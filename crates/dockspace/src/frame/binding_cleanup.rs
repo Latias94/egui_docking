@@ -69,8 +69,10 @@ pub enum BindingRetirementStatus {
 /// Why one binding-scoped destructive cleanup remains authoritative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BindingCleanupPurpose {
-    /// The binding has left the live registry and remains quarantined until its
-    /// exact platform lifecycle is terminal.
+    /// The binding has left the logical surface roster and remains quarantined
+    /// until its exact platform lifecycle is terminal. A vacancy may retain the
+    /// record as non-routeable `Retiring` authority only until input restoration
+    /// has been observed; destructive cleanup starts after that record detaches.
     Retired,
     /// A recovery replacement is still registered but cannot acquire graph
     /// ownership until this cleanup obligation settles.

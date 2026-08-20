@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use dockspace::geometry::LogicalPoint;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceSemanticOutput, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
-    NativeScrollReceiverChallenge, NativeSurfaceBinding, PaintedSurfaceOutput,
+    DockspaceReceiverRole, DockspaceSemanticOutput, NativeReceiverAnswer, NativeReceiverPurpose,
+    NativeReceiverQuery, NativeScrollReceiverChallenge, NativeSurfaceBinding, PaintedSurfaceOutput,
 };
 use eframe::{NativeOutputToken, egui};
 use egui_dockspace::native_support::{NativePaintReceiver, NativeScrollPaintReceiver};
@@ -18,6 +18,7 @@ pub(crate) enum NativeReceiverStageError {
     ViewportMismatch,
     BindingMismatch,
     SemanticOutputMismatch,
+    HitAuthorityMismatch,
     PassRegressed,
 }
 
@@ -26,7 +27,7 @@ struct PendingReceiverSet {
     surface: SurfaceId,
     binding: NativeSurfaceBinding,
     viewport: egui::ViewportId,
-    cumulative_pass_nr: u64,
+    hit_authority: egui::CompletedPassHitAuthority,
     semantic_output: DockspaceSemanticOutput,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
@@ -34,6 +35,7 @@ struct PendingReceiverSet {
 
 impl PendingReceiverSet {
     fn from_paint(
+        context: &egui::Context,
         token: NativeOutputToken,
         binding: NativeSurfaceBinding,
         output: &PaintedSurfaceOutput,
@@ -53,6 +55,10 @@ impl PendingReceiverSet {
         }
         let viewport = paint.viewport_id();
         let cumulative_pass_nr = paint.cumulative_pass_nr();
+        let hit_authority = context
+            .capture_completed_pass_hit_authority(viewport)
+            .filter(|authority| authority.cumulative_pass_nr() == cumulative_pass_nr)
+            .ok_or(NativeReceiverStageError::HitAuthorityMismatch)?;
         let receivers = paint.receivers().collect::<Vec<_>>();
         let scroll_receivers = paint
             .scroll_receivers()
@@ -63,7 +69,7 @@ impl PendingReceiverSet {
             surface: paint.surface(),
             binding,
             viewport,
-            cumulative_pass_nr,
+            hit_authority,
             semantic_output,
             receivers,
             scroll_receivers,
@@ -75,7 +81,7 @@ impl PendingReceiverSet {
 struct PresentedReceiverSet {
     binding: NativeSurfaceBinding,
     viewport: egui::ViewportId,
-    cumulative_pass_nr: u64,
+    hit_authority: egui::CompletedPassHitAuthority,
     semantic_output: DockspaceSemanticOutput,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
@@ -96,18 +102,20 @@ pub(crate) struct NativeReceiverStore {
 impl NativeReceiverStore {
     pub(crate) fn stage(
         &mut self,
+        context: &egui::Context,
         token: NativeOutputToken,
         binding: NativeSurfaceBinding,
         output: &PaintedSurfaceOutput,
         paint: &NativeSurfacePaint,
     ) -> Result<(), NativeReceiverStageError> {
-        let next = PendingReceiverSet::from_paint(token, binding, output, paint)?;
+        let next = PendingReceiverSet::from_paint(context, token, binding, output, paint)?;
         if let Some(current) = self.pending.get(&token)
             && (current.surface != next.surface
                 || current.binding != next.binding
                 || current.viewport != next.viewport
                 || current.semantic_output != next.semantic_output
-                || next.cumulative_pass_nr < current.cumulative_pass_nr)
+                || next.hit_authority.cumulative_pass_nr()
+                    < current.hit_authority.cumulative_pass_nr())
         {
             return Err(NativeReceiverStageError::PassRegressed);
         }
@@ -133,13 +141,13 @@ impl NativeReceiverStore {
             || pending.binding != binding
             || pending.viewport != viewport
         {
-            self.discard_presented_if_not_newer(&pending);
             return;
         }
         if self.presented.get(&pending.surface).is_some_and(|current| {
             current.binding == binding
                 && current.viewport == pending.viewport
-                && current.cumulative_pass_nr > pending.cumulative_pass_nr
+                && current.hit_authority.cumulative_pass_nr()
+                    > pending.hit_authority.cumulative_pass_nr()
         }) {
             return;
         }
@@ -148,7 +156,7 @@ impl NativeReceiverStore {
             PresentedReceiverSet {
                 binding,
                 viewport: pending.viewport,
-                cumulative_pass_nr: pending.cumulative_pass_nr,
+                hit_authority: pending.hit_authority,
                 semantic_output: pending.semantic_output,
                 receivers: pending.receivers,
                 scroll_receivers: pending.scroll_receivers,
@@ -157,20 +165,11 @@ impl NativeReceiverStore {
     }
 
     pub(crate) fn dropped(&mut self, token: NativeOutputToken) {
-        let pending = self.pending.remove(&token);
-        self.finish_dropped(pending);
-    }
-
-    fn finish_dropped(&mut self, pending: Option<PendingReceiverSet>) {
-        if let Some(pending) = pending {
-            self.discard_presented_if_not_newer(&pending);
-        }
+        self.pending.remove(&token);
     }
 
     pub(crate) fn abandon(&mut self, token: NativeOutputToken) {
-        if let Some(pending) = self.pending.remove(&token) {
-            self.discard_presented_if_not_newer(&pending);
-        }
+        self.pending.remove(&token);
     }
 
     pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
@@ -195,11 +194,7 @@ impl NativeReceiverStore {
                 .is_some_and(|presented| presented.binding == binding)
     }
 
-    pub(crate) fn resolve(
-        &self,
-        context: &egui::Context,
-        query: NativeReceiverQuery,
-    ) -> NativeReceiverAnswer {
+    pub(crate) fn resolve(&self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
         let Some(presented) = self.presented.get(&query.surface()) else {
             return NativeReceiverAnswer::Unknown;
         };
@@ -213,14 +208,11 @@ impl NativeReceiverStore {
             return NativeReceiverAnswer::Unknown;
         };
         if let NativeReceiverPurpose::ScrollDelivery(challenge) = query.purpose() {
-            return resolve_scroll(context, query, presented, point, *challenge);
+            return resolve_scroll(query, presented, point, *challenge);
         }
-        let Some(hit) = context.hit_test_last_pass(presented.viewport, point) else {
+        let Some(hit) = presented.hit_authority.hit_test(point) else {
             return NativeReceiverAnswer::Unknown;
         };
-        if hit.cumulative_pass_nr() != presented.cumulative_pass_nr {
-            return NativeReceiverAnswer::Unknown;
-        }
         let identity = match query.purpose() {
             NativeReceiverPurpose::ClickDelivery => hit.click(),
             NativeReceiverPurpose::DragDelivery => hit.drag(),
@@ -232,7 +224,7 @@ impl NativeReceiverStore {
         };
         let mut matches = presented.receivers.iter().copied().filter(|receiver| {
             receiver.viewport_id() == presented.viewport
-                && receiver.cumulative_pass_nr() == presented.cumulative_pass_nr
+                && receiver.cumulative_pass_nr() == presented.hit_authority.cumulative_pass_nr()
                 && receiver.widget_id() == identity.id()
                 && receiver.layer_id() == identity.layer_id()
         });
@@ -242,25 +234,26 @@ impl NativeReceiverStore {
         if matches.next().is_some() {
             return NativeReceiverAnswer::Unknown;
         }
-        receiver
-            .bind_for_query(query)
-            .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+        resolve_matching_receiver(query, receiver)
     }
+}
 
-    fn discard_presented_if_not_newer(&mut self, pending: &PendingReceiverSet) {
-        let should_remove = self.presented.get(&pending.surface).is_some_and(|current| {
-            current.binding == pending.binding
-                && (current.viewport != pending.viewport
-                    || current.cumulative_pass_nr <= pending.cumulative_pass_nr)
-        });
-        if should_remove {
-            self.presented.remove(&pending.surface);
+fn resolve_matching_receiver(
+    query: NativeReceiverQuery,
+    receiver: NativePaintReceiver,
+) -> NativeReceiverAnswer {
+    match receiver.bind_for_query(query) {
+        Some(receiver) => NativeReceiverAnswer::Dock(receiver),
+        None if matches!(query.purpose(), NativeReceiverPurpose::HoverHit)
+            && receiver.role() == DockspaceReceiverRole::PaneBody =>
+        {
+            NativeReceiverAnswer::NoReceiver(query.presented_surface())
         }
+        None => NativeReceiverAnswer::Unknown,
     }
 }
 
 fn resolve_scroll(
-    context: &egui::Context,
     query: NativeReceiverQuery,
     presented: &PresentedReceiverSet,
     point: egui::Pos2,
@@ -297,17 +290,13 @@ fn resolve_scroll(
             }
         }
     };
-    let Some(hit) = context.scroll_hit_test_last_pass(
-        presented.viewport,
-        point,
-        candidates.as_slice(),
-        challenge,
-    ) else {
+    let Some(hit) =
+        presented
+            .hit_authority
+            .scroll_hit_test(point, candidates.as_slice(), challenge)
+    else {
         return NativeReceiverAnswer::Unknown;
     };
-    if hit.cumulative_pass_nr() != presented.cumulative_pass_nr {
-        return NativeReceiverAnswer::Unknown;
-    }
     match hit.hit() {
         egui::WidgetScrollHit::Blocked => NativeReceiverAnswer::Blocked(query.presented_surface()),
         egui::WidgetScrollHit::NoReceiver => {
@@ -320,7 +309,8 @@ fn resolve_scroll(
                 .copied()
                 .filter(|candidate| {
                     candidate.receiver.viewport_id() == presented.viewport
-                        && candidate.receiver.cumulative_pass_nr() == presented.cumulative_pass_nr
+                        && candidate.receiver.cumulative_pass_nr()
+                            == presented.hit_authority.cumulative_pass_nr()
                         && candidate.identity == identity
                 });
             let Some(candidate) = matches.next() else {
@@ -365,12 +355,13 @@ mod tests {
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
         DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseState,
-        NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerEvent,
-        NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-        NativePointerRoster, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
-        NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeWindowFacts,
-        NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
-        SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+        NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
+        NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+        NativePointerOwner, NativePointerRoster, NativeScrollDelta, NativeScrollDeviceId,
+        NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
+        NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+        NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
+        UniformSurfaceMetrics,
     };
     use egui::{Id, RawInput, Rect, Sense, Ui, Vec2};
     use egui_dockspace::{DockStyle, PaneView, native_support};
@@ -456,6 +447,30 @@ mod tests {
             .semantic_output()
     }
 
+    fn empty_hit_authority() -> egui::CompletedPassHitAuthority {
+        let context = egui::Context::default();
+        let mut output = context.run_ui(RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        context
+            .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+            .expect("one completed root pass publishes hit authority")
+    }
+
+    fn empty_pending_receiver(
+        binding: NativeSurfaceBinding,
+        viewport: egui::ViewportId,
+    ) -> PendingReceiverSet {
+        PendingReceiverSet {
+            surface: SURFACE,
+            binding,
+            viewport,
+            hit_authority: empty_hit_authority(),
+            semantic_output: semantic_output(),
+            receivers: Vec::new(),
+            scroll_receivers: Vec::new(),
+        }
+    }
+
     struct TestPanes;
 
     impl PaneView for TestPanes {
@@ -466,6 +481,16 @@ mod tests {
         fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
             ui.allocate_rect(ui.max_rect(), Sense::hover());
         }
+    }
+
+    struct UnclaimedPanes;
+
+    impl PaneView for UnclaimedPanes {
+        fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+            Some(format!("Pane {}", item.get()).into())
+        }
+
+        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
     }
 
     #[test]
@@ -714,7 +739,7 @@ mod tests {
             PresentedReceiverSet {
                 binding: successor,
                 viewport: egui::ViewportId::ROOT,
-                cumulative_pass_nr: 7,
+                hit_authority: empty_hit_authority(),
                 semantic_output: semantic_output(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
@@ -739,7 +764,7 @@ mod tests {
             PresentedReceiverSet {
                 binding: successor,
                 viewport: egui::ViewportId::ROOT,
-                cumulative_pass_nr: 9,
+                hit_authority: empty_hit_authority(),
                 semantic_output: semantic_output(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
@@ -747,12 +772,334 @@ mod tests {
         );
 
         store.finish_presented(None, egui::ViewportId::ROOT, predecessor);
-        store.finish_dropped(None);
 
         assert_eq!(
             store.presented.get(&SURFACE).map(|entry| entry.binding),
             Some(successor),
             "an A1 terminal without its retired pending token cannot clear A2 authority"
+        );
+    }
+
+    #[test]
+    fn mismatched_presented_candidate_preserves_the_presented_predecessor() {
+        let binding = binding(41);
+        let mut store = NativeReceiverStore::default();
+        store.presented.insert(
+            SURFACE,
+            PresentedReceiverSet {
+                binding,
+                viewport: egui::ViewportId::ROOT,
+                hit_authority: empty_hit_authority(),
+                semantic_output: semantic_output(),
+                receivers: Vec::new(),
+                scroll_receivers: Vec::new(),
+            },
+        );
+
+        store.finish_presented(
+            Some(empty_pending_receiver(
+                binding,
+                egui::ViewportId::from_hash_of("mismatched-candidate"),
+            )),
+            egui::ViewportId::ROOT,
+            binding,
+        );
+
+        assert!(store.references_binding(binding));
+    }
+
+    #[test]
+    fn exact_hit_without_hover_lane_is_unclaimed_while_uncertain_hits_fail_closed() {
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .expect("hover receiver layout validates");
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+            .expect("hover receiver session initializes");
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .expect("managed native host enrolls");
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .expect("managed native capabilities configure");
+        session
+            .register_native_root(SURFACE, HostWindowToken::new(102))
+            .expect("native root registration queues");
+        let mut registration = session
+            .begin_host_frame()
+            .expect("native root registration frame begins");
+        registration
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("native root registration frame settles");
+        let registration = registration
+            .commit()
+            .expect("native root registration commits");
+        let binding = registration
+            .inputs()
+            .iter()
+            .find_map(|outcome| match outcome {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .expect("native root registration emits one binding");
+
+        let bounds =
+            PhysicalRect::new(0.0, 0.0, 640.0, 480.0).expect("native window bounds validate");
+        let scale = ScaleFactor::new(1.0).expect("native scale validates");
+        let facts = NativeWindowFacts::live()
+            .with_content_bounds(bounds)
+            .with_outer_bounds(bounds)
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_close(NativeCloseState::Clear, None);
+        session
+            .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
+            .expect("exact native root facts record");
+        let mut snapshot = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("native snapshot frame begins");
+        snapshot
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("native snapshot frame settles");
+        snapshot.commit().expect("native snapshot commits");
+
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("surface bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("surface minimum validates"),
+            96.0,
+        )
+        .expect("surface metrics validate");
+        let mut measured = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("native measurement frame begins");
+        measured
+            .measure_surface(SURFACE, metrics)
+            .expect("native surface measures");
+        measured.commit().expect("native measurement commits");
+
+        let context = egui::Context::default();
+        let mut panes = UnclaimedPanes;
+        let mut painted_semantic_output = None;
+        let mut tab_point = None;
+        let mut pane_point = None;
+        let mut receivers = Vec::new();
+        let mut painted_output = None;
+        let mut full_output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(640.0, 480.0),
+                )),
+                ..RawInput::default()
+            },
+            |ui| {
+                let mut frame = session
+                    .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                    .expect("native paint frame begins");
+                let plan = frame
+                    .paint_plan(SURFACE)
+                    .expect("native paint plan resolves")
+                    .expect("native paint plan is ready");
+                tab_point = plan
+                    .tab_receiver(ItemId::new(1))
+                    .map(|receiver| receiver.center());
+                pane_point = plan.panes().next().and_then(|pane| {
+                    let bounds = plan.receiver_for_pane(pane)?.bounds();
+                    LogicalPoint::new(
+                        bounds.x() + bounds.width() * 0.15,
+                        bounds.y() + bounds.height() * 0.2,
+                    )
+                    .ok()
+                });
+                let mut register_scroll_candidate = |ui: &Ui, rect: Rect, id: Id| {
+                    let identity = ui.register_scroll_hit_candidate(rect, id);
+                    (identity.id(), identity.layer_id())
+                };
+                let painted = native_support::paint_surface(
+                    &mut frame,
+                    Id::new("native-unclaimed-hover-receiver"),
+                    SURFACE,
+                    ui,
+                    &mut panes,
+                    &DockStyle::default(),
+                    &mut register_scroll_candidate,
+                )
+                .expect("native surface paints");
+                painted_semantic_output = painted.semantic_output();
+                receivers = painted.receivers().collect();
+                frame
+                    .confirm_surface_painted(SURFACE)
+                    .expect("native surface paint confirms");
+                frame
+                    .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                    .expect("native paint frame settles");
+                let mut report = frame.commit().expect("native paint frame commits");
+                painted_output = report.take_painted_outputs().pop();
+            },
+        );
+        full_output.textures_delta.clear();
+        let presented_semantic_output =
+            painted_semantic_output.expect("ready paint has one semantic output");
+        let output = painted_output.expect("confirmed native paint emits one output");
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("native presentation records");
+        let mut presented = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("native presentation frame begins");
+        presented
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("native presentation frame settles");
+        presented.commit().expect("native presentation commits");
+
+        let hit_authority = context
+            .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+            .expect("the presented pass publishes immutable hit authority");
+        let pane_point = pane_point.expect("the ready surface paints one pane receiver");
+        let pane_identity = hit_authority
+            .hit_test(logical_pos(pane_point).expect("pane point projects into egui space"))
+            .and_then(|hit| hit.contains_pointer())
+            .expect("the pane body owns the exact pointer identity");
+        let matching = receivers
+            .iter()
+            .copied()
+            .filter(|receiver| {
+                receiver.viewport_id() == egui::ViewportId::ROOT
+                    && receiver.cumulative_pass_nr() == hit_authority.cumulative_pass_nr()
+                    && receiver.widget_id() == pane_identity.id()
+                    && receiver.layer_id() == pane_identity.layer_id()
+            })
+            .collect::<Vec<_>>();
+        let [pane_receiver] = matching.as_slice() else {
+            panic!("the pane hit must map to one exact receiver, got {matching:?}")
+        };
+        assert_eq!(pane_receiver.role(), DockspaceReceiverRole::PaneBody);
+        let tab_receiver = receivers
+            .iter()
+            .copied()
+            .find(|receiver| receiver.role() == DockspaceReceiverRole::TabBody)
+            .expect("the ready surface paints one tab-body receiver");
+
+        let presented_set = |receivers: Vec<NativePaintReceiver>, semantic_output| {
+            let mut store = NativeReceiverStore::default();
+            store.presented.insert(
+                SURFACE,
+                PresentedReceiverSet {
+                    binding,
+                    viewport: egui::ViewportId::ROOT,
+                    hit_authority: hit_authority.clone(),
+                    semantic_output,
+                    receivers,
+                    scroll_receivers: Vec::new(),
+                },
+            );
+            store
+        };
+        let exact_store = presented_set(receivers.clone(), presented_semantic_output);
+        let blocked_store = presented_set(
+            receivers
+                .iter()
+                .copied()
+                .filter(|receiver| {
+                    receiver.widget_id() != pane_receiver.widget_id()
+                        || receiver.layer_id() != pane_receiver.layer_id()
+                })
+                .collect(),
+            presented_semantic_output,
+        );
+        let mut duplicate_receivers = receivers;
+        duplicate_receivers.push(*pane_receiver);
+        let duplicate_store = presented_set(duplicate_receivers, presented_semantic_output);
+        let mismatched_output = semantic_output();
+        assert_ne!(mismatched_output, presented_semantic_output);
+        let mismatched_store = presented_set(vec![*pane_receiver], mismatched_output);
+
+        let tab_point = tab_point.expect("the ready surface paints one tab receiver");
+        session
+            .record_native_pointer(NativePointerInput::new(
+                NativePointerId::new(1),
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                NativeDesktopPointerLocation::new(
+                    NativeDesktopPosition::Exact(
+                        PhysicalPoint::new(tab_point.x(), tab_point.y())
+                            .expect("native tab point validates"),
+                    ),
+                    NativePointerHover::Dock(binding),
+                    None,
+                ),
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding),
+            ))
+            .expect("native press edge records");
+        let mut press = session
+            .begin_native_host_frame(|query| exact_store.resolve(query))
+            .expect("native press frame begins");
+        press
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("native press frame settles");
+        press.commit().expect("native press frame commits");
+
+        session
+            .record_native_pointer(NativePointerInput::new(
+                NativePointerId::new(1),
+                NativePointerEvent::Moved,
+                NativeDesktopPointerLocation::new(
+                    NativeDesktopPosition::Exact(
+                        PhysicalPoint::new(pane_point.x(), pane_point.y())
+                            .expect("native pane point validates"),
+                    ),
+                    NativePointerHover::Dock(binding),
+                    None,
+                ),
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding),
+            ))
+            .expect("native move edge records");
+        let mut hover_resolved = false;
+        let mut drag = session
+            .begin_native_host_frame(|query| {
+                let answer = exact_store.resolve(query);
+                if matches!(query.purpose(), NativeReceiverPurpose::HoverHit)
+                    && query.point() == Some(pane_point)
+                {
+                    let presented = query.presented_surface();
+                    assert_eq!(answer, NativeReceiverAnswer::NoReceiver(presented));
+                    assert_eq!(
+                        resolve_matching_receiver(query, tab_receiver),
+                        NativeReceiverAnswer::Unknown,
+                        "an unsupported tab-body hover lane cannot deny an overlapping core drop target"
+                    );
+                    assert_eq!(
+                        blocked_store.resolve(query),
+                        NativeReceiverAnswer::Blocked(presented)
+                    );
+                    assert_eq!(
+                        duplicate_store.resolve(query),
+                        NativeReceiverAnswer::Unknown
+                    );
+                    assert_eq!(
+                        mismatched_store.resolve(query),
+                        NativeReceiverAnswer::Unknown
+                    );
+                    hover_resolved = true;
+                }
+                answer
+            })
+            .expect("native drag frame begins");
+        drag.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("native drag frame settles");
+        drag.commit().expect("native drag frame commits");
+        assert!(
+            hover_resolved,
+            "the native drag asks one exact hover question at the pane ingress point"
         );
     }
 
@@ -915,13 +1262,22 @@ mod tests {
                     == dockspace::runtime::DockspaceReceiverRole::TabStripScroll
             })
             .expect("the overflowing tab strip paints one scroll receiver");
+        let hit_authority = context
+            .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+            .expect("the presented pass publishes immutable hit authority");
+        assert_eq!(
+            hit_authority.cumulative_pass_nr(),
+            expected.receiver.cumulative_pass_nr()
+        );
+        let presented_pass_nr = hit_authority.cumulative_pass_nr();
+        let expected_identity = expected.identity;
         let mut store = NativeReceiverStore::default();
         store.presented.insert(
             SURFACE,
             PresentedReceiverSet {
                 binding,
                 viewport: egui::ViewportId::ROOT,
-                cumulative_pass_nr: expected.receiver.cumulative_pass_nr(),
+                hit_authority,
                 semantic_output,
                 receivers: Vec::new(),
                 scroll_receivers,
@@ -929,6 +1285,43 @@ mod tests {
         );
 
         let point = receiver_point.expect("the overflowing tab strip has receiver geometry");
+        let mut later_output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(640.0, 480.0),
+                )),
+                ..RawInput::default()
+            },
+            |ui| {
+                ui.interact(
+                    ui.max_rect(),
+                    Id::new("later-unpresented-native-blocker"),
+                    Sense::click_and_drag(),
+                );
+            },
+        );
+        later_output.textures_delta.clear();
+        let later_authority = context
+            .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+            .expect("the later unpresented pass publishes separate hit authority");
+        assert!(later_authority.cumulative_pass_nr() > presented_pass_nr);
+        let projected_delta = egui::WidgetScrollDelta::new(0.0, -1.0)
+            .expect("the test scroll delta is finite and non-zero");
+        assert_ne!(
+            later_authority
+                .scroll_hit_test(
+                    logical_pos(point).expect("receiver point projects into egui space"),
+                    &[expected_identity],
+                    egui::WidgetScrollHitChallenge::Spatial {
+                        projected_delta: Some(projected_delta),
+                    },
+                )
+                .expect("the later pass answers the finite scroll query")
+                .hit(),
+            egui::WidgetScrollHit::Candidate(expected_identity),
+            "an unpresented later pass must not alias the presented scroll receiver"
+        );
         session
             .record_native_pointer(NativePointerInput::new(
                 NativePointerId::new(1),
@@ -960,7 +1353,7 @@ mod tests {
         let mut resolved = false;
         let mut scroll = session
             .begin_native_host_frame(|query| {
-                let answer = store.resolve(&context, query);
+                let answer = store.resolve(query);
                 if matches!(query.purpose(), NativeReceiverPurpose::ScrollDelivery(_)) {
                     let expected = expected
                         .receiver

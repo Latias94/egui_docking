@@ -196,6 +196,6 @@ pub(crate) fn paint_placeholder(
         disposition,
         Some(DeferredViewportPaint::Created | DeferredViewportPaint::Staging(_))
     ) {
-        ui.ctx().request_repaint_of(ViewportId::ROOT);
+        ui.ctx().request_repaint_once_of(ViewportId::ROOT);
     }
 }

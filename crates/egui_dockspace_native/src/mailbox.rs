@@ -7,17 +7,17 @@ use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
 use eframe::{
-    NativeGlobalFocusObservation, NativeHostAttachment, NativeHostHandler, NativeHostWake,
-    NativeOutputResult, NativeOutputToken, NativePhysicalRect, NativeViewportCloseRequest,
-    NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeViewportCreateFailure,
-    NativeViewportFocusResult, NativeViewportPointerPassthroughResult, NativeViewportRoster,
-    NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot,
+    NativeDeviceRemoval, NativeGlobalFocusObservation, NativeHostAttachment, NativeHostHandler,
+    NativeHostWake, NativeOutputResult, NativeOutputToken, NativePhysicalRect,
+    NativeViewportCloseRequest, NativeViewportCreateAdmission, NativeViewportCreateAttempt,
+    NativeViewportCreateFailure, NativeViewportFocusResult, NativeViewportPointerPassthroughResult,
+    NativeViewportRoster, NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot,
     NativeWindowingBackend, egui::ViewportId,
 };
 
 use crate::close_control::NativeViewportCloseCancellationRecord;
 use crate::error::NativeHostProtocolError;
-use crate::event::{NativeWindowEventClass, NativeWindowEventRecord};
+use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWindowEventRecord};
 use crate::focus_control::{NativeGlobalFocusRecord, NativeViewportFocusRecord};
 use crate::input_control::NativePointerPassthroughRecord;
 use crate::retirement::CommittedRetirement;
@@ -30,6 +30,7 @@ use crate::work_area::FrozenWorkAreaRoster;
 #[derive(Debug, Clone)]
 pub(crate) enum HostRecord {
     WindowEvent(NativeWindowEventRecord),
+    DeviceRemoval(NativeDeviceRemovalRecord),
     GlobalFocus(NativeGlobalFocusRecord),
     ViewportFocus(NativeViewportFocusRecord),
     ViewportPointerPassthrough(NativePointerPassthroughRecord),
@@ -54,7 +55,8 @@ impl HostRecord {
             Self::WindowEvent(event) => {
                 matches!(event.event(), winit::event::WindowEvent::Destroyed)
             }
-            Self::GlobalFocus(_)
+            Self::DeviceRemoval(_)
+            | Self::GlobalFocus(_)
             | Self::ViewportFocus(_)
             | Self::ViewportCloseCancelled(_)
             | Self::ViewportRoster(_)
@@ -228,10 +230,23 @@ impl NativeViewportRosterRecord {
         observations: impl IntoIterator<Item = CompiledWindowObservation>,
         work_areas: FrozenWorkAreaRoster,
     ) -> Self {
+        Self::for_test_with_backend_and_work_areas(
+            observations,
+            work_areas,
+            NativeWindowingBackend::Windows,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_backend_and_work_areas(
+        observations: impl IntoIterator<Item = CompiledWindowObservation>,
+        work_areas: FrozenWorkAreaRoster,
+        backend: NativeWindowingBackend,
+    ) -> Self {
         Self {
             observations: Vec::new(),
             work_areas: Ok(work_areas),
-            backend: NativeWindowingBackend::Windows,
+            backend,
             compiled_override: Some(Ok(observations.into_iter().collect())),
         }
     }
@@ -336,6 +351,14 @@ pub(crate) struct OutputReservation {
     terminal_recorded: bool,
     abandoned: bool,
     wake_on_terminal: bool,
+    wake_after_current: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputAbandonment {
+    NewlyAbandoned,
+    AlreadyAbandonedAwaitingTerminal,
+    MissingOrTerminal,
 }
 
 impl OutputReservation {
@@ -346,6 +369,7 @@ impl OutputReservation {
             terminal_recorded: false,
             abandoned: false,
             wake_on_terminal: true,
+            wake_after_current: false,
         }
     }
 
@@ -356,16 +380,21 @@ impl OutputReservation {
             terminal_recorded: false,
             abandoned: false,
             wake_on_terminal: true,
+            wake_after_current: false,
         }
     }
 
-    const fn diagnostic(window: NativeWindowSnapshot) -> Self {
+    const fn diagnostic(
+        binding: Option<NativeSurfaceBinding>,
+        window: NativeWindowSnapshot,
+    ) -> Self {
         Self {
-            binding: None,
+            binding,
             window: Some(window),
             terminal_recorded: false,
             abandoned: true,
             wake_on_terminal: false,
+            wake_after_current: false,
         }
     }
 
@@ -376,6 +405,7 @@ impl OutputReservation {
             terminal_recorded: false,
             abandoned: true,
             wake_on_terminal: true,
+            wake_after_current: true,
         }
     }
 
@@ -403,6 +433,7 @@ impl OutputReservation {
             terminal_recorded: false,
             abandoned: false,
             wake_on_terminal: true,
+            wake_after_current: false,
         }
     }
 
@@ -414,19 +445,54 @@ impl OutputReservation {
             terminal_recorded: false,
             abandoned: false,
             wake_on_terminal: true,
+            wake_after_current: false,
         }
     }
 
     fn abandon(&mut self) -> bool {
+        self.abandon_with_terminal_wake(true)
+    }
+
+    fn abandon_silently(&mut self) -> bool {
+        self.abandon_with_terminal_wake(false)
+    }
+
+    fn abandon_with_terminal_wake(&mut self, wake_on_terminal: bool) -> bool {
         if self.abandoned {
             return false;
         }
         self.abandoned = true;
+        self.wake_on_terminal = wake_on_terminal;
         true
+    }
+
+    fn settle_abandonment(&mut self, wake_on_terminal: bool) -> OutputAbandonment {
+        if self.terminal_recorded {
+            return OutputAbandonment::MissingOrTerminal;
+        }
+        if self.abandoned {
+            self.wake_on_terminal |= wake_on_terminal;
+            return OutputAbandonment::AlreadyAbandonedAwaitingTerminal;
+        }
+        self.abandoned = true;
+        self.wake_on_terminal = wake_on_terminal;
+        OutputAbandonment::NewlyAbandoned
     }
 
     const fn wakes_on_terminal(self) -> bool {
         self.wake_on_terminal
+    }
+
+    const fn wakes_after_current(self) -> bool {
+        self.wake_after_current
+    }
+
+    fn require_wake_after_current(&mut self) -> bool {
+        if self.terminal_recorded {
+            return self.wake_after_current;
+        }
+        self.wake_after_current = true;
+        true
     }
 }
 
@@ -515,6 +581,51 @@ mod tests {
     }
 
     #[test]
+    fn durable_output_wake_is_idempotent_after_the_terminal_when_prearmed() {
+        let (binding, _) = bindings();
+        let mut prearmed = OutputReservation::bound_for_test(binding);
+        assert!(prearmed.require_wake_after_current());
+        prearmed.terminal_recorded = true;
+        assert!(prearmed.require_wake_after_current());
+
+        let mut too_late = OutputReservation::bound_for_test(binding);
+        too_late.terminal_recorded = true;
+        assert!(!too_late.require_wake_after_current());
+    }
+
+    #[test]
+    fn silent_output_abandonment_does_not_request_a_terminal_wake() {
+        let mut reservation = OutputReservation::unbound_for_test();
+
+        assert!(reservation.abandon_silently());
+        assert!(!reservation.wakes_on_terminal());
+        assert!(!reservation.abandon_silently());
+    }
+
+    #[test]
+    fn repeated_output_settlement_only_upgrades_the_terminal_wake() {
+        let (binding, _) = bindings();
+        let mut silent = OutputReservation::unbound_for_test();
+        assert_eq!(
+            silent.settle_abandonment(false),
+            OutputAbandonment::NewlyAbandoned
+        );
+        assert_eq!(
+            silent.settle_abandonment(true),
+            OutputAbandonment::AlreadyAbandonedAwaitingTerminal
+        );
+        assert!(silent.wakes_on_terminal());
+
+        let mut terminal_create = OutputReservation::bound_for_test(binding);
+        assert!(terminal_create.abandon());
+        assert_eq!(
+            terminal_create.settle_abandonment(false),
+            OutputAbandonment::AlreadyAbandonedAwaitingTerminal
+        );
+        assert!(terminal_create.wakes_on_terminal());
+    }
+
+    #[test]
     fn output_ordinals_must_form_one_contiguous_sequence() {
         assert!(is_next_output_ordinal(0, 1));
         assert!(is_next_output_ordinal(1, 2));
@@ -537,46 +648,67 @@ mod tests {
     }
 
     #[test]
-    fn semantic_prelude_accepts_only_an_empty_or_root_output_only_journal() {
+    fn deferred_semantic_prelude_waits_for_an_empty_journal() {
         let child = ViewportId::from_hash_of("semantic-prelude-child");
         let cases = [
-            ("empty", false, Vec::new(), true),
-            ("empty after boundary", true, Vec::new(), true),
-            ("root output", false, vec![Some(ViewportId::ROOT)], true),
+            ("empty", Vec::new(), true),
+            ("root output", vec![Some(ViewportId::ROOT)], false),
             (
                 "root outputs",
-                false,
                 vec![Some(ViewportId::ROOT), Some(ViewportId::ROOT)],
-                true,
-            ),
-            (
-                "root output after boundary",
-                true,
-                vec![Some(ViewportId::ROOT)],
                 false,
             ),
-            ("child output", false, vec![Some(child)], false),
+            ("child output", vec![Some(child)], false),
             (
                 "root then child output",
-                false,
                 vec![Some(ViewportId::ROOT), Some(child)],
                 false,
             ),
             (
                 "root then callback",
-                false,
                 vec![Some(ViewportId::ROOT), None],
                 false,
             ),
         ];
 
-        for (name, event_boundary_pending, records, expected) in cases {
+        for (name, records, expected) in cases {
             assert_eq!(
-                semantic_prelude_ready(event_boundary_pending, records.into_iter()),
+                deferred_semantic_prelude_ready(records.into_iter()),
                 expected,
                 "{name}"
             );
         }
+
+        let mut records = HostRecords::active();
+        records.event_boundary_pending = true;
+        assert!(records.semantic_prelude_ready());
+    }
+
+    #[test]
+    fn staging_requests_survive_empty_frames_and_track_latest_core_request() {
+        let mut pending = BTreeMap::from([(1_u8, 10_u8)]);
+
+        let inserted = retain_unclaimed_staging_requests(&mut pending, BTreeMap::new(), &[]);
+        assert!(inserted.is_empty());
+        assert_eq!(pending, BTreeMap::from([(1, 10)]));
+
+        let inserted = retain_unclaimed_staging_requests(
+            &mut pending,
+            BTreeMap::from([(1, 20), (2, 30)]),
+            &[30],
+        );
+        assert!(inserted.is_empty());
+        assert_eq!(
+            pending,
+            BTreeMap::from([(1, 20)]),
+            "an unclaimed request follows the latest core basis while in-flight requests are not republished"
+        );
+
+        assert_eq!(pending.remove(&1), Some(20));
+        let inserted =
+            retain_unclaimed_staging_requests(&mut pending, BTreeMap::from([(1, 20)]), &[]);
+        assert_eq!(inserted, vec![1]);
+        assert_eq!(pending, BTreeMap::from([(1, 20)]));
     }
 
     #[test]
@@ -622,20 +754,20 @@ mod tests {
     }
 
     #[test]
-    fn idle_cursor_prefix_crosses_outputs_but_stops_at_other_callbacks() {
+    fn idle_cursor_prefix_stops_at_outputs_and_other_callbacks() {
         use IdleCursorPrefixEntry::{Boundary, Cursor, Output};
 
         assert_eq!(
             idle_cursor_prefix_latest_index(
                 [Cursor, Output, Cursor, Output, Cursor, Output].into_iter()
             ),
-            Some(4)
+            None
         );
         assert_eq!(
             idle_cursor_prefix_latest_index(
-                [Cursor, Output, Cursor, Boundary, Output, Cursor].into_iter()
+                [Cursor, Cursor, Output, Cursor, Boundary, Output, Cursor].into_iter()
             ),
-            Some(2)
+            Some(1)
         );
         assert_eq!(
             idle_cursor_prefix_latest_index([Cursor, Output, Output].into_iter()),
@@ -865,15 +997,21 @@ mod tests {
     }
 
     #[test]
-    fn quarantine_accepts_only_terminal_callbacks() {
+    fn quarantine_accepts_terminal_callbacks_and_close_requests() {
         let (binding, _) = bindings();
         let viewport = ViewportId::ROOT;
         let window = WindowId::from(11);
         let mut records = HostRecords::active();
+        records.blocked_semantic_viewports.insert(viewport);
+        records.ready_semantic_viewports.insert(viewport);
 
         assert!(records.quarantine_after_fatal().is_empty());
 
         assert_eq!(records.mode, HostIngressMode::Quarantined);
+        assert!(records.accepts_no_frame_invalidation());
+        assert!(records.blocked_semantic_viewports.is_empty());
+        assert!(records.ready_semantic_viewports.is_empty());
+        assert!(records.accepts_window_event(&WindowEvent::CloseRequested));
         assert!(records.accepts_window_event(&WindowEvent::Destroyed));
         assert!(!records.accepts_window_event(&WindowEvent::Focused(true)));
         assert!(
@@ -912,6 +1050,7 @@ mod tests {
         records.freeze();
 
         assert_eq!(records.mode, HostIngressMode::Frozen);
+        assert!(!records.accepts_no_frame_invalidation());
         assert!(!records.accepts_window_event(&WindowEvent::Destroyed));
         assert!(
             !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
@@ -926,8 +1065,10 @@ mod tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputRecordDisposition {
     Recorded,
+    RecordedAfterCurrent,
     Ignored,
     IgnoredAndWake,
+    IgnoredAndWakeAfterCurrent,
     ProtocolViolation,
     Inactive,
 }
@@ -974,9 +1115,16 @@ impl HostIngressMode {
     fn accepts_window_event(self, event: &winit::event::WindowEvent) -> bool {
         match self {
             Self::Active => NativeWindowEventClass::classify(event).is_dockspace_ingress(),
-            Self::Quarantined => matches!(event, winit::event::WindowEvent::Destroyed),
+            Self::Quarantined => matches!(
+                event,
+                winit::event::WindowEvent::CloseRequested | winit::event::WindowEvent::Destroyed
+            ),
             Self::Frozen => false,
         }
+    }
+
+    const fn accepts_device_removal(self) -> bool {
+        self.accepts_terminal_callbacks()
     }
 }
 
@@ -1048,27 +1196,35 @@ impl HostRecords {
         {
             return false;
         }
-        let reservation = match self.mode {
-            HostIngressMode::Active => binding.map_or_else(
-                || OutputReservation::unbound(window),
-                |binding| OutputReservation::bound(binding, window),
+        let wake_after_current = binding.is_some_and(|binding| {
+            self.hidden_render_bindings.get(&token.viewport_id()) == Some(&binding)
+        });
+        let (mut reservation, terminal_create) = match self.mode {
+            HostIngressMode::Active => (
+                binding.map_or_else(
+                    || OutputReservation::unbound(window),
+                    |binding| OutputReservation::bound(binding, window),
+                ),
+                false,
             ),
-            HostIngressMode::Quarantined => binding
-                .filter(|binding| {
+            HostIngressMode::Quarantined => {
+                let terminal_create = binding.filter(|binding| {
                     token.create_attempt().is_some()
                         && self
                             .create_reservations
                             .get(&token.viewport_id())
                             .is_some_and(|reservation| reservation.binding == *binding)
-                })
-                .map_or_else(
-                    || OutputReservation::diagnostic(window),
-                    |binding| OutputReservation::terminal_create(binding, window),
-                ),
+                });
+                terminal_create.map_or_else(
+                    || (OutputReservation::diagnostic(binding, window), false),
+                    |binding| (OutputReservation::terminal_create(binding, window), true),
+                )
+            }
             HostIngressMode::Frozen => unreachable!("frozen outputs return before reservation"),
         };
-        let terminal_create =
-            matches!(self.mode, HostIngressMode::Quarantined) && reservation.binding().is_some();
+        if wake_after_current {
+            debug_assert!(reservation.require_wake_after_current());
+        }
         self.output_reservations.insert(token, reservation);
         if terminal_create {
             let binding = reservation
@@ -1090,6 +1246,13 @@ impl HostRecords {
         reservation.attach(binding)
     }
 
+    fn require_output_wake_after_current(&mut self, token: NativeOutputToken) -> bool {
+        let Some(reservation) = self.output_reservations.get_mut(&token) else {
+            return false;
+        };
+        reservation.require_wake_after_current()
+    }
+
     fn record_output(&mut self, result: NativeOutputResult) -> OutputRecordDisposition {
         if !self.mode.accepts_terminal_callbacks() {
             return OutputRecordDisposition::Inactive;
@@ -1109,18 +1272,25 @@ impl HostRecords {
         reservation.terminal_recorded = true;
         if reservation.abandoned {
             let wake = reservation.wakes_on_terminal();
+            let wake_after_current = reservation.wakes_after_current();
             self.output_reservations.remove(&result.token());
-            return if wake {
-                OutputRecordDisposition::IgnoredAndWake
-            } else {
-                OutputRecordDisposition::Ignored
+            return match (wake, wake_after_current) {
+                (true, true) => OutputRecordDisposition::IgnoredAndWakeAfterCurrent,
+                (true, false) => OutputRecordDisposition::IgnoredAndWake,
+                (false, true) => OutputRecordDisposition::IgnoredAndWakeAfterCurrent,
+                (false, false) => OutputRecordDisposition::Ignored,
             };
         }
+        let wake_after_current = reservation.wakes_after_current();
         self.journal.push_back(HostRecord::Output {
             result,
             submitted: false,
         });
-        OutputRecordDisposition::Recorded
+        if wake_after_current {
+            OutputRecordDisposition::RecordedAfterCurrent
+        } else {
+            OutputRecordDisposition::Recorded
+        }
     }
 
     fn accept_output_order(&mut self, result: NativeOutputResult) -> bool {
@@ -1238,25 +1408,18 @@ impl HostRecords {
     }
 
     fn semantic_prelude_ready(&self) -> bool {
-        semantic_prelude_ready(
-            self.event_boundary_pending,
-            self.journal.iter().map(|record| match record {
-                HostRecord::Output { result, .. } => Some(result.token().viewport_id()),
-                HostRecord::WindowEvent(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_) => None,
-            }),
-        )
+        deferred_semantic_prelude_ready(self.journal.iter())
     }
 
     fn abandon_output(&mut self, token: NativeOutputToken) -> bool {
+        self.abandon_output_with_terminal_wake(token, true)
+    }
+
+    fn abandon_output_with_terminal_wake(
+        &mut self,
+        token: NativeOutputToken,
+        wake_on_terminal: bool,
+    ) -> bool {
         if self.journal.iter().any(|record| {
             matches!(
                 record,
@@ -1279,7 +1442,31 @@ impl HostRecords {
         let Some(reservation) = self.output_reservations.get_mut(&token) else {
             return false;
         };
-        reservation.abandon()
+        if wake_on_terminal {
+            reservation.abandon()
+        } else {
+            reservation.abandon_silently()
+        }
+    }
+
+    fn settle_output_abandonment(
+        &mut self,
+        token: NativeOutputToken,
+        wake_on_terminal: bool,
+    ) -> OutputAbandonment {
+        if self.journal.iter().any(
+            |record| matches!(record, HostRecord::Output { result, .. } if result.token() == token),
+        ) {
+            return OutputAbandonment::MissingOrTerminal;
+        }
+        let Some(reservation) = self.output_reservations.get_mut(&token) else {
+            return OutputAbandonment::MissingOrTerminal;
+        };
+        reservation.settle_abandonment(wake_on_terminal)
+    }
+
+    const fn accepts_no_frame_invalidation(&self) -> bool {
+        !matches!(self.mode, HostIngressMode::Frozen)
     }
 
     fn freeze(&mut self) {
@@ -1290,6 +1477,12 @@ impl HostRecords {
         if !matches!(self.mode, HostIngressMode::Frozen) {
             self.mode = HostIngressMode::Quarantined;
         }
+        // Quarantine cannot accept another staging or semantic paint. Release
+        // adapter-owned wake obligations here; exact output reservations and
+        // binding retirement continue to carry terminal lifetime authority.
+        self.staging_requests.clear();
+        self.blocked_semantic_viewports.clear();
+        self.ready_semantic_viewports.clear();
         if self
             .journal
             .iter()
@@ -1326,6 +1519,10 @@ impl HostRecords {
         self.journal.push_back(HostRecord::WindowEvent(record));
     }
 
+    fn record_device_removal(&mut self, record: NativeDeviceRemovalRecord) {
+        self.journal.push_back(HostRecord::DeviceRemoval(record));
+    }
+
     fn coalesce_idle_cursor_prefix(&mut self) -> bool {
         let Some(HostRecord::WindowEvent(first)) = self.journal.front() else {
             return false;
@@ -1337,6 +1534,7 @@ impl HostRecords {
                 }
                 HostRecord::Output { .. } => IdleCursorPrefixEntry::Output,
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
@@ -1351,17 +1549,16 @@ impl HostRecords {
             return false;
         };
 
-        // Keep renderer terminals in their exact callback order. Only obsolete
-        // idle hover observations disappear, allowing an output-separated
-        // `move -> output -> move` backlog to converge without reordering any
-        // retained fact.
+        // Renderer terminals are causal boundaries. Only obsolete idle hover
+        // observations before the first output or other callback may
+        // disappear; output-separated cursor observations remain lossless.
         let mut retained = Vec::new();
         for index in 0..=latest_cursor_index {
             let record = self
                 .journal
                 .pop_front()
                 .expect("the scanned cursor prefix remains present");
-            if matches!(record, HostRecord::Output { .. }) || index == latest_cursor_index {
+            if index == latest_cursor_index {
                 retained.push(record);
             }
         }
@@ -1543,6 +1740,7 @@ impl HostRecords {
     fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.journal.iter().any(|record| match record {
             HostRecord::WindowEvent(event) => event.references_binding(binding),
+            HostRecord::DeviceRemoval(_) => false,
             HostRecord::GlobalFocus(focus) => focus.references_binding(binding),
             HostRecord::ViewportFocus(focus) => focus.references_binding(binding),
             HostRecord::ViewportPointerPassthrough(input) => input.references_binding(binding),
@@ -1576,13 +1774,31 @@ impl HostRecords {
     }
 }
 
-fn semantic_prelude_ready(
-    event_boundary_pending: bool,
-    records: impl Iterator<Item = Option<ViewportId>>,
-) -> bool {
-    let mut records = records.peekable();
-    records.peek().is_none()
-        || (!event_boundary_pending && records.all(|viewport| viewport == Some(ViewportId::ROOT)))
+fn deferred_semantic_prelude_ready<T>(mut records: impl Iterator<Item = T>) -> bool {
+    records.next().is_none()
+}
+
+fn retain_unclaimed_staging_requests<K, V>(
+    pending: &mut BTreeMap<K, V>,
+    published: BTreeMap<K, V>,
+    in_flight: &[V],
+) -> Vec<K>
+where
+    K: Copy + Ord,
+    V: Copy + PartialEq,
+{
+    let mut inserted = Vec::new();
+    for (key, request) in published {
+        if in_flight.contains(&request) {
+            continue;
+        }
+        match pending.insert(key, request) {
+            None => inserted.push(key),
+            Some(previous) if previous == request => {}
+            Some(_) => {}
+        }
+    }
+    inserted
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1599,8 +1815,7 @@ fn idle_cursor_prefix_latest_index(
     for (index, entry) in entries.enumerate() {
         match entry {
             IdleCursorPrefixEntry::Cursor => latest_cursor_index = Some(index),
-            IdleCursorPrefixEntry::Output => {}
-            IdleCursorPrefixEntry::Boundary => break,
+            IdleCursorPrefixEntry::Output | IdleCursorPrefixEntry::Boundary => break,
         }
     }
     latest_cursor_index.filter(|index| *index != 0)
@@ -1674,7 +1889,28 @@ impl NativeHostBridge {
         match self.lock().journal.front() {
             Some(HostRecord::WindowEvent(event)) => Some(event.clone()),
             Some(
-                HostRecord::GlobalFocus(_)
+                HostRecord::DeviceRemoval(_)
+                | HostRecord::GlobalFocus(_)
+                | HostRecord::ViewportFocus(_)
+                | HostRecord::ViewportPointerPassthrough(_)
+                | HostRecord::ViewportCloseCancelled(_)
+                | HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportVisibility(_)
+                | HostRecord::ViewportCreated(_)
+                | HostRecord::StagingPainted(_)
+                | HostRecord::Output { .. },
+            )
+            | None => None,
+        }
+    }
+
+    pub(crate) fn front_device_removal(&self) -> Option<NativeDeviceRemovalRecord> {
+        match self.lock().journal.front() {
+            Some(HostRecord::DeviceRemoval(removal)) => Some(*removal),
+            Some(
+                HostRecord::WindowEvent(_)
+                | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::ViewportCloseCancelled(_)
@@ -1694,6 +1930,7 @@ impl NativeHostBridge {
             Some(HostRecord::GlobalFocus(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::ViewportCloseCancelled(_)
@@ -1713,6 +1950,7 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportFocus(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::ViewportCloseCancelled(_)
@@ -1734,6 +1972,7 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportPointerPassthrough(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportCloseCancelled(_)
@@ -1755,6 +1994,7 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportCloseCancelled(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
@@ -1778,6 +2018,7 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportCreated(created)) => Some(*created),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
@@ -1797,6 +2038,7 @@ impl NativeHostBridge {
             Some(HostRecord::StagingPainted(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
@@ -1818,6 +2060,7 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportCreateFailed(failure)) => Some(*failure),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
@@ -1837,6 +2080,7 @@ impl NativeHostBridge {
             self.lock().journal.front(),
             Some(
                 HostRecord::WindowEvent(_)
+                    | HostRecord::DeviceRemoval(_)
                     | HostRecord::GlobalFocus(_)
                     | HostRecord::ViewportFocus(_)
                     | HostRecord::ViewportPointerPassthrough(_)
@@ -1850,11 +2094,28 @@ impl NativeHostBridge {
         )
     }
 
+    pub(crate) fn has_pending_callback_records(&self) -> bool {
+        !self.lock().journal.is_empty()
+    }
+
     pub(crate) fn acknowledge_event(&self, ordinal: u64) -> bool {
         let mut records = self.lock();
         let matches = matches!(
             records.journal.front(),
             Some(HostRecord::WindowEvent(event)) if event.ordinal() == ordinal
+        );
+        if matches {
+            records.journal.pop_front();
+            records.event_boundary_pending = true;
+        }
+        matches
+    }
+
+    pub(crate) fn acknowledge_device_removal(&self, expected: NativeDeviceRemovalRecord) -> bool {
+        let mut records = self.lock();
+        let matches = matches!(
+            records.journal.front(),
+            Some(HostRecord::DeviceRemoval(removal)) if *removal == expected
         );
         if matches {
             records.journal.pop_front();
@@ -1955,6 +2216,7 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportVisibility(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
@@ -2040,6 +2302,7 @@ impl NativeHostBridge {
             .map_while(|record| match record {
                 HostRecord::Output { result, submitted } => Some((*result, *submitted)),
                 HostRecord::WindowEvent(_)
+                | HostRecord::DeviceRemoval(_)
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
@@ -2161,10 +2424,10 @@ impl NativeHostBridge {
             .map(|reservation| reservation.binding)
     }
 
-    pub(crate) fn replace_staging_requests(
+    pub(crate) fn publish_staging_requests(
         &self,
-        mut requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
-    ) {
+        requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
+    ) -> Vec<ViewportId> {
         let mut records = self.lock();
         let in_flight = records
             .journal
@@ -2174,8 +2437,10 @@ impl NativeHostBridge {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        requests.retain(|_, request| !in_flight.contains(request));
-        records.staging_requests = requests;
+        // Empty control frames do not revoke a pending callback. A later
+        // request for the same viewport does replace its basis, because core
+        // reissues staging after newer exact window observations.
+        retain_unclaimed_staging_requests(&mut records.staging_requests, requests, &in_flight)
     }
 
     pub(crate) fn record_deferred_viewport_paint(
@@ -2217,11 +2482,6 @@ impl NativeHostBridge {
                     return DeferredViewportPaint::Semantic(binding);
                 }
                 records.block_semantic_viewport(token.viewport_id());
-                records
-                    .output_reservations
-                    .get_mut(&token)
-                    .expect("the deferred output reservation remains present")
-                    .abandon();
                 return DeferredViewportPaint::Retain(binding);
             }
             records
@@ -2300,6 +2560,10 @@ impl NativeHostBridge {
         self.lock().attach_output_binding(token, binding)
     }
 
+    pub(crate) fn require_output_wake_after_current(&self, token: NativeOutputToken) -> bool {
+        self.lock().require_output_wake_after_current(token)
+    }
+
     pub(crate) fn mark_output_submitted(&self, token: NativeOutputToken) -> bool {
         let mut records = self.lock();
         let Some(HostRecord::Output { result, submitted }) = records.journal.iter_mut().find(
@@ -2316,6 +2580,19 @@ impl NativeHostBridge {
 
     pub(crate) fn abandon_output(&self, token: NativeOutputToken) -> bool {
         self.lock().abandon_output(token)
+    }
+
+    pub(crate) fn settle_output_abandonment(
+        &self,
+        token: NativeOutputToken,
+        wake_on_terminal: bool,
+    ) -> OutputAbandonment {
+        self.lock()
+            .settle_output_abandonment(token, wake_on_terminal)
+    }
+
+    pub(crate) fn accepts_no_frame_invalidation(&self) -> bool {
+        self.lock().accepts_no_frame_invalidation()
     }
 
     pub(crate) fn commit_frame_boundary(&self) {
@@ -2338,6 +2615,10 @@ impl NativeHostBridge {
 
     pub(crate) fn take_ready_semantic_viewports(&self) -> Vec<ViewportId> {
         self.lock().take_ready_semantic_viewports()
+    }
+
+    pub(crate) fn block_semantic_viewport(&self, viewport: ViewportId) {
+        self.lock().block_semantic_viewport(viewport);
     }
 
     pub(crate) fn freeze(&self) {
@@ -2452,6 +2733,11 @@ impl NativeHostBridge {
         assert!(self.lock().record_viewport_roster(roster));
     }
 
+    #[cfg(test)]
+    pub(crate) fn push_terminal_viewport_roster(&self, roster: NativeViewportRosterRecord) {
+        assert!(self.lock().record_terminal_viewport_roster(roster));
+    }
+
     pub(crate) fn callback_boundary_pending(&self) -> bool {
         self.lock().event_boundary_pending
     }
@@ -2492,6 +2778,14 @@ impl NativeHostHandler for NativeHostBridge {
         }
         let record = NativeWindowEventRecord::from_eframe(event, &mut viewports);
         records.record_window_event(record);
+    }
+
+    fn on_device_removed(&self, removal: NativeDeviceRemoval) {
+        let mut records = self.lock();
+        if !records.mode.accepts_device_removal() {
+            return;
+        }
+        records.record_device_removal(NativeDeviceRemovalRecord::from_eframe(removal));
     }
 
     fn on_global_focus(&self, observation: NativeGlobalFocusObservation) -> NativeHostWake {
@@ -2559,13 +2853,14 @@ impl NativeHostHandler for NativeHostBridge {
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
         let disposition = self.lock().record_output(result);
         match disposition {
-            OutputRecordDisposition::Recorded | OutputRecordDisposition::ProtocolViolation => {
-                NativeHostWake::RepaintRoot
-            }
+            OutputRecordDisposition::Recorded => NativeHostWake::RepaintRoot,
+            OutputRecordDisposition::RecordedAfterCurrent
+            | OutputRecordDisposition::IgnoredAndWakeAfterCurrent
+            | OutputRecordDisposition::ProtocolViolation => NativeHostWake::RepaintRootAfterCurrent,
+            OutputRecordDisposition::IgnoredAndWake => NativeHostWake::RepaintRoot,
             OutputRecordDisposition::Ignored | OutputRecordDisposition::Inactive => {
                 NativeHostWake::Wait
             }
-            OutputRecordDisposition::IgnoredAndWake => NativeHostWake::RepaintRoot,
         }
     }
 

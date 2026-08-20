@@ -222,6 +222,24 @@ impl DockspaceSession {
         Ok(())
     }
 
+    /// Records one causally indivisible batch of native pointer edges.
+    ///
+    /// The runtime assigns consecutive provider sequences in iterator order.
+    /// If any input is rejected, every edge appended by this call is rolled
+    /// back so the adapter can retry from the exact preceding boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong host profile, stale window or work-area
+    /// bindings, contradictory route facts, or sequence exhaustion.
+    pub fn record_native_pointer_batch(
+        &mut self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.native_state_mut()?.record_pointer_batch(inputs)?;
+        Ok(())
+    }
+
     /// Records an explicit Unknown native-window inventory tombstone.
     ///
     /// This revokes retained inventory authority without guessing that any

@@ -40,6 +40,8 @@ pub(crate) enum NativeHostProtocolError {
     CallbackRecordPending,
     #[error("the native window event acknowledgement does not match the journal head")]
     WindowEventAcknowledgementMismatch,
+    #[error("the native device-removal acknowledgement does not match the journal head")]
+    DeviceRemovalAcknowledgementMismatch,
     #[error("the global native-focus acknowledgement does not match the journal head")]
     GlobalFocusAcknowledgementMismatch,
     #[error("the viewport focus-command acknowledgement does not match the journal head")]
@@ -54,7 +56,7 @@ pub(crate) enum NativeHostProtocolError {
     ViewportRosterAcknowledgementMismatch,
     #[error("a viewport creation failure has no matching retained native effect")]
     ViewportCreateFailureWithoutEffect,
-    #[error("dockspace rejected a retryable native effect result: {0:?}")]
+    #[error("dockspace rejected a native effect result: {0:?}")]
     NativeEffectResultRejected(NativeHostErrorKind),
     #[error("a terminal native output is waiting for its affine painted output")]
     OutputAwaitingAttachment,
@@ -122,6 +124,7 @@ impl NativeHostProtocolError {
             Self::NativeEffectResultRejected(kind) => kind.runtime_error_kind(),
             Self::CallbackRecordPending
             | Self::WindowEventAcknowledgementMismatch
+            | Self::DeviceRemovalAcknowledgementMismatch
             | Self::GlobalFocusAcknowledgementMismatch
             | Self::ViewportFocusAcknowledgementMismatch
             | Self::ViewportPointerPassthroughAcknowledgementMismatch
@@ -411,6 +414,10 @@ mod tests {
             ),
             (
                 NativeHostProtocolError::WindowEventAcknowledgementMismatch,
+                NativeRuntimeErrorKind::HostProtocol,
+            ),
+            (
+                NativeHostProtocolError::DeviceRemovalAcknowledgementMismatch,
                 NativeRuntimeErrorKind::HostProtocol,
             ),
             (

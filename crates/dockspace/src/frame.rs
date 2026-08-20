@@ -1467,6 +1467,27 @@ impl ViewportCoordinator {
             return Ok(None);
         }
         let pointer_restore_pending = self.pointer_passthrough.contains_binding(binding);
+        if !pointer_restore_pending
+            && self
+                .binding_cleanup
+                .get(&binding)
+                .is_some_and(BindingRetirement::is_retired)
+            && let Some(record) = self.registry.record(binding.surface())
+            && record.binding() == binding
+        {
+            if record.admission() != ViewportAdmission::Retiring {
+                return Err(
+                    ViewportCoordinatorError::RetiringBindingUnexpectedAdmission {
+                        binding,
+                        admission: record.admission(),
+                    },
+                );
+            }
+            let _ = self
+                .registry
+                .detach(binding)
+                .map_err(ViewportCoordinatorError::Registry)?;
+        }
         let directive = self
             .binding_cleanup
             .plan_drive(binding, pointer_restore_pending)
@@ -3121,6 +3142,13 @@ impl ViewportCoordinator {
             if actual.admission() == ViewportAdmission::Retiring {
                 continue;
             }
+            let binding = actual.binding();
+            let role = actual.role();
+            let ownership = actual.ownership();
+            let lifecycle = actual.lifecycle();
+            let input_observations = actual.input_observations();
+            let close_observations = actual.close_observations();
+            let ever_observed = actual.ever_observed();
             let mut retained_staging_resource = None;
             if let Some((saga, resource)) =
                 candidate.retire_first_live_native_create_for_vacancy(expected.binding)
@@ -3160,33 +3188,38 @@ impl ViewportCoordinator {
                     (resource, owner)
                 });
             }
-            let facts = candidate
-                .registry
-                .detach(expected.binding)
-                .map_err(ViewportCoordinatorError::Registry)?;
-            let binding = facts.binding();
-            let observed = facts.ever_observed()
+            let observed = ever_observed
                 && !matches!(
-                    facts.lifecycle(),
+                    lifecycle,
                     ViewportLifecycle::Missing | ViewportLifecycle::Destroyed
                 );
-            let may_reappear =
-                facts.ever_observed() && !matches!(facts.lifecycle(), ViewportLifecycle::Destroyed);
-            let cleanup = match facts.ownership() {
+            let may_reappear = ever_observed && !matches!(lifecycle, ViewportLifecycle::Destroyed);
+            let cleanup = match ownership {
                 ViewportOwnership::External => BindingCleanupAction::KeepExternal,
                 ViewportOwnership::RuntimeOwned => BindingCleanupAction::ReleaseOwnedWindow,
             };
             // Inventory absence cannot establish that an external window was destroyed.
             // Keep its token owned by this exact binding until a Destroyed observation
             // arrives, even if it was never observed in an inventory snapshot.
-            let external_requires_exact_destruction = facts.ownership()
-                == ViewportOwnership::External
-                && !matches!(facts.lifecycle(), ViewportLifecycle::Destroyed);
+            let external_requires_exact_destruction = ownership == ViewportOwnership::External
+                && !matches!(lifecycle, ViewportLifecycle::Destroyed);
+            let pointer_restore_pending = candidate.pointer_passthrough.contains_binding(binding);
             let needs_retirement = external_requires_exact_destruction
-                || facts.ownership() == ViewportOwnership::RuntimeOwned
+                || ownership == ViewportOwnership::RuntimeOwned
                 || observed
                 || may_reappear
-                || candidate.pointer_passthrough.contains_binding(binding);
+                || pointer_restore_pending;
+            if pointer_restore_pending {
+                candidate
+                    .registry
+                    .mark_awaiting_destroyed(binding)
+                    .map_err(ViewportCoordinatorError::Registry)?;
+            } else {
+                let _ = candidate
+                    .registry
+                    .detach(binding)
+                    .map_err(ViewportCoordinatorError::Registry)?;
+            }
             if needs_retirement {
                 if let Some((resource, owner)) = retained_staging_resource {
                     candidate.transition_native_staging_resource(
@@ -3197,13 +3230,13 @@ impl ViewportCoordinator {
                 }
                 candidate.begin_binding_cleanup(BindingCleanupRequest {
                     binding,
-                    role: facts.role(),
-                    ownership: facts.ownership(),
+                    role,
+                    ownership,
                     origin: BindingRetirementOrigin::SurfaceVacated,
                     status: BindingRetirementStatus::AwaitingInputRestore,
                     observed,
-                    input_observations: facts.input_observations(),
-                    close_observations: facts.close_observations(),
+                    input_observations,
+                    close_observations,
                     may_reappear,
                     cleanup,
                     retained_staging_resource: retained_staging_resource
@@ -4077,6 +4110,11 @@ pub enum ViewportCoordinatorError {
     MissingRecoveryPending { surface: SurfaceId },
     #[error("staging binding {binding:?} did not retain pending admission: {admission:?}")]
     StagingBindingUnexpectedAdmission {
+        binding: ViewportBinding,
+        admission: ViewportAdmission,
+    },
+    #[error("retiring binding {binding:?} has unexpected admission {admission:?}")]
+    RetiringBindingUnexpectedAdmission {
         binding: ViewportBinding,
         admission: ViewportAdmission,
     },

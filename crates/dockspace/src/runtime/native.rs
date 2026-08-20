@@ -842,6 +842,7 @@ pub(super) struct RuntimeNativeState {
     bindings: BTreeMap<SurfaceId, NativeSurfaceBinding>,
     binding_admissions: BTreeMap<ViewportBinding, ViewportAdmission>,
     retired_bindings: BTreeSet<ViewportBinding>,
+    window_observation_generations: BTreeMap<ViewportBinding, u64>,
     work_areas: BTreeMap<WorkAreaToken, NativeWorkAreaBinding>,
     close_generations: BTreeMap<ViewportBinding, u64>,
     focus_generation: u64,
@@ -867,6 +868,7 @@ impl RuntimeNativeState {
             bindings: BTreeMap::new(),
             binding_admissions: BTreeMap::new(),
             retired_bindings: BTreeSet::new(),
+            window_observation_generations: BTreeMap::new(),
             work_areas: BTreeMap::new(),
             close_generations: BTreeMap::new(),
             focus_generation: 0,
@@ -1066,6 +1068,28 @@ impl RuntimeNativeState {
             .collect()
     }
 
+    fn next_window_observation_generations(
+        &self,
+        supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
+    ) -> Result<BTreeMap<ViewportBinding, u64>, NativePlatformError> {
+        supplied
+            .iter()
+            .filter_map(|(binding, facts)| {
+                matches!(facts.lifecycle, NativeWindowLifecycleFact::Live).then_some(*binding)
+            })
+            .map(|binding| {
+                let generation = self
+                    .window_observation_generations
+                    .get(&binding)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(NativePlatformError::GenerationExhausted)?;
+                Ok((binding, generation))
+            })
+            .collect()
+    }
+
     fn validate_snapshot_roster(
         &self,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
@@ -1119,6 +1143,7 @@ impl RuntimeNativeState {
         }
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
+        let window_observation_generations = self.next_window_observation_generations(&supplied)?;
         let close_generations = self.next_close_generations(supplied.keys().copied())?;
         let (focus, focus_update) =
             self.focus_observation_for_bindings(supplied.iter().filter_map(|(binding, facts)| {
@@ -1130,6 +1155,7 @@ impl RuntimeNativeState {
             self.provider(),
             generation,
             focus,
+            &window_observation_generations,
             &close_generations,
             &supplied,
             &work_areas,
@@ -1141,6 +1167,8 @@ impl RuntimeNativeState {
             .values()
             .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }));
         self.snapshot_generation = generation;
+        self.window_observation_generations
+            .extend(window_observation_generations);
         self.close_generations.extend(close_generations);
         if let Some((generation, focus)) = focus_update {
             self.focus_generation = generation;
@@ -1260,6 +1288,11 @@ impl RuntimeNativeState {
         }
         self.bindings = next_bindings;
         self.binding_admissions = next_binding_admissions;
+        self.window_observation_generations.retain(|binding, _| {
+            self.bindings
+                .get(&binding.surface())
+                .is_some_and(|current| current.binding == *binding)
+        });
         self.work_areas = engine
             .viewport()
             .work_areas()

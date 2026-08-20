@@ -1,11 +1,29 @@
 //! Owned records copied from eframe's borrowed native event callback.
 
 use dockspace::runtime::NativeSurfaceBinding;
-use eframe::egui::ViewportId;
+use eframe::{NativeDeviceRemoval, egui::ViewportId};
 use winit::event::{PointerWindowRoute, WindowEvent};
 use winit::window::WindowId;
 
 use crate::viewport_map::NativeViewportMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeDeviceRemovalRecord {
+    ordinal: u64,
+}
+
+impl NativeDeviceRemovalRecord {
+    pub(crate) fn from_eframe(removal: NativeDeviceRemoval) -> Self {
+        Self {
+            ordinal: removal.ordinal().get(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(ordinal: u64) -> Self {
+        Self { ordinal }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeWindowEventClass {
@@ -21,7 +39,8 @@ impl NativeWindowEventClass {
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. }
             | WindowEvent::PointerCaptureChanged { .. }
-            | WindowEvent::PanGesture { .. } => Self::Pointer,
+            | WindowEvent::PanGesture { .. }
+            | WindowEvent::Touch(_) => Self::Pointer,
             WindowEvent::CloseRequested | WindowEvent::Destroyed => Self::Lifecycle,
             _ => Self::Other,
         }

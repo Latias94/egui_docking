@@ -561,17 +561,6 @@ pub enum EngineInput {
         item: ItemId,
         /// Existing target surface.
         surface: SurfaceId,
-        /// Durable surface-local contained bounds.
-        rect: crate::geometry::LogicalRect,
-    },
-    /// Replace the durable bounds of the contained presentation owning one item.
-    SetContainedRect {
-        /// Exact workspace version from which this product action was derived.
-        expected: WorkspaceVersion,
-        /// Stable application item inside the contained root.
-        item: ItemId,
-        /// New durable surface-local bounds.
-        rect: crate::geometry::LogicalRect,
     },
     /// Raise the contained presentation owning one item.
     RaiseContained {
@@ -906,7 +895,6 @@ impl EngineInput {
             | Self::TearOffRoot { .. }
             | Self::FloatRoot { .. }
             | Self::FloatItem { .. }
-            | Self::SetContainedRect { .. }
             | Self::RaiseContained { .. }
             | Self::BringContainedIntoView { .. }
             | Self::RequestContentClose { .. }

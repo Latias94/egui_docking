@@ -134,6 +134,84 @@ fn wheel_translation_never_upgrades_missing_event_time_facts() {
 }
 
 #[test]
+fn device_removal_cancels_live_scroll_before_terminating_its_pointer() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let window = WindowId::from(45);
+    let started = phaseful_scroll_record(1, window, binding, TouchPhase::Started, 1.0);
+    let mut translator = NativePointerTranslator::default();
+
+    assert!(matches!(
+        translator.translate_for_test_device(&started, 303, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert_eq!(
+        translator.remove_all_devices(),
+        vec![
+            phaseful_scroll_input_for_device(
+                NativePointerId::new(1),
+                NativeScrollDeviceId::new(1),
+                None,
+                NativeScrollPhase::Cancel {
+                    sequence: NativeScrollSequenceId::new(1),
+                    reason: NativeScrollCancelReason::DeviceRemoved,
+                },
+            ),
+            NativePointerInput::new(
+                NativePointerId::new(1),
+                NativePointerEvent::StreamCancelled(NativePointerCancelReason::DeviceRemoved),
+                NativeDesktopPointerLocation::new(
+                    NativeDesktopPosition::Unknown,
+                    NativePointerHover::Unknown,
+                    None,
+                ),
+                NativePointerOwner::Unknown,
+                NativePointerOwner::Unknown,
+            ),
+        ],
+        "the scroll sequence closes before the shared pointer stream terminates"
+    );
+}
+
+#[test]
+fn removed_device_ignores_wheel_moved_and_ended_until_a_new_phase_begins() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let window = WindowId::from(46);
+    let started = phaseful_scroll_record(1, window, binding, TouchPhase::Started, 1.0);
+    let moved = phaseful_scroll_record(2, window, binding, TouchPhase::Moved, 2.0);
+    let ended = phaseful_scroll_record(3, window, binding, TouchPhase::Ended, 0.0);
+    let mut translator = NativePointerTranslator::default();
+
+    assert!(matches!(
+        translator.translate_for_test_device(&started, 304, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert_eq!(translator.remove_all_devices().len(), 2);
+    assert_eq!(
+        translator.translate_for_test_device(&moved, 304, |_| None),
+        NativePointerTranslation::Ignored,
+        "a moved tail cannot create a discrete sequence after removal"
+    );
+    assert_eq!(
+        translator.translate_for_test_device(&ended, 304, |_| None),
+        NativePointerTranslation::Ignored
+    );
+    assert_eq!(
+        translator.translate_for_test_device(&started, 304, |_| None),
+        NativePointerTranslation::Input(phaseful_scroll_input_for_device(
+            NativePointerId::new(2),
+            NativeScrollDeviceId::new(2),
+            Some(binding),
+            NativeScrollPhase::Begin {
+                sequence: NativeScrollSequenceId::new(2),
+                delta: Some(NativeScrollDelta::Lines { x: 0.0, y: 1.0 }),
+            },
+        ))
+    );
+}
+
+#[test]
 fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
@@ -157,9 +235,6 @@ fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
     assert!(translator.references_binding(first));
     assert!(!translator.references_binding(second));
 
-    let retired = translator
-        .cancel_destroyed_binding(first)
-        .expect("the destroyed delivery binding owns the active sequence");
     let expected_retired = phaseful_scroll_input(
         None,
         NativeScrollPhase::Cancel {
@@ -167,10 +242,13 @@ fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
             reason: NativeScrollCancelReason::BindingRetired,
         },
     );
-    assert_eq!(retired, expected_retired);
+    assert_eq!(
+        translator.cancel_destroyed_binding(first),
+        vec![expected_retired]
+    );
     assert!(translator.references_binding(first));
     assert!(translator.has_pending_provider_tail());
-    assert!(translator.cancel_destroyed_binding(first).is_none());
+    assert!(translator.cancel_destroyed_binding(first).is_empty());
 
     let expected_reset = phaseful_scroll_input(
         None,
@@ -180,10 +258,8 @@ fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
         },
     );
     assert_eq!(
-        translator
-            .reset_destroyed_binding(first)
-            .expect("the destroyed lifecycle boundary resets the provider tail"),
-        expected_reset
+        translator.reset_destroyed_binding(first),
+        vec![expected_reset]
     );
     assert!(!translator.has_pending_provider_tail());
     assert!(!translator.references_binding(first));
@@ -221,6 +297,84 @@ fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
 }
 
 #[test]
+fn destroying_one_binding_preserves_another_devices_live_scroll_sequence() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let first_window = WindowId::from(53);
+    let second_window = WindowId::from(54);
+    let first_begin = phaseful_scroll_record(1, first_window, first, TouchPhase::Started, 1.0);
+    let second_begin = phaseful_scroll_record(2, second_window, second, TouchPhase::Started, 2.0);
+    let mut translator = NativePointerTranslator::default();
+
+    assert_eq!(
+        translator.translate_for_test_device(&first_begin, 101, |_| None),
+        NativePointerTranslation::Input(phaseful_scroll_input_for_device(
+            NativePointerId::new(1),
+            NativeScrollDeviceId::new(1),
+            Some(first),
+            NativeScrollPhase::Begin {
+                sequence: NativeScrollSequenceId::new(1),
+                delta: Some(NativeScrollDelta::Lines { x: 0.0, y: 1.0 }),
+            },
+        ))
+    );
+    assert_eq!(
+        translator.translate_for_test_device(&second_begin, 202, |_| None),
+        NativePointerTranslation::Input(phaseful_scroll_input_for_device(
+            NativePointerId::new(2),
+            NativeScrollDeviceId::new(2),
+            Some(second),
+            NativeScrollPhase::Begin {
+                sequence: NativeScrollSequenceId::new(2),
+                delta: Some(NativeScrollDelta::Lines { x: 0.0, y: 2.0 }),
+            },
+        ))
+    );
+
+    assert_eq!(
+        translator.cancel_destroyed_binding(first),
+        vec![phaseful_scroll_input_for_device(
+            NativePointerId::new(1),
+            NativeScrollDeviceId::new(1),
+            None,
+            NativeScrollPhase::Cancel {
+                sequence: NativeScrollSequenceId::new(1),
+                reason: NativeScrollCancelReason::BindingRetired,
+            },
+        )]
+    );
+    assert_eq!(
+        translator.reset_destroyed_binding(first),
+        vec![phaseful_scroll_input_for_device(
+            NativePointerId::new(1),
+            NativeScrollDeviceId::new(1),
+            None,
+            NativeScrollPhase::Cancel {
+                sequence: NativeScrollSequenceId::new(1),
+                reason: NativeScrollCancelReason::ProviderReset,
+            },
+        )]
+    );
+    assert!(!translator.references_binding(first));
+    assert!(translator.references_binding(second));
+
+    let second_update = phaseful_scroll_record(3, second_window, second, TouchPhase::Moved, 3.0);
+    assert_eq!(
+        translator.translate_for_test_device(&second_update, 202, |_| None),
+        NativePointerTranslation::Input(phaseful_scroll_input_for_device(
+            NativePointerId::new(2),
+            NativeScrollDeviceId::new(2),
+            Some(second),
+            NativeScrollPhase::Update {
+                sequence: NativeScrollSequenceId::new(2),
+                delta: NativeScrollDelta::Lines { x: 0.0, y: 3.0 },
+            },
+        )),
+        "destroying device A's binding must not reset device B's sequence"
+    );
+}
+
+#[test]
 fn destroyed_binding_retires_mouse_and_scroll_before_reuse() {
     let mut native = coordinator();
     let (binding, _) = register_roots(&mut native);
@@ -250,10 +404,8 @@ fn destroyed_binding_retires_mouse_and_scroll_before_reuse() {
     ));
 
     assert_eq!(
-        translator
-            .cancel_destroyed_binding(binding)
-            .expect("the pressed mouse stream retires first"),
-        NativePointerInput::new(
+        translator.cancel_destroyed_binding(binding),
+        vec![NativePointerInput::new(
             NativePointerId::new(1),
             NativePointerEvent::StreamCancelled(NativePointerCancelReason::BindingRetired),
             NativeDesktopPointerLocation::new(
@@ -263,14 +415,14 @@ fn destroyed_binding_retires_mouse_and_scroll_before_reuse() {
             ),
             NativePointerOwner::Unknown,
             NativePointerOwner::Unknown,
-        )
+        )]
     );
     assert!(
-        translator.cancel_destroyed_binding(binding).is_none(),
+        translator.cancel_destroyed_binding(binding).is_empty(),
         "the pointer cancellation already terminates its live scroll sequence"
     );
     assert!(
-        translator.reset_destroyed_binding(binding).is_none(),
+        translator.reset_destroyed_binding(binding).is_empty(),
         "the following boundary clears correlation without a duplicate scroll terminal"
     );
     assert!(!translator.has_pending_provider_tail());
@@ -385,10 +537,24 @@ fn phaseful_scroll_input(
     delivery: Option<NativeSurfaceBinding>,
     phase: NativeScrollPhase,
 ) -> NativePointerInput {
-    NativePointerInput::new(
+    phaseful_scroll_input_for_device(
         NativePointerId::new(1),
+        NativeScrollDeviceId::new(1),
+        delivery,
+        phase,
+    )
+}
+
+fn phaseful_scroll_input_for_device(
+    pointer: NativePointerId,
+    device: NativeScrollDeviceId,
+    delivery: Option<NativeSurfaceBinding>,
+    phase: NativeScrollPhase,
+) -> NativePointerInput {
+    NativePointerInput::new(
+        pointer,
         NativePointerEvent::Scrolled(NativeScrollEvent::new(
-            NativeScrollDeviceId::new(1),
+            device,
             phase,
             NativeScrollMomentum::Unknown,
             NativeScrollModifiers::Unknown,

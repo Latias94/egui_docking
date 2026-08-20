@@ -1,6 +1,6 @@
 //! Shared hidden-to-live admission protocol for native windows.
 
-use crate::effect::{EffectId, EffectTransition, PlatformEffect};
+use crate::effect::{EffectId, EffectPhase, EffectTransition, PlatformEffect};
 use crate::platform::{WindowPresentationObservation, WindowPresentationState};
 use crate::platform_provider::PlatformObservationLease;
 use crate::presentation_observation::{
@@ -296,7 +296,11 @@ impl ViewportCoordinator {
                 presentation,
                 ..
             } if observation.known_state() == Some(WindowPresentationState::Hidden)
-                && self.presentation_observation_settles(observation, create)
+                && self.presentation_observation_follows_applied_effect(
+                    provider,
+                    observation,
+                    create,
+                )
                 && (presentation.basis().platform_provider() != provider
                     || presentation.basis().presentation_observation_generation()
                         != observation.generation()
@@ -625,6 +629,24 @@ impl ViewportCoordinator {
     ) -> bool {
         observation.acknowledges(effect)
             && self.presentation_observation_is_after_emission(observation, effect)
+    }
+
+    fn presentation_observation_follows_applied_effect(
+        &self,
+        provider: PlatformObservationLease,
+        observation: WindowPresentationObservation,
+        effect: EffectId,
+    ) -> bool {
+        self.presentation_observation_is_after_emission(observation, effect)
+            && self.effects.record(effect).is_some_and(|record| {
+                record.provider() == Some(provider)
+                    && matches!(
+                        record.phase(),
+                        EffectPhase::ObservedApplied {
+                            inventory_generation,
+                        } if observation.inventory_generation() >= inventory_generation
+                    )
+            })
     }
 
     pub(super) fn presentation_observation_is_after_emission(

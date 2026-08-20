@@ -398,6 +398,18 @@ impl SurfaceSceneDelta {
     )> {
         self.after
     }
+
+    pub(crate) fn requires_repaint(self) -> bool {
+        let Some((before_stamp, before_kind, Some(before_authority))) = self.before else {
+            return true;
+        };
+        let Some((after_stamp, after_kind, Some(after_authority))) = self.after else {
+            return true;
+        };
+        before_stamp != after_stamp
+            || before_kind != after_kind
+            || !before_authority.same_interaction_semantics(after_authority)
+    }
 }
 
 /// Typed non-fatal rejection of one independently delivered surface contribution.

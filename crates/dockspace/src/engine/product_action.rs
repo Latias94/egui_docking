@@ -160,6 +160,16 @@ impl DockEngine {
         }
 
         match action {
+            ProductAction::DockRoot { .. } => self.reduce_product_action(
+                input,
+                cause,
+                focus_causal,
+                expected,
+                action,
+                policy,
+                events,
+                interaction_events,
+            ),
             ProductAction::FloatRoot {
                 root,
                 surface,
@@ -296,16 +306,6 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::DockBackRoot { root })
     }
 
-    /// Prepares one complete-root native tear-off against the exact published version.
-    #[must_use]
-    pub const fn prepare_tear_off_root(
-        &self,
-        root: RootId,
-        placement: NativeWindowPlacement,
-    ) -> PreparedDockAction {
-        self.prepare_product_action(ProductAction::TearOffRoot { root, placement })
-    }
-
     /// Prepares one complete-root move to a native window against the published version.
     #[must_use]
     pub const fn prepare_move_root_to_new_window(
@@ -313,7 +313,7 @@ impl DockEngine {
         root: RootId,
         placement: NativeWindowPlacement,
     ) -> PreparedDockAction {
-        self.prepare_tear_off_root(root, placement)
+        self.prepare_product_action(ProductAction::TearOffRoot { root, placement })
     }
 
     /// Prepares one complete-root contained-floating action against the published version.
@@ -326,44 +326,10 @@ impl DockEngine {
         })
     }
 
-    /// Prepares one complete-root contained-floating action with explicit bounds.
-    #[must_use]
-    pub const fn prepare_float_root_at(
-        &self,
-        root: RootId,
-        surface: SurfaceId,
-        rect: LogicalRect,
-    ) -> PreparedDockAction {
-        self.prepare_product_action(ProductAction::FloatRoot {
-            root,
-            surface,
-            rect: Some(rect),
-        })
-    }
-
     /// Prepares one contained-floating action against the exact published workspace version.
     #[must_use]
-    pub const fn prepare_float_item(
-        &self,
-        item: ItemId,
-        surface: SurfaceId,
-        rect: LogicalRect,
-    ) -> PreparedDockAction {
-        self.prepare_product_action(ProductAction::FloatItem {
-            item,
-            surface,
-            rect,
-        })
-    }
-
-    /// Prepares one contained-bounds update against the exact published workspace version.
-    #[must_use]
-    pub const fn prepare_set_contained_rect(
-        &self,
-        item: ItemId,
-        rect: LogicalRect,
-    ) -> PreparedDockAction {
-        self.prepare_product_action(ProductAction::SetContainedRect { item, rect })
+    pub const fn prepare_float_item(&self, item: ItemId, surface: SurfaceId) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::FloatItem { item, surface })
     }
 
     /// Prepares one contained raise against the exact published workspace version.
@@ -423,20 +389,10 @@ impl DockEngine {
                 surface,
                 rect,
             },
-            ProductAction::FloatItem {
-                item,
-                surface,
-                rect,
-            } => EngineInput::FloatItem {
+            ProductAction::FloatItem { item, surface } => EngineInput::FloatItem {
                 expected,
                 item,
                 surface,
-                rect,
-            },
-            ProductAction::SetContainedRect { item, rect } => EngineInput::SetContainedRect {
-                expected,
-                item,
-                rect,
             },
             ProductAction::RaiseContained { item } => {
                 EngineInput::RaiseContained { expected, item }
@@ -622,13 +578,10 @@ impl DockEngine {
                     None => self.derive_product_root_float_rect(root, surface)?,
                 },
             ),
-            ProductAction::FloatItem {
-                item,
-                surface,
-                rect,
-            } => self.compile_product_float(item, surface, rect),
-            ProductAction::SetContainedRect { item, rect } => {
-                self.compile_product_contained_rect(item, rect)
+            ProductAction::FloatItem { item, surface } => {
+                let source = self.capture_product_item(item)?;
+                let rect = self.derive_product_root_float_rect(source.root(), surface)?;
+                self.compile_product_float(item, surface, rect)
             }
             ProductAction::RaiseContained { item } => self.compile_product_contained_raise(item),
             ProductAction::BringContainedIntoView { item } => {
@@ -1006,7 +959,6 @@ pub(super) const fn product_presentation_transition_root(action: ProductAction) 
         | ProductAction::OpenItem { .. }
         | ProductAction::DockItem { .. }
         | ProductAction::FloatItem { .. }
-        | ProductAction::SetContainedRect { .. }
         | ProductAction::RaiseContained { .. }
         | ProductAction::BringContainedIntoView { .. } => None,
     }

@@ -409,11 +409,6 @@ pub(crate) enum ProductAction {
     FloatItem {
         item: ItemId,
         surface: SurfaceId,
-        rect: LogicalRect,
-    },
-    SetContainedRect {
-        item: ItemId,
-        rect: LogicalRect,
     },
     RaiseContained {
         item: ItemId,

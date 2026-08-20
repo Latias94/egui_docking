@@ -8,14 +8,23 @@ use dockspace::runtime::{
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{self, Id, ViewportId};
 use eframe::{NativeHostWake, NativeOutputToken, queue_native_viewport_pointer_passthrough};
-use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
+#[cfg(test)]
+use egui_dockspace::DockspaceActionStatus;
+use egui_dockspace::{DockStyle, PaneView};
 
-use crate::application_action::{NativeActionRequestError, NativeApplicationActions};
+use crate::application_action::{
+    NativeActionRequestError, NativeActionTerminal, NativeApplicationActions,
+};
 use crate::close_control::NativeWindowClosePolicy;
-use crate::coordinator::{NativeCoordinator, NativeShutdownAdvance, NativeShutdownRegistration};
+use crate::coordinator::{
+    NativeCoordinator, NativeShutdownAdvance, NativeShutdownRegistration,
+    split_no_frame_invalidations_for_frame,
+};
 use crate::deferred_viewport::DeferredViewportSpec;
+#[cfg(test)]
+use crate::error::NativeRuntimeErrorKind;
 use crate::error::{NativeHostProtocolError, NativeRuntimeError};
-use crate::pass_actions::{NativePassActionError, NativePassActions};
+use crate::pass_actions::{NativeFinalPass, NativePassActionError, NativePassActions};
 
 const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
 
@@ -31,6 +40,91 @@ enum SurfaceFrameDisposition {
 pub(crate) enum NativeSurfaceUpdate {
     Semantic,
     RetainPrevious,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeErrorPresentation {
+    NoFrame,
+    RetainedOverlay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetainedOutputKind {
+    Skip,
+    Overlay,
+}
+
+impl RetainedOutputKind {
+    const fn omits_accessibility_when_retained(self) -> bool {
+        matches!(self, Self::Skip)
+    }
+
+    fn request(self) -> bool {
+        match self {
+            Self::Skip => eframe::retain_current_native_output(),
+            Self::Overlay => eframe::retain_current_native_output_with_overlay(),
+        }
+    }
+}
+
+fn native_error_paint_rect(
+    available: egui::Rect,
+    presentation: NativeErrorPresentation,
+    status_height: f32,
+) -> egui::Rect {
+    match presentation {
+        NativeErrorPresentation::NoFrame => available,
+        NativeErrorPresentation::RetainedOverlay => egui::Rect::from_min_max(
+            egui::pos2(
+                available.left(),
+                (available.bottom() - status_height).max(available.top()),
+            ),
+            available.right_bottom(),
+        ),
+    }
+}
+
+fn paint_native_error_status(
+    ui: &mut egui::Ui,
+    presentation: NativeErrorPresentation,
+    message: &str,
+) {
+    let available = ui.max_rect();
+    let status_height = ui.spacing().interact_size.y.max(30.0);
+    let paint_rect = native_error_paint_rect(available, presentation, status_height);
+    let (fill, text_color, layout) = match presentation {
+        NativeErrorPresentation::NoFrame => (
+            ui.visuals().panel_fill,
+            ui.visuals().error_fg_color,
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+        ),
+        NativeErrorPresentation::RetainedOverlay => (
+            ui.visuals().extreme_bg_color,
+            ui.visuals().warn_fg_color,
+            egui::Layout::left_to_right(egui::Align::Center),
+        ),
+    };
+    ui.painter().rect_filled(paint_rect, 0.0, fill);
+
+    let _ = ui.scope_builder(
+        egui::UiBuilder::new().max_rect(paint_rect).layout(layout),
+        |ui| {
+            if presentation == NativeErrorPresentation::RetainedOverlay {
+                ui.add_space(8.0);
+            }
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(message)
+                        .font(egui::FontId::proportional(13.0))
+                        .color(text_color),
+                )
+                .selectable(false)
+                .sense(egui::Sense::hover())
+                .show_tooltip_when_elided(false)
+                .truncate(),
+            );
+        },
+    );
 }
 
 const fn surface_frame_disposition(
@@ -50,14 +144,55 @@ const fn surface_frame_disposition(
     }
 }
 
+const fn should_retain_previous_output(
+    output_prefix_pending: bool,
+    callback_reduced: bool,
+) -> bool {
+    output_prefix_pending || callback_reduced
+}
+
+const fn retained_pass_requires_semantic_retry(
+    retain_previous_output: bool,
+    surface_is_presented: bool,
+    application_action_queued: bool,
+) -> bool {
+    retain_previous_output && (!surface_is_presented || application_action_queued)
+}
+
+fn select_no_frame_invalidations_for_frame<T>(
+    context: &egui::Context,
+    frame_surfaces: &[SurfaceId],
+    ready: impl IntoIterator<Item = T>,
+    surface: impl Fn(&T) -> SurfaceId,
+    viewport: impl Fn(&T) -> ViewportId,
+) -> Vec<T> {
+    let (accepted, repaint_viewports) =
+        split_no_frame_invalidations_for_frame(frame_surfaces, ready, surface, viewport);
+    for viewport in repaint_viewports {
+        context.request_repaint_once_of(viewport);
+    }
+    accepted
+}
+
 fn request_follow_up_root_cycle(
     context: &egui::Context,
     retirement_committed: bool,
     cycle_progressed: bool,
 ) {
     if retirement_committed || cycle_progressed {
-        context.request_repaint_of(ViewportId::ROOT);
+        context.request_repaint_once_of(ViewportId::ROOT);
     }
+}
+
+fn require_durable_root_cycle(
+    coordinator: &NativeCoordinator,
+    token: NativeOutputToken,
+    durable_progress: bool,
+) -> Result<(), NativeRuntimeError> {
+    if durable_progress && !coordinator.require_output_wake_after_current(token) {
+        return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+    }
+    Ok(())
 }
 
 pub(crate) struct NativeRuntimeState<P> {
@@ -143,15 +278,16 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) fn is_quiescent(&self) -> bool {
-        self.shutdown.is_none()
-            && self
-                .coordinator
+        committed_boundary_is_quiescent(
+            self.shutdown.is_some(),
+            self.coordinator
                 .session()
                 .presented_surface(self.root_surface)
-                .is_some()
-            && !self.application_actions.is_occupied()
-            && !self.pass_actions.has_pending_work()
-            && self.coordinator.is_quiescent()
+                .is_some(),
+            self.application_actions.is_occupied(),
+            self.pass_actions.has_retained_action_work(),
+            self.coordinator.is_quiescent(),
+        )
     }
 
     pub(crate) fn request_dock_root(
@@ -184,7 +320,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         Ok(())
     }
 
-    pub(crate) fn request_tear_off_root(
+    pub(crate) fn request_move_root_to_new_window(
         &mut self,
         root: RootId,
         placement: NativeWindowPlacement,
@@ -195,17 +331,23 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let action = self
             .coordinator
             .session()
-            .prepare_tear_off_root(root, placement);
+            .prepare_move_root_to_new_window(root, placement);
         self.application_actions.enqueue(action)?;
         self.request_root_repaint();
         Ok(())
     }
 
-    pub(crate) fn take_action_status(&mut self) -> Option<DockspaceActionStatus> {
+    pub(crate) fn take_action_status(&mut self) -> Option<NativeActionTerminal> {
         self.application_actions.take_result()
     }
 
     fn request_root_repaint(&self) {
+        if let Some(token) = eframe::current_native_output_token() {
+            let armed = self.coordinator.require_output_wake_after_current(token);
+            if armed {
+                return;
+            }
+        }
         if let Some(context) = &self.root_context {
             context.request_repaint_of(ViewportId::ROOT);
         }
@@ -222,6 +364,24 @@ impl<P: PaneView> NativeRuntimeState<P> {
         self.coordinator.deferred_viewport_paint(token)
     }
 
+    pub(crate) fn stage_retain_previous(
+        &mut self,
+        token: NativeOutputToken,
+    ) -> Result<(), NativeRuntimeError> {
+        self.pass_actions
+            .stage_retain_previous(token)
+            .map_err(map_pass_action_error)
+    }
+
+    pub(crate) fn stage_retained_overlay(
+        &mut self,
+        token: NativeOutputToken,
+    ) -> Result<(), NativeRuntimeError> {
+        self.pass_actions
+            .stage_retained_overlay(token)
+            .map_err(map_pass_action_error)
+    }
+
     pub(crate) fn update_surface(
         &mut self,
         ui: &mut egui::Ui,
@@ -236,12 +396,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let prelude = {
             let coordinator = &mut self.coordinator;
             (|| {
+                let output_prefix_pending = coordinator.has_pending_output_prefix();
                 let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
                 let quiescence_recorded = surface == self.root_surface
                     && coordinator.try_report_retirement_quiescence()?;
                 let reduced_callback = coordinator.reduce_callback_head()?;
                 let callback_error = coordinator.take_callback_error();
                 Ok::<_, NativeRuntimeError>((
+                    output_prefix_pending,
                     pending_effect_reported,
                     quiescence_recorded,
                     reduced_callback,
@@ -250,8 +412,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
             })()
         };
         let internal_action_settled = self.settle_internal_application_transitions()?;
-        let (pending_effect_reported, quiescence_recorded, reduced_callback, callback_error) =
-            prelude?;
+        let (
+            output_prefix_pending,
+            pending_effect_reported,
+            quiescence_recorded,
+            reduced_callback,
+            callback_error,
+        ) = prelude?;
         if let Some(error) = callback_error {
             return Err(error);
         }
@@ -261,6 +428,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         } else {
             None
         };
+        let no_frame_invalidations = coordinator.prepare_no_frame_invalidations();
+        let no_frame_invalidation_pending = coordinator.has_pending_no_frame_invalidation(surface);
 
         let instance_id = self.instance_id.with(surface.get());
         let style = &self.style;
@@ -268,11 +437,34 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let pass_actions = &mut self.pass_actions;
         let root_surface = self.root_surface;
         let mut host_frame = coordinator.begin_resolved_host_frame(&context)?;
-        let retain_previous_output = !host_frame.frame.surfaces().contains(&surface);
+        let frame_surfaces = host_frame.frame.surfaces();
+        let no_frame_invalidations = select_no_frame_invalidations_for_frame(
+            &context,
+            &frame_surfaces,
+            no_frame_invalidations,
+            |invalidation| invalidation.surface(),
+            |invalidation| invalidation.viewport(),
+        );
+        // A renderer terminal callback must commit before any later callback,
+        // but confirming another painted output in that settlement frame
+        // creates an unbounded Presented -> repaint -> Presented loop. Retain
+        // the existing framebuffer for this exact pass. If the settlement
+        // changes product authority, the committed report requests the next
+        // semantic frame explicitly.
+        let retain_previous_output =
+            should_retain_previous_output(output_prefix_pending, reduced_callback)
+                || no_frame_invalidation_pending
+                || !no_frame_invalidations.is_empty();
         let mut pass_draft = None;
         let mut painted_output_expected = false;
 
         let render_result = if retain_previous_output {
+            for invalidation in &no_frame_invalidations {
+                host_frame.defer_surface(
+                    invalidation.surface(),
+                    SurfaceUnavailableReason::SurfaceUnavailable,
+                )?;
+            }
             host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         } else {
             (|| -> Result<(), NativeRuntimeError> {
@@ -326,6 +518,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         render_result?;
 
         let mut report = host_frame.commit()?;
+        coordinator.finish_no_frame_invalidations(&no_frame_invalidations);
         let mut application_action_settled = self
             .application_actions
             .settle(None, report.presentation_transitions())
@@ -388,6 +581,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             // follow-up cycle to publish semantics from the new workspace.
             painted_output = None;
         }
+        let post_output_quiescence_recorded = surface == self.root_surface
+            && output_prefix_pending
+            && coordinator.try_report_retirement_quiescence()?;
         if retain_previous_output {
             // Eframe retains the previous visual immediately, but the newly
             // announced output token is not abandoned until this egui pass is
@@ -422,12 +618,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         for repaint_surface in report.repaint_surfaces() {
             match coordinator.repaint_viewport(*repaint_surface) {
                 Some(egui::ViewportId::ROOT) | None if *repaint_surface == self.root_surface => {
-                    context.request_repaint_of(egui::ViewportId::ROOT);
+                    context.request_repaint_once_of(egui::ViewportId::ROOT);
                 }
-                Some(viewport) => context.request_repaint_of(viewport),
+                Some(viewport) => context.request_repaint_once_of(viewport),
                 None => {}
             }
         }
+        let pending_callback_records = coordinator.has_pending_callback_records();
         request_follow_up_root_cycle(
             &context,
             retirement_committed,
@@ -440,8 +637,20 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 || application_action_settled
                 || native_effects_emitted
                 || native_close_settled
-                || native_close_progress,
+                || native_close_progress
+                || post_output_quiescence_recorded
+                || pending_callback_records,
         );
+        let semantic_retry_pending = retained_pass_requires_semantic_retry(
+            retain_previous_output,
+            coordinator.session().presented_surface(surface).is_some(),
+            self.application_actions.has_queued(),
+        );
+        let durable_armed = internal_action_settled
+            || application_action_settled
+            || native_admission_settled
+            || semantic_retry_pending;
+        require_durable_root_cycle(coordinator, token, durable_armed)?;
         Ok(if retain_previous_output {
             NativeSurfaceUpdate::RetainPrevious
         } else {
@@ -452,6 +661,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
     pub(crate) fn settle_egui_pass(
         &mut self,
         context: &egui::Context,
+        output: &mut egui::FullOutput,
         token: NativeOutputToken,
         discarded: bool,
     ) -> Result<(), NativeRuntimeError> {
@@ -470,14 +680,21 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .finish_pass(token)
             .map_err(map_pass_action_error)?
             .expect("a checked staged native pass remains available");
-        let Some(final_pass) = final_pass.into_semantic() else {
-            if matches!(
-                self.coordinator.abandon_output_token(token),
-                NativeHostWake::RepaintRoot
-            ) {
-                context.request_repaint_of(egui::ViewportId::ROOT);
+        let final_pass = match final_pass {
+            NativeFinalPass::RetainPrevious => {
+                self.settle_retained_egui_output(context, output, token, RetainedOutputKind::Skip)?;
+                return Ok(());
             }
-            return Ok(());
+            NativeFinalPass::RetainedOverlay => {
+                self.settle_retained_egui_output(
+                    context,
+                    output,
+                    token,
+                    RetainedOutputKind::Overlay,
+                )?;
+                return Ok(());
+            }
+            NativeFinalPass::Semantic(final_pass) => final_pass,
         };
         let surface = final_pass.paint_surface();
         let has_application_action = final_pass.application_action_ready();
@@ -512,7 +729,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
 
         if let Some(output) = output {
-            if let Err(error) = self.coordinator.bind_painted_surface(token, output, &paint) {
+            if let Err(error) = self
+                .coordinator
+                .bind_painted_surface(context, token, output, &paint)
+            {
                 let kind = error.kind();
                 drop(error.into_output());
                 let _ = self.coordinator.abandon_output_token(token);
@@ -522,7 +742,31 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.coordinator.abandon_output_token(token),
             NativeHostWake::RepaintRoot
         ) {
-            context.request_repaint_of(egui::ViewportId::ROOT);
+            context.request_repaint_once_of(egui::ViewportId::ROOT);
+        }
+        Ok(())
+    }
+
+    fn settle_retained_egui_output(
+        &mut self,
+        context: &egui::Context,
+        output: &mut egui::FullOutput,
+        token: NativeOutputToken,
+        kind: RetainedOutputKind,
+    ) -> Result<(), NativeRuntimeError> {
+        let retained = kind.request();
+        if retained && kind.omits_accessibility_when_retained() {
+            // A skipped renderer pass keeps the exact previous framebuffer and
+            // its matching accessibility tree. An overlay is different: its
+            // inert status label is visible now and must remain accessible.
+            output.platform_output.accesskit_update = None;
+        }
+        let wake = self
+            .coordinator
+            .settle_retained_output_token(token, retained)
+            .map_err(NativeHostProtocolError::OutputBindingFailed)?;
+        if matches!(wake, NativeHostWake::RepaintRoot) {
+            context.request_repaint_once_of(egui::ViewportId::ROOT);
         }
         Ok(())
     }
@@ -581,7 +825,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
     ) -> Result<(), NativeRuntimeError> {
         let submitted_application_outcome = submitted_application_action
             .and_then(|submitted| report.submitted_action_outcome(submitted));
-        let _ = self
+        let application_action_settled = self
             .application_actions
             .settle(
                 submitted_application_outcome,
@@ -592,7 +836,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let _ = self
             .coordinator
             .settle_close_control_inputs(report.inputs())?;
-        let _ = self
+        let native_admission_settled = self
             .coordinator
             .settle_native_admissions(report.native_admissions())?;
         if surface == self.root_surface {
@@ -620,23 +864,29 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .drive_close_policy(self.close_policy, self.root_surface);
         let internal_transitions = self.coordinator.take_internal_presentation_transitions();
         if !internal_transitions.is_empty() {
-            let _ = self
+            let internal_action_settled = self
                 .application_actions
                 .settle_presentation_transitions(&internal_transitions)
                 .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
+            require_durable_root_cycle(&self.coordinator, token, internal_action_settled)?;
         }
         let _ = native_close_progress?;
         self.dispatch_post_commit(context)?;
         for repaint_surface in report.repaint_surfaces() {
             match self.coordinator.repaint_viewport(*repaint_surface) {
                 Some(egui::ViewportId::ROOT) | None if *repaint_surface == self.root_surface => {
-                    context.request_repaint_of(egui::ViewportId::ROOT);
+                    context.request_repaint_once_of(egui::ViewportId::ROOT);
                 }
-                Some(viewport) => context.request_repaint_of(viewport),
+                Some(viewport) => context.request_repaint_once_of(viewport),
                 None => {}
             }
         }
         request_follow_up_root_cycle(context, false, true);
+        require_durable_root_cycle(
+            &self.coordinator,
+            token,
+            application_action_settled || native_admission_settled,
+        )?;
         Ok(())
     }
 
@@ -693,15 +943,16 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if self.shutdown.is_some() {
             return;
         }
-        let _ = self.settle_internal_application_transitions();
+        let kind = error.kind();
+        let internal_transition_error = self.settle_internal_application_transitions().err();
         for token in self.coordinator.quarantine_after_fatal() {
             self.pass_actions.abandon(token);
         }
         self.pass_actions.clear();
-        self.application_actions.abandon_unsettled();
+        let _ = self.application_actions.begin_shutdown(kind);
         self.shutdown = Some(NativeShutdownState {
             primary: error,
-            cleanup_errors: Vec::new(),
+            cleanup_errors: internal_transition_error.into_iter().collect(),
         });
     }
 
@@ -723,7 +974,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.shutdown.is_some(),
             "shutdown advance requires a primary failure"
         );
-        let advance = self.coordinator.advance_shutdown_boundary();
+        let advance = self
+            .coordinator
+            .advance_shutdown_boundary_with_close_policy(self.close_policy, self.root_surface);
         self.apply_shutdown_advance(context, advance)
     }
 
@@ -745,15 +998,32 @@ impl<P: PaneView> NativeRuntimeState<P> {
         root_window: Option<winit::window::WindowId>,
     ) -> (bool, Vec<NativeRuntimeError>) {
         let NativeShutdownAdvance {
-            progress,
+            mut progress,
+            transition_source_exhausted,
+            presentation_transitions,
             registrations,
             commands,
+            repaint_viewports,
             pointer_passthrough,
             abandoned_outputs,
             mut errors,
         } = advance;
+        if !presentation_transitions.is_empty() {
+            match self
+                .application_actions
+                .settle_presentation_transitions(&presentation_transitions)
+            {
+                Ok(settled) => progress |= settled,
+                Err(()) => {
+                    errors.push(NativeHostProtocolError::ApplicationActionOutcomeMissing.into())
+                }
+            }
+        }
         for token in abandoned_outputs {
             self.pass_actions.abandon(token);
+        }
+        for viewport in repaint_viewports {
+            context.request_repaint_once_of(viewport);
         }
         for (viewport, command) in commands {
             context.send_viewport_cmd_to(viewport, command);
@@ -799,6 +1069,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 }
             }
         }
+        if transition_source_exhausted {
+            progress |= self.application_actions.finish_shutdown_exhausted();
+        }
         (progress, errors)
     }
 
@@ -810,21 +1083,21 @@ impl<P: PaneView> NativeRuntimeState<P> {
         shutdown.cleanup_errors.push(error);
     }
 
-    pub(crate) fn render_error(&self, ui: &mut egui::Ui) {
-        ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
-        ui.heading("Native dockspace stopped");
-        if let Some(shutdown) = &self.shutdown {
-            ui.label(shutdown.primary.to_string());
-            if !shutdown.cleanup_errors.is_empty() {
-                ui.label(format!(
-                    "{} cleanup error(s) retained",
-                    shutdown.cleanup_errors.len()
-                ));
-            }
-        } else {
-            ui.label("unknown native runtime error");
-        }
+    pub(crate) fn render_error(&self, ui: &mut egui::Ui, presentation: NativeErrorPresentation) {
+        let primary = self.shutdown.as_ref().map_or_else(
+            || "unknown native runtime error".to_owned(),
+            |shutdown| shutdown.primary.to_string(),
+        );
+        let cleanup_count = self
+            .shutdown
+            .as_ref()
+            .map_or(0, |shutdown| shutdown.cleanup_errors.len());
+        let cleanup = (cleanup_count > 0).then(|| format!(" · {cleanup_count} cleanup error(s)"));
+        let message = format!(
+            "Native dockspace stopped — {primary}{}",
+            cleanup.as_deref().unwrap_or_default()
+        );
+        paint_native_error_status(ui, presentation, &message);
     }
 }
 
@@ -839,9 +1112,25 @@ fn map_pass_action_error(error: NativePassActionError) -> NativeRuntimeError {
     }
 }
 
+fn committed_boundary_is_quiescent(
+    stopped: bool,
+    root_presented: bool,
+    application_action_pending: bool,
+    retained_local_actions_pending: bool,
+    coordinator_quiescent: bool,
+) -> bool {
+    !stopped
+        && root_presented
+        && !application_action_pending
+        && !retained_local_actions_pending
+        && coordinator_quiescent
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error as _;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use dockspace::model::{
         DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
@@ -863,7 +1152,7 @@ mod tests {
         fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
     }
 
-    fn test_state() -> NativeRuntimeState<TestPanes> {
+    fn test_session() -> dockspace::runtime::DockspaceSession {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             SURFACE,
             DockspaceRootLayout::new(
@@ -877,9 +1166,13 @@ mod tests {
             dockspace::policy::DockPolicy::default(),
         )
         .expect("the native runtime test session initializes");
+        session
+    }
+
+    fn test_state() -> NativeRuntimeState<TestPanes> {
         NativeRuntimeState::new(
             Id::new("native-runtime-stop-test"),
-            session,
+            test_session(),
             SURFACE,
             TestPanes,
             DockStyle::default(),
@@ -909,7 +1202,137 @@ mod tests {
     }
 
     #[test]
-    fn committed_route_retirement_requests_a_follow_up_root_cycle() {
+    fn control_frames_retain_without_minting_another_output() {
+        assert!(should_retain_previous_output(true, false));
+        assert!(should_retain_previous_output(false, true));
+        assert!(!should_retain_previous_output(false, false));
+    }
+
+    #[test]
+    fn retained_control_frame_rearms_pending_semantic_work() {
+        assert!(retained_pass_requires_semantic_retry(true, false, false));
+        assert!(retained_pass_requires_semantic_retry(true, true, true));
+        assert!(!retained_pass_requires_semantic_retry(true, true, false));
+        assert!(!retained_pass_requires_semantic_retry(false, false, true));
+    }
+
+    #[test]
+    fn no_frame_invalidation_requests_its_child_until_that_frame_accepts_it() {
+        let context = egui::Context::default();
+        let child_surface = SurfaceId::new(2);
+        let child_viewport = ViewportId::from_hash_of("no-frame-invalidation-child");
+        let repaint_viewports = Arc::new(std::sync::Mutex::new(Vec::new()));
+        context.set_request_repaint_callback({
+            let repaint_viewports = Arc::clone(&repaint_viewports);
+            move |info| {
+                repaint_viewports
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(info.viewport_id);
+            }
+        });
+
+        let accepted = select_no_frame_invalidations_for_frame(
+            &context,
+            &[SURFACE],
+            [
+                (child_surface, child_viewport),
+                (child_surface, child_viewport),
+            ],
+            |(surface, _)| *surface,
+            |(_, viewport)| *viewport,
+        );
+
+        assert!(accepted.is_empty());
+        assert_eq!(
+            *repaint_viewports
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            [child_viewport],
+            "an out-of-roster child obligation requests exactly its owning callback"
+        );
+
+        let accepted = select_no_frame_invalidations_for_frame(
+            &context,
+            &[child_surface],
+            [(child_surface, child_viewport)],
+            |(surface, _)| *surface,
+            |(_, viewport)| *viewport,
+        );
+        assert_eq!(accepted, [(child_surface, child_viewport)]);
+    }
+
+    #[test]
+    fn fatal_overlay_uses_only_a_bottom_status_strip() {
+        let available = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(800.0, 600.0));
+
+        assert_eq!(
+            native_error_paint_rect(available, NativeErrorPresentation::NoFrame, 30.0),
+            available
+        );
+        assert_eq!(
+            native_error_paint_rect(available, NativeErrorPresentation::RetainedOverlay, 30.0,),
+            egui::Rect::from_min_max(egui::pos2(10.0, 590.0), egui::pos2(810.0, 620.0))
+        );
+    }
+
+    #[test]
+    fn retained_overlay_keeps_an_inert_accessible_status_label() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let message = "Native dockspace stopped — test failure";
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                paint_native_error_status(ui, NativeErrorPresentation::RetainedOverlay, message);
+            },
+        );
+
+        let (status_actions, observed_nodes) = {
+            let tree = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .expect("the status pass publishes accessibility");
+            let status_actions = tree.nodes.iter().find_map(|(_, node)| {
+                (node.role() == egui::accesskit::Role::Label && node.value() == Some(message)).then(
+                    || {
+                        (
+                            node.supports_action(egui::accesskit::Action::Click),
+                            node.supports_action(egui::accesskit::Action::Focus),
+                        )
+                    },
+                )
+            });
+            let observed_nodes = tree
+                .nodes
+                .iter()
+                .map(|(_, node)| (node.role(), node.label(), node.value()))
+                .collect::<Vec<_>>();
+            (status_actions, observed_nodes)
+        };
+        output.textures_delta.clear();
+        let (supports_click, supports_focus) = status_actions.unwrap_or_else(|| {
+            panic!("the visible native status strip owns one label; nodes={observed_nodes:?}")
+        });
+        assert!(!supports_click);
+        assert!(!supports_focus);
+    }
+
+    #[test]
+    fn only_a_skipped_retain_omits_the_accessibility_update() {
+        assert!(RetainedOutputKind::Skip.omits_accessibility_when_retained());
+        assert!(!RetainedOutputKind::Overlay.omits_accessibility_when_retained());
+    }
+
+    #[test]
+    fn protocol_follow_up_requests_exactly_one_root_cycle() {
         let context = egui::Context::default();
         for _ in 0..8 {
             if !context.has_requested_repaint_for(&ViewportId::ROOT) {
@@ -920,13 +1343,24 @@ mod tests {
             output.textures_delta.clear();
         }
         assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
+        let repaint_count = Arc::new(AtomicUsize::new(0));
+        context.set_request_repaint_callback({
+            let repaint_count = Arc::clone(&repaint_count);
+            move |_| {
+                repaint_count.fetch_add(1, Ordering::Relaxed);
+            }
+        });
 
         request_follow_up_root_cycle(&context, false, false);
         assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
 
         request_follow_up_root_cycle(&context, true, false);
-
         assert!(context.has_requested_repaint_for(&ViewportId::ROOT));
+        assert_eq!(repaint_count.load(Ordering::Relaxed), 1);
+
+        let mut output = context.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        assert_eq!(repaint_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -965,9 +1399,9 @@ mod tests {
         assert!(state.application_actions.is_occupied());
         assert!(matches!(
             state.take_action_status(),
-            Some(DockspaceActionStatus::Rejected(
+            Some(Ok(DockspaceActionStatus::Rejected(
                 dockspace::model::DockspaceActionRejection::PolicyDenied
-            ))
+            )))
         ));
 
         state
@@ -975,6 +1409,13 @@ mod tests {
             .expect("consuming the result releases the bounded slot");
 
         state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
+        assert!(state.application_actions.is_occupied());
+        assert!(matches!(
+            state.take_action_status(),
+            Some(Err(error))
+                if error.interruption() == crate::NativeActionInterruption::NotCommitted
+                    && error.kind() == NativeRuntimeErrorKind::InvalidConfiguration
+        ));
         assert!(!state.application_actions.is_occupied());
         assert_eq!(
             state
@@ -985,7 +1426,37 @@ mod tests {
     }
 
     #[test]
-    fn presentation_gated_action_rejects_an_uncorrelated_legacy_outcome() {
+    fn quiescence_tracks_the_committed_boundary_and_real_pending_actions() {
+        let mut state = test_state();
+        assert!(committed_boundary_is_quiescent(
+            false, true, false, false, true,
+        ));
+
+        state
+            .request_dock_root(
+                RootId::new(1),
+                DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+            )
+            .expect("the committed boundary accepts one application action");
+
+        assert!(
+            !committed_boundary_is_quiescent(
+                false,
+                true,
+                state.application_actions.is_occupied(),
+                state.pass_actions.has_retained_action_work(),
+                true,
+            ),
+            "a real durable application action still blocks quiescence"
+        );
+        assert!(
+            !committed_boundary_is_quiescent(false, true, false, true, true),
+            "a local action retained across egui passes remains durable work"
+        );
+    }
+
+    #[test]
+    fn committed_action_reports_an_uncorrelated_outcome_as_a_terminal_failure() {
         let mut state = test_state();
         let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
         state
@@ -1013,6 +1484,37 @@ mod tests {
                 .is_err()
         );
         assert!(state.application_actions.is_occupied());
+        assert!(matches!(
+            state.take_action_status(),
+            Some(Err(error))
+                if error.interruption()
+                    == crate::NativeActionInterruption::CommittedOutcomeUnavailable
+                    && error.kind() == NativeRuntimeErrorKind::Internal
+        ));
+    }
+
+    #[test]
+    fn fatal_stop_terminalizes_an_uncommitted_application_frame_once() {
+        let mut state = test_state();
+        let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
+        state
+            .request_dock_root(RootId::new(1), placement)
+            .expect("the application action is queued");
+        let _action = state
+            .application_actions
+            .take()
+            .expect("the final root pass takes the pending action");
+
+        state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
+        state
+            .stop_current_output(NativeHostProtocolError::RootRegistrationRejected(SURFACE).into());
+
+        assert!(matches!(
+            state.take_action_status(),
+            Some(Err(error))
+                if error.interruption() == crate::NativeActionInterruption::NotCommitted
+                    && error.kind() == NativeRuntimeErrorKind::InvalidConfiguration
+        ));
         assert!(state.take_action_status().is_none());
     }
 
@@ -1063,9 +1565,9 @@ mod tests {
 
         assert!(matches!(
             state.take_action_status(),
-            Some(DockspaceActionStatus::Rejected(
+            Some(Ok(DockspaceActionStatus::Rejected(
                 dockspace::model::DockspaceActionRejection::PolicyDenied
-            ))
+            )))
         ));
         assert!(!state.application_actions.is_occupied());
     }
@@ -1120,8 +1622,11 @@ mod tests {
             &context,
             NativeShutdownAdvance {
                 progress: true,
+                transition_source_exhausted: false,
+                presentation_transitions: Vec::new(),
                 registrations: vec![NativeShutdownRegistration::Rejected(SURFACE)],
                 commands: vec![(egui::ViewportId::ROOT, egui::ViewportCommand::Close)],
+                repaint_viewports: Vec::new(),
                 pointer_passthrough: None,
                 abandoned_outputs: Vec::new(),
                 errors: vec![NativeHostProtocolError::IncompleteTransientPaint(SURFACE).into()],

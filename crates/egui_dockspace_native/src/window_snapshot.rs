@@ -5,7 +5,10 @@ use dockspace::runtime::{
     NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
     NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
 };
-use eframe::{NativePhysicalRect, NativeWindowSnapshot};
+use eframe::{
+    NativePhysicalRect, NativeWindowInputState as EframeNativeWindowInputState,
+    NativeWindowSnapshot,
+};
 
 use crate::error::NativeHostProtocolError;
 
@@ -74,6 +77,7 @@ struct SnapshotParts {
     presentation_scale_factor: f64,
     visible: Option<bool>,
     minimized: Option<bool>,
+    input_state: EframeNativeWindowInputState,
 }
 
 impl From<NativeWindowSnapshot> for SnapshotParts {
@@ -85,6 +89,7 @@ impl From<NativeWindowSnapshot> for SnapshotParts {
             presentation_scale_factor: snapshot.presentation_scale_factor(),
             visible: snapshot.visible(),
             minimized: snapshot.minimized(),
+            input_state: snapshot.input_state(),
         }
     }
 }
@@ -116,7 +121,8 @@ fn compile_window_facts(
         .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
     let mut facts = NativeWindowFacts::live()
         .with_native_scale_factor(native_scale_factor)
-        .with_presentation_scale_factor(presentation_scale_factor);
+        .with_presentation_scale_factor(presentation_scale_factor)
+        .with_input(input_state(snapshot.input_state), None);
     if let Some(rect) = snapshot.inner_rect {
         facts = facts.with_content_bounds(physical_rect(rect)?);
     }
@@ -129,6 +135,13 @@ fn compile_window_facts(
         return Err(NativeHostProtocolError::PresentationAcknowledgementWithoutState);
     }
     Ok(facts)
+}
+
+const fn input_state(state: EframeNativeWindowInputState) -> NativeWindowInputState {
+    match state {
+        EframeNativeWindowInputState::ReceivesInput => NativeWindowInputState::ReceivesInput,
+        EframeNativeWindowInputState::PassThrough => NativeWindowInputState::PassThrough,
+    }
 }
 
 fn physical_rect(rect: NativePhysicalRect) -> Result<PhysicalRect, NativeHostProtocolError> {
@@ -213,6 +226,7 @@ mod tests {
             presentation_scale_factor: 2.5,
             visible: Some(true),
             minimized: Some(false),
+            input_state: EframeNativeWindowInputState::ReceivesInput,
         }
     }
 
@@ -228,6 +242,7 @@ mod tests {
             )
             .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
             .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
+            .with_input(NativeWindowInputState::ReceivesInput, None)
             .with_presentation(NativeWindowPresentationState::Visible, None);
         let observation = CompiledWindowObservation::new(
             binding,
@@ -248,6 +263,7 @@ mod tests {
                 presentation_scale_factor: 1.25,
                 visible: None,
                 minimized: None,
+                input_state: EframeNativeWindowInputState::ReceivesInput,
             },
             None,
         )
@@ -258,7 +274,30 @@ mod tests {
             NativeWindowFacts::live()
                 .with_native_scale_factor(ScaleFactor::new(1.5).expect("scale validates"))
                 .with_presentation_scale_factor(ScaleFactor::new(1.25).expect("scale validates"),)
+                .with_input(NativeWindowInputState::ReceivesInput, None)
         );
+    }
+
+    #[test]
+    fn pointer_passthrough_snapshot_compiles_as_an_exact_input_fact() {
+        let mut snapshot = parts();
+        snapshot.input_state = EframeNativeWindowInputState::PassThrough;
+
+        let facts = compile_window_facts(snapshot, None).expect("pass-through snapshot compiles");
+
+        let expected = NativeWindowFacts::live()
+            .with_content_bounds(
+                PhysicalRect::new(10.0, 20.0, 800.0, 600.0).expect("content rect validates"),
+            )
+            .with_outer_bounds(
+                PhysicalRect::new(2.0, -10.0, 816.0, 638.0).expect("outer rect validates"),
+            )
+            .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
+            .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
+            .with_input(NativeWindowInputState::PassThrough, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None);
+
+        assert_eq!(facts, expected);
     }
 
     #[test]
@@ -275,6 +314,7 @@ mod tests {
             )
             .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
             .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
+            .with_input(NativeWindowInputState::ReceivesInput, None)
             .with_presentation(NativeWindowPresentationState::Minimized, None);
 
         assert_eq!(facts, expected);

@@ -1,5 +1,5 @@
 use crate::close_plan::ClosePlanTarget;
-use crate::geometry::{LogicalRect, PhysicalRect};
+use crate::geometry::{LogicalRect, LogicalSize, PhysicalRect};
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
@@ -9,7 +9,8 @@ use crate::model::{
 use crate::runtime::{
     DockPresentationConfig, DockspaceCloseRequestRejection, DockspaceHostFrame,
     DockspacePresentationCommand, DockspaceRuntimeErrorKind, DockspaceSession,
-    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, SurfaceUnavailableReason,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 
 const MAIN_SURFACE: SurfaceId = SurfaceId::new(10);
@@ -42,12 +43,80 @@ fn session() -> DockspaceSession {
     session_with_policy(crate::policy::DockPolicy::default())
 }
 
+fn presentation_bounds() -> LogicalRect {
+    LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("presentation bounds validate")
+}
+
+fn presentation_metrics() -> UniformSurfaceMetrics {
+    UniformSurfaceMetrics::new(
+        presentation_bounds(),
+        LogicalSize::new(64.0, 48.0).expect("pane minimum validates"),
+        96.0,
+    )
+    .expect("presentation metrics validate")
+}
+
+fn present_surfaces(session: &mut DockspaceSession, surfaces: &[SurfaceId]) {
+    let mut measure = session
+        .begin_host_frame()
+        .expect("presentation measurement frame begins");
+    for surface in surfaces {
+        measure
+            .measure_surface(*surface, presentation_metrics())
+            .expect("presentation surface measurement succeeds");
+    }
+    measure
+        .commit()
+        .expect("presentation measurement frame commits");
+
+    let mut paint = session
+        .begin_host_frame()
+        .expect("presentation paint frame begins");
+    for surface in surfaces {
+        assert!(
+            paint
+                .paint_plan(*surface)
+                .expect("presentation paint plan lookup succeeds")
+                .is_some(),
+            "surface {surface:?} must have a paintable plan"
+        );
+        paint
+            .confirm_surface_painted(*surface)
+            .expect("presentation output confirmation succeeds");
+    }
+    let mut report = paint.commit().expect("presentation paint frame commits");
+    let outputs = report.take_painted_outputs();
+    assert_eq!(outputs.len(), surfaces.len());
+    for output in outputs {
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("presentation output is accepted");
+    }
+
+    let mut settle = session
+        .begin_host_frame()
+        .expect("presentation settlement frame begins");
+    settle
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("presentation settlement retains every surface");
+    settle
+        .commit()
+        .expect("presentation settlement frame commits");
+}
+
 #[test]
 fn presentation_commands_report_current_availability_before_submission() {
-    let session = session();
+    let mut session = session();
+    present_surfaces(&mut session, &[MAIN_SURFACE, ROOTLESS_SURFACE]);
 
     let contained = session.presentation_commands(CONTAINED_ROOT);
     assert_eq!(contained.root(), CONTAINED_ROOT);
+    assert!(matches!(
+        contained
+            .float_to(MAIN_SURFACE)
+            .expect("core-derived float availability is queryable"),
+        DockspacePresentationCommand::Ready(_)
+    ));
     assert!(matches!(
         contained
             .dock_back()
@@ -310,7 +379,7 @@ fn submitted_action_token_does_not_cross_rollback_frame_attempts() {
 }
 
 #[test]
-fn prepared_native_root_tear_off_rejects_a_newer_workspace_revision() {
+fn prepared_move_root_to_new_window_rejects_a_newer_workspace_revision() {
     let mut session = session();
     let expected = session.version();
     let placement = NativeWindowPlacement::new(
@@ -365,9 +434,11 @@ fn complete_root_cross_surface_float_and_dock_back_use_current_surface() {
     let layout = DockspaceLayout::new([source, target]).expect("root float layout validates");
     let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
         .expect("root float session initializes");
-    let rect = LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("float rect validates");
+    present_surfaces(&mut session, &[MAIN_SURFACE, TARGET_SURFACE]);
+    let core_derived_rect =
+        LogicalRect::new(112.0, 84.0, 576.0, 432.0).expect("derived float rect validates");
 
-    let prepared = session.prepare_float_root_at(MAIN_ROOT, TARGET_SURFACE, rect);
+    let prepared = session.prepare_float_root(MAIN_ROOT, TARGET_SURFACE);
     let mut frame = session.begin_host_frame().expect("root float frame begins");
     frame
         .submit_prepared_action(prepared)
@@ -392,7 +463,7 @@ fn complete_root_cross_surface_float_and_dock_back_use_current_surface() {
         .expect("the complete source root becomes contained");
     assert_eq!(
         session.view().contained(floating).map(|view| view.rect()),
-        Some(rect)
+        Some(core_derived_rect)
     );
     assert_eq!(
         session
@@ -472,9 +543,9 @@ fn same_surface_split_root_float_and_dock_back_preserve_root_identity() {
     .expect("same-surface split layout validates");
     let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
         .expect("same-surface split session initializes");
-    let rect = LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("float rect validates");
+    present_surfaces(&mut session, &[MAIN_SURFACE]);
 
-    let prepared = session.prepare_float_root_at(MAIN_ROOT, MAIN_SURFACE, rect);
+    let prepared = session.prepare_float_root(MAIN_ROOT, MAIN_SURFACE);
     let mut frame = session
         .begin_host_frame()
         .expect("same-surface split float frame begins");
@@ -570,9 +641,9 @@ fn cross_surface_split_root_dock_back_uses_current_surface_and_configured_fracti
         presentation,
     )
     .expect("split recovery session initializes");
-    let rect = LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("float rect validates");
+    present_surfaces(&mut session, &[MAIN_SURFACE, TARGET_SURFACE]);
 
-    let prepared = session.prepare_float_root_at(MAIN_ROOT, TARGET_SURFACE, rect);
+    let prepared = session.prepare_float_root(MAIN_ROOT, TARGET_SURFACE);
     let mut frame = session
         .begin_host_frame()
         .expect("split float frame begins");
@@ -690,7 +761,7 @@ fn native_root_tear_off_reports_an_unavailable_host_without_native_enrollment() 
         .begin_host_frame()
         .expect("unsupported native tear-off frame begins");
     frame
-        .tear_off_root_current(CONTAINED_ROOT, placement)
+        .move_root_to_new_window_current(CONTAINED_ROOT, placement)
         .expect("unsupported native tear-off stages structurally");
     let report = commit(frame);
 
@@ -1080,13 +1151,13 @@ fn docking_a_complete_main_root_across_surfaces_preserves_root_identity() {
 #[test]
 fn floating_part_of_a_root_allocates_fresh_product_identities() {
     let mut session = session();
-    let rect = LogicalRect::new(40.0, 50.0, 240.0, 160.0).expect("float rect validates");
+    present_surfaces(&mut session, &[MAIN_SURFACE, ROOTLESS_SURFACE]);
     let expected_root = RootId::new(CONTAINED_ROOT.get() + 1);
     let expected_floating = FloatingPresentationId::new(1_001);
 
     let mut frame = session.begin_host_frame().expect("float frame begins");
     frame
-        .float_item_current(FIRST, MAIN_SURFACE, rect)
+        .float_item_current(FIRST, MAIN_SURFACE)
         .expect("partial-root float stages");
     let report = commit(frame);
 
@@ -1109,13 +1180,14 @@ fn floating_part_of_a_root_allocates_fresh_product_identities() {
     assert_eq!(item.root(), expected_root);
     assert_eq!(item.surface(), MAIN_SURFACE);
     assert_eq!(item.contained(), Some(expected_floating));
-    assert_eq!(
-        session
-            .view()
-            .contained(expected_floating)
-            .map(|contained| contained.rect()),
-        Some(rect),
-    );
+    let rect = session
+        .view()
+        .contained(expected_floating)
+        .map(|contained| contained.rect())
+        .expect("core derives durable contained bounds");
+    assert!(presentation_bounds().contains(rect.min()));
+    assert!(rect.max().x() <= presentation_bounds().max().x());
+    assert!(rect.max().y() <= presentation_bounds().max().y());
     assert_eq!(
         session
             .view()
@@ -1143,14 +1215,14 @@ fn floating_a_singleton_main_root_preserves_root_identity() {
     let layout = DockspaceLayout::new([source, target]).expect("singleton float layout validates");
     let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
         .expect("singleton float session initializes");
-    let rect = LogicalRect::new(60.0, 70.0, 260.0, 170.0).expect("float rect validates");
+    present_surfaces(&mut session, &[MAIN_SURFACE, ROOTLESS_SURFACE]);
     let expected_floating = FloatingPresentationId::new(1_001);
 
     let mut frame = session
         .begin_host_frame()
         .expect("singleton float frame begins");
     frame
-        .float_item_current(FIRST, ROOTLESS_SURFACE, rect)
+        .float_item_current(FIRST, ROOTLESS_SURFACE)
         .expect("complete-root float stages");
     let report = commit(frame);
 
@@ -1173,18 +1245,19 @@ fn floating_a_singleton_main_root_preserves_root_identity() {
     assert_eq!(item.root(), MAIN_ROOT);
     assert_eq!(item.contained(), Some(expected_floating));
     assert_eq!(item.surface(), ROOTLESS_SURFACE);
-    assert_eq!(
-        session
-            .view()
-            .contained(expected_floating)
-            .map(|contained| contained.rect()),
-        Some(rect),
-    );
+    let rect = session
+        .view()
+        .contained(expected_floating)
+        .map(|contained| contained.rect())
+        .expect("core derives durable contained bounds");
+    assert!(presentation_bounds().contains(rect.min()));
+    assert!(rect.max().x() <= presentation_bounds().max().x());
+    assert!(rect.max().y() <= presentation_bounds().max().y());
     assert!(session.view().surface(MAIN_SURFACE).is_none());
 }
 
 #[test]
-fn contained_bounds_and_stacking_are_item_centric() {
+fn contained_stacking_is_item_centric() {
     const FRONT_ROOT: RootId = RootId::new(300);
     const FRONT_ITEM: ItemId = ItemId::new(5);
     const FRONT_FLOATING: FloatingPresentationId = FloatingPresentationId::new(2_000);
@@ -1211,14 +1284,9 @@ fn contained_bounds_and_stacking_are_item_centric() {
     .expect("contained action layout validates");
     let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
         .expect("contained action session initializes");
-    let rect = LogicalRect::new(30.0, 40.0, 360.0, 220.0).expect("updated rect validates");
-
     let mut frame = session
         .begin_host_frame()
         .expect("contained action frame begins");
-    frame
-        .set_contained_rect_current(FLOATING, rect)
-        .expect("contained bounds update stages");
     frame
         .raise_contained_current(FLOATING)
         .expect("contained raise stages");
@@ -1226,29 +1294,14 @@ fn contained_bounds_and_stacking_are_item_centric() {
 
     assert_eq!(
         report.inputs(),
-        &[
-            HostInputOutcome::ProductActionApplied(
-                DockspaceActionOutcome::ContainedBoundsUpdated {
-                    root: CONTAINED_ROOT,
-                    surface: ROOTLESS_SURFACE,
-                    floating: FloatingPresentationId::new(1_000),
-                    changed: true,
-                },
-            ),
-            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::ContainedRaised {
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::ContainedRaised {
                 root: CONTAINED_ROOT,
                 surface: ROOTLESS_SURFACE,
                 floating: FloatingPresentationId::new(1_000),
                 changed: true,
-            }),
-        ]
-    );
-    assert_eq!(
-        session
-            .view()
-            .contained(FloatingPresentationId::new(1_000))
-            .map(|contained| contained.rect()),
-        Some(rect),
+            },
+        )]
     );
     assert_eq!(
         session
@@ -1265,9 +1318,6 @@ fn contained_bounds_and_stacking_are_item_centric() {
         .begin_host_frame()
         .expect("contained no-op frame begins");
     frame
-        .set_contained_rect_current(FLOATING, rect)
-        .expect("same bounds stage");
-    frame
         .raise_contained_current(FLOATING)
         .expect("same stacking stage");
     let report = commit(frame);
@@ -1281,20 +1331,19 @@ fn contained_bounds_and_stacking_are_item_centric() {
 #[test]
 fn contained_product_actions_fail_closed_at_the_product_boundary() {
     let mut session = session();
-    let rect = LogicalRect::new(40.0, 50.0, 240.0, 160.0).expect("test rect validates");
     let before = session.version();
 
     let mut frame = session
         .begin_host_frame()
         .expect("contained rejection frame begins");
     frame
-        .set_contained_rect_current(FIRST, rect)
-        .expect("non-contained bounds action stages structurally");
-    frame
         .raise_contained_current(FIRST)
         .expect("non-contained raise stages structurally");
     frame
-        .float_item_current(FIRST, SurfaceId::new(999), rect)
+        .bring_contained_into_view_current(FIRST)
+        .expect("non-contained bring-into-view stages structurally");
+    frame
+        .float_item_current(FIRST, SurfaceId::new(999))
         .expect("missing-surface float stages structurally");
     let report = commit(frame);
 

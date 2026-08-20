@@ -415,8 +415,10 @@ pub(crate) fn paint_surface(
             context.push_presentation_action(action);
         }
         drag_feedback::paint(&mut context);
-        if context.pointer_authority.accepts_local_pointer_actions()
-            && let Some(action) = context.plan.prepare_escape_cancel()
+        if actions::effective_enabled(
+            context.ui,
+            context.pointer_authority.accepts_local_pointer_actions(),
+        ) && let Some(action) = context.plan.prepare_escape_cancel()
             && context
                 .ui
                 .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))

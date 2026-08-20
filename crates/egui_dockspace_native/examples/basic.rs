@@ -213,7 +213,10 @@ impl NativeExampleApp {
             PhysicalRect::new(760.0, 120.0, 440.0, 340.0)
                 .expect("the static child placement is valid"),
         );
-        match self.dockspace.request_tear_off_root(root, placement) {
+        match self
+            .dockspace
+            .request_move_root_to_new_window(root, placement)
+        {
             Ok(()) => {
                 self.action = InspectorActionState::AwaitingTearOffOutcome;
                 self.status = None;
@@ -239,9 +242,9 @@ impl NativeExampleApp {
         match (self.action, status) {
             (
                 InspectorActionState::AwaitingTearOffOutcome,
-                DockspaceActionStatus::Applied(
+                Ok(DockspaceActionStatus::Applied(
                     DockspaceActionOutcome::NativeRootTearOffRequested { target_surface, .. },
-                ),
+                )),
             ) => {
                 self.action = InspectorActionState::AwaitingFirstPresentation(target_surface);
                 self.status = Some(
@@ -251,36 +254,40 @@ impl NativeExampleApp {
             }
             (
                 InspectorActionState::AwaitingDockBackOutcome(expected_root),
-                DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
+                Ok(DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
                     root,
                     changed: true,
                     ..
-                }),
+                })),
             ) if root == expected_root => {
                 self.action = InspectorActionState::Idle;
                 self.status =
                     Some("Inspector was presented back in the root dockspace.".to_owned());
             }
-            (_, DockspaceActionStatus::Applied(outcome)) => {
+            (_, Ok(DockspaceActionStatus::Applied(outcome))) => {
                 self.action = InspectorActionState::Idle;
                 self.status = Some(format!(
                     "Unexpected native demo action outcome: {outcome:?}"
                 ));
             }
-            (_, DockspaceActionStatus::Rejected(reason)) => {
+            (_, Ok(DockspaceActionStatus::Rejected(reason))) => {
                 self.action = InspectorActionState::Idle;
                 self.status = Some(format!("The presentation action was rejected: {reason:?}"));
             }
-            (_, DockspaceActionStatus::Stale { .. }) => {
+            (_, Ok(DockspaceActionStatus::Stale { .. })) => {
                 self.action = InspectorActionState::Idle;
                 self.status =
                     Some("The layout changed before the request committed; try again.".to_owned());
             }
-            (_, DockspaceActionStatus::PresentationFailed { reason, .. }) => {
+            (_, Ok(DockspaceActionStatus::PresentationFailed { reason, .. })) => {
                 self.action = InspectorActionState::Idle;
                 self.status = Some(format!(
                     "The target presentation did not complete: {reason:?}"
                 ));
+            }
+            (_, Err(error)) => {
+                self.action = InspectorActionState::Idle;
+                self.status = Some(format!("The native action was interrupted: {error}"));
             }
         }
     }

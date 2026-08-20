@@ -167,7 +167,7 @@ impl DockspaceHostFrame<'_> {
     ///
     /// Returns an error when the affine frame is poisoned or its private source
     /// sequence cannot advance.
-    pub fn tear_off_root_current(
+    pub fn move_root_to_new_window_current(
         &mut self,
         root: crate::ids::RootId,
         placement: NativeWindowPlacement,
@@ -192,31 +192,11 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         item: crate::ids::ItemId,
         surface: crate::ids::SurfaceId,
-        rect: crate::geometry::LogicalRect,
     ) -> Result<(), DockspaceRuntimeError> {
         self.append(EngineInput::FloatItem {
             expected: self.frame.view().version(),
             item,
             surface,
-            rect,
-        })
-    }
-
-    /// Updates the contained bounds owning one open item.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the affine frame is poisoned or its private source
-    /// sequence cannot advance.
-    pub fn set_contained_rect_current(
-        &mut self,
-        item: crate::ids::ItemId,
-        rect: crate::geometry::LogicalRect,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::SetContainedRect {
-            expected: self.frame.view().version(),
-            item,
-            rect,
         })
     }
 

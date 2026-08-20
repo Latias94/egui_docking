@@ -598,10 +598,13 @@ impl HostFrameReport {
         std::mem::take(&mut self.native_effects)
     }
 
-    /// Returns every logical surface whose presentation authority changed.
+    /// Returns every logical surface whose semantic scene requires repainting.
     ///
-    /// The roster is sorted and deduplicated. A renderer should schedule a new
-    /// paint for each entry; it must not infer repaint from callback absence.
+    /// The roster is sorted and deduplicated. Presentation-provenance changes
+    /// remain visible through [`Self::affected_surfaces`] but are omitted here
+    /// when scene, coordinates, and endpoint stay equivalent. A renderer should
+    /// schedule a new paint for each entry; it must not infer repaint from
+    /// callback absence.
     #[must_use]
     pub fn repaint_surfaces(&self) -> &[SurfaceId] {
         &self.repaint_surfaces
@@ -1001,5 +1004,66 @@ mod tests {
             session.engine.retire_pointer_provider(lease),
             Err(EngineError::SurfaceLocalPointerProducerRequired)
         ));
+    }
+
+    #[test]
+    fn refreshed_presentation_provenance_does_not_request_an_equivalent_repaint() {
+        let mut session = single_surface_session();
+        let surface = SurfaceId::new(1);
+        let metrics = UniformSurfaceMetrics::new(
+            crate::geometry::LogicalRect::new(0.0, 0.0, 640.0, 480.0)
+                .expect("runtime test bounds validate"),
+            crate::geometry::LogicalSize::new(32.0, 24.0).expect("runtime test minimum validates"),
+            80.0,
+        )
+        .expect("runtime test metrics validate");
+        let mut measured = session
+            .begin_host_frame()
+            .expect("runtime measurement frame begins");
+        measured
+            .measure_surface(surface, metrics)
+            .expect("runtime surface measurements stage");
+        measured
+            .commit()
+            .expect("runtime surface measurements commit");
+
+        let present_once = |session: &mut DockspaceSession| {
+            let mut painted = session
+                .begin_host_frame()
+                .expect("runtime paint frame begins");
+            painted
+                .confirm_surface_painted(surface)
+                .expect("runtime surface paint stages");
+            let mut report = painted.commit().expect("runtime surface paint emits");
+            let output = report
+                .take_painted_outputs()
+                .pop()
+                .expect("runtime paint emits one exact output");
+            session
+                .report_surface_presentation(output, SurfacePresentationResult::Presented)
+                .expect("runtime renderer presents the exact output");
+            let mut observed = session
+                .begin_host_frame()
+                .expect("runtime presentation observation frame begins");
+            observed
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .expect("runtime presentation observation settles the surface roster");
+            observed
+                .commit()
+                .expect("runtime presentation observation commits")
+        };
+
+        let first = present_once(&mut session);
+        assert_eq!(first.repaint_surfaces(), &[surface]);
+        let refreshed = present_once(&mut session);
+        assert_eq!(
+            refreshed.affected_surfaces(),
+            &[surface],
+            "provenance refresh remains an affected-surface audit fact"
+        );
+        assert!(
+            refreshed.repaint_surfaces().is_empty(),
+            "a newer emission with identical scene, coordinates, and endpoint is provenance only"
+        );
     }
 }

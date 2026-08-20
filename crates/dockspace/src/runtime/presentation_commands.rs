@@ -1,7 +1,6 @@
 //! Product presentation commands and current-state availability.
 
 use super::{DockspaceRuntimeError, DockspaceSession, NativeWindowPlacement, PreparedDockAction};
-use crate::geometry::LogicalRect;
 use crate::ids::{RootId, SurfaceId};
 use crate::model::{DockspaceActionRejection, ProductAction};
 
@@ -73,23 +72,6 @@ impl<'session> DockspacePresentationCommands<'session> {
             root: self.root,
             surface,
             rect: None,
-        })
-    }
-
-    /// Preflights a contained-floating transition with explicit durable bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an internal runtime error only when core command compilation violates an invariant.
-    pub fn float_to_at(
-        &self,
-        surface: SurfaceId,
-        rect: LogicalRect,
-    ) -> Result<DockspacePresentationCommand, DockspaceRuntimeError> {
-        self.prepare(ProductAction::FloatRoot {
-            root: self.root,
-            surface,
-            rect: Some(rect),
         })
     }
 

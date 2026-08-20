@@ -58,12 +58,16 @@ impl LocalScrollInput {
     }
 }
 
+pub(super) fn effective_enabled(ui: &Ui, enabled: bool) -> bool {
+    enabled && ui.is_enabled()
+}
+
 pub(super) fn button_activated(
     ui: &Ui,
     response: &Response,
     pointer_authority: PointerActionAuthority,
 ) -> bool {
-    if !response.enabled() {
+    if !effective_enabled(ui, response.enabled()) {
         return false;
     }
     let keyboard = response.has_focus()
@@ -104,7 +108,7 @@ pub(super) fn local_primary_presses(
     ui: &Ui,
     pointer_authority: PointerActionAuthority,
 ) -> Vec<LocalPrimaryPress> {
-    if !pointer_authority.accepts_local_pointer_actions() {
+    if !effective_enabled(ui, pointer_authority.accepts_local_pointer_actions()) {
         return Vec::new();
     }
     ui.input(|input| {
@@ -134,7 +138,9 @@ pub(super) fn local_scroll_input(
     pointer_authority: PointerActionAuthority,
     axis: LocalScrollAxis,
 ) -> Option<LocalScrollInput> {
-    if !pointer_authority.accepts_local_pointer_actions() || ui.ctx().dragged_id().is_some() {
+    if !effective_enabled(ui, pointer_authority.accepts_local_pointer_actions())
+        || ui.ctx().dragged_id().is_some()
+    {
         return None;
     }
     let point = ui

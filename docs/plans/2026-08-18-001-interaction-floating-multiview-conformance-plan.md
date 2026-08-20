@@ -633,7 +633,8 @@ The key seam is the current product paint/action interface. The adapter receives
 
 - Build and run the existing one-shot Glow smoke under Xvfb with a bounded timeout and `LIBGL_ALWAYS_SOFTWARE=1`.
 - The smoke must report programmatic lifecycle phases separately from physical pointer phases.
-- A physical pointer smoke is required only for a backend whose capability profile is complete; it must use real OS events and the production native journal. It is not substituted by a direct core gesture, fixed-coordinate click script, sleep loop, screenshot, or `request_tear_off_root` call.
+- A physical pointer smoke is required only for a backend whose capability profile is complete; it must use real OS events and the production native journal. It is not substituted by a direct core gesture, fixed-coordinate click script, sleep loop, screenshot, or `request_move_root_to_new_window` call.
+- The X11 reference lane runs under Xvfb, Openbox, and XTest. It must prove drag-out, child first-live, an exact read-only semantic Center guide, drag-back, OS-window destruction, and `Retired && quiescent`; the same CI job must pin the reviewed egui/eframe and Winit revisions that provide its facts.
 
 ### Evidence policy
 
@@ -651,6 +652,7 @@ Global completion requires:
 - Local tab/group drag, ghost/gap, guide, splitter/junction, focus, and AccessKit behavior is deterministic and documented.
 - Native programmatic first-live, cross-surface re-dock, close, retirement, and quiescence smoke remains green.
 - Physical drag support is advertised only on platforms with complete exact facts; other platforms report a typed capability gap.
+- The automated X11 claim is limited to the first X screen with one exact identity-transformed active CRTC and a complete EWMH/XSettings authority snapshot; other X11 topologies remain fail-closed.
 - The conformance catalog, executor assignments, and research notes match the actual evidence.
 - No public interface exposes raw scene/graph/receipt/viewport authority, and no generic test engine or duplicate graph is introduced.
 - All verification gates in this plan pass at the supported revisions.

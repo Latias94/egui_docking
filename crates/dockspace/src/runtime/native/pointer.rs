@@ -81,7 +81,7 @@ pub enum NativePointerEvent {
 /// Typed reason why a native host ended one pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePointerCancelReason {
-    /// The physical or virtual input device was removed.
+    /// The host observed a device-removal boundary and invalidated this stream.
     DeviceRemoved,
     /// The platform explicitly cancelled this stream.
     ExplicitPlatformCancellation,
@@ -261,7 +261,7 @@ pub enum NativeScrollCancelReason {
     PlatformCancelled,
     /// The exact native binding retired.
     BindingRetired,
-    /// The scroll device was removed.
+    /// The host observed a device-removal boundary and invalidated this sequence.
     DeviceRemoved,
     /// The provider reset its sequence namespace.
     ProviderReset,
@@ -605,6 +605,25 @@ impl RuntimeNativeState {
         self.recorder
             .record_pointer_segment(journal)
             .expect("a fresh managed recorder accepts its enrollment checkpoint");
+    }
+
+    pub(super) fn record_pointer_batch(
+        &mut self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+    ) -> Result<(), NativePlatformError> {
+        if self.profile != NativeHostProfile::ManagedDesktop {
+            return Err(NativePlatformError::HostProfileMismatch);
+        }
+        let savepoint = self.recorder.savepoint();
+        for input in inputs {
+            if let Err(error) = self.record_pointer(input) {
+                self.recorder
+                    .rollback_to(savepoint)
+                    .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn record_pointer(

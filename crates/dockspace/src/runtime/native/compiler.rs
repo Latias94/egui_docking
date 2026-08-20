@@ -88,6 +88,7 @@ pub(super) fn compile_platform_snapshot(
     provider: PlatformObservationLease,
     generation: u64,
     focus: FocusObservationEnvelope,
+    window_observation_generations: &BTreeMap<ViewportBinding, u64>,
     close_generations: &BTreeMap<ViewportBinding, u64>,
     supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
     work_areas: &NativeWorkAreaRoster,
@@ -101,7 +102,22 @@ pub(super) fn compile_platform_snapshot(
             .get(&binding)
             .copied()
             .ok_or(NativePlatformError::ProtocolInvariant)?;
-        let compiled = compile_window_fact(provider, binding, facts, generation, close_generation)?;
+        let window_observation_generation =
+            if matches!(facts.lifecycle, NativeWindowLifecycleFact::Live) {
+                window_observation_generations
+                    .get(&binding)
+                    .copied()
+                    .ok_or(NativePlatformError::ProtocolInvariant)?
+            } else {
+                0
+            };
+        let compiled = compile_window_fact(
+            provider,
+            binding,
+            facts,
+            window_observation_generation,
+            close_generation,
+        )?;
         if compiled.is_live {
             live_bindings.push(binding);
         }

@@ -21,7 +21,9 @@ impl DockEngine {
     ) -> Result<LogicalRect, DockspaceActionRejection> {
         self.require_product_surface(surface)?;
         let target = self
-            .interaction_projection(surface)
+            .scene()
+            .surface(surface)
+            .and_then(crate::scene::SurfaceScene::ready)
             .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
         let bounds = target.plan().bounds();
         let source = match self
@@ -37,8 +39,10 @@ impl DockEngine {
             crate::RootPresentationOwner::Main {
                 surface: source_surface,
             } => self
-                .interaction_projection(source_surface)
-                .and_then(|projection| projection.plan().layout_facts())
+                .scene()
+                .surface(source_surface)
+                .and_then(crate::scene::SurfaceScene::ready)
+                .and_then(|scene| scene.plan().layout_facts())
                 .and_then(|facts| facts.root(root))
                 .map(|facts| facts.bounds())
                 .ok_or(DockspaceActionRejection::PresentationUnavailable {
@@ -160,22 +164,78 @@ impl DockEngine {
                         fraction,
                     });
                 }
-                let target = self
-                    .workspace
-                    .root(target_root)
-                    .ok_or(DockspaceActionRejection::DockBackUnavailable { root })?;
-                match target.central {
-                    Some(_) => Ok(DockPlacement::Center(DockAnchor::Central(target_root))),
-                    None => {
-                        let item = self
-                            .workspace
-                            .collect_items_in_subtree(target.node)
-                            .into_iter()
-                            .next()
-                            .ok_or(DockspaceActionRejection::DockBackUnavailable { root })?;
-                        Ok(DockPlacement::Center(DockAnchor::Item(item)))
-                    }
+                self.product_center_placement(root, target_root)
+            }
+        }
+    }
+
+    pub(in crate::engine) fn derive_product_directional_dock_placement(
+        &self,
+        root: RootId,
+        edge: Option<DockEdge>,
+    ) -> Result<DockPlacement, DockspaceActionRejection> {
+        let target_surface = match self
+            .workspace
+            .presentation_for_root(root)
+            .ok_or(DockspaceActionRejection::RootUnavailable { root })?
+        {
+            crate::RootPresentationOwner::Contained { surface, .. } => surface,
+            crate::RootPresentationOwner::Main { .. } => {
+                self.native_main_dock_back_target(root)?
+                    .ok_or(DockspaceActionRejection::DockBackUnavailable { root })?
+            }
+        };
+        let target_root = self
+            .workspace
+            .surface(target_surface)
+            .ok_or(DockspaceActionRejection::SurfaceUnavailable {
+                surface: target_surface,
+            })?
+            .main_root;
+
+        match (edge, target_root) {
+            (None, None) => Ok(DockPlacement::Main(target_surface)),
+            (Some(_), None) => Err(DockspaceActionRejection::MainSurfaceUnavailable {
+                surface: target_surface,
+            }),
+            (None, Some(target_root)) => self.product_center_placement(root, target_root),
+            (Some(edge), Some(target_root)) => {
+                if target_root == root {
+                    return Err(DockspaceActionRejection::DockBackUnavailable { root });
                 }
+                let fraction = DockFraction::new(self.presentation_config().dock_fraction() as f32)
+                    .map_err(|_| DockspaceActionRejection::DockBackUnavailable { root })?;
+                Ok(DockPlacement::OuterEdge {
+                    root: target_root,
+                    edge,
+                    fraction,
+                })
+            }
+        }
+    }
+
+    fn product_center_placement(
+        &self,
+        source_root: RootId,
+        target_root: RootId,
+    ) -> Result<DockPlacement, DockspaceActionRejection> {
+        if source_root == target_root {
+            return Err(DockspaceActionRejection::DockBackUnavailable { root: source_root });
+        }
+        let target = self
+            .workspace
+            .root(target_root)
+            .ok_or(DockspaceActionRejection::DockBackUnavailable { root: source_root })?;
+        match target.central {
+            Some(_) => Ok(DockPlacement::Center(DockAnchor::Central(target_root))),
+            None => {
+                let item = self
+                    .workspace
+                    .collect_items_in_subtree(target.node)
+                    .into_iter()
+                    .next()
+                    .ok_or(DockspaceActionRejection::DockBackUnavailable { root: source_root })?;
+                Ok(DockPlacement::Center(DockAnchor::Item(item)))
             }
         }
     }
@@ -317,28 +377,6 @@ impl DockEngine {
                 })
             }
         }
-    }
-
-    pub(super) fn compile_product_contained_rect(
-        &self,
-        item: ItemId,
-        rect: LogicalRect,
-    ) -> Result<ProductActionPlan, DockspaceActionRejection> {
-        let contained = self.capture_product_contained(item)?;
-        Ok(ProductActionPlan::Command {
-            command: WorkspaceCommand::UpdateContainedRect {
-                surface: contained.surface,
-                root: contained.root,
-                floating: contained.floating,
-                expected_rect: contained.rect,
-                rect,
-            },
-            context: ProductCommandContext::SetContainedRect {
-                root: contained.root,
-                surface: contained.surface,
-                floating: contained.floating,
-            },
-        })
     }
 
     pub(super) fn compile_product_contained_raise(

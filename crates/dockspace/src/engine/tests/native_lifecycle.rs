@@ -1068,6 +1068,31 @@ fn background_native_window_snapshot_with_capabilities(
     focused: GlobalFocusedWindow,
     capabilities: PlatformCapabilities,
 ) -> PlatformSnapshot {
+    let acknowledged_effect = fixture
+        .engine
+        .viewport()
+        .native_create_saga(request.saga())
+        .map(|saga| saga.phase().presentation_correlation_effect());
+    background_native_window_snapshot_with_capabilities_and_acknowledgement(
+        fixture,
+        request,
+        presentation,
+        generation,
+        focused,
+        capabilities,
+        acknowledged_effect,
+    )
+}
+
+fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
+    fixture: &mut BackgroundFixture,
+    request: crate::frame::NativeCreateRequest,
+    presentation: WindowPresentationState,
+    generation: u64,
+    focused: GlobalFocusedWindow,
+    capabilities: PlatformCapabilities,
+    acknowledged_effect: Option<crate::effect::EffectId>,
+) -> PlatformSnapshot {
     const WORK_AREA: WorkAreaToken = WorkAreaToken::new(93);
     let source = ObservedWindow::new(background_source_binding(fixture))
         .with_coordinate_observation(WindowCoordinateObservation::new(
@@ -1090,11 +1115,6 @@ fn background_native_window_snapshot_with_capabilities(
             Authority::Known(WindowPresentationState::Visible),
             PresentationEffectAcknowledgement::known(None),
         ));
-    let acknowledged_effect = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .map(|saga| saga.phase().presentation_correlation_effect());
     let native = ObservedWindow::new(request.binding())
         .with_coordinate_observation(WindowCoordinateObservation::new(
             request.binding(),

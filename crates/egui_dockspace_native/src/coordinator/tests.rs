@@ -21,6 +21,7 @@ mod ingress_create;
 mod input_control;
 mod replacement;
 mod retirement;
+mod touch;
 mod wheel;
 mod work_area;
 
@@ -71,14 +72,14 @@ fn deferred_viewport_rect_never_rounds_or_accepts_empty_extents() {
 }
 
 #[test]
-fn deferred_binding_authority_only_semantically_paints_a_current_surface() {
+fn deferred_binding_authority_waits_for_first_live_surface_authority() {
+    assert_eq!(
+        deferred_binding_authority(true, true, true, false),
+        DeferredBindingAuthority::AwaitingFirstLive
+    );
     assert_eq!(
         deferred_binding_authority(true, true, true, true),
         DeferredBindingAuthority::CurrentSurface
-    );
-    assert_eq!(
-        deferred_binding_authority(true, true, true, false),
-        DeferredBindingAuthority::Retiring
     );
     assert_eq!(
         deferred_binding_authority(true, false, true, true),
@@ -93,9 +94,136 @@ fn deferred_binding_authority_rejects_foreign_or_forgotten_bindings() {
         DeferredBindingAuthority::Invalid
     );
     assert_eq!(
-        deferred_binding_authority(true, false, false, false),
+        deferred_binding_authority(true, false, false, true),
         DeferredBindingAuthority::Invalid
     );
+}
+
+#[test]
+fn stale_staging_callback_is_obsolete_but_other_native_failures_remain_fatal() {
+    assert_eq!(
+        staging_paint_failure_disposition(Some(NativeHostErrorKind::StaleBinding)),
+        StagingPaintFailureDisposition::Obsolete
+    );
+    for kind in [
+        None,
+        Some(NativeHostErrorKind::InvalidFacts),
+        Some(NativeHostErrorKind::OperationConflict),
+        Some(NativeHostErrorKind::Internal),
+    ] {
+        assert_eq!(
+            staging_paint_failure_disposition(kind),
+            StagingPaintFailureDisposition::Fatal,
+            "only an obsolete affine staging callback is recoverable"
+        );
+    }
+}
+
+#[test]
+fn no_frame_invalidation_requires_existing_presented_surface_authority() {
+    assert!(!should_record_no_frame_invalidation(true, true, false));
+    assert!(should_record_no_frame_invalidation(true, true, true));
+    assert!(!should_record_no_frame_invalidation(false, true, true));
+    assert!(!should_record_no_frame_invalidation(true, false, true));
+}
+
+#[test]
+fn no_frame_invalidation_waits_for_terminal_and_rejects_stale_routes() {
+    assert_eq!(
+        no_frame_invalidation_readiness(true, true, true),
+        NoFrameInvalidationReadiness::WaitingForTerminal
+    );
+    assert_eq!(
+        no_frame_invalidation_readiness(false, true, true),
+        NoFrameInvalidationReadiness::Ready
+    );
+    assert_eq!(
+        no_frame_invalidation_readiness(false, false, true),
+        NoFrameInvalidationReadiness::Stale
+    );
+    assert_eq!(
+        no_frame_invalidation_readiness(false, true, false),
+        NoFrameInvalidationReadiness::Stale
+    );
+}
+
+#[test]
+fn quarantine_preserves_a_terminal_observed_no_frame_invalidation() {
+    let mut native = coordinator();
+    let (_, binding) = register_roots(&mut native);
+    let invalidation = PendingNoFrameInvalidation::terminal_observed_for_test(
+        ViewportId::ROOT,
+        WindowId::from(11),
+        binding,
+    );
+    native
+        .pending_no_frame_invalidations
+        .insert(binding, invalidation);
+
+    let _ = native.quarantine_after_fatal();
+
+    assert_eq!(
+        native.pending_no_frame_invalidations.get(&binding),
+        Some(&invalidation),
+        "fatal quarantine must not erase a physical NoFrame awaiting core invalidation"
+    );
+}
+
+#[test]
+fn shutdown_commits_terminal_no_frame_invalidation_before_clearing_it() {
+    let mut native = coordinator();
+    let (root_binding, child_binding) = register_root_and_child(&mut native);
+    let child_viewport = ViewportId::from_hash_of("shutdown-no-frame-child");
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), root_binding)
+        .expect("the root route binds");
+    native
+        .bind_viewport(child_viewport, WindowId::from(22), child_binding)
+        .expect("the child route binds");
+    let _ = paint_and_present_all_surfaces(&mut native);
+    assert!(native.session.presented_surface(SECOND_SURFACE).is_some());
+
+    let invalidation = PendingNoFrameInvalidation::terminal_observed_for_test(
+        child_viewport,
+        WindowId::from(22),
+        child_binding,
+    );
+    native
+        .pending_no_frame_invalidations
+        .insert(child_binding, invalidation);
+    let _ = native.quarantine_after_fatal();
+
+    let advance = native.advance_shutdown_boundary();
+
+    assert!(advance.errors.is_empty());
+    assert!(
+        native.pending_no_frame_invalidations.is_empty(),
+        "the obligation clears only after its core frame commits"
+    );
+    assert!(
+        native.session.presented_surface(SECOND_SURFACE).is_none(),
+        "physical NoFrame and receiver retirement must be joined by core authority invalidation"
+    );
+}
+
+#[test]
+fn native_effect_rejection_policy_retries_only_state_races() {
+    assert!(native_effect_submission_rejection_is_recoverable(
+        NativeHostErrorKind::StaleBinding
+    ));
+    assert!(native_effect_submission_rejection_is_recoverable(
+        NativeHostErrorKind::OperationConflict
+    ));
+
+    for fatal in [
+        NativeHostErrorKind::NotEnabled,
+        NativeHostErrorKind::AlreadyEnabled,
+        NativeHostErrorKind::InvalidFacts,
+        NativeHostErrorKind::Unsupported,
+        NativeHostErrorKind::Internal,
+    ] {
+        assert!(!native_effect_submission_rejection_is_recoverable(fatal));
+    }
 }
 
 fn coordinator() -> NativeCoordinator {
@@ -738,6 +866,49 @@ fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
 
     assert!(native.quarantine_after_fatal().is_empty());
     assert!(native.bridge.has_pending_coordinator_work());
+}
+
+#[test]
+fn settled_presentation_acknowledgement_rearms_identical_roster_capture() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    native
+        .bridge
+        .push_viewport_roster(live_roster([first, second]));
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("the acknowledgement roster is accepted")
+    );
+    native
+        .queued_snapshot
+        .as_mut()
+        .expect("the reduced roster retains one exact snapshot")
+        .presentation_acknowledgements
+        .push(second);
+
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the acknowledgement boundary begins");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the acknowledgement boundary settles every surface");
+    let report = frame
+        .commit()
+        .expect("the acknowledgement boundary commits");
+    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native.bridge.viewport_roster_dirty(),
+        "clearing an applied acknowledgement must force a later provider capture"
+    );
+    native
+        .bridge
+        .push_viewport_roster(live_roster([first, second]));
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("the identical post-acknowledgement roster is accepted")
+    );
 }
 
 #[test]

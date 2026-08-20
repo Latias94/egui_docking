@@ -11,10 +11,15 @@ use egui::{Button, Popup, Sense, vec2};
 use super::RenderContext;
 use super::geometry::{accesskit_bounds, egui_rect};
 
-const COMMANDS: [DockspacePresentationCommandKind; 3] = [
+const COMMANDS: [DockspacePresentationCommandKind; 8] = [
     DockspacePresentationCommandKind::Float,
     DockspacePresentationCommandKind::MoveToNewWindow,
     DockspacePresentationCommandKind::DockBack,
+    DockspacePresentationCommandKind::DockLeft,
+    DockspacePresentationCommandKind::DockRight,
+    DockspacePresentationCommandKind::DockTop,
+    DockspacePresentationCommandKind::DockBottom,
+    DockspacePresentationCommandKind::DockCenter,
 ];
 
 pub(super) fn paint(
@@ -183,6 +188,11 @@ const fn command_label(kind: DockspacePresentationCommandKind) -> &'static str {
         DockspacePresentationCommandKind::Float => "Float",
         DockspacePresentationCommandKind::MoveToNewWindow => "Move to New Window",
         DockspacePresentationCommandKind::DockBack => "Dock Back",
+        DockspacePresentationCommandKind::DockLeft => "Dock Left",
+        DockspacePresentationCommandKind::DockRight => "Dock Right",
+        DockspacePresentationCommandKind::DockTop => "Dock Top",
+        DockspacePresentationCommandKind::DockBottom => "Dock Bottom",
+        DockspacePresentationCommandKind::DockCenter => "Dock Center",
     }
 }
 

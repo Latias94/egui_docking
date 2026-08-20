@@ -1,3 +1,4 @@
+use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerCancelReason,
     NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
@@ -12,6 +13,158 @@ use winit::event::{
 
 use super::*;
 use crate::event::NativePointerRouteSnapshot;
+
+#[test]
+fn captured_drag_ignores_target_cursor_notification_until_owner_callback() {
+    let CrossWindowCaptureFixture {
+        source,
+        target,
+        press,
+        target_notification,
+        source_callback,
+        ..
+    } = cross_window_capture_fixture();
+    let mut translator = NativePointerTranslator::default();
+
+    assert!(matches!(
+        translator.translate_for_test_device(&press, 41, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert_eq!(
+        translator.translate_for_test_device(&target_notification, 41, |_| None),
+        NativePointerTranslation::Ignored,
+        "capture-owner delivery must win over a target-window cursor notification"
+    );
+    assert_eq!(
+        translator.translate_for_test_device(&source_callback, 41, |_| None),
+        NativePointerTranslation::Input(NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::Moved,
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(
+                    PhysicalPoint::new(330.0, 440.0).expect("test point validates"),
+                ),
+                NativePointerHover::Dock(target),
+                None,
+            ),
+            NativePointerOwner::Native(source),
+            NativePointerOwner::Native(source),
+        )),
+        "the capture-owner callback keeps source delivery with target hover"
+    );
+}
+
+#[test]
+fn ingress_ignores_target_cursor_notification_before_captured_source_delivery() {
+    let CrossWindowCaptureFixture {
+        mut native,
+        press,
+        target_notification,
+        source_callback,
+        ..
+    } = cross_window_capture_fixture();
+
+    for (record, expectation) in [
+        (press, "the source press enters the core journal"),
+        (
+            target_notification,
+            "the target notification is acknowledged without entering the journal",
+        ),
+        (
+            source_callback,
+            "the capture-owner callback enters the core journal",
+        ),
+    ] {
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        assert!(native.reduce_callback_head().expect(expectation));
+        commit_pending_pointer_frame(&mut native);
+    }
+}
+
+struct CrossWindowCaptureFixture {
+    native: NativeCoordinator,
+    source: NativeSurfaceBinding,
+    target: NativeSurfaceBinding,
+    press: NativeWindowEventRecord,
+    target_notification: NativeWindowEventRecord,
+    source_callback: NativeWindowEventRecord,
+}
+
+fn cross_window_capture_fixture() -> CrossWindowCaptureFixture {
+    let mut native = coordinator();
+    let (source, target) = register_roots(&mut native);
+    let source_window = WindowId::from(11);
+    let target_window = WindowId::from(22);
+    let target_viewport = ViewportId::from_hash_of("capture-target-window");
+    native
+        .bind_viewport(ViewportId::ROOT, source_window, source)
+        .expect("source viewport binds");
+    native
+        .bind_viewport(target_viewport, target_window, target)
+        .expect("target viewport binds");
+
+    let device_id = DeviceId::dummy();
+    let cursor_event = || WindowEvent::CursorMoved {
+        device_id,
+        position: PhysicalPosition::new(30.0, 40.0),
+        facts: PointerEventFacts {
+            surface_position: Some(PhysicalPosition::new(30.0, 40.0)),
+            desktop_position: Some(PhysicalPosition::new(330.0, 440.0)),
+            hover: PointerWindowRoute::Window(target_window),
+            capture: PointerWindowRoute::Window(source_window),
+            ..PointerEventFacts::default()
+        },
+    };
+    let (press, target_notification, source_callback) = {
+        let viewports = native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (
+            NativeWindowEventRecord::for_test_snapshot(
+                1,
+                source_window,
+                Some(ViewportId::ROOT),
+                WindowEvent::MouseInput {
+                    device_id,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    facts: PointerEventFacts {
+                        surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
+                        desktop_position: Some(PhysicalPosition::new(110.0, 220.0)),
+                        hover: PointerWindowRoute::Window(source_window),
+                        capture: PointerWindowRoute::Window(source_window),
+                        ..PointerEventFacts::default()
+                    },
+                },
+                &viewports,
+            ),
+            NativeWindowEventRecord::for_test_snapshot(
+                2,
+                target_window,
+                Some(target_viewport),
+                cursor_event(),
+                &viewports,
+            ),
+            NativeWindowEventRecord::for_test_snapshot(
+                3,
+                source_window,
+                Some(ViewportId::ROOT),
+                cursor_event(),
+                &viewports,
+            ),
+        )
+    };
+
+    CrossWindowCaptureFixture {
+        native,
+        source,
+        target,
+        press,
+        target_notification,
+        source_callback,
+    }
+}
 
 #[test]
 fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
@@ -153,7 +306,7 @@ fn idle_delivery_does_not_become_a_persistent_pointer_owner() {
         native
             .pointer_translator
             .cancel_destroyed_binding(binding)
-            .is_none(),
+            .is_empty(),
         "an idle delivery route is not a live pointer owner"
     );
 }
@@ -188,7 +341,7 @@ fn released_button_no_longer_keeps_its_press_binding_live() {
         native
             .pointer_translator
             .cancel_destroyed_binding(binding)
-            .is_none(),
+            .is_empty(),
         "a normally released button must not synthesize a later cancellation"
     );
 }
@@ -255,7 +408,7 @@ fn pressed_delivery_and_capture_bindings_remain_independent() {
     assert!(!native.pointer_translator.references_binding(captured));
     assert_eq!(
         native.pointer_translator.cancel_destroyed_binding(delivery),
-        Some(retired_pointer_input())
+        vec![retired_pointer_input()]
     );
 }
 
@@ -295,11 +448,11 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
     assert!(native.pointer_translator.references_binding(captured));
     assert_eq!(
         native.pointer_translator.cancel_destroyed_binding(captured),
-        Some(retired_pointer_input())
+        vec![retired_pointer_input()]
     );
     assert_eq!(
         native.pointer_translator.reset_destroyed_binding(captured),
-        None
+        Vec::new()
     );
 
     let late_release = NativeWindowEventRecord::for_test(
@@ -320,9 +473,145 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
     );
 }
 
+#[test]
+fn binding_retirement_keeps_button_tombstones_isolated_by_device() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let first_window = WindowId::from(51);
+    let second_window = WindowId::from(52);
+    let first_press = pointer_button_record(1, first_window, first, ElementState::Pressed);
+    let second_press = pointer_button_record(2, second_window, second, ElementState::Pressed);
+    let mut translator = NativePointerTranslator::default();
+
+    assert!(matches!(
+        translator.translate_for_test_device(&first_press, 101, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(matches!(
+        translator.translate_for_test_device(&second_press, 202, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+
+    assert_eq!(
+        translator.cancel_destroyed_binding(first),
+        vec![retired_pointer_input_for(NativePointerId::new(1))]
+    );
+    assert!(translator.reset_destroyed_binding(first).is_empty());
+    assert!(!translator.references_binding(first));
+    assert!(translator.references_binding(second));
+
+    let second_release = pointer_button_record(3, second_window, second, ElementState::Released);
+    assert!(matches!(
+        translator.translate_for_test_device(&second_release, 202, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+
+    let first_late_release = pointer_button_record(4, first_window, first, ElementState::Released);
+    assert_eq!(
+        translator.translate_for_test_device(&first_late_release, 101, |_| None),
+        NativePointerTranslation::Ignored,
+        "only the retired device consumes its cancelled-button tombstone"
+    );
+}
+
+#[test]
+fn binding_retirement_returns_terminals_in_adapter_identity_order() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let window = WindowId::from(61);
+    let first_press = pointer_button_record(1, window, binding, ElementState::Pressed);
+    let second_press = pointer_button_record(2, window, binding, ElementState::Pressed);
+    let mut translator = NativePointerTranslator::default();
+
+    assert!(matches!(
+        translator.translate_for_test_device(&first_press, 901, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(matches!(
+        translator.translate_for_test_device(&second_press, 303, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+
+    assert_eq!(
+        translator.cancel_destroyed_binding(binding),
+        vec![
+            retired_pointer_input_for(NativePointerId::new(1)),
+            retired_pointer_input_for(NativePointerId::new(2)),
+        ],
+        "terminal order follows first-seen adapter identities rather than device-key ordering"
+    );
+}
+
+#[test]
+fn destroyed_callback_records_all_device_terminals_in_one_boundary() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let window = WindowId::from(71);
+    native
+        .bind_viewport(ViewportId::ROOT, window, binding)
+        .expect("retiring viewport binds");
+
+    for (ordinal, device) in [(1, 101), (2, 202)] {
+        let press = pointer_button_record(ordinal, window, binding, ElementState::Pressed);
+        let input =
+            match native
+                .pointer_translator
+                .translate_for_test_device(&press, device, |_| None)
+            {
+                NativePointerTranslation::Input(input) => input,
+                translation => panic!("press must translate, got {translation:?}"),
+            };
+        native
+            .record_pointer(input)
+            .expect("test press enters the core journal");
+    }
+    commit_pending_pointer_frame(&mut native);
+
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            3,
+            window,
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::Destroyed,
+        )));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the ordered device terminal batch records")
+    );
+    assert!(native.pointer_translator.has_pending_provider_tail());
+    commit_pending_pointer_frame(&mut native);
+}
+
+fn pointer_button_record(
+    ordinal: u64,
+    window: WindowId,
+    binding: dockspace::runtime::NativeSurfaceBinding,
+    state: ElementState,
+) -> NativeWindowEventRecord {
+    NativeWindowEventRecord::for_test(
+        ordinal,
+        window,
+        None,
+        Some(binding),
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+            facts: PointerEventFacts::default(),
+        },
+    )
+}
+
 fn retired_pointer_input() -> NativePointerInput {
+    retired_pointer_input_for(NativePointerId::new(1))
+}
+
+fn retired_pointer_input_for(pointer: NativePointerId) -> NativePointerInput {
     NativePointerInput::new(
-        NativePointerId::new(1),
+        pointer,
         NativePointerEvent::StreamCancelled(NativePointerCancelReason::BindingRetired),
         NativeDesktopPointerLocation::new(
             NativeDesktopPosition::Unknown,
@@ -417,14 +706,16 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
         native
             .pointer_translator
             .cancel_destroyed_binding(child_binding)
-            .is_some(),
+            .len()
+            == 1,
         "the later Destroyed callback can still retire the semantic owner"
     );
     assert!(
         native
             .pointer_translator
             .reset_destroyed_binding(child_binding)
-            .is_some(),
+            .len()
+            == 1,
         "the following boundary can still close the provider tail"
     );
 }

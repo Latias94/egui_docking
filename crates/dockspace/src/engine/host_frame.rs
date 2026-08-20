@@ -584,6 +584,15 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.native_main_float_target(root)
     }
 
+    pub(crate) fn directional_dock_placement(
+        &self,
+        root: RootId,
+        edge: Option<crate::model::DockEdge>,
+    ) -> Result<crate::model::DockPlacement, crate::model::DockspaceActionRejection> {
+        self.engine
+            .derive_product_directional_dock_placement(root, edge)
+    }
+
     /// Returns the exact semantic requirement manifest visible to this frame.
     #[must_use]
     pub const fn presentation_requirements(&self) -> &'frame SceneRequirementManifest {

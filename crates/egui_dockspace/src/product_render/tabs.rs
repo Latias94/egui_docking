@@ -13,8 +13,8 @@ use egui::{
 
 use super::RenderContext;
 use super::actions::{
-    LocalScrollAxis, button_activated, consume_local_scroll_input, gesture_phase,
-    local_scroll_input,
+    LocalScrollAxis, button_activated, consume_local_scroll_input, effective_enabled,
+    gesture_phase, local_scroll_input,
 };
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
@@ -144,7 +144,9 @@ fn paint_tab_bars(
             "tab-strip-scroll",
             bar.visual_id(),
         ));
-        let receiver = context.plan.receiver_for_tab_strip_scroll(bar);
+        let receiver = effective_enabled(context.ui, true)
+            .then(|| context.plan.receiver_for_tab_strip_scroll(bar))
+            .flatten();
         context.register_scroll_receiver(id, receiver);
         if let Some(scroll) = local_scroll_input(
             context.ui,
@@ -176,16 +178,25 @@ fn paint_group_drag_regions(
             "tab-group-drag-region",
             region.visual_id(),
         ));
-        let response = context
-            .interact_receiver(
-                bounds,
-                id,
-                Sense::click_and_drag(),
-                context.plan.receiver_for_tab_group_drag_region(region),
-            )
-            .on_hover_text("Drag tab group");
-        let locally_dragged = context.response_dragged_locally(&response);
-        if response.hovered() || locally_dragged {
+        let receiver = context.plan.receiver_for_tab_group_drag_region(region);
+        let enabled = effective_enabled(context.ui, receiver.is_some());
+        let response = context.interact_receiver(
+            bounds,
+            id,
+            if enabled {
+                Sense::click_and_drag()
+            } else {
+                Sense::hover()
+            },
+            enabled.then_some(receiver).flatten(),
+        );
+        let response = if enabled {
+            response.on_hover_text("Drag tab group")
+        } else {
+            response
+        };
+        let locally_dragged = enabled && context.response_dragged_locally(&response);
+        if enabled && (response.hovered() || locally_dragged) {
             context.ui.ctx().set_cursor_icon(if locally_dragged {
                 CursorIcon::Grabbing
             } else {
@@ -205,9 +216,7 @@ fn paint_group_drag_regions(
                 );
             }
         }
-        let phase = context
-            .pointer_authority
-            .accepts_local_pointer_actions()
+        let phase = (enabled && context.pointer_authority.accepts_local_pointer_actions())
             .then(|| gesture_phase(&response))
             .flatten();
         if let Some(phase) = phase
@@ -473,7 +482,17 @@ fn paint_close(
     let id = context
         .ui
         .make_persistent_id((context.instance_id, "tab-close", item));
-    let response = context.interact_receiver(rect, id, Sense::click(), receiver);
+    let enabled = effective_enabled(context.ui, receiver.is_some());
+    let response = context.interact_receiver(
+        rect,
+        id,
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+        enabled.then_some(receiver).flatten(),
+    );
     let visuals = *context.ui.style().interact(&response);
     if paint_icon && (tab_emphasized || RenderContext::response_emphasized(&response)) {
         let paint_rect = rect.expand(visuals.expansion);
@@ -498,9 +517,14 @@ fn paint_close(
         node.set_role(Role::Button);
         node.set_bounds(accesskit_bounds(rect));
         node.set_label(format!("Close {title}"));
-        node.add_action(Action::Click);
+        if enabled {
+            node.add_action(Action::Click);
+        } else {
+            node.set_disabled();
+        }
     });
-    if button_activated(context.ui, &response, context.pointer_authority)
+    if enabled
+        && button_activated(context.ui, &response, context.pointer_authority)
         && let Some(action) = context.plan.prepare_tab_close(item)
     {
         context.push_local_action(action);

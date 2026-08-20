@@ -1459,7 +1459,6 @@ impl DockEngine {
                 expected,
                 item,
                 surface,
-                rect,
             } => self.reduce_product_action(
                 input.sequence,
                 cause,
@@ -1468,24 +1467,6 @@ impl DockEngine {
                 ProductAction::FloatItem {
                     item: *item,
                     surface: *surface,
-                    rect: *rect,
-                },
-                tick_start.policy,
-                events,
-                interaction_events,
-            ),
-            EngineInput::SetContainedRect {
-                expected,
-                item,
-                rect,
-            } => self.reduce_product_action(
-                input.sequence,
-                cause,
-                focus_causal,
-                *expected,
-                ProductAction::SetContainedRect {
-                    item: *item,
-                    rect: *rect,
                 },
                 tick_start.policy,
                 events,

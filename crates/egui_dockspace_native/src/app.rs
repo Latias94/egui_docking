@@ -8,14 +8,14 @@ use eframe::NativeHostHandler;
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 
-use crate::NativeActionRequestError;
 use crate::close_control::NativeWindowClosePolicy;
 use crate::deferred_viewport::{
     DeferredViewportSpec, declare_deferred_viewports, paint_placeholder,
 };
 use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErrorKind};
 use crate::mailbox::DeferredViewportPaint;
-use crate::surface_driver::{NativeRuntimeState, NativeSurfaceUpdate};
+use crate::surface_driver::{NativeErrorPresentation, NativeRuntimeState, NativeSurfaceUpdate};
+use crate::{NativeActionFailure, NativeActionRequestError};
 
 /// Fork-backed eframe application whose [`DockspaceSession`] is the sole graph authority.
 ///
@@ -181,7 +181,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).request_dock_root_back(root)
     }
 
-    /// Queues one complete-root native tear-off for the next final root pass.
+    /// Queues one complete-root move to a new native window for the next final root pass.
     ///
     /// Source ownership remains in place until the managed native lifecycle
     /// reaches its exact post-show transfer and first-live barriers.
@@ -190,58 +190,55 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ///
     /// Returns an error when another application action is pending or the
     /// native runtime has stopped.
-    pub fn request_tear_off_root(
+    pub fn request_move_root_to_new_window(
         &self,
         root: RootId,
         placement: NativeWindowPlacement,
     ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_tear_off_root(root, placement)
+        lock_state(&self.state).request_move_root_to_new_window(root, placement)
     }
 
     /// Takes the exact terminal status of the last queued application action.
     ///
     /// A new action remains busy until this result is consumed, so the native
     /// facade never overwrites or grows an unbounded action-result history.
-    pub fn take_action_status(&self) -> Option<DockspaceActionStatus> {
+    pub fn take_action_status(&self) -> Option<Result<DockspaceActionStatus, NativeActionFailure>> {
         lock_state(&self.state).take_action_status()
     }
 
     fn update_root(&self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
         register_pass_settlement::<P>(&context, &self.state);
-        let (specs, stopped) = {
+        let token = eframe::current_native_output_token();
+        let (specs, request_repaint) = {
             let mut state = lock_state(&self.state);
             if state.error().is_some() {
                 let (progress, cleanup_errors) = state.advance_shutdown(&context);
                 for error in cleanup_errors {
                     state.record_cleanup_error(error);
                 }
-                state.render_error(ui);
-                if progress {
-                    context.request_repaint_of(ViewportId::ROOT);
-                }
-                return;
-            }
-            let root_surface = state.root_surface();
-            match state.update_surface(ui, root_surface) {
-                Ok(NativeSurfaceUpdate::Semantic) => (state.deferred_viewport_specs(), false),
-                Ok(NativeSurfaceUpdate::RetainPrevious) => {
-                    state.stop_current_output(
-                        NativeHostProtocolError::RootSurfaceUnavailable(root_surface).into(),
-                    );
-                    state.render_error(ui);
-                    (Vec::new(), true)
-                }
-                Err(error) => {
-                    state.stop_current_output(error);
-                    state.render_error(ui);
-                    (Vec::new(), true)
+                let specs = state.deferred_viewport_specs();
+                render_native_error(&mut state, token, ui);
+                (specs, progress)
+            } else {
+                let root_surface = state.root_surface();
+                match state.update_surface(ui, root_surface) {
+                    Ok(NativeSurfaceUpdate::Semantic) => (state.deferred_viewport_specs(), false),
+                    Ok(NativeSurfaceUpdate::RetainPrevious) => {
+                        paint_root_waiting(ui);
+                        (state.deferred_viewport_specs(), false)
+                    }
+                    Err(error) => {
+                        state.stop_current_output(error);
+                        let specs = state.deferred_viewport_specs();
+                        render_native_error(&mut state, token, ui);
+                        (specs, true)
+                    }
                 }
             }
         };
-        if stopped {
-            context.request_repaint();
-            return;
+        if request_repaint {
+            context.request_repaint_once_of(ViewportId::ROOT);
         }
 
         let state = Arc::clone(&self.state);
@@ -267,7 +264,14 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
     let token = eframe::current_native_output_token();
     let mut state = lock_state(shared);
     if state.error().is_some() {
-        state.render_error(ui);
+        let (progress, cleanup_errors) = state.advance_shutdown(ui.ctx());
+        for error in cleanup_errors {
+            state.record_cleanup_error(error);
+        }
+        if progress {
+            ui.ctx().request_repaint_once_of(ViewportId::ROOT);
+        }
+        render_native_error(&mut state, token, ui);
         return;
     }
     if class != ViewportClass::Deferred {
@@ -285,27 +289,29 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
             match state.update_surface(ui, binding.surface()) {
                 Ok(NativeSurfaceUpdate::Semantic) => {}
                 Ok(NativeSurfaceUpdate::RetainPrevious) => {
-                    if !eframe::retain_current_native_output() {
-                        paint_placeholder(ui, class, Some(DeferredViewportPaint::Waiting));
-                    }
+                    paint_placeholder(ui, class, Some(DeferredViewportPaint::Waiting));
                 }
                 Err(error) => {
                     state.stop_current_output(error);
-                    ui.ctx().request_repaint_of(ViewportId::ROOT);
-                    state.render_error(ui);
+                    ui.ctx().request_repaint_once_of(ViewportId::ROOT);
+                    render_native_error(&mut state, Some(token), ui);
                 }
             }
         }
-        DeferredViewportPaint::Semantic(_) => {
+        DeferredViewportPaint::Semantic(_binding) => {
             state.stop_current_output(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-            ui.ctx().request_repaint_of(ViewportId::ROOT);
-            state.render_error(ui);
+            ui.ctx().request_repaint_once_of(ViewportId::ROOT);
+            render_native_error(&mut state, Some(token), ui);
         }
         DeferredViewportPaint::Created | DeferredViewportPaint::Staging(_) => {
             paint_placeholder(ui, class, Some(disposition));
         }
         DeferredViewportPaint::Retain(_) => {
-            if !eframe::retain_current_native_output() {
+            if let Err(error) = state.stage_retain_previous(token) {
+                state.stop_current_output(error);
+                ui.ctx().request_repaint_once_of(ViewportId::ROOT);
+                state.render_error(ui, NativeErrorPresentation::NoFrame);
+            } else {
                 paint_placeholder(ui, class, Some(DeferredViewportPaint::Waiting));
             }
         }
@@ -313,6 +319,30 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
             paint_placeholder(ui, class, Some(disposition));
         }
     }
+}
+
+fn render_native_error<P: PaneView>(
+    state: &mut NativeRuntimeState<P>,
+    token: Option<eframe::NativeOutputToken>,
+    ui: &mut egui::Ui,
+) {
+    let retained_overlay = token.is_some_and(|token| {
+        if let Err(error) = state.stage_retained_overlay(token) {
+            state.record_cleanup_error(error);
+            return false;
+        }
+        request_retained_error_overlay()
+    });
+    let presentation = if retained_overlay {
+        NativeErrorPresentation::RetainedOverlay
+    } else {
+        NativeErrorPresentation::NoFrame
+    };
+    state.render_error(ui, presentation);
+}
+
+fn request_retained_error_overlay() -> bool {
+    eframe::retain_current_native_output_with_overlay()
 }
 
 fn lock_state<P>(state: &Arc<Mutex<P>>) -> MutexGuard<'_, P> {
@@ -346,21 +376,38 @@ impl<P: PaneView + Send + 'static> egui::plugin::Plugin for NativePassSettlement
         "egui_dockspace_native::final_pass_settlement"
     }
 
-    fn output_hook(&mut self, context: &egui::Context, output: &mut egui::FullOutput) {
+    fn output_pass_settlement(
+        &mut self,
+        context: &egui::Context,
+        ended_viewport: ViewportId,
+        disposition: egui::OutputPassDisposition,
+        output: &mut egui::FullOutput,
+    ) {
         let Some(token) = eframe::current_native_output_token() else {
             return;
         };
-        let discarded = pass_will_repeat(context, output);
         self.states.retain(|state| {
             let Some(state) = state.upgrade() else {
                 return false;
             };
             let mut state = lock_state(&state);
-            if state.error().is_none()
-                && let Err(error) = state.settle_egui_pass(context, token, discarded)
-            {
-                state.stop_current_output(error);
-                context.request_repaint_of(ViewportId::ROOT);
+            let result = if token.viewport_id() == ended_viewport {
+                state.settle_egui_pass(
+                    context,
+                    output,
+                    token,
+                    disposition == egui::OutputPassDisposition::Repeat,
+                )
+            } else {
+                Err(NativeHostProtocolError::MultipassOutputChanged.into())
+            };
+            if let Err(error) = result {
+                if state.error().is_some() {
+                    state.record_cleanup_error(error);
+                } else {
+                    state.stop_current_output(error);
+                    context.request_repaint_once_of(ViewportId::ROOT);
+                }
             }
             true
         });
@@ -377,10 +424,12 @@ fn register_pass_settlement<P: PaneView + Send + 'static>(
         .register(Arc::downgrade(state));
 }
 
-fn pass_will_repeat(context: &egui::Context, output: &egui::FullOutput) -> bool {
-    output.platform_output.requested_discard()
-        && output.platform_output.num_completed_passes
-            < context.options(|options| options.max_passes.get())
+fn paint_root_waiting(ui: &mut egui::Ui) {
+    ui.painter()
+        .rect_filled(ui.max_rect(), 0.0, egui::Color32::from_gray(24));
+    ui.centered_and_justified(|ui| {
+        ui.label("Waiting for dockspace authority…");
+    });
 }
 
 #[cfg(test)]
@@ -389,11 +438,9 @@ mod tests {
 
     use eframe::egui;
 
-    use super::pass_will_repeat;
-
     #[derive(Default)]
     struct PassProbe {
-        observations: Arc<Mutex<Vec<bool>>>,
+        observations: Arc<Mutex<Vec<egui::OutputPassDisposition>>>,
     }
 
     impl egui::plugin::Plugin for PassProbe {
@@ -401,35 +448,65 @@ mod tests {
             "egui_dockspace_native::late_discard_probe"
         }
 
-        fn output_hook(&mut self, context: &egui::Context, output: &mut egui::FullOutput) {
+        fn output_pass_settlement(
+            &mut self,
+            _context: &egui::Context,
+            _ended_viewport: egui::ViewportId,
+            disposition: egui::OutputPassDisposition,
+            _output: &mut egui::FullOutput,
+        ) {
             self.observations
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .push(pass_will_repeat(context, output));
+                .push(disposition);
+        }
+    }
+
+    #[derive(Default)]
+    struct LateDiscardProbe {
+        remaining: usize,
+    }
+
+    impl egui::plugin::Plugin for LateDiscardProbe {
+        fn debug_name(&self) -> &'static str {
+            "egui_dockspace_native::late_discard_request"
+        }
+
+        fn output_hook(&mut self, _context: &egui::Context, output: &mut egui::FullOutput) {
+            if self.remaining == 0 {
+                return;
+            }
+            self.remaining -= 1;
+            output
+                .platform_output
+                .request_discard_reasons
+                .push(egui::RepaintCause::new_reason(
+                    "outer application requested a later pass",
+                ));
         }
     }
 
     #[test]
-    fn output_hook_observes_a_discard_requested_after_native_ui_returns() {
+    fn post_output_settlement_observes_a_late_discard() {
         let context = egui::Context::default();
         let observations = Arc::new(Mutex::new(Vec::new()));
+        context.plugin_or_default::<PassProbe>().lock().observations = Arc::clone(&observations);
+        context
+            .plugin_or_default::<LateDiscardProbe>()
+            .lock()
+            .remaining = 1;
 
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.ctx()
-                .plugin_or_default::<PassProbe>()
-                .lock()
-                .observations = Arc::clone(&observations);
             ui.label("native dockspace ui has returned");
-            if ui.ctx().current_pass_index() == 0 {
-                ui.ctx()
-                    .request_discard("outer application requested a later pass");
-            }
         });
         output.textures_delta.clear();
 
         assert_eq!(
             *observations.lock().unwrap_or_else(PoisonError::into_inner),
-            [true, false],
+            [
+                egui::OutputPassDisposition::Repeat,
+                egui::OutputPassDisposition::Terminal,
+            ],
             "only the pass followed by another egui pass is discarded"
         );
     }
@@ -442,17 +519,19 @@ mod tests {
         });
         let observations = Arc::new(Mutex::new(Vec::new()));
         context.plugin_or_default::<PassProbe>().lock().observations = Arc::clone(&observations);
+        context
+            .plugin_or_default::<LateDiscardProbe>()
+            .lock()
+            .remaining = 1;
 
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.label("the only pass is terminal");
-            ui.ctx()
-                .request_discard("the configured pass limit denies this request");
+            ui.label("the configured pass limit denies the late request");
         });
         output.textures_delta.clear();
 
         assert_eq!(
             *observations.lock().unwrap_or_else(PoisonError::into_inner),
-            [false],
+            [egui::OutputPassDisposition::Terminal],
             "a denied discard must still settle the current output"
         );
     }
