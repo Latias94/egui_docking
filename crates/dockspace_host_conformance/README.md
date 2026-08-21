@@ -27,6 +27,13 @@ splitter adjustment, and contained-resize steps without sharing runtime IDs,
 coordinates, or output authority. The OGC cases above remain `core-host`
 evidence only and do not claim native-window coverage.
 
+The fixed U1 `JOURNEY_CATALOG` names L01-L08, N01, and P01 plus their cadence
+and admission requirements. It is deliberately not a GUI driver language.
+Semantic source/basin/preview/outcome/ownership/focus/quiescence checkpoints,
+oracle classifications, executor assignments, and known gaps live in
+`docs/VALIDATION.md`. The existing shared scenario is linked to L08; the
+managed lifecycle scenario is linked to N01.
+
 The test crate also keeps a private two-surface transaction fixture. Each
 mutation boundary freezes the complete logical roster and records one exact
 contribution for every surface; output capabilities then settle in their normal
@@ -44,5 +51,5 @@ they do not claim real operating-system window evidence.
 Run with:
 
 ```console
-cargo nextest run -p dockspace_host_conformance --all-targets
+cargo nextest run -p dockspace_host_conformance --all-targets --locked -j1
 ```

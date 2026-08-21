@@ -1,5 +1,5 @@
 use dockspace_host_conformance::scenario::{
-    ItemAlias, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED, NATIVE_CREATE_REDOCK_RETIREMENT,
+    ItemAlias, JourneyId, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED, NATIVE_CREATE_REDOCK_RETIREMENT,
     ScenarioAdmission, ScenarioAxis, ScenarioCapability, ScenarioEdge, ScenarioId,
     SemanticAction as ScenarioAction, SemanticSelector,
 };
@@ -5030,6 +5030,10 @@ fn shared_local_interaction_scenario_maps_to_egui_product_headless_semantics() {
     assert_eq!(
         LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.id(),
         ScenarioId::LocalTabCloseSplitterAndContained,
+    );
+    assert_eq!(
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.journey(),
+        JourneyId::L08,
     );
     let supported = [
         ScenarioCapability::LocalTabSelection,

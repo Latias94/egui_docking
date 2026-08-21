@@ -14,6 +14,11 @@ case records its source evidence and the executor that must prove it. The
 catalog prevents a core-only replay or a fake provider from being described as
 native multi-viewport product evidence.
 
+The U1 behavior-spine directory, cadence assignments, executor capability
+boundaries, and oracle classifications are maintained in
+[`docs/VALIDATION.md`](../VALIDATION.md). This catalog links that validation
+spine rather than duplicating its journey matrix.
+
 ## Non-goals
 
 - Porting GPUI `Entity`, `View`, `Window`, panel factory, focus-handle, or
@@ -64,19 +69,12 @@ below records partial progress without promoting an incomplete case.
 | `OGC-11` | `host_interaction_tests.rs::runtime_rendered_mouse_up_with_unknown_button_state_does_not_tear_off`; `host_viewport_matrix_tests.rs::source_only_known_viewport_release_rejects_overlapping_geometry_without_backend_route_selection` | `core-host`, `native-coordinator-trace`, `native-physical-platform` | A global pointer edge plus current receiver/capture receipt is required; unknown or blocked facts cannot infer a release or target. | Passing |
 | `OGC-12` | `host_accessibility_tests.rs::accessibility_gpui_mapping_exposes_stable_roles_ids_and_final_tab_actions` | `core-host`, `egui-product-headless` | Final presentation identity and geometry drive accessibility, while local drag decoration preserves the exact final-plan receiver bounds. | Passing |
 
-## Shared Semantic Scenario Evidence
+## Shared semantic scenario evidence
 
-The internal conformance kit uses one bounded product scenario rather than a
-generic driver interface. The scenario carries only
-semantic item aliases, selectors, actions, expected observations, and required
-capabilities. Each executor owns its framework mapping.
-
-| Scenario | Executor | Evidence | Status |
-| --- | --- | --- | --- |
-| `LocalTabCloseSplitterAndContained` | `core-host` | `dockspace_host_conformance::tests::shared_local_interaction_scenario_maps_to_core_host_semantics` | Passing |
-| `LocalTabCloseSplitterAndContained` | `egui-product-headless` | `integration/egui-product-harness/tests/product.rs::shared_local_interaction_scenario_maps_to_egui_product_headless_semantics` | Passing |
-| `NativeCreateRedockRetirement` | `core-host` | `dockspace_host_conformance::tests::native_lifecycle_scenario_reports_terminality_presentation_first_live_and_quiescence` | Passing |
-| `NativeCreateRedockRetirement` | `egui-product-headless` | `integration/egui-product-harness/tests/product.rs::shared_local_interaction_scenario_maps_to_egui_product_headless_semantics` (capability-negative assertion) | Capability-negative passing |
+The bounded shared scenario and its two executor mappings are listed in the
+[U1 validation spine](../VALIDATION.md#journey-directory). The conformance
+crate remains semantic-only: it carries selectors, actions, and expected
+observations, while each executor resolves its own framework facts.
 
 The private `core-host` transaction fixture freezes a complete two-surface
 roster for each mutation boundary; exact output capabilities settle later in

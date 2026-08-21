@@ -801,6 +801,101 @@ fn native_lifecycle_scenario_reports_terminality_presentation_first_live_and_qui
     );
 }
 
+#[test]
+fn u1_journey_catalog_has_all_ids_and_cadence_profiles() {
+    use crate::scenario::{CadenceProfile, JOURNEY_CATALOG, JourneyId};
+
+    let ids = JOURNEY_CATALOG
+        .iter()
+        .map(|journey| journey.id())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![
+            JourneyId::L01,
+            JourneyId::L02,
+            JourneyId::L03,
+            JourneyId::L04,
+            JourneyId::L05,
+            JourneyId::L06,
+            JourneyId::L07,
+            JourneyId::L08,
+            JourneyId::N01,
+            JourneyId::P01,
+        ],
+        "the U1 catalog must expose exactly L01-L08, N01, and P01",
+    );
+
+    let cadences = JOURNEY_CATALOG
+        .iter()
+        .flat_map(|journey| journey.cadences())
+        .collect::<Vec<_>>();
+    for cadence in [
+        CadenceProfile::Burst,
+        CadenceProfile::Stepwise,
+        CadenceProfile::Hesitant,
+        CadenceProfile::ReleaseWithFinalMove,
+        CadenceProfile::DiscardBeforeRelease,
+        CadenceProfile::TargetDisappears,
+        CadenceProfile::TouchLongPress,
+    ] {
+        assert!(
+            cadences.contains(&&cadence),
+            "cadence {cadence:?} must be assigned to at least one journey",
+        );
+    }
+    assert!(
+        JOURNEY_CATALOG
+            .iter()
+            .all(|journey| !journey.title().is_empty()
+                && !journey.required_capabilities().is_empty())
+    );
+}
+
+#[test]
+fn u1_journey_admission_reports_missing_facts_without_guessing() {
+    use crate::scenario::{JOURNEY_CATALOG, JourneyId, ScenarioAdmission, ScenarioCapability};
+
+    let find = |id| {
+        JOURNEY_CATALOG
+            .iter()
+            .copied()
+            .find(|journey| journey.id() == id)
+            .expect("the catalog contains every U1 journey")
+    };
+    assert_eq!(
+        find(JourneyId::L03).admission(&[ScenarioCapability::LocalDirectManipulation]),
+        ScenarioAdmission::Unsupported {
+            missing: ScenarioCapability::SemanticDockBasins,
+        },
+    );
+    assert_eq!(
+        find(JourneyId::N01).admission(&[]),
+        ScenarioAdmission::Unsupported {
+            missing: ScenarioCapability::NativeWindowLifecycle,
+        },
+    );
+    assert_eq!(
+        find(JourneyId::P01).admission(&[ScenarioCapability::NativeWindowLifecycle]),
+        ScenarioAdmission::Unsupported {
+            missing: ScenarioCapability::NativePhysicalAuthority,
+        },
+    );
+}
+
+#[test]
+fn u1_shared_executors_are_linked_to_local_and_native_journeys() {
+    use crate::scenario::{
+        JourneyId, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED, NATIVE_CREATE_REDOCK_RETIREMENT,
+    };
+
+    assert_eq!(
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.journey(),
+        JourneyId::L08,
+    );
+    assert_eq!(NATIVE_CREATE_REDOCK_RETIREMENT.journey(), JourneyId::N01,);
+}
+
 struct ManagedLifecycleScenarioFixture {
     host: DeterministicHost,
     root: NativeSurfaceBinding,

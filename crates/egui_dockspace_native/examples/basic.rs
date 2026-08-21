@@ -107,7 +107,7 @@ impl NativeExampleApp {
         let root_presented = self.dockspace.is_surface_presented(SURFACE);
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Native multiview demo");
+            ui.strong("Dockspace U1 interaction baseline");
             ui.separator();
             let contained_root = inspector.filter(|location| location.is_contained());
             let enabled = root_presented && contained_root.is_some();
@@ -132,6 +132,7 @@ impl NativeExampleApp {
                 ui.label("Waiting for the root output to be presented…");
             }
         });
+        self.show_capability_status(ui, inspector, root_presented);
         self.show_presentation_state(ui, inspector, root_presented);
         self.show_walkthrough(ui);
         if let Some(status) = &self.status {
@@ -141,7 +142,7 @@ impl NativeExampleApp {
 
     fn show_pending_controls(&self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Native multiview demo");
+            ui.strong("Dockspace U1 interaction baseline");
             ui.separator();
             ui.spinner();
             match self.action {
@@ -156,6 +157,32 @@ impl NativeExampleApp {
         if let Some(status) = &self.status {
             ui.small(format!("Last fallback action: {status}"));
         }
+    }
+
+    fn show_capability_status(
+        &self,
+        ui: &mut egui::Ui,
+        inspector: Option<InspectorLocation>,
+        root_presented: bool,
+    ) {
+        let local = if root_presented {
+            "ready"
+        } else {
+            "waiting for the root surface"
+        };
+        let contained = if inspector.is_some_and(InspectorLocation::is_contained) {
+            "ready"
+        } else {
+            "not currently presented"
+        };
+        let native = if self.dockspace.error_kind().is_some() {
+            "unavailable (runtime stopped)"
+        } else {
+            "host-qualified; missing facts fail closed"
+        };
+        ui.small(format!(
+            "Capability status — local select/reorder/close: {local}; contained move/resize: {contained}; native promotion: {native}."
+        ));
     }
 
     fn show_presentation_state(
@@ -186,20 +213,22 @@ impl NativeExampleApp {
     }
 
     fn show_walkthrough(&self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("How to try contained floating and native multiview")
+        egui::CollapsingHeader::new("How to try the baseline interactions")
             .default_open(true)
             .show(ui, |ui| {
                 ui.label(
-                    "1. Contained floating: the Inspector group starts as an egui-styled window. \
+                    "1. Select and reorder: click a tab body to select it, then drag the tab across the tab strip. \
+                     Close one pane with its own close control. \
+                     2. Contained floating: the Inspector group starts as an egui-styled window. \
                      Drag its title bar to move it, drag an edge to resize it, or open its ⋮ menu and choose Dock Back.",
                 );
                 ui.label(
-                    "2. Explicit native child: open the Inspector title bar's ⋮ menu and choose Move to New Window. \
+                    "3. Explicit native child: open the Inspector title bar's ⋮ menu and choose Move to New Window. \
                      The toolbar button performs the same programmatic action only as a fallback.",
                 );
                 ui.label(
-                    "3. Physical multiview: on a capability-qualified backend, drag a tab or the contained title bar outside an OS window and release. \
-                     Drag a tab from the child back over a center or edge docking guide to dock it; releasing inside the target surface away from a guide creates a contained window.",
+                    "4. Physical multiview: on a capability-qualified backend, drag a tab or the contained title bar outside an OS window and release. \
+                     Drag a tab from the child into a center or edge docking basin; guides are visual hints, and releasing away from a basin creates a contained window.",
                 );
                 ui.small(
                     "Physical promotion is intentionally fail-closed when the host cannot provide exact cross-window pointer facts. \
