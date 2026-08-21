@@ -1173,7 +1173,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
     ///
     /// The visitor receives core order directly. It cannot regroup roots or
     /// retain a second owned schedule, and any stale record identity fails the
-    /// whole traversal rather than silently omitting paint or receiver facts.
+    /// whole traversal before the visitor sees any step, rather than silently
+    /// omitting paint or leaving a partial renderer output.
     ///
     /// # Errors
     ///
@@ -1183,6 +1184,23 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// step.
     #[doc(hidden)]
     pub fn visit_surface_program<E>(
+        self,
+        mut visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
+    ) -> Result<(), SurfacePaintProgramVisitError<E>> {
+        // Resolve the immutable tape first without renderer side effects so a
+        // late invariant failure cannot leave a partially painted output.
+        match self.walk_surface_program(|_| Ok::<(), std::convert::Infallible>(())) {
+            Ok(()) => {}
+            Err(SurfacePaintProgramVisitError::InvalidProgram { surface }) => {
+                return Err(SurfacePaintProgramVisitError::InvalidProgram { surface });
+            }
+            Err(SurfacePaintProgramVisitError::Sink(never)) => match never {},
+        }
+
+        self.walk_surface_program(&mut visitor)
+    }
+
+    fn walk_surface_program<E>(
         self,
         mut visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
     ) -> Result<(), SurfacePaintProgramVisitError<E>> {
@@ -2219,4 +2237,87 @@ const fn receiver_role(kind: PresentationHitRegionKind) -> Option<DockspaceRecei
         PresentationHitRegionKind::DropGuideActivation(_) => return None,
         PresentationHitRegionKind::DropTarget(_) => DockspaceReceiverRole::DropTarget,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use crate::policy::DockPolicy;
+    use crate::runtime::{DockspaceSession, UniformSurfaceMetrics};
+    use crate::scene::PaneSceneId;
+
+    #[test]
+    fn invalid_surface_program_emits_no_paint_steps() {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(2);
+        let item = ItemId::new(3);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([item]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().expect("the test workspace validates"),
+            DockPolicy::default(),
+        )
+        .expect("the runtime initializes");
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+            80.0,
+        )
+        .expect("test metrics validate");
+        let mut measurement_frame = session
+            .begin_host_frame()
+            .expect("the measurement frame begins");
+        measurement_frame
+            .measure_surface(surface, metrics)
+            .expect("the surface measurement stages");
+        measurement_frame
+            .commit()
+            .expect("the surface measurement commits");
+
+        let mut paint_frame = session.begin_host_frame().expect("the paint frame begins");
+        let valid = paint_frame
+            .paint_plan(surface)
+            .expect("the paint plan lookup succeeds")
+            .expect("the measured surface is paintable");
+        let mut malformed = PresentationPlan::new(surface, valid.bounds());
+        malformed
+            .begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)
+            .expect("the malformed program root opens");
+        malformed
+            .push_surface_program_root_operation(SurfaceProgramRootOperation::Pane(PaneSceneId {
+                root,
+                tabs,
+            }))
+            .expect("the missing record identity enters the program");
+        malformed
+            .end_surface_program_root(root)
+            .expect("the malformed program root closes");
+        malformed
+            .finish_surface_program()
+            .expect("the malformed program seals structurally");
+        let malformed = SurfacePaintPlan {
+            plan: &malformed,
+            ..valid
+        };
+
+        let mut emitted_steps = 0;
+        let result = malformed.visit_surface_program(|_| {
+            emitted_steps += 1;
+            Ok::<(), ()>(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(SurfacePaintProgramVisitError::InvalidProgram {
+                surface: rejected
+            }) if rejected == surface
+        ));
+        assert_eq!(
+            emitted_steps, 0,
+            "an invalid program must fail before the renderer can paint a partial output"
+        );
+    }
 }
