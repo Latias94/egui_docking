@@ -188,6 +188,227 @@ impl SurfaceCoordinateCapture {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceProgramRootPresentation {
+    Main,
+    Contained(FloatingPresentationId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SurfaceProgramRootOperation {
+    TabBar(TabBarSceneId),
+    Tab(TabSceneId),
+    Pane(PaneSceneId),
+    Splitter(SplitterSceneId),
+    SplitterJunction(SplitterJunctionId),
+    TabStripControl(TabStripControlId),
+    ContainedControls(FloatingPresentationId),
+    PresentationMenuAnchor(RootId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SurfaceProgramBlock {
+    RootBegin {
+        root: RootId,
+        presentation: SurfaceProgramRootPresentation,
+        title_item: Option<ItemId>,
+    },
+    RootOperation(SurfaceProgramRootOperation),
+    RootEnd {
+        root: RootId,
+    },
+    ProjectionPlane,
+    DropGuide(DropGuideClusterId),
+    FeedbackPlane,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub(crate) enum SurfaceProgramBuildError {
+    #[error("surface program already has an open root")]
+    RootAlreadyOpen,
+    #[error("surface program has no open root")]
+    RootNotOpen,
+    #[error("surface program expected open root {expected}, found {actual}")]
+    RootMismatch { expected: RootId, actual: RootId },
+    #[error("surface program already contains root {root}")]
+    DuplicateRoot { root: RootId },
+    #[error("surface program does not contain root {root}")]
+    MissingRoot { root: RootId },
+    #[error("surface program was already finished")]
+    AlreadyFinished,
+    #[error("surface program repeats operation {operation:?} for root {root}")]
+    DuplicateOperation {
+        root: RootId,
+        operation: SurfaceProgramRootOperation,
+    },
+    #[error("surface program repeats guide cluster {id:?}")]
+    DuplicateGuide { id: DropGuideClusterId },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SurfaceProgram {
+    blocks: Vec<SurfaceProgramBlock>,
+    root_drafts: Vec<SurfaceProgramRootDraft>,
+    root_indices: std::collections::BTreeMap<RootId, usize>,
+    active_root: Option<usize>,
+    deferred_guides: Vec<DropGuideClusterId>,
+    finished: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurfaceProgramRootDraft {
+    root: RootId,
+    presentation: SurfaceProgramRootPresentation,
+    title_item: Option<ItemId>,
+    operations: Vec<SurfaceProgramRootOperation>,
+}
+
+impl SurfaceProgram {
+    fn begin_root(
+        &mut self,
+        root: RootId,
+        presentation: SurfaceProgramRootPresentation,
+    ) -> Result<(), SurfaceProgramBuildError> {
+        if self.finished {
+            return Err(SurfaceProgramBuildError::AlreadyFinished);
+        }
+        if self.active_root.is_some() {
+            return Err(SurfaceProgramBuildError::RootAlreadyOpen);
+        }
+        if self.root_indices.contains_key(&root) {
+            return Err(SurfaceProgramBuildError::DuplicateRoot { root });
+        }
+        let index = self.root_drafts.len();
+        self.root_drafts.push(SurfaceProgramRootDraft {
+            root,
+            presentation,
+            title_item: None,
+            operations: Vec::new(),
+        });
+        self.root_indices.insert(root, index);
+        self.active_root = Some(index);
+        Ok(())
+    }
+
+    fn push_root_operation(
+        &mut self,
+        operation: SurfaceProgramRootOperation,
+        title_item: Option<ItemId>,
+    ) -> Result<(), SurfaceProgramBuildError> {
+        let index = self
+            .active_root
+            .ok_or(SurfaceProgramBuildError::RootNotOpen)?;
+        if self.root_drafts[index].title_item.is_none() {
+            self.root_drafts[index].title_item = title_item;
+        }
+        self.root_drafts[index].operations.push(operation);
+        Ok(())
+    }
+
+    fn end_root(&mut self, expected: RootId) -> Result<(), SurfaceProgramBuildError> {
+        let index = self
+            .active_root
+            .ok_or(SurfaceProgramBuildError::RootNotOpen)?;
+        let actual = self.root_drafts[index].root;
+        if actual != expected {
+            return Err(SurfaceProgramBuildError::RootMismatch { expected, actual });
+        }
+        self.active_root = None;
+        Ok(())
+    }
+
+    fn push_derived_root_operation(
+        &mut self,
+        root: RootId,
+        operation: SurfaceProgramRootOperation,
+    ) -> Result<(), SurfaceProgramBuildError> {
+        if self.finished {
+            return Err(SurfaceProgramBuildError::AlreadyFinished);
+        }
+        let index = self
+            .root_indices
+            .get(&root)
+            .copied()
+            .ok_or(SurfaceProgramBuildError::MissingRoot { root })?;
+        self.root_drafts[index].operations.push(operation);
+        Ok(())
+    }
+
+    fn defer_guide(&mut self, id: DropGuideClusterId) {
+        self.deferred_guides.push(id);
+    }
+
+    fn finish(&mut self) -> Result<(), SurfaceProgramBuildError> {
+        if self.finished {
+            return Err(SurfaceProgramBuildError::AlreadyFinished);
+        }
+        if self.active_root.is_some() {
+            return Err(SurfaceProgramBuildError::RootAlreadyOpen);
+        }
+        let mut seen_guides = std::collections::HashSet::new();
+        for id in &self.deferred_guides {
+            if !seen_guides.insert(*id) {
+                return Err(SurfaceProgramBuildError::DuplicateGuide { id: *id });
+            }
+        }
+        for root in &self.root_drafts {
+            let mut seen_operations = std::collections::HashSet::new();
+            for operation in &root.operations {
+                if !seen_operations.insert(*operation) {
+                    return Err(SurfaceProgramBuildError::DuplicateOperation {
+                        root: root.root,
+                        operation: *operation,
+                    });
+                }
+            }
+        }
+        let root_drafts = std::mem::take(&mut self.root_drafts);
+        self.root_indices.clear();
+        for mut root in root_drafts {
+            root.operations
+                .sort_by_key(|operation| operation.paint_rank());
+            self.blocks.push(SurfaceProgramBlock::RootBegin {
+                root: root.root,
+                presentation: root.presentation,
+                title_item: root.title_item,
+            });
+            self.blocks.extend(
+                root.operations
+                    .iter()
+                    .copied()
+                    .map(SurfaceProgramBlock::RootOperation),
+            );
+            self.blocks
+                .push(SurfaceProgramBlock::RootEnd { root: root.root });
+        }
+        self.blocks.push(SurfaceProgramBlock::ProjectionPlane);
+        for id in std::mem::take(&mut self.deferred_guides) {
+            self.blocks.push(SurfaceProgramBlock::DropGuide(id));
+        }
+        self.blocks.push(SurfaceProgramBlock::FeedbackPlane);
+        self.finished = true;
+        Ok(())
+    }
+
+    pub(crate) fn blocks(&self) -> &[SurfaceProgramBlock] {
+        &self.blocks
+    }
+}
+
+impl SurfaceProgramRootOperation {
+    const fn paint_rank(self) -> usize {
+        match self {
+            Self::Pane(_) => 0,
+            Self::TabBar(_) => 1,
+            Self::Tab(_) => 2,
+            Self::Splitter(_) | Self::SplitterJunction(_) => 3,
+            Self::TabStripControl(_) => 4,
+            Self::ContainedControls(_) => 5,
+            Self::PresentationMenuAnchor(_) => 6,
+        }
+    }
+}
+
 /// Complete semantic facts compiled as one candidate surface projection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresentationPlan {
@@ -213,6 +434,7 @@ pub struct PresentationPlan {
     drop_occlusions: Vec<DropOcclusionRecord>,
     drop_guide_clusters: Vec<DropGuideClusterRecord>,
     drop_targets: Vec<DropTargetRecord>,
+    surface_program: SurfaceProgram,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +506,7 @@ impl PresentationPlan {
             drop_occlusions: Vec::new(),
             drop_guide_clusters: Vec::new(),
             drop_targets: Vec::new(),
+            surface_program: SurfaceProgram::default(),
         }
     }
 
@@ -328,6 +551,54 @@ impl PresentationPlan {
             .as_mut()
             .is_some_and(|layout| layout.insert_root(facts));
         debug_assert!(inserted);
+    }
+
+    pub(crate) fn begin_surface_program_root(
+        &mut self,
+        root: RootId,
+        presentation: SurfaceProgramRootPresentation,
+    ) -> Result<(), SurfaceProgramBuildError> {
+        self.surface_program.begin_root(root, presentation)
+    }
+
+    pub(crate) fn push_surface_program_root_operation(
+        &mut self,
+        operation: SurfaceProgramRootOperation,
+    ) -> Result<(), SurfaceProgramBuildError> {
+        let title_item = match operation {
+            SurfaceProgramRootOperation::Pane(id) => self
+                .pane_records
+                .iter()
+                .find(|record| record.id() == id)
+                .and_then(PaneRecord::selected),
+            _ => None,
+        };
+        self.surface_program
+            .push_root_operation(operation, title_item)
+    }
+
+    pub(crate) fn push_surface_program_derived_root_operation(
+        &mut self,
+        root: RootId,
+        operation: SurfaceProgramRootOperation,
+    ) -> Result<(), SurfaceProgramBuildError> {
+        self.surface_program
+            .push_derived_root_operation(root, operation)
+    }
+
+    pub(crate) fn end_surface_program_root(
+        &mut self,
+        root: RootId,
+    ) -> Result<(), SurfaceProgramBuildError> {
+        self.surface_program.end_root(root)
+    }
+
+    pub(crate) fn finish_surface_program(&mut self) -> Result<(), SurfaceProgramBuildError> {
+        self.surface_program.finish()
+    }
+
+    pub(crate) const fn surface_program(&self) -> &SurfaceProgram {
+        &self.surface_program
     }
 
     pub(crate) const fn layout_facts(&self) -> Option<&PresentationLayoutFacts> {
@@ -475,6 +746,7 @@ impl PresentationPlan {
 
     /// Adds one complete docking-guide cluster before scene submission.
     pub(crate) fn push_drop_guide_cluster(&mut self, cluster: DropGuideClusterRecord) {
+        self.surface_program.defer_guide(cluster.id());
         self.drop_guide_clusters.push(cluster);
     }
 

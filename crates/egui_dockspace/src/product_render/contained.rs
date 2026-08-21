@@ -2,7 +2,7 @@
 
 use dockspace::runtime::{
     ContainedPaintRecord, ContainedResizeDirection, SurfaceContainedResizeAdjustment,
-    SurfaceGesturePhase,
+    SurfaceGesturePhase, SurfacePaintProgramRoot,
 };
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense};
@@ -12,12 +12,11 @@ use crate::style::ResolvedContainedWindowVisuals;
 use super::RenderContext;
 use super::actions::{button_activated, gesture_phase};
 use super::geometry::{accesskit_bounds, egui_rect};
-use super::schedule::RootPaintSchedule;
 
 pub(crate) fn paint_background(
     context: &mut RenderContext<'_, '_, '_>,
     contained: ContainedPaintRecord<'_>,
-    root: &RootPaintSchedule<'_>,
+    root: &SurfacePaintProgramRoot<'_>,
     visuals: ResolvedContainedWindowVisuals,
 ) {
     let Some(outer) = egui_rect(contained.outer_bounds()) else {
@@ -93,7 +92,7 @@ fn inset_title_rect(rect: egui::Rect, margin: egui::Margin) -> egui::Rect {
 pub(crate) fn paint_controls(
     context: &mut RenderContext<'_, '_, '_>,
     contained: ContainedPaintRecord<'_>,
-    root: &RootPaintSchedule<'_>,
+    root: &SurfacePaintProgramRoot<'_>,
 ) {
     let paint_omitted = context
         .plan
@@ -385,11 +384,9 @@ const fn cardinal_resize_axis(direction: ContainedResizeDirection) -> Option<(Or
 
 fn title_label<'a>(
     context: &'a RenderContext<'_, '_, '_>,
-    root: &RootPaintSchedule<'_>,
+    root: &SurfacePaintProgramRoot<'_>,
 ) -> &'a str {
-    root.panes()
-        .next()
-        .and_then(dockspace::runtime::PanePaintRecord::selected)
+    root.title_item()
         .and_then(|item| context.resources.item(item))
         .map_or("Floating", |resource| resource.title.as_str())
 }

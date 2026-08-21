@@ -121,6 +121,336 @@ fn compile_default_ready_plan(
 }
 
 #[test]
+fn surface_program_keeps_root_chrome_pane_contained_and_guide_order_in_core() {
+    let surface = SurfaceId::new(841);
+    let main_root = RootId::new(842);
+    let contained_root = RootId::new(843);
+    let second_contained_root = RootId::new(851);
+    let floating = FloatingPresentationId::new(844);
+    let second_floating = FloatingPresentationId::new(852);
+    let mut builder = Workspace::builder();
+    let main_tabs = builder.insert_node(Node::tabs([ItemId::new(845)]));
+    let main_lower_tabs = builder.insert_node(Node::tabs([ItemId::new(847)]));
+    let main_right_tabs = builder.insert_node(Node::tabs([ItemId::new(848)]));
+    let main_right_lower_tabs = builder.insert_node(Node::tabs([ItemId::new(849)]));
+    let main_left = builder.insert_node(
+        Node::equal_split(Axis::Vertical, [main_tabs, main_lower_tabs])
+            .expect("nested split should be valid"),
+    );
+    let main_right = builder.insert_node(
+        Node::equal_split(Axis::Vertical, [main_right_tabs, main_right_lower_tabs])
+            .expect("nested split should be valid"),
+    );
+    let main_tree = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [main_left, main_right])
+            .expect("outer split should be valid"),
+    );
+    let contained_tabs = builder.insert_node(Node::tabs([ItemId::new(846)]));
+    let second_contained_tabs = builder.insert_node(Node::tabs([ItemId::new(850)]));
+    builder.set_root(main_root, RootRecord::new(main_tree));
+    builder.set_root(contained_root, RootRecord::new(contained_tabs));
+    builder.set_root(
+        second_contained_root,
+        RootRecord::new(second_contained_tabs),
+    );
+    builder.set_surface(surface, SurfacePresentation::with_main(main_root));
+    builder.set_contained_floating(
+        floating,
+        ContainedFloating::new(
+            contained_root,
+            LogicalRect::new(16.0, 16.0, 160.0, 120.0).expect("floating rect should be valid"),
+        ),
+    );
+    builder
+        .attach_contained(surface, floating)
+        .expect("surface should exist");
+    builder.set_contained_floating(
+        second_floating,
+        ContainedFloating::new(
+            second_contained_root,
+            LogicalRect::new(220.0, 16.0, 160.0, 120.0)
+                .expect("second floating rect should be valid"),
+        ),
+    );
+    builder
+        .attach_contained(surface, second_floating)
+        .expect("surface should exist");
+    let workspace = builder.build().expect("fixture should validate");
+
+    let plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 800.0, 480.0).expect("bounds should be valid"),
+    );
+    let blocks = plan.surface_program().blocks();
+
+    let root_begins = blocks
+        .iter()
+        .filter_map(|block| match block {
+            crate::scene::SurfaceProgramBlock::RootBegin {
+                root,
+                presentation,
+                title_item,
+            } => Some((*root, *presentation, *title_item)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        root_begins,
+        [
+            (
+                main_root,
+                crate::scene::SurfaceProgramRootPresentation::Main,
+                Some(ItemId::new(845)),
+            ),
+            (
+                contained_root,
+                crate::scene::SurfaceProgramRootPresentation::Contained(floating),
+                Some(ItemId::new(846)),
+            ),
+            (
+                second_contained_root,
+                crate::scene::SurfaceProgramRootPresentation::Contained(second_floating),
+                Some(ItemId::new(850)),
+            ),
+        ],
+        "core must fix main-before-contained traversal and the title source"
+    );
+
+    let mut unique_operations = std::collections::HashSet::new();
+    let operations = blocks
+        .iter()
+        .filter_map(|block| match block {
+            crate::scene::SurfaceProgramBlock::RootOperation(operation) => Some(*operation),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        operations
+            .iter()
+            .all(|operation| unique_operations.insert(*operation)),
+        "one compiled record must appear at most once in the surface program"
+    );
+
+    let count_operations = |predicate: fn(&crate::scene::SurfaceProgramRootOperation) -> bool| {
+        operations
+            .iter()
+            .filter(|operation| predicate(operation))
+            .count()
+    };
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::Pane(_)
+        )),
+        plan.pane_records().len()
+    );
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::TabBar(_)
+        )),
+        plan.tab_bar_records().len()
+    );
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::Tab(_)
+        )),
+        plan.tab_records().len()
+    );
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::Splitter(_)
+        )),
+        plan.splitter_records().len()
+    );
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::SplitterJunction(_)
+        )),
+        plan.splitter_junction_records().len()
+    );
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::TabStripControl(_)
+        )),
+        plan.tab_strip_control_records().len()
+    );
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::ContainedControls(_)
+        )),
+        plan.contained_records().len()
+    );
+    assert_eq!(
+        count_operations(|operation| matches!(
+            operation,
+            crate::scene::SurfaceProgramRootOperation::PresentationMenuAnchor(_)
+        )),
+        plan.presentation_menu_anchor_records()
+            .iter()
+            .filter(|anchor| anchor.is_ready())
+            .count()
+    );
+    assert!(
+        !plan.splitter_junction_records().is_empty(),
+        "the nested fixture must exercise derived junction insertion"
+    );
+
+    for root in [main_root, contained_root, second_contained_root] {
+        let begin = blocks
+            .iter()
+            .position(|block| {
+                matches!(
+                    block,
+                    crate::scene::SurfaceProgramBlock::RootBegin { root: value, .. }
+                        if *value == root
+                )
+            })
+            .expect("each presentation root should have one begin");
+        let end = blocks
+            .iter()
+            .position(|block| {
+                matches!(
+                    block,
+                    crate::scene::SurfaceProgramBlock::RootEnd { root: value }
+                        if *value == root
+                )
+            })
+            .expect("each presentation root should have one end");
+        let operations = &blocks[begin + 1..end];
+        let pane = operations
+            .iter()
+            .position(|operation| {
+                matches!(
+                    operation,
+                    crate::scene::SurfaceProgramBlock::RootOperation(
+                        crate::scene::SurfaceProgramRootOperation::Pane(_)
+                    )
+                )
+            })
+            .expect("root program should contain a pane");
+        let tab_bar = operations
+            .iter()
+            .position(|operation| {
+                matches!(
+                    operation,
+                    crate::scene::SurfaceProgramBlock::RootOperation(
+                        crate::scene::SurfaceProgramRootOperation::TabBar(_)
+                    )
+                )
+            })
+            .expect("root program should contain tab chrome");
+        let tab = operations
+            .iter()
+            .position(|operation| {
+                matches!(
+                    operation,
+                    crate::scene::SurfaceProgramBlock::RootOperation(
+                        crate::scene::SurfaceProgramRootOperation::Tab(_)
+                    )
+                )
+            })
+            .expect("root program should contain a tab");
+        assert!(pane < tab_bar && tab_bar < tab);
+
+        if root == contained_root || root == second_contained_root {
+            let floating = if root == contained_root {
+                floating
+            } else {
+                second_floating
+            };
+            let controls = operations
+                .iter()
+                .position(|operation| {
+                    matches!(
+                        operation,
+                        crate::scene::SurfaceProgramBlock::RootOperation(
+                            crate::scene::SurfaceProgramRootOperation::ContainedControls(value)
+                        ) if *value == floating
+                    )
+                })
+                .expect("contained root should contain its title and resize controls");
+            assert!(
+                operations.iter().enumerate().all(|(index, operation)| {
+                    !matches!(
+                        operation,
+                        crate::scene::SurfaceProgramBlock::RootOperation(
+                            crate::scene::SurfaceProgramRootOperation::TabStripControl(_)
+                        )
+                    ) || index < controls
+                }),
+                "tab-strip controls must precede contained chrome controls"
+            );
+            if let Some(menu) = operations.iter().position(|operation| {
+                matches!(
+                    operation,
+                    crate::scene::SurfaceProgramBlock::RootOperation(
+                        crate::scene::SurfaceProgramRootOperation::PresentationMenuAnchor(value)
+                    ) if *value == root
+                )
+            }) {
+                assert!(
+                    controls < menu,
+                    "contained controls must remain below the presentation menu in z-order"
+                );
+            }
+        }
+    }
+
+    let projection = blocks
+        .iter()
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::ProjectionPlane))
+        .expect("the program should contain one projection boundary");
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| matches!(block, crate::scene::SurfaceProgramBlock::ProjectionPlane))
+            .count(),
+        1
+    );
+    let last_root_end = blocks
+        .iter()
+        .rposition(|block| matches!(block, crate::scene::SurfaceProgramBlock::RootEnd { .. }))
+        .expect("the program should close every root before projection");
+    assert!(last_root_end < projection);
+    let first_guide = blocks
+        .iter()
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::DropGuide(_)))
+        .expect("compiled docking roots should publish guides");
+    assert!(projection < first_guide);
+    let last_guide = blocks
+        .iter()
+        .rposition(|block| matches!(block, crate::scene::SurfaceProgramBlock::DropGuide(_)))
+        .expect("compiled docking roots should publish guides");
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| matches!(block, crate::scene::SurfaceProgramBlock::DropGuide(_)))
+            .count(),
+        plan.drop_guide_clusters().len()
+    );
+    let feedback = blocks
+        .iter()
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::FeedbackPlane))
+        .expect("the program should contain one feedback boundary");
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| matches!(block, crate::scene::SurfaceProgramBlock::FeedbackPlane))
+            .count(),
+        1
+    );
+    assert!(last_guide < feedback);
+    assert_eq!(feedback, blocks.len() - 1);
+}
+
+#[test]
 fn main_presentation_menu_anchor_prefers_the_visible_central_tab_bar() {
     let surface = SurfaceId::new(801);
     let root = RootId::new(802);
@@ -277,6 +607,18 @@ fn narrow_main_tab_bar_preserves_an_interactive_tab_before_the_presentation_menu
     assert!(
         bar.group_grip_bounds().is_some(),
         "optional menu chrome must compact before the primary group-drag affordance"
+    );
+    assert!(
+        plan.surface_program()
+            .blocks()
+            .iter()
+            .all(|block| !matches!(
+                block,
+                crate::scene::SurfaceProgramBlock::RootOperation(
+                    crate::scene::SurfaceProgramRootOperation::PresentationMenuAnchor(value)
+                ) if *value == root
+            )),
+        "a compacted menu record must not leave an unresolvable paint operation"
     );
 }
 

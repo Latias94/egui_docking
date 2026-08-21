@@ -8,90 +8,84 @@ use egui::{CursorIcon, EventFilter, Key, Sense, UiBuilder};
 use super::RenderContext;
 use super::actions::{effective_enabled, gesture_phase};
 use super::geometry::{accesskit_bounds, egui_rect};
-use super::schedule::RootPaintSchedule;
-
-pub(crate) fn paint_root(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
-    for splitter in root.splitters() {
-        let Some(draw) = egui_rect(splitter.draw_bounds()) else {
-            continue;
-        };
-        let Some(hit) = egui_rect(splitter.hit_bounds()) else {
-            continue;
-        };
-        let id =
-            context
-                .ui
-                .make_persistent_id((context.instance_id, "splitter", splitter.visual_id()));
-        let enabled = effective_enabled(context.ui, splitter.operable());
-        let sense = if enabled {
-            Sense::drag()
-        } else {
-            Sense::hover()
-        };
-        let receiver = enabled
-            .then(|| context.plan.receiver_for_splitter(splitter))
-            .flatten();
-        let response = context.interact_receiver(hit, id, sense, receiver);
-        configure_accessibility(context.ui, &response, splitter, enabled);
-        let focused = enabled && response.has_focus();
-        let emphasized = enabled
-            && (response.hovered() || context.response_dragged_locally(&response) || focused);
-        let paint_omitted = context
-            .plan
-            .drag_decoration()
-            .is_some_and(|decoration| decoration.omits_visual(splitter.visual_id()));
-        if !paint_omitted {
-            context.ui.painter().rect_filled(
-                draw,
-                0.0,
-                context.splitter_fill(&response, emphasized),
-            );
-        }
-        if !enabled {
-            continue;
-        }
-        let horizontal = splitter.axis() == DockspaceAxis::Horizontal;
-        if focused {
-            context.ui.memory_mut(|memory| {
-                memory.set_focus_lock_filter(
-                    id,
-                    EventFilter {
-                        horizontal_arrows: horizontal,
-                        vertical_arrows: !horizontal,
-                        ..Default::default()
-                    },
-                );
-            });
-        }
-        let adjustment = splitter_adjustment(context.ui, id, horizontal, focused);
-        if let Some(action) = adjustment.and_then(|adjustment| {
-            context
-                .plan
-                .prepare_splitter_adjustment(splitter.visual_id(), adjustment)
-        }) {
-            context.push_local_action(action);
-        }
-        if response.hovered() || context.response_dragged_locally(&response) {
-            context.ui.ctx().set_cursor_icon(match splitter.axis() {
-                DockspaceAxis::Horizontal => CursorIcon::ResizeHorizontal,
-                DockspaceAxis::Vertical => CursorIcon::ResizeVertical,
-            });
-        }
-        if context.pointer_authority.accepts_local_pointer_actions()
-            && let Some(phase) = gesture_phase(&response)
-            && let Some(action) = context
-                .plan
-                .prepare_splitter_gesture(splitter.visual_id(), phase)
-        {
-            context.push_local_action(action);
-        }
+pub(crate) fn paint_splitter(
+    context: &mut RenderContext<'_, '_, '_>,
+    splitter: dockspace::runtime::SplitterPaintRecord<'_>,
+) {
+    let Some(draw) = egui_rect(splitter.draw_bounds()) else {
+        return;
+    };
+    let Some(hit) = egui_rect(splitter.hit_bounds()) else {
+        return;
+    };
+    let id = context
+        .ui
+        .make_persistent_id((context.instance_id, "splitter", splitter.visual_id()));
+    let enabled = effective_enabled(context.ui, splitter.operable());
+    let sense = if enabled {
+        Sense::drag()
+    } else {
+        Sense::hover()
+    };
+    let receiver = enabled
+        .then(|| context.plan.receiver_for_splitter(splitter))
+        .flatten();
+    let response = context.interact_receiver(hit, id, sense, receiver);
+    configure_accessibility(context.ui, &response, splitter, enabled);
+    let focused = enabled && response.has_focus();
+    let emphasized =
+        enabled && (response.hovered() || context.response_dragged_locally(&response) || focused);
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(splitter.visual_id()));
+    if !paint_omitted {
+        context
+            .ui
+            .painter()
+            .rect_filled(draw, 0.0, context.splitter_fill(&response, emphasized));
     }
-    for junction in root.splitter_junctions() {
-        paint_junction(context, junction);
+    if !enabled {
+        return;
+    }
+    let horizontal = splitter.axis() == DockspaceAxis::Horizontal;
+    if focused {
+        context.ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                EventFilter {
+                    horizontal_arrows: horizontal,
+                    vertical_arrows: !horizontal,
+                    ..Default::default()
+                },
+            );
+        });
+    }
+    let adjustment = splitter_adjustment(context.ui, id, horizontal, focused);
+    if let Some(action) = adjustment.and_then(|adjustment| {
+        context
+            .plan
+            .prepare_splitter_adjustment(splitter.visual_id(), adjustment)
+    }) {
+        context.push_local_action(action);
+    }
+    if response.hovered() || context.response_dragged_locally(&response) {
+        context.ui.ctx().set_cursor_icon(match splitter.axis() {
+            DockspaceAxis::Horizontal => CursorIcon::ResizeHorizontal,
+            DockspaceAxis::Vertical => CursorIcon::ResizeVertical,
+        });
+    }
+    if context.pointer_authority.accepts_local_pointer_actions()
+        && let Some(phase) = gesture_phase(&response)
+        && let Some(action) = context
+            .plan
+            .prepare_splitter_gesture(splitter.visual_id(), phase)
+    {
+        context.push_local_action(action);
     }
 }
 
-fn paint_junction(
+pub(crate) fn paint_junction(
     context: &mut RenderContext<'_, '_, '_>,
     junction: SplitterJunctionPaintRecord<'_>,
 ) {

@@ -1,7 +1,8 @@
 //! Core-derived four-way and center docking-guide rendering.
 
 use dockspace::runtime::{
-    DockspaceDropDirection, DockspaceDropEligibility, DropAffordanceTargetPaintRecord,
+    DockspaceDropDirection, DockspaceDropEligibility, DropAffordanceClusterPaintRecord,
+    DropAffordanceTargetPaintRecord,
 };
 use egui::Sense;
 use egui::accesskit::Role;
@@ -13,14 +14,12 @@ use super::geometry::{accesskit_bounds, egui_rect};
 
 const CENTER_DROP_GUIDE_LABEL: &str = "Dockspace center drop guide";
 
-pub(crate) fn paint(context: &mut RenderContext<'_, '_, '_>) {
-    let Some(affordance) = context.plan.drop_affordance() else {
-        return;
-    };
-    for cluster in affordance.clusters() {
-        for target in cluster.targets() {
-            paint_target(context, target);
-        }
+pub(crate) fn paint_cluster(
+    context: &mut RenderContext<'_, '_, '_>,
+    cluster: DropAffordanceClusterPaintRecord<'_>,
+) {
+    for target in cluster.targets() {
+        paint_target(context, target);
     }
 }
 

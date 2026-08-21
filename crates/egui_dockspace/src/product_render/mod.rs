@@ -11,7 +11,6 @@ mod geometry;
 mod guides;
 mod measurement;
 mod presentation_menu;
-mod schedule;
 mod splitters;
 mod tab_chrome;
 mod tabs;
@@ -21,6 +20,8 @@ use dockspace::runtime::{
     ContainedPaintRecord, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
     DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceRuntimeError,
     PreparedPaneFocusObservation, PreparedSurfaceAction, SurfaceGesturePhase, SurfacePaintPlan,
+    SurfacePaintProgramOperation, SurfacePaintProgramRoot, SurfacePaintProgramRootKind,
+    SurfacePaintProgramStep, SurfacePaintProgramVisitError,
 };
 use egui::{Color32, Id, Key, Modifiers, Response, Sense, Stroke, StrokeKind, Ui};
 
@@ -360,8 +361,6 @@ pub(crate) fn paint_surface(
             .rect_filled(bounds, 0.0, visuals.workspace_fill);
     }
 
-    let schedule = schedule::SurfacePaintSchedule::from_plan(plan);
-
     {
         let mut context = RenderContext {
             ui,
@@ -388,73 +387,104 @@ pub(crate) fn paint_surface(
             local_primary_presses,
             claimed_contained_activations: Vec::new(),
         };
-        for root in schedule.main_roots() {
-            tabs::paint_root(&mut context, root, tabs::RootVisualContext::Main);
-            splitters::paint_root(&mut context, root);
-            tab_chrome::paint_controls(&mut context, root.tab_strip_controls());
-            if let Some(anchor) = root.presentation_menu_anchor() {
-                presentation_menu::paint(&mut context, anchor)?;
-            }
-        }
-
-        for root in schedule.contained_roots() {
-            let record = root.contained();
-            let window_visuals = context
-                .style
-                .resolved_contained_window(context.ui.style(), record.is_frontmost());
-            contained::paint_background(&mut context, record, root.records(), window_visuals);
-            tabs::paint_root(
-                &mut context,
-                root.records(),
-                tabs::RootVisualContext::Contained {
-                    record,
-                    pane_fill: window_visuals.frame.fill,
-                },
-            );
-            splitters::paint_root(&mut context, root.records());
-            tab_chrome::paint_controls(&mut context, root.records().tab_strip_controls());
-            contained::paint_controls(&mut context, record, root.records());
-            if let Some(anchor) = root.records().presentation_menu_anchor() {
-                presentation_menu::paint(&mut context, anchor)?;
-            }
-            context.flush_contained_activation(record);
-        }
-
-        tab_chrome::paint_popups(&mut context);
-
-        let drag_preview_required = context.plan.drag_preview().is_some();
-        let drag_preview_painted = paint_preview(context.ui, context.plan, context.visuals);
-        transient_visuals_complete &= !drag_preview_required || drag_preview_painted;
-        if context.pointer_authority.acknowledges_previews_locally()
-            && drag_preview_painted
-            && let Some(action) = context.plan.prepare_drag_preview_painted()
-        {
-            context.push_presentation_action(action);
-            *context.defer_measurement = true;
-        }
-        guides::paint(&mut context);
-        let contained_preview_required = context.plan.contained_transform_preview().is_some();
-        let contained_preview_painted =
-            paint_contained_transform_preview(context.ui, context.plan, context.visuals);
-        transient_visuals_complete &= !contained_preview_required || contained_preview_painted;
-        if context.pointer_authority.acknowledges_previews_locally()
-            && contained_preview_painted
-            && let Some(action) = context.plan.prepare_contained_transform_preview_painted()
-        {
-            context.push_presentation_action(action);
-        }
-        drag_feedback::paint(&mut context);
-        if actions::effective_enabled(
-            context.ui,
-            context.pointer_authority.accepts_local_pointer_actions(),
-        ) && let Some(action) = context.plan.prepare_escape_cancel()
-            && context
-                .ui
-                .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
-        {
-            context.ui.ctx().stop_dragging();
-            context.push_local_action(action);
-        }
+        context
+            .plan
+            .visit_surface_program(|step| -> Result<(), DockspaceRuntimeError> {
+                match step {
+                    SurfacePaintProgramStep::RootBegin(root) => {
+                        if let SurfacePaintProgramRootKind::Contained(record) = root.kind() {
+                            let window_visuals = context.style.resolved_contained_window(
+                                context.ui.style(),
+                                record.is_frontmost(),
+                            );
+                            contained::paint_background(
+                                &mut context,
+                                record,
+                                &root,
+                                window_visuals,
+                            );
+                        }
+                    }
+                    SurfacePaintProgramStep::Operation { root, operation } => {
+                        let visual_context = match root.kind() {
+                            SurfacePaintProgramRootKind::Main => tabs::RootVisualContext::Main,
+                            SurfacePaintProgramRootKind::Contained(record) => {
+                                let window_visuals = context.style.resolved_contained_window(
+                                    context.ui.style(),
+                                    record.is_frontmost(),
+                                );
+                                tabs::RootVisualContext::Contained {
+                                    record,
+                                    pane_fill: window_visuals.frame.fill,
+                                }
+                            }
+                        };
+                        paint_surface_program_operation(
+                            &mut context,
+                            &root,
+                            &operation,
+                            visual_context,
+                        )?;
+                    }
+                    SurfacePaintProgramStep::RootEnd(root) => {
+                        if let Some(record) = root.contained() {
+                            context.flush_contained_activation(record);
+                        }
+                    }
+                    SurfacePaintProgramStep::ProjectionPlane => {
+                        tab_chrome::paint_popups(&mut context);
+                        let drag_preview_required = context.plan.drag_preview().is_some();
+                        let drag_preview_painted =
+                            paint_preview(context.ui, context.plan, context.visuals);
+                        transient_visuals_complete &=
+                            !drag_preview_required || drag_preview_painted;
+                        if context.pointer_authority.acknowledges_previews_locally()
+                            && drag_preview_painted
+                            && let Some(action) = context.plan.prepare_drag_preview_painted()
+                        {
+                            context.push_presentation_action(action);
+                            *context.defer_measurement = true;
+                        }
+                    }
+                    SurfacePaintProgramStep::DropGuide { affordance, .. } => {
+                        if let Some(cluster) = affordance {
+                            guides::paint_cluster(&mut context, cluster);
+                        }
+                    }
+                    SurfacePaintProgramStep::FeedbackPlane => {
+                        let contained_preview_required =
+                            context.plan.contained_transform_preview().is_some();
+                        let contained_preview_painted = paint_contained_transform_preview(
+                            context.ui,
+                            context.plan,
+                            context.visuals,
+                        );
+                        transient_visuals_complete &=
+                            !contained_preview_required || contained_preview_painted;
+                        if context.pointer_authority.acknowledges_previews_locally()
+                            && contained_preview_painted
+                            && let Some(action) =
+                                context.plan.prepare_contained_transform_preview_painted()
+                        {
+                            context.push_presentation_action(action);
+                        }
+                        drag_feedback::paint(&mut context);
+                        if actions::effective_enabled(
+                            context.ui,
+                            context.pointer_authority.accepts_local_pointer_actions(),
+                        ) && let Some(action) = context.plan.prepare_escape_cancel()
+                            && context
+                                .ui
+                                .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+                        {
+                            context.ui.ctx().stop_dragging();
+                            context.push_local_action(action);
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .map_err(SurfacePaintProgramVisitError::into_runtime_error)?;
     }
     let (pane_focus_observation, pane_focus_capability) =
         pane_focus_request.map_or((None, DockspaceCapability::Supported), |request| {
@@ -506,6 +536,41 @@ pub(crate) fn paint_surface(
         #[cfg(feature = "native-render-support")]
         transient_visuals_complete,
     })
+}
+
+fn paint_surface_program_operation(
+    context: &mut RenderContext<'_, '_, '_>,
+    root: &SurfacePaintProgramRoot<'_>,
+    operation: &SurfacePaintProgramOperation<'_>,
+    visual_context: tabs::RootVisualContext<'_>,
+) -> Result<(), DockspaceRuntimeError> {
+    match *operation {
+        SurfacePaintProgramOperation::Pane(pane) => {
+            tabs::paint_pane(context, pane, visual_context);
+        }
+        SurfacePaintProgramOperation::TabBar(bar) => {
+            tabs::paint_tab_bar(context, bar, visual_context.contained());
+        }
+        SurfacePaintProgramOperation::Tab(tab) => {
+            tabs::paint_tab_record(context, tab, visual_context.contained());
+        }
+        SurfacePaintProgramOperation::Splitter(splitter) => {
+            splitters::paint_splitter(context, splitter);
+        }
+        SurfacePaintProgramOperation::SplitterJunction(junction) => {
+            splitters::paint_junction(context, junction);
+        }
+        SurfacePaintProgramOperation::TabStripControl(control) => {
+            tab_chrome::paint_control_record(context, control);
+        }
+        SurfacePaintProgramOperation::ContainedControls(record) => {
+            contained::paint_controls(context, record, root);
+        }
+        SurfacePaintProgramOperation::PresentationMenuAnchor(anchor) => {
+            presentation_menu::paint(context, anchor)?;
+        }
+    }
+    Ok(())
 }
 
 fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, visuals: ResolvedDockVisuals) -> bool {

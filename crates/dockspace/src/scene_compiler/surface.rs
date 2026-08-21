@@ -82,6 +82,7 @@ pub(crate) fn compile_surface_scene(
     }
 
     if let Some(root) = presentation.main_root {
+        ready.begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)?;
         compile_root(
             workspace,
             workspace_index,
@@ -100,6 +101,7 @@ pub(crate) fn compile_surface_scene(
             true,
             &mut ready,
         )?;
+        ready.end_surface_program_root(root)?;
     } else {
         ready.set_surface_background(DropTargetRecord::surface_background(
             SurfaceBackground::new(surface),
@@ -142,8 +144,13 @@ pub(crate) fn compile_surface_scene(
             layer,
         )?;
         let content = contained.content_bounds();
+        let presentation_menu_ready = presentation_menu_anchor.ready_bounds().is_some();
         ready.push_contained_record(contained);
         ready.push_presentation_menu_anchor_record(presentation_menu_anchor);
+        ready.begin_surface_program_root(
+            record.root,
+            SurfaceProgramRootPresentation::Contained(floating),
+        )?;
         if rect_has_area(content) {
             compile_root(
                 workspace,
@@ -164,10 +171,20 @@ pub(crate) fn compile_surface_scene(
                 &mut ready,
             )?;
         }
+        ready.push_surface_program_root_operation(
+            SurfaceProgramRootOperation::ContainedControls(floating),
+        )?;
+        if presentation_menu_ready {
+            ready.push_surface_program_root_operation(
+                SurfaceProgramRootOperation::PresentationMenuAnchor(record.root),
+            )?;
+        }
+        ready.end_surface_program_root(record.root)?;
     }
 
     ready.derive_splitter_operability();
     compile_splitter_junctions(&mut ready)?;
+    ready.finish_surface_program()?;
 
     match popup {
         PopupPlaneRequirement::Inactive { .. } => {
@@ -197,7 +214,7 @@ pub(crate) fn compile_surface_scene(
     Ok(ready)
 }
 
-fn compile_splitter_junctions(ready: &mut PresentationPlan) -> Result<(), GeometryError> {
+fn compile_splitter_junctions(ready: &mut PresentationPlan) -> Result<(), SceneCompilationError> {
     let candidates = derive_splitter_junction_candidates(ready.splitter_records())?;
     for candidate in candidates {
         if ready.region_is_operable(candidate.hit, candidate.layer) {
@@ -206,12 +223,17 @@ fn compile_splitter_junctions(ready: &mut PresentationPlan) -> Result<(), Geomet
                     .splitter_record(splitter)
                     .is_some_and(SplitterRecord::operable)
             });
+            let id = candidate.id();
             ready.push_splitter_junction_record(SplitterJunctionRecord::new(
-                candidate.id(),
+                id,
                 HitRegion::new(candidate.hit),
                 candidate.layer,
                 operable,
             ));
+            ready.push_surface_program_derived_root_operation(
+                id.root(),
+                SurfaceProgramRootOperation::SplitterJunction(id),
+            )?;
         }
     }
     Ok(())
@@ -733,6 +755,9 @@ fn compile_root(
                         layer,
                         operable,
                     ));
+                    ready.push_surface_program_root_operation(
+                        SurfaceProgramRootOperation::Splitter(id),
+                    )?;
                 }
             }
         }
@@ -786,6 +811,16 @@ fn compile_tabs_leaf(
         0.0
     };
     let tab_bar = LogicalRect::new(bounds.x(), bounds.y(), bounds.width(), tab_height)?;
+    let content_height = (bounds.height() - tab_height).max(0.0);
+    let content = LogicalRect::new(
+        bounds.x(),
+        bounds.y() + tab_height,
+        bounds.width(),
+        content_height,
+    )?;
+    let pane_id = PaneSceneId { root, tabs };
+    ready.push_pane_record(PaneRecord::new(pane_id, bounds, content, selected, layer));
+    ready.push_surface_program_root_operation(SurfaceProgramRootOperation::Pane(pane_id))?;
     if rect_has_area(tab_bar) {
         compile_tab_strip(
             workspace,
@@ -807,20 +842,6 @@ fn compile_tabs_leaf(
             ready,
         )?;
     }
-    let content_height = (bounds.height() - tab_height).max(0.0);
-    let content = LogicalRect::new(
-        bounds.x(),
-        bounds.y() + tab_height,
-        bounds.width(),
-        content_height,
-    )?;
-    ready.push_pane_record(PaneRecord::new(
-        PaneSceneId { root, tabs },
-        bounds,
-        content,
-        selected,
-        layer,
-    ));
     if rect_has_area(bounds) {
         push_inner_guide(
             workspace,
@@ -948,6 +969,7 @@ fn compile_tab_strip(
     };
 
     let mut full_tabs = Vec::with_capacity(items.len());
+    let mut program_tabs = Vec::with_capacity(items.len());
     let mut cursor = viewport.x() - scroll;
     let mut visible_items = BTreeSet::new();
     let mut members = Vec::with_capacity(items.len());
@@ -994,6 +1016,7 @@ fn compile_tab_strip(
                 ordinal,
                 layer,
             ));
+            program_tabs.push(id);
             visible_items.insert(item);
         }
         full_tabs.push(full);
@@ -1039,32 +1062,39 @@ fn compile_tab_strip(
         });
     }
 
+    let mut program_controls = Vec::new();
     if let Some([backward, forward, menu]) = control_rects {
         let enabled = interaction == TabBarInteraction::Enabled;
         if let Some(backward) = backward {
+            let id = TabStripControlId::ScrollBackward(bar_id);
             ready.push_tab_strip_control_record(TabStripControlRecord::new(
-                TabStripControlId::ScrollBackward(bar_id),
+                id,
                 backward,
                 enabled && scroll > 0.0,
                 layer,
             ));
+            program_controls.push(id);
         }
         if let Some(forward) = forward {
+            let id = TabStripControlId::ScrollForward(bar_id);
             ready.push_tab_strip_control_record(TabStripControlRecord::new(
-                TabStripControlId::ScrollForward(bar_id),
+                id,
                 forward,
                 enabled && scroll < max_scroll,
                 layer,
             ));
+            program_controls.push(id);
         }
         if let Some(menu) = menu {
             let menu_enabled = enabled && menu_geometry.is_available();
+            let id = TabStripControlId::TabListMenu(bar_id);
             ready.push_tab_strip_control_record(TabStripControlRecord::new(
-                TabStripControlId::TabListMenu(bar_id),
+                id,
                 menu,
                 menu_enabled,
                 layer,
             ));
+            program_controls.push(id);
         }
         if interaction == TabBarInteraction::Enabled
             && let Some(active_menu) = active_menu
@@ -1086,6 +1116,21 @@ fn compile_tab_strip(
                 ready,
             )?;
         }
+    }
+
+    ready.push_surface_program_root_operation(SurfaceProgramRootOperation::TabBar(bar_id))?;
+    for tab in program_tabs {
+        ready.push_surface_program_root_operation(SurfaceProgramRootOperation::Tab(tab))?;
+    }
+    for control in program_controls {
+        ready.push_surface_program_root_operation(SurfaceProgramRootOperation::TabStripControl(
+            control,
+        ))?;
+    }
+    if presentation_menu_anchor && presentation_menu_bounds.is_some() {
+        ready.push_surface_program_root_operation(
+            SurfaceProgramRootOperation::PresentationMenuAnchor(root),
+        )?;
     }
 
     if interaction == TabBarInteraction::Enabled {
@@ -2913,6 +2958,15 @@ pub enum SceneCompilationError {
     /// The compiler produced a scene record that violated construction rules.
     #[error(transparent)]
     Scene(#[from] SceneBuildError),
+    /// The compiler could not preserve one ordered renderer program.
+    #[error("surface program construction violated an internal ordering invariant")]
+    SurfaceProgramInvariant,
+}
+
+impl From<SurfaceProgramBuildError> for SceneCompilationError {
+    fn from(_error: SurfaceProgramBuildError) -> Self {
+        Self::SurfaceProgramInvariant
+    }
 }
 
 /// Rejection of one exact adapter measurement contribution.

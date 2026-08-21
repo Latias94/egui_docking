@@ -2,8 +2,8 @@
 
 use dockspace::model::ItemId;
 use dockspace::runtime::{
-    ContainedPaintRecord, SurfaceGesturePhase, SurfaceTabNavigation, TabGroupDragRegionKind,
-    TabPaintRecord,
+    ContainedPaintRecord, PanePaintRecord, SurfaceGesturePhase, SurfaceTabNavigation,
+    TabGroupDragRegionKind, TabPaintRecord,
 };
 use egui::accesskit::{Action, Role};
 use egui::{
@@ -15,7 +15,6 @@ use super::RenderContext;
 use super::actions::{button_activated, effective_enabled, gesture_phase};
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
-use super::schedule::RootPaintSchedule;
 
 #[derive(Clone, Copy)]
 pub(crate) enum RootVisualContext<'plan> {
@@ -27,7 +26,7 @@ pub(crate) enum RootVisualContext<'plan> {
 }
 
 impl<'plan> RootVisualContext<'plan> {
-    const fn contained(self) -> Option<ContainedPaintRecord<'plan>> {
+    pub(crate) const fn contained(self) -> Option<ContainedPaintRecord<'plan>> {
         match self {
             Self::Main => None,
             Self::Contained { record, .. } => Some(record),
@@ -42,111 +41,96 @@ impl<'plan> RootVisualContext<'plan> {
     }
 }
 
-pub(crate) fn paint_root(
+pub(crate) fn paint_pane(
     context: &mut RenderContext<'_, '_, '_>,
-    root: &RootPaintSchedule<'_>,
-    visual_context: RootVisualContext<'_>,
-) {
-    paint_panes(context, root, visual_context);
-    paint_tab_bars(context, root, visual_context.contained());
-    paint_tabs(context, root, visual_context.contained());
-}
-
-fn paint_panes(
-    context: &mut RenderContext<'_, '_, '_>,
-    root: &RootPaintSchedule<'_>,
+    pane: PanePaintRecord<'_>,
     visual_context: RootVisualContext<'_>,
 ) {
     let pane_fill = visual_context.pane_fill(context.visuals.workspace_fill);
-    for pane in root.panes() {
-        let paint_omitted = context
-            .plan
-            .drag_decoration()
-            .is_some_and(|decoration| decoration.omits_visual(pane.visual_id()));
-        let Some(bounds) = egui_rect(pane.bounds()) else {
-            continue;
-        };
-        if !paint_omitted {
-            context.ui.painter().rect_filled(bounds, 0.0, pane_fill);
-        }
-        let Some(pane_rect) = egui_rect(pane.content_bounds()) else {
-            continue;
-        };
-        let pane_id =
-            context
-                .ui
-                .make_persistent_id((context.instance_id, "pane-body", pane.visual_id()));
-        let _response = context.interact_receiver(
-            pane_rect,
-            pane_id,
-            Sense::click_and_drag(),
-            context.plan.receiver_for_pane(pane),
-        );
-        let Some(item) = pane.selected() else {
-            continue;
-        };
-        let mut child = context.ui.new_child(
-            UiBuilder::new()
-                .id_salt((context.instance_id, "pane", pane.visual_id()))
-                .max_rect(pane_rect)
-                .layout(Layout::top_down(Align::Min)),
-        );
-        if paint_omitted {
-            // Keep pane widget identities alive so focus and application-owned
-            // accessibility state survive the temporary source gap.
-            child.set_opacity(0.0);
-        }
-        child.set_clip_rect(pane_rect);
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(pane.visual_id()));
+    let Some(bounds) = egui_rect(pane.bounds()) else {
+        return;
+    };
+    if !paint_omitted {
+        context.ui.painter().rect_filled(bounds, 0.0, pane_fill);
+    }
+    let Some(pane_rect) = egui_rect(pane.content_bounds()) else {
+        return;
+    };
+    let pane_id =
+        context
+            .ui
+            .make_persistent_id((context.instance_id, "pane-body", pane.visual_id()));
+    let _response = context.interact_receiver(
+        pane_rect,
+        pane_id,
+        Sense::click_and_drag(),
+        context.plan.receiver_for_pane(pane),
+    );
+    let Some(item) = pane.selected() else {
+        return;
+    };
+    let mut child = context.ui.new_child(
+        UiBuilder::new()
+            .id_salt((context.instance_id, "pane", pane.visual_id()))
+            .max_rect(pane_rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    if paint_omitted {
+        // Keep pane widget identities alive so focus and application-owned
+        // accessibility state survive the temporary source gap.
+        child.set_opacity(0.0);
+    }
+    child.set_clip_rect(pane_rect);
+    if context
+        .resources
+        .item(item)
+        .is_some_and(|resource| resource.missing)
+    {
+        child.centered_and_justified(|ui| {
+            ui.label(format!("Missing pane {}", item.get()));
+        });
+    } else {
         if context
-            .resources
-            .item(item)
-            .is_some_and(|resource| resource.missing)
+            .pane_focus_request
+            .is_some_and(|request| request.item() == item)
+            && !*context.pane_focus_target_requested
+            && let Some(target) = context.panes.focus_target(item)
         {
-            child.centered_and_justified(|ui| {
-                ui.label(format!("Missing pane {}", item.get()));
-            });
-        } else {
-            if context
-                .pane_focus_request
-                .is_some_and(|request| request.item() == item)
-                && !*context.pane_focus_target_requested
-                && let Some(target) = context.panes.focus_target(item)
-            {
-                context.ui.memory_mut(|memory| memory.request_focus(target));
-                *context.pane_focus_target_requested = true;
-            }
-            context.panes.ui(item, &mut child);
+            context.ui.memory_mut(|memory| memory.request_focus(target));
+            *context.pane_focus_target_requested = true;
         }
+        context.panes.ui(item, &mut child);
     }
 }
 
-fn paint_tab_bars(
+pub(crate) fn paint_tab_bar(
     context: &mut RenderContext<'_, '_, '_>,
-    root: &RootPaintSchedule<'_>,
+    bar: dockspace::runtime::TabBarPaintRecord<'_>,
     contained: Option<ContainedPaintRecord<'_>>,
 ) {
-    for bar in root.tab_bars() {
-        let paint_omitted = context
-            .plan
-            .drag_decoration()
-            .is_some_and(|decoration| decoration.omits_visual(bar.visual_id()));
-        if !paint_omitted && let Some(bounds) = egui_rect(bar.bounds()) {
-            context
-                .ui
-                .painter()
-                .rect_filled(bounds, 0.0, context.visuals.tab_bar_fill);
-        }
-        let id = context.ui.make_persistent_id((
-            context.instance_id,
-            "tab-strip-scroll",
-            bar.visual_id(),
-        ));
-        let receiver = effective_enabled(context.ui, true)
-            .then(|| context.plan.receiver_for_tab_strip_scroll(bar))
-            .flatten();
-        context.register_scroll_receiver(id, receiver);
-        paint_group_drag_regions(context, bar, contained);
+    let paint_omitted = context
+        .plan
+        .drag_decoration()
+        .is_some_and(|decoration| decoration.omits_visual(bar.visual_id()));
+    if !paint_omitted && let Some(bounds) = egui_rect(bar.bounds()) {
+        context
+            .ui
+            .painter()
+            .rect_filled(bounds, 0.0, context.visuals.tab_bar_fill);
     }
+    let id =
+        context
+            .ui
+            .make_persistent_id((context.instance_id, "tab-strip-scroll", bar.visual_id()));
+    let receiver = effective_enabled(context.ui, true)
+        .then(|| context.plan.receiver_for_tab_strip_scroll(bar))
+        .flatten();
+    context.register_scroll_receiver(id, receiver);
+    paint_group_drag_regions(context, bar, contained);
 }
 
 fn paint_group_drag_regions(
@@ -238,20 +222,18 @@ fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, stroke: Stroke) {
     }
 }
 
-fn paint_tabs(
+pub(crate) fn paint_tab_record(
     context: &mut RenderContext<'_, '_, '_>,
-    root: &RootPaintSchedule<'_>,
+    tab: TabPaintRecord<'_>,
     contained: Option<ContainedPaintRecord<'_>>,
 ) {
-    for tab in root.tabs() {
-        let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
-            continue;
-        };
-        paint_tab(context, tab, &resource, contained);
-    }
+    let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
+        return;
+    };
+    paint_tab(context, tab, &resource, contained);
 }
 
-fn paint_tab(
+pub(crate) fn paint_tab(
     context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
     resource: &TabPaintResource,

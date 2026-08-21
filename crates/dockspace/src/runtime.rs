@@ -94,7 +94,9 @@ pub use paint::{
     DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord,
     PresentationCommandPaintRecord, PresentationMenuAnchorPaintRecord, SplitterGapVisibility,
     SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
-    SurfacePaintPlan, TabBarPaintRecord, TabGroupDragRegionKind, TabGroupDragRegionPaintRecord,
+    SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramRoot,
+    SurfacePaintProgramRootKind, SurfacePaintProgramStep, SurfacePaintProgramVisitError,
+    TabBarPaintRecord, TabGroupDragRegionKind, TabGroupDragRegionPaintRecord,
     TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
     TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord, TabStripMemberPaintRecord,
     TabStripMemberVisibility,
@@ -675,6 +677,9 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PaintObligationUnavailable { .. } => {
                 DockspaceRuntimeErrorKind::HostProtocol
             }
+            DockspaceRuntimeErrorSource::SurfaceProgramInvariant { .. } => {
+                DockspaceRuntimeErrorKind::Internal
+            }
             DockspaceRuntimeErrorSource::SurfaceContributionBegin(_) => {
                 DockspaceRuntimeErrorKind::HostProtocol
             }
@@ -751,6 +756,12 @@ impl DockspaceRuntimeError {
     const fn paint_obligation_unavailable(surface: SurfaceId) -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::PaintObligationUnavailable { surface },
+        }
+    }
+
+    pub(crate) const fn surface_program_invariant(surface: SurfaceId) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::SurfaceProgramInvariant { surface },
         }
     }
 
@@ -833,6 +844,8 @@ enum DockspaceRuntimeErrorSource {
     PreparedDocumentRestoreMismatch,
     #[error("surface {surface} has no paintable presentation obligation in this frame")]
     PaintObligationUnavailable { surface: SurfaceId },
+    #[error("surface {surface} has an invalid compiled paint program")]
+    SurfaceProgramInvariant { surface: SurfaceId },
     #[error(transparent)]
     SurfaceContributionBegin(SurfaceContributionBeginError),
     #[error(transparent)]

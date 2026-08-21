@@ -282,7 +282,8 @@ const fn scene_compilation_error_kind(error: &SceneCompilationError) -> Dockspac
         | SceneCompilationError::MissingSplitMinimum { .. }
         | SceneCompilationError::MissingSplitMaximum { .. }
         | SceneCompilationError::Command(_)
-        | SceneCompilationError::Scene(_) => DockspaceRuntimeErrorKind::Internal,
+        | SceneCompilationError::Scene(_)
+        | SceneCompilationError::SurfaceProgramInvariant => DockspaceRuntimeErrorKind::Internal,
     }
 }
 

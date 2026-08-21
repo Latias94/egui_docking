@@ -11,11 +11,11 @@ use super::RenderContext;
 use super::actions::{button_activated, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect};
 
-pub(crate) fn paint_controls(
+pub(crate) fn paint_control_record(
     context: &mut RenderContext<'_, '_, '_>,
-    controls: impl IntoIterator<Item = TabStripControlPaintRecord>,
+    control: TabStripControlPaintRecord,
 ) {
-    paint_control_records(context, controls);
+    paint_control_records(context, std::iter::once(control));
 }
 
 pub(crate) fn paint_popups(context: &mut RenderContext<'_, '_, '_>) {

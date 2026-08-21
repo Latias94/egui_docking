@@ -20,7 +20,8 @@ use crate::scene::{
     ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
     PresentationMenuAnchorRecord, PresentationPlan, SplitterGapPresentation, SplitterGapRecord,
     SplitterJunctionDirection, SplitterJunctionId, SplitterJunctionRecord, SplitterRecord,
-    SplitterSceneId, SurfaceScene, TabBarSceneId, TabSceneId,
+    SplitterSceneId, SurfaceProgramBlock, SurfaceProgramRootOperation,
+    SurfaceProgramRootPresentation, SurfaceScene, TabBarSceneId, TabSceneId,
 };
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
 
@@ -952,6 +953,130 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) candidate: crate::engine::HostFrameView<'frame>,
 }
 
+/// Root presentation kind in the core-owned surface paint program.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub enum SurfacePaintProgramRootKind<'frame> {
+    /// The surface's ordinary main root.
+    Main,
+    /// A contained-floating root painted in roster order.
+    Contained(ContainedPaintRecord<'frame>),
+}
+
+/// One operation in the core-owned surface paint program.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub enum SurfacePaintProgramOperation<'frame> {
+    /// Paint one pane background and content host.
+    Pane(PanePaintRecord<'frame>),
+    /// Paint one tab strip.
+    TabBar(TabBarPaintRecord<'frame>),
+    /// Paint one visible tab.
+    Tab(TabPaintRecord<'frame>),
+    /// Paint one splitter.
+    Splitter(SplitterPaintRecord<'frame>),
+    /// Paint one atomic splitter junction.
+    SplitterJunction(SplitterJunctionPaintRecord<'frame>),
+    /// Paint one tab-strip control.
+    TabStripControl(TabStripControlPaintRecord),
+    /// Paint the contained-window title and resize controls.
+    ContainedControls(ContainedPaintRecord<'frame>),
+    /// Paint one root-scoped presentation-menu anchor.
+    PresentationMenuAnchor(PresentationMenuAnchorPaintRecord<'frame>),
+}
+
+/// One root header in the core-owned paint program.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct SurfacePaintProgramRoot<'frame> {
+    root: RootId,
+    kind: SurfacePaintProgramRootKind<'frame>,
+    title_item: Option<ItemId>,
+}
+
+impl SurfacePaintProgramRoot<'_> {
+    /// Returns the stable root identity.
+    #[must_use]
+    pub const fn root(&self) -> RootId {
+        self.root
+    }
+
+    /// Returns whether the root is main or contained-floating.
+    #[must_use]
+    pub const fn kind(&self) -> SurfacePaintProgramRootKind<'_> {
+        self.kind
+    }
+
+    /// Returns the contained frame when this is a contained root.
+    #[must_use]
+    pub const fn contained(&self) -> Option<ContainedPaintRecord<'_>> {
+        match self.kind {
+            SurfacePaintProgramRootKind::Main => None,
+            SurfacePaintProgramRootKind::Contained(record) => Some(record),
+        }
+    }
+
+    /// Returns the first selected item in core traversal order.
+    #[must_use]
+    pub const fn title_item(&self) -> Option<ItemId> {
+        self.title_item
+    }
+}
+
+/// One linear step in the core-owned surface paint program.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub enum SurfacePaintProgramStep<'frame> {
+    /// Starts one main or contained root segment.
+    RootBegin(SurfacePaintProgramRoot<'frame>),
+    /// Executes one root-scoped operation.
+    Operation {
+        /// Core-owned root segment containing the operation.
+        root: SurfacePaintProgramRoot<'frame>,
+        /// Exact paint operation.
+        operation: SurfacePaintProgramOperation<'frame>,
+    },
+    /// Ends the active root segment.
+    RootEnd(SurfacePaintProgramRoot<'frame>),
+    /// Starts popup, preview, guide, and feedback projection.
+    ProjectionPlane,
+    /// Paints one guide cluster in core order.
+    DropGuide {
+        /// Structural guide identity and geometry compiled into the scene.
+        structural: DropGuidePaintRecord<'frame>,
+        /// Payload-specific visible guide state for the current drag point.
+        affordance: Option<DropAffordanceClusterPaintRecord<'frame>>,
+    },
+    /// Paints contained preview and terminal drag feedback after all guides.
+    FeedbackPlane,
+}
+
+/// Failure while resolving or executing one compiled paint program.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum SurfacePaintProgramVisitError<E> {
+    /// The sealed program no longer matches its canonical record roster.
+    InvalidProgram {
+        /// Surface whose program failed its internal invariant.
+        surface: SurfaceId,
+    },
+    /// The renderer rejected one emitted step.
+    Sink(E),
+}
+
+impl<E: Into<DockspaceRuntimeError>> SurfacePaintProgramVisitError<E> {
+    /// Converts either failure lane into the renderer-neutral facade error.
+    #[doc(hidden)]
+    pub fn into_runtime_error(self) -> DockspaceRuntimeError {
+        match self {
+            Self::InvalidProgram { surface } => {
+                DockspaceRuntimeError::surface_program_invariant(surface)
+            }
+            Self::Sink(error) => error.into(),
+        }
+    }
+}
+
 impl fmt::Debug for SurfacePaintPlan<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1042,6 +1167,252 @@ impl<'frame> SurfacePaintPlan<'frame> {
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
         self.surface
+    }
+
+    /// Visits the single ordered program for this exact surface candidate.
+    ///
+    /// The visitor receives core order directly. It cannot regroup roots or
+    /// retain a second owned schedule, and any stale record identity fails the
+    /// whole traversal rather than silently omitting paint or receiver facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfacePaintProgramVisitError::InvalidProgram`] when the
+    /// sealed tape no longer matches its canonical record roster, or
+    /// [`SurfacePaintProgramVisitError::Sink`] when the renderer rejects a
+    /// step.
+    #[doc(hidden)]
+    pub fn visit_surface_program<E>(
+        self,
+        mut visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
+    ) -> Result<(), SurfacePaintProgramVisitError<E>> {
+        let invalid = || SurfacePaintProgramVisitError::InvalidProgram {
+            surface: self.surface,
+        };
+        let mut active_root = None;
+        let mut contained_records = self.plan.contained_records().iter();
+        let mut projection_seen = false;
+        let mut feedback_seen = false;
+
+        for block in self.plan.surface_program().blocks() {
+            match block {
+                SurfaceProgramBlock::RootBegin {
+                    root,
+                    presentation,
+                    title_item,
+                } => {
+                    if active_root.is_some() || projection_seen {
+                        return Err(invalid());
+                    }
+                    let kind = match presentation {
+                        SurfaceProgramRootPresentation::Main => SurfacePaintProgramRootKind::Main,
+                        SurfaceProgramRootPresentation::Contained(floating) => {
+                            let Some(record) = contained_records.next().filter(|record| {
+                                record.floating() == *floating && record.root() == *root
+                            }) else {
+                                return Err(invalid());
+                            };
+                            SurfacePaintProgramRootKind::Contained(ContainedPaintRecord {
+                                record,
+                                plan: self.plan,
+                            })
+                        }
+                    };
+                    let header = SurfacePaintProgramRoot {
+                        root: *root,
+                        kind,
+                        title_item: *title_item,
+                    };
+                    active_root = Some((header, *presentation));
+                    visitor(SurfacePaintProgramStep::RootBegin(header))
+                        .map_err(SurfacePaintProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::RootOperation(operation) => {
+                    let Some((root, presentation)) = active_root else {
+                        return Err(invalid());
+                    };
+                    let Some(operation) = self.resolve_surface_program_operation(
+                        *operation,
+                        root.root(),
+                        presentation,
+                    ) else {
+                        return Err(invalid());
+                    };
+                    visitor(SurfacePaintProgramStep::Operation { root, operation })
+                        .map_err(SurfacePaintProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::RootEnd { root } => {
+                    let Some((active, _)) = active_root.take() else {
+                        return Err(invalid());
+                    };
+                    if active.root() != *root {
+                        return Err(invalid());
+                    }
+                    visitor(SurfacePaintProgramStep::RootEnd(active))
+                        .map_err(SurfacePaintProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::ProjectionPlane => {
+                    if active_root.is_some() || projection_seen {
+                        return Err(invalid());
+                    }
+                    projection_seen = true;
+                    visitor(SurfacePaintProgramStep::ProjectionPlane)
+                        .map_err(SurfacePaintProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::DropGuide(id) => {
+                    if active_root.is_some() || !projection_seen || feedback_seen {
+                        return Err(invalid());
+                    }
+                    let Ok(index) = self
+                        .plan
+                        .drop_guide_clusters()
+                        .binary_search_by_key(id, |record| record.id())
+                    else {
+                        return Err(invalid());
+                    };
+                    let structural = DropGuidePaintRecord {
+                        record: &self.plan.drop_guide_clusters()[index],
+                    };
+                    let affordance = self.drop_affordance().and_then(|affordance| {
+                        affordance
+                            .clusters()
+                            .find(|cluster| cluster.visual_id() == structural.visual_id())
+                    });
+                    visitor(SurfacePaintProgramStep::DropGuide {
+                        structural,
+                        affordance,
+                    })
+                    .map_err(SurfacePaintProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::FeedbackPlane => {
+                    if active_root.is_some() || !projection_seen || feedback_seen {
+                        return Err(invalid());
+                    }
+                    feedback_seen = true;
+                    visitor(SurfacePaintProgramStep::FeedbackPlane)
+                        .map_err(SurfacePaintProgramVisitError::Sink)?;
+                }
+            }
+        }
+
+        if active_root.is_some()
+            || !projection_seen
+            || !feedback_seen
+            || contained_records.next().is_some()
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    fn resolve_surface_program_operation(
+        self,
+        operation: SurfaceProgramRootOperation,
+        active_root: RootId,
+        presentation: SurfaceProgramRootPresentation,
+    ) -> Option<SurfacePaintProgramOperation<'frame>> {
+        match operation {
+            SurfaceProgramRootOperation::Pane(id) if id.root == active_root => {
+                let index = self
+                    .plan
+                    .pane_records()
+                    .binary_search_by_key(&id, crate::scene::PaneRecord::id)
+                    .ok()?;
+                Some(SurfacePaintProgramOperation::Pane(PanePaintRecord {
+                    record: &self.plan.pane_records()[index],
+                }))
+            }
+            SurfaceProgramRootOperation::TabBar(id) if id.root == active_root => {
+                let index = self
+                    .plan
+                    .tab_bar_records()
+                    .binary_search_by(|record| record.id().cmp(&id))
+                    .ok()?;
+                Some(SurfacePaintProgramOperation::TabBar(TabBarPaintRecord {
+                    record: &self.plan.tab_bar_records()[index],
+                }))
+            }
+            SurfaceProgramRootOperation::Tab(id) if id.root == active_root => {
+                let index = self
+                    .plan
+                    .tab_records()
+                    .binary_search_by(|record| record.id().cmp(&id))
+                    .ok()?;
+                let record = &self.plan.tab_records()[index];
+                Some(SurfacePaintProgramOperation::Tab(TabPaintRecord {
+                    record,
+                    operable: self.tab_is_operable(record),
+                }))
+            }
+            SurfaceProgramRootOperation::Splitter(id) if id.root == active_root => {
+                let index = self
+                    .plan
+                    .splitter_records()
+                    .binary_search_by(|record| record.id().cmp(&id))
+                    .ok()?;
+                Some(SurfacePaintProgramOperation::Splitter(
+                    SplitterPaintRecord {
+                        record: &self.plan.splitter_records()[index],
+                    },
+                ))
+            }
+            SurfaceProgramRootOperation::SplitterJunction(id) if id.root() == active_root => {
+                let index = self
+                    .plan
+                    .splitter_junction_records()
+                    .binary_search_by_key(&id, SplitterJunctionRecord::id)
+                    .ok()?;
+                Some(SurfacePaintProgramOperation::SplitterJunction(
+                    SplitterJunctionPaintRecord {
+                        record: &self.plan.splitter_junction_records()[index],
+                    },
+                ))
+            }
+            SurfaceProgramRootOperation::TabStripControl(id) if id.bar().root == active_root => {
+                let index = self
+                    .plan
+                    .tab_strip_control_records()
+                    .binary_search_by_key(&id, |record| record.id())
+                    .ok()?;
+                Some(SurfacePaintProgramOperation::TabStripControl(
+                    TabStripControlPaintRecord {
+                        record: self.plan.tab_strip_control_records()[index],
+                    },
+                ))
+            }
+            SurfaceProgramRootOperation::ContainedControls(floating)
+                if presentation == SurfaceProgramRootPresentation::Contained(floating) =>
+            {
+                let record = self
+                    .plan
+                    .contained_records()
+                    .iter()
+                    .find(|record| record.floating() == floating)?;
+                Some(SurfacePaintProgramOperation::ContainedControls(
+                    ContainedPaintRecord {
+                        record,
+                        plan: self.plan,
+                    },
+                ))
+            }
+            SurfaceProgramRootOperation::PresentationMenuAnchor(root) if root == active_root => {
+                let index = self
+                    .plan
+                    .presentation_menu_anchor_records()
+                    .binary_search_by_key(&root, |record| record.root())
+                    .ok()?;
+                let record = &self.plan.presentation_menu_anchor_records()[index];
+                let bounds = record.ready_bounds()?;
+                Some(SurfacePaintProgramOperation::PresentationMenuAnchor(
+                    PresentationMenuAnchorPaintRecord {
+                        record,
+                        bounds,
+                        operable: self.plan.region_is_operable(bounds, record.layer()),
+                    },
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Returns the exact semantic output represented by this paint plan.
