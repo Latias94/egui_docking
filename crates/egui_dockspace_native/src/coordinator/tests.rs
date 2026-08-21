@@ -1001,7 +1001,7 @@ fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
 }
 
 #[test]
-fn duplicate_snapshot_outcomes_fail_before_settling_the_exact_roster() {
+fn the_last_snapshot_outcome_settles_the_exact_queued_roster() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
     native
@@ -1036,14 +1036,59 @@ fn duplicate_snapshot_outcomes_fail_before_settling_the_exact_roster() {
             close_requests: Vec::new(),
         },
     ];
-    let error = native
-        .settle_host_frame_inputs(&duplicate)
-        .expect_err("one queued snapshot must have exactly one terminal outcome");
-
-    assert_eq!(error.kind(), crate::NativeRuntimeErrorKind::HostProtocol);
     assert!(
-        native.bridge.settle_viewport_roster(&roster, true),
-        "a rejected host settlement must not partially consume the exact roster envelope"
+        native
+            .settle_host_frame_inputs(&duplicate)
+            .expect("an earlier provider-baseline snapshot may share the host frame")
+    );
+    assert!(
+        !native.bridge.settle_viewport_roster(&roster, true),
+        "the last snapshot outcome must consume the exact queued roster envelope"
+    );
+}
+
+#[test]
+fn a_trailing_rejected_snapshot_does_not_commit_an_earlier_applied_outcome() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    native
+        .bridge
+        .push_viewport_roster(live_roster([first, second]));
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("the exact roster is accepted")
+    );
+    let roster = native
+        .queued_snapshot
+        .as_ref()
+        .expect("the reduced roster retains one exact snapshot")
+        .roster
+        .clone();
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the snapshot boundary begins");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the snapshot boundary settles every surface");
+    frame
+        .commit()
+        .expect("the snapshot boundary commits before host settlement");
+
+    let outcomes = [
+        HostInputOutcome::NativePlatformSnapshotApplied {
+            close_requests: Vec::new(),
+        },
+        HostInputOutcome::NativePlatformSnapshotStale,
+    ];
+    assert!(
+        !native
+            .settle_host_frame_inputs(&outcomes)
+            .expect("the last snapshot terminal belongs to the queued roster")
+    );
+    assert!(
+        !native.bridge.settle_viewport_roster(&roster, false),
+        "a rejected last outcome must still consume the exact queued roster envelope"
     );
 }
 

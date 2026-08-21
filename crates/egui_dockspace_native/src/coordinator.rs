@@ -789,29 +789,19 @@ impl NativeCoordinator {
         let Some(queued) = self.queued_snapshot.take() else {
             return Ok(false);
         };
-        let applied = inputs
+        // Provider enrollment may publish an earlier baseline snapshot in the
+        // same host frame. The coordinator queues the last snapshot input, so
+        // its matching terminal is the last snapshot outcome in input order.
+        let snapshot_applied = inputs
             .iter()
-            .filter(|input| {
-                matches!(
-                    input,
-                    HostInputOutcome::NativePlatformSnapshotApplied { .. }
-                )
+            .rev()
+            .find_map(|input| match input {
+                HostInputOutcome::NativePlatformSnapshotApplied { .. } => Some(true),
+                HostInputOutcome::NativePlatformSnapshotStale
+                | HostInputOutcome::NativePlatformProviderRejected => Some(false),
+                _ => None,
             })
-            .count();
-        let rejected = inputs
-            .iter()
-            .filter(|input| {
-                matches!(
-                    input,
-                    HostInputOutcome::NativePlatformSnapshotStale
-                        | HostInputOutcome::NativePlatformProviderRejected
-                )
-            })
-            .count();
-        if applied + rejected != 1 {
-            return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
-        }
-        let snapshot_applied = applied == 1;
+            .ok_or(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch)?;
         if snapshot_applied
             && !self
                 .input_control
