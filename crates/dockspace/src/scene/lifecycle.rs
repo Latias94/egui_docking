@@ -1132,8 +1132,8 @@ impl SurfaceSceneSet {
         let stamp = SurfaceSceneStamp::new(ticket, revision);
         let output_ticket =
             SurfacePresentationOutputTicket::mint(authority_domain, output_serial, stamp);
-        let hit_manifest = PresentationHitManifest::compile(output_ticket, &plan);
-        let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan);
+        let hit_manifest = PresentationHitManifest::compile(output_ticket, &plan)?;
+        let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan)?;
         let (retained_fallback, retained_interaction, confirmed_paint_fallback) = match current {
             SurfaceScene::Ready(ready) => ready.into_retained_authority(),
             SurfaceScene::Stale(stale) => {

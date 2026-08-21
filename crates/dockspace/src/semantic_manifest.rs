@@ -5,9 +5,13 @@
 //! of the pointer viewport, so using the hit manifest as its authority would
 //! incorrectly erase a real presented control.
 
+use std::convert::Infallible;
+
 use crate::presentation_hit::PresentationHitRegionKind;
 use crate::presentation_observation::SurfacePresentationOutputTicket;
-use crate::scene::PresentationPlan;
+use crate::scene::{
+    PresentationPlan, ResolvedSurfaceProgramOperation, ResolvedSurfaceProgramStep, SceneBuildError,
+};
 use crate::semantic_input::{SemanticAccessibilityAction, SemanticKey, SemanticReceiverAction};
 
 /// Exact semantic receiver roster bound to one presented output.
@@ -21,60 +25,79 @@ impl PresentationSemanticManifest {
     pub(crate) fn compile(
         output: SurfacePresentationOutputTicket,
         plan: &PresentationPlan,
-    ) -> Self {
+    ) -> Result<Self, SceneBuildError> {
         debug_assert_eq!(output.surface(), plan.surface());
         let mut receivers = Vec::new();
 
-        for tab in plan.tab_records() {
-            receivers.push(PresentationHitRegionKind::TabBody(*tab.id()));
-            if tab.close_bounds().is_some() {
-                receivers.push(PresentationHitRegionKind::TabClose(*tab.id()));
-            }
-        }
-        receivers.extend(
-            plan.tab_strip_control_records()
-                .iter()
-                .filter(|control| control.enabled())
-                .map(|control| PresentationHitRegionKind::TabStripControl(control.id())),
-        );
-        for menu in plan.tab_list_menu_records() {
-            if menu.maximum_scroll_offset() > 0.0 {
-                receivers.push(PresentationHitRegionKind::TabListMenuScroll(menu.session()));
-            }
-            receivers.extend(menu.rows().iter().map(|row| {
-                PresentationHitRegionKind::TabListMenuRow {
-                    menu: menu.session(),
-                    tab: row.tab(),
+        plan.visit_surface_program(|step| {
+            match step {
+                ResolvedSurfaceProgramStep::Operation { operation, .. } => match operation {
+                    ResolvedSurfaceProgramOperation::Tab(tab) => {
+                        receivers.push(PresentationHitRegionKind::TabBody(*tab.id()));
+                        if tab.close_bounds().is_some() {
+                            receivers.push(PresentationHitRegionKind::TabClose(*tab.id()));
+                        }
+                    }
+                    ResolvedSurfaceProgramOperation::TabStripControl(control)
+                        if control.enabled() =>
+                    {
+                        receivers.push(PresentationHitRegionKind::TabStripControl(control.id()));
+                    }
+                    ResolvedSurfaceProgramOperation::Splitter(splitter) if splitter.operable() => {
+                        receivers.push(PresentationHitRegionKind::SplitterHandle(*splitter.id()));
+                    }
+                    ResolvedSurfaceProgramOperation::ContainedControls(contained) => {
+                        if contained.close_bounds().is_some() {
+                            receivers.push(PresentationHitRegionKind::ContainedClose(
+                                contained.floating(),
+                            ));
+                        }
+                        if contained.transform_operable() {
+                            receivers.extend(contained.resize().iter().filter_map(|resize| {
+                                is_cardinal_resize(resize.direction()).then_some(
+                                    PresentationHitRegionKind::ContainedResize {
+                                        floating: contained.floating(),
+                                        direction: resize.direction(),
+                                    },
+                                )
+                            }));
+                        }
+                    }
+                    ResolvedSurfaceProgramOperation::Pane(_)
+                    | ResolvedSurfaceProgramOperation::TabBar(_)
+                    | ResolvedSurfaceProgramOperation::Splitter(_)
+                    | ResolvedSurfaceProgramOperation::SplitterJunction(_)
+                    | ResolvedSurfaceProgramOperation::TabStripControl(_)
+                    | ResolvedSurfaceProgramOperation::PresentationMenuAnchor => {}
+                },
+                ResolvedSurfaceProgramStep::ProjectionPlane => {
+                    for menu in plan.tab_list_menu_records() {
+                        if menu.maximum_scroll_offset() > 0.0 {
+                            receivers
+                                .push(PresentationHitRegionKind::TabListMenuScroll(menu.session()));
+                        }
+                        receivers.extend(menu.rows().iter().map(|row| {
+                            PresentationHitRegionKind::TabListMenuRow {
+                                menu: menu.session(),
+                                tab: row.tab(),
+                            }
+                        }));
+                    }
                 }
-            }));
-        }
-        receivers.extend(
-            plan.splitter_records()
-                .iter()
-                .filter(|splitter| splitter.operable())
-                .map(|splitter| PresentationHitRegionKind::SplitterHandle(*splitter.id())),
-        );
-        for contained in plan.contained_records() {
-            if contained.close_bounds().is_some() {
-                receivers.push(PresentationHitRegionKind::ContainedClose(
-                    contained.floating(),
-                ));
+                ResolvedSurfaceProgramStep::RootBegin(_)
+                | ResolvedSurfaceProgramStep::RootEnd(_)
+                | ResolvedSurfaceProgramStep::DropGuide(_)
+                | ResolvedSurfaceProgramStep::FeedbackPlane => {}
             }
-            if contained.transform_operable() {
-                receivers.extend(contained.resize().iter().filter_map(|resize| {
-                    is_cardinal_resize(resize.direction()).then_some(
-                        PresentationHitRegionKind::ContainedResize {
-                            floating: contained.floating(),
-                            direction: resize.direction(),
-                        },
-                    )
-                }));
-            }
-        }
+            Ok::<(), Infallible>(())
+        })
+        .map_err(|_| SceneBuildError::InvalidSurfaceProgram {
+            surface: plan.surface(),
+        })?;
 
         receivers.sort_unstable();
         receivers.dedup();
-        Self { output, receivers }
+        Ok(Self { output, receivers })
     }
 
     /// Returns the exact output which minted this roster.

@@ -2125,6 +2125,7 @@ fn compiled_control_region(
         stamp,
     );
     PresentationHitManifest::compile(output, plan)
+        .expect("test plans should resolve through their surface program")
         .regions()
         .iter()
         .find(|region| region.id().kind() == PresentationHitRegionKind::TabStripControl(control))

@@ -6,14 +6,16 @@
 //! docking receiver.
 
 use std::cmp::Ordering;
+use std::convert::Infallible;
 
-use crate::drop_guide::DropGuideScope;
+use crate::drop_guide::{DropGuideClusterRecord, DropGuideScope};
 use crate::drop_target::{DropTargetKind, SceneLayerKey};
 use crate::hit_region::HitRegion;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
-    ContainedResizeDirection, PaneSceneId, PresentationPlan, SplitterJunctionId, SplitterSceneId,
+    ContainedResizeDirection, PaneSceneId, PresentationPlan, ResolvedSurfaceProgramOperation,
+    ResolvedSurfaceProgramStep, SceneBuildError, SplitterJunctionId, SplitterSceneId,
     TabBarSceneId, TabGroupDragRegionKind, TabSceneId,
 };
 use crate::tab_strip::{TabListMenuSessionId, TabStripControlId};
@@ -400,404 +402,33 @@ impl PresentationHitManifest {
     pub(crate) fn compile(
         output: SurfacePresentationOutputTicket,
         plan: &PresentationPlan,
-    ) -> Self {
+    ) -> Result<Self, SceneBuildError> {
         debug_assert_eq!(output.surface(), plan.surface());
         let surface = plan.surface();
         let mut regions = Vec::new();
 
-        for pane in plan.pane_records() {
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::PaneBody(pane.id()),
-                    ),
-                    HitRegion::new(pane.content_bounds()),
-                    PresentationPointerLanes::CLICK_AND_DRAG,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        pane.layer(),
-                        PresentationHitPrecedence::PaneBody,
-                    ),
-                    PresentationHitBehavior::FallbackBlocker,
-                ),
-            );
-        }
-
-        for tab in plan.tab_records() {
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::TabBody(*tab.id()),
-                    ),
-                    tab.drag_hit(),
-                    PresentationPointerLanes::CLICK_AND_DRAG,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        tab.layer(),
-                        PresentationHitPrecedence::TabBody,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-            if let Some(close) = tab.close_bounds() {
-                push_region_if_hittable(
-                    &mut regions,
-                    PresentationHitRegion::new(
-                        PresentationHitRegionId::new(
-                            surface,
-                            PresentationHitRegionKind::TabClose(*tab.id()),
-                        ),
-                        HitRegion::new(close),
-                        PresentationPointerLanes::CLICK,
-                        PresentationHitStackKey::new(
-                            PresentationPlane::Workspace,
-                            tab.layer(),
-                            PresentationHitPrecedence::TabClose,
-                        ),
-                        PresentationHitBehavior::ExclusiveReceiver,
-                    ),
-                );
-            }
-        }
-
-        for bar in plan.tab_bar_records() {
-            if let Some(group) = bar.group_drag() {
-                for region in group.regions() {
-                    push_region_if_hittable(
-                        &mut regions,
-                        PresentationHitRegion::new(
-                            PresentationHitRegionId::new(
-                                surface,
-                                PresentationHitRegionKind::TabGroupDrag {
-                                    bar: *bar.id(),
-                                    region: region.kind(),
-                                },
-                            ),
-                            region.hit(),
-                            PresentationPointerLanes::DRAG,
-                            PresentationHitStackKey::new(
-                                PresentationPlane::Workspace,
-                                bar.layer(),
-                                PresentationHitPrecedence::TabGroupDrag,
-                            ),
-                            PresentationHitBehavior::ExclusiveReceiver,
-                        ),
-                    );
+        plan.visit_surface_program(|step| {
+            match step {
+                ResolvedSurfaceProgramStep::Operation { operation, .. } => {
+                    push_operation_regions(&mut regions, surface, operation);
                 }
-            }
-            if bar.interaction() == crate::policy::TabBarInteraction::Enabled
-                && bar.maximum_scroll_offset() > 0.0
-            {
-                push_region_if_hittable(
-                    &mut regions,
-                    PresentationHitRegion::new(
-                        PresentationHitRegionId::new(
-                            surface,
-                            PresentationHitRegionKind::TabStripScroll(*bar.id()),
-                        ),
-                        HitRegion::new(bar.viewport()),
-                        PresentationPointerLanes::SCROLL,
-                        PresentationHitStackKey::new(
-                            PresentationPlane::Workspace,
-                            bar.layer(),
-                            PresentationHitPrecedence::TabStripScroll,
-                        ),
-                        PresentationHitBehavior::ExclusiveReceiver,
-                    ),
-                );
-            }
-        }
-
-        for control in plan.tab_strip_control_records() {
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::TabStripControl(control.id()),
-                    ),
-                    control.hit(),
-                    PresentationPointerLanes::CLICK,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        control.layer(),
-                        PresentationHitPrecedence::TabStripControl,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-        }
-
-        for backdrop in plan.tab_list_menu_backdrop_records() {
-            let session = backdrop.session();
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::TabListMenuBackdrop(session),
-                    ),
-                    HitRegion::new(backdrop.bounds()),
-                    PresentationPointerLanes::ALL,
-                    PresentationHitStackKey::popup(
-                        session,
-                        PopupHitRole::Backdrop,
-                        PresentationHitPrecedence::FallbackBlocker,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-        }
-
-        for menu in plan.tab_list_menu_records() {
-            let session = menu.session();
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::TabListMenuBlocker(session),
-                    ),
-                    HitRegion::new(menu.bounds()),
-                    PresentationPointerLanes::ALL,
-                    PresentationHitStackKey::popup(
-                        session,
-                        PopupHitRole::FrameBlocker,
-                        PresentationHitPrecedence::FallbackBlocker,
-                    ),
-                    PresentationHitBehavior::FallbackBlocker,
-                ),
-            );
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::TabListMenuScroll(session),
-                    ),
-                    HitRegion::new(menu.viewport()),
-                    PresentationPointerLanes::SCROLL,
-                    PresentationHitStackKey::popup(
-                        session,
-                        PopupHitRole::Scroll,
-                        PresentationHitPrecedence::PopupScroll,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-            for row in menu.rows() {
-                let Some(hit) = row.hit() else {
-                    continue;
-                };
-                push_region_if_hittable(
-                    &mut regions,
-                    PresentationHitRegion::new(
-                        PresentationHitRegionId::new(
-                            surface,
-                            PresentationHitRegionKind::TabListMenuRow {
-                                menu: session,
-                                tab: row.tab(),
-                            },
-                        ),
-                        hit,
-                        PresentationPointerLanes::CLICK,
-                        PresentationHitStackKey::popup(
-                            session,
-                            PopupHitRole::Row,
-                            PresentationHitPrecedence::PopupRow,
-                        ),
-                        PresentationHitBehavior::ExclusiveReceiver,
-                    ),
-                );
-            }
-        }
-
-        for splitter in plan
-            .splitter_records()
-            .iter()
-            .filter(|splitter| splitter.operable())
-        {
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::SplitterHandle(*splitter.id()),
-                    ),
-                    splitter.hit(),
-                    PresentationPointerLanes::DRAG,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        splitter.layer(),
-                        PresentationHitPrecedence::SplitterHandle,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-        }
-
-        for junction in plan
-            .splitter_junction_records()
-            .iter()
-            .filter(|junction| junction.operable())
-        {
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::SplitterJunction(junction.id()),
-                    ),
-                    junction.hit(),
-                    PresentationPointerLanes::DRAG,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        junction.layer(),
-                        PresentationHitPrecedence::SplitterJunction,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-        }
-
-        for contained in plan.contained_records() {
-            let floating = contained.floating();
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::ContainedFrameBlocker(floating),
-                    ),
-                    HitRegion::new(contained.outer_bounds()),
-                    PresentationPointerLanes::ALL,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        contained.layer(),
-                        PresentationHitPrecedence::FallbackBlocker,
-                    ),
-                    PresentationHitBehavior::FallbackBlocker,
-                ),
-            );
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::ContainedTitle(floating),
-                    ),
-                    contained.title_drag_hit(),
-                    PresentationPointerLanes::DRAG,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        contained.layer(),
-                        PresentationHitPrecedence::ContainedTitle,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-            if let Some(close) = contained.close_bounds() {
-                push_region_if_hittable(
-                    &mut regions,
-                    PresentationHitRegion::new(
-                        PresentationHitRegionId::new(
-                            surface,
-                            PresentationHitRegionKind::ContainedClose(floating),
-                        ),
-                        HitRegion::new(close),
-                        PresentationPointerLanes::CLICK,
-                        PresentationHitStackKey::new(
-                            PresentationPlane::Workspace,
-                            contained.layer(),
-                            PresentationHitPrecedence::ContainedClose,
-                        ),
-                        PresentationHitBehavior::ExclusiveReceiver,
-                    ),
-                );
-            }
-            if contained.transform_operable() {
-                for resize in contained.resize() {
-                    push_region_if_hittable(
-                        &mut regions,
-                        PresentationHitRegion::new(
-                            PresentationHitRegionId::new(
-                                surface,
-                                PresentationHitRegionKind::ContainedResize {
-                                    floating,
-                                    direction: resize.direction(),
-                                },
-                            ),
-                            resize.hit(),
-                            PresentationPointerLanes::DRAG,
-                            PresentationHitStackKey::new(
-                                PresentationPlane::Workspace,
-                                contained.layer(),
-                                PresentationHitPrecedence::ContainedResize,
-                            ),
-                            PresentationHitBehavior::ExclusiveReceiver,
-                        ),
-                    );
+                ResolvedSurfaceProgramStep::ProjectionPlane => {
+                    push_projection_regions(&mut regions, surface, plan);
                 }
+                ResolvedSurfaceProgramStep::DropGuide(cluster) => {
+                    push_guide_regions(&mut regions, surface, cluster);
+                }
+                ResolvedSurfaceProgramStep::RootBegin(_)
+                | ResolvedSurfaceProgramStep::RootEnd(_)
+                | ResolvedSurfaceProgramStep::FeedbackPlane => {}
             }
-        }
-
-        for cluster in plan.drop_guide_clusters() {
-            push_region_if_hittable(
-                &mut regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::DropGuideActivation(cluster.id()),
-                    ),
-                    cluster.activation(),
-                    PresentationPointerLanes::HOVER_DROP,
-                    PresentationHitStackKey::new(
-                        PresentationPlane::Workspace,
-                        cluster.layer(),
-                        PresentationHitPrecedence::PassiveGuideActivation,
-                    ),
-                    PresentationHitBehavior::PassiveAffordance,
-                ),
-            );
-            let precedence = match cluster.id().scope {
-                DropGuideScope::Inner(_) => PresentationHitPrecedence::InnerGuideTarget,
-                DropGuideScope::Outer => PresentationHitPrecedence::OuterGuideTarget,
-            };
-            for (_, target) in cluster.targets() {
-                push_region_if_hittable(
-                    &mut regions,
-                    PresentationHitRegion::new(
-                        PresentationHitRegionId::new(
-                            surface,
-                            PresentationHitRegionKind::DropTarget(target.id()),
-                        ),
-                        target.target().region(),
-                        PresentationPointerLanes::HOVER_DROP,
-                        PresentationHitStackKey::new(
-                            PresentationPlane::Workspace,
-                            cluster.layer(),
-                            precedence,
-                        ),
-                        PresentationHitBehavior::ExclusiveReceiver,
-                    ),
-                );
-            }
-        }
-
-        for target in plan.drop_targets() {
-            push_drop_target_region(&mut regions, surface, target);
-        }
-        if let Some(background) = plan.surface_background() {
-            push_drop_target_region(&mut regions, surface, background);
-        }
+            Ok::<(), Infallible>(())
+        })
+        .map_err(|_| SceneBuildError::InvalidSurfaceProgram { surface })?;
 
         regions.sort_unstable_by_key(|region| region.id());
         debug_assert!(regions.windows(2).all(|pair| pair[0].id() != pair[1].id()));
-        Self { output, regions }
+        Ok(Self { output, regions })
     }
 
     /// Returns the exact semantic output to which every region belongs.
@@ -854,6 +485,401 @@ impl PresentationHitManifest {
         suppression: PresentationHitSuppression,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
         resolve_exclusive_regions(&self.regions, lane, point, suppression)
+    }
+}
+
+fn push_operation_regions(
+    regions: &mut Vec<PresentationHitRegion>,
+    surface: SurfaceId,
+    operation: ResolvedSurfaceProgramOperation<'_>,
+) {
+    match operation {
+        ResolvedSurfaceProgramOperation::Pane(pane) => {
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::PaneBody(pane.id()),
+                    ),
+                    HitRegion::new(pane.content_bounds()),
+                    PresentationPointerLanes::CLICK_AND_DRAG,
+                    PresentationHitStackKey::new(
+                        PresentationPlane::Workspace,
+                        pane.layer(),
+                        PresentationHitPrecedence::PaneBody,
+                    ),
+                    PresentationHitBehavior::FallbackBlocker,
+                ),
+            );
+        }
+        ResolvedSurfaceProgramOperation::Tab(tab) => {
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::TabBody(*tab.id()),
+                    ),
+                    tab.drag_hit(),
+                    PresentationPointerLanes::CLICK_AND_DRAG,
+                    PresentationHitStackKey::new(
+                        PresentationPlane::Workspace,
+                        tab.layer(),
+                        PresentationHitPrecedence::TabBody,
+                    ),
+                    PresentationHitBehavior::ExclusiveReceiver,
+                ),
+            );
+            if let Some(close) = tab.close_bounds() {
+                push_region_if_hittable(
+                    regions,
+                    PresentationHitRegion::new(
+                        PresentationHitRegionId::new(
+                            surface,
+                            PresentationHitRegionKind::TabClose(*tab.id()),
+                        ),
+                        HitRegion::new(close),
+                        PresentationPointerLanes::CLICK,
+                        PresentationHitStackKey::new(
+                            PresentationPlane::Workspace,
+                            tab.layer(),
+                            PresentationHitPrecedence::TabClose,
+                        ),
+                        PresentationHitBehavior::ExclusiveReceiver,
+                    ),
+                );
+            }
+        }
+        ResolvedSurfaceProgramOperation::TabBar(bar) => {
+            if let Some(group) = bar.group_drag() {
+                for region in group.regions() {
+                    push_region_if_hittable(
+                        regions,
+                        PresentationHitRegion::new(
+                            PresentationHitRegionId::new(
+                                surface,
+                                PresentationHitRegionKind::TabGroupDrag {
+                                    bar: *bar.id(),
+                                    region: region.kind(),
+                                },
+                            ),
+                            region.hit(),
+                            PresentationPointerLanes::DRAG,
+                            PresentationHitStackKey::new(
+                                PresentationPlane::Workspace,
+                                bar.layer(),
+                                PresentationHitPrecedence::TabGroupDrag,
+                            ),
+                            PresentationHitBehavior::ExclusiveReceiver,
+                        ),
+                    );
+                }
+            }
+            if bar.interaction() == crate::policy::TabBarInteraction::Enabled
+                && bar.maximum_scroll_offset() > 0.0
+            {
+                push_region_if_hittable(
+                    regions,
+                    PresentationHitRegion::new(
+                        PresentationHitRegionId::new(
+                            surface,
+                            PresentationHitRegionKind::TabStripScroll(*bar.id()),
+                        ),
+                        HitRegion::new(bar.viewport()),
+                        PresentationPointerLanes::SCROLL,
+                        PresentationHitStackKey::new(
+                            PresentationPlane::Workspace,
+                            bar.layer(),
+                            PresentationHitPrecedence::TabStripScroll,
+                        ),
+                        PresentationHitBehavior::ExclusiveReceiver,
+                    ),
+                );
+            }
+        }
+        ResolvedSurfaceProgramOperation::TabStripControl(control) => {
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::TabStripControl(control.id()),
+                    ),
+                    control.hit(),
+                    PresentationPointerLanes::CLICK,
+                    PresentationHitStackKey::new(
+                        PresentationPlane::Workspace,
+                        control.layer(),
+                        PresentationHitPrecedence::TabStripControl,
+                    ),
+                    PresentationHitBehavior::ExclusiveReceiver,
+                ),
+            );
+        }
+        ResolvedSurfaceProgramOperation::Splitter(splitter) if splitter.operable() => {
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::SplitterHandle(*splitter.id()),
+                    ),
+                    splitter.hit(),
+                    PresentationPointerLanes::DRAG,
+                    PresentationHitStackKey::new(
+                        PresentationPlane::Workspace,
+                        splitter.layer(),
+                        PresentationHitPrecedence::SplitterHandle,
+                    ),
+                    PresentationHitBehavior::ExclusiveReceiver,
+                ),
+            );
+        }
+        ResolvedSurfaceProgramOperation::SplitterJunction(junction) if junction.operable() => {
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::SplitterJunction(junction.id()),
+                    ),
+                    junction.hit(),
+                    PresentationPointerLanes::DRAG,
+                    PresentationHitStackKey::new(
+                        PresentationPlane::Workspace,
+                        junction.layer(),
+                        PresentationHitPrecedence::SplitterJunction,
+                    ),
+                    PresentationHitBehavior::ExclusiveReceiver,
+                ),
+            );
+        }
+        ResolvedSurfaceProgramOperation::ContainedControls(contained) => {
+            let floating = contained.floating();
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::ContainedFrameBlocker(floating),
+                    ),
+                    HitRegion::new(contained.outer_bounds()),
+                    PresentationPointerLanes::ALL,
+                    PresentationHitStackKey::new(
+                        PresentationPlane::Workspace,
+                        contained.layer(),
+                        PresentationHitPrecedence::FallbackBlocker,
+                    ),
+                    PresentationHitBehavior::FallbackBlocker,
+                ),
+            );
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::ContainedTitle(floating),
+                    ),
+                    contained.title_drag_hit(),
+                    PresentationPointerLanes::DRAG,
+                    PresentationHitStackKey::new(
+                        PresentationPlane::Workspace,
+                        contained.layer(),
+                        PresentationHitPrecedence::ContainedTitle,
+                    ),
+                    PresentationHitBehavior::ExclusiveReceiver,
+                ),
+            );
+            if let Some(close) = contained.close_bounds() {
+                push_region_if_hittable(
+                    regions,
+                    PresentationHitRegion::new(
+                        PresentationHitRegionId::new(
+                            surface,
+                            PresentationHitRegionKind::ContainedClose(floating),
+                        ),
+                        HitRegion::new(close),
+                        PresentationPointerLanes::CLICK,
+                        PresentationHitStackKey::new(
+                            PresentationPlane::Workspace,
+                            contained.layer(),
+                            PresentationHitPrecedence::ContainedClose,
+                        ),
+                        PresentationHitBehavior::ExclusiveReceiver,
+                    ),
+                );
+            }
+            if contained.transform_operable() {
+                for resize in contained.resize() {
+                    push_region_if_hittable(
+                        regions,
+                        PresentationHitRegion::new(
+                            PresentationHitRegionId::new(
+                                surface,
+                                PresentationHitRegionKind::ContainedResize {
+                                    floating,
+                                    direction: resize.direction(),
+                                },
+                            ),
+                            resize.hit(),
+                            PresentationPointerLanes::DRAG,
+                            PresentationHitStackKey::new(
+                                PresentationPlane::Workspace,
+                                contained.layer(),
+                                PresentationHitPrecedence::ContainedResize,
+                            ),
+                            PresentationHitBehavior::ExclusiveReceiver,
+                        ),
+                    );
+                }
+            }
+        }
+        ResolvedSurfaceProgramOperation::Splitter(_)
+        | ResolvedSurfaceProgramOperation::SplitterJunction(_)
+        | ResolvedSurfaceProgramOperation::PresentationMenuAnchor => {}
+    }
+}
+
+fn push_projection_regions(
+    regions: &mut Vec<PresentationHitRegion>,
+    surface: SurfaceId,
+    plan: &PresentationPlan,
+) {
+    for backdrop in plan.tab_list_menu_backdrop_records() {
+        let session = backdrop.session();
+        push_region_if_hittable(
+            regions,
+            PresentationHitRegion::new(
+                PresentationHitRegionId::new(
+                    surface,
+                    PresentationHitRegionKind::TabListMenuBackdrop(session),
+                ),
+                HitRegion::new(backdrop.bounds()),
+                PresentationPointerLanes::ALL,
+                PresentationHitStackKey::popup(
+                    session,
+                    PopupHitRole::Backdrop,
+                    PresentationHitPrecedence::FallbackBlocker,
+                ),
+                PresentationHitBehavior::ExclusiveReceiver,
+            ),
+        );
+    }
+    for menu in plan.tab_list_menu_records() {
+        let session = menu.session();
+        push_region_if_hittable(
+            regions,
+            PresentationHitRegion::new(
+                PresentationHitRegionId::new(
+                    surface,
+                    PresentationHitRegionKind::TabListMenuBlocker(session),
+                ),
+                HitRegion::new(menu.bounds()),
+                PresentationPointerLanes::ALL,
+                PresentationHitStackKey::popup(
+                    session,
+                    PopupHitRole::FrameBlocker,
+                    PresentationHitPrecedence::FallbackBlocker,
+                ),
+                PresentationHitBehavior::FallbackBlocker,
+            ),
+        );
+        push_region_if_hittable(
+            regions,
+            PresentationHitRegion::new(
+                PresentationHitRegionId::new(
+                    surface,
+                    PresentationHitRegionKind::TabListMenuScroll(session),
+                ),
+                HitRegion::new(menu.viewport()),
+                PresentationPointerLanes::SCROLL,
+                PresentationHitStackKey::popup(
+                    session,
+                    PopupHitRole::Scroll,
+                    PresentationHitPrecedence::PopupScroll,
+                ),
+                PresentationHitBehavior::ExclusiveReceiver,
+            ),
+        );
+        for row in menu.rows() {
+            let Some(hit) = row.hit() else {
+                continue;
+            };
+            push_region_if_hittable(
+                regions,
+                PresentationHitRegion::new(
+                    PresentationHitRegionId::new(
+                        surface,
+                        PresentationHitRegionKind::TabListMenuRow {
+                            menu: session,
+                            tab: row.tab(),
+                        },
+                    ),
+                    hit,
+                    PresentationPointerLanes::CLICK,
+                    PresentationHitStackKey::popup(
+                        session,
+                        PopupHitRole::Row,
+                        PresentationHitPrecedence::PopupRow,
+                    ),
+                    PresentationHitBehavior::ExclusiveReceiver,
+                ),
+            );
+        }
+    }
+    for target in plan.drop_targets() {
+        push_drop_target_region(regions, surface, target);
+    }
+    if let Some(background) = plan.surface_background() {
+        push_drop_target_region(regions, surface, background);
+    }
+}
+
+fn push_guide_regions(
+    regions: &mut Vec<PresentationHitRegion>,
+    surface: SurfaceId,
+    cluster: &DropGuideClusterRecord,
+) {
+    push_region_if_hittable(
+        regions,
+        PresentationHitRegion::new(
+            PresentationHitRegionId::new(
+                surface,
+                PresentationHitRegionKind::DropGuideActivation(cluster.id()),
+            ),
+            cluster.activation(),
+            PresentationPointerLanes::HOVER_DROP,
+            PresentationHitStackKey::new(
+                PresentationPlane::Workspace,
+                cluster.layer(),
+                PresentationHitPrecedence::PassiveGuideActivation,
+            ),
+            PresentationHitBehavior::PassiveAffordance,
+        ),
+    );
+    let precedence = match cluster.id().scope {
+        DropGuideScope::Inner(_) => PresentationHitPrecedence::InnerGuideTarget,
+        DropGuideScope::Outer => PresentationHitPrecedence::OuterGuideTarget,
+    };
+    for (_, target) in cluster.targets() {
+        push_region_if_hittable(
+            regions,
+            PresentationHitRegion::new(
+                PresentationHitRegionId::new(
+                    surface,
+                    PresentationHitRegionKind::DropTarget(target.id()),
+                ),
+                target.target().region(),
+                PresentationPointerLanes::HOVER_DROP,
+                PresentationHitStackKey::new(
+                    PresentationPlane::Workspace,
+                    cluster.layer(),
+                    precedence,
+                ),
+                PresentationHitBehavior::ExclusiveReceiver,
+            ),
+        );
     }
 }
 

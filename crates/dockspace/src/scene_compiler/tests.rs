@@ -8,11 +8,15 @@ use crate::presentation_hit::{
     PopupHitRole, PresentationHitManifest, PresentationHitRegionKind, PresentationPlane,
 };
 use crate::presentation_observation::{PresentationOutputSerial, SurfacePresentationOutputTicket};
-use crate::scene::{PresentationPlanValidator, SurfaceSceneStamp, TabStripMemberVisibility};
+use crate::scene::{
+    PresentationPlanValidator, SurfaceProgramRootOperation, SurfaceSceneStamp,
+    TabStripMemberVisibility,
+};
 use crate::scene_manifest::{
     Measurement, SurfaceSceneRevision, TabIntrinsic, TabListMenuMetrics, TabStripControlMetric,
     TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
 };
+use crate::semantic_manifest::PresentationSemanticManifest;
 
 fn version() -> WorkspaceVersion {
     WorkspaceVersion::new(WorkspaceEpoch::new(3), WorkspaceRevision::new(5))
@@ -451,6 +455,60 @@ fn surface_program_keeps_root_chrome_pane_contained_and_guide_order_in_core() {
 }
 
 #[test]
+fn hit_and_semantic_manifests_follow_surface_program_membership() {
+    let surface = SurfaceId::new(861);
+    let root = RootId::new(862);
+    let item = ItemId::new(863);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([item]));
+    builder.set_root(root, RootRecord::new(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder.build().expect("fixture should validate");
+    let mut plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 480.0, 320.0).expect("bounds should be valid"),
+    );
+    let tab = *plan
+        .tab_records()
+        .iter()
+        .find(|record| record.id().item == item)
+        .expect("fixture should compile the tab")
+        .id();
+    assert!(
+        plan.remove_surface_program_operation_for_test(SurfaceProgramRootOperation::Tab(tab)),
+        "the test must remove the exact program operation"
+    );
+    assert!(
+        plan.tab_records().iter().any(|record| *record.id() == tab),
+        "the flat record intentionally remains to catch independent rescans"
+    );
+
+    let ticket = plan
+        .measurement_ticket()
+        .expect("compiled plan should retain its measurement ticket");
+    let output = SurfacePresentationOutputTicket::mint(
+        ticket.authority_domain(),
+        PresentationOutputSerial::new_for_test(1),
+        SurfaceSceneStamp::new(ticket, SurfaceSceneRevision::new(1)),
+    );
+    let hit = PresentationHitManifest::compile(output, &plan)
+        .expect("the test plan should resolve through its surface program");
+    let semantic = PresentationSemanticManifest::compile(output, &plan)
+        .expect("the test plan should resolve through its surface program");
+    assert!(
+        hit.regions()
+            .iter()
+            .all(|region| region.id().kind() != PresentationHitRegionKind::TabBody(tab)),
+        "hit authority must not resurrect an operation omitted by the program"
+    );
+    assert!(
+        !semantic.contains(PresentationHitRegionKind::TabBody(tab)),
+        "semantic authority must not resurrect an operation omitted by the program"
+    );
+}
+
+#[test]
 fn main_presentation_menu_anchor_prefers_the_visible_central_tab_bar() {
     let surface = SurfaceId::new(801);
     let root = RootId::new(802);
@@ -703,6 +761,7 @@ fn hit_manifest(
         scene,
     );
     PresentationHitManifest::compile(output, plan)
+        .expect("compiled plans should resolve through their surface program")
 }
 
 fn surface_revisions(

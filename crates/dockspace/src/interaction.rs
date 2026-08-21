@@ -3381,7 +3381,8 @@ mod tests {
             PresentationOutputSerial::new_for_test(1),
             stamp,
         );
-        let manifest = PresentationHitManifest::compile(output, &plan);
+        let manifest = PresentationHitManifest::compile(output, &plan)
+            .expect("test plan should resolve through its surface program");
         let region = manifest
             .regions()
             .iter()
