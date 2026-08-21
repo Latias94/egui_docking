@@ -23,6 +23,8 @@ mod guide_paint;
 pub mod native_support;
 mod pass_settlement;
 mod product_render;
+#[cfg(test)]
+mod renderer_pass_bridge;
 #[path = "product_response.rs"]
 mod response;
 
