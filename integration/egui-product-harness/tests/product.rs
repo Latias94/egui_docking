@@ -3199,7 +3199,7 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
 }
 
 #[test]
-fn contained_title_drag_settles_root_gap_and_compact_ghost_in_the_same_run() {
+fn contained_title_drag_paints_a_full_window_preview_in_the_same_run() {
     let context = Context::default();
     context.enable_accesskit();
     context.options_mut(|options| {
@@ -3255,8 +3255,15 @@ fn contained_title_drag_settles_root_gap_and_compact_ghost_in_the_same_run() {
     );
     assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 1);
     let ghost = rect_with_fill(&dragging.output, ghost_fill).expect("the root ghost is painted");
-    assert!(ghost.width() <= 280.0);
-    assert!(ghost.height() <= 64.0);
+    assert!(ghost.width() >= source_rect.width() * 0.9);
+    assert!(ghost.height() >= source_rect.height() * 0.9);
+    assert!(
+        ghost
+            .min
+            .distance(source_rect.translate(vec2(24.0, 8.0)).min)
+            <= 0.01,
+        "the full-window preview preserves the title-bar grab offset"
+    );
     let _ = accesskit_node(&dragging.output, Role::TitleBar, "Second");
     let _ = accesskit_node(&dragging.output, Role::Button, "Close floating Second");
     assert_eq!(

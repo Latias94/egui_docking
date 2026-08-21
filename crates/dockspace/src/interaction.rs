@@ -690,6 +690,8 @@ pub struct ActiveDragView<'state> {
     owner: GestureOwner,
     button: PointerButton,
     payload: &'state MovePayload,
+    current_pointer: Option<LogicalPoint>,
+    origin: &'state FrozenDragOrigin,
     contained_offer: Option<&'state ContainedPresentationOffer>,
     surface_background_offer: Option<&'state SurfaceBackgroundRootOffer>,
     native_offer: Option<&'state NativePresentationOffer>,
@@ -807,6 +809,20 @@ impl<'state> ActiveDragView<'state> {
     #[must_use]
     pub const fn payload(self) -> &'state MovePayload {
         self.payload
+    }
+
+    pub(crate) fn contained_projection_rect(self) -> Option<LogicalRect> {
+        let FrozenDragOrigin::Contained(origin) = self.origin else {
+            return None;
+        };
+        let current = self.current_pointer?;
+        LogicalRect::new(
+            origin.source_rect.x() + current.x() - origin.initial_pointer.x(),
+            origin.source_rect.y() + current.y() - origin.initial_pointer.y(),
+            origin.source_rect.width(),
+            origin.source_rect.height(),
+        )
+        .ok()
     }
 
     /// Returns the first contained-presentation offer frozen for this session.
@@ -2427,6 +2443,8 @@ impl InteractionState {
                 owner: drag.owner,
                 button: drag.button,
                 payload: &drag.payload,
+                current_pointer: drag.initial_pointer,
+                origin: &drag.origin,
                 contained_offer: None,
                 surface_background_offer: None,
                 native_offer: None,
@@ -2437,6 +2455,8 @@ impl InteractionState {
                 owner: drag.owner,
                 button: drag.button,
                 payload: &drag.payload,
+                current_pointer: drag.current_pointer,
+                origin: &drag.origin,
                 contained_offer: drag.contained_offer.as_ref(),
                 surface_background_offer: drag.surface_background_offer.as_ref(),
                 native_offer: drag.native_offer.as_ref(),

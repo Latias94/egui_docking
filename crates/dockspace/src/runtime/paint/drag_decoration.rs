@@ -36,6 +36,7 @@ pub struct DockspaceDragDecoration<'frame> {
     kind: DockspaceDragSourceKind,
     source_visual: DockspaceVisualId,
     source_bounds: LogicalRect,
+    projected_root_bounds: Option<LogicalRect>,
     item: Option<ItemId>,
     ghost_item: Option<ItemId>,
     source: DragDecorationSource<'frame>,
@@ -90,6 +91,12 @@ impl DockspaceDragDecoration<'_> {
     #[must_use]
     pub const fn source_bounds(self) -> LogicalRect {
         self.source_bounds
+    }
+
+    /// Returns the full-window projection for a contained root drag.
+    #[must_use]
+    pub const fn projected_root_bounds(self) -> Option<LogicalRect> {
+        self.projected_root_bounds
     }
 
     /// Returns the dragged item when the source is one tab.
@@ -152,6 +159,7 @@ pub(super) fn resolve<'frame>(
                 kind: DockspaceDragSourceKind::Item,
                 source_visual: DockspaceVisualId(VisualIdentity::Tab(*tab.id())),
                 source_bounds: tab.full_bounds(),
+                projected_root_bounds: None,
                 item: Some(source.item()),
                 ghost_item: Some(source.item()),
                 source: DragDecorationSource::Item(*tab.id()),
@@ -167,12 +175,13 @@ pub(super) fn resolve<'frame>(
                 kind: DockspaceDragSourceKind::TabGroup,
                 source_visual: DockspaceVisualId(VisualIdentity::Pane(pane.id())),
                 source_bounds: pane.bounds(),
+                projected_root_bounds: None,
                 item: None,
                 ghost_item: pane.selected(),
                 source: DragDecorationSource::TabGroup(pane.id()),
             })
         }
-        MovePayload::Subtree(source) => resolve_subtree(plan, source_surface, source),
+        MovePayload::Subtree(source) => resolve_subtree(plan, source_surface, source, drag),
     }
 }
 
@@ -191,6 +200,7 @@ fn resolve_subtree<'frame>(
     plan: &PresentationPlan,
     source_surface: SurfaceId,
     source: &'frame NodeSource,
+    drag: ActiveDragView<'frame>,
 ) -> Option<DockspaceDragDecoration<'frame>> {
     let complete_root = source.node() == source.fingerprint().0.root_node;
     let source_identity = DragDecorationSource::Subtree {
@@ -211,6 +221,7 @@ fn resolve_subtree<'frame>(
             kind: DockspaceDragSourceKind::Root,
             source_visual: DockspaceVisualId(VisualIdentity::Contained(contained.floating())),
             source_bounds: contained.outer_bounds(),
+            projected_root_bounds: drag.contained_projection_rect(),
             item: None,
             ghost_item,
             source: source_identity,
@@ -229,6 +240,7 @@ fn resolve_subtree<'frame>(
             node: source.node(),
         }),
         source_bounds: subtree_bounds(plan, source)?,
+        projected_root_bounds: None,
         item: None,
         ghost_item,
         source: source_identity,

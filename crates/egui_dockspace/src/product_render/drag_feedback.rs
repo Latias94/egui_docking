@@ -21,21 +21,27 @@ pub(super) fn paint(context: &mut RenderContext<'_, '_, '_>) {
         .ghost_item()
         .and_then(|item| context.resources.item(item))
         .cloned();
-    let ghost_size = if decoration.kind() == DockspaceDragSourceKind::Item {
-        source.size()
-    } else {
-        let width = resource.as_ref().map_or(160.0, |resource| {
-            resource.galley.size().x + context.style.tab_horizontal_padding * 2.0
-        });
-        egui::vec2(
-            width.clamp(96.0, 280.0),
-            context
-                .style
-                .tab_bar_height
-                .max(context.ui.spacing().interact_size.y),
-        )
+    let projected_root = decoration.projected_root_bounds().and_then(egui_rect);
+    let ghost_size = match decoration.kind() {
+        DockspaceDragSourceKind::Item => source.size(),
+        DockspaceDragSourceKind::Root => {
+            projected_root.map_or_else(|| source.size(), |rect| rect.size())
+        }
+        DockspaceDragSourceKind::TabGroup | DockspaceDragSourceKind::Subtree => {
+            let width = resource.as_ref().map_or(160.0, |resource| {
+                resource.galley.size().x + context.style.tab_horizontal_padding * 2.0
+            });
+            egui::vec2(
+                width.clamp(96.0, 280.0),
+                context
+                    .style
+                    .tab_bar_height
+                    .max(context.ui.spacing().interact_size.y),
+            )
+        }
     };
-    let ghost = Rect::from_min_size(pointer + context.style.ghost_offset, ghost_size);
+    let ghost = projected_root
+        .unwrap_or_else(|| Rect::from_min_size(pointer + context.style.ghost_offset, ghost_size));
     context.ui.painter().rect(
         ghost,
         3.0,
@@ -43,6 +49,14 @@ pub(super) fn paint(context: &mut RenderContext<'_, '_, '_>) {
         Stroke::new(1.0, context.visuals.ghost_border_color),
         StrokeKind::Inside,
     );
+    if decoration.kind() == DockspaceDragSourceKind::Root {
+        let title_height = context.style.tab_bar_height.min(ghost.height());
+        let title = Rect::from_min_size(ghost.min, egui::vec2(ghost.width(), title_height));
+        context
+            .ui
+            .painter()
+            .rect_filled(title, 3.0, context.visuals.floating_title_fill);
+    }
     if let Some(resource) = resource {
         let text = ghost.shrink2(egui::vec2(context.style.tab_horizontal_padding, 0.0));
         context.ui.painter_at(text).galley_with_override_text_color(

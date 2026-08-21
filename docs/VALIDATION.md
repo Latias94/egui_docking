@@ -48,7 +48,7 @@ gap is written as such instead of being given a synthetic test name.
 | U1-04 | L03 presentation: outer guide targeting | characterization-only | `integration/egui-product-harness/tests/product.rs::default_features_paint_outer_guides_and_dock_each_edge` | Record current guide evidence while basin targeting is built |
 | U1-05 | L03 presentation: center guide hit | characterization-only | `integration/egui-product-harness/tests/product.rs::default_features_center_guide_merges_tabs` | Do not promote guide-center aiming to the product contract |
 | U1-06 | L04 action: durable contained move/resize/redock | normative | `integration/egui-product-harness/tests/product.rs::contained_move_resize_select_focus_and_dock_back_preserve_exact_ownership` | Durable placement changes only at terminal commit |
-| U1-07 | L04 presentation: complete live contained projection | known-invalid | `integration/egui-product-harness/tests/product.rs::contained_title_drag_settles_root_gap_and_compact_ghost_in_the_same_run` | Current compact ghost is the intentional pre-U4 gap |
+| U1-07 | L04 presentation: full-window contained drag preview shell | characterization-only | `integration/egui-product-harness/tests/product.rs::contained_title_drag_paints_a_full_window_preview_in_the_same_run` | The window-sized shell is present; live pane-content projection remains a later U4 gate |
 | U1-08 | L05 action: stale target has no partial mutation | normative | `crates/dockspace_host_conformance/src/tests.rs::private_multi_surface_fixture_rejects_a_stale_target_without_partial_commit` | Keep fail-closed stale rejection |
 | U1-09 | L05 presentation: target loss preserves source drag | normative | `crates/dockspace_host_conformance/src/tests.rs::private_multi_surface_fixture_target_destruction_preserves_the_source_drag` | Clear only the lost target route |
 | U1-10 | L06 retained frame: discarded preview cannot release | normative | `integration/egui-product-harness/tests/product.rs::default_features_discarded_preview_cannot_release_a_drag` | Release needs current presented evidence |
@@ -90,8 +90,9 @@ internal scene/graph identity for a missing fact.
 - Ordinary product readiness must use a causal predicate with a bounded
   diagnostic timeout. Fixed pass counts remain valid only when discard/terminal
   pass count is itself the contract.
-- The current contained compact ghost, guide-center targeting, and touch
-  capability gap are retained as explicit evidence. They are not made green by
-  changing production behavior in U1.
+- The remaining contained-content projection gap, guide-center targeting, and
+  touch capability gap are retained as explicit evidence. The window-sized
+  preview shell is now covered separately and is not treated as full content
+  projection until U4.
 - The lightweight native example is a discoverability checkpoint. The complete
   game-editor showcase and layout/preset shell remain assigned to U10.
