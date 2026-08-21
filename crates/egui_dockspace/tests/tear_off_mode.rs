@@ -1,7 +1,7 @@
 use egui::{Context, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{
-    Dockspace, DockspaceCapability, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, DockspaceUnavailableReason, ItemId, PaneView, RootId, SurfaceId,
+    Dockspace, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+    PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -36,38 +36,37 @@ fn layout() -> DockspaceLayout {
     .expect("fixture layout is valid")
 }
 
-fn capability(dockspace: &mut Dockspace, context: &Context) -> DockspaceCapability {
+fn local_actions_become_current(dockspace: &mut Dockspace, context: &Context) -> bool {
     let mut pane = TestPane;
-    let mut observed = None;
-    let _ = run_ui_without_renderer(
-        context,
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 400.0))),
-            ..RawInput::default()
-        },
-        |ui| {
-            observed = Some(
-                dockspace
+    let mut observed = false;
+    for _ in 0..3 {
+        let _ = run_ui_without_renderer(
+            context,
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 400.0))),
+                ..RawInput::default()
+            },
+            |ui| {
+                observed |= dockspace
                     .show_single_surface(SURFACE, ui, &mut pane)
                     .expect("fixture frame advances")
-                    .contained_capability(),
-            );
-        },
-    );
-    observed.expect("egui executes one or more passes")
+                    .interaction_capabilities()
+                    .local_actions_current();
+            },
+        );
+    }
+    observed
 }
 
 #[test]
-fn callback_only_contained_tear_off_requires_presentation_settlement() {
+fn callback_only_product_frames_reach_current_local_action_authority() {
     let context = Context::default();
     let mut dockspace = Dockspace::builder("contained-tear-off", layout())
         .build()
         .expect("fixture facade builds");
 
-    assert_eq!(
-        capability(&mut dockspace, &context),
-        DockspaceCapability::Unavailable(
-            DockspaceUnavailableReason::PresentationSettlementRequired
-        )
+    assert!(
+        local_actions_become_current(&mut dockspace, &context),
+        "ordinary callback frames must reach current local-action authority without an external settlement token"
     );
 }

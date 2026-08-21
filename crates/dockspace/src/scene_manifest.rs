@@ -353,9 +353,6 @@ pub struct TabStripMetrics {
     trailing_reserved: f64,
     controls: Option<TabStripControlMetrics>,
     tab_list_menu: Option<TabListMenuMetrics>,
-    // Transitional input retained until egui consumes core-owned strip state.
-    // The scene compiler deliberately ignores this value.
-    scroll_offset: Option<f64>,
 }
 
 impl TabStripMetrics {
@@ -375,7 +372,6 @@ impl TabStripMetrics {
             trailing_reserved,
             controls: None,
             tab_list_menu: None,
-            scroll_offset: None,
         })
     }
 
@@ -393,21 +389,6 @@ impl TabStripMetrics {
         self
     }
 
-    /// Attaches a legacy adapter scroll observation.
-    ///
-    /// The core does not consume this value. It remains temporarily accepted so
-    /// adapters can migrate to core-owned tab-strip state without reintroducing
-    /// two scroll authorities.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MeasurementValueError`] for a non-finite or negative offset.
-    pub fn with_scroll_offset(mut self, scroll_offset: f64) -> Result<Self, MeasurementValueError> {
-        validate_non_negative("tab strip scroll offset", scroll_offset)?;
-        self.scroll_offset = Some(scroll_offset);
-        Ok(self)
-    }
-
     /// Returns chrome reserved before the first tab.
     #[must_use]
     pub const fn leading_reserved(self) -> f64 {
@@ -418,17 +399,6 @@ impl TabStripMetrics {
     #[must_use]
     pub const fn trailing_reserved(self) -> f64 {
         self.trailing_reserved
-    }
-
-    /// Returns the adapter's explicit transient scroll offset, when supplied.
-    #[must_use]
-    pub const fn scroll_offset(self) -> Option<f64> {
-        self.scroll_offset
-    }
-
-    pub(crate) const fn without_legacy_scroll_offset(mut self) -> Self {
-        self.scroll_offset = None;
-        self
     }
 
     /// Returns renderer measurements for a tab-list menu, when available.

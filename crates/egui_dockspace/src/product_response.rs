@@ -357,8 +357,6 @@ pub enum DockspaceSurfaceStatus {
 pub enum DockspaceUnavailableReason {
     /// The callback-only path cannot prove final renderer presentation.
     PresentationSettlementRequired,
-    /// Current policy disables contained floating.
-    ContainedPolicyDisabled,
     /// No ready scene can authorize placement.
     SurfaceBoundsUnavailable,
     /// The surface is absent.
@@ -430,7 +428,6 @@ struct SurfacePaintResponse {
     missing_panes: Vec<ItemId>,
     interaction_capabilities: DockspaceInteractionCapabilities,
     surface_status: DockspaceSurfaceStatus,
-    contained_capability: DockspaceCapability,
     pane_focus_capability: DockspaceCapability,
 }
 
@@ -486,9 +483,6 @@ impl DockspaceResponse {
                     local_actions_current,
                 ),
                 surface_status,
-                contained_capability: DockspaceCapability::Unavailable(
-                    DockspaceUnavailableReason::PresentationSettlementRequired,
-                ),
                 pane_focus_capability,
             },
             surface_commit_status: status,
@@ -535,12 +529,6 @@ impl DockspaceResponse {
     #[must_use]
     pub const fn surface_status(&self) -> DockspaceSurfaceStatus {
         self.paint.surface_status
-    }
-
-    /// Returns contained-floating availability.
-    #[must_use]
-    pub const fn contained_capability(&self) -> DockspaceCapability {
-        self.paint.contained_capability
     }
 
     /// Returns pane-focus observation availability.

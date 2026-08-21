@@ -113,7 +113,11 @@ fn request_replacement_on_existing_viewport() -> (
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the recovery frame settles every surface");
     let mut report = frame.commit().expect("the recovery frame commits");
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
     let effects = report.take_native_effects();
     let successor = match effects.as_slice() {
         [request] => match request.operation() {

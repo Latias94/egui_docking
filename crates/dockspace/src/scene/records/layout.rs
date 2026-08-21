@@ -28,10 +28,7 @@ impl PresentationLayoutFacts {
             config,
             roots: BTreeMap::new(),
             tab_intrinsics: measurements.tab_intrinsics().collect(),
-            tab_strips: measurements
-                .tab_strips()
-                .map(|(key, metrics)| (key, metrics.without_legacy_scroll_offset()))
-                .collect(),
+            tab_strips: measurements.tab_strips().collect(),
         }
     }
 

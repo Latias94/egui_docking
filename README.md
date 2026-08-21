@@ -61,9 +61,9 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
 native workspace uses the reviewed egui/eframe fork revision
-`d74b86ad9b642655bc867263a10864575e32cc9f`, which contains every admitted native
+`660073444296f40903e92dbce0fb818a7f4771b0`, which contains every admitted native
 seam. The event-time Winit fork is pinned at
-`c3fe740e090543e7afba525c111874d36e68948f`. The manifest, lockfile, CI, and
+`f378b50f29cafafec31cd8675c17646b4ef57d70`. The manifest, lockfile, CI, and
 this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
@@ -129,6 +129,11 @@ then drag a child tab onto a root-window docking guide to return it. The default
 child close policy recovers the previous presentation. Physical dragging
 remains fail-closed on backends without complete cross-window pointer facts, so
 the programmatic lifecycle demo is not described as physical-input evidence.
+The pinned macOS Winit facts are tested for same-window routing, but macOS does
+not advertise cross-surface physical promotion until an OS-input lane proves
+the complete button/capture contract. Windows likewise keeps hover and desktop
+pointer authority unavailable until equivalent platform-fact tests land. X11
+is the current certified physical reference backend.
 
 CI keeps those claims separate. The programmatic Glow smoke proves hidden
 creation, staging, first-live transfer, redock, and retirement through product

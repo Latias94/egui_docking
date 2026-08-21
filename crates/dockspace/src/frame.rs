@@ -3260,6 +3260,13 @@ impl ViewportCoordinator {
         &self.capabilities
     }
 
+    pub(crate) fn authoritative_inventory_contains(&self, binding: ViewportBinding) -> bool {
+        self.inventory_observations
+            .current()
+            .and_then(|observation| observation.known_roster())
+            .is_some_and(|bindings| bindings.binary_search(&binding).is_ok())
+    }
+
     #[must_use]
     pub fn native_exact_placement_create_capability(&self) -> PlatformCapability {
         self.capabilities.native_exact_placement_create()

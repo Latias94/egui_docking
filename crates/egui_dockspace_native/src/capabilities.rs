@@ -14,8 +14,6 @@ pub(crate) fn capabilities_for_backend(backend: NativeWindowingBackend) -> Nativ
     match backend {
         NativeWindowingBackend::Windows => controlled_hit_test
             .with(NativeHostCapability::NativeWindowLifecycle)
-            .with(NativeHostCapability::HoveredWindow)
-            .with(NativeHostCapability::DesktopPointerPosition)
             .with(NativeHostCapability::GlobalWindowPlacement)
             .with(NativeHostCapability::WorkArea)
             .with(NativeHostCapability::WindowActivationControl),
@@ -23,7 +21,6 @@ pub(crate) fn capabilities_for_backend(backend: NativeWindowingBackend) -> Nativ
             .with(NativeHostCapability::NativeWindowLifecycle)
             .with(NativeHostCapability::HoveredWindow)
             .with(NativeHostCapability::DesktopPointerPosition)
-            .with(NativeHostCapability::AuthoritativeButtonState)
             .with(NativeHostCapability::GlobalWindowPlacement)
             .with(NativeHostCapability::WorkArea)
             .with(NativeHostCapability::WindowActivationControl),
@@ -49,7 +46,8 @@ mod tests {
     fn platform_capability_matrix_is_conservative() {
         let windows = capabilities_for_backend(NativeWindowingBackend::Windows);
         assert!(windows.supports(NativeHostCapability::NativeWindowLifecycle));
-        assert!(windows.supports(NativeHostCapability::HoveredWindow));
+        assert!(!windows.supports(NativeHostCapability::HoveredWindow));
+        assert!(!windows.supports(NativeHostCapability::DesktopPointerPosition));
         assert!(windows.supports(NativeHostCapability::WorkArea));
         assert!(!windows.supports(NativeHostCapability::AuthoritativeButtonState));
 
@@ -57,7 +55,7 @@ mod tests {
         assert!(macos.supports(NativeHostCapability::NativeWindowLifecycle));
         assert!(macos.supports(NativeHostCapability::HoveredWindow));
         assert!(macos.supports(NativeHostCapability::DesktopPointerPosition));
-        assert!(macos.supports(NativeHostCapability::AuthoritativeButtonState));
+        assert!(!macos.supports(NativeHostCapability::AuthoritativeButtonState));
         assert!(macos.supports(NativeHostCapability::GlobalWindowPlacement));
         assert!(macos.supports(NativeHostCapability::WorkArea));
         assert!(macos.supports(NativeHostCapability::PointerHitTestObservation));

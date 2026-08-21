@@ -943,6 +943,197 @@ fn paint_only_tabs_expose_no_receiver_or_prepared_semantic_action() {
 }
 
 #[test]
+fn local_tab_drag_without_a_drop_receiver_publishes_a_contained_preview() {
+    let mut session = session();
+    install_ready_candidate(&mut session);
+
+    let mut frame = session.begin_host_frame().expect("gesture frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("ready candidate is paintable");
+    let tab = plan
+        .tabs()
+        .find(|tab| tab.item() == FIRST)
+        .expect("the first tab is visible");
+    let source = plan
+        .receiver_for_tab_body(tab)
+        .expect("the first tab has an exact drag receiver")
+        .center();
+    let target = (1..10)
+        .flat_map(|y| (1..10).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            LogicalPoint::new(f64::from(x) * 80.0, f64::from(y) * 60.0)
+                .expect("sample point validates")
+        })
+        .find(|point| {
+            let delta_x = point.x() - source.x();
+            let delta_y = point.y() - source.y();
+            delta_x * delta_x + delta_y * delta_y > 64.0
+                && !plan.receivers().any(|receiver| {
+                    receiver.role() == DockspaceReceiverRole::DropTarget
+                        && receiver.bounds().contains(*point)
+                })
+        })
+        .expect("the ready surface exposes a no-target point");
+    let begin = plan
+        .prepare_tab_gesture(
+            FIRST,
+            SurfaceGesturePhase::Begin {
+                initial: source,
+                current: target,
+            },
+        )
+        .expect("the exact tab prepares a local drag");
+    frame
+        .submit_surface_action(begin)
+        .expect("the local drag begin is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("the dragging surface measures");
+    frame.commit().expect("the drag begin commits");
+
+    let mut inspection = session
+        .begin_host_frame()
+        .expect("preview inspection frame begins");
+    let preview = inspection
+        .paint_plan(SURFACE)
+        .expect("preview paint plan lookup succeeds")
+        .expect("the dragging surface remains paintable")
+        .drag_preview()
+        .expect("a no-target local drag publishes a contained preview");
+    assert!(matches!(
+        preview.visual(),
+        crate::runtime::DockspacePreviewVisual::Contained {
+            surface: SURFACE,
+            fallback: false,
+            ..
+        }
+    ));
+    inspection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the preview inspection retains the current surface");
+    inspection
+        .commit()
+        .expect("the preview inspection frame commits");
+}
+
+#[test]
+fn local_tab_drag_outside_the_surface_cancels_without_contained_preview() {
+    let mut session = session();
+    install_ready_candidate(&mut session);
+    let original_version = session.version();
+
+    let mut begin_frame = session.begin_host_frame().expect("gesture frame begins");
+    let begin_plan = begin_frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("ready candidate is paintable");
+    let tab = begin_plan
+        .tabs()
+        .find(|tab| tab.item() == FIRST)
+        .expect("the first tab is visible");
+    let source = begin_plan
+        .receiver_for_tab_body(tab)
+        .expect("the first tab has an exact drag receiver")
+        .center();
+    let threshold =
+        LogicalPoint::new(source.x() + 16.0, source.y() + 8.0).expect("threshold point validates");
+    let bounds = begin_plan.bounds();
+    let outside = LogicalPoint::new(bounds.max().x() + 32.0, bounds.max().y() + 32.0)
+        .expect("outside point validates");
+    let begin = begin_plan
+        .prepare_tab_gesture(
+            FIRST,
+            SurfaceGesturePhase::Begin {
+                initial: source,
+                current: threshold,
+            },
+        )
+        .expect("the exact tab prepares a local drag");
+    begin_frame
+        .submit_surface_action(begin)
+        .expect("the local drag begin is accepted");
+    begin_frame
+        .measure_surface(SURFACE, metrics())
+        .expect("the dragging surface measures");
+    begin_frame.commit().expect("the drag begin commits");
+
+    let mut move_frame = session
+        .begin_host_frame()
+        .expect("outside move frame begins");
+    let move_action = move_frame
+        .paint_plan(SURFACE)
+        .expect("outside move paint plan lookup succeeds")
+        .expect("the dragging surface remains paintable")
+        .prepare_tab_gesture(FIRST, SurfaceGesturePhase::Move { current: outside })
+        .expect("the active tab drag prepares an outside move");
+    move_frame
+        .submit_surface_action(move_action)
+        .expect("the outside move is accepted");
+    move_frame
+        .measure_surface(SURFACE, metrics())
+        .expect("the outside move surface measures");
+    move_frame.commit().expect("the outside move commits");
+
+    let mut inspection = session
+        .begin_host_frame()
+        .expect("outside preview inspection begins");
+    assert!(
+        inspection
+            .paint_plan(SURFACE)
+            .expect("outside preview paint plan lookup succeeds")
+            .expect("the dragging surface remains paintable")
+            .drag_preview()
+            .is_none(),
+        "surface-external local coordinates cannot authorize contained placement"
+    );
+    inspection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the outside preview inspection retains the surface");
+    inspection
+        .commit()
+        .expect("the outside preview inspection commits");
+
+    let mut release_frame = session
+        .begin_host_frame()
+        .expect("outside release frame begins");
+    let release = release_frame
+        .paint_plan(SURFACE)
+        .expect("outside release paint plan lookup succeeds")
+        .expect("the dragging surface remains paintable")
+        .prepare_tab_gesture(FIRST, SurfaceGesturePhase::Release { current: outside })
+        .expect("the active tab drag prepares an outside release");
+    release_frame
+        .submit_surface_action(release)
+        .expect("the outside release is accepted as a cancellation");
+    release_frame
+        .measure_surface(SURFACE, metrics())
+        .expect("the cancelled surface measures");
+    release_frame
+        .commit()
+        .expect("the outside release cancellation commits");
+
+    assert_eq!(session.version(), original_version);
+    assert!(!session.has_active_gesture());
+    let item = session
+        .view()
+        .item(FIRST)
+        .expect("the dragged item remains present");
+    assert_eq!(item.root(), ROOT);
+    assert_eq!(item.contained(), None);
+    assert_eq!(
+        session
+            .view()
+            .surface(SURFACE)
+            .expect("the source surface remains present")
+            .contained()
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
     let mut session = session();
     install_ready_candidate(&mut session);
@@ -1718,6 +1909,57 @@ fn candidate_bound_presentation_commands_report_truthful_availability_and_execut
             .contained()
             .any(|contained| contained.root().is_some_and(|root| root.id() == ROOT))
     );
+}
+
+#[test]
+fn local_dock_back_without_focus_history_does_not_guess_from_selection() {
+    let mut session = contained_session(DockPolicy::default());
+    install_ready_candidate(&mut session);
+
+    let mut prepare = session
+        .begin_host_frame()
+        .expect("contained dock-back preparation frame begins");
+    let action = prepare
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("contained candidate is paintable")
+        .prepare_contained_close(FLOATING)
+        .expect("the exact contained close prepares dock-back");
+    prepare
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the preparation frame retains the current candidate");
+    prepare
+        .commit()
+        .expect("the dock-back preparation frame commits");
+
+    let mut execute = session
+        .begin_host_frame()
+        .expect("contained dock-back execution frame begins");
+    execute
+        .submit_surface_action(action)
+        .expect("the exact dock-back action is accepted");
+    execute
+        .measure_surface(SURFACE, metrics())
+        .expect("the recovered surface measures");
+    execute.commit().expect("the contained dock-back commits");
+
+    let mut inspect = session
+        .begin_host_frame()
+        .expect("focus inspection frame begins");
+    let plan = inspect
+        .paint_plan(SURFACE)
+        .expect("focus paint plan lookup succeeds")
+        .expect("the recovered surface remains paintable");
+    assert!(
+        plan.pane_focus_request().is_none(),
+        "selection alone must not be promoted into a pane-focus request"
+    );
+    inspect
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the focus inspection retains the current surface");
+    inspect
+        .commit()
+        .expect("the focus inspection frame commits");
 }
 
 #[test]

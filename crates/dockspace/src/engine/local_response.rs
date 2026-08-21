@@ -572,7 +572,7 @@ impl DockEngine {
                 accepted_base: application_base,
             });
         }
-        let root = {
+        let (root, focus_item) = {
             let candidate = match self.local_response_candidate(scene) {
                 Ok(candidate) => candidate,
                 Err(error) => return Ok(self.local_response_rejection(error)),
@@ -596,9 +596,29 @@ impl DockEngine {
                     InteractionRejection::CloseActivationOccluded { target },
                 ));
             }
-            record.root()
+            let root = record.root();
+            let pending = self
+                .viewport_focus
+                .pending_pane_intent()
+                .filter(|intent| intent.surface() == scene.surface())
+                .and_then(crate::viewport_focus::PaneFocusIntent::item)
+                .filter(|item| {
+                    self.workspace
+                        .locate_item_by_id(*item)
+                        .is_some_and(|(item_root, _, _)| item_root == root)
+                });
+            let historical = match self.viewport_focus.panel_focus(scene.surface()) {
+                crate::viewport_focus::PanelFocusRecord::Item(item) => self
+                    .workspace
+                    .locate_item_by_id(item)
+                    .filter(|(item_root, _, _)| *item_root == root)
+                    .map(|_| item),
+                crate::viewport_focus::PanelFocusRecord::NoHistory
+                | crate::viewport_focus::PanelFocusRecord::None => None,
+            };
+            (root, pending.or(historical))
         };
-        self.reduce_product_action(
+        let outcome = self.reduce_product_action(
             input,
             cause,
             focus_causal,
@@ -607,7 +627,20 @@ impl DockEngine {
             policy,
             events,
             interaction_events,
-        )
+        )?;
+        if matches!(&outcome, InputOutcome::ProductActionProcessed { .. })
+            && let Some(item) = focus_item
+        {
+            let native_guard = self.viewport_focus_binding(scene.surface());
+            let _ = self
+                .viewport_focus
+                .request_local_pane_focus(scene.surface(), item, native_guard, focus_causal)
+                .map_err(|source| EngineError::CausedViewportFocus {
+                    cause: focus_causal.cause(),
+                    source,
+                })?;
+        }
+        Ok(outcome)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -798,6 +831,7 @@ impl DockEngine {
         {
             return Ok(InteractionOutcome::Rejected(rejection));
         }
+        self.freeze_local_contained_offer(cause, session, owner)?;
         self.interaction
             .set_drag_current_pointer(session, current)
             .map_err(|source| EngineError::PointerInteractionInvariant {
@@ -824,6 +858,60 @@ impl DockEngine {
             )?;
         }
         Ok(InteractionOutcome::DragBegan { session })
+    }
+
+    fn freeze_local_contained_offer(
+        &mut self,
+        cause: ReductionCause,
+        session: crate::interaction::DragSessionId,
+        owner: GestureOwner,
+    ) -> Result<(), EngineError> {
+        let drag = self
+            .interaction
+            .active_drag(session)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: format!("local drag lost its presentation source: {source:?}"),
+            })?
+            .clone();
+        if !matches!(drag.origin, FrozenDragOrigin::Workspace) {
+            return Ok(());
+        }
+        let initial_pointer =
+            drag.initial_pointer
+                .ok_or_else(|| EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: "local drag has no frozen initial pointer".to_owned(),
+                })?;
+        let source_geometry = drag.journal_source_geometry.ok_or_else(|| {
+            EngineError::PointerInteractionInvariant {
+                cause,
+                detail: "local drag has no frozen source geometry".to_owned(),
+            }
+        })?;
+        let existing_root = drag.complete_root.as_ref().map(NodeSource::root);
+        let reservation = self.reserve_local_contained_identities(existing_root.is_none())?;
+        let root = existing_root.or(reservation.root()).ok_or_else(|| {
+            EngineError::PointerInteractionInvariant {
+                cause,
+                detail: "local contained reservation did not provide a root".to_owned(),
+            }
+        })?;
+        self.interaction
+            .freeze_local_contained_offer(
+                session,
+                owner,
+                root,
+                reservation.floating(),
+                SurfacePointer::new(drag.source_surface, initial_pointer),
+                source_geometry.source_rect,
+                source_geometry.minimum_size,
+                existing_root.is_none(),
+            )
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: source.to_string(),
+            })
     }
 
     fn update_local_tab_gesture(
@@ -1105,9 +1193,12 @@ impl DockEngine {
                     }),
                 }
             }
-            DropResolution::KnownNone(_) => self
+            DropResolution::KnownNone(_) if candidate.plan().bounds().contains(point) => self
                 .resolve_local_contained_move_preview(cause, drag, candidate, point, policy)?
                 .unwrap_or(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)),
+            DropResolution::KnownNone(_) => {
+                PreviewDecision::Clear(PreviewResolutionStatus::Unavailable)
+            }
             DropResolution::Rejected(_) => {
                 PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
             }
@@ -1126,9 +1217,6 @@ impl DockEngine {
         point: LogicalPoint,
         policy: &DockPolicySnapshot,
     ) -> Result<Option<PreviewDecision>, EngineError> {
-        let FrozenDragOrigin::Contained(origin) = &drag.origin else {
-            return Ok(None);
-        };
         let DragGestureAuthority::LocalReady {
             surface,
             coordinates,
@@ -1139,7 +1227,6 @@ impl DockEngine {
             )));
         };
         if surface != drag.source_surface
-            || surface != origin.surface
             || surface != candidate.stamp().surface()
             || coordinates != candidate.coordinate_capture()
         {
@@ -1148,71 +1235,23 @@ impl DockEngine {
             )));
         }
 
-        let requested =
-            match translated_contained_rect(origin.source_rect, origin.initial_pointer, point) {
-                Ok(requested) => requested,
-                Err(()) => {
-                    return Ok(Some(PreviewDecision::Clear(
-                        PreviewResolutionStatus::Rejected,
-                    )));
-                }
-            };
-        let bounds = candidate.plan().bounds();
-        let clamped = match clamp_contained_rect(surface, bounds, requested, origin.minimum_size) {
-            Ok(clamped) => clamped,
-            Err(_) => {
-                return Ok(Some(PreviewDecision::Clear(
-                    PreviewResolutionStatus::Rejected,
-                )));
-            }
-        };
-        let placement = ContainedPlacementProof::new(
-            candidate.stamp(),
-            surface,
-            requested,
-            origin.minimum_size,
-            bounds,
-            clamped,
-        );
-        let proposal = crate::intent::ContainedTearOffProposal::new(
-            origin.root,
-            origin.floating,
-            placement,
-            ContainedPosition::Front,
-        );
-        let Some(command) = self.contained_presentation_command(
-            &drag.payload,
-            proposal,
-            drag.complete_root.clone(),
-            Some(origin),
-        ) else {
-            return Ok(Some(PreviewDecision::Clear(
+        let pointer = SurfacePointer::new(surface, point);
+        match self.core_contained_candidate(drag, pointer, Some(candidate)) {
+            CoreContainedCandidate::None => Ok(None),
+            CoreContainedCandidate::Proposal(proposal) => self
+                .resolve_contained_proposal(
+                    cause,
+                    drag,
+                    proposal,
+                    ContainedPlacementAuthority::LocalReady,
+                    policy,
+                )
+                .map(Some),
+            CoreContainedCandidate::Rejected => Ok(Some(PreviewDecision::Clear(
                 PreviewResolutionStatus::Rejected,
-            )));
-        };
-        if !self.valid_contained_command_structure(drag, proposal, &command)
-            || self
-                .stage_journal_workspace_command(cause, &command, policy)?
-                .is_err()
-        {
-            return Ok(Some(PreviewDecision::Clear(
-                PreviewResolutionStatus::Rejected,
-            )));
+            ))),
+            CoreContainedCandidate::Cancel(reason) => Ok(Some(PreviewDecision::Cancel(reason))),
         }
-
-        Ok(Some(PreviewDecision::Publish {
-            scene: placement.scene(),
-            visual: PreviewVisual::Contained {
-                surface,
-                rect: proposal.rect(),
-                fallback: false,
-            },
-            proof: Box::new(PreviewProof::Contained {
-                command,
-                proposal,
-                fallback: false,
-            }),
-        }))
     }
 
     #[allow(clippy::too_many_arguments)]

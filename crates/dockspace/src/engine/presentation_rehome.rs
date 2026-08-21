@@ -138,6 +138,14 @@ impl DockEngine {
                 surface: source_surface,
             });
         };
+        if !self
+            .viewport
+            .authoritative_inventory_contains(source_binding)
+        {
+            return Err(DockspaceActionRejection::PresentationUnavailable {
+                surface: source_surface,
+            });
+        }
         if source_record.ownership() == ViewportOwnership::RuntimeOwned
             && !self
                 .viewport
@@ -870,12 +878,15 @@ impl DockEngine {
             return Ok(false);
         };
         let source_is_current = self
-            .bound_surface_recoveries
-            .get(&pending.source_surface)
-            .is_some_and(|bound| {
-                bound.binding == pending.source_binding
-                    && bound.obligation.id() == pending.source_recovery
-            })
+            .viewport
+            .authoritative_inventory_contains(pending.source_binding)
+            && self
+                .bound_surface_recoveries
+                .get(&pending.source_surface)
+                .is_some_and(|bound| {
+                    bound.binding == pending.source_binding
+                        && bound.obligation.id() == pending.source_recovery
+                })
             && self
                 .viewport
                 .viewport(pending.source_surface)

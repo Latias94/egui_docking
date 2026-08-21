@@ -129,7 +129,11 @@ fn publish_desktop_authority_with_input(
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("native roster frame settles the surface");
     let report = frame.commit().expect("native roster frame commits");
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
 }
 
 fn measure_and_present_source(
@@ -802,7 +806,11 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     let enabled_report = enabled_snapshot
         .commit()
         .expect("the enabling snapshot commits");
-    assert!(native.settle_host_frame_inputs(enabled_report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(enabled_report.inputs())
+            .expect("the exact enabled snapshot settles")
+    );
 
     let restore = native
         .pointer_passthrough_command()
@@ -875,7 +883,11 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     let restored_report = restored_snapshot
         .commit()
         .expect("the restoring snapshot commits");
-    assert!(native.settle_host_frame_inputs(restored_report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(restored_report.inputs())
+            .expect("the exact restored snapshot settles")
+    );
     assert_eq!(
         native.input_control.snapshot_fact(source),
         Some((NativeWindowInputState::ReceivesInput, None))

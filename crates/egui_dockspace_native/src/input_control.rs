@@ -371,19 +371,28 @@ impl NativeInputControl {
         }
     }
 
+    pub(crate) fn snapshot_settlement_matches(
+        &self,
+        acknowledged: Option<NativeSurfaceBinding>,
+    ) -> bool {
+        let Some(acknowledged) = acknowledged else {
+            return true;
+        };
+        self.pending.front().is_some_and(|pending| {
+            matches!(pending.state, PendingNativeInputState::AwaitingSnapshot)
+                && acknowledged == pending.binding
+        })
+    }
+
     pub(crate) fn settle_snapshot(&mut self, acknowledged: Option<NativeSurfaceBinding>) -> bool {
-        if let Some(binding) = acknowledged
-            && let Some(observation) = self.observations.get_mut(&binding)
-        {
-            observation.acknowledgement = None;
+        if !self.snapshot_settlement_matches(acknowledged) {
+            return false;
         }
-        let Some(pending) = self.pending.front() else {
+        let Some(binding) = acknowledged else {
             return false;
         };
-        if !matches!(pending.state, PendingNativeInputState::AwaitingSnapshot)
-            || acknowledged != Some(pending.binding)
-        {
-            return false;
+        if let Some(observation) = self.observations.get_mut(&binding) {
+            observation.acknowledgement = None;
         }
         self.pending.pop_front();
         true

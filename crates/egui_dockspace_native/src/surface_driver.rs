@@ -67,6 +67,19 @@ impl RetainedOutputKind {
     }
 }
 
+fn finalize_retained_accessibility(
+    output: &mut egui::FullOutput,
+    kind: RetainedOutputKind,
+    retained: bool,
+) {
+    if retained && kind.omits_accessibility_when_retained() {
+        // A skipped renderer pass keeps the exact previous framebuffer and
+        // its matching accessibility tree. An overlay is different: its
+        // inert status label is visible now and must remain accessible.
+        output.platform_output.accesskit_update = None;
+    }
+}
+
 fn native_error_paint_rect(
     available: egui::Rect,
     presentation: NativeErrorPresentation,
@@ -105,6 +118,7 @@ fn paint_native_error_status(
         ),
     };
     ui.painter().rect_filled(paint_rect, 0.0, fill);
+    ui.disable();
 
     let _ = ui.scope_builder(
         egui::UiBuilder::new().max_rect(paint_rect).layout(layout),
@@ -526,7 +540,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .settle(None, report.presentation_transitions())
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         let coordinator = &mut self.coordinator;
-        let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
+        let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs())?;
         let native_close_settled = coordinator.settle_close_control_inputs(report.inputs())?;
         let native_admission_settled =
             coordinator.settle_native_admissions(report.native_admissions())?;
@@ -802,12 +816,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         kind: RetainedOutputKind,
     ) -> Result<(), NativeRuntimeError> {
         let retained = kind.request();
-        if retained && kind.omits_accessibility_when_retained() {
-            // A skipped renderer pass keeps the exact previous framebuffer and
-            // its matching accessibility tree. An overlay is different: its
-            // inert status label is visible now and must remain accessible.
-            output.platform_output.accesskit_update = None;
-        }
+        finalize_retained_accessibility(output, kind, retained);
         let wake = self
             .coordinator
             .settle_retained_output_token(token, retained)
@@ -905,7 +914,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 report.presentation_transitions(),
             )
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
-        let _ = self.coordinator.settle_host_frame_inputs(report.inputs());
+        let _ = self.coordinator.settle_host_frame_inputs(report.inputs())?;
         let _ = self
             .coordinator
             .settle_close_control_inputs(report.inputs())?;
@@ -1221,6 +1230,7 @@ mod tests {
         DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
         DockspaceSurfaceLayout, ItemId, RootId,
     };
+    use dockspace::runtime::{SurfacePresentationResult, SurfaceUnavailableReason};
     use eframe::egui::{Ui, WidgetText};
 
     use super::*;
@@ -1366,6 +1376,7 @@ mod tests {
         let context = egui::Context::default();
         context.enable_accesskit();
         let message = "Native dockspace stopped — test failure";
+        let mut probe_enabled = true;
         let mut output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -1376,6 +1387,7 @@ mod tests {
             },
             |ui| {
                 paint_native_error_status(ui, NativeErrorPresentation::RetainedOverlay, message);
+                probe_enabled = ui.button("mutation probe").enabled();
             },
         );
 
@@ -1391,6 +1403,7 @@ mod tests {
                         (
                             node.supports_action(egui::accesskit::Action::Click),
                             node.supports_action(egui::accesskit::Action::Focus),
+                            node.is_disabled(),
                         )
                     },
                 )
@@ -1403,17 +1416,257 @@ mod tests {
             (status_actions, observed_nodes)
         };
         output.textures_delta.clear();
-        let (supports_click, supports_focus) = status_actions.unwrap_or_else(|| {
+        let (supports_click, supports_focus, disabled) = status_actions.unwrap_or_else(|| {
             panic!("the visible native status strip owns one label; nodes={observed_nodes:?}")
         });
         assert!(!supports_click);
         assert!(!supports_focus);
+        assert!(
+            !probe_enabled,
+            "fatal/quarantined UI must reject later semantic input"
+        );
+        assert!(
+            disabled,
+            "fatal/quarantined status must be exposed as non-interactive"
+        );
+    }
+
+    #[test]
+    fn no_frame_placeholder_disables_semantic_input_and_accessibility() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut probe_enabled = true;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                crate::deferred_viewport::paint_placeholder(
+                    ui,
+                    egui::ViewportClass::Deferred,
+                    Some(crate::mailbox::DeferredViewportPaint::Created),
+                );
+                probe_enabled = ui.button("mutation probe").enabled();
+            },
+        );
+        output.textures_delta.clear();
+
+        let tree = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("the no-frame status publishes accessibility");
+        let status = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.role() == egui::accesskit::Role::Label
+                    && node.value() == Some("Creating dockspace window…"))
+                .then_some(node)
+            })
+            .expect("the no-frame status owns one semantic node");
+        assert!(!probe_enabled, "NoFrame must reject semantic input");
+        assert!(
+            status.is_disabled(),
+            "NoFrame status must be disabled in AccessKit"
+        );
+        assert!(
+            context.has_requested_repaint_for(&ViewportId::ROOT),
+            "creating a no-frame viewport must request the next lifecycle boundary"
+        );
     }
 
     #[test]
     fn only_a_skipped_retain_omits_the_accessibility_update() {
         assert!(RetainedOutputKind::Skip.omits_accessibility_when_retained());
         assert!(!RetainedOutputKind::Overlay.omits_accessibility_when_retained());
+    }
+
+    #[test]
+    fn presented_pending_keeps_the_previous_accessibility_tree() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut pending_probe_enabled = false;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            pending_probe_enabled = ui.button("pending mutation").enabled();
+        });
+        assert!(pending_probe_enabled);
+        assert!(
+            !output.shapes.is_empty(),
+            "the pending pass may produce paint, but the retained renderer path must skip it"
+        );
+        assert!(output.platform_output.accesskit_update.is_some());
+
+        finalize_retained_accessibility(&mut output, RetainedOutputKind::Overlay, true);
+        assert!(
+            output.platform_output.accesskit_update.is_some(),
+            "a visible fatal overlay must publish its inert status semantics"
+        );
+        finalize_retained_accessibility(&mut output, RetainedOutputKind::Skip, false);
+        assert!(
+            output.platform_output.accesskit_update.is_some(),
+            "a failed retain falls back to the current NoFrame semantics"
+        );
+        finalize_retained_accessibility(&mut output, RetainedOutputKind::Skip, true);
+
+        assert!(
+            output.platform_output.accesskit_update.is_none(),
+            "PresentedPending must keep the prior semantic tree instead of publishing pending UI"
+        );
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn no_frame_recovery_reaches_enabled_first_live_at_the_presented_boundary() {
+        let mut session = test_session();
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let raw_input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+
+        let mut no_frame_probe_enabled = true;
+        let mut no_frame_output = context.run_ui(raw_input(), |ui| {
+            crate::deferred_viewport::paint_placeholder(
+                ui,
+                egui::ViewportClass::Deferred,
+                Some(crate::mailbox::DeferredViewportPaint::Created),
+            );
+            no_frame_probe_enabled = ui.button("no-frame mutation probe").enabled();
+        });
+        let no_frame_accesskit = no_frame_output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("NoFrame publishes its preparing status");
+        assert!(!no_frame_probe_enabled);
+        assert!(no_frame_accesskit.nodes.iter().any(|(_, node)| {
+            node.role() == egui::accesskit::Role::Label
+                && node.value() == Some("Creating dockspace window…")
+                && node.is_disabled()
+        }));
+        no_frame_output.textures_delta.clear();
+
+        let mut measurement_output = context.run_ui(raw_input(), |ui| {
+            let mut frame = session
+                .begin_host_frame()
+                .expect("the first-live measurement frame begins");
+            let dock_rect = ui.available_rect_before_wrap();
+            egui_dockspace::native_support::measure_surface(
+                &mut frame,
+                SURFACE,
+                ui,
+                dock_rect,
+                dock_rect,
+                &TestPanes,
+                &DockStyle::default(),
+            )
+            .expect("the first-live surface measures through the production renderer");
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .expect("the measurement frame settles every surface");
+            drop(
+                frame
+                    .commit()
+                    .expect("the measurement contribution commits"),
+            );
+        });
+        measurement_output.textures_delta.clear();
+
+        let mut panes = TestPanes;
+        let mut paint_report = None;
+        let mut paint_had_ready_plan = false;
+        let mut mutation_probe_enabled = false;
+        let mut semantic_output = context.run_ui(raw_input(), |ui| {
+            let mut frame = session
+                .begin_host_frame()
+                .expect("the first-live semantic frame begins");
+            let mut register_scroll = |ui: &egui::Ui, rect: egui::Rect, id: egui::Id| {
+                let identity = ui.register_scroll_hit_candidate(rect, id);
+                (identity.id(), identity.layer_id())
+            };
+            let paint = egui_dockspace::native_support::paint_surface(
+                &mut frame,
+                Id::new("first-live-semantic-paint"),
+                SURFACE,
+                ui,
+                &mut panes,
+                &DockStyle::default(),
+                &mut register_scroll,
+            )
+            .expect("the first-live surface paints through the production renderer");
+            paint_had_ready_plan = paint.had_ready_plan();
+            mutation_probe_enabled = ui.button("first-live mutation probe").enabled();
+            frame
+                .confirm_surface_painted(SURFACE)
+                .expect("the complete first-live paint confirms");
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .expect("the semantic frame settles every surface");
+            paint_report = Some(frame.commit().expect("the first-live paint commits"));
+        });
+
+        assert!(paint_had_ready_plan);
+        assert!(
+            mutation_probe_enabled,
+            "FirstLive must leave product input enabled"
+        );
+        let accesskit = semantic_output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("FirstLive publishes the current semantic tree");
+        let mutation_probe = accesskit
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.role() == egui::accesskit::Role::Button
+                    && node.label() == Some("first-live mutation probe"))
+                .then_some(node)
+            })
+            .expect("the enabled FirstLive mutation probe is accessible");
+        assert!(!mutation_probe.is_disabled());
+        assert!(mutation_probe.supports_action(egui::accesskit::Action::Click));
+        assert!(
+            accesskit.nodes.iter().all(|(_, node)| {
+                node.value().is_none_or(|value| {
+                    value != "Creating dockspace window…"
+                        && value != "Waiting for dockspace authority…"
+                        && !value.starts_with("Native dockspace stopped")
+                })
+            }),
+            "FirstLive removes transitional and fatal status UI"
+        );
+
+        let mut report = paint_report.take().expect("the semantic report exists");
+        let outputs = report.take_painted_outputs();
+        let [painted] = outputs.try_into().unwrap_or_else(|outputs: Vec<_>| {
+            panic!("expected one first-live output, got {}", outputs.len())
+        });
+        session
+            .report_surface_presentation(painted, SurfacePresentationResult::Presented)
+            .expect("the renderer presents the exact first-live output");
+        let mut admission = session
+            .begin_host_frame()
+            .expect("the first-live admission boundary begins");
+        admission
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the admission boundary settles every surface");
+        drop(
+            admission
+                .commit()
+                .expect("the first-live admission commits"),
+        );
+        assert!(session.presented_surface(SURFACE).is_some());
+        semantic_output.textures_delta.clear();
     }
 
     #[test]
@@ -1698,8 +1951,18 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_applies_committed_commands_before_registration_errors() {
+    fn fatal_quarantine_recovery_commits_close_before_exit_errors() {
         let mut state = test_state();
+        state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
+        assert!(state.error().is_some());
+        assert!(!state.is_quiescent());
+        assert_eq!(
+            state
+                .request_dock_root_back(RootId::new(1))
+                .expect_err("fatal quarantine rejects semantic mutation"),
+            crate::NativeActionRequestError::Stopped
+        );
+
         let context = egui::Context::default();
         context.begin_pass(egui::RawInput::default());
 
@@ -1745,6 +2008,9 @@ mod tests {
             .commands
             .contains(&egui::ViewportCommand::Close);
         output.textures_delta.clear();
-        assert!(close_was_queued);
+        assert!(
+            close_was_queued,
+            "fatal recovery exits only after the committed close command survives the output"
+        );
     }
 }

@@ -2710,6 +2710,53 @@ impl InteractionState {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn freeze_local_contained_offer(
+        &mut self,
+        session: DragSessionId,
+        owner: GestureOwner,
+        root: RootId,
+        floating: FloatingPresentationId,
+        anchor: crate::intent::SurfacePointer,
+        requested_rect: LogicalRect,
+        minimum_size: LogicalSize,
+        reserve_background_root: bool,
+    ) -> Result<(), InteractionCounterError> {
+        let drag = self
+            .active_drag_mut(session)
+            .map_err(|_| InteractionCounterError::StateInvariant)?;
+        let GestureOwner::LocalResponse { surface } = owner else {
+            return Err(InteractionCounterError::StateInvariant);
+        };
+        if drag.owner != owner
+            || !matches!(drag.origin, FrozenDragOrigin::Workspace)
+            || drag.source_surface != surface
+            || anchor.surface() != surface
+            || drag.journal_presentation_reservation.is_some()
+            || drag.contained_offer.is_some()
+            || drag.surface_background_offer.is_some()
+            || drag.native_offer.is_some()
+            || drag
+                .complete_root
+                .as_ref()
+                .is_some_and(|source| source.root() != root)
+            || (drag.complete_root.is_some() && reserve_background_root)
+            || (drag.complete_root.is_none() && !reserve_background_root)
+        {
+            return Err(InteractionCounterError::StateInvariant);
+        }
+        drag.contained_offer = Some(ContainedPresentationOffer::front(
+            root,
+            floating,
+            anchor,
+            requested_rect,
+            minimum_size,
+        ));
+        drag.surface_background_offer =
+            reserve_background_root.then_some(SurfaceBackgroundRootOffer::new(root));
+        Ok(())
+    }
+
     pub(crate) fn active_drag(
         &self,
         session: DragSessionId,

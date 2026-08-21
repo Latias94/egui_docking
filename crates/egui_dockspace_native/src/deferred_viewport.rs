@@ -169,6 +169,7 @@ pub(crate) fn paint_placeholder(
 ) {
     ui.painter()
         .rect_filled(ui.max_rect(), 0.0, egui::Color32::from_gray(24));
+    ui.disable();
     if class != ViewportClass::Deferred {
         ui.centered_and_justified(|ui| {
             ui.label("Native dockspace viewports require an eframe multi-window backend");

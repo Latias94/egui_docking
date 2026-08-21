@@ -897,7 +897,11 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         report.take_native_effects().is_empty(),
         "the exact close acknowledgement settles ReleaseChild without cleanup fallback"
     );
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
 
     assert!(
         native

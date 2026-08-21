@@ -23,9 +23,9 @@ output tokens and physical viewport obligations at the same boundary.
 Baselines:
 
 - upstream egui/eframe `0.36.1`: `4c1f2fae95475a40e524884ebb298bcb1714b08e`
-- public egui/eframe fork: `d74b86ad9b642655bc867263a10864575e32cc9f`
+- public egui/eframe fork: `660073444296f40903e92dbce0fb818a7f4771b0`
 - upstream winit `0.30.13`: `e9809ef5`
-- public winit fork: `c3fe740e090543e7afba525c111874d36e68948f`
+- public winit fork: `f378b50f29cafafec31cd8675c17646b4ef57d70`
 
 ## Admitted seams
 
@@ -46,6 +46,14 @@ Baselines:
 | Visibility dispatch result | Dispatching `Visible(true/false)` is distinct from later observing actual visibility. Core needs to know whether eframe invoked a supported operation without treating that as visibility proof. | Windows, macOS, and X11 can dispatch; Wayland is currently typed unsupported. | Report `Dispatched` or `Unsupported` immediately after viewport command processing, then rely on a later window snapshot for the actual visibility fact. | `viewport_visibility_result_keeps_exact_identity_and_wake`. | Remove when upstream eframe reports typed visibility-command dispatch independently from visibility observation. |
 | Pointer pass-through command result | Upstream applies `MousePassthrough` without an opaque command identity or typed terminal result. Matching only viewport, window, and value lets an unrelated same-value application command consume a core effect. | All native platforms; unsupported cursor hit-test control remains a typed terminal result. | Add one property-specific host command queue in eframe. It returns an opaque token, applies after ordinary viewport commands, and echoes the token with `Applied`, `Unsupported`, or `Failed`. Ordinary application commands remain callback-free. No generic command scheduler or dock identity enters the fork. | `pointer_passthrough_host_commands_keep_exact_tokens_and_viewport_order`, `viewport_pointer_passthrough_callback_reports_exact_command_result`, and the native adapter's same-value wrong-token regression. | Remove when upstream eframe exposes a correlated pointer hit-test command result, or when upstream winit provides an equivalent typed request/result API. |
 | Work-area roster | Outside-all placement needs the selected display's usable work area and scale. Monitor bounds alone do not prove a work area. | Windows and macOS can be exact. X11 is exact only on the first X screen when one identity-transformed active CRTC covers the root and the EWMH/XSettings authorities are complete and self-consistent. Multi-CRTC X11 and Wayland remain `Unknown`. | Capture a complete root-level roster. Each record keeps opaque display identity, full display bounds, usable work-area bounds, and scale. X11 derives the snapshot from the event-loop connection and invalidates it on root, supporting-WM, RandR, or XSettings changes. Any incomplete platform capture produces `Unknown`, never a partial exact roster. | Host-roster coverage plus `accepts_exact_current_desktop_and_clips_each_monitor`, `rejects_unadvertised_or_unverified_wm_authority`, `rejects_inexact_desktop_arrays_and_nonzero_current_viewport`, `non_identity_crtc_transform_cannot_publish_scalar_scale_authority`, and the X11/XTest physical smoke. | Remove when upstream winit or eframe exposes a complete, typed work-area roster with honest platform support. |
+
+macOS currently remains fail-closed for cross-surface physical promotion. Its
+event-time same-window facts are covered by the pinned Winit tests, but the
+repository does not advertise `AuthoritativeButtonState` until a real OS-input
+lane proves the complete cross-window release contract. Windows keeps
+`HoveredWindow` and `DesktopPointerPosition` unavailable until equivalent
+platform-fact tests exist. X11 is the certified physical reference backend for
+this release.
 
 ## Explicit non-seams
 

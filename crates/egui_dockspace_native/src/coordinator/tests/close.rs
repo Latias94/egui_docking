@@ -16,6 +16,54 @@ fn default_close_policy_recovers_children_and_accepts_the_external_root() {
     );
 }
 
+#[test]
+fn callbacks_after_the_exact_close_boundary_cannot_starve_the_policy() {
+    let mut native = coordinator();
+    let (binding, survivor) = register_roots(&mut native);
+    observe_close(
+        &mut native,
+        binding,
+        [binding, survivor],
+        ViewportId::ROOT,
+        WindowId::from(39),
+        15,
+    );
+
+    native
+        .bridge
+        .push_viewport_roster(live_roster([binding, survivor]));
+    assert!(
+        native
+            .drive_close_policy(NativeWindowClosePolicy::Cancel, survivor.surface())
+            .expect("a later callback cannot delay the synchronous close policy"),
+        "the close request is already ordered after every older callback"
+    );
+    assert!(native.close_control.unresolved_requests().next().is_none());
+    assert_eq!(
+        native.take_viewport_commands(),
+        vec![(ViewportId::ROOT, ViewportCommand::CancelClose)],
+        "the same eframe output receives the exact close cancellation"
+    );
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the later callback record remains independently reducible")
+    );
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the later callback boundary begins");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the later callback boundary settles every surface");
+    let report = frame.commit().expect("the later callback boundary commits");
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
+}
+
 pub(super) fn observe_close(
     native: &mut NativeCoordinator,
     binding: NativeSurfaceBinding,
@@ -190,7 +238,11 @@ fn destroyed_before_cancel_callback_retires_close_sidecar_and_allows_quiescence(
     let report = roster
         .commit()
         .expect("the destroyed roster commits the exact tombstone");
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
 
     let prepared = native
         .prepare_committed_retirements()
@@ -285,7 +337,11 @@ fn retain_layout_accepts_close_and_retires_only_after_destroyed_acknowledgement(
         .commit()
         .expect("the destroyed roster commits the exact acknowledgement");
     assert!(report.take_native_effects().is_empty());
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
     assert!(!native.session.is_current_native_binding(binding));
     assert!(native.session.view().surface(FIRST_SURFACE).is_some());
 }

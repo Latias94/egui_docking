@@ -19,7 +19,7 @@ use super::super::app::{
 };
 use super::super::assertions::{
     LogicalBounds, PhysicalBounds, PhysicalPoint, SemanticLookupError, SemanticSelector,
-    SemanticStabilitySample, SemanticText, choose_outside_point, desktop_to_viewport_logical,
+    SemanticStabilitySample, SemanticText, choose_outside_points, desktop_to_viewport_logical,
     native_drag_preview_observation, point_towards, pointer_barrier_is_satisfied,
     pointer_observation_for_barrier, semantic_baseline_after_missing, semantic_bounds,
     semantic_node, semantic_snapshot_is_stable, semantic_tree_summary, tab_drag_point,
@@ -437,7 +437,7 @@ impl PhysicalDriver {
             .work_area
             .ok_or_else(|| "exact native work area was not frozen".to_owned())?;
         let process_windows = self.desktop.process_windows()?;
-        let outside = choose_outside_point(
+        let (outside, routed_outside) = choose_outside_points(
             work_area,
             process_windows.iter().map(|window| window.bounds),
         )
@@ -455,7 +455,7 @@ impl PhysicalDriver {
         .max(16.0);
         let threshold = point_towards(source, outside, threshold_distance);
         eprintln!(
-            "physical-smoke: root-window={:?} source={source:?} threshold={threshold:?} outside={outside:?} work-area={work_area:?}",
+            "physical-smoke: root-window={:?} source={source:?} threshold={threshold:?} outside={outside:?} routed-outside={routed_outside:?} work-area={work_area:?}",
             root_window.bounds
         );
 
@@ -475,6 +475,7 @@ impl PhysicalDriver {
                 source,
                 threshold,
                 target: outside,
+                routed_target: routed_outside,
                 deadline: self.deadline,
             },
         )
@@ -642,6 +643,7 @@ struct DragRequest<'a> {
     source: PhysicalPoint,
     threshold: PhysicalPoint,
     target: PhysicalPoint,
+    routed_target: PhysicalPoint,
     deadline: Instant,
 }
 
@@ -744,8 +746,8 @@ fn inject_drag(
             request.deadline,
             &format!("{} drag-route confirmation", request.label),
         )?;
-        desktop.move_pointer(request.target)?;
-        desktop.assert_pointer(request.target, Some(true))?;
+        desktop.move_pointer(request.routed_target)?;
+        desktop.assert_pointer(request.routed_target, Some(true))?;
         let source_barrier_step = if request.source_viewport == ViewportId::ROOT {
             source_at_first_target.step.max(route_confirmed.step)
         } else {
@@ -758,7 +760,7 @@ fn inject_drag(
             source_barrier_step,
             request.source_client,
             request.source_pixels_per_point,
-            request.target,
+            request.routed_target,
             true,
             request.deadline,
             &format!("{} routed target input", request.label),
@@ -789,7 +791,7 @@ fn inject_drag(
             return Err(format!("{error}; release cleanup also failed: {release}"));
         }
     };
-    desktop.assert_pointer(request.target, Some(false))?;
+    desktop.assert_pointer(request.routed_target, Some(false))?;
     let released = viewport_barrier(
         inspection,
         request.preview_viewport,

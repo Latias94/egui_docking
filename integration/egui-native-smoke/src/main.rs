@@ -1,6 +1,7 @@
 //! One-shot X11/Glow smoke for the real native coordinator.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::error::Error;
 use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -27,24 +28,22 @@ const CHILD_FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 const MAIN_ITEM: ItemId = ItemId::new(1);
 const CHILD_ITEM: ItemId = ItemId::new(2);
 const CHILD_DETAIL: ItemId = ItemId::new(3);
+const SCENARIO_ENV: &str = "EGUI_DOCKSPACE_NATIVE_SMOKE_SCENARIO";
+const CLOSE_READY_TITLE: &str = "Dockspace native close ready";
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let scenario = configured_scenario()?;
+    eprintln!("native-smoke: scenario {scenario:?}");
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let session = DockspaceSession::from_layout(smoke_layout(), policy)?;
-    let dockspace = NativeDockspaceApp::new_with_close_policy(
-        egui::Id::new("egui-native-smoke"),
-        session,
-        ROOT_SURFACE,
-        SmokePanes::new(),
-        DockStyle::default(),
-        NativeWindowClosePolicy::RetainLayout,
-    )?;
+    let dockspace = new_dockspace(scenario, session)?;
     let native_host = dockspace.native_host_handler();
     let outcome = Arc::new(Mutex::new(None));
     let reported_outcome = Arc::clone(&outcome);
     let smoke = SmokeApp {
         dockspace,
+        scenario,
         phase: SmokePhase::AwaitRootPresentation,
         deadline: Instant::now() + Duration::from_secs(30),
         outcome: reported_outcome,
@@ -74,18 +73,122 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SmokeScenario {
+    #[default]
+    Redock,
+    RecoverClose,
+    RetainClose,
+}
+
+impl SmokeScenario {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "redock" => Ok(Self::Redock),
+            "recover-close" => Ok(Self::RecoverClose),
+            "retain-close" => Ok(Self::RetainClose),
+            value => Err(format!(
+                "unknown native smoke scenario {value:?}; expected redock, recover-close, or retain-close"
+            )),
+        }
+    }
+
+    const fn explicit_close_policy(self) -> Option<NativeWindowClosePolicy> {
+        match self {
+            Self::RecoverClose => None,
+            Self::Redock | Self::RetainClose => Some(NativeWindowClosePolicy::RetainLayout),
+        }
+    }
+}
+
+fn configured_scenario() -> Result<SmokeScenario, io::Error> {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    let environment = match env::var(SCENARIO_ENV) {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{SCENARIO_ENV} must contain Unicode text"),
+            ));
+        }
+    };
+    select_scenario(&args, environment.as_deref())
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))
+}
+
+fn select_scenario(args: &[String], environment: Option<&str>) -> Result<SmokeScenario, String> {
+    let mut selected = None;
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        let value = if let Some(value) = argument.strip_prefix("--scenario=") {
+            value
+        } else if argument == "--scenario" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| "--scenario requires a value".to_owned())?;
+            index += 1;
+            value
+        } else {
+            return Err(format!("unknown native smoke argument {argument:?}"));
+        };
+        if selected.replace(SmokeScenario::parse(value)?).is_some() {
+            return Err("--scenario may be specified only once".to_owned());
+        }
+        index += 1;
+    }
+    selected.map_or_else(
+        || environment.map_or(Ok(SmokeScenario::default()), SmokeScenario::parse),
+        Ok,
+    )
+}
+
+fn new_dockspace(
+    scenario: SmokeScenario,
+    session: DockspaceSession,
+) -> Result<NativeDockspaceApp<SmokePanes>, egui_dockspace_native::NativeRuntimeError> {
+    let instance = egui::Id::new("egui-native-smoke");
+    let panes = SmokePanes::new();
+    let style = DockStyle::default();
+    match scenario.explicit_close_policy() {
+        Some(close_policy) => NativeDockspaceApp::new_with_close_policy(
+            instance,
+            session,
+            ROOT_SURFACE,
+            panes,
+            style,
+            close_policy,
+        ),
+        None => NativeDockspaceApp::new(instance, session, ROOT_SURFACE, panes, style),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum SmokePhase {
     AwaitRootPresentation,
     AwaitTearOff,
-    AwaitFirstLive { target_surface: SurfaceId },
-    AwaitRedock { target_surface: SurfaceId },
-    AwaitRetirement { target_surface: SurfaceId },
+    AwaitFirstLive {
+        target_surface: SurfaceId,
+    },
+    AwaitChildClose {
+        target_surface: SurfaceId,
+    },
+    AwaitCloseSettlement {
+        target_surface: SurfaceId,
+        child_viewport: ViewportId,
+    },
+    AwaitRedock {
+        target_surface: SurfaceId,
+    },
+    AwaitRetirement {
+        target_surface: SurfaceId,
+    },
     Done,
 }
 
 struct SmokeApp {
     dockspace: NativeDockspaceApp<SmokePanes>,
+    scenario: SmokeScenario,
     phase: SmokePhase,
     deadline: Instant,
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
@@ -133,6 +236,13 @@ impl SmokeApp {
             SmokePhase::AwaitFirstLive { target_surface } => {
                 self.await_first_live(context, target_surface)
             }
+            SmokePhase::AwaitChildClose { target_surface } => {
+                self.queue_child_close(context, target_surface)
+            }
+            SmokePhase::AwaitCloseSettlement {
+                target_surface,
+                child_viewport,
+            } => self.await_close_settlement(context, target_surface, child_viewport),
             SmokePhase::AwaitRedock { target_surface } => {
                 self.await_redock(context, target_surface)
             }
@@ -210,7 +320,126 @@ impl SmokeApp {
                 })
         });
         if transferred == Some(true) {
-            self.queue_redock(context, target_surface);
+            match self.scenario {
+                SmokeScenario::Redock => self.queue_redock(context, target_surface),
+                SmokeScenario::RecoverClose | SmokeScenario::RetainClose => {
+                    self.transition(SmokePhase::AwaitChildClose { target_surface });
+                    self.queue_child_close(context, target_surface);
+                }
+            }
+        }
+    }
+
+    fn queue_child_close(&mut self, context: &egui::Context, target_surface: SurfaceId) {
+        let child = context.input(|input| unique_deferred_child(&input.raw.viewports));
+        let child_viewport = match child {
+            Ok(Some(child_viewport)) => child_viewport,
+            Ok(None) => {
+                context.request_repaint_once_of(ViewportId::ROOT);
+                return;
+            }
+            Err(message) => {
+                self.finish(context, Err(message));
+                return;
+            }
+        };
+        // The X11 smoke driver waits for this exact title before sending a real
+        // WM close request. `ViewportCommand::Close` would bypass Winit's
+        // `CloseRequested` event and therefore could not prove close policy.
+        context.send_viewport_cmd_to(
+            child_viewport,
+            ViewportCommand::Title(CLOSE_READY_TITLE.to_owned()),
+        );
+        context.request_repaint_once_of(ViewportId::ROOT);
+        self.transition(SmokePhase::AwaitCloseSettlement {
+            target_surface,
+            child_viewport,
+        });
+    }
+
+    fn await_close_settlement(
+        &mut self,
+        context: &egui::Context,
+        target_surface: SurfaceId,
+        child_viewport: ViewportId,
+    ) {
+        let child_window_destroyed =
+            context.input(|input| !input.raw.viewports.contains_key(&child_viewport));
+        if !child_window_destroyed
+            || !self.dockspace.is_surface_presented(ROOT_SURFACE)
+            || self.dockspace.is_surface_presented(target_surface)
+            || !self.dockspace.is_quiescent()
+        {
+            return;
+        }
+
+        let layout_matches = self.dockspace.with_view(|view| {
+            let root_is_live = view
+                .surface(ROOT_SURFACE)
+                .and_then(|surface| surface.main_root())
+                .is_some_and(|root| root.id() == MAIN_ROOT);
+            if !root_is_live {
+                return false;
+            }
+            match self.scenario {
+                SmokeScenario::RecoverClose => {
+                    [CHILD_ITEM, CHILD_DETAIL].into_iter().all(|item| {
+                        view.item(item)
+                            .is_some_and(|pane| pane.surface() == ROOT_SURFACE)
+                    }) && view
+                        .surface(target_surface)
+                        .is_none_or(|surface| surface.is_rootless())
+                }
+                SmokeScenario::RetainClose => {
+                    [CHILD_ITEM, CHILD_DETAIL].into_iter().all(|item| {
+                        view.item(item)
+                            .is_some_and(|pane| pane.surface() == target_surface)
+                    }) && view
+                        .surface(target_surface)
+                        .and_then(|surface| surface.main_root())
+                        .is_some_and(|root| root.id() == CHILD_ROOT)
+                }
+                SmokeScenario::Redock => false,
+            }
+        });
+        match layout_matches {
+            Some(true) => self.finish(context, Ok(())),
+            Some(false) => {
+                let layout = self.dockspace.with_view(|view| {
+                    let root = view
+                        .surface(ROOT_SURFACE)
+                        .and_then(|surface| surface.main_root())
+                        .map(|root| root.id());
+                    let target = view
+                        .surface(target_surface)
+                        .and_then(|surface| surface.main_root())
+                        .map(|root| root.id());
+                    let items = [CHILD_ITEM, CHILD_DETAIL].map(|item| {
+                        view.item(item).map(|pane| {
+                            (
+                                item,
+                                pane.surface(),
+                                pane.root(),
+                                pane.contained(),
+                                pane.is_selected(),
+                            )
+                        })
+                    });
+                    format!("root={root:?}, target={target:?}, items={items:?}")
+                });
+                self.finish(
+                    context,
+                    Err(format!(
+                        "{:?} reached retired and quiescent state with an unexpected layout: {}",
+                        self.scenario,
+                        layout.unwrap_or_else(|| "published view unavailable".to_owned())
+                    )),
+                );
+            }
+            None => self.finish(
+                context,
+                Err("native runtime lost its published view after child close".to_owned()),
+            ),
         }
     }
 
@@ -301,6 +530,29 @@ impl SmokeApp {
     }
 }
 
+/// Selects the one non-root viewport owned by this bounded smoke.
+///
+/// `RawInput` does not expose the viewport class and does not guarantee that a
+/// deferred callback reports its logical parent. The one-child layout makes
+/// uniqueness sufficient without inspecting adapter bindings.
+fn unique_deferred_child(
+    viewports: &egui::ViewportIdMap<egui::ViewportInfo>,
+) -> Result<Option<ViewportId>, String> {
+    let mut children = viewports
+        .keys()
+        .filter(|viewport| **viewport != ViewportId::ROOT);
+    let Some(viewport) = children.next() else {
+        return Ok(None);
+    };
+    if children.next().is_some() {
+        return Err(format!(
+            "expected at most one deferred child viewport, found multiple: {:?}",
+            viewports.keys().collect::<Vec<_>>()
+        ));
+    }
+    Ok(Some(*viewport))
+}
+
 fn action_request_message(error: NativeActionRequestError) -> String {
     format!("native action request failed: {error}")
 }
@@ -373,5 +625,81 @@ impl PaneView for SmokePanes {
         };
         ui.heading(pane.title);
         ui.label(pane.body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scenario_selection_defaults_to_redock_and_cli_overrides_the_environment() {
+        assert_eq!(
+            select_scenario(&[], None).expect("the default scenario is valid"),
+            SmokeScenario::Redock
+        );
+        assert_eq!(
+            select_scenario(&[], Some("recover-close")).expect("the environment is valid"),
+            SmokeScenario::RecoverClose
+        );
+        assert_eq!(
+            select_scenario(
+                &["--scenario=retain-close".to_owned()],
+                Some("recover-close")
+            )
+            .expect("the CLI selection is valid"),
+            SmokeScenario::RetainClose
+        );
+    }
+
+    #[test]
+    fn recover_close_uses_the_default_policy_and_retain_close_is_explicit() {
+        assert_eq!(SmokeScenario::RecoverClose.explicit_close_policy(), None);
+        assert_eq!(
+            SmokeScenario::RetainClose.explicit_close_policy(),
+            Some(NativeWindowClosePolicy::RetainLayout)
+        );
+    }
+
+    #[test]
+    fn raw_input_child_selection_requires_one_unique_deferred_child() {
+        let mut viewports = egui::ViewportIdMap::default();
+        viewports.insert(ViewportId::ROOT, egui::ViewportInfo::default());
+        assert_eq!(
+            unique_deferred_child(&viewports).expect("root-only input is valid"),
+            None
+        );
+
+        let child = ViewportId::from_hash_of("smoke-child");
+        viewports.insert(
+            child,
+            egui::ViewportInfo {
+                parent: Some(ViewportId::ROOT),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            unique_deferred_child(&viewports).expect("one child is unambiguous"),
+            Some(child)
+        );
+
+        viewports
+            .get_mut(&child)
+            .expect("the unique child remains present")
+            .parent = None;
+        assert_eq!(
+            unique_deferred_child(&viewports)
+                .expect("a deferred callback need not repeat logical parentage"),
+            Some(child)
+        );
+
+        viewports.insert(
+            ViewportId::from_hash_of("unexpected-second-child"),
+            egui::ViewportInfo {
+                parent: Some(ViewportId::ROOT),
+                ..Default::default()
+            },
+        );
+        assert!(unique_deferred_child(&viewports).is_err());
     }
 }

@@ -47,7 +47,11 @@ fn publish_work_areas(
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the native snapshot frame settles every surface");
     let report = frame.commit().expect("the native snapshot commits");
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
 }
 
 #[test]

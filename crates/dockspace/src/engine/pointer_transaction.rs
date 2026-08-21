@@ -2213,13 +2213,17 @@ impl DockEngine {
         pointer: SurfacePointer,
         policy: &DockPolicySnapshot,
     ) -> Result<PreviewDecision, EngineError> {
-        match self.core_contained_candidate(drag, pointer) {
+        match self.core_contained_candidate(drag, pointer, None) {
             CoreContainedCandidate::None => {
                 Ok(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone))
             }
-            CoreContainedCandidate::Proposal(proposal) => {
-                self.resolve_journal_contained_proposal(cause, drag, proposal, policy)
-            }
+            CoreContainedCandidate::Proposal(proposal) => self.resolve_contained_proposal(
+                cause,
+                drag,
+                proposal,
+                ContainedPlacementAuthority::PresentedCoordinates,
+                policy,
+            ),
             CoreContainedCandidate::Rejected => {
                 Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected))
             }
@@ -2227,19 +2231,14 @@ impl DockEngine {
         }
     }
 
-    fn resolve_journal_contained_proposal(
+    pub(super) fn resolve_contained_proposal(
         &self,
         cause: ReductionCause,
         drag: &crate::interaction::ActiveDrag,
         proposal: crate::intent::ContainedTearOffProposal,
+        authority: ContainedPlacementAuthority,
         policy: &DockPolicySnapshot,
     ) -> Result<PreviewDecision, EngineError> {
-        if self
-            .validate_contained_placement(proposal.placement())
-            .is_err()
-        {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-        }
         let Some(command) = self.contained_presentation_command(
             &drag.payload,
             proposal,
@@ -2251,7 +2250,7 @@ impl DockEngine {
         ) else {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         };
-        if !self.valid_core_contained_command(drag, proposal, &command)
+        if !self.valid_core_contained_command(drag, proposal, &command, authority)
             || self
                 .stage_journal_workspace_command(cause, &command, policy)?
                 .is_err()

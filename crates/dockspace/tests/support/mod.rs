@@ -1020,7 +1020,6 @@ pub struct MeasurementProfile {
     pub tab_content_width: f64,
     pub leading_reserved: f64,
     pub trailing_reserved: f64,
-    pub scroll_offset: Option<f64>,
     pub tab_strip_controls: Option<TabStripControlMetrics>,
     pub tab_list_menu: Option<TabListMenuMetrics>,
 }
@@ -1032,7 +1031,6 @@ impl Default for MeasurementProfile {
             tab_content_width: 56.0,
             leading_reserved: 0.0,
             trailing_reserved: 0.0,
-            scroll_offset: None,
             tab_strip_controls: None,
             tab_list_menu: None,
         }
@@ -1090,14 +1088,8 @@ fn measurements_from_requirements(
         let metrics = profile
             .tab_list_menu
             .map_or(metrics, |menu| metrics.with_tab_list_menu(menu));
-        let metrics = profile
-            .scroll_offset
-            .map_or(Ok(metrics), |offset| metrics.with_scroll_offset(offset));
         contribution
-            .insert_tab_strip(
-                key,
-                Measurement::Measured(metrics.expect("tab strip scroll offset is valid")),
-            )
+            .insert_tab_strip(key, Measurement::Measured(metrics))
             .expect("tab strip answer is unique");
     }
     contribution

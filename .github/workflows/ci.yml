@@ -96,6 +96,14 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      - name: Check out pinned winit fork
+        if: runner.os == 'macOS'
+        uses: actions/checkout@v4
+        with:
+          repository: Latias94/winit
+          ref: f378b50f29cafafec31cd8675c17646b4ef57d70
+          path: .ci/winit-fork
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
         with:
@@ -107,6 +115,33 @@ jobs:
           --manifest-path integration/egui-fork-workspace/Cargo.toml
           --package egui_dockspace_native --lib --locked -j1
 
+      - name: Run pinned macOS pointer-fact tests
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          pointer_fact_tests=(
+            platform_impl::macos::view::pointer_route_tests::frontmost_winit_window_is_reported_exactly
+            platform_impl::macos::view::pointer_route_tests::desktop_and_foreign_windows_remain_distinct
+            platform_impl::macos::view::pointer_route_tests::capture_follows_post_event_pressed_button_state
+            platform_impl::macos::view::pointer_route_tests::button_transitions_preserve_other_capture_buttons
+            platform_impl::macos::view::pointer_route_tests::pointer_capture_reset_is_idempotent
+            platform_impl::macos::view::pointer_route_tests::quartz_desktop_points_map_through_the_exact_display
+            platform_impl::macos::view::pointer_route_tests::overlapping_or_missing_display_mapping_is_unknown
+          )
+          listed="$(
+            cargo test --manifest-path .ci/winit-fork/Cargo.toml \
+              -p winit --lib --no-default-features --locked -j1 -- --list
+          )"
+          for test_name in "${pointer_fact_tests[@]}"; do
+            if ! grep -Fqx "$test_name: test" <<<"$listed"; then
+              echo "missing pinned macOS pointer-fact test: $test_name" >&2
+              exit 1
+            fi
+          done
+          cargo test --manifest-path .ci/winit-fork/Cargo.toml \
+            -p winit --lib --no-default-features \
+            platform_impl::macos::view::pointer_route_tests --locked -j1
+
   fork-native:
     name: Fork-backed native coordinator
     runs-on: ubuntu-latest
@@ -117,14 +152,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: d74b86ad9b642655bc867263a10864575e32cc9f
+          ref: 660073444296f40903e92dbce0fb818a7f4771b0
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
         uses: actions/checkout@v4
         with:
           repository: Latias94/winit
-          ref: c3fe740e090543e7afba525c111874d36e68948f
+          ref: f378b50f29cafafec31cd8675c17646b4ef57d70
           path: .ci/winit-fork
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -211,17 +246,58 @@ jobs:
             --features winit,native-host-seam,x11,wayland \
             "$test_name" --locked -j1 -- --exact
 
-      - name: Run pinned winit event-model tests
-        run: >-
-          cargo test --manifest-path .ci/winit-fork/Cargo.toml
-          -p winit --lib --no-default-features
-          --features x11,wayland event::tests --locked -j1
-
-      - name: Run pinned X11 work-area authority tests
-        run: >-
-          cargo test --manifest-path .ci/winit-fork/Cargo.toml
-          -p winit --lib --no-default-features
-          --features x11,wayland work_area::tests --locked -j1
+      - name: Run pinned X11 pointer and work-area fact tests
+        run: |
+          x11_fact_tests=(
+            platform_impl::linux::x11::pointer_facts::tests::button_transition_uses_post_event_state
+            platform_impl::linux::x11::pointer_facts::tests::implicit_capture_stays_with_first_delivery_until_last_release
+            platform_impl::linux::x11::pointer_facts::tests::capture_without_observed_press_fails_closed_until_buttons_are_up
+            platform_impl::linux::x11::pointer_facts::tests::resetting_window_capture_is_scoped_and_idempotent
+            platform_impl::linux::x11::pointer_facts::tests::hierarchy_distinguishes_desktop_foreign_and_winit_windows
+            platform_impl::linux::x11::pointer_facts::tests::hover_route_does_not_change_capture_owner
+            platform_impl::linux::x11::pointer_facts::tests::pointer_query_coordinates_must_match_the_native_event
+            platform_impl::linux::x11::work_area::tests::accepts_exact_current_desktop_and_clips_each_monitor
+            platform_impl::linux::x11::work_area::tests::rejects_unadvertised_or_unverified_wm_authority
+            platform_impl::linux::x11::work_area::tests::rejects_inexact_desktop_arrays_and_nonzero_current_viewport
+            platform_impl::linux::x11::work_area::tests::rejects_geometry_and_work_area_outside_root
+            platform_impl::linux::x11::work_area::tests::rejects_empty_cloned_overlapping_or_invalid_scale_rosters
+            platform_impl::linux::x11::work_area::tests::rejects_duplicate_crtc_or_output_identity
+            platform_impl::linux::x11::work_area::tests::event_mask_merge_preserves_every_existing_bit
+            platform_impl::linux::x11::work_area::tests::property_reply_length_must_match_format_and_value_count
+            platform_impl::linux::x11::work_area::tests::non_identity_crtc_transform_cannot_publish_scalar_scale_authority
+            platform_impl::linux::x11::work_area::tests::global_ewmh_work_area_is_not_published_as_per_monitor_authority
+            platform_impl::linux::x11::work_area::tests::exact_randr_scale_rejects_winit_compatibility_clamps
+            platform_impl::linux::x11::work_area::tests::subscribed_foreign_authorities_survive_owner_switches_until_destroyed
+            platform_impl::linux::x11::work_area::tests::authority_subscription_roster_is_bounded_and_recovers_after_destroy
+            platform_impl::linux::x11::monitor::tests::monitor_authority_subscribes_to_every_randr_1_3_fact
+            platform_impl::linux::x11::monitor::tests::monitor_authority_versions_newer_randr_selection_bits
+            platform_impl::linux::x11::xsettings::tests::empty
+            platform_impl::linux::x11::xsettings::tests::parse_xsettings
+            platform_impl::linux::x11::xsettings::tests::exact_parser_reads_the_complete_property
+            platform_impl::linux::x11::xsettings::tests::exact_parser_rejects_ambiguous_or_malformed_authority
+          )
+          listed="$(
+            cargo test --manifest-path .ci/winit-fork/Cargo.toml \
+              -p winit --lib --no-default-features --features x11,wayland \
+              --locked -j1 -- --list
+          )"
+          for test_name in "${x11_fact_tests[@]}"; do
+            if ! grep -Fqx "$test_name: test" <<<"$listed"; then
+              echo "missing pinned X11 fact test: $test_name" >&2
+              exit 1
+            fi
+          done
+          x11_fact_modules=(
+            platform_impl::linux::x11::pointer_facts::tests
+            platform_impl::linux::x11::work_area::tests
+            platform_impl::linux::x11::monitor::tests
+            platform_impl::linux::x11::xsettings::tests
+          )
+          for module in "${x11_fact_modules[@]}"; do
+            cargo test --manifest-path .ci/winit-fork/Cargo.toml \
+              -p winit --lib --no-default-features --features x11,wayland \
+              "$module" --locked -j1
+          done
 
       - name: Run pinned native workspace tests
         run: python3 scripts/run_egui_fork_harness.py
@@ -230,7 +306,7 @@ jobs:
         run: >-
           sudo apt-get update &&
           sudo apt-get install --no-install-recommends -y
-          libxkbcommon-x11-0 openbox x11-utils xauth xvfb
+          libxkbcommon-x11-0 openbox x11-utils xauth xdotool xvfb
 
       - name: Build real-window Glow smokes
         run: >-
@@ -245,10 +321,101 @@ jobs:
       - name: Run programmatic real-window Glow smoke
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
-        run: >-
-          timeout --kill-after=5s 45s xvfb-run -a
-          --server-args="-screen 0 1280x1024x24"
-          integration/egui-fork-workspace/target/debug/egui-native-smoke
+        run: |
+          timeout --kill-after=5s 45s xvfb-run -a \
+            --server-args="-screen 0 1280x1024x24" \
+            integration/egui-fork-workspace/target/debug/egui-native-smoke
+
+          run_close_smoke() {
+            scenario="$1"
+            log="/tmp/egui-native-${scenario}.log"
+            openbox --sm-disable >"/tmp/openbox-${scenario}.log" 2>&1 &
+            wm_pid=$!
+            trap 'kill "$wm_pid" 2>/dev/null || true' EXIT
+
+            wm_attempts=0
+            until {
+              root_properties="$(
+                xprop -root \
+                  _NET_SUPPORTING_WM_CHECK \
+                  _NET_CURRENT_DESKTOP \
+                  _NET_NUMBER_OF_DESKTOPS \
+                  _NET_DESKTOP_GEOMETRY \
+                  _NET_DESKTOP_VIEWPORT \
+                  _NET_WORKAREA 2>/dev/null
+              )" &&
+              wm_window="$(
+                sed -n 's/.*window id # //p' <<<"$root_properties" | head -n 1
+              )" &&
+              [[ "$wm_window" =~ ^0x[1-9a-fA-F][0-9a-fA-F]*$ ]] &&
+              grep -Eq '_NET_WORKAREA\(CARDINAL\) = [0-9]' <<<"$root_properties" &&
+              wm_properties="$(
+                xprop -id "$wm_window" \
+                  _NET_SUPPORTING_WM_CHECK _NET_WM_NAME 2>/dev/null
+              )" &&
+              grep -Fq "window id # $wm_window" <<<"$wm_properties" &&
+              grep -Fq '_NET_WM_NAME(UTF8_STRING) = "Openbox"' <<<"$wm_properties"
+            }; do
+              wm_attempts=$((wm_attempts + 1))
+              if [ "$wm_attempts" -ge 200 ]; then
+                cat "/tmp/openbox-${scenario}.log"
+                return 1
+              fi
+              sleep 0.05
+            done
+
+            EGUI_DOCKSPACE_NATIVE_SMOKE_SCENARIO="$scenario" \
+              integration/egui-fork-workspace/target/debug/egui-native-smoke \
+              >"$log" 2>&1 &
+            app_pid=$!
+            close_window=""
+            close_attempts=0
+            while [ -z "$close_window" ]; do
+              if ! kill -0 "$app_pid" 2>/dev/null; then
+                wait "$app_pid" || true
+                cat "$log"
+                return 1
+              fi
+              mapfile -t close_windows < <(
+                xdotool search --onlyvisible --name '^Dockspace native close ready$' \
+                  2>/dev/null || true
+              )
+              if [ "${#close_windows[@]}" -gt 1 ]; then
+                echo "expected one close-ready child, found ${#close_windows[@]}" >&2
+                cat "$log"
+                return 1
+              fi
+              if [ "${#close_windows[@]}" -eq 1 ]; then
+                close_window="${close_windows[0]}"
+                break
+              fi
+              close_attempts=$((close_attempts + 1))
+              if [ "$close_attempts" -ge 400 ]; then
+                echo "timed out waiting for the close-ready child" >&2
+                cat "$log"
+                return 1
+              fi
+              sleep 0.05
+            done
+
+            # Exercise the ordinary WM_DELETE_WINDOW path. `windowclose`
+            # destroys the X11 window directly and cannot prove the product's
+            # close-policy correlation or recovery semantics.
+            xdotool windowactivate --sync "$close_window"
+            xdotool key --clearmodifiers alt+F4
+            if ! wait "$app_pid"; then
+              cat "$log"
+              return 1
+            fi
+            cat "$log"
+          }
+
+          for scenario in recover-close retain-close; do
+            timeout --kill-after=5s 45s xvfb-run -a \
+              --server-args="-screen 0 1280x1024x24" \
+              bash -euo pipefail -c \
+              "$(declare -f run_close_smoke); run_close_smoke '$scenario'"
+          done
 
       - name: Run physical X11/XTest docking smoke
         env:
@@ -262,7 +429,28 @@ jobs:
             wm_pid=$!
             trap 'kill "$wm_pid" 2>/dev/null || true' EXIT
             wm_attempts=0
-            until xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1; do
+            until {
+              root_properties="$(
+                xprop -root \
+                  _NET_SUPPORTING_WM_CHECK \
+                  _NET_CURRENT_DESKTOP \
+                  _NET_NUMBER_OF_DESKTOPS \
+                  _NET_DESKTOP_GEOMETRY \
+                  _NET_DESKTOP_VIEWPORT \
+                  _NET_WORKAREA 2>/dev/null
+              )" &&
+              wm_window="$(
+                sed -n 's/.*window id # //p' <<<"$root_properties" | head -n 1
+              )" &&
+              [[ "$wm_window" =~ ^0x[1-9a-fA-F][0-9a-fA-F]*$ ]] &&
+              grep -Eq '_NET_WORKAREA\(CARDINAL\) = [0-9]' <<<"$root_properties" &&
+              wm_properties="$(
+                xprop -id "$wm_window" \
+                  _NET_SUPPORTING_WM_CHECK _NET_WM_NAME 2>/dev/null
+              )" &&
+              grep -Fq "window id # $wm_window" <<<"$wm_properties" &&
+              grep -Fq '_NET_WM_NAME(UTF8_STRING) = "Openbox"' <<<"$wm_properties"
+            }; do
               wm_attempts=$((wm_attempts + 1))
               if [ "$wm_attempts" -ge 200 ]; then
                 cat /tmp/openbox.log
@@ -272,7 +460,7 @@ jobs:
             done
             integration/egui-fork-workspace/target/debug/egui-native-physical-smoke
           }
-          export -f run_physical_smoke
           timeout --kill-after=5s 55s xvfb-run -a \
             --server-args="-screen 0 1280x800x24 +extension RANDR +extension XTEST" \
-            bash -euo pipefail -c run_physical_smoke
+            bash -euo pipefail -c \
+            "$(declare -f run_physical_smoke); run_physical_smoke"

@@ -64,7 +64,11 @@ fn applied_pointer_passthrough_callback_becomes_an_exact_snapshot_fact() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the roster boundary settles every surface");
     let report = roster_frame.commit().expect("the roster boundary commits");
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
     assert!(report.inputs().iter().any(|input| matches!(
         input,
         HostInputOutcome::NativePlatformSnapshotApplied { .. }

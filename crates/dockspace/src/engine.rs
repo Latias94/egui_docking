@@ -3062,6 +3062,30 @@ impl DockEngine {
         ))
     }
 
+    fn contained_placement_from_local_candidate(
+        candidate: &crate::scene::SurfacePlanScene,
+        workspace: WorkspaceVersion,
+        surface: crate::ids::SurfaceId,
+        requested_rect: crate::geometry::LogicalRect,
+        minimum_size: crate::geometry::LogicalSize,
+    ) -> Result<ContainedPlacementProof, ContainedPlacementUnavailable> {
+        if candidate.stamp().surface() != surface
+            || candidate.stamp().requirement().workspace_epoch() != workspace.epoch()
+        {
+            return Err(ContainedPlacementUnavailable::SceneUnavailable);
+        }
+        let bounds = candidate.plan().bounds();
+        let clamped_rect = clamp_contained_rect(surface, bounds, requested_rect, minimum_size)?;
+        Ok(ContainedPlacementProof::new(
+            candidate.stamp(),
+            surface,
+            requested_rect,
+            minimum_size,
+            bounds,
+            clamped_rect,
+        ))
+    }
+
     fn ready_surface_bounds(
         scene: &SurfaceSceneSet,
         workspace: WorkspaceVersion,
@@ -4048,11 +4072,27 @@ impl DockEngine {
         drag: &crate::interaction::ActiveDrag,
         proposal: crate::intent::ContainedTearOffProposal,
         command: &WorkspaceCommand,
+        authority: ContainedPlacementAuthority,
     ) -> bool {
-        if self
-            .validate_contained_placement(proposal.placement())
-            .is_err()
-        {
+        let placement_is_current = match authority {
+            ContainedPlacementAuthority::PresentedCoordinates => {
+                self.validate_contained_placement(proposal.placement())
+            }
+            ContainedPlacementAuthority::LocalReady => self
+                .local_response_candidate(proposal.placement().scene())
+                .map_err(|_| ContainedPlacementUnavailable::StaleScene {
+                    expected: proposal.placement().scene(),
+                    current: self
+                        .presentation_authority
+                        .scene
+                        .surface(proposal.surface())
+                        .map(SurfaceScene::stamp),
+                })
+                .and_then(|candidate| {
+                    Self::validate_contained_placement_geometry(proposal.placement(), candidate)
+                }),
+        };
+        if placement_is_current.is_err() {
             return false;
         }
         self.valid_contained_command_structure(drag, proposal, command)
@@ -4216,6 +4256,7 @@ impl DockEngine {
         &self,
         drag: &crate::interaction::ActiveDrag,
         current_pointer: SurfacePointer,
+        local_candidate: Option<&crate::scene::SurfacePlanScene>,
     ) -> CoreContainedCandidate {
         let (root, floating, source_rect, initial_pointer, minimum_size, position) =
             match &drag.origin {
@@ -4260,33 +4301,40 @@ impl DockEngine {
         else {
             return CoreContainedCandidate::Rejected;
         };
-        let placement =
-            match self.contained_placement(current_pointer.surface(), requested_rect, minimum_size)
-            {
-                Ok(placement) => placement,
-                Err(
-                    ContainedPlacementUnavailable::UnrepresentableGeometry { .. }
-                    | ContainedPlacementUnavailable::ProofMismatch { .. },
-                ) => {
-                    return CoreContainedCandidate::Rejected;
-                }
-                Err(
-                    ContainedPlacementUnavailable::SceneUnavailable
-                    | ContainedPlacementUnavailable::StaleScene { .. }
-                    | ContainedPlacementUnavailable::MissingSurface { .. }
-                    | ContainedPlacementUnavailable::BootstrapSurface { .. },
-                ) => {
-                    return CoreContainedCandidate::Cancel(
-                        InteractionCancelReason::SceneUnavailable,
-                    );
-                }
-                Err(
-                    ContainedPlacementUnavailable::StaleSurface { .. }
-                    | ContainedPlacementUnavailable::PendingPaintSurface { .. },
-                ) => {
-                    return CoreContainedCandidate::None;
-                }
-            };
+        let placement = match local_candidate.map_or_else(
+            || self.contained_placement(current_pointer.surface(), requested_rect, minimum_size),
+            |candidate| {
+                Self::contained_placement_from_local_candidate(
+                    candidate,
+                    self.version,
+                    current_pointer.surface(),
+                    requested_rect,
+                    minimum_size,
+                )
+            },
+        ) {
+            Ok(placement) => placement,
+            Err(
+                ContainedPlacementUnavailable::UnrepresentableGeometry { .. }
+                | ContainedPlacementUnavailable::ProofMismatch { .. },
+            ) => {
+                return CoreContainedCandidate::Rejected;
+            }
+            Err(
+                ContainedPlacementUnavailable::SceneUnavailable
+                | ContainedPlacementUnavailable::StaleScene { .. }
+                | ContainedPlacementUnavailable::MissingSurface { .. }
+                | ContainedPlacementUnavailable::BootstrapSurface { .. },
+            ) => {
+                return CoreContainedCandidate::Cancel(InteractionCancelReason::SceneUnavailable);
+            }
+            Err(
+                ContainedPlacementUnavailable::StaleSurface { .. }
+                | ContainedPlacementUnavailable::PendingPaintSurface { .. },
+            ) => {
+                return CoreContainedCandidate::None;
+            }
+        };
         CoreContainedCandidate::Proposal(crate::intent::ContainedTearOffProposal::new(
             root, floating, placement, position,
         ))

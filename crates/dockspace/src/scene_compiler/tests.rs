@@ -669,9 +669,8 @@ type OverflowingTabStripFixture = (
     [ItemId; 4],
 );
 
-fn overflowing_tab_strip_fixture(legacy_scroll: f64) -> OverflowingTabStripFixture {
+fn overflowing_tab_strip_fixture() -> OverflowingTabStripFixture {
     overflowing_tab_strip_fixture_with(
-        legacy_scroll,
         &policy_snapshot(),
         Some(
             TabListMenuMetrics::new(24.0, 8.0, 8.0, 2.0, 92.0, 10.0)
@@ -682,7 +681,6 @@ fn overflowing_tab_strip_fixture(legacy_scroll: f64) -> OverflowingTabStripFixtu
 }
 
 fn overflowing_tab_strip_fixture_with(
-    legacy_scroll: f64,
     policy: &DockPolicySnapshot,
     menu: Option<TabListMenuMetrics>,
     open_menu: bool,
@@ -701,11 +699,10 @@ fn overflowing_tab_strip_fixture_with(
             TabStripControlMetric::new(20.0, TabStripControlPlacement::ReservedTrailing)
                 .expect("menu control metric should be valid"),
         );
-    overflowing_tab_strip_fixture_with_controls(legacy_scroll, policy, menu, open_menu, controls)
+    overflowing_tab_strip_fixture_with_controls(policy, menu, open_menu, controls)
 }
 
 fn overflowing_tab_strip_fixture_with_controls(
-    legacy_scroll: f64,
     policy: &DockPolicySnapshot,
     menu: Option<TabListMenuMetrics>,
     open_menu: bool,
@@ -713,20 +710,11 @@ fn overflowing_tab_strip_fixture_with_controls(
 ) -> OverflowingTabStripFixture {
     let bounds =
         LogicalRect::new(0.0, 0.0, 260.0, 180.0).expect("default fixture bounds should be valid");
-    overflowing_tab_strip_fixture_with_geometry(
-        legacy_scroll,
-        policy,
-        menu,
-        open_menu,
-        controls,
-        bounds,
-        bounds,
-    )
+    overflowing_tab_strip_fixture_with_geometry(policy, menu, open_menu, controls, bounds, bounds)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn overflowing_tab_strip_fixture_with_geometry(
-    legacy_scroll: f64,
     policy: &DockPolicySnapshot,
     menu: Option<TabListMenuMetrics>,
     open_menu: bool,
@@ -780,23 +768,19 @@ fn overflowing_tab_strip_fixture_with_geometry(
         measurements
             .insert_tab_strip(
                 key,
-                Measurement::Measured(
-                    menu.map_or_else(
-                        || {
-                            TabStripMetrics::new(0.0, 0.0)
-                                .expect("strip should be valid")
-                                .with_controls(controls)
-                        },
-                        |menu| {
-                            TabStripMetrics::new(0.0, 0.0)
-                                .expect("strip should be valid")
-                                .with_controls(controls)
-                                .with_tab_list_menu(menu)
-                        },
-                    )
-                    .with_scroll_offset(legacy_scroll)
-                    .expect("legacy observation should be valid"),
-                ),
+                Measurement::Measured(menu.map_or_else(
+                    || {
+                        TabStripMetrics::new(0.0, 0.0)
+                            .expect("strip should be valid")
+                            .with_controls(controls)
+                    },
+                    |menu| {
+                        TabStripMetrics::new(0.0, 0.0)
+                            .expect("strip should be valid")
+                            .with_controls(controls)
+                            .with_tab_list_menu(menu)
+                    },
+                )),
             )
             .expect("strip answer is unique");
     }
@@ -847,7 +831,7 @@ fn overflowing_tab_strip_fixture_with_geometry(
 #[test]
 fn overflow_compiles_stable_controls_membership_and_menu_roster() {
     let (workspace, manifest, measurements, states, surface, bar, items) =
-        overflowing_tab_strip_fixture(900.0);
+        overflowing_tab_strip_fixture();
     let plan = compile_surface_measurements(
         &workspace,
         version(),
@@ -998,7 +982,6 @@ fn bottom_dock_menu_opens_upward_within_the_authoritative_popup_plane() {
         .expect("menu metrics should be valid");
     let (workspace, manifest, measurements, states, _, _, _) =
         overflowing_tab_strip_fixture_with_geometry(
-            0.0,
             &policy_snapshot(),
             Some(menu_metrics),
             true,
@@ -1063,7 +1046,6 @@ fn active_popup_rejects_an_empty_measured_plane_before_projection() {
         .expect("menu metrics should be valid");
     let (workspace, manifest, measurements, states, surface, _, _) =
         overflowing_tab_strip_fixture_with_geometry(
-            0.0,
             &policy_snapshot(),
             Some(menu_metrics),
             true,
@@ -1123,13 +1105,7 @@ fn menu_only_control_compiles_as_an_exact_scene_subset() {
                 .expect("menu extent is valid"),
         );
     let (workspace, manifest, measurements, states, _, bar, _) =
-        overflowing_tab_strip_fixture_with_controls(
-            0.0,
-            &policy,
-            Some(menu_metrics),
-            false,
-            controls,
-        );
+        overflowing_tab_strip_fixture_with_controls(&policy, Some(menu_metrics), false, controls);
     let plan = compile_surface_measurements(
         &workspace,
         version(),
@@ -1223,7 +1199,7 @@ fn disabled_tab_bar_cannot_publish_an_open_menu_or_row_hits() {
     let menu = TabListMenuMetrics::new(24.0, 8.0, 8.0, 2.0, 92.0, 10.0)
         .expect("menu metrics should be valid");
     let (workspace, manifest, measurements, states, _, _, _) =
-        overflowing_tab_strip_fixture_with(0.0, &policy, Some(menu), false);
+        overflowing_tab_strip_fixture_with(&policy, Some(menu), false);
 
     let plan = compile_surface_measurements(
         &workspace,
@@ -1273,7 +1249,7 @@ fn disabled_tab_bar_cannot_publish_an_open_menu_or_row_hits() {
 fn idle_overflow_without_menu_metrics_is_ready_with_a_disabled_menu_receiver() {
     let policy = policy_snapshot();
     let (workspace, manifest, measurements, states, _, bar, _) =
-        overflowing_tab_strip_fixture_with(0.0, &policy, None, false);
+        overflowing_tab_strip_fixture_with(&policy, None, false);
 
     let plan = compile_surface_measurements(
         &workspace,
@@ -1330,7 +1306,7 @@ fn active_menu_without_allocatable_geometry_cannot_publish_a_ready_scene() {
     let menu = TabListMenuMetrics::new(24.0, 8.0, 20.0, 2.0, 20.0, 10.0)
         .expect("degenerate menu metrics remain a valid measurement");
     let (workspace, manifest, measurements, states, _, _, _) =
-        overflowing_tab_strip_fixture_with(0.0, &policy, Some(menu), true);
+        overflowing_tab_strip_fixture_with(&policy, Some(menu), true);
 
     assert!(matches!(
         compile_surface_measurements(
@@ -1355,7 +1331,7 @@ fn overflowing_menu_aggregate_is_rejected_before_scene_publication() {
     let menu = TabListMenuMetrics::new(f64::MAX, 8.0, 8.0, 2.0, 92.0, 10.0)
         .expect("finite menu metrics should be accepted as measurements");
     let (workspace, manifest, measurements, states, _, _, _) =
-        overflowing_tab_strip_fixture_with(0.0, &policy, Some(menu), true);
+        overflowing_tab_strip_fixture_with(&policy, Some(menu), true);
 
     assert!(matches!(
         compile_surface_measurements(
@@ -1374,38 +1350,6 @@ fn overflowing_menu_aggregate_is_rejected_before_scene_publication() {
             }
         ))
     ));
-}
-
-#[test]
-fn adapter_scroll_observation_does_not_change_core_compilation() {
-    let (first_workspace, first_manifest, first, first_states, _, _, _) =
-        overflowing_tab_strip_fixture(0.0);
-    let (second_workspace, second_manifest, second, second_states, _, _, _) =
-        overflowing_tab_strip_fixture(9_000.0);
-    let first_plan = compile_surface_measurements(
-        &first_workspace,
-        version(),
-        &policy_snapshot(),
-        &DockPresentationConfig::default(),
-        &first_manifest,
-        &first,
-        &first_states,
-        &[],
-    )
-    .expect("first measurements should compile");
-    let second_plan = compile_surface_measurements(
-        &second_workspace,
-        version(),
-        &policy_snapshot(),
-        &DockPresentationConfig::default(),
-        &second_manifest,
-        &second,
-        &second_states,
-        &[],
-    )
-    .expect("second measurements should compile");
-
-    assert_eq!(first_plan, second_plan);
 }
 
 #[test]

@@ -782,34 +782,50 @@ impl NativeCoordinator {
         abandoned
     }
 
-    pub(crate) fn settle_host_frame_inputs(&mut self, inputs: &[HostInputOutcome]) -> bool {
+    pub(crate) fn settle_host_frame_inputs(
+        &mut self,
+        inputs: &[HostInputOutcome],
+    ) -> Result<bool, NativeRuntimeError> {
         let Some(queued) = self.queued_snapshot.take() else {
-            return false;
+            return Ok(false);
         };
-        let applied = inputs.iter().any(|input| {
-            matches!(
-                input,
-                HostInputOutcome::NativePlatformSnapshotApplied { .. }
-            )
-        });
-        let rejected = inputs.iter().any(|input| {
-            matches!(
-                input,
-                HostInputOutcome::NativePlatformSnapshotStale
-                    | HostInputOutcome::NativePlatformProviderRejected
-            )
-        });
-        debug_assert_ne!(
-            applied, rejected,
-            "one queued native snapshot has one outcome"
-        );
-        self.retirements.settle_snapshot(applied && !rejected);
-        let snapshot_applied = applied && !rejected;
-        debug_assert!(
-            self.bridge
-                .settle_viewport_roster(&queued.roster, snapshot_applied),
-            "one queued native snapshot settles its exact roster envelope"
-        );
+        let applied = inputs
+            .iter()
+            .filter(|input| {
+                matches!(
+                    input,
+                    HostInputOutcome::NativePlatformSnapshotApplied { .. }
+                )
+            })
+            .count();
+        let rejected = inputs
+            .iter()
+            .filter(|input| {
+                matches!(
+                    input,
+                    HostInputOutcome::NativePlatformSnapshotStale
+                        | HostInputOutcome::NativePlatformProviderRejected
+                )
+            })
+            .count();
+        if applied + rejected != 1 {
+            return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
+        }
+        let snapshot_applied = applied == 1;
+        if snapshot_applied
+            && !self
+                .input_control
+                .snapshot_settlement_matches(queued.input_acknowledgement)
+        {
+            return Err(NativeHostProtocolError::NativeInputCorrelationChanged.into());
+        }
+        if !self
+            .bridge
+            .settle_viewport_roster(&queued.roster, snapshot_applied)
+        {
+            return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
+        }
+        self.retirements.settle_snapshot(snapshot_applied);
         if snapshot_applied {
             self.work_areas.commit(queued.work_areas, &self.session);
             self.viewports
@@ -823,14 +839,16 @@ impl NativeCoordinator {
             if presentation_acknowledged {
                 self.bridge.invalidate_viewport_roster();
             }
-            self.input_control
+            let input_settled = self
+                .input_control
                 .settle_snapshot(queued.input_acknowledgement);
+            debug_assert_eq!(input_settled, queued.input_acknowledgement.is_some());
             if queued.roster.is_terminal() && self.requires_terminal_snapshot() {
                 self.bridge.require_terminal_roster();
             }
-            true
+            Ok(true)
         } else {
-            queued.roster.is_terminal()
+            Ok(queued.roster.is_terminal())
         }
     }
 

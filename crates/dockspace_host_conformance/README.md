@@ -1,6 +1,6 @@
 # dockspace host conformance
 
-This unpublished crate is the renderer-neutral `host-driver` executor from the
+This unpublished crate is the renderer-neutral `core-host` executor from the
 Open GPUI docking conformance catalog. It uses only `dockspace`'s public runtime
 and model APIs. It does not own a `DockEngine`, replay core traces, or ask the
 core hit resolver to choose receiver facts.
@@ -24,7 +24,7 @@ The crate also owns the private-workspace semantic description for
 `LocalTabCloseSplitterAndContained`. The `core-host` test in this crate and the
 `egui-product-headless` kittest harness both map the same tab selection, close,
 splitter adjustment, and contained-resize steps without sharing runtime IDs,
-coordinates, or output authority. The OGC cases above remain host-driver
+coordinates, or output authority. The OGC cases above remain `core-host`
 evidence only and do not claim native-window coverage.
 
 The test crate also keeps a private two-surface transaction fixture. Each

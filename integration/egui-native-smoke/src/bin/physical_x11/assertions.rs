@@ -148,10 +148,10 @@ pub(super) fn desktop_to_viewport_logical(
     })
 }
 
-pub(super) fn choose_outside_point(
+pub(super) fn choose_outside_points(
     work_area: PhysicalBounds,
     occupied: impl IntoIterator<Item = PhysicalBounds>,
-) -> Option<PhysicalPoint> {
+) -> Option<(PhysicalPoint, PhysicalPoint)> {
     const FRACTIONS: [i32; 5] = [1, 3, 5, 7, 9];
 
     if work_area.width() <= 0 || work_area.height() <= 0 {
@@ -164,7 +164,7 @@ pub(super) fn choose_outside_point(
         .copied()
         .map(|bounds| bounds.expanded(margin))
         .collect::<Vec<_>>();
-    FRACTIONS
+    let candidates = FRACTIONS
         .into_iter()
         .flat_map(|x| FRACTIONS.into_iter().map(move |y| (x, y)))
         .map(|(x, y)| PhysicalPoint {
@@ -174,18 +174,32 @@ pub(super) fn choose_outside_point(
         .filter(|point| {
             work_area.contains(*point) && expanded.iter().all(|bounds| !bounds.contains(*point))
         })
-        .max_by_key(|point| {
-            occupied
-                .iter()
-                .map(|bounds| {
-                    let center = bounds.center();
-                    let dx = i64::from(point.x) - i64::from(center.x);
-                    let dy = i64::from(point.y) - i64::from(center.y);
-                    dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
-                })
-                .min()
-                .unwrap_or(i64::MAX)
-        })
+        .collect::<Vec<_>>();
+    let distance_from_nearest_window = |point: &PhysicalPoint| {
+        occupied
+            .iter()
+            .map(|bounds| {
+                let center = bounds.center();
+                let dx = i64::from(point.x) - i64::from(center.x);
+                let dy = i64::from(point.y) - i64::from(center.y);
+                dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+            })
+            .min()
+            .unwrap_or(i64::MAX)
+    };
+    let first = candidates
+        .iter()
+        .copied()
+        .max_by_key(distance_from_nearest_window)?;
+    let routed = candidates
+        .into_iter()
+        .filter(|point| *point != first)
+        .min_by_key(|point| {
+            let dx = i64::from(point.x) - i64::from(first.x);
+            let dy = i64::from(point.y) - i64::from(first.y);
+            dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+        })?;
+    Some((first, routed))
 }
 
 pub(super) fn point_towards(
@@ -915,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn outside_point_is_derived_from_the_work_area_and_live_windows() {
+    fn outside_route_uses_two_distinct_points_derived_from_live_geometry() {
         let work_area = PhysicalBounds {
             min_x: 0,
             min_y: 24,
@@ -929,10 +943,14 @@ mod tests {
             max_y: 620,
         };
 
-        let point = choose_outside_point(work_area, [root]).expect("the desktop has free space");
+        let (first, routed) =
+            choose_outside_points(work_area, [root]).expect("the desktop has free space");
 
-        assert!(work_area.contains(point));
-        assert!(!root.expanded(50).contains(point));
+        assert!(work_area.contains(first));
+        assert!(work_area.contains(routed));
+        assert!(!root.expanded(50).contains(first));
+        assert!(!root.expanded(50).contains(routed));
+        assert_ne!(first, routed);
     }
 
     #[test]

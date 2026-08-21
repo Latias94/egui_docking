@@ -9,7 +9,7 @@ use egui::{
     Ui, vec2,
 };
 use egui_dockspace::{
-    CloseDecision, ClosePlanTarget, DockStyle, Dockspace, DockspaceActionOutcome,
+    CloseDecision, ClosePlanTarget, DockPlacement, DockStyle, Dockspace, DockspaceActionOutcome,
     DockspaceActionStatus, DockspaceAxis, DockspaceCapability, DockspaceCloseRequest,
     DockspaceCloseRequestRejection, DockspaceCloseRequestStatus, DockspaceContainedLayout,
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
@@ -31,6 +31,14 @@ const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
 const FOURTH: ItemId = ItemId::new(4);
+
+fn surface_ids(dockspace: &Dockspace) -> Vec<SurfaceId> {
+    dockspace
+        .view()
+        .surfaces()
+        .map(|surface| surface.id())
+        .collect()
+}
 
 fn instrumented_style() -> DockStyle {
     let mut style = DockStyle::default();
@@ -1085,6 +1093,8 @@ fn inactive_tab_close_hides_only_its_paint_until_emphasized() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let close = node_rect(&stable.output, Role::Button, "Close Second");
+    let first_tab = node_rect(&stable.output, Role::Tab, "First");
+    let second_tab = node_rect(&stable.output, Role::Tab, "Second");
     assert_eq!(
         line_segment_count_in(&stable.output, idle, close.expand(4.0)),
         0,
@@ -1102,6 +1112,16 @@ fn inactive_tab_close_hides_only_its_paint_until_emphasized() {
         node_rect(&hover.output, Role::Button, "Close Second"),
         close,
         "paint visibility must not change the reserved close geometry"
+    );
+    assert_eq!(
+        node_rect(&hover.output, Role::Tab, "First"),
+        first_tab,
+        "close hover must not move the selected tab row"
+    );
+    assert_eq!(
+        node_rect(&hover.output, Role::Tab, "Second"),
+        second_tab,
+        "close hover must not change the inactive tab row height"
     );
 }
 
@@ -1397,6 +1417,151 @@ fn default_features_contained_dock_back_supports_pointer_accesskit_and_keyboard(
 }
 
 #[test]
+fn contained_move_resize_select_focus_and_dock_back_preserve_exact_ownership() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-contained-lifecycle-focus", contained_layout())
+        .build()
+        .expect("the contained lifecycle facade initializes");
+    let mut panes = FocusPanes::new("product-contained-lifecycle-focus", true);
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let initial = contained_rect(&dockspace);
+    let move_source = contained_title_point(&dockspace);
+    let move_target = move_source + vec2(-80.0, 60.0);
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(move_source),
+            pointer_button(move_source, true),
+        ],
+    );
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(move_target)],
+    );
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(move_target),
+            pointer_button(move_target, false),
+        ],
+    );
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let moved = contained_rect(&dockspace);
+    assert_eq!(moved.size(), initial.size());
+    assert_eq!(moved.min().x(), initial.min().x() - 80.0);
+    assert_eq!(moved.min().y(), initial.min().y() + 60.0);
+    assert_eq!(
+        dockspace
+            .view()
+            .item(SECOND)
+            .and_then(|item| item.contained()),
+        Some(FLOATING),
+        "contained motion must preserve exact item ownership"
+    );
+
+    let resize_source = Pos2::new(moved.max().x() as f32 - 1.0, moved.min().y() as f32 + 100.0);
+    let resize_target = resize_source + vec2(30.0, 0.0);
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(resize_source),
+            pointer_button(resize_source, true),
+        ],
+    );
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(resize_target)],
+    );
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(resize_target),
+            pointer_button(resize_target, false),
+        ],
+    );
+    let (stable, _) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let resized = contained_rect(&dockspace);
+    assert_eq!(resized.min(), moved.min());
+    assert!(resized.width() > moved.width());
+    assert_eq!(resized.height(), moved.height());
+    assert_eq!(
+        dockspace
+            .view()
+            .item(SECOND)
+            .and_then(|item| item.contained()),
+        Some(FLOATING),
+        "contained resize must preserve exact item ownership"
+    );
+
+    let (second, _) = accesskit_node(&stable.output, Role::Tab, "Second");
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(second, Action::Click)],
+    );
+    let (focused, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(capability, DockspaceCapability::Supported);
+    assert_eq!(panes.target_requests(), 1);
+    assert!(context.memory(|memory| memory.has_focus(panes.target)));
+
+    let (close, _) = accesskit_node(&focused.output, Role::Button, "Close floating Second");
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(close, Action::Click)],
+    );
+
+    assert!(dockspace.view().contained(FLOATING).is_none());
+    let tabs = dockspace
+        .view()
+        .root(ROOT)
+        .and_then(|root| root.content())
+        .and_then(|content| content.tabs())
+        .expect("dock-back recovers the contained pane into the main tabs");
+    assert_eq!(tabs.items(), &[FIRST, SECOND]);
+    assert_eq!(
+        tabs.selected(),
+        Some(SECOND),
+        "core must preserve the exact recovered pane instead of selecting the first visible tab"
+    );
+    assert!(
+        context.memory(|memory| memory.has_focus(panes.target)),
+        "same-context dock-back must preserve the exact focused pane target"
+    );
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        panes.target_requests(),
+        2,
+        "dock-back must publish one fresh request for the exact recovered pane"
+    );
+    assert!(context.memory(|memory| memory.has_focus(panes.target)));
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        panes.target_requests(),
+        2,
+        "the terminal Focused observation must settle the recovery request without replay"
+    );
+}
+
+#[test]
 fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     let context = Context::default();
     context.enable_accesskit();
@@ -1427,6 +1592,11 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     );
     assert!(native_node.is_disabled());
     assert!(dock_back_node.is_disabled());
+    assert_eq!(
+        surface_ids(&dockspace),
+        [SURFACE],
+        "the callback-only product starts with one same-context logical surface"
+    );
 
     let _ = run_frame(
         &context,
@@ -1442,6 +1612,11 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
             .is_some(),
         "Float must move the complete root into an egui-native contained window",
     );
+    assert_eq!(
+        surface_ids(&dockspace),
+        [SURFACE],
+        "same-context Float must not synthesize a native logical surface or binding"
+    );
 
     let floating = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let (menu, _) = accesskit_node(&floating.output, Role::Button, "Presentation commands");
@@ -1453,8 +1628,13 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     );
     let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let (_, float_node) = accesskit_node(&opened.output, Role::MenuItem, "Float");
+    let (_, native_node) = accesskit_node(&opened.output, Role::MenuItem, "Move to New Window");
     let (dock_back, dock_back_node) = accesskit_node(&opened.output, Role::MenuItem, "Dock Back");
     assert!(float_node.is_disabled());
+    assert!(
+        native_node.is_disabled(),
+        "contained ownership does not promote the callback-only product into a native host"
+    );
     assert!(!dock_back_node.is_disabled());
 
     let _ = run_frame(
@@ -1470,6 +1650,11 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
             .and_then(|item| item.contained())
             .is_none(),
         "Dock Back must recover the complete root into the dockspace",
+    );
+    assert_eq!(
+        surface_ids(&dockspace),
+        [SURFACE],
+        "same-context Dock Back must preserve the sole logical surface"
     );
 }
 
@@ -2726,6 +2911,7 @@ fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source_rect = node_rect(&stable.output, Role::Tab, "First");
+    let close_rect = node_rect(&stable.output, Role::Button, "Close First");
     let source = source_rect.center();
     assert!(rect_fill_count_in(&stable.output, active_fill, source_rect) > 0);
 
@@ -2740,6 +2926,16 @@ fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
         "an armed press must not hide the source tab"
     );
     assert_eq!(rect_fill_count(&armed.output, ghost_fill), 0);
+    assert_eq!(
+        node_rect(&armed.output, Role::Tab, "First"),
+        source_rect,
+        "arming a drag must not change the tab receiver or accessibility bounds"
+    );
+    assert_eq!(
+        node_rect(&armed.output, Role::Button, "Close First"),
+        close_rect,
+        "arming a drag must not change the disjoint close receiver bounds"
+    );
 
     let dragged = source + vec2(24.0, 8.0);
     let dragging = run_frame(
@@ -2769,6 +2965,16 @@ fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
     );
     let _ = accesskit_node(&dragging.output, Role::Tab, "First");
     let _ = accesskit_node(&dragging.output, Role::Button, "Close First");
+    assert_eq!(
+        node_rect(&dragging.output, Role::Tab, "First"),
+        source_rect,
+        "crossing the drag threshold must preserve the tab semantic bounds behind the gap"
+    );
+    assert_eq!(
+        node_rect(&dragging.output, Role::Button, "Close First"),
+        close_rect,
+        "crossing the drag threshold must preserve close geometry and semantics"
+    );
     assert_eq!(
         dragging.output.platform_output.cursor_icon,
         egui::CursorIcon::Grabbing
@@ -2851,6 +3057,8 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let second = node_rect(&stable.output, Role::Tab, "Second");
+    let close = node_rect(&stable.output, Role::Button, "Close Second");
+    let title = node_rect(&stable.output, Role::TitleBar, "Second");
     let source = Pos2::new((second.max.x + 80.0).min(760.0), second.center().y);
     assert!(
         source.x > second.max.x,
@@ -2868,6 +3076,12 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
         egui::CursorIcon::Grab,
         "unused tab-bar space must expose the same group drag affordance as the leading grip"
     );
+    assert_eq!(node_rect(&hovered.output, Role::Tab, "Second"), second);
+    assert_eq!(
+        node_rect(&hovered.output, Role::Button, "Close Second"),
+        close
+    );
+    assert_eq!(node_rect(&hovered.output, Role::TitleBar, "Second"), title);
 
     let armed = run_frame(
         &context,
@@ -2877,6 +3091,12 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
     );
     assert!(rect_fill_count_in(&armed.output, group_fill, second) > 0);
     assert_eq!(rect_fill_count(&armed.output, ghost_fill), 0);
+    assert_eq!(node_rect(&armed.output, Role::Tab, "Second"), second);
+    assert_eq!(
+        node_rect(&armed.output, Role::Button, "Close Second"),
+        close
+    );
+    assert_eq!(node_rect(&armed.output, Role::TitleBar, "Second"), title);
     let dragging = run_frame(
         &context,
         &mut dockspace,
@@ -2897,6 +3117,21 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
         "the terminal threshold-crossing output already contains the group source gap"
     );
     assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 1);
+    assert_eq!(
+        node_rect(&dragging.output, Role::Tab, "Second"),
+        second,
+        "group drag threshold crossing must not move the tab receiver"
+    );
+    assert_eq!(
+        node_rect(&dragging.output, Role::Button, "Close Second"),
+        close,
+        "group drag threshold crossing must not move the close receiver"
+    );
+    assert_eq!(
+        node_rect(&dragging.output, Role::TitleBar, "Second"),
+        title,
+        "group drag threshold crossing must not move contained-title accessibility bounds"
+    );
 
     let passive = dockspace
         .style()
@@ -3305,6 +3540,38 @@ fn default_features_programmatic_close_reports_stale_and_root_rejection() {
 }
 
 #[test]
+fn stale_prepared_dock_action_is_inert_in_the_product_executor() {
+    let mut dockspace = Dockspace::builder("product-stale-dock-action", layout())
+        .build()
+        .expect("the stale dock-action facade initializes");
+    let prepared = dockspace.prepare_dock_item(SECOND, DockPlacement::Before(FIRST));
+    let expected = prepared.expected_version();
+    let selection = dockspace
+        .select_item_current(SECOND)
+        .expect("selection advances the product revision");
+    assert!(matches!(
+        selection.status(),
+        DockspaceActionStatus::Applied(DockspaceActionOutcome::Selected {
+            item: SECOND,
+            changed: true,
+        })
+    ));
+
+    let stale = dockspace
+        .submit_prepared_action(prepared)
+        .expect("the stale dock action is reduced inertly");
+    assert!(matches!(
+        stale.status(),
+        DockspaceActionStatus::Stale {
+            expected: actual_expected,
+            accepted,
+        } if *actual_expected == expected && *accepted == stale.mutation().after()
+    ));
+    assert_eq!(root_tabs(&dockspace), Some(vec![FIRST, SECOND]));
+    assert_eq!(selected(&dockspace), Some(SECOND));
+}
+
+#[test]
 fn default_features_paint_outer_guides_and_dock_each_edge() {
     for (name, target, expected_axis, expected_items) in [
         (
@@ -3473,6 +3740,233 @@ fn default_features_center_guide_merges_tabs() {
     );
 
     assert_eq!(root_tabs(&dockspace), Some(vec![FIRST, SECOND]));
+}
+
+#[test]
+fn docked_tab_drag_to_a_non_target_region_creates_contained_floating() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-local-tab-contained", layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the local contained tab facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "First");
+    let target = Pos2::new(620.0, 440.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(16.0, 8.0))],
+    );
+    let mut preview = None;
+    for _ in 0..3 {
+        preview = Some(run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        ));
+    }
+    let preview = preview.expect("the drag publishes a terminal target frame");
+    let drop_fill = dockspace
+        .style()
+        .visuals
+        .drop_fill
+        .expect("the fixture fixes its preview fill");
+    assert_eq!(
+        rect_fill_count(&preview.output, drop_fill),
+        1,
+        "a no-target local tab drag must paint one contained preview before release"
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+
+    let first = dockspace
+        .view()
+        .item(FIRST)
+        .expect("the dragged tab remains present");
+    assert_eq!(first.surface(), SURFACE);
+    assert_ne!(first.root(), ROOT);
+    assert!(first.contained().is_some());
+    let second = dockspace
+        .view()
+        .item(SECOND)
+        .expect("the undragged tab remains in the main root");
+    assert_eq!(second.root(), ROOT);
+    assert_eq!(second.contained(), None);
+}
+
+#[test]
+fn docked_tab_drag_released_outside_the_surface_cancels_without_floating() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-local-tab-outside", layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the outside local tab facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "First");
+    let outside = Pos2::new(840.0, 640.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(16.0, 8.0))],
+    );
+    let mut outside_frame = None;
+    for _ in 0..3 {
+        outside_frame = Some(run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(outside)],
+        ));
+    }
+    let outside_frame = outside_frame.expect("the outside drag reaches a terminal product frame");
+    let drop_fill = dockspace
+        .style()
+        .visuals
+        .drop_fill
+        .expect("the fixture fixes its preview fill");
+    assert_eq!(
+        rect_fill_count(&outside_frame.output, drop_fill),
+        0,
+        "surface-external local coordinates cannot paint a contained preview"
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(outside), pointer_button(outside, false)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+
+    assert_eq!(root_tabs(&dockspace), Some(vec![FIRST, SECOND]));
+    let surface = dockspace
+        .view()
+        .surface(SURFACE)
+        .expect("the logical surface remains present");
+    assert_eq!(surface.contained().count(), 0);
+}
+
+#[test]
+fn docked_group_drag_to_a_non_target_region_rehomes_the_complete_root() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-local-group-contained", layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the local contained group facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let second = node_rect(&stable.output, Role::Tab, "Second");
+    let source = Pos2::new((second.max.x + 80.0).min(760.0), second.center().y);
+    let target = Pos2::new(620.0, 440.0);
+
+    let hovered = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source)],
+    );
+    assert_eq!(
+        hovered.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grab
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(source, true)],
+    );
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(16.0, 0.0))],
+    );
+    assert_eq!(
+        dragging.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+    let mut preview = None;
+    for _ in 0..3 {
+        preview = Some(run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        ));
+    }
+    let preview = preview.expect("the drag publishes a terminal target frame");
+    let drop_fill = dockspace
+        .style()
+        .visuals
+        .drop_fill
+        .expect("the fixture fixes its preview fill");
+    assert_eq!(
+        rect_fill_count(&preview.output, drop_fill),
+        1,
+        "a no-target local group drag must paint one contained preview before release"
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+
+    let surface = dockspace
+        .view()
+        .surface(SURFACE)
+        .expect("the logical surface remains present");
+    assert!(surface.main_root().is_none());
+    assert_eq!(surface.contained().count(), 1);
+    for item in [FIRST, SECOND] {
+        let location = dockspace
+            .view()
+            .item(item)
+            .expect("the complete dragged root keeps every item");
+        assert_eq!(location.root(), ROOT);
+        assert!(location.contained().is_some());
+    }
 }
 
 #[test]
@@ -3959,6 +4453,82 @@ fn default_features_discarded_preview_cannot_release_a_drag() {
         root_split(&dockspace),
         Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]],)),
         "the release settles after a terminal pass paints the exact preview",
+    );
+}
+
+#[test]
+fn discarded_contained_move_preview_cannot_commit_release() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-discarded-contained-move", contained_layout())
+        .build()
+        .expect("the discarded contained-move facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let initial = contained_rect(&dockspace);
+    let source = contained_title_point(&dockspace);
+    let destination = source + vec2(-120.0, 80.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+
+    context
+        .plugin_or_default::<LateDiscardPlugin>()
+        .lock()
+        .remaining = 2;
+    let passes = run_two_discarded_dockspace_passes(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(destination)],
+    );
+    assert_eq!(
+        passes, 3,
+        "the fixture must omit dockspace from the terminal pass"
+    );
+    assert_eq!(
+        contained_rect(&dockspace),
+        initial,
+        "a contained transform observed only in discarded passes remains transient"
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(destination),
+            pointer_button(destination, false),
+        ],
+    );
+    assert_eq!(
+        contained_rect(&dockspace),
+        initial,
+        "a discarded contained move preview cannot release or mutate durable geometry"
+    );
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let committed = contained_rect(&dockspace);
+    assert_eq!(committed.width(), initial.width());
+    assert_eq!(committed.height(), initial.height());
+    assert_eq!(
+        committed.min().x(),
+        initial.min().x() - 120.0,
+        "the terminal product pass may settle the exact contained move on x"
+    );
+    assert_eq!(
+        committed.min().y(),
+        initial.min().y() + 80.0,
+        "the terminal product pass may settle the exact contained move on y"
     );
 }
 
@@ -4453,7 +5023,10 @@ fn default_features_replace_policy_and_style_atomically() {
 
 #[test]
 fn shared_local_interaction_scenario_maps_to_egui_product_headless_semantics() {
-    let mut harness = kittest_harness("product-kittest-local-interactions", shared_semantic_layout());
+    let mut harness = kittest_harness(
+        "product-kittest-local-interactions",
+        shared_semantic_layout(),
+    );
     assert_eq!(
         LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.id(),
         ScenarioId::LocalTabCloseSplitterAndContained,
@@ -4465,8 +5038,7 @@ fn shared_local_interaction_scenario_maps_to_egui_product_headless_semantics() {
         ScenarioCapability::LocalContainedResize,
     ];
     assert_eq!(
-        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED
-            .admission(&supported),
+        LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED.admission(&supported),
         ScenarioAdmission::Ready,
         "egui-product-headless admits the shared scenario only from declared capabilities",
     );
@@ -4515,10 +5087,7 @@ fn shared_local_interaction_scenario_maps_to_egui_product_headless_semantics() {
                 assert_eq!(alias, ItemAlias::Secondary);
                 observations.push(step.expected());
             }
-            (
-                SemanticSelector::Splitter(ScenarioAxis::Horizontal),
-                ScenarioAction::Increment,
-            ) => {
+            (SemanticSelector::Splitter(ScenarioAxis::Horizontal), ScenarioAction::Increment) => {
                 let before = root_weights(&harness.state().dockspace)
                     .expect("the shared product root remains split");
                 harness
@@ -4550,7 +5119,9 @@ fn shared_local_interaction_scenario_maps_to_egui_product_headless_semantics() {
                 assert_eq!(after.height(), before.height());
                 observations.push(step.expected());
             }
-            (selector, action) => panic!("unsupported shared semantic step: {selector:?} {action:?}"),
+            (selector, action) => {
+                panic!("unsupported shared semantic step: {selector:?} {action:?}")
+            }
         }
     }
 
@@ -4635,6 +5206,11 @@ fn kittest_moves_and_resizes_contained_content_semantically() {
     assert_eq!(moved.size(), initial.size());
     assert!((moved.min().x() - (initial.min().x() - 80.0)).abs() < 0.5);
     assert!((moved.min().y() - (initial.min().y() + 60.0)).abs() < 0.5);
+    assert_eq!(
+        surface_ids(&harness.state().dockspace),
+        [SURFACE],
+        "same-context contained motion must not synthesize a native logical surface"
+    );
 
     harness
         .get_by_role_and_label(Role::Splitter, "Resize floating right edge")
@@ -4647,6 +5223,11 @@ fn kittest_moves_and_resizes_contained_content_semantically() {
     assert_eq!(resized.min(), moved.min());
     assert!(resized.width() > moved.width());
     assert_eq!(resized.height(), moved.height());
+    assert_eq!(
+        surface_ids(&harness.state().dockspace),
+        [SURFACE],
+        "same-context contained resize must preserve the sole logical surface"
+    );
 }
 
 #[test]

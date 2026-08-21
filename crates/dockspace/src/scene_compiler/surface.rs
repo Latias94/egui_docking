@@ -934,7 +934,6 @@ fn compile_tab_strip(
         let start = widths[..index].iter().sum::<f64>();
         Some((start, start + widths[index]))
     });
-    // Adapter-owned legacy scroll observations are intentionally ignored.
     let requested_scroll = state
         .and_then(|state| state.scroll_offset())
         .unwrap_or(0.0)

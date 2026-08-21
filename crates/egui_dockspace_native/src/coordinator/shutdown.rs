@@ -201,7 +201,13 @@ impl NativeCoordinator {
             })
             .collect();
         let had_inputs = !report.inputs().is_empty();
-        let native_snapshot_applied = self.settle_host_frame_inputs(report.inputs());
+        let native_snapshot_applied = match self.settle_host_frame_inputs(report.inputs()) {
+            Ok(applied) => applied,
+            Err(error) => {
+                errors.push(error);
+                false
+            }
+        };
         let (native_close_settled, close_errors) =
             self.settle_close_control_inputs_all(report.inputs());
         errors.extend(close_errors);

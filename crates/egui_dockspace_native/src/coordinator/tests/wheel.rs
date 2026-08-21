@@ -389,7 +389,28 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
     native
         .bind_viewport(scroll_viewport, scroll_window, scroll_binding)
         .expect("the scroll binding attaches to its own viewport");
-    let press = mouse_press_record(1, mouse_window, mouse_binding);
+    let press = {
+        let viewports = native
+            .viewports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        NativeWindowEventRecord::for_test_snapshot(
+            1,
+            mouse_window,
+            Some(ViewportId::ROOT),
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                facts: PointerEventFacts {
+                    hover: PointerWindowRoute::Window(mouse_window),
+                    capture: PointerWindowRoute::Window(mouse_window),
+                    ..PointerEventFacts::default()
+                },
+            },
+            &viewports,
+        )
+    };
     let scroll_begin = {
         let viewports = native
             .viewports

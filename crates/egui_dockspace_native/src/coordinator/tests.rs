@@ -6,8 +6,8 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     HostFrameReport, HostInputOutcome, NativeCloseState, NativeHostCapabilities,
-    NativeWindowInputState, NativeWindowPresentationState, SurfacePresentationResult,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    NativeWindowInputState, NativeWindowPresentationState, SurfaceGesturePhase,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use eframe::{NativeViewportVisibilityStatus, egui};
 use winit::event::WindowEvent;
@@ -482,6 +482,134 @@ fn coordinator_owns_registration_and_viewport_identity() {
 }
 
 #[test]
+fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
+    let mut native = coordinator();
+    let (binding, second) = register_roots(&mut native);
+    let window = WindowId::from(11);
+    native
+        .bind_viewport(ViewportId::ROOT, window, binding)
+        .expect("the root viewport binds");
+    native
+        .report_snapshot(
+            [
+                (binding, ready_window_facts(0.0)),
+                (second, ready_window_facts(720.0)),
+            ],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .expect("the exact native window facts record");
+    let mut snapshot = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the native snapshot frame begins");
+    snapshot
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the native snapshot frame settles every surface");
+    snapshot
+        .commit()
+        .expect("the native snapshot frame commits");
+    paint_and_present_all_surfaces(&mut native);
+
+    let metrics = UniformSurfaceMetrics::new(
+        LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+        LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+        80.0,
+    )
+    .expect("test metrics validate");
+    let mut gesture = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the local gesture frame begins");
+    let plan = gesture
+        .frame
+        .paint_plan(FIRST_SURFACE)
+        .expect("the local gesture plan resolves")
+        .expect("the first surface remains paintable");
+    let tab = plan
+        .tabs()
+        .next()
+        .expect("the first surface exposes its tab");
+    let point = plan
+        .receiver_for_tab_body(tab)
+        .expect("the tab has an exact drag receiver")
+        .center();
+    let begin = plan
+        .prepare_tab_gesture(
+            tab.item(),
+            SurfaceGesturePhase::Begin {
+                initial: point,
+                current: point,
+            },
+        )
+        .expect("the exact tab prepares a local gesture");
+    gesture
+        .frame
+        .submit_surface_action(begin)
+        .expect("the local gesture begins");
+    gesture
+        .frame
+        .measure_surface(FIRST_SURFACE, metrics)
+        .expect("the active gesture surface measures");
+    gesture
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the other surface is retained");
+    gesture.commit().expect("the local gesture frame commits");
+    assert!(native.session.has_active_gesture());
+
+    for (ordinal, x) in [(41, 20.0), (42, 36.0)] {
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+                ordinal,
+                window,
+                Some(ViewportId::ROOT),
+                Some(binding),
+                WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(x, 20.0),
+                    facts: winit::event::PointerEventFacts::default(),
+                },
+            )));
+    }
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the first cursor edge reduces")
+    );
+    assert_eq!(
+        native
+            .next_window_event()
+            .expect("the second cursor edge remains queryable")
+            .map(|record| record.ordinal()),
+        Some(42),
+        "an active core gesture must keep both cursor edges in FIFO order"
+    );
+
+    let mut first_boundary = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the first cursor boundary begins");
+    first_boundary
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the first cursor boundary settles every surface");
+    first_boundary
+        .commit()
+        .expect("the first cursor boundary commits");
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the second cursor edge reduces after the first boundary")
+    );
+    assert!(
+        native
+            .next_window_event()
+            .expect("the cursor prefix remains readable")
+            .is_none(),
+        "the second cursor edge is consumed only in its own causal boundary"
+    );
+}
+
+#[test]
 fn viewport_reservation_requires_exact_window_attachment() {
     let mut native = coordinator();
     let (_, second) = register_roots(&mut native);
@@ -845,7 +973,11 @@ fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
     let roster_report = roster_frame
         .commit()
         .expect("the initial roster boundary commits");
-    assert!(native.settle_host_frame_inputs(roster_report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(roster_report.inputs())
+            .expect("the exact roster snapshot settles")
+    );
     assert!(!native.bridge.viewport_roster_dirty());
 
     native.bridge.push_record(HostRecord::ViewportVisibility(
@@ -866,6 +998,53 @@ fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
 
     assert!(native.quarantine_after_fatal().is_empty());
     assert!(native.bridge.has_pending_coordinator_work());
+}
+
+#[test]
+fn duplicate_snapshot_outcomes_fail_before_settling_the_exact_roster() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    native
+        .bridge
+        .push_viewport_roster(live_roster([first, second]));
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("the exact roster is accepted")
+    );
+    let roster = native
+        .queued_snapshot
+        .as_ref()
+        .expect("the reduced roster retains one exact snapshot")
+        .roster
+        .clone();
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the snapshot boundary begins");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the snapshot boundary settles every surface");
+    frame
+        .commit()
+        .expect("the snapshot boundary commits before host settlement");
+
+    let duplicate = [
+        HostInputOutcome::NativePlatformSnapshotApplied {
+            close_requests: Vec::new(),
+        },
+        HostInputOutcome::NativePlatformSnapshotApplied {
+            close_requests: Vec::new(),
+        },
+    ];
+    let error = native
+        .settle_host_frame_inputs(&duplicate)
+        .expect_err("one queued snapshot must have exactly one terminal outcome");
+
+    assert_eq!(error.kind(), crate::NativeRuntimeErrorKind::HostProtocol);
+    assert!(
+        native.bridge.settle_viewport_roster(&roster, true),
+        "a rejected host settlement must not partially consume the exact roster envelope"
+    );
 }
 
 #[test]
@@ -896,7 +1075,11 @@ fn settled_presentation_acknowledgement_rearms_identical_roster_capture() {
     let report = frame
         .commit()
         .expect("the acknowledgement boundary commits");
-    assert!(native.settle_host_frame_inputs(report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(report.inputs())
+            .expect("the exact native snapshot settles")
+    );
     assert!(
         native.bridge.viewport_roster_dirty(),
         "clearing an applied acknowledgement must force a later provider capture"

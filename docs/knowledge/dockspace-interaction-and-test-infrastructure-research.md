@@ -12,10 +12,9 @@ This split preserves the core rule that Dockspace owns topology, revisions, hit 
 
 This is a source-based design note. The repository snapshot is 2026-08-18; an
 evidence update on 2026-08-19 records the completed X11 physical reference
-lane without changing the original source comparison. The ordinary egui
-0.36.1 reference is `repo-ref/egui-release`; the hosted-cycle/native fork is
-`repo-ref/egui-release-split` (its current fork commits are visible with
-`git -C repo-ref/egui-release-split log`). The Dear ImGui Rust comparison uses
+lane without changing the original source comparison. The current pinned egui,
+eframe, and `egui_kittest` fork is `repo-ref/egui-release` (its commits are
+visible with `git -C repo-ref/egui-release log`). The Dear ImGui Rust comparison uses
 the already-fetched `repo-ref/dear-imgui-rs` object `origin/main` at
 `abac30563586`, not that nested checkout's stale local `main`. Keeping these references
 separate matters: the fork adds host lifecycle hooks, but it does not turn
@@ -26,8 +25,8 @@ egui's logical viewport API into an OS drag-and-drop protocol.
 The comparison used the checked-in primary sources:
 
 - `repo-ref/egui-release/crates/egui_kittest/README.md` and `repo-ref/egui-release/crates/egui_kittest/src/lib.rs`
-- `repo-ref/egui-release-split/crates/eframe/src/epi.rs` and
-  `repo-ref/egui-release-split/tests/test_viewports/src/main.rs`
+- `repo-ref/egui-release/crates/eframe/src/epi.rs` and
+  `repo-ref/egui-release/tests/test_viewports/src/main.rs`
 - `repo-ref/egui_tiles/src/behavior.rs`, `repo-ref/egui_tiles/src/tree.rs`, and `repo-ref/egui_tiles_docking/src/container/tabs.rs`
 - `repo-ref/dear-imgui-rs` `origin/main:backends/dear-imgui-winit/src/multi_viewport/`
 - `repo-ref/imgui_test_engine/docs/README.md`, `repo-ref/imgui_test_engine/imgui_test_engine/imgui_te_context.cpp`, and `repo-ref/imgui_test_engine/imgui_test_suite/imgui_tests_viewports.cpp`
@@ -55,7 +54,7 @@ commands read the root viewport (`repo-ref/egui-release/crates/egui_kittest/src/
 The harness therefore cannot prove Winit window identity, desktop pointer
 position, cross-window capture, monitor work areas, output presentation, or
 first-live admission. The fork's `accept_for_headless_host()` is deliberately
-an explicit headless acceptance hook (`repo-ref/egui-release-split/crates/egui_kittest/src/lib.rs:851-855`),
+an explicit headless acceptance hook (`repo-ref/egui-release/crates/egui_kittest/src/lib.rs`),
 not a substitute for native presentation authority.
 
 The current product harness is already a no-backend product fixture
@@ -75,11 +74,11 @@ such as tab/content connection, guide density, and drag feedback.
 
 The upstream multiview examples are not a ready-made DnD solution. The
 viewport test explicitly keeps `DRAG_AND_DROP_TEST` disabled because cross-window
-drag-and-drop is not implemented (`repo-ref/egui-release-split/tests/test_viewports/src/main.rs:9-10`).
+drag-and-drop is not implemented (`repo-ref/egui-release/tests/test_viewports/src/main.rs`).
 The example does demonstrate stable `ViewportId`/parent state and immediate
-versus deferred callbacks (`repo-ref/egui-release-split/tests/test_viewports/src/main.rs:29-35,64-110`),
+versus deferred callbacks (`repo-ref/egui-release/tests/test_viewports/src/main.rs`),
 while its disabled prototype uses a global dragged-id map
-(`repo-ref/egui-release-split/tests/test_viewports/src/main.rs:275-409`). That
+(`repo-ref/egui-release/tests/test_viewports/src/main.rs`). That
 prototype is useful as a test sketch only; it would violate Dockspace's
 revision-bound, core-owned action authority in production.
 
@@ -264,10 +263,10 @@ The fork's hosted-cycle hooks provide a good deterministic simulator contract:
 freeze the complete input roster before any viewport callback, run hidden and
 occluded viewports so the output roster stays complete, stage every output,
 then publish semantic state only from the commit hook
-(`repo-ref/egui-release-split/crates/eframe/src/epi.rs:368-417,434-493`). The
+(`repo-ref/egui-release/crates/eframe/src/epi.rs`). The
 same order should be used by a headless multiview test driver. In particular,
 an aborted cycle retains resource-accounting outputs but must not replay its
-consumed input (`repo-ref/egui-release-split/crates/eframe/src/epi.rs:450-455`).
+consumed input (`repo-ref/egui-release/crates/eframe/src/epi.rs`).
 
 ## Recommended Conformance Kit
 

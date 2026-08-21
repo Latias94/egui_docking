@@ -96,7 +96,11 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the visible roster frame settles every surface");
     let visible_report = visible_frame.commit().expect("the visible roster commits");
-    assert!(native.settle_host_frame_inputs(visible_report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(visible_report.inputs())
+            .expect("the exact visible snapshot settles")
+    );
 
     let committed = NativeGlobalFocusRecord::capture_for_test(
         3,
@@ -126,7 +130,11 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the inventory tombstone frame settles every surface");
     let unknown_report = unknown.commit().expect("the inventory tombstone commits");
-    assert!(native.settle_host_frame_inputs(unknown_report.inputs()));
+    assert!(
+        native
+            .settle_host_frame_inputs(unknown_report.inputs())
+            .expect("the exact unknown snapshot settles")
+    );
 
     let after_unknown = NativeGlobalFocusRecord::capture_for_test(
         4,
