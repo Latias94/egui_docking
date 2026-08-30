@@ -1,5 +1,7 @@
 //! Explicit docking-guide clusters and their renderer geometry.
 
+use std::sync::Arc;
+
 use crate::command::Edge;
 use crate::drop_target::{DropTargetId, DropTargetRecord, SceneLayerKey};
 use crate::geometry::LogicalRect;
@@ -57,33 +59,57 @@ pub enum DropGuideSlot {
     Edge(Edge),
 }
 
-/// One guide-owned drop target with independent button geometry.
+/// One guide button referencing a canonical core-owned drop target.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropGuideTargetRecord {
-    target: DropTargetRecord,
+    target: Arc<DropTargetRecord>,
+    id: DropTargetId,
+    hit: HitRegion,
+    preview: LogicalRect,
     draw: LogicalRect,
 }
 
 impl DropGuideTargetRecord {
-    /// Creates one guide target from exact hit, draw, and preview facts.
+    /// Creates one visual guide reference to a canonical semantic target.
     ///
-    /// The owned target's region is the exact hit area and its visual is the
-    /// exact body preview. Scene sealing validates all geometry and semantics.
+    /// The canonical target catalog owns pointer hit, preview, availability,
+    /// destination, and prepared-command semantics. A guide owns only visual
+    /// placement and immutable geometry snapshots alongside a stable reference
+    /// to that target; the snapshots preserve the const paint-query contract.
     #[must_use]
-    pub const fn new(target: DropTargetRecord, draw: LogicalRect) -> Self {
-        Self { target, draw }
-    }
-
-    /// Returns the owned structural target record.
-    #[must_use]
-    pub const fn target(&self) -> &DropTargetRecord {
-        &self.target
+    pub fn new(target: Arc<DropTargetRecord>, draw: LogicalRect) -> Self {
+        let id = target.id();
+        let hit = target.region();
+        let preview = target.visual().rect();
+        Self {
+            target,
+            id,
+            hit,
+            preview,
+            draw,
+        }
     }
 
     /// Returns the structural target identity.
     #[must_use]
     pub const fn id(&self) -> DropTargetId {
-        self.target.id()
+        self.id
+    }
+
+    /// Returns the single canonical target shared with the scene catalog.
+    #[must_use]
+    pub fn target(&self) -> &DropTargetRecord {
+        self.target.as_ref()
+    }
+
+    pub(crate) fn shares_target(&self, target: &Arc<DropTargetRecord>) -> bool {
+        Arc::ptr_eq(&self.target, target)
+    }
+
+    /// Returns the canonical pointer hit rectangle explained by this button.
+    #[must_use]
+    pub const fn hit(&self) -> HitRegion {
+        self.hit
     }
 
     /// Returns the exact passive or active guide-button rectangle.
@@ -92,8 +118,17 @@ impl DropGuideTargetRecord {
         self.draw
     }
 
-    pub(crate) fn target_mut(&mut self) -> &mut DropTargetRecord {
-        &mut self.target
+    /// Returns the canonical preview geometry explained by this button.
+    #[must_use]
+    pub const fn preview(&self) -> LogicalRect {
+        self.preview
+    }
+
+    pub(crate) fn rebind_target(&mut self, target: Arc<DropTargetRecord>) {
+        self.id = target.id();
+        self.hit = target.region();
+        self.preview = target.visual().rect();
+        self.target = target;
     }
 }
 
@@ -113,7 +148,7 @@ pub struct DropGuideEdgeSet {
 impl DropGuideEdgeSet {
     /// Creates a complete left, right, top, and bottom edge set.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         left: DropGuideTargetRecord,
         right: DropGuideTargetRecord,
         top: DropGuideTargetRecord,
@@ -151,11 +186,11 @@ impl DropGuideEdgeSet {
         .into_iter()
     }
 
-    fn for_each_target_mut(&mut self, mut visit: impl FnMut(Edge, &mut DropGuideTargetRecord)) {
-        visit(Edge::Left, &mut self.left);
-        visit(Edge::Right, &mut self.right);
-        visit(Edge::Top, &mut self.top);
-        visit(Edge::Bottom, &mut self.bottom);
+    fn for_each_target_mut(&mut self, mut visit: impl FnMut(&mut DropGuideTargetRecord)) {
+        visit(&mut self.left);
+        visit(&mut self.right);
+        visit(&mut self.top);
+        visit(&mut self.bottom);
     }
 }
 
@@ -187,7 +222,7 @@ enum DropGuideClusterTargets {
 impl DropGuideClusterRecord {
     /// Creates a complete inner guide cluster local to `node`.
     #[must_use]
-    pub const fn inner(
+    pub fn inner(
         surface: SurfaceId,
         root: RootId,
         node: NodeId,
@@ -209,7 +244,7 @@ impl DropGuideClusterRecord {
 
     /// Creates a center-only inner cluster for a root-central tabs leaf.
     #[must_use]
-    pub const fn inner_center(
+    pub fn inner_center(
         surface: SurfaceId,
         root: RootId,
         node: NodeId,
@@ -230,7 +265,7 @@ impl DropGuideClusterRecord {
 
     /// Creates a complete outer guide cluster for one docking root.
     #[must_use]
-    pub const fn outer(
+    pub fn outer(
         surface: SurfaceId,
         root: RootId,
         activation: HitRegion,
@@ -307,22 +342,16 @@ impl DropGuideClusterRecord {
 
     pub(crate) fn for_each_target_mut(
         &mut self,
-        mut visit: impl FnMut(DropGuideSlot, &mut DropGuideTargetRecord),
+        mut visit: impl FnMut(&mut DropGuideTargetRecord),
     ) {
         match &mut self.targets {
             DropGuideClusterTargets::Inner { center, edges } => {
-                visit(DropGuideSlot::Center, center);
+                visit(center);
                 if let Some(edges) = edges {
-                    edges.for_each_target_mut(|edge, target| {
-                        visit(DropGuideSlot::Edge(edge), target);
-                    });
+                    edges.for_each_target_mut(visit);
                 }
             }
-            DropGuideClusterTargets::Outer { edges } => {
-                edges.for_each_target_mut(|edge, target| {
-                    visit(DropGuideSlot::Edge(edge), target);
-                });
-            }
+            DropGuideClusterTargets::Outer { edges } => edges.for_each_target_mut(visit),
         }
     }
 }

@@ -7,6 +7,7 @@
 //! authority.
 
 mod close;
+pub(crate) mod direct_manipulation;
 mod error_kind;
 mod focus;
 mod host_frame;

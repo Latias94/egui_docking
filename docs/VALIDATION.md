@@ -14,7 +14,7 @@ authority.
 | --- | --- | --- | --- | --- | --- | --- |
 | L01 | Tab body; below-threshold select or threshold-crossing drag | None before selection | Select without drag; source remains owner | Selected tab; local quiescence | Burst, Stepwise | `core-host` and `egui-product-headless` characterize selection; exact human threshold remains product evidence |
 | L02 | Tab body; semantic tab gap before/after a sibling | Visible insertion candidate | Reorder once; local target owns the tab | Moved tab; local quiescence | Burst, Stepwise, ReleaseWithFinalMove, DiscardBeforeRelease | Both existing shared product/core paths cover the local command spine; product drag evidence is normative, pass-count details are not |
-| L03 | Tab body; pane center plus north/south/east/west basins | Magnetic candidate, not a guide-center requirement | Center merge or edge split; target owns payload | Moved tab; local quiescence | Stepwise, Hesitant, ReleaseWithFinalMove | Existing product guide tests are characterization-only; non-guide basin coverage is a U1 gap and is not fabricated |
+| L03 | Tab body; pane center plus north/south/east/west basins | Magnetic candidate, not a guide-center requirement | Center merge or edge split; target owns payload | Moved tab; local quiescence | Stepwise, Hesitant, ReleaseWithFinalMove | Ordinary non-guide center merge is normative; four-edge cadence and hysteresis coverage remain U4 gaps |
 | L04 | Contained title/edge; surface free space and eligible pane basin | Full contained-window projection | Move/resize/re-dock commits once; contained or target owner | Moved item; local quiescence | Stepwise, Hesitant, ReleaseWithFinalMove | Durable placement and ownership are covered; full-window projection remains an intentional known-invalid baseline |
 | L05 | Tab body; current basin can become stale or disappear | Candidate is cleared while source stays recoverable | Cancel/reject and restore source without partial mutation | Preserve source focus; local quiescence | Stepwise, TargetDisappears | `core-host` stale-target and target-destruction fixtures provide the current normative evidence |
 | L06 | Tab body; center/edge basin with release barrier | Exact candidate must be presented before release commits | Commit presented candidate or restore source | Moved item or preserved source; local quiescence | Burst, Hesitant, ReleaseWithFinalMove, DiscardBeforeRelease | Discarded-preview and release-waits tests are normative; ordinary fixed hover loops are known-invalid test technique |
@@ -62,6 +62,7 @@ gap is written as such instead of being given a synthetic test name.
 | U1-18 | N01 quiescence | characterization-only | `crates/dockspace_host_conformance/src/tests.rs::native_lifecycle_scenario_reports_terminality_presentation_first_live_and_quiescence` | Measure bounded cleanup, not callback count |
 | U1-19 | P01 physical drag barriers | characterization-only | `integration/egui-native-smoke/src/bin/physical_x11/driver/scenario.rs::perform_drag_out`; `::move_to_center_guide_while_pressed`; `::native_drag_preview_barrier` | X11 is evidence to requalify, not a portable authority |
 | U1-20 | P01 missing native facts | normative | `integration/egui-product-harness/tests/product.rs::shared_local_interaction_scenario_maps_to_egui_product_headless_semantics` (native admission assertion) | Unsupported hover/release/desktop facts remain typed and fail closed |
+| U1-21 | L03 ordinary pane center basin | normative | `crates/dockspace/src/drop_resolver.rs::non_guide_center_basin_resolves_center_target`; `integration/egui-product-harness/tests/product.rs::ordinary_pane_center_release_uses_magnetic_merge_without_guide_aiming` | A non-guide point in the central 52% publishes the Center preview, highlights the explanatory guide, commits once, and preserves main-root ownership |
 
 The N01 rows deliberately do **not** classify “native ownership before
 first-live” as known-invalid. The existing fixture demonstrates a sequence,
@@ -73,7 +74,7 @@ That comparison belongs to the later lifecycle replacement unit.
 | Executor | L01–L08 | N01 | P01 |
 | --- | --- | --- | --- |
 | `core-host` | L08 shared command scenario passes; gesture-preview rows remain characterization or gap | Programmatic lifecycle scenario passes | Unsupported without `NativePhysicalAuthority` |
-| `egui-product-headless` | L08 shared command scenario passes; guide/ghost tests remain characterization | Capability-negative | Capability-negative |
+| `egui-product-headless` | L08 shared command scenario and ordinary L03 center basin pass; four-edge/hysteresis rows remain gaps | Capability-negative | Capability-negative |
 | `egui-official-harness` | Public local facade only | Capability-negative | Capability-negative |
 | `native-coordinator-trace` / `egui-native-smoke` | Adapter-specific evidence | Programmatic lifecycle evidence | Physical X11 evidence only |
 
@@ -90,8 +91,8 @@ internal scene/graph identity for a missing fact.
 - Ordinary product readiness must use a causal predicate with a bounded
   diagnostic timeout. Fixed pass counts remain valid only when discard/terminal
   pass count is itself the contract.
-- The remaining contained-content projection gap, guide-center targeting, and
-  touch capability gap are retained as explicit evidence. The window-sized
+- The remaining contained-content projection, four-edge hysteresis, and touch
+  capability gaps are retained as explicit evidence. The window-sized
   preview shell is now covered separately and is not treated as full content
   projection until U4.
 - The lightweight native example is a discoverability checkpoint. The complete

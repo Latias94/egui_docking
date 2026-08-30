@@ -76,6 +76,47 @@ impl Fixture {
             watermark: 0,
         }
     }
+
+    fn split() -> (Self, NodeId) {
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([MOVED_ITEM, SOURCE_REMAINDER]));
+        let target_tabs = builder.insert_node(Node::tabs([TARGET_ITEM]));
+        let split = builder.insert_node(
+            Node::equal_split(Axis::Horizontal, [source_tabs, target_tabs])
+                .expect("split guide fixture must be valid"),
+        );
+        builder.set_root(ROOT, RootRecord::new(split).with_central(target_tabs));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+        let workspace = builder.build().expect("split guide fixture must be valid");
+        let policy = DockPolicy::default();
+        let mut engine = DockEngine::new(workspace, policy).expect("guide engine must be valid");
+        let mut host = support::TestPresentationHost::new(&mut engine);
+        support::publish_surface(
+            &mut engine,
+            &mut host,
+            SURFACE,
+            rect(0.0, 0.0, 400.0, 300.0),
+        );
+        let provider = engine
+            .create_surface_local_pointer_provider(
+                SurfaceLocalPointerScope::new(
+                    host.lease(),
+                    SurfaceLocalPointerEndpoint::Logical(SURFACE),
+                ),
+                PointerEdgeSequence::new(0),
+            )
+            .expect("surface-local pointer provider must be admitted");
+        (
+            Self {
+                engine,
+                host,
+                tabs: source_tabs,
+                provider,
+                watermark: 0,
+            },
+            target_tabs,
+        )
+    }
 }
 
 fn rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
@@ -113,8 +154,8 @@ fn outer_edge_guide(fixture: &Fixture, edge: Edge) -> GuideFact {
         .expect("compiled target plan must expose every outer edge guide");
     GuideFact {
         target: guide.id(),
-        hit_point: midpoint(guide.target().region().rect()),
-        preview: guide.target().visual().rect(),
+        hit_point: midpoint(guide.hit().rect()),
+        preview: guide.preview(),
     }
 }
 
@@ -137,7 +178,7 @@ fn activation_without_button_hit(fixture: &Fixture) -> LogicalPoint {
                 .drop_guide_clusters()
                 .iter()
                 .flat_map(|cluster| cluster.targets())
-                .any(|(_, guide)| guide.target().region().contains(candidate));
+                .any(|(_, guide)| guide.hit().contains(candidate));
             let hits_structural = plan
                 .drop_targets()
                 .iter()
@@ -153,6 +194,40 @@ fn activation_without_button_hit(fixture: &Fixture) -> LogicalPoint {
 fn outside_surface(fixture: &Fixture) -> LogicalPoint {
     let bounds = target_plan(fixture).bounds();
     point(bounds.max().x() + 1.0, bounds.max().y() + 1.0)
+}
+
+fn pane_content(fixture: &Fixture) -> LogicalRect {
+    target_plan(fixture)
+        .pane_records()
+        .iter()
+        .find(|pane| pane.id().root == ROOT && pane.id().tabs == fixture.tabs)
+        .expect("the target tabs expose one pane")
+        .content_bounds()
+}
+
+fn pane_content_for(fixture: &Fixture, tabs: NodeId) -> LogicalRect {
+    target_plan(fixture)
+        .pane_records()
+        .iter()
+        .find(|pane| pane.id().root == ROOT && pane.id().tabs == tabs)
+        .expect("the requested tabs expose one pane")
+        .content_bounds()
+}
+
+fn pane_center_basin(fixture: &Fixture) -> LogicalRect {
+    let content = pane_content(fixture);
+    let fraction = fixture
+        .engine
+        .presentation_config()
+        .magnetic_center_fraction();
+    let inset_x = content.width() * (1.0 - fraction) * 0.5;
+    let inset_y = content.height() * (1.0 - fraction) * 0.5;
+    rect(
+        content.x() + inset_x,
+        content.y() + inset_y,
+        content.width() - 2.0 * inset_x,
+        content.height() - 2.0 * inset_y,
+    )
 }
 
 fn source_tab(fixture: &Fixture) -> (PresentationHitRegionId, LogicalPoint) {
@@ -340,7 +415,7 @@ fn paint_active_drag(fixture: &mut Fixture) {
 }
 
 #[test]
-fn activation_without_button_hit_publishes_center_and_outer_four_affordance() {
+fn activation_without_button_hit_acquires_magnetic_target_and_keeps_complete_affordance() {
     let mut fixture = Fixture::new(DockPolicy::default());
     let scene = fixture
         .engine
@@ -368,7 +443,19 @@ fn activation_without_button_hit_publishes_center_and_outer_four_affordance() {
         .drop_affordance()
         .expect("activation must publish guide affordance");
     assert_eq!(affordance.scene(), scene);
-    assert!(affordance.active_target().is_none());
+    let active = affordance
+        .active_target()
+        .expect("the magnetic winner highlights its explanatory guide");
+    let preview = fixture
+        .engine
+        .interaction()
+        .preview()
+        .expect("the magnetic winner publishes a docking preview");
+    assert!(matches!(
+        preview.visual(),
+        dockspace::interaction::PreviewVisual::Dock { target, .. }
+            if *target == active.target_id()
+    ));
     assert_eq!(affordance.clusters().len(), 2);
     let inner = affordance
         .clusters()
@@ -405,6 +492,261 @@ fn activation_without_button_hit_publishes_center_and_outer_four_affordance() {
             DropGuideSlot::Edge(Edge::Bottom),
         ]
     );
+}
+
+#[test]
+fn magnetic_edge_latch_survives_small_center_overshoot_and_release() {
+    let mut fixture = Fixture::new(DockPolicy::default());
+    let center = pane_center_basin(&fixture);
+    let y = center.y() + 10.0;
+    let acquired_at = point(center.x() - 0.25, y);
+    let acquired = begin_and_observe(&mut fixture, acquired_at);
+    assert!(matches!(
+        acquired.reduced_pointer_edges()[0].interaction_outcomes(),
+        [
+            InteractionOutcome::DragBegan { .. },
+            InteractionOutcome::PreviewUpdated {
+                preview: Some(_),
+                status: PreviewResolutionStatus::Resolved,
+                ..
+            }
+        ]
+    ));
+    let latched_target = match fixture
+        .engine
+        .interaction()
+        .preview()
+        .expect("the pane edge acquires one preview")
+        .visual()
+    {
+        PreviewVisual::Dock { target, .. } => *target,
+        visual => panic!("the magnetic edge must publish a dock preview, got {visual:?}"),
+    };
+    assert!(matches!(
+        latched_target,
+        DropTargetId::OuterEdge {
+            edge: Edge::Left,
+            ..
+        }
+    ));
+    paint_active_drag(&mut fixture);
+
+    let overshoot = point(center.x() + 7.5, y);
+    let jittered = observe(&mut fixture, overshoot);
+    assert!(matches!(
+        jittered.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            preview: Some(_),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        }]
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .interaction()
+            .preview()
+            .expect("small overshoot keeps the painted target latched")
+            .visual(),
+        PreviewVisual::Dock { target, .. } if *target == latched_target
+    ));
+
+    let before_items = fixture.engine.workspace().item_multiset();
+    let delivered = submit_edge(
+        &mut fixture,
+        PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+        overshoot,
+        PointerCaptureOwner::None,
+        None,
+    );
+    assert!(matches!(
+        delivered.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::DragDelivered { .. }]
+    ));
+    assert_eq!(fixture.engine.workspace().item_multiset(), before_items);
+
+    let root = fixture
+        .engine
+        .workspace()
+        .root(ROOT)
+        .expect("the source root survives the magnetic split");
+    let children = match fixture.engine.workspace().node(root.node) {
+        Some(Node::Split {
+            axis: Axis::Horizontal,
+            children,
+            ..
+        }) => children,
+        node => panic!("the latched left edge must create a horizontal split, got {node:?}"),
+    };
+    let moved = children
+        .iter()
+        .position(|child| {
+            matches!(
+                fixture.engine.workspace().node(*child),
+                Some(Node::Tabs { items, .. }) if items.contains(&MOVED_ITEM)
+            )
+        })
+        .expect("the moved item remains present");
+    let target = children
+        .iter()
+        .position(|child| {
+            matches!(
+                fixture.engine.workspace().node(*child),
+                Some(Node::Tabs { items, .. }) if items.contains(&TARGET_ITEM)
+            )
+        })
+        .expect("the target item remains present");
+    assert!(moved < target);
+}
+
+#[test]
+fn magnetic_edge_latch_releases_after_the_configured_hysteresis_envelope() {
+    let mut fixture = Fixture::new(DockPolicy::default());
+    let center = pane_center_basin(&fixture);
+    let y = center.y() + 10.0;
+    let acquired_at = point(center.x() - 0.25, y);
+    let acquired = begin_and_observe(&mut fixture, acquired_at);
+    assert!(matches!(
+        acquired.reduced_pointer_edges()[0].interaction_outcomes(),
+        [
+            InteractionOutcome::DragBegan { .. },
+            InteractionOutcome::PreviewUpdated {
+                preview: Some(_),
+                status: PreviewResolutionStatus::Resolved,
+                ..
+            }
+        ]
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .interaction()
+            .preview()
+            .expect("the pane edge acquires one preview")
+            .visual(),
+        PreviewVisual::Dock {
+            target: DropTargetId::OuterEdge {
+                edge: Edge::Left,
+                ..
+            },
+            ..
+        }
+    ));
+    paint_active_drag(&mut fixture);
+
+    let outside_envelope = point(center.x() + 8.5, y);
+    let switched = observe(&mut fixture, outside_envelope);
+    assert!(matches!(
+        switched.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            preview: Some(_),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        }]
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .interaction()
+            .preview()
+            .expect("leaving the release envelope selects the normal fallback")
+            .visual(),
+        PreviewVisual::Contained { .. }
+    ));
+    paint_active_drag(&mut fixture);
+
+    let delivered = submit_edge(
+        &mut fixture,
+        PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+        outside_envelope,
+        PointerCaptureOwner::None,
+        None,
+    );
+    assert!(matches!(
+        delivered.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::DragDelivered { .. }]
+    ));
+    assert_eq!(fixture.engine.workspace().contained_floatings().count(), 1);
+    let moved = fixture
+        .engine
+        .workspace()
+        .locate_item_by_id(MOVED_ITEM)
+        .expect("the moved item remains present");
+    assert_eq!(moved.0, RootId::new(2));
+}
+
+#[test]
+fn adjacent_pane_jitter_keeps_preview_guide_and_release_on_one_latched_target() {
+    let (mut fixture, target_tabs) = Fixture::split();
+    let source = pane_content_for(&fixture, fixture.tabs);
+    let target = pane_content_for(&fixture, target_tabs);
+    let y = source.y() + source.height() * 0.6;
+    let acquired_at = point(source.max().x() - 1.0, y);
+    let acquired = begin_and_observe(&mut fixture, acquired_at);
+    assert!(matches!(
+        acquired.reduced_pointer_edges()[0].interaction_outcomes(),
+        [
+            InteractionOutcome::DragBegan { .. },
+            InteractionOutcome::PreviewUpdated {
+                preview: Some(_),
+                status: PreviewResolutionStatus::Resolved,
+                ..
+            }
+        ]
+    ));
+    let latched_target = match fixture
+        .engine
+        .interaction()
+        .preview()
+        .expect("the source pane edge acquires one preview")
+        .visual()
+    {
+        PreviewVisual::Dock { target, .. } => *target,
+        visual => panic!("the source pane edge must publish a dock preview, got {visual:?}"),
+    };
+    paint_active_drag(&mut fixture);
+
+    let jittered_at = point(target.x() + 4.0, y);
+    let jittered = observe(&mut fixture, jittered_at);
+    assert!(matches!(
+        jittered.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            preview: Some(_),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        }]
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .interaction()
+            .preview()
+            .expect("small adjacent-pane jitter keeps the old preview")
+            .visual(),
+        PreviewVisual::Dock { target, .. } if *target == latched_target
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .interaction()
+            .drop_affordance()
+            .and_then(dockspace::drop_resolver::DropAffordance::active_target)
+            .map(dockspace::drop_resolver::DropAffordanceTarget::target_id),
+        Some(latched_target),
+        "the visible active guide must describe the command retained by the latch"
+    );
+
+    let delivered = submit_edge(
+        &mut fixture,
+        PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+        jittered_at,
+        PointerCaptureOwner::None,
+        None,
+    );
+    assert!(matches!(
+        delivered.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::DragDelivered { .. }]
+    ));
 }
 
 #[test]
@@ -554,10 +896,7 @@ fn top_and_bottom_presented_releases_commit_the_exact_target_and_conserve_items(
         );
         assert!(matches!(
             delivered.reduced_pointer_edges()[0].interaction_outcomes(),
-            [
-                InteractionOutcome::PreviewUpdated { .. },
-                InteractionOutcome::DragDelivered { .. }
-            ]
+            [InteractionOutcome::DragDelivered { .. }]
         ));
         assert_eq!(fixture.engine.workspace().item_multiset(), before_items);
         assert_eq!(

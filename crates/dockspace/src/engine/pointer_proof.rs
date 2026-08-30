@@ -60,6 +60,7 @@ pub(super) fn pointer_receiver_candidate_spec(
         );
     }
     let owns_stream = engine.interaction.active_stream() == Some(stream);
+    let position = journal_position_key(engine, stream, edge);
     let (delivery, hover) = match (engine.interaction.status(), edge.kind(), owns_stream) {
         (InteractionStatus::Idle, PointerEdgeKind::ButtonPressed(PointerButton::Primary), _) => {
             (PointerReceiverDeliveryRequest::ClickAndDrag, false)
@@ -70,17 +71,32 @@ pub(super) fn pointer_receiver_candidate_spec(
             | PointerEdgeKind::ContactEnded(PointerButton::Primary),
             true,
         ) => (PointerReceiverDeliveryRequest::Click, false),
+        (InteractionStatus::Armed { .. }, PointerEdgeKind::Moved, true) => (
+            PointerReceiverDeliveryRequest::None,
+            position.hover_probe_requested(),
+        ),
+        (InteractionStatus::Dragging { session }, PointerEdgeKind::Moved, true) => (
+            PointerReceiverDeliveryRequest::None,
+            engine
+                .interaction
+                .active_drag(session)
+                .is_ok_and(|_| position.hover_probe_requested()),
+        ),
         (
-            InteractionStatus::Armed { .. } | InteractionStatus::Dragging { .. },
-            PointerEdgeKind::Moved,
-            true,
-        )
-        | (
-            InteractionStatus::Dragging { .. },
+            InteractionStatus::Dragging { session },
             PointerEdgeKind::ButtonReleased(PointerButton::Primary)
             | PointerEdgeKind::ContactEnded(PointerButton::Primary),
             true,
-        ) => (PointerReceiverDeliveryRequest::None, true),
+        ) => {
+            let hover = engine
+                .interaction
+                .active_drag(session)
+                .is_ok_and(|_| position.hover_probe_requested());
+            // Every active drag release is a fresh receiver-authority boundary,
+            // including an unchanged point. An explicit outside-all desktop
+            // route is the only release without a surface receiver to probe.
+            (PointerReceiverDeliveryRequest::None, hover)
+        }
         _ => (PointerReceiverDeliveryRequest::None, false),
     };
     if delivery != PointerReceiverDeliveryRequest::None {
@@ -105,28 +121,27 @@ pub(super) fn pointer_receiver_candidate_spec(
         return PointerReceiverCandidateSpec::delivery(edge.sequence(), surface, point, delivery);
     }
     if hover {
-        let (surface, point) = match edge.location() {
-            PointerEdgeLocation::SurfaceLocal { position } => (
-                stream
-                    .lease()
-                    .scope()
-                    .surface_local()
-                    .map(|scope| scope.surface()),
-                position.known().copied(),
-            ),
-            PointerEdgeLocation::Desktop { route } => {
-                let route = route
-                    .validate_against_registry(engine.authority_domain, engine.viewport.registry())
-                    .dock_route();
-                (
-                    route.map(|route| route.binding().surface()),
-                    route.map(DesktopDockRoute::surface_position),
-                )
-            }
-        };
+        let surface = position.hover_surface();
+        let point = position.hover_probe().map(SurfacePointer::position);
         return PointerReceiverCandidateSpec::hover_hit(edge.sequence(), surface, point);
     }
     PointerReceiverCandidateSpec::not_applicable(edge.sequence())
+}
+
+pub(super) fn journal_position_key(
+    engine: &DockEngine,
+    stream: PointerStreamId,
+    edge: &PointerEdge,
+) -> ManipulationPositionKey {
+    match edge.location() {
+        PointerEdgeLocation::SurfaceLocal { position } => ManipulationPositionKey::JournalSurface {
+            scope: stream.lease().scope(),
+            position,
+        },
+        PointerEdgeLocation::Desktop { route } => ManipulationPositionKey::JournalDesktop(
+            route.validate_against_registry(engine.authority_domain, engine.viewport.registry()),
+        ),
+    }
 }
 
 /// Joins the edge-local delivery binding with the independent desktop position.

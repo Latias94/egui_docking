@@ -110,10 +110,19 @@ python3 scripts/run_egui_fork_harness.py
 ```
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example exercises the
-default interactive single-surface facade. To inspect the fork-backed native
-path, run the separate example. It starts with the Inspector group as an
-egui-styled contained window in the root surface; it does not open a child OS
-window automatically:
+default interactive single-surface facade:
+
+```text
+cargo run --manifest-path crates/egui_dockspace/Cargo.toml --features example-app --example basic --locked -j1
+```
+
+In that example, drag the center-left part of a contained window's title strip
+to move it; keep the pointer away from the menu, close button, and resize edges.
+Drag a tab body (not its close button) into the middle or an edge of a pane and
+release only after the preview target appears. To inspect the fork-backed
+native path, run the separate example. It starts with the Inspector group as
+an egui-styled contained window in the root surface; it does not open a child
+OS window automatically:
 
 ```text
 cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --locked -j1

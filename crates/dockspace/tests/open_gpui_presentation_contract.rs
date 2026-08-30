@@ -355,8 +355,8 @@ fn root_central_leaf_keeps_inner_center_separate_from_outer_four_way_guides() {
             panic!("outer clusters cannot contain a center target");
         };
         let draw = guide.draw();
-        let hit = guide.target().region().rect();
-        let preview = guide.target().visual().rect();
+        let hit = guide.hit().rect();
+        let preview = guide.preview();
         assert!(
             hit.x() <= draw.x()
                 && hit.y() <= draw.y()
@@ -409,12 +409,9 @@ fn nested_central_leaf_retains_center_and_all_four_inner_edges() {
         let guide = inner
             .target(DropGuideSlot::Edge(edge))
             .unwrap_or_else(|| panic!("nested central leaf exposes {edge:?}"));
-        assert!(area(guide.target().region().rect()) > area(guide.draw()));
-        assert_ne!(guide.draw(), guide.target().visual().rect());
-        assert_ne!(
-            guide.target().region().rect(),
-            guide.target().visual().rect()
-        );
+        assert!(area(guide.hit().rect()) > area(guide.draw()));
+        assert_ne!(guide.draw(), guide.preview());
+        assert_ne!(guide.hit().rect(), guide.preview());
     }
 
     let outer = ready

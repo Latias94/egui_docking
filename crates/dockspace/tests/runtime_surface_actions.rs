@@ -943,7 +943,7 @@ fn paint_only_tabs_expose_no_receiver_or_prepared_semantic_action() {
 }
 
 #[test]
-fn local_tab_drag_without_a_drop_receiver_publishes_a_contained_preview() {
+fn local_tab_drag_into_its_source_pane_center_publishes_a_contained_preview() {
     let mut session = session();
     install_ready_candidate(&mut session);
 
@@ -960,22 +960,16 @@ fn local_tab_drag_without_a_drop_receiver_publishes_a_contained_preview() {
         .receiver_for_tab_body(tab)
         .expect("the first tab has an exact drag receiver")
         .center();
-    let target = (1..10)
-        .flat_map(|y| (1..10).map(move |x| (x, y)))
-        .map(|(x, y)| {
-            LogicalPoint::new(f64::from(x) * 80.0, f64::from(y) * 60.0)
-                .expect("sample point validates")
-        })
-        .find(|point| {
-            let delta_x = point.x() - source.x();
-            let delta_y = point.y() - source.y();
-            delta_x * delta_x + delta_y * delta_y > 64.0
-                && !plan.receivers().any(|receiver| {
-                    receiver.role() == DockspaceReceiverRole::DropTarget
-                        && receiver.bounds().contains(*point)
-                })
-        })
-        .expect("the ready surface exposes a no-target point");
+    let pane = plan
+        .panes()
+        .find(|pane| pane.root() == tab.root())
+        .expect("the source tab has an exact pane");
+    let pane_bounds = pane.content_bounds();
+    let target = LogicalPoint::new(
+        pane_bounds.x() + pane_bounds.width() * 0.65,
+        pane_bounds.y() + pane_bounds.height() * 0.65,
+    )
+    .expect("the source pane center validates");
     let begin = plan
         .prepare_tab_gesture(
             FIRST,
@@ -1483,6 +1477,182 @@ fn rear_contained_title_begin_atomically_raises_and_starts_the_local_drag() {
     inspection
         .commit()
         .expect("drag feedback inspection commits");
+}
+
+#[test]
+fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
+    let mut session = contained_session(DockPolicy::default());
+    install_ready_candidate(&mut session);
+
+    let mut begin = session
+        .begin_host_frame()
+        .expect("contained magnetic-redock frame begins");
+    let plan = begin
+        .paint_plan(SURFACE)
+        .expect("contained magnetic-redock plan lookup succeeds")
+        .expect("contained magnetic-redock candidate is paintable");
+    let contained = plan
+        .contained()
+        .find(|contained| contained.floating() == FLOATING)
+        .expect("the contained source is painted");
+    let tab = plan
+        .tabs()
+        .find(|tab| tab.item() == SECOND)
+        .expect("the contained tab is painted");
+    let initial = plan
+        .receiver_for_tab_body(tab)
+        .expect("the contained tab has an exact drag receiver")
+        .center();
+    let pane = plan
+        .panes()
+        .find(|pane| pane.root() == ROOT)
+        .expect("the main root exposes a pane basin");
+    let target = LogicalPoint::new(
+        pane.content_bounds().x() + pane.content_bounds().width() * 0.75,
+        pane.content_bounds().y() + pane.content_bounds().height() * 0.75,
+    )
+    .expect("the main pane basin point is finite");
+    assert!(
+        !contained.outer_bounds().contains(target),
+        "the first magnetic observation must leave the frozen source rectangle"
+    );
+    assert!(
+        plan.drop_guides()
+            .flat_map(|cluster| cluster.targets())
+            .all(|guide| !guide.hit_bounds().contains(target)),
+        "the redock journey must not aim at an exact guide button"
+    );
+    let action = plan
+        .prepare_tab_gesture(
+            SECOND,
+            SurfaceGesturePhase::Begin {
+                initial,
+                current: target,
+            },
+        )
+        .expect("the contained tab prepares a direct-manipulation drag");
+    begin
+        .submit_surface_action(action)
+        .expect("the contained magnetic-redock begin is accepted");
+    begin
+        .measure_surface(SURFACE, metrics())
+        .expect("the magnetic-redock surface measures");
+    begin.commit().expect("the magnetic-redock begin commits");
+
+    let mut paint = session
+        .begin_host_frame()
+        .expect("contained magnetic-preview paint begins");
+    let preview = paint
+        .paint_plan(SURFACE)
+        .expect("contained magnetic-preview plan lookup succeeds")
+        .expect("contained magnetic-preview candidate remains paintable")
+        .drag_preview()
+        .expect("leaving the source rectangle acquires a pane target");
+    assert!(matches!(
+        preview.visual(),
+        crate::runtime::DockspacePreviewVisual::Dock {
+            surface: SURFACE,
+            ..
+        }
+    ));
+    paint
+        .confirm_surface_painted(SURFACE)
+        .expect("the magnetic preview is painted");
+    let mut report = paint.commit().expect("the magnetic preview paint commits");
+    let output = report
+        .take_painted_outputs()
+        .pop()
+        .expect("the magnetic preview produces one output");
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .expect("the magnetic preview reaches presentation");
+
+    let mut settle = session
+        .begin_host_frame()
+        .expect("magnetic preview settlement begins");
+    settle
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the settlement retains the presented surface");
+    settle.commit().expect("the magnetic preview settles");
+
+    let mut release = session
+        .begin_host_frame()
+        .expect("contained magnetic release begins");
+    let action = release
+        .paint_plan(SURFACE)
+        .expect("contained magnetic release plan lookup succeeds")
+        .expect("contained magnetic release candidate remains paintable")
+        .prepare_tab_gesture(SECOND, SurfaceGesturePhase::Release { current: target })
+        .expect("the painted magnetic target prepares release");
+    release
+        .submit_surface_action(action)
+        .expect("the magnetic release is accepted");
+    release
+        .measure_surface(SURFACE, metrics())
+        .expect("the redocked surface measures");
+    release.commit().expect("the magnetic release commits");
+
+    if session.view().contained(FLOATING).is_some() {
+        assert!(
+            !session.has_active_gesture(),
+            "an unpainted release must leave interaction ownership before waiting for output"
+        );
+        let mut paint = session
+            .begin_host_frame()
+            .expect("release-pending magnetic preview paint begins");
+        assert!(matches!(
+            paint
+                .paint_plan(SURFACE)
+                .expect("release-pending plan lookup succeeds")
+                .expect("release-pending candidate remains paintable")
+                .drag_preview()
+                .expect("the release-pending target remains visible")
+                .visual(),
+            crate::runtime::DockspacePreviewVisual::Dock {
+                surface: SURFACE,
+                ..
+            }
+        ));
+        paint
+            .confirm_surface_painted(SURFACE)
+            .expect("the release-pending preview is painted");
+        let mut report = paint
+            .commit()
+            .expect("the release-pending preview paint commits");
+        let output = report
+            .take_painted_outputs()
+            .pop()
+            .expect("the release-pending preview produces one output");
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the release-pending preview reaches presentation");
+
+        let mut settle = session
+            .begin_host_frame()
+            .expect("release-pending magnetic settlement begins");
+        settle
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the release settlement retains unaffected surfaces");
+        settle
+            .commit()
+            .expect("the exact presented release settles");
+    }
+
+    assert!(
+        session.view().contained(FLOATING).is_none(),
+        "magnetic release did not redock: active_gesture={}, contained={:?}, moved={:?}",
+        session.has_active_gesture(),
+        contained_roster(&session),
+        session.view().item(SECOND),
+    );
+    let moved = session
+        .view()
+        .item(SECOND)
+        .expect("the redocked item remains open");
+    assert_eq!(moved.surface(), SURFACE);
+    assert_eq!(moved.root(), ROOT);
+    assert_eq!(moved.contained(), None);
+    assert!(!session.has_active_gesture());
 }
 
 #[test]

@@ -56,6 +56,7 @@ struct Panes;
 struct FocusPanes {
     target: egui::Id,
     target_rect: Cell<Option<Rect>>,
+    pane_rect: Cell<Option<Rect>>,
     expose_target: bool,
     target_requests: Cell<usize>,
 }
@@ -65,6 +66,7 @@ impl FocusPanes {
         Self {
             target: egui::Id::new((id_salt, "pane-focus-target")),
             target_rect: Cell::new(None),
+            pane_rect: Cell::new(None),
             expose_target,
             target_requests: Cell::new(0),
         }
@@ -78,6 +80,12 @@ impl FocusPanes {
         self.target_rect
             .get()
             .expect("the selected pane published its focus target rectangle")
+    }
+
+    fn pane_rect(&self) -> Rect {
+        self.pane_rect
+            .get()
+            .expect("the selected pane published its content rectangle")
     }
 }
 
@@ -166,8 +174,10 @@ impl PaneView for FocusPanes {
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        let pane_rect = ui.available_rect_before_wrap();
+        self.pane_rect.set(Some(pane_rect));
         if item == SECOND {
-            let rect = Rect::from_min_size(ui.available_rect_before_wrap().min, vec2(120.0, 24.0));
+            let rect = Rect::from_min_size(pane_rect.min, vec2(120.0, 24.0));
             self.target_rect.set(Some(rect));
             let _ = ui.interact(rect, self.target, egui::Sense::click_and_drag());
         }
@@ -3750,6 +3760,131 @@ fn default_features_center_guide_merges_tabs() {
 }
 
 #[test]
+fn ordinary_pane_center_release_uses_magnetic_merge_without_guide_aiming() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-magnetic-center-basin", split_layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the magnetic docking facade initializes");
+    let mut panes = FocusPanes::new("magnetic-center-basin", true);
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (stable, _) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "First");
+    let pane = panes.pane_rect();
+    let target = Pos2::new(
+        egui::lerp(pane.x_range(), 0.65),
+        egui::lerp(pane.y_range(), 0.65),
+    );
+    let passive = dockspace
+        .style()
+        .visuals
+        .drop_guide_fill
+        .expect("the fixture fixes its passive guide color");
+    let active = dockspace
+        .style()
+        .visuals
+        .drop_guide_active_fill
+        .expect("the fixture fixes its active guide color");
+    let drop_fill = dockspace
+        .style()
+        .visuals
+        .drop_fill
+        .expect("the fixture fixes its preview fill");
+
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+    );
+
+    let mut preview = None;
+    for _ in 0..8 {
+        let frame = run_focus_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        )
+        .0;
+        let center_merge = rect_with_fill(&frame.output, drop_fill)
+            .is_some_and(|rect| rect.min.x < pane.min.x && rect.max.x >= pane.max.x - 0.01);
+        if center_merge {
+            preview = Some(frame);
+            break;
+        }
+    }
+    let preview = preview
+        .expect("the ordinary pane point publishes a center-merge preview before the deadline");
+    assert!(
+        preview.output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect) if rect.fill == active
+        )),
+        "the magnetic center candidate highlights its explanatory guide"
+    );
+    assert!(
+        preview.output.shapes.iter().all(|shape| !matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect)
+                if (rect.fill == passive || rect.fill == active) && rect.rect.contains(target)
+        )),
+        "the semantic journey must not aim at an explicit guide button"
+    );
+
+    let _ = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+
+    let mut merged = false;
+    for _ in 0..8 {
+        let no_contained = dockspace
+            .view()
+            .surface(SURFACE)
+            .is_some_and(|surface| surface.contained().next().is_none());
+        if root_tabs(&dockspace) == Some(vec![SECOND, FIRST]) && no_contained {
+            merged = true;
+            break;
+        }
+        let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    }
+
+    assert!(
+        merged,
+        "releasing inside the pane's center basin merges without exact guide aiming"
+    );
+    let moved = dockspace
+        .view()
+        .item(FIRST)
+        .expect("the moved tab remains open after magnetic docking");
+    assert_eq!(moved.surface(), SURFACE);
+    assert_eq!(moved.root(), ROOT);
+    assert_eq!(moved.contained(), None);
+    assert!(moved.is_selected());
+    assert!(dockspace.view().contained(FLOATING).is_none());
+    assert_eq!(context.dragged_id(), None);
+
+    let stable_topology = root_tabs(&dockspace);
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(root_tabs(&dockspace), stable_topology);
+    assert_eq!(context.dragged_id(), None);
+}
+
+#[test]
 fn docked_tab_drag_to_a_non_target_region_creates_contained_floating() {
     let context = Context::default();
     context.enable_accesskit();
@@ -3760,20 +3895,24 @@ fn docked_tab_drag_to_a_non_target_region_creates_contained_floating() {
         .style(instrumented_style())
         .build()
         .expect("the local contained tab facade initializes");
-    let mut panes = Panes;
+    let mut panes = FocusPanes::new("product-local-tab-contained", false);
 
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new()).0;
     let source = tab_center(&stable.output, "First");
-    let target = Pos2::new(620.0, 440.0);
+    let pane = panes.pane_rect();
+    let target = Pos2::new(
+        egui::lerp(pane.x_range(), 0.65),
+        egui::lerp(pane.y_range(), 0.65),
+    );
 
-    let _ = run_frame(
+    let _ = run_focus_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerMoved(source), pointer_button(source, true)],
     );
-    let _ = run_frame(
+    let _ = run_focus_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -3781,12 +3920,15 @@ fn docked_tab_drag_to_a_non_target_region_creates_contained_floating() {
     );
     let mut preview = None;
     for _ in 0..3 {
-        preview = Some(run_frame(
-            &context,
-            &mut dockspace,
-            &mut panes,
-            vec![Event::PointerMoved(target)],
-        ));
+        preview = Some(
+            run_focus_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(target)],
+            )
+            .0,
+        );
     }
     let preview = preview.expect("the drag publishes a terminal target frame");
     let drop_fill = dockspace
@@ -3799,7 +3941,7 @@ fn docked_tab_drag_to_a_non_target_region_creates_contained_floating() {
         1,
         "a no-target local tab drag must paint one contained preview before release"
     );
-    let _ = run_frame(
+    let _ = run_focus_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -4980,6 +5122,128 @@ fn default_features_contained_title_redocks_through_the_canonical_guide() {
         Some((DockspaceAxis::Vertical, vec![vec![SECOND], vec![FIRST]],)),
     );
     assert!(dockspace.view().contained(FLOATING).is_none());
+}
+
+#[test]
+fn contained_tab_redocks_through_an_ordinary_pane_basin_without_guide_aiming() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-contained-magnetic-redock", contained_layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the contained magnetic-redock facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = node_center(&stable.output, Role::Tab, "Second");
+    let root_tab = node_rect(&stable.output, Role::Tab, "First");
+    let target = Pos2::new(root_tab.max.x + 280.0, root_tab.max.y + 300.0);
+    let source_rect = contained_rect(&dockspace);
+    assert!(
+        !Rect::from_min_size(
+            Pos2::new(source_rect.x() as f32, source_rect.y() as f32),
+            vec2(source_rect.width() as f32, source_rect.height() as f32),
+        )
+        .contains(target),
+        "the first magnetic observation must leave the contained source rectangle"
+    );
+    let passive = dockspace
+        .style()
+        .visuals
+        .drop_guide_fill
+        .expect("the fixture fixes its passive guide color");
+    let active = dockspace
+        .style()
+        .visuals
+        .drop_guide_active_fill
+        .expect("the fixture fixes its active guide color");
+    let drop_fill = dockspace
+        .style()
+        .visuals
+        .drop_fill
+        .expect("the fixture fixes its preview fill");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+
+    let mut preview = None;
+    for _ in 0..8 {
+        let frame = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+        let pane_merge = rect_with_fill(&frame.output, drop_fill).is_some_and(|rect| {
+            rect.contains(target) && rect.width() > source_rect.width() as f32 * 2.0
+        });
+        if pane_merge {
+            preview = Some(frame);
+            break;
+        }
+    }
+    let preview = preview
+        .expect("the ordinary pane point publishes a full-pane Dock preview before the deadline");
+    assert!(
+        preview.output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect) if rect.fill == active
+        )),
+        "the magnetic pane candidate highlights its explanatory guide"
+    );
+    assert!(
+        preview.output.shapes.iter().all(|shape| !matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect)
+                if (rect.fill == passive || rect.fill == active) && rect.rect.contains(target)
+        )),
+        "the contained redock journey must not aim at an explicit guide button"
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+    let mut redocked = false;
+    for _ in 0..8 {
+        if root_tabs(&dockspace) == Some(vec![FIRST, SECOND])
+            && dockspace.view().contained(FLOATING).is_none()
+        {
+            redocked = true;
+            break;
+        }
+        let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    }
+
+    assert!(
+        redocked,
+        "a contained tab released in the ordinary pane basin must redock without guide aiming"
+    );
+    let moved = dockspace
+        .view()
+        .item(SECOND)
+        .expect("the redocked contained item remains open");
+    assert_eq!(moved.surface(), SURFACE);
+    assert_eq!(moved.root(), ROOT);
+    assert_eq!(moved.contained(), None);
+    assert!(moved.is_selected());
+    assert_eq!(context.dragged_id(), None);
 }
 
 #[test]

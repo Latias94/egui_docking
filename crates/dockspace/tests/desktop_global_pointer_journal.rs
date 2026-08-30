@@ -2259,7 +2259,7 @@ fn submit_active_drag_edge_after(
     previous: u64,
 ) -> dockspace::transition::EngineTransition {
     let projection = interaction(engine, TARGET_SURFACE);
-    let (target_region, expected_point) = center_drop_point(projection, target_tabs);
+    let (_, expected_point) = center_drop_point(projection, target_tabs);
     assert_eq!(target_point, expected_point);
     let route = desktop_route(
         target_binding,
@@ -2291,23 +2291,33 @@ fn submit_active_drag_edge_after(
         .expect("active drag edge freezes one hover candidate")
         .candidates()[0]
         .clone();
+    let release_projection = frame
+        .view()
+        .interaction_projection(TARGET_SURFACE)
+        .expect("active drag hover is bound to the current output");
+    let (target_region, _) = center_drop_point(release_projection, target_tabs);
     let target_hover = PointerReceiverHoverHit::new(
-        projection,
+        release_projection,
         target_point,
         PointerReceiverHoverHitDisposition::Dock(target_region),
     )
     .expect("active drag hover is output-bound");
+    let observation = match candidate.probes() {
+        PointerReceiverProbeRequest::NotApplicable => PointerReceiverObservation::NotApplicable,
+        PointerReceiverProbeRequest::HoverHit => PointerReceiverObservation::Presented(
+            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
+                target_hover,
+            )])
+            .expect("active drag move answers hover"),
+        ),
+        PointerReceiverProbeRequest::Delivery => {
+            panic!("active drag edge must not request delivery")
+        }
+    };
     frame
         .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([candidate.receipt(
-                PointerReceiverObservation::Presented(
-                    PresentedPointerReceiverObservation::new([
-                        PointerReceiverProbeReceipt::HoverHit(target_hover),
-                    ])
-                    .expect("active drag edge answers hover"),
-                ),
-            )])
-            .expect("active drag receipt set is exact"),
+            PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                .expect("active drag receipt set is exact"),
         )
         .expect("active drag receipt stages");
     complete(engine, &mut frame);
@@ -2716,12 +2726,11 @@ fn unknown_capture_with_exact_source_delivery_reaches_release_pending() {
         edge.interaction_outcomes(),
         [
             InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
                 status: PreviewResolutionStatus::Resolved,
                 ..
             },
             InteractionOutcome::ReleasePending { .. }
-        ]
+        ] | [InteractionOutcome::ReleasePending { .. }]
     ));
     assert_eq!(engine.workspace(), &before);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
@@ -3257,7 +3266,8 @@ fn assert_stale_native_capture_semantic_edge_cancels(kind: PointerEdgeKind) {
     assert_eq!(candidates.len(), 1);
     assert_eq!(
         candidates[0].probes(),
-        PointerReceiverProbeRequest::HoverHit
+        PointerReceiverProbeRequest::HoverHit,
+        "active drag edges always refresh hover authority"
     );
     frame
         .submit_pointer_receiver_receipts(unknown_receipts(&frame))
@@ -3572,11 +3582,12 @@ fn target_coordinate_change_precedes_journal_release_and_blocks_delivery() {
         .clone();
     assert_eq!(candidate.probes(), PointerReceiverProbeRequest::HoverHit);
     assert_eq!(candidate.hover_surface(), Some(TARGET_SURFACE));
-    assert_ne!(
-        candidate.hover_point(),
-        Some(target_point),
-        "the release point is reprojected with reducer-ordinal coordinate facts"
-    );
+    let rescaled_target = LogicalPoint::new(
+        target_point.x() * TARGET_SCALE / 1.5,
+        target_point.y() * TARGET_SCALE / 1.5,
+    )
+    .expect("rescaled target point must be finite");
+    assert_eq!(candidate.hover_point(), Some(rescaled_target));
     frame
         .submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([candidate.receipt(
@@ -4212,10 +4223,6 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
     release_frame
         .submit_pointer_journal(provider, release_journal)
         .expect("target-bound release freezes exact receiver candidate");
-    let release_projection = release_frame
-        .view()
-        .interaction_projection(TARGET_SURFACE)
-        .expect("sealed release frame has current target authority");
     let release_candidate = release_frame
         .pointer_receiver_candidates()
         .expect("release candidate roster exists")
@@ -4228,12 +4235,17 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
         release_candidate.probes(),
         PointerReceiverProbeRequest::HoverHit
     );
+    let release_projection = release_frame
+        .view()
+        .interaction_projection(TARGET_SURFACE)
+        .expect("release hover is bound to the current output");
+    let (target_region, _) = center_drop_point(release_projection, target_tabs);
     let release_hover = PointerReceiverHoverHit::new(
         release_projection,
         target_point,
-        PointerReceiverHoverHitDisposition::Dock(target_drop),
+        PointerReceiverHoverHitDisposition::Dock(target_region),
     )
-    .expect("release hover remains bound to target native output");
+    .expect("release hover is output-bound");
     release_frame
         .submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([release_candidate.receipt(
@@ -4241,7 +4253,7 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
                     PresentedPointerReceiverObservation::new([
                         PointerReceiverProbeReceipt::HoverHit(release_hover),
                     ])
-                    .expect("active drag release answers only target hover"),
+                    .expect("release hover answers the exact candidate"),
                 ),
             )])
             .expect("release receipt set is exact"),
@@ -4252,14 +4264,7 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
 
     assert!(matches!(
         release_transition.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
-                ..
-            },
-            InteractionOutcome::DragDelivered { .. }
-        ]
+        [InteractionOutcome::DragDelivered { .. }]
     ));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert!(matches!(
@@ -4330,20 +4335,8 @@ fn platform_destruction_before_release_prevents_stale_cross_window_drop() {
     frame
         .submit_pointer_journal(provider, release)
         .expect("stale release stages after the platform fact");
-    let candidate = frame
-        .pointer_receiver_candidates()
-        .expect("release freezes one receiver candidate")
-        .candidates()[0]
-        .clone();
     frame
-        .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([candidate.receipt(
-                PointerReceiverObservation::Unknown(
-                    PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
-                ),
-            )])
-            .expect("unknown receiver observation answers the exact candidate"),
-        )
+        .submit_pointer_receiver_receipts(unknown_receipts(&frame))
         .expect("release receiver authority stages");
     complete(&engine, &mut frame);
 

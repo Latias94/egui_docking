@@ -368,6 +368,27 @@ fn tabs_containing(view: DockspaceView<'_>, item: ItemId) -> Option<DockspaceTab
     view.item(item).map(|item| item.tabs())
 }
 
+fn item_snapshot(
+    view: DockspaceView<'_>,
+    item: ItemId,
+) -> (
+    SurfaceId,
+    RootId,
+    Option<FloatingPresentationId>,
+    Vec<ItemId>,
+    Option<ItemId>,
+) {
+    let item_view = view.item(item).expect("the fixture item remains open");
+    let tabs = item_view.tabs();
+    (
+        item_view.surface(),
+        item_view.root(),
+        item_view.contained(),
+        tabs.items().to_vec(),
+        tabs.selected(),
+    )
+}
+
 fn assert_product_dock_applied(report: &HostFrameReport, item: ItemId) {
     assert!(matches!(
         report.inputs(),
@@ -3001,7 +3022,10 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
     cached.begin_drag_without_target();
     cached.preview_target();
     cached.paint_preview();
-    let before_cached = cached.host.version();
+    let before_cached = [A, B, C]
+        .into_iter()
+        .map(|item| item_snapshot(cached.host.view(), item))
+        .collect::<Vec<_>>();
     let point = cached.current_target().center();
     cached.host.run(|frame| {
         frame
@@ -3014,7 +3038,14 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
             ))
             .expect("absence of a current hover fact is represented as unknown");
     });
-    assert_eq!(cached.host.version(), before_cached);
+    assert_eq!(
+        [A, B, C]
+            .into_iter()
+            .map(|item| item_snapshot(cached.host.view(), item))
+            .collect::<Vec<_>>(),
+        before_cached,
+        "an unavailable receiver may cancel the gesture, but cannot mutate workspace ownership"
+    );
 
     let mut stale = InteractionFixture::new();
     stale.begin_drag_without_target();
@@ -3022,7 +3053,10 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
     stale.paint_preview();
     let old_target = stale.current_target();
     stale.paint_preview();
-    let before_stale = stale.host.version();
+    let before_stale = [A, B, C]
+        .into_iter()
+        .map(|item| item_snapshot(stale.host.view(), item))
+        .collect::<Vec<_>>();
     stale.host.run(|frame| {
         frame
             .submit_surface_pointer(SurfacePointerInput::new(
@@ -3034,7 +3068,14 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
             ))
             .expect("the facade converts a stale concrete receiver into fail-closed evidence");
     });
-    assert_eq!(stale.host.version(), before_stale);
+    assert_eq!(
+        [A, B, C]
+            .into_iter()
+            .map(|item| item_snapshot(stale.host.view(), item))
+            .collect::<Vec<_>>(),
+        before_stale,
+        "a stale receiver may cancel the gesture, but cannot mutate workspace ownership"
+    );
 }
 
 #[test]

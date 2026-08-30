@@ -832,12 +832,10 @@ impl DockEngine {
             return Ok(InteractionOutcome::Rejected(rejection));
         }
         self.freeze_local_contained_offer(cause, session, owner)?;
-        self.interaction
-            .set_drag_current_pointer(session, current)
-            .map_err(|source| EngineError::PointerInteractionInvariant {
-                cause,
-                detail: format!("local tab drag lost its current pointer after begin: {source:?}"),
-            })?;
+        let position = ManipulationPositionKey::Local {
+            scene,
+            pointer: SurfacePointer::new(scene.surface(), current),
+        };
         if current != initial {
             let drag = self
                 .interaction
@@ -849,13 +847,23 @@ impl DockEngine {
                 .clone();
             let evaluation =
                 self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
-            let _ = self.apply_preview_evaluation(
+            let _ = self.apply_position_evaluation(
                 cause,
                 owner,
                 session,
+                position,
                 evaluation,
                 interaction_events,
             )?;
+        } else {
+            self.interaction
+                .set_drag_position(session, position)
+                .map_err(|source| EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: format!(
+                        "local tab drag lost its exact initial position after begin: {source:?}"
+                    ),
+                })?;
         }
         Ok(InteractionOutcome::DragBegan { session })
     }
@@ -936,17 +944,22 @@ impl DockEngine {
                 detail: format!("local tab drag session disappeared: {source:?}"),
             })?
             .clone();
+        let position = ManipulationPositionKey::Local {
+            scene,
+            pointer: SurfacePointer::new(scene.surface(), current),
+        };
         let evaluation = self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
-        self.interaction
-            .set_drag_current_pointer(session, current)
-            .map_err(|source| EngineError::PointerInteractionInvariant {
-                cause,
-                detail: format!("local tab drag lost its current pointer: {source:?}"),
-            })?;
-        self.apply_preview_evaluation(cause, owner, session, evaluation, interaction_events)?
-            .ok_or(EngineError::ReductionCauseInvariant {
-                detail: "local tab preview evaluation produced no outcome",
-            })
+        self.apply_position_evaluation(
+            cause,
+            owner,
+            session,
+            position,
+            evaluation,
+            interaction_events,
+        )?
+        .ok_or(EngineError::ReductionCauseInvariant {
+            detail: "local tab preview evaluation produced no outcome",
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -966,7 +979,7 @@ impl DockEngine {
             Ok(session) => session,
             Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
         };
-        let drag = self
+        let mut drag = self
             .interaction
             .active_drag(session)
             .map_err(|source| EngineError::PointerInteractionInvariant {
@@ -974,19 +987,43 @@ impl DockEngine {
                 detail: format!("local tab release session disappeared: {source:?}"),
             })?
             .clone();
-        let evaluation = self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
-        self.interaction
-            .set_drag_current_pointer(session, current)
-            .map_err(|source| EngineError::PointerInteractionInvariant {
+        let position = ManipulationPositionKey::Local {
+            scene,
+            pointer: SurfacePointer::new(scene.surface(), current),
+        };
+        if drag.last_advanced_position() != Some(position) {
+            let evaluation =
+                self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
+            let advance_outcome = self.apply_position_evaluation(
                 cause,
-                detail: format!("local tab release lost its current pointer: {source:?}"),
-            })?;
-        if !matches!(evaluation.decision, PreviewDecision::Publish { .. }) {
+                owner,
+                session,
+                position,
+                evaluation,
+                interaction_events,
+            )?;
+            if self.interaction.status() != (InteractionStatus::Dragging { session }) {
+                return advance_outcome.ok_or(EngineError::ReductionCauseInvariant {
+                    detail: "local release position advance ended the drag without an outcome",
+                });
+            }
+            drag = self
+                .interaction
+                .active_drag(session)
+                .map_err(|source| EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: format!(
+                        "local tab release lost its drag after final position advance: {source:?}"
+                    ),
+                })?
+                .clone();
+        }
+        if drag.preview().is_some() && !self.drag_preview_authority_is_current(&drag) {
             return self.cancel_local_tab_release(cause, session, interaction_events);
         }
-        let release_decision = evaluation.decision.clone();
-        let _ =
-            self.apply_preview_evaluation(cause, owner, session, evaluation, interaction_events)?;
+        let Some(release_decision) = Self::frozen_drag_release_decision(&drag) else {
+            return self.cancel_local_tab_release(cause, session, interaction_events);
+        };
         let drag = self
             .interaction
             .take_drag_for_release(session, owner, PointerButton::Primary)
@@ -994,7 +1031,7 @@ impl DockEngine {
                 cause,
                 detail: format!("local tab release could not consume drag: {source:?}"),
             })?;
-        if drag.preview.as_ref().is_some_and(|published| {
+        if drag.preview().is_some_and(|published| {
             !published.painted()
                 && Self::release_decision_matches_preview(published, &release_decision)
         }) {
@@ -1151,7 +1188,11 @@ impl DockEngine {
         point: LogicalPoint,
         policy: &DockPolicySnapshot,
     ) -> Result<PreviewEvaluation, EngineError> {
-        let query = resolve_presented_drop(
+        let position = ManipulationPositionKey::Local {
+            scene: candidate.stamp(),
+            pointer: SurfacePointer::new(candidate.stamp().surface(), point),
+        };
+        let query = resolve_presented_drop_with_magnetic(
             candidate.stamp(),
             candidate.plan(),
             drag.source_layout_facts.as_deref(),
@@ -1165,12 +1206,13 @@ impl DockEngine {
             drag.payload.clone(),
             drag.surface_background_offer,
             point,
+            drag.magnetic_targeting_allowed_at(position),
         )
         .map_err(|source| EngineError::PointerInteractionInvariant {
             cause,
             detail: source.to_string(),
         })?;
-        let (resolution, affordance) = query.into_parts();
+        let (resolution, affordance, observation) = query.into_evaluation_parts();
         let decision = match resolution {
             DropResolution::Resolved(resolved) => {
                 if resolved.session() != drag.session || resolved.source() != &drag.payload {
@@ -1206,7 +1248,7 @@ impl DockEngine {
                 PreviewDecision::Clear(PreviewResolutionStatus::Unavailable)
             }
         };
-        Ok(PreviewEvaluation::new(decision, affordance))
+        Ok(PreviewEvaluation::new(decision, affordance, observation))
     }
 
     fn resolve_local_contained_move_preview(

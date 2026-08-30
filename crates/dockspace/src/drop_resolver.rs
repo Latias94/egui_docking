@@ -22,6 +22,9 @@ use crate::ids::{FloatingPresentationId, RootId, SurfaceId, WorkspaceRevision};
 use crate::intent::SurfaceBackgroundRootOffer;
 use crate::interaction::DragSessionId;
 use crate::policy::{DockPolicySnapshot, PolicyRejection};
+use crate::runtime::direct_manipulation::{
+    DirectTargetCandidate, DirectTargetProvenance, TargetCandidate, TargetObservation,
+};
 use crate::scene::{
     PresentationLayoutFacts, PresentationPlan, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp,
 };
@@ -33,14 +36,12 @@ use thiserror::Error;
 
 /// Queries both the exact drop outcome and the complete visible guide affordance.
 ///
-/// A scene with explicit guide clusters uses exact, half-open guide-button hits
-/// plus standalone tab-gap targets. An exact guide hit wins over a tab gap; a
-/// matching explicit outer button wins over its inner counterpart. An
-/// ineligible exact winner never falls through to another target. Activating a
-/// cluster is only a painting affordance: when no button is hit, exact unguided
-/// targets are still resolved while the [`DropAffordance`] remains visible.
-/// Scenes with no guide clusters use the same deterministic target ordering
-/// without publishing a guide affordance.
+/// A scene with explicit guide clusters uses exact, half-open guide-button and
+/// tab-gap hits before its core-owned magnetic target field. Direct hits outrank
+/// the active outer-root band, which outranks the deepest pane's center or
+/// normalized nearest-edge basin. An ineligible winner never falls through to
+/// another target. Guide clusters remain painting affordances for the same
+/// structural targets selected by the larger field.
 ///
 /// Every selected guide target is checked against scene availability and one
 /// immutable payload-policy context. Only the unique geometric winner performs
@@ -78,6 +79,7 @@ pub fn resolve_drop(
                 DropSurfaceUnavailable::MissingSurface,
             )),
             None,
+            TargetObservation::Unavailable,
         ));
     };
     let Some(presented) = scene.ready_surface(surface) else {
@@ -93,6 +95,7 @@ pub fn resolve_drop(
                 reason,
             )),
             None,
+            TargetObservation::Unavailable,
         ));
     };
     let workspace_version = WorkspaceVersion::new(
@@ -144,30 +147,48 @@ pub(crate) fn resolve_presented_drop(
     surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     point: LogicalPoint,
 ) -> Result<DropQuery, DropResolutionError> {
+    resolve_presented_drop_with_magnetic(
+        stamp,
+        ready,
+        source_layout_facts,
+        workspace,
+        workspace_version,
+        workspace_index,
+        policy,
+        session,
+        source,
+        surface_background_offer,
+        point,
+        true,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the resolver binds every authoritative drag fact without an ambient context"
+)]
+pub(crate) fn resolve_presented_drop_with_magnetic(
+    stamp: SurfaceSceneStamp,
+    ready: &PresentationPlan,
+    source_layout_facts: Option<&PresentationLayoutFacts>,
+    workspace: &Workspace,
+    workspace_version: WorkspaceVersion,
+    workspace_index: &WorkspaceIndex,
+    policy: &DockPolicySnapshot,
+    session: DragSessionId,
+    source: MovePayload,
+    surface_background_offer: Option<SurfaceBackgroundRootOffer>,
+    point: LogicalPoint,
+    allow_magnetic: bool,
+) -> Result<DropQuery, DropResolutionError> {
     let surface = stamp.surface();
 
     if !HitRegion::new(ready.bounds()).contains(point) {
         return Ok(DropQuery::new(
             DropResolution::KnownNone(KnownDropAbsence::new(stamp, surface, point)),
             None,
+            TargetObservation::surface(stamp, None),
         ));
-    }
-
-    if ready.drop_guide_clusters().is_empty() {
-        return resolve_presented_unguided_drop(
-            stamp,
-            ready,
-            source_layout_facts,
-            workspace,
-            workspace_version,
-            workspace_index,
-            policy,
-            session,
-            source,
-            surface_background_offer,
-            point,
-        )
-        .map(|resolution| DropQuery::new(resolution, None));
     }
 
     let assessment = DropEligibilityContext::new(
@@ -183,30 +204,39 @@ pub(crate) fn resolve_presented_drop(
     let suppression = assessment.source_suppression();
     let occluding_layer = occluding_layer(ready, point, suppression);
     let selected = select_guide_clusters(ready, point, occluding_layer, suppression);
-    let (affordance, exact) = build_affordance(stamp, surface, point, selected, &assessment)?;
-    let resolution = match exact {
+    let (mut affordance, exact) = build_affordance(stamp, surface, point, selected, &assessment)?;
+    let (resolution, candidate) = match exact {
         Some(ExactGuidePreparation::Eligible {
             target,
+            candidate,
             visual,
             command,
-        }) => DropResolution::Resolved(ResolvedDrop {
-            scene: stamp,
-            session,
-            source,
+        }) => (
+            DropResolution::Resolved(ResolvedDrop {
+                scene: stamp,
+                session,
+                source,
+                target,
+                visual,
+                command,
+            }),
+            Some(TargetCandidate::Direct(candidate)),
+        ),
+        Some(ExactGuidePreparation::Rejected {
             target,
-            visual,
-            command,
-        }),
-        Some(ExactGuidePreparation::Rejected { target, reason }) => {
+            candidate,
+            reason,
+        }) => (
             DropResolution::Rejected(RejectedDrop::new(
                 stamp,
                 surface,
                 point,
                 vec![DropCandidateRejection::new(target, reason)],
-            ))
-        }
-        None => resolve_exact_unguided_target(
-            &DropLocation {
+            )),
+            Some(TargetCandidate::Direct(candidate)),
+        ),
+        None => {
+            let location = DropLocation {
                 scene: stamp,
                 ready,
                 workspace,
@@ -220,12 +250,108 @@ pub(crate) fn resolve_presented_drop(
                 occluding_layer,
                 suppression,
                 surface_background_offer,
-            },
-            source,
-        )?,
+            };
+            let (direct, direct_candidate) =
+                resolve_exact_unguided_target(&location, source.clone())?;
+            if allow_magnetic && matches!(direct, DropResolution::KnownNone(_)) {
+                resolve_magnetic_target(&location, &assessment, source.clone())?.map_or(
+                    (direct, None),
+                    |(resolution, candidate)| {
+                        (resolution, Some(TargetCandidate::Magnetic(candidate)))
+                    },
+                )
+            } else {
+                (direct, direct_candidate.map(TargetCandidate::Direct))
+            }
+        }
     };
+    let selected_target = resolution_target_id(&resolution);
+    if let (Some(affordance), Some(target)) = (&mut affordance, selected_target) {
+        affordance.activate_target(target);
+    }
 
-    Ok(DropQuery::new(resolution, affordance))
+    Ok(DropQuery::new(
+        resolution,
+        affordance,
+        TargetObservation::surface(stamp, candidate),
+    ))
+}
+
+fn resolution_target_id(resolution: &DropResolution) -> Option<DropTargetId> {
+    match resolution {
+        DropResolution::Resolved(resolved) => Some(resolved.target_id()),
+        DropResolution::Rejected(rejected) => rejected
+            .candidates()
+            .first()
+            .map(|candidate| candidate.target_id()),
+        DropResolution::KnownNone(_) | DropResolution::Unavailable(_) => None,
+    }
+}
+
+fn resolve_magnetic_target(
+    location: &DropLocation<'_>,
+    assessment: &DropEligibilityContext<'_>,
+    source: MovePayload,
+) -> Result<
+    Option<(DropResolution, crate::target_field::MagneticTargetCandidate)>,
+    DropResolutionError,
+> {
+    let layer = location
+        .occluding_layer
+        .unwrap_or_else(SceneLayerKey::surface_base);
+    let Some(candidate) = location
+        .ready
+        .magnetic_target_at(location.point, layer, |target| {
+            location
+                .suppression
+                .is_none_or(|entry| !entry.excludes_target(target))
+                && !source_excludes_magnetic_target(&source, target)
+        })
+    else {
+        return Ok(None);
+    };
+    let target_id = candidate.target();
+    let target = location
+        .ready
+        .drop_target(target_id)
+        .ok_or(DropResolutionError::PresentedTargetIdentityMismatch { target: target_id })?;
+    if target.layer() != layer {
+        return Err(DropResolutionError::PresentedTargetIdentityMismatch { target: target_id });
+    }
+    match assessment.prepare_winner(target)? {
+        PreparedDropWinner::Eligible { command, visual } => Ok(Some((
+            DropResolution::Resolved(ResolvedDrop {
+                scene: location.scene,
+                session: location.session,
+                source,
+                target: target_id,
+                visual,
+                command,
+            }),
+            candidate,
+        ))),
+        PreparedDropWinner::Rejected(reason) => Ok(Some((
+            DropResolution::Rejected(RejectedDrop::new(
+                location.scene,
+                location.surface,
+                location.point,
+                vec![DropCandidateRejection::new(target_id, reason)],
+            )),
+            candidate,
+        ))),
+    }
+}
+
+fn source_excludes_magnetic_target(source: &MovePayload, target: DropTargetId) -> bool {
+    let DropTargetId::Center { root, tabs, .. } = target else {
+        return false;
+    };
+    match source {
+        MovePayload::Item(source) => source.root() == root && source.tabs() == tabs,
+        MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
+            source.root() == root && source.node() == tabs
+        }
+    }
 }
 
 /// Resolves one authoritative surface-local point against an immutable scene.
@@ -294,6 +420,7 @@ fn resolve_presented_unguided_drop(
     let mut hits: Vec<&DropTargetRecord> = surface_scene
         .drop_targets()
         .iter()
+        .map(AsRef::as_ref)
         .chain(surface_scene.surface_background())
         .filter(|target| {
             suppression.is_none_or(|entry| !entry.excludes_target(target.id()))
@@ -478,11 +605,10 @@ fn build_affordance(
     let active = clusters.iter().find_map(|cluster| {
         let cluster_id = cluster.id();
         cluster.targets().find_map(|(slot, guide_target)| {
-            let target = guide_target.target();
-            target
-                .region()
+            guide_target
+                .hit()
                 .contains(point)
-                .then(|| DropGuideTargetKey::new(cluster_id, slot, target.id()))
+                .then(|| DropGuideTargetKey::new(cluster_id, slot, guide_target.id()))
         })
     });
     let mut exact = None;
@@ -497,16 +623,34 @@ fn build_affordance(
             let eligibility = if is_exact_hit {
                 match assessment.prepare_winner(target)? {
                     PreparedDropWinner::Eligible { command, visual } => {
+                        let candidate = DirectTargetCandidate::new(
+                            target.id(),
+                            DirectTargetProvenance::Guide {
+                                cluster: cluster_id,
+                                slot,
+                            },
+                            target.region(),
+                        );
                         exact = Some(ExactGuidePreparation::Eligible {
                             target: target.id(),
+                            candidate,
                             visual,
                             command,
                         });
                         DropGuideEligibility::Eligible
                     }
                     PreparedDropWinner::Rejected(reason) => {
+                        let candidate = DirectTargetCandidate::new(
+                            target.id(),
+                            DirectTargetProvenance::Guide {
+                                cluster: cluster_id,
+                                slot,
+                            },
+                            target.region(),
+                        );
                         exact = Some(ExactGuidePreparation::Rejected {
                             target: target.id(),
+                            candidate,
                             reason: reason.clone(),
                         });
                         DropGuideEligibility::Rejected(reason)
@@ -549,11 +693,12 @@ fn build_affordance(
 fn resolve_exact_unguided_target(
     location: &DropLocation<'_>,
     source: MovePayload,
-) -> Result<DropResolution, DropResolutionError> {
+) -> Result<(DropResolution, Option<DirectTargetCandidate>), DropResolutionError> {
     let target = location
         .ready
         .drop_targets()
         .iter()
+        .map(AsRef::as_ref)
         .filter(|target| target.id().kind() == DropTargetKind::TabGap)
         .chain(location.ready.surface_background())
         .filter(|target| {
@@ -577,12 +722,26 @@ fn resolve_exact_unguided_target(
                 .then_with(|| left.id().cmp(&right.id()))
         });
     let Some(target) = target else {
-        return Ok(DropResolution::KnownNone(KnownDropAbsence::new(
-            location.scene,
-            location.surface,
-            location.point,
-        )));
+        return Ok((
+            DropResolution::KnownNone(KnownDropAbsence::new(
+                location.scene,
+                location.surface,
+                location.point,
+            )),
+            None,
+        ));
     };
+
+    let provenance = match target.id().kind() {
+        DropTargetKind::TabGap => DirectTargetProvenance::TabGap,
+        DropTargetKind::SurfaceBackground => DirectTargetProvenance::SurfaceBackground,
+        DropTargetKind::Center | DropTargetKind::InnerEdge | DropTargetKind::OuterEdge => {
+            return Err(DropResolutionError::PresentedTargetIdentityMismatch {
+                target: target.id(),
+            });
+        }
+    };
+    let candidate = DirectTargetCandidate::new(target.id(), provenance, target.region());
 
     let assessment = DropEligibilityContext::new(
         location.workspace,
@@ -595,22 +754,26 @@ fn resolve_exact_unguided_target(
         location.surface_background_offer,
     );
     match assessment.prepare_winner(target)? {
-        PreparedDropWinner::Eligible { command, visual } => {
-            Ok(DropResolution::Resolved(ResolvedDrop {
+        PreparedDropWinner::Eligible { command, visual } => Ok((
+            DropResolution::Resolved(ResolvedDrop {
                 scene: location.scene,
                 session: location.session,
                 source,
                 target: target.id(),
                 visual,
                 command,
-            }))
-        }
-        PreparedDropWinner::Rejected(reason) => Ok(DropResolution::Rejected(RejectedDrop::new(
-            location.scene,
-            location.surface,
-            location.point,
-            vec![DropCandidateRejection::new(target.id(), reason)],
-        ))),
+            }),
+            Some(candidate),
+        )),
+        PreparedDropWinner::Rejected(reason) => Ok((
+            DropResolution::Rejected(RejectedDrop::new(
+                location.scene,
+                location.surface,
+                location.point,
+                vec![DropCandidateRejection::new(target.id(), reason)],
+            )),
+            Some(candidate),
+        )),
     }
 }
 
@@ -1345,11 +1508,13 @@ enum PreparedDropWinner {
 enum ExactGuidePreparation {
     Eligible {
         target: DropTargetId,
+        candidate: DirectTargetCandidate,
         visual: DropVisual,
         command: WorkspaceCommand,
     },
     Rejected {
         target: DropTargetId,
+        candidate: DirectTargetCandidate,
         reason: DropRejectionReason,
     },
 }
@@ -1377,13 +1542,19 @@ pub enum DropResolution {
 pub struct DropQuery {
     resolution: DropResolution,
     affordance: Option<DropAffordance>,
+    observation: TargetObservation,
 }
 
 impl DropQuery {
-    const fn new(resolution: DropResolution, affordance: Option<DropAffordance>) -> Self {
+    const fn new(
+        resolution: DropResolution,
+        affordance: Option<DropAffordance>,
+        observation: TargetObservation,
+    ) -> Self {
         Self {
             resolution,
             affordance,
+            observation,
         }
     }
 
@@ -1403,6 +1574,12 @@ impl DropQuery {
     #[must_use]
     pub fn into_parts(self) -> (DropResolution, Option<DropAffordance>) {
         (self.resolution, self.affordance)
+    }
+
+    pub(crate) fn into_evaluation_parts(
+        self,
+    ) -> (DropResolution, Option<DropAffordance>, TargetObservation) {
+        (self.resolution, self.affordance, self.observation)
     }
 }
 
@@ -1472,6 +1649,16 @@ impl DropAffordance {
             .iter()
             .flat_map(|cluster| cluster.targets.iter())
             .find(|target| target.key == active)
+    }
+
+    pub(crate) fn activate_target(&mut self, target: DropTargetId) -> bool {
+        self.active = self
+            .clusters
+            .iter()
+            .flat_map(|cluster| cluster.targets.iter())
+            .find(|candidate| candidate.target_id() == target)
+            .map(DropAffordanceTarget::key);
+        self.active.is_some()
     }
 }
 
@@ -1889,9 +2076,13 @@ impl RejectedDrop {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::command::{CommandOutcome, DockFraction, DockTarget, Edge};
-    use crate::drop_guide::{DropGuideEdgeSet, DropGuideTargetRecord};
+    use crate::drop_guide::{
+        DropGuideEdgeSet, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
+    };
     use crate::drop_target::{
         DropOcclusionRecord, DropTargetAvailability, DropTargetUnavailable, SurfaceBackground,
     };
@@ -1934,7 +2125,6 @@ mod tests {
         source_tabs: NodeId,
         complete_tabs: NodeId,
         contained_tabs: NodeId,
-        cross_contained_tabs: NodeId,
     }
 
     fn rect() -> LogicalRect {
@@ -1997,7 +2187,6 @@ mod tests {
             source_tabs,
             complete_tabs,
             contained_tabs,
-            cross_contained_tabs,
         }
     }
 
@@ -2019,6 +2208,7 @@ mod tests {
             None,
         );
         measured.clone_layout_facts_from(plan);
+        measured.clone_magnetic_target_field_from(plan);
         for record in plan.pane_records().iter().cloned() {
             measured.push_pane_record(record);
         }
@@ -2131,6 +2321,28 @@ mod tests {
         }
     }
 
+    fn compile_fixture_surface_plan_without_guides(
+        engine: &DockEngine,
+        surface: SurfaceId,
+        bounds: LogicalRect,
+    ) -> PresentationPlan {
+        let plan = crate::scene_compiler::compile_surface_measurements_without_guides(
+            engine.workspace(),
+            engine.version(),
+            engine.policy_snapshot(),
+            engine.presentation_config(),
+            engine.presentation_requirements(),
+            &fixture_measurements(engine, surface, bounds),
+            &crate::tab_strip::TabStripStateStore::default(),
+            &[],
+        )
+        .expect("guide-disabled fixture measurements must compile");
+        PresentationPlanValidator::new(engine.workspace(), engine.policy_snapshot())
+            .expect("guide-disabled fixture validator must initialize")
+            .validate_and_canonicalize(plan)
+            .expect("guide-disabled fixture plan must validate")
+    }
+
     fn ready_background(extra: Option<DropTargetRecord>) -> PresentationPlan {
         ready_background_in(rect(), extra)
     }
@@ -2154,7 +2366,7 @@ mod tests {
         ));
         ready.push_contained_minimum(contained_minimum(CONTAINED));
         if let Some(extra) = extra {
-            ready.push_drop_target(extra);
+            ready.push_drop_target(extra.into());
         }
         ready
     }
@@ -2175,7 +2387,7 @@ mod tests {
         ));
         ready.push_contained_minimum(contained_minimum(CROSS_CONTAINED));
         if let Some(extra) = extra {
-            ready.push_drop_target(extra);
+            ready.push_drop_target(extra.into());
         }
         ready
     }
@@ -2239,57 +2451,95 @@ mod tests {
         )
     }
 
-    fn guide_target_record(id: DropTargetId, target: DockTarget) -> DropGuideTargetRecord {
-        DropGuideTargetRecord::new(
-            DropTargetRecord::new(
-                id,
-                target,
-                DropTargetAvailability::Available,
-                HitRegion::new(rect()),
-                SceneLayerKey::new(2),
-                DropVisual::new(rect()),
-            ),
-            rect(),
-        )
+    fn guide_target_record(
+        targets: &mut Vec<Arc<DropTargetRecord>>,
+        id: DropTargetId,
+        target: DockTarget,
+    ) -> DropGuideTargetRecord {
+        let target = Arc::new(DropTargetRecord::new(
+            id,
+            target,
+            DropTargetAvailability::Available,
+            HitRegion::new(rect()),
+            SceneLayerKey::new(2),
+            DropVisual::new(rect()),
+        ));
+        targets.push(Arc::clone(&target));
+        DropGuideTargetRecord::new(target, rect())
     }
 
-    fn complete_guide_clusters(fixture: &Fixture) -> [DropGuideClusterRecord; 2] {
+    fn complete_guide_clusters(
+        fixture: &Fixture,
+    ) -> (Vec<Arc<DropTargetRecord>>, [DropGuideClusterRecord; 2]) {
         let fraction = DockFraction::new(0.35).expect("guide fraction must be valid");
-        let inner_edge = |edge| {
-            guide_target_record(
-                DropTargetId::InnerEdge {
-                    surface: TARGET_SURFACE,
-                    root: CONTAINED_ROOT,
-                    node: fixture.contained_tabs,
-                    edge,
-                },
-                DockTarget::InnerEdge(
-                    fixture
-                        .workspace
-                        .capture_inner_edge_target(
-                            CONTAINED_ROOT,
-                            fixture.contained_tabs,
-                            edge,
-                            fraction,
-                        )
-                        .expect("inner guide target must be current"),
-                ),
+        let mut targets = Vec::new();
+        let center = guide_target_record(
+            &mut targets,
+            DropTargetId::Center {
+                surface: TARGET_SURFACE,
+                root: CONTAINED_ROOT,
+                tabs: fixture.contained_tabs,
+            },
+            DockTarget::Center(
+                fixture
+                    .workspace
+                    .capture_tab_target(CONTAINED_ROOT, fixture.contained_tabs)
+                    .expect("center guide target must be current"),
+            ),
+        );
+        let inner_edges = {
+            let mut inner_edge = |edge| {
+                guide_target_record(
+                    &mut targets,
+                    DropTargetId::InnerEdge {
+                        surface: TARGET_SURFACE,
+                        root: CONTAINED_ROOT,
+                        node: fixture.contained_tabs,
+                        edge,
+                    },
+                    DockTarget::InnerEdge(
+                        fixture
+                            .workspace
+                            .capture_inner_edge_target(
+                                CONTAINED_ROOT,
+                                fixture.contained_tabs,
+                                edge,
+                                fraction,
+                            )
+                            .expect("inner guide target must be current"),
+                    ),
+                )
+            };
+            DropGuideEdgeSet::new(
+                inner_edge(Edge::Left),
+                inner_edge(Edge::Right),
+                inner_edge(Edge::Top),
+                inner_edge(Edge::Bottom),
             )
         };
-        let outer_edge = |edge| {
-            guide_target_record(
-                DropTargetId::OuterEdge {
-                    surface: TARGET_SURFACE,
-                    root: CONTAINED_ROOT,
-                    node: fixture.contained_tabs,
-                    edge,
-                },
-                DockTarget::OuterEdge(
-                    fixture
-                        .workspace
-                        .capture_outer_edge_target(CONTAINED_ROOT, edge, fraction)
-                        .expect("outer guide target must be current"),
-                ),
+        let outer_edges = {
+            let mut outer_edge = |edge| {
+                guide_target_record(
+                    &mut targets,
+                    DropTargetId::OuterEdge {
+                        surface: TARGET_SURFACE,
+                        root: CONTAINED_ROOT,
+                        node: fixture.contained_tabs,
+                        edge,
+                    },
+                    DockTarget::OuterEdge(
+                        fixture
+                            .workspace
+                            .capture_outer_edge_target(CONTAINED_ROOT, edge, fraction)
+                            .expect("outer guide target must be current"),
+                    ),
+                )
+            };
+            DropGuideEdgeSet::new(
+                outer_edge(Edge::Left),
+                outer_edge(Edge::Right),
+                outer_edge(Edge::Top),
+                outer_edge(Edge::Bottom),
             )
         };
         let inner = DropGuideClusterRecord::inner(
@@ -2298,50 +2548,39 @@ mod tests {
             fixture.contained_tabs,
             HitRegion::new(rect()),
             SceneLayerKey::new(2),
-            guide_target_record(
-                DropTargetId::Center {
-                    surface: TARGET_SURFACE,
-                    root: CONTAINED_ROOT,
-                    tabs: fixture.contained_tabs,
-                },
-                DockTarget::Center(
-                    fixture
-                        .workspace
-                        .capture_tab_target(CONTAINED_ROOT, fixture.contained_tabs)
-                        .expect("center guide target must be current"),
-                ),
-            ),
-            DropGuideEdgeSet::new(
-                inner_edge(Edge::Left),
-                inner_edge(Edge::Right),
-                inner_edge(Edge::Top),
-                inner_edge(Edge::Bottom),
-            ),
+            center,
+            inner_edges,
         );
         let outer = DropGuideClusterRecord::outer(
             TARGET_SURFACE,
             CONTAINED_ROOT,
             HitRegion::new(rect()),
             SceneLayerKey::new(2),
-            DropGuideEdgeSet::new(
-                outer_edge(Edge::Left),
-                outer_edge(Edge::Right),
-                outer_edge(Edge::Top),
-                outer_edge(Edge::Bottom),
-            ),
+            outer_edges,
         );
-        [outer, inner]
+        (targets, [outer, inner])
+    }
+
+    fn install_complete_guide_targets(
+        fixture: &Fixture,
+        mut ready: PresentationPlan,
+    ) -> (PresentationPlan, [DropGuideClusterRecord; 2]) {
+        let (targets, clusters) = complete_guide_clusters(fixture);
+        for target in targets {
+            ready.push_drop_target(target);
+        }
+        (ready, clusters)
     }
 
     #[test]
     fn complete_guide_affordance_preflights_only_the_unique_winner() {
         let fixture = fixture();
-        let scene = seal(&fixture, ready_background(None));
+        let (ready, clusters) = install_complete_guide_targets(&fixture, ready_background(None));
+        let scene = seal(&fixture, ready);
         let stamp = scene
             .ready_surface(TARGET_SURFACE)
             .expect("target scene must be ready")
             .stamp();
-        let clusters = complete_guide_clusters(&fixture);
         let payload = partial_payload(&fixture);
         let policy = DockPolicySnapshot::default();
         let workspace_version = WorkspaceVersion::initial();
@@ -2388,12 +2627,12 @@ mod tests {
     #[test]
     fn rejected_geometric_winner_never_falls_through_or_preflights() {
         let fixture = fixture();
-        let scene = seal(&fixture, ready_background(None));
+        let (ready, clusters) = install_complete_guide_targets(&fixture, ready_background(None));
+        let scene = seal(&fixture, ready);
         let stamp = scene
             .ready_surface(TARGET_SURFACE)
             .expect("target scene must be ready")
             .stamp();
-        let clusters = complete_guide_clusters(&fixture);
         let payload = partial_payload(&fixture);
         let mut policy = DockPolicy::default();
         policy.set_allow_edge_split(false);
@@ -2433,6 +2672,7 @@ mod tests {
                     ..
                 },
                 reason: DropRejectionReason::Policy(PolicyRejection::EdgeSplitDisabled),
+                ..
             })
         ));
         let work = resolution_work();
@@ -3092,24 +3332,44 @@ mod tests {
     #[test]
     fn cross_surface_contained_background_rejection_never_falls_through() {
         let fixture = fixture();
-        let target = DropTargetRecord::new(
-            DropTargetId::Center {
-                surface: CROSS_TARGET_SURFACE,
-                root: CROSS_CONTAINED_ROOT,
-                tabs: fixture.cross_contained_tabs,
-            },
-            DockTarget::Center(
-                fixture
-                    .workspace
-                    .capture_tab_target(CROSS_CONTAINED_ROOT, fixture.cross_contained_tabs)
-                    .expect("cross-surface target must be current"),
-            ),
+        let engine = DockEngine::new(fixture.workspace.clone(), DockPolicy::default())
+            .expect("cross-surface fixture engine must be valid");
+        let mut plan = compile_fixture_surface_plan(&engine, CROSS_TARGET_SURFACE, rect());
+        let guide = plan
+            .drop_guide_clusters()
+            .iter()
+            .find(|cluster| {
+                cluster.id().root == CROSS_CONTAINED_ROOT
+                    && cluster.id().scope == DropGuideScope::Outer
+            })
+            .and_then(|cluster| cluster.target(DropGuideSlot::Edge(Edge::Bottom)))
+            .expect("production compilation must publish the visible contained outer guide");
+        let target_id = guide.id();
+        let guide_draw = guide.draw();
+        let target = plan
+            .drop_target(target_id)
+            .expect("production compilation must publish the contained outer target");
+        let DropDestination::Topology(destination) = target.destination() else {
+            panic!("contained center target must carry a topology destination");
+        };
+        let target_region = target.region();
+        let target_layer = target.layer();
+        let target_visual = target.visual();
+        let replacement = Arc::new(DropTargetRecord::new(
+            target_id,
+            destination.clone(),
             DropTargetAvailability::Unavailable(DropTargetUnavailable::AdapterUnavailable),
-            HitRegion::new(rect()),
-            SceneLayerKey::new(2),
-            DropVisual::new(rect()),
-        );
-        let scene = seal_workspace(&fixture.workspace, cross_surface_background(Some(target)));
+            target_region,
+            target_layer,
+            target_visual,
+        ));
+        assert!(plan.replace_drop_target_for_test(replacement));
+        let scene = seal_workspace(&fixture.workspace, plan);
+        let point = LogicalPoint::new(
+            guide_draw.x() + guide_draw.width() * 0.5,
+            guide_draw.y() + guide_draw.height() * 0.5,
+        )
+        .expect("visible guide midpoint must be finite");
 
         for payload in contained_complete_payloads(&fixture) {
             let query = resolve_drop(
@@ -3120,24 +3380,24 @@ mod tests {
                 payload,
                 None,
                 CROSS_TARGET_SURFACE,
-                LogicalPoint::new(10.0, 10.0).expect("point must be finite"),
+                point,
             )
             .expect("expected target rejection cannot expose an invariant");
-            assert!(matches!(
-                query.resolution(),
-                DropResolution::Rejected(rejected)
-                    if rejected.candidates().len() == 1
-                        && rejected.candidates()[0].target_id()
-                            == DropTargetId::Center {
-                                surface: CROSS_TARGET_SURFACE,
-                                root: CROSS_CONTAINED_ROOT,
-                                tabs: fixture.cross_contained_tabs,
-                            }
-                        && rejected.candidates()[0].reason()
-                            == &DropRejectionReason::SceneUnavailable(
-                                DropTargetUnavailable::AdapterUnavailable,
-                            )
-            ));
+            assert!(
+                matches!(
+                    query.resolution(),
+                    DropResolution::Rejected(rejected)
+                        if rejected.candidates().len() == 1
+                            && rejected.candidates()[0].target_id()
+                                == target_id
+                            && rejected.candidates()[0].reason()
+                                == &DropRejectionReason::SceneUnavailable(
+                                    DropTargetUnavailable::AdapterUnavailable,
+                                )
+                ),
+                "unexpected visible-target resolution: {:#?}",
+                query.resolution()
+            );
         }
     }
 
@@ -3412,10 +3672,10 @@ mod tests {
             .drop_guide_clusters()
             .iter()
             .flat_map(DropGuideClusterRecord::targets)
-            .map(|(_, target)| target.target())
+            .map(|(_, target)| target)
             .find(|target| target.id() == target_id)
             .expect("the target pane must expose a left inner guide");
-        let hit = target.region().rect();
+        let hit = target.hit().rect();
         let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
             .expect("guide midpoint must be finite");
         let source = MovePayload::Tabs(
@@ -3492,11 +3752,11 @@ mod tests {
             .drop_guide_clusters()
             .iter()
             .flat_map(DropGuideClusterRecord::targets)
-            .map(|(_, target)| target.target())
+            .map(|(_, target)| target)
             .find(|target| target.id() == target_id)
             .expect("the target pane must expose a center guide");
-        let stale_visual = target.visual().rect();
-        let hit = target.region().rect();
+        let stale_visual = target.preview();
+        let hit = target.hit().rect();
         let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
             .expect("guide midpoint must be finite");
         let source = MovePayload::Tabs(
@@ -3536,6 +3796,156 @@ mod tests {
 
         assert_ne!(stale_visual, content_bounds);
         assert_eq!(resolved.visual().rect(), content_bounds);
+    }
+
+    #[test]
+    fn non_guide_center_basin_resolves_center_target() {
+        let surface = SurfaceId::new(99);
+        let root = RootId::new(100);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([ItemId::new(101)]));
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(102)]));
+        let split = builder.insert_node(
+            Node::split(Axis::Horizontal, [source_tabs, target_tabs], [0.25, 0.75])
+                .expect("weighted magnetic-basin layout must be valid"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder
+            .build()
+            .expect("magnetic-basin workspace must be valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("magnetic-basin engine must be valid");
+        let plan = compile_fixture_surface_plan(&engine, surface, rect());
+        let target_id = DropTargetId::Center {
+            surface,
+            root,
+            tabs: target_tabs,
+        };
+        let content = plan
+            .pane_records()
+            .iter()
+            .find(|pane| pane.id().tabs == target_tabs)
+            .expect("the target pane must be presented")
+            .content_bounds();
+        let point = LogicalPoint::new(
+            content.x() + content.width() * 0.65,
+            content.y() + content.height() * 0.65,
+        )
+        .expect("the magnetic-basin point must be finite");
+        assert!(plan.drop_guide_clusters().iter().all(|cluster| {
+            cluster
+                .targets()
+                .all(|(_, target)| !target.hit().contains(point))
+        }));
+        let source = MovePayload::Tabs(
+            workspace
+                .capture_node_source(root, source_tabs)
+                .expect("source tabs must be current"),
+        );
+        let scene = seal_workspace(&workspace, plan);
+        let resolved = resolve_drop(
+            &scene,
+            &workspace,
+            &DockPolicySnapshot::default(),
+            session(),
+            source,
+            None,
+            surface,
+            point,
+        )
+        .expect("magnetic-basin resolution must remain valid");
+        let DropResolution::Resolved(resolved) = resolved.resolution() else {
+            panic!(
+                "the ordinary pane center basin must resolve a docking target, got {:?}",
+                resolved.resolution()
+            );
+        };
+
+        assert_eq!(resolved.target_id(), target_id);
+    }
+
+    #[test]
+    fn magnetic_center_resolution_does_not_require_guide_records() {
+        let surface = SurfaceId::new(103);
+        let root = RootId::new(104);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([ItemId::new(105)]));
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(106)]));
+        let split = builder.insert_node(
+            Node::split(Axis::Horizontal, [source_tabs, target_tabs], [0.25, 0.75])
+                .expect("guide-independent magnetic layout must be valid"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder
+            .build()
+            .expect("guide-independent magnetic workspace must be valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("guide-independent magnetic engine must be valid");
+        let guided = compile_fixture_surface_plan(&engine, surface, rect());
+        let edge_target = DropTargetId::InnerEdge {
+            surface,
+            root,
+            node: target_tabs,
+            edge: Edge::Left,
+        };
+        let former_guide_hit = guided
+            .drop_guide_clusters()
+            .iter()
+            .flat_map(|cluster| cluster.targets())
+            .find_map(|(_, target)| (target.id() == edge_target).then(|| target.hit().rect()))
+            .expect("guided compilation must expose the target pane's left guide hit");
+        let point = LogicalPoint::new(
+            former_guide_hit.x() + former_guide_hit.width() * 0.5,
+            former_guide_hit.y() + former_guide_hit.height() * 0.5,
+        )
+        .expect("former guide center must be finite");
+
+        let plan = compile_fixture_surface_plan_without_guides(&engine, surface, rect());
+        let content = plan
+            .pane_records()
+            .iter()
+            .find(|pane| pane.id().tabs == target_tabs)
+            .expect("the target pane must be presented")
+            .content_bounds();
+        assert!(plan.drop_guide_clusters().is_empty());
+        assert!(
+            crate::target_field::pane_center_basin(content, engine.presentation_config())
+                .expect("pane center basin must be valid")
+                .contains(point),
+            "the former edge-guide button must overlap the magnetic center basin for this proof"
+        );
+
+        let source = MovePayload::Tabs(
+            workspace
+                .capture_node_source(root, source_tabs)
+                .expect("source tabs must be current"),
+        );
+        let scene = seal_workspace(&workspace, plan);
+        let query = resolve_drop(
+            &scene,
+            &workspace,
+            &DockPolicySnapshot::default(),
+            session(),
+            source,
+            None,
+            surface,
+            point,
+        )
+        .expect("guide-independent magnetic resolution must remain valid");
+        let DropResolution::Resolved(resolved) = query.resolution() else {
+            panic!("the guide-independent center basin must resolve: {query:?}");
+        };
+        assert_eq!(
+            resolved.target_id(),
+            DropTargetId::Center {
+                surface,
+                root,
+                tabs: target_tabs,
+            }
+        );
+        assert!(query.affordance().is_none());
     }
 
     #[test]
@@ -3801,10 +4211,10 @@ mod tests {
             .drop_guide_clusters()
             .iter()
             .flat_map(DropGuideClusterRecord::targets)
-            .map(|(_, target)| target.target())
+            .map(|(_, target)| target)
             .find(|target| target.id() == target_id)
             .expect("target pane must expose a right inner guide");
-        let hit = target.region().rect();
+        let hit = target.hit().rect();
         let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
             .expect("guide midpoint must be finite");
         let source = MovePayload::Item(

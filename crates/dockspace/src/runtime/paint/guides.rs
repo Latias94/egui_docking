@@ -100,13 +100,13 @@ impl DropGuideTargetPaintRecord<'_> {
     /// Returns the exact pointer hit rectangle.
     #[must_use]
     pub const fn hit_bounds(self) -> LogicalRect {
-        self.record.target().region().rect()
+        self.record.hit().rect()
     }
 
     /// Returns the exact preview rectangle for this static target.
     #[must_use]
     pub const fn preview_bounds(self) -> LogicalRect {
-        self.record.target().visual().rect()
+        self.record.preview()
     }
 }
 

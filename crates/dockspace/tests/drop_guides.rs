@@ -222,8 +222,8 @@ fn compiled_guide_geometry_separates_activation_draw_hit_and_preview() {
         let activation = cluster.activation().rect();
         for (slot, guide) in cluster.targets() {
             let draw = guide.draw();
-            let hit = guide.target().region().rect();
-            let preview = guide.target().visual().rect();
+            let hit = guide.hit().rect();
+            let preview = guide.preview();
 
             assert!(
                 rect_contains(activation, hit),
@@ -240,7 +240,12 @@ fn compiled_guide_geometry_separates_activation_draw_hit_and_preview() {
             assert_ne!(draw, hit, "{slot:?} draw and hit remain distinct");
             assert_ne!(draw, preview, "{slot:?} draw and preview remain distinct");
             assert_ne!(hit, preview, "{slot:?} hit and preview remain distinct");
-            assert_eq!(cluster.layer(), guide.target().layer());
+            let canonical = ready
+                .drop_targets()
+                .iter()
+                .find(|target| target.id() == guide.id())
+                .expect("guide target exists in the canonical catalog");
+            assert_eq!(cluster.layer(), canonical.layer());
         }
     }
 }
@@ -257,7 +262,12 @@ fn policy_availability_is_compiled_into_every_guide_owned_target() {
     for cluster in ready.drop_guide_clusters() {
         for (_, target) in cluster.targets() {
             assert_eq!(
-                target.target().availability(),
+                ready
+                    .drop_targets()
+                    .iter()
+                    .find(|canonical| canonical.id() == target.id())
+                    .expect("guide target exists in the canonical catalog")
+                    .availability(),
                 DropTargetAvailability::Unavailable(DropTargetUnavailable::PolicyDisabled)
             );
         }

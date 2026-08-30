@@ -6,6 +6,7 @@
 //! docking receiver.
 
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 
 use crate::drop_guide::{DropGuideClusterRecord, DropGuideScope};
@@ -828,8 +829,18 @@ fn push_projection_regions(
             );
         }
     }
+    let guide_targets: BTreeSet<_> = plan
+        .drop_guide_clusters()
+        .iter()
+        .flat_map(DropGuideClusterRecord::targets)
+        .map(|(_, guide)| guide.id())
+        .collect();
     for target in plan.drop_targets() {
-        push_drop_target_region(regions, surface, target);
+        if target.id().kind() == crate::drop_target::DropTargetKind::TabGap
+            && !guide_targets.contains(&target.id())
+        {
+            push_drop_target_region(regions, surface, target);
+        }
     }
     if let Some(background) = plan.surface_background() {
         push_drop_target_region(regions, surface, background);
@@ -870,7 +881,7 @@ fn push_guide_regions(
                     surface,
                     PresentationHitRegionKind::DropTarget(target.id()),
                 ),
-                target.target().region(),
+                target.hit(),
                 PresentationPointerLanes::HOVER_DROP,
                 PresentationHitStackKey::new(
                     PresentationPlane::Workspace,

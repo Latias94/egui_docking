@@ -701,7 +701,7 @@ impl DockEngine {
                 offer.anchor().surface(),
             );
         }
-        if let Some(preview) = &drag.preview {
+        if let Some(preview) = drag.preview() {
             match preview.public().visual() {
                 PreviewVisual::Dock { surface, .. } | PreviewVisual::Contained { surface, .. } => {
                     self.insert_current_viewport_binding(
@@ -1284,15 +1284,15 @@ impl DockEngine {
                     }
                     Ok(drag) => {
                         let end_routing = false;
-                        let target_resource_affected =
-                            drag.contained_offer
-                                .is_some_and(|offer| surfaces.contains(&offer.anchor().surface()))
-                                || drag.affordance.as_ref().is_some_and(|affordance| {
-                                    surfaces.contains(&affordance.surface())
-                                })
-                                || drag.preview.as_ref().is_some_and(|preview| {
-                                    surfaces.contains(&preview.public().visual().surface())
-                                });
+                        let target_resource_affected = drag
+                            .contained_offer
+                            .is_some_and(|offer| surfaces.contains(&offer.anchor().surface()))
+                            || drag
+                                .drop_affordance()
+                                .is_some_and(|affordance| surfaces.contains(&affordance.surface()))
+                            || drag.preview().is_some_and(|preview| {
+                                surfaces.contains(&preview.public().visual().surface())
+                            });
                         if target_resource_affected {
                             PresentationHostRetirementInteractionImpact::ClearFeedback {
                                 end_routing,
@@ -1683,8 +1683,7 @@ impl DockEngine {
         };
         let preview_surface = pending
             .drag
-            .preview
-            .as_ref()
+            .preview()
             .expect("pending release retains its exact preview")
             .public()
             .visual()
@@ -1809,29 +1808,42 @@ impl DockEngine {
                     .active_drag(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?
                     .clone();
-                let affected = drag.preview.as_ref().is_some_and(|preview| {
+                let affected = drag.preview().is_some_and(|preview| {
                     changed_surfaces.contains(&preview.public().token().scene().surface())
                 });
+                let position_affected = drag
+                    .last_advanced_position()
+                    .and_then(ManipulationPositionKey::surface)
+                    .is_some_and(|surface| changed_surfaces.contains(&surface));
                 if matches!(cause, ReductionCause::SurfaceContributionBatch { .. })
                     && let GestureOwner::LocalResponse { surface } = drag.owner
                     && surface == drag.source_surface
                     && changed_surfaces.contains(&surface)
-                    && let Some(current) = drag.current_pointer
+                    && let Some(current) = drag.current_pointer()
+                    && let Some(scene) = self
+                        .presentation_authority
+                        .scene
+                        .ready_candidate(surface)
+                        .map(crate::scene::SurfacePlanScene::stamp)
                 {
                     let policy = self.policy_snapshot().clone();
                     let evaluation = self.resolve_local_tab_preview_against_ready_candidate(
                         cause, &drag, surface, current, &policy,
                     )?;
-                    let _ = self.apply_preview_evaluation(
+                    let _ = self.apply_position_evaluation(
                         cause,
                         drag.owner,
                         session,
+                        ManipulationPositionKey::Local {
+                            scene,
+                            pointer: SurfacePointer::new(surface, current),
+                        },
                         evaluation,
                         interaction_events,
                     )?;
                     return Ok(());
                 }
-                if affected {
+                if affected || position_affected {
                     let changed =
                         self.interaction
                             .clear_drag_feedback(session)

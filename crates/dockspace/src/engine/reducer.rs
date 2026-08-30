@@ -1023,8 +1023,7 @@ impl DockEngine {
         {
             let expected = pending
                 .drag
-                .preview
-                .as_ref()
+                .preview()
                 .expect("pending release retains its exact preview")
                 .public()
                 .visual()

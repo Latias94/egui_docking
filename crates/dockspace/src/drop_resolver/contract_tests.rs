@@ -1,4 +1,5 @@
 use crate as dockspace;
+use std::sync::Arc;
 
 use super::resolve_unguided_drop;
 use dockspace::command::{DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand};
@@ -538,7 +539,7 @@ fn seal_scene_with_occlusions(
 ) -> SurfaceSceneSet {
     let mut ready = PresentationPlan::new(TARGET_SURFACE, rect(0.0, 0.0, 100.0, 100.0));
     for record in records {
-        ready.push_drop_target(record);
+        ready.push_drop_target(record.into());
     }
     for occlusion in occlusions {
         ready.push_drop_occlusion(occlusion);
@@ -1059,13 +1060,16 @@ fn unpainted_next_candidate_does_not_replace_the_painted_hit_authority() {
     let mut scenes = seal_scene(&fixture, &policy, [painted_target]);
 
     let mut next = PresentationPlan::new(TARGET_SURFACE, bounds);
-    next.push_drop_target(target_record(
-        &fixture,
-        TargetSpec::OuterEdge,
-        DropTargetAvailability::Available,
-        bounds,
-        1,
-    ));
+    next.push_drop_target(
+        target_record(
+            &fixture,
+            TargetSpec::OuterEdge,
+            DropTargetAvailability::Available,
+            bounds,
+            1,
+        )
+        .into(),
+    );
     next.push_drop_occlusion(floating_occlusion(rect(20.0, 20.0, 60.0, 60.0), 2));
     next.push_contained_minimum(floating_minimum());
     let next = PresentationPlanValidator::new(&fixture.workspace, &policy)
@@ -1465,7 +1469,7 @@ fn malformed_semantic_facts_and_target_id_mismatches_fail_seal() {
         DropVisual::new(bounds),
     );
     let mut invalid_target = PresentationPlan::new(TARGET_SURFACE, bounds);
-    invalid_target.push_drop_target(mismatched);
+    invalid_target.push_drop_target(mismatched.into());
     assert_scene_error(&fixture, &policy, invalid_target, |error| {
         matches!(error, SceneBuildError::TargetSemanticMismatch { .. })
     });
@@ -1485,7 +1489,7 @@ fn invalid_inner_edges_and_unpaintable_visuals_fail_seal() {
         )
         .expect("split edge reference is current");
     let mut invalid_inner_edge = PresentationPlan::new(TARGET_SURFACE, bounds);
-    invalid_inner_edge.push_drop_target(DropTargetRecord::new(
+    invalid_inner_edge.push_drop_target(Arc::new(DropTargetRecord::new(
         DropTargetId::InnerEdge {
             surface: TARGET_SURFACE,
             root: TARGET_ROOT,
@@ -1497,34 +1501,34 @@ fn invalid_inner_edges_and_unpaintable_visuals_fail_seal() {
         HitRegion::new(bounds),
         SceneLayerKey::new(1),
         DropVisual::new(bounds),
-    ));
+    )));
     assert_scene_error(&fixture, &policy, invalid_inner_edge, |error| {
         matches!(error, SceneBuildError::TargetSemanticMismatch { .. })
     });
 
     let center = center_record(&fixture, fixture.target_tabs_a, bounds, 1);
     let mut empty_visual = PresentationPlan::new(TARGET_SURFACE, bounds);
-    empty_visual.push_drop_target(DropTargetRecord::new(
+    empty_visual.push_drop_target(Arc::new(DropTargetRecord::new(
         center.id(),
         topology_destination(&center),
         center.availability(),
         center.region(),
         center.layer(),
         DropVisual::new(rect(10.0, 10.0, 0.0, 30.0)),
-    ));
+    )));
     assert_scene_error(&fixture, &policy, empty_visual, |error| {
         matches!(error, SceneBuildError::EmptyDropVisual { .. })
     });
 
     let mut outside_visual = PresentationPlan::new(TARGET_SURFACE, bounds);
-    outside_visual.push_drop_target(DropTargetRecord::new(
+    outside_visual.push_drop_target(Arc::new(DropTargetRecord::new(
         center.id(),
         topology_destination(&center),
         center.availability(),
         center.region(),
         center.layer(),
         DropVisual::new(rect(90.0, 10.0, 20.0, 30.0)),
-    ));
+    )));
     assert_scene_error(&fixture, &policy, outside_visual, |error| {
         matches!(error, SceneBuildError::DropVisualOutsideSurface { .. })
     });

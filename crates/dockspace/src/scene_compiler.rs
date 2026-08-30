@@ -50,6 +50,7 @@ use crate::tab_strip::{
     ActiveTabListMenu, PopupPlaneRequirement, TabStripControlId, TabStripStateKey,
     TabStripStateStore,
 };
+use crate::target_field::{MagneticEdgeTargets, pane_center_basin, root_edge_band};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
 
@@ -70,7 +71,10 @@ pub use surface::{PresentationCompilationError, SceneCompilationError};
 use requirements::SceneRequirementDerivationError;
 
 #[cfg(test)]
-pub(crate) use surface::{reset_surface_compilation_count, surface_compilation_count};
+pub(crate) use surface::{
+    compile_surface_measurements_without_guides, reset_surface_compilation_count,
+    surface_compilation_count,
+};
 
 #[cfg(test)]
 use surface::{edge_preview, rect_contains, reveal_tab_range, tab_strip_control_layout};

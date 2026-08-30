@@ -1438,6 +1438,32 @@ fn point_inside_tab_group(
     (region.id(), point)
 }
 
+fn point_inside_item_pane(
+    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    item: ItemId,
+    x_fraction: f64,
+    y_fraction: f64,
+) -> LogicalPoint {
+    let tab = projection
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|record| record.id().item == item)
+        .expect("item has an exact tab record");
+    let pane = projection
+        .plan()
+        .pane_records()
+        .iter()
+        .find(|pane| pane.id().root == tab.id().root && pane.id().tabs == tab.id().tabs)
+        .expect("item has an exact pane record");
+    let bounds = pane.content_bounds();
+    LogicalPoint::new(
+        bounds.x() + bounds.width() * x_fraction,
+        bounds.y() + bounds.height() * y_fraction,
+    )
+    .expect("pane-relative point is finite")
+}
+
 fn point_without_hover_receiver(
     projection: dockspace::scene::SurfaceInteractionProjection<'_>,
     away_from: LogicalPoint,
@@ -1849,15 +1875,6 @@ fn release_journal_drag_after(
             release_journal(previous, Authority::Known(target)),
         )
         .expect("release follows the committed watermark");
-    let projection = frame
-        .view()
-        .interaction_projection(SURFACE)
-        .expect("sealed release frame has current interaction authority");
-    let hover = PointerReceiverHoverHit::new(projection, target, target_disposition)
-        .expect("release hover is bound to the frozen output");
-    let delivery =
-        PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::NoReceiver)
-            .expect("release delivery absence is output-bound");
     let candidate = frame
         .pointer_receiver_candidates()
         .expect("release candidate roster exists")
@@ -1865,14 +1882,33 @@ fn release_journal_drag_after(
         .first()
         .expect("release creates one candidate")
         .clone();
+    let observation = match candidate.probes() {
+        PointerReceiverProbeRequest::NotApplicable => PointerReceiverObservation::NotApplicable,
+        PointerReceiverProbeRequest::HoverHit => {
+            let surface = candidate
+                .hover_surface()
+                .expect("hover release names one exact surface");
+            let projection = frame
+                .view()
+                .interaction_projection(surface)
+                .expect("release hover is bound to the current output");
+            let hover = PointerReceiverHoverHit::new(projection, target, target_disposition)
+                .expect("release hover disposition is exact");
+            PointerReceiverObservation::Presented(
+                PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
+                    hover,
+                )])
+                .expect("release answers the hover probe"),
+            )
+        }
+        PointerReceiverProbeRequest::Delivery => {
+            panic!("drag release must not request a delivery receiver")
+        }
+    };
     frame
         .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([candidate.receipt(exact_candidate_observation(
-                &candidate,
-                Some(delivery),
-                Some(hover),
-            ))])
-            .expect("release receipt set is exact"),
+            PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                .expect("release receipt set is exact"),
         )
         .expect("release receipt stages");
     complete(engine, &mut frame);
@@ -2001,24 +2037,39 @@ fn resolved_journal_preview_does_not_commit_before_presentation_proof() {
             .expect("move answers hover"),
         ),
     );
-    submit_pointer_edge_with_observation(
-        &mut frame,
-        provider,
-        pointer_edge_journal(
-            2,
-            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
-            PointerEdgeLocation::SurfaceLocal {
-                position: Authority::Known(target),
-            },
-            Authority::Known(PointerCaptureOwner::None),
-        ),
-        PointerReceiverObservation::Presented(
-            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
-                target_hover,
+    frame
+        .submit_surface_pointer_journal(
+            provider,
+            pointer_edge_journal(
+                2,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                PointerEdgeLocation::SurfaceLocal {
+                    position: Authority::Known(target),
+                },
+                Authority::Known(PointerCaptureOwner::None),
+            ),
+        )
+        .expect("release edge stages");
+    let release_candidate = frame
+        .pointer_receiver_candidates()
+        .expect("release candidate exists")
+        .candidates()[0]
+        .clone();
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([release_candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::HoverHit(PointerReceiverHoverHit::unknown(
+                            PointerReceiverUnknownReason::NotReported,
+                        )),
+                    ])
+                    .expect("release answers the typed unknown hover"),
+                ),
             )])
-            .expect("release answers hover"),
-        ),
-    );
+            .expect("release receipt set is exact"),
+        )
+        .expect("release receipt reduces");
     complete(&engine, &mut frame);
     let transition = host.finish(frame, &mut engine);
 
@@ -2041,17 +2092,10 @@ fn resolved_journal_preview_does_not_commit_before_presentation_proof() {
     assert!(
         matches!(
             release_outcomes,
-            [
-                InteractionOutcome::PreviewUpdated {
-                    preview: None,
-                    status: PreviewResolutionStatus::UnknownAuthority,
-                    ..
-                },
-                InteractionOutcome::Cancelled {
-                    status: InteractionStatus::Dragging { .. },
-                    reason: InteractionCancelReason::UnknownTargetAuthority,
-                }
-            ]
+            [InteractionOutcome::Cancelled {
+                status: InteractionStatus::Dragging { .. },
+                reason: InteractionCancelReason::UnknownTargetAuthority,
+            }]
         ),
         "unexpected release outcomes: {release_outcomes:?}"
     );
@@ -2155,14 +2199,7 @@ fn inactive_tab_continuation_waits_for_fresh_target_authority_then_commits() {
     );
     assert!(matches!(
         release.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
-                ..
-            },
-            InteractionOutcome::DragDelivered { .. }
-        ]
+        [InteractionOutcome::DragDelivered { .. }]
     ));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert!(matches!(
@@ -3782,47 +3819,39 @@ fn resolved_journal_preview_commits_only_after_its_exact_presentation_is_observe
     );
 
     let mut release_frame = host.begin(&engine);
-    let release_projection = release_frame
-        .view()
-        .interaction_projection(SURFACE)
-        .expect("sealed release frame has current interaction authority");
-    let release_hover = PointerReceiverHoverHit::new(
-        release_projection,
-        target,
-        PointerReceiverHoverHitDisposition::Dock(drop_region),
-    )
-    .expect("release hover is bound to the frame-begin output");
-    submit_pointer_edge_with_observation(
-        &mut release_frame,
-        provider,
-        pointer_edge_journal(
-            2,
-            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
-            PointerEdgeLocation::SurfaceLocal {
-                position: Authority::Known(target),
-            },
-            Authority::Known(PointerCaptureOwner::None),
-        ),
-        PointerReceiverObservation::Presented(
-            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
-                release_hover,
+    release_frame
+        .submit_surface_pointer_journal(
+            provider,
+            pointer_edge_journal(
+                2,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                PointerEdgeLocation::SurfaceLocal {
+                    position: Authority::Known(target),
+                },
+                Authority::Known(PointerCaptureOwner::None),
+            ),
+        )
+        .expect("release edge stages");
+    let release_candidate = release_frame
+        .pointer_receiver_candidates()
+        .expect("release candidate exists")
+        .candidates()[0]
+        .clone();
+    let release_hover = exact_hover_receipt(&release_frame, target);
+    release_frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([release_candidate.receipt(
+                exact_candidate_observation(&release_candidate, None, Some(release_hover)),
             )])
-            .expect("release answers hover"),
-        ),
-    );
+            .expect("release receipt set is exact"),
+        )
+        .expect("release receipt stages");
     complete(&engine, &mut release_frame);
     let release_transition = host.finish(release_frame, &mut engine);
 
     assert!(matches!(
         release_transition.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
-                ..
-            },
-            InteractionOutcome::DragDelivered { .. }
-        ]
+        [InteractionOutcome::DragDelivered { .. }]
     ));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert!(matches!(
@@ -3844,7 +3873,7 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
     let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
-    let target = point_without_hover_receiver(projection, press);
+    let target = point_inside_item_pane(projection, ItemId::new(1), 0.65, 0.65);
 
     let mut gesture_frame = host.begin(&engine);
     let projection = gesture_frame
@@ -3934,47 +3963,53 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
     host.finish_presentation(paint_frame, &mut engine);
 
     let mut release_frame = host.begin(&engine);
+    release_frame
+        .submit_surface_pointer_journal(
+            provider,
+            pointer_edge_journal(
+                2,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                PointerEdgeLocation::SurfaceLocal {
+                    position: Authority::Known(target),
+                },
+                Authority::Known(PointerCaptureOwner::None),
+            ),
+        )
+        .expect("release edge stages");
+    let release_candidate = release_frame
+        .pointer_receiver_candidates()
+        .expect("release candidate exists")
+        .candidates()[0]
+        .clone();
     let release_projection = release_frame
         .view()
         .interaction_projection(SURFACE)
-        .expect("sealed release frame has current interaction authority");
+        .expect("release retains the current interaction authority");
     let release_hover = PointerReceiverHoverHit::new(
         release_projection,
         target,
         PointerReceiverHoverHitDisposition::NoReceiver,
     )
-    .expect("release absence is bound to the frame-begin output");
-    submit_pointer_edge_with_observation(
-        &mut release_frame,
-        provider,
-        pointer_edge_journal(
-            2,
-            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
-            PointerEdgeLocation::SurfaceLocal {
-                position: Authority::Known(target),
-            },
-            Authority::Known(PointerCaptureOwner::None),
-        ),
-        PointerReceiverObservation::Presented(
-            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
-                release_hover,
+    .expect("release absence is bound to the current output");
+    release_frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([release_candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::HoverHit(release_hover),
+                    ])
+                    .expect("release answers hover"),
+                ),
             )])
-            .expect("release answers hover"),
-        ),
-    );
+            .expect("release receipt set is exact"),
+        )
+        .expect("release receipt reduces");
     complete(&engine, &mut release_frame);
     let release_transition = host.finish(release_frame, &mut engine);
 
     assert!(matches!(
         release_transition.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
-                ..
-            },
-            InteractionOutcome::DragDelivered { .. }
-        ]
+        [InteractionOutcome::DragDelivered { .. }]
     ));
     let (detached_root, detached_record) = engine
         .workspace()
@@ -4020,7 +4055,7 @@ fn journal_known_none_contained_fallback_is_rejected_by_core_policy() {
     let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
-    let target = point_without_hover_receiver(projection, press);
+    let target = point_inside_item_pane(projection, ItemId::new(1), 0.65, 0.65);
     let before_workspace = engine.workspace().clone();
     let before_frontier = engine.presentation_identity_frontier();
 
@@ -4108,13 +4143,7 @@ fn journal_complete_root_known_none_reuses_root_and_mints_only_floating_identity
     );
     assert!(matches!(
         release.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                ..
-            },
-            InteractionOutcome::DragDelivered { .. }
-        ]
+        [InteractionOutcome::DragDelivered { .. }]
     ));
     assert!(matches!(
         engine.workspace().presentation_for_root(ROOT),
@@ -4186,13 +4215,7 @@ fn journal_partial_payload_installs_core_reserved_root_on_rootless_background() 
     );
     assert!(matches!(
         release.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                ..
-            },
-            InteractionOutcome::DragDelivered { .. }
-        ]
+        [InteractionOutcome::DragDelivered { .. }]
     ));
     let main_root = engine
         .workspace()
@@ -4232,7 +4255,7 @@ fn journal_contained_release_waits_for_the_release_edge_preview() {
     let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
-    let first_target = point_without_hover_receiver(projection, press);
+    let first_target = point_inside_item_pane(projection, ItemId::new(1), 0.62, 0.65);
 
     begin_journal_drag(
         &mut engine,
@@ -4245,14 +4268,15 @@ fn journal_contained_release_waits_for_the_release_edge_preview() {
     );
     paint_active_journal_drag(&mut engine, &mut host, provider);
     let release_projection = interaction(&engine);
-    let final_target = point_without_hover_receiver(release_projection, first_target);
+    let final_target = point_inside_item_pane(release_projection, ItemId::new(1), 0.70, 0.65);
     assert_ne!(final_target, first_target);
     let before = engine.workspace().clone();
 
-    let release = release_journal_drag(
+    let release = release_journal_drag_after(
         &mut engine,
         &mut host,
         provider,
+        2,
         final_target,
         PointerReceiverHoverHitDisposition::NoReceiver,
     );
@@ -4264,8 +4288,9 @@ fn journal_contained_release_waits_for_the_release_edge_preview() {
                 status: PreviewResolutionStatus::Resolved,
                 ..
             },
-            InteractionOutcome::ReleasePending { session, preview }
-        ] if engine.pending_release_preview() == Some((*session, *preview))
+            InteractionOutcome::ReleasePending { session, preview },
+        ]
+            if engine.pending_release_preview() == Some((*session, *preview))
     ));
     assert_eq!(engine.workspace(), &before);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
@@ -6292,15 +6317,16 @@ fn incomplete_later_pointer_segment_keeps_every_segment_uncommitted() {
 }
 
 #[test]
-fn same_segment_drag_release_requires_the_hover_probe() {
-    let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
+fn same_segment_drag_release_revalidates_the_move_target_with_a_release_hover_probe() {
+    let (workspace, target_tabs) = split_workspace();
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
     let provider = create_local_provider(&mut engine, &host);
     let provider = &provider;
     let projection = interaction(&engine);
-    let (source, press) = point_inside_inactive_tab(projection);
-    let moved = point_without_hover_receiver(projection, press);
+    let (source, press) = point_inside_tab(projection, ItemId::new(1));
+    let (target_region, moved) = point_inside_center_target(projection, target_tabs);
     let mut frame = host.begin(&engine);
     let press_delivery =
         PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::Dock(source))
@@ -6326,7 +6352,7 @@ fn same_segment_drag_release_requires_the_hover_probe() {
     let move_hover = PointerReceiverHoverHit::new(
         projection,
         moved,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::Dock(target_region),
     )
     .expect("move hover is output-bound");
     submit_pointer_edge_with_observation(
@@ -6368,33 +6394,31 @@ fn same_segment_drag_release_requires_the_hover_probe() {
         .clone();
     assert_eq!(candidate.probes(), PointerReceiverProbeRequest::HoverHit);
     assert_eq!(candidate.hover_point(), Some(moved));
-    let release_delivery =
-        PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::NoReceiver)
-            .expect("release delivery absence is output-bound");
-    let incomplete =
-        PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
-            release_delivery,
-        )])
-        .expect("delivery-only release is structurally valid but incomplete");
-    assert_eq!(
-        frame.submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([
-                candidate.receipt(PointerReceiverObservation::Presented(incomplete))
-            ])
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::HoverHit(move_hover),
+                    ])
+                    .expect("release answers the exact hover candidate"),
+                ),
+            )])
             .expect("release candidate receipt set is exact"),
-        ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
-        "an incomplete release receipt poisons the private input prefix immediately",
+        )
+        .expect("release consumes the target acquired by the move");
+    complete(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
+
+    let release_outcomes = transition.reduced_pointer_edges()[2].interaction_outcomes();
+    assert!(
+        release_outcomes.iter().any(|outcome| matches!(
+            outcome,
+            InteractionOutcome::ReleasePending { .. } | InteractionOutcome::DragDelivered { .. }
+        )),
+        "release did not consume the move target: {:#?}",
+        transition.reduced_pointer_edges(),
     );
-    assert!(matches!(
-        frame.finish(&mut engine),
-        Err(EngineError::PointerReceiverReceipt {
-            source: PointerReceiverReceiptValidationError::MissingProbe {
-                probe: PointerReceiverProbe::HoverHit,
-                ..
-            }
-        })
-    ));
 }
 
 #[test]
@@ -6455,7 +6479,7 @@ fn known_hover_must_echo_the_exact_edge_point() {
 }
 
 #[test]
-fn unknown_local_point_requires_a_per_probe_unknown_hover_answer() {
+fn unknown_local_point_requests_typed_hover_and_clears_target_authority() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
@@ -6492,66 +6516,35 @@ fn unknown_local_point_requires_a_per_probe_unknown_hover_answer() {
         .clone();
     assert_eq!(candidate.probes(), PointerReceiverProbeRequest::HoverHit);
     assert_eq!(candidate.hover_point(), None);
-    let known = PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
-        known_hover(
-            interaction(&engine),
-            LogicalPoint::new(96.0, 24.0).expect("finite point"),
-        ),
-    )])
-    .expect("known hover is structurally valid before candidate point join");
-    assert_eq!(
-        frame.submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([
-                candidate.receipt(PointerReceiverObservation::Presented(known))
-            ])
-            .expect("one candidate receipt"),
-        ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
-    );
-    assert!(matches!(
-        frame.finish(&mut engine),
-        Err(EngineError::PointerReceiverReceipt {
-            source: PointerReceiverReceiptValidationError::HoverHitPointUnavailable { .. }
-        })
-    ));
-
-    let mut retry = host.begin(&engine);
-    retry
-        .submit_surface_pointer_journal(
-            provider,
-            moved_journal(
-                2,
-                Authority::Unknown(AuthorityUnavailableReason::CoordinateUnavailable),
-            ),
-        )
-        .expect("rejected known hover left the watermark unchanged");
-    let retry_candidate = retry
-        .pointer_receiver_candidates()
-        .expect("retry freezes one candidate")
-        .candidates()[0]
-        .clone();
-    let unknown =
-        PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
-            PointerReceiverHoverHit::unknown(
-                dockspace::pointer_receiver::PointerReceiverUnknownReason::NotReported,
-            ),
-        )])
-        .expect("per-probe unknown answers the exact hover request");
-    retry
+    frame
         .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([
-                retry_candidate.receipt(PointerReceiverObservation::Presented(unknown))
-            ])
-            .expect("one candidate receipt"),
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::HoverHit(PointerReceiverHoverHit::unknown(
+                            PointerReceiverUnknownReason::NotReported,
+                        )),
+                    ])
+                    .expect("unknown local point answers the typed hover probe"),
+                ),
+            )])
+            .expect("unknown position has one exact hover receipt"),
         )
-        .expect("per-probe unknown receipt stages");
-    complete(&engine, &mut retry);
-    assert_eq!(
-        host.finish(retry, &mut engine)
-            .reduced_pointer_edges()
-            .len(),
-        1
-    );
+        .expect("unknown position receipt stages");
+    complete(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
+    assert!(matches!(
+        transition.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            preview: None,
+            status: PreviewResolutionStatus::UnknownAuthority,
+            ..
+        }]
+    ));
+    assert!(matches!(
+        engine.interaction().status(),
+        InteractionStatus::Dragging { .. }
+    ));
 }
 
 #[test]
@@ -7299,7 +7292,7 @@ fn idle_move_and_release_request_no_receiver_probes() {
 }
 
 #[test]
-fn dragging_move_and_release_request_only_hover() {
+fn dragging_move_requests_hover_and_release_consumes_the_latched_target() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
@@ -7339,17 +7332,7 @@ fn dragging_move_and_release_request_only_hover() {
     );
     assert_eq!(move_candidate.hover_point(), Some(target));
 
-    let projection = frame
-        .view()
-        .interaction_projection(SURFACE)
-        .expect("active drag frame retains interaction authority");
     let move_hover = exact_hover_receipt(&frame, target);
-    let release_hover = PointerReceiverHoverHit::new(
-        projection,
-        target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
-    )
-    .expect("release hover is output-bound");
     frame
         .submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([move_candidate.receipt(
@@ -7370,10 +7353,16 @@ fn dragging_move_and_release_request_only_hover() {
         release_candidate.probes(),
         PointerReceiverProbeRequest::HoverHit
     );
+    let release_hover = exact_hover_receipt(&frame, target);
     frame
         .submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([release_candidate.receipt(
-                exact_candidate_observation(&release_candidate, None, Some(release_hover)),
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::HoverHit(release_hover),
+                    ])
+                    .expect("active drag release answers hover"),
+                ),
             )])
             .expect("active drag release receipt is exact"),
         )
@@ -7497,17 +7486,15 @@ fn pending_drag_release_fixture_with_evidence(
     let transition = host.finish_presentation(frame, &mut engine);
 
     let release_outcomes = transition.reduced_pointer_edges()[1].interaction_outcomes();
-    assert!(matches!(
-        release_outcomes,
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
-                ..
-            },
-            InteractionOutcome::ReleasePending { session, preview }
-        ] if engine.pending_release_preview() == Some((*session, *preview))
-    ));
+    let pending_from_outcome = release_outcomes.iter().find_map(|outcome| match outcome {
+        InteractionOutcome::ReleasePending { session, preview } => Some((*session, *preview)),
+        _ => None,
+    });
+    assert_eq!(
+        pending_from_outcome,
+        engine.pending_release_preview(),
+        "release must retain its exact pending preview after fresh authority validation"
+    );
     assert_eq!(engine.workspace(), &before);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 

@@ -57,6 +57,11 @@ pub struct DockPresentationConfig {
     guide_gap: f64,
     guide_hit_padding: f64,
     guide_outer_inset: f64,
+    magnetic_center_fraction: f64,
+    magnetic_outer_band_fraction: f64,
+    magnetic_outer_band_minimum: f64,
+    magnetic_outer_band_maximum: f64,
+    target_release_hysteresis: f64,
     dock_fraction: f64,
     floating_title_height: f64,
     floating_border_width: f64,
@@ -173,6 +178,36 @@ impl DockPresentationConfig {
         self.guide_outer_inset
     }
 
+    /// Returns the fraction of each pane axis occupied by its center-merge basin.
+    #[must_use]
+    pub const fn magnetic_center_fraction(&self) -> f64 {
+        self.magnetic_center_fraction
+    }
+
+    /// Returns the short-side fraction used to derive the outer-root magnetic band.
+    #[must_use]
+    pub const fn magnetic_outer_band_fraction(&self) -> f64 {
+        self.magnetic_outer_band_fraction
+    }
+
+    /// Returns the minimum outer-root magnetic band in logical points.
+    #[must_use]
+    pub const fn magnetic_outer_band_minimum(&self) -> f64 {
+        self.magnetic_outer_band_minimum
+    }
+
+    /// Returns the maximum outer-root magnetic band in logical points.
+    #[must_use]
+    pub const fn magnetic_outer_band_maximum(&self) -> f64 {
+        self.magnetic_outer_band_maximum
+    }
+
+    /// Returns the logical distance retained around the acquired drop target.
+    #[must_use]
+    pub const fn target_release_hysteresis(&self) -> f64 {
+        self.target_release_hysteresis
+    }
+
     pub(crate) fn inner_guide_reference_span(&self) -> f64 {
         3.0 * self.guide_extent + 2.0 * self.guide_gap + 2.0 * self.guide_hit_padding
     }
@@ -237,6 +272,11 @@ pub struct DockPresentationConfigBuilder {
     guide_gap: f64,
     guide_hit_padding: f64,
     guide_outer_inset: f64,
+    magnetic_center_fraction: f64,
+    magnetic_outer_band_fraction: f64,
+    magnetic_outer_band_minimum: f64,
+    magnetic_outer_band_maximum: f64,
+    target_release_hysteresis: f64,
     dock_fraction: f64,
     floating_title_height: f64,
     floating_border_width: f64,
@@ -265,6 +305,11 @@ impl Default for DockPresentationConfigBuilder {
             guide_gap: 12.0,
             guide_hit_padding: 6.0,
             guide_outer_inset: 72.0,
+            magnetic_center_fraction: 0.52,
+            magnetic_outer_band_fraction: 0.15,
+            magnetic_outer_band_minimum: 32.0,
+            magnetic_outer_band_maximum: 72.0,
+            target_release_hysteresis: 8.0,
             dock_fraction: 0.5,
             floating_title_height: 28.0,
             floating_border_width: 1.0,
@@ -383,6 +428,35 @@ impl DockPresentationConfigBuilder {
         self
     }
 
+    /// Sets the fraction of each pane axis occupied by its center-merge basin.
+    #[must_use]
+    pub const fn magnetic_center_fraction(mut self, value: f64) -> Self {
+        self.magnetic_center_fraction = value;
+        self
+    }
+
+    /// Sets the short-side fraction used to derive the outer-root magnetic band.
+    #[must_use]
+    pub const fn magnetic_outer_band_fraction(mut self, value: f64) -> Self {
+        self.magnetic_outer_band_fraction = value;
+        self
+    }
+
+    /// Sets the clamped logical-point range for the outer-root magnetic band.
+    #[must_use]
+    pub const fn magnetic_outer_band_range(mut self, minimum: f64, maximum: f64) -> Self {
+        self.magnetic_outer_band_minimum = minimum;
+        self.magnetic_outer_band_maximum = maximum;
+        self
+    }
+
+    /// Sets the logical distance retained around the acquired drop target.
+    #[must_use]
+    pub const fn target_release_hysteresis(mut self, value: f64) -> Self {
+        self.target_release_hysteresis = value;
+        self
+    }
+
     /// Sets the fraction assigned to a newly docked edge child.
     #[must_use]
     pub const fn dock_fraction(mut self, value: f64) -> Self {
@@ -453,6 +527,15 @@ impl DockPresentationConfigBuilder {
             ),
             ("guide_extent", self.guide_extent),
             ("guide_outer_inset", self.guide_outer_inset),
+            (
+                "magnetic_outer_band_minimum",
+                self.magnetic_outer_band_minimum,
+            ),
+            (
+                "magnetic_outer_band_maximum",
+                self.magnetic_outer_band_maximum,
+            ),
+            ("target_release_hysteresis", self.target_release_hysteresis),
             ("floating_title_height", self.floating_title_height),
             ("floating_resize_extent", self.floating_resize_extent),
             ("minimum_pane_size.width", self.minimum_pane_width),
@@ -474,6 +557,24 @@ impl DockPresentationConfigBuilder {
         if self.dock_fraction <= 0.0 || self.dock_fraction >= 1.0 {
             return Err(DockPresentationConfigError::DockFractionOutOfRange {
                 value: self.dock_fraction,
+            });
+        }
+        for (field, value) in [
+            ("magnetic_center_fraction", self.magnetic_center_fraction),
+            (
+                "magnetic_outer_band_fraction",
+                self.magnetic_outer_band_fraction,
+            ),
+        ] {
+            require_finite(field, value)?;
+            if value <= 0.0 || value >= 1.0 {
+                return Err(DockPresentationConfigError::UnitFractionOutOfRange { field, value });
+            }
+        }
+        if self.magnetic_outer_band_minimum > self.magnetic_outer_band_maximum {
+            return Err(DockPresentationConfigError::MinimumExceedsMaximum {
+                minimum: "magnetic_outer_band_minimum",
+                maximum: "magnetic_outer_band_maximum",
             });
         }
         if self.tab_min_width > self.tab_max_width {
@@ -543,6 +644,11 @@ impl DockPresentationConfigBuilder {
             guide_gap: self.guide_gap,
             guide_hit_padding: self.guide_hit_padding,
             guide_outer_inset: self.guide_outer_inset,
+            magnetic_center_fraction: self.magnetic_center_fraction,
+            magnetic_outer_band_fraction: self.magnetic_outer_band_fraction,
+            magnetic_outer_band_minimum: self.magnetic_outer_band_minimum,
+            magnetic_outer_band_maximum: self.magnetic_outer_band_maximum,
+            target_release_hysteresis: self.target_release_hysteresis,
             dock_fraction: self.dock_fraction,
             floating_title_height: self.floating_title_height,
             floating_border_width: self.floating_border_width,
@@ -618,6 +724,14 @@ pub enum DockPresentationConfigError {
         /// Rejected fraction.
         value: f64,
     },
+    /// A generic presentation fraction was outside the open interval `(0, 1)`.
+    #[error("presentation fraction `{field}` must be strictly between zero and one, got {value}")]
+    UnitFractionOutOfRange {
+        /// Name of the rejected fraction.
+        field: &'static str,
+        /// Rejected fraction.
+        value: f64,
+    },
     /// A configured minimum exceeded its corresponding maximum.
     #[error("presentation minimum `{minimum}` exceeds maximum `{maximum}`")]
     MinimumExceedsMaximum {
@@ -680,6 +794,26 @@ mod tests {
         assert_eq!(config.guide_hit_padding().to_bits(), 6.0_f64.to_bits());
         assert_eq!(config.guide_gap().to_bits(), 12.0_f64.to_bits());
         assert_eq!(config.guide_outer_inset().to_bits(), 72.0_f64.to_bits());
+        assert_eq!(
+            config.magnetic_center_fraction().to_bits(),
+            0.52_f64.to_bits()
+        );
+        assert_eq!(
+            config.magnetic_outer_band_fraction().to_bits(),
+            0.15_f64.to_bits()
+        );
+        assert_eq!(
+            config.magnetic_outer_band_minimum().to_bits(),
+            32.0_f64.to_bits()
+        );
+        assert_eq!(
+            config.magnetic_outer_band_maximum().to_bits(),
+            72.0_f64.to_bits()
+        );
+        assert_eq!(
+            config.target_release_hysteresis().to_bits(),
+            8.0_f64.to_bits()
+        );
         assert_eq!(
             config.minimum_pane_size().width().to_bits(),
             80.0_f64.to_bits()
@@ -749,6 +883,24 @@ mod tests {
         assert!(matches!(
             DockPresentationConfig::builder().dock_fraction(1.0).build(),
             Err(DockPresentationConfigError::DockFractionOutOfRange { value: 1.0 })
+        ));
+        assert!(matches!(
+            DockPresentationConfig::builder()
+                .magnetic_center_fraction(1.0)
+                .build(),
+            Err(DockPresentationConfigError::UnitFractionOutOfRange {
+                field: "magnetic_center_fraction",
+                value: 1.0,
+            })
+        ));
+        assert!(matches!(
+            DockPresentationConfig::builder()
+                .magnetic_outer_band_range(72.0, 32.0)
+                .build(),
+            Err(DockPresentationConfigError::MinimumExceedsMaximum {
+                minimum: "magnetic_outer_band_minimum",
+                maximum: "magnetic_outer_band_maximum",
+            })
         ));
     }
 

@@ -577,10 +577,7 @@ fn journal_contained_move_commits_the_exact_painted_preview() {
     );
     assert!(matches!(
         release.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated { .. },
-            InteractionOutcome::DragDelivered { .. }
-        ]
+        [InteractionOutcome::DragDelivered { .. }]
     ));
     assert_eq!(
         fixture

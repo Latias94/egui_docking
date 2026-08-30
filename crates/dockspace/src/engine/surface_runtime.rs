@@ -278,6 +278,20 @@ impl DockEngine {
         let previous_physical_native_drag = self.viewport.physical_native_drag_capability();
         let previous_physical_cross_surface_drag =
             self.viewport.physical_cross_surface_drag_capability();
+        let active_drag_pointer = match self.interaction.status() {
+            InteractionStatus::Dragging { session } => self
+                .interaction
+                .active_drag(session)
+                .ok()
+                .and_then(|drag| drag.owner.pointer_if_physical()),
+            InteractionStatus::Idle
+            | InteractionStatus::Pressed { .. }
+            | InteractionStatus::Armed { .. }
+            | InteractionStatus::Resizing { .. }
+            | InteractionStatus::ContainedTransforming { .. } => None,
+        };
+        let previous_confirmed_drag_source =
+            active_drag_pointer.and_then(|pointer| self.viewport.confirmed_drag_source(pointer));
         let interaction_dependencies = self.platform_interaction_dependencies();
         let version_before_actions = self.version;
         let transition = self
@@ -359,6 +373,8 @@ impl DockEngine {
         self.surface_recovery
             .retain_pending(|surface| self.viewport.recovery_pending(surface).is_some());
         *application_base = self.version;
+        let confirmed_drag_source =
+            active_drag_pointer.and_then(|pointer| self.viewport.confirmed_drag_source(pointer));
         match self.platform_interaction_reconciliation(
             &interaction_dependencies,
             version_before_actions,
@@ -367,7 +383,18 @@ impl DockEngine {
             previous_physical_cross_surface_drag,
             &invalidated_scene_authorities.bindings,
         ) {
-            PlatformInteractionReconciliation::Preserve => {}
+            PlatformInteractionReconciliation::Preserve => {
+                if previous_confirmed_drag_source != confirmed_drag_source
+                    && let InteractionStatus::Dragging { session } = self.interaction.status()
+                {
+                    self.interaction
+                        .invalidate_drag_position(session)
+                        .map_err(|_| EngineError::Interaction {
+                            input,
+                            source: InteractionCounterError::StateInvariant,
+                        })?;
+                }
+            }
             PlatformInteractionReconciliation::ClearDragFeedback {
                 workspace_changed,
                 end_routing,

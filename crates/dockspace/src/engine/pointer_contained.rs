@@ -228,6 +228,7 @@ impl DockEngine {
                     surface: prepared.surface,
                     root: prepared.root,
                     floating: prepared.floating,
+                    intent: ContainedDragIntent::MoveWindow,
                     source_rect: prepared.source_rect,
                     source_roster,
                     initial_pointer: prepared.initial_pointer,

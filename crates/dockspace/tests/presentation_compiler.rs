@@ -1,9 +1,11 @@
 use super::support;
 
 use dockspace::command::{DockTarget, Edge};
-use dockspace::drop_guide::{DropGuideClusterRecord, DropGuideScope, DropGuideSlot};
+use dockspace::drop_guide::{
+    DropGuideClusterRecord, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
+};
 use dockspace::drop_target::{
-    DropDestination, DropTargetAvailability, DropTargetId, DropTargetUnavailable,
+    DropDestination, DropTargetAvailability, DropTargetId, DropTargetRecord, DropTargetUnavailable,
 };
 use dockspace::engine::DockEngine;
 use dockspace::geometry::LogicalRect;
@@ -74,11 +76,8 @@ fn ordinary_noncentral_panes_keep_uniform_five_way_square_guides() {
             let target = cluster.target(slot).expect("all five slots exist");
             assert_close(target.draw().width(), expected_extent);
             assert_close(target.draw().height(), expected_extent);
-            assert_close(target.target().region().rect().width(), expected_hit_extent);
-            assert_close(
-                target.target().region().rect().height(),
-                expected_hit_extent,
-            );
+            assert_close(target.hit().rect().width(), expected_hit_extent);
+            assert_close(target.hit().rect().height(), expected_hit_extent);
         }
         let center = cluster
             .target(DropGuideSlot::Center)
@@ -111,14 +110,24 @@ fn rect_contains(outer: LogicalRect, inner: LogicalRect) -> bool {
         && outer.max().y() >= inner.max().y()
 }
 
+fn canonical_target<'a>(
+    plan: &'a dockspace::scene::PresentationPlan,
+    guide: &DropGuideTargetRecord,
+) -> &'a DropTargetRecord {
+    plan.drop_targets()
+        .iter()
+        .find(|target| target.id() == guide.id())
+        .expect("every guide references one canonical target")
+}
+
 fn assert_compact_cluster_geometry(cluster: &DropGuideClusterRecord, surface: LogicalRect) {
     let activation = cluster.activation().rect();
     assert!(rect_contains(surface, activation));
     let targets = cluster.targets().collect::<Vec<_>>();
     for (slot, target) in &targets {
         let draw = target.draw();
-        let hit = target.target().region().rect();
-        let preview = target.target().visual().rect();
+        let hit = target.hit().rect();
+        let preview = target.preview();
         assert!(draw.width() > 0.0 && draw.height() > 0.0, "{slot:?}");
         assert!(hit.width() > 0.0 && hit.height() > 0.0, "{slot:?}");
         assert!(rect_contains(surface, draw), "{slot:?}");
@@ -131,10 +140,7 @@ fn assert_compact_cluster_geometry(cluster: &DropGuideClusterRecord, surface: Lo
     }
     for (index, (_, first)) in targets.iter().enumerate() {
         for (_, second) in targets.iter().skip(index + 1) {
-            assert!(!rects_overlap(
-                first.target().region().rect(),
-                second.target().region().rect(),
-            ));
+            assert!(!rects_overlap(first.hit().rect(), second.hit().rect(),));
         }
     }
 }
@@ -199,21 +205,16 @@ fn positive_narrow_and_flat_leaves_keep_complete_compact_guide_semantics() {
         let center = inner
             .target(DropGuideSlot::Center)
             .expect("inner center remains present");
-        assert_eq!(center.target().visual().rect(), placement);
+        assert_eq!(center.preview(), placement);
         assert!(rect_contains(placement, center.draw()));
-        assert!(rect_contains(placement, center.target().region().rect()));
+        assert!(rect_contains(placement, center.hit().rect()));
         assert_close(center.draw().width(), GUIDE_EXTENT * inner_scale);
-        assert_close(
-            center.target().region().rect().width(),
-            GUIDE_HIT_EXTENT * inner_scale,
-        );
+        assert_close(center.hit().rect().width(), GUIDE_HIT_EXTENT * inner_scale);
         for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
             let preview = inner
                 .target(DropGuideSlot::Edge(edge))
                 .expect("every inner edge remains present")
-                .target()
-                .visual()
-                .rect();
+                .preview();
             assert_ne!(preview, inner.activation().rect());
             match edge {
                 Edge::Left | Edge::Right => {
@@ -238,10 +239,7 @@ fn positive_narrow_and_flat_leaves_keep_complete_compact_guide_semantics() {
             .min(1.0);
         for (_, target) in outer.targets() {
             assert_close(target.draw().width(), GUIDE_EXTENT * outer_scale);
-            assert_close(
-                target.target().region().rect().width(),
-                GUIDE_HIT_EXTENT * outer_scale,
-            );
+            assert_close(target.hit().rect().width(), GUIDE_HIT_EXTENT * outer_scale);
         }
 
         install_surface_projection(&mut engine, &mut host, SURFACE, surface);
@@ -289,9 +287,7 @@ fn positive_root_central_leaf_keeps_center_only_inner_plus_compact_outer_four() 
             inner
                 .target(DropGuideSlot::Center)
                 .expect("center exists")
-                .target()
-                .visual()
-                .rect(),
+                .preview(),
             expected_center_preview
         );
 
@@ -330,7 +326,11 @@ fn central_root_compiles_center_only_inner_and_exact_outer_guides() {
     assert_eq!(inner.targets().count(), 1);
     assert!(inner.target(DropGuideSlot::Center).is_some());
     assert_eq!(outer.targets().count(), 4);
-    assert_eq!(ready.drop_targets().len(), 3, "two tabs expose three gaps");
+    assert_eq!(
+        ready.drop_targets().len(),
+        8,
+        "two tabs expose three gaps plus five canonical guide targets"
+    );
 
     let top = outer
         .target(DropGuideSlot::Edge(Edge::Top))
@@ -339,25 +339,16 @@ fn central_root_compiles_center_only_inner_and_exact_outer_guides() {
         (ready.bounds().width().min(ready.bounds().height()) / OUTER_GUIDE_REFERENCE_SPAN).min(1.0);
     assert_close(top.draw().width(), GUIDE_EXTENT * scale);
     assert_close(top.draw().height(), GUIDE_EXTENT * scale);
-    assert_close(
-        top.target().region().rect().width(),
-        GUIDE_HIT_EXTENT * scale,
-    );
-    assert_close(
-        top.target().region().rect().height(),
-        GUIDE_HIT_EXTENT * scale,
-    );
+    assert_close(top.hit().rect().width(), GUIDE_HIT_EXTENT * scale);
+    assert_close(top.hit().rect().height(), GUIDE_HIT_EXTENT * scale);
     assert_compact_cluster_geometry(outer, ready.bounds());
     assert!(matches!(
-        top.target().destination(),
+        canonical_target(ready, top).destination(),
         DropDestination::Topology(DockTarget::OuterEdge(target))
             if target.edge() == Edge::Top
                 && (f64::from(target.fraction().get()) - 0.5).abs() < f64::EPSILON
     ));
-    assert_eq!(
-        top.target().visual().rect().height(),
-        ready.bounds().height() * 0.5
-    );
+    assert_eq!(top.preview().height(), ready.bounds().height() * 0.5);
 }
 
 #[test]
@@ -382,7 +373,7 @@ fn empty_central_root_compiles_a_center_and_four_explicit_outer_guides() {
         .target(DropGuideSlot::Center)
         .expect("empty central center target exists");
     assert!(matches!(
-        center.target().destination(),
+        canonical_target(ready, center).destination(),
         DropDestination::Topology(DockTarget::Center(target))
             if target.rule() == DockTargetRuleKey::Root(ROOT)
     ));
@@ -396,9 +387,10 @@ fn empty_central_root_compiles_a_center_and_four_explicit_outer_guides() {
     for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
         assert!(outer.target(DropGuideSlot::Edge(edge)).is_some());
     }
-    assert!(
-        ready.drop_targets().is_empty(),
-        "empty tabs expose no tab gaps"
+    assert_eq!(
+        ready.drop_targets().len(),
+        5,
+        "empty tabs expose only the five canonical center/outer targets"
     );
 }
 
@@ -428,10 +420,7 @@ fn nested_central_leaf_keeps_all_inner_edges_alongside_root_outer_edges() {
         let targets = inner.targets().collect::<Vec<_>>();
         for (index, (_, first)) in targets.iter().enumerate() {
             for (_, second) in targets.iter().skip(index + 1) {
-                assert!(!rects_overlap(
-                    first.target().region().rect(),
-                    second.target().region().rect()
-                ));
+                assert!(!rects_overlap(first.hit().rect(), second.hit().rect()));
             }
         }
     }
@@ -919,7 +908,7 @@ fn policy_rejection_is_compiled_into_every_edge_without_removing_guides() {
                     DropTargetAvailability::Unavailable(DropTargetUnavailable::PolicyDisabled)
                 }
             };
-            assert_eq!(target.target().availability(), expected);
+            assert_eq!(canonical_target(ready, target).availability(), expected);
         }
     }
 }

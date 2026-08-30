@@ -22,18 +22,21 @@ use crate::ids::{
 use crate::intent::{
     Authority, CloseSceneTarget, ContainedGestureKind, ContainedPresentationOffer,
     ContainedTearOffProposal, ContainedTransformKind, NativePresentationOffer, PointerButton,
-    PointerId, SurfaceBackgroundRootOffer, TabGestureSource,
+    PointerId, SurfaceBackgroundRootOffer, SurfacePointer, TabGestureSource,
 };
 use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use crate::operation::PreparedContentClose;
 use crate::pointer_journal::{
-    PointerCaptureOwner, PointerEventDeliveryOwner, PointerStreamId, ScrollCancelReason,
-    ScrollPhase, ScrollSequenceToken,
+    DesktopRouteValidation, PointerCaptureOwner, PointerEventDeliveryOwner, PointerProviderScope,
+    PointerStreamId, ScrollCancelReason, ScrollPhase, ScrollSequenceToken,
 };
 use crate::policy::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
 use crate::presentation_hit::PresentationHitRegionId;
 use crate::presentation_observation::PresentedSurfaceAuthority;
+use crate::runtime::direct_manipulation::{
+    TargetAcquisition, TargetLatchDecision, TargetObservation, reconcile_target,
+};
 use crate::scene::{
     PopupInteractionGateRevision, PresentationLayoutFacts, SplitterRecord, SplitterResizeTarget,
     SurfaceCoordinateCapture, SurfaceSceneStamp, TabBarSceneId, TabListMenuBackdropRecord,
@@ -1755,6 +1758,147 @@ pub(crate) enum PreviewProof {
     },
 }
 
+fn preview_acquisition_matches(
+    scene: SurfaceSceneStamp,
+    proof: &PreviewProof,
+    acquisition: Option<TargetAcquisition>,
+) -> bool {
+    match (proof, acquisition) {
+        (PreviewProof::Dock { target, .. }, Some(acquisition)) => {
+            acquisition.scene() == scene && acquisition.target() == *target
+        }
+        (
+            PreviewProof::Contained { .. }
+            | PreviewProof::Native { .. }
+            | PreviewProof::PresentationRehome { .. },
+            None,
+        ) => true,
+        (PreviewProof::Dock { .. }, None)
+        | (
+            PreviewProof::Contained { .. }
+            | PreviewProof::Native { .. }
+            | PreviewProof::PresentationRehome { .. },
+            Some(_),
+        ) => false,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ManipulationPositionKey {
+    Local {
+        scene: SurfaceSceneStamp,
+        pointer: SurfacePointer,
+    },
+    JournalSurface {
+        scope: PointerProviderScope,
+        position: Authority<LogicalPoint>,
+    },
+    JournalDesktop(DesktopRouteValidation),
+}
+
+impl ManipulationPositionKey {
+    pub(crate) const fn surface(self) -> Option<SurfaceId> {
+        match self {
+            Self::Local { pointer, .. } => Some(pointer.surface()),
+            Self::JournalSurface {
+                scope: PointerProviderScope::SurfaceLocal(scope),
+                ..
+            } => Some(scope.surface()),
+            Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
+            )) => Some(route.binding().surface()),
+            Self::JournalSurface { .. } | Self::JournalDesktop(_) => None,
+        }
+    }
+
+    pub(crate) const fn hover_probe(self) -> Option<SurfacePointer> {
+        match self {
+            Self::Local { pointer, .. } => Some(pointer),
+            Self::JournalSurface {
+                scope: PointerProviderScope::SurfaceLocal(scope),
+                position: Authority::Known(point),
+            } => Some(SurfacePointer::new(scope.surface(), point)),
+            Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
+            )) => Some(SurfacePointer::new(
+                route.binding().surface(),
+                route.surface_position(),
+            )),
+            Self::JournalSurface { .. } | Self::JournalDesktop(_) => None,
+        }
+    }
+
+    /// Returns whether this edge can ask the adapter for a fresh hover fact.
+    ///
+    /// A surface-local provider still has a hover question when its coordinate
+    /// is unknown; the adapter must answer that question with a typed unknown
+    /// result instead of making the edge look not-applicable. A validated
+    /// outside-all desktop route is the only active-drag position with no
+    /// surface receiver to probe.
+    pub(crate) const fn hover_probe_requested(self) -> bool {
+        !matches!(
+            self,
+            Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::NoWindow { .. },
+            ))
+        )
+    }
+
+    /// Returns the surface the adapter should associate with a hover probe,
+    /// even when the event-time logical point itself is unavailable.
+    pub(crate) const fn hover_surface(self) -> Option<SurfaceId> {
+        match self {
+            Self::Local { pointer, .. } => Some(pointer.surface()),
+            Self::JournalSurface {
+                scope: PointerProviderScope::SurfaceLocal(scope),
+                ..
+            } => Some(scope.surface()),
+            Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
+            )) => Some(route.binding().surface()),
+            Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::NoWindow { .. }
+                | crate::pointer_journal::ValidatedDesktopRoute::Foreign { .. },
+            ))
+            | Self::JournalDesktop(DesktopRouteValidation::Unavailable(_))
+            | Self::JournalSurface { .. } => None,
+        }
+    }
+
+    pub(crate) const fn logical_point(self) -> Option<LogicalPoint> {
+        match self.hover_probe() {
+            Some(pointer) => Some(pointer.position()),
+            None => None,
+        }
+    }
+
+    fn exits_contained_source(self, surface: SurfaceId, source_rect: LogicalRect) -> bool {
+        match self {
+            Self::Local { pointer, .. } => {
+                pointer.surface() != surface || !source_rect.contains(pointer.position())
+            }
+            Self::JournalSurface {
+                scope: PointerProviderScope::SurfaceLocal(scope),
+                position: Authority::Known(point),
+            } => scope.surface() != surface || !source_rect.contains(point),
+            Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
+            )) => {
+                route.binding().surface() != surface
+                    || !source_rect.contains(route.surface_position())
+            }
+            Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::NoWindow { .. },
+            )) => true,
+            Self::JournalSurface { .. }
+            | Self::JournalDesktop(DesktopRouteValidation::Known(
+                crate::pointer_journal::ValidatedDesktopRoute::Foreign { .. },
+            ))
+            | Self::JournalDesktop(DesktopRouteValidation::Unavailable(_)) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PublishedPreview {
     public: InteractionPreview,
@@ -1787,6 +1931,193 @@ impl PublishedPreview {
         let changed = !self.painted;
         self.painted = true;
         Ok(changed)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum DragPreviewState {
+    Unresolved {
+        status: PreviewResolutionStatus,
+    },
+    Published {
+        preview: PublishedPreview,
+        acquisition: Option<TargetAcquisition>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum MagneticSourceGate {
+    Open,
+    ExplicitTargetsOnly,
+    AwaitContainedExit {
+        surface: SurfaceId,
+        source_rect: LogicalRect,
+    },
+}
+
+impl MagneticSourceGate {
+    const fn from_origin(origin: &FrozenDragOrigin) -> Self {
+        match origin {
+            FrozenDragOrigin::Workspace => Self::Open,
+            FrozenDragOrigin::Contained(origin) => match origin.intent {
+                ContainedDragIntent::MoveWindow => Self::ExplicitTargetsOnly,
+                ContainedDragIntent::DockContent => Self::AwaitContainedExit {
+                    surface: origin.surface,
+                    source_rect: origin.source_rect,
+                },
+            },
+        }
+    }
+
+    fn allows_at(&self, position: ManipulationPositionKey) -> bool {
+        match self {
+            Self::Open => true,
+            Self::ExplicitTargetsOnly => false,
+            Self::AwaitContainedExit {
+                surface,
+                source_rect,
+            } => position.exits_contained_source(*surface, *source_rect),
+        }
+    }
+
+    fn observe(&mut self, position: ManipulationPositionKey) {
+        if matches!(self, Self::AwaitContainedExit { .. }) && self.allows_at(position) {
+            *self = Self::Open;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DragTargetState {
+    last_advanced: Option<ManipulationPositionKey>,
+    /// 最近一次可用于重新取证的逻辑位置；authority key 失效时仍保留它。
+    last_logical_point: Option<LogicalPoint>,
+    magnetic_source_gate: MagneticSourceGate,
+    affordance: Option<DropAffordance>,
+    preview: DragPreviewState,
+}
+
+impl DragTargetState {
+    const fn new(origin: &FrozenDragOrigin) -> Self {
+        Self {
+            last_advanced: None,
+            last_logical_point: None,
+            magnetic_source_gate: MagneticSourceGate::from_origin(origin),
+            affordance: None,
+            preview: DragPreviewState::Unresolved {
+                status: PreviewResolutionStatus::KnownNone,
+            },
+        }
+    }
+
+    pub(crate) const fn affordance(&self) -> Option<&DropAffordance> {
+        self.affordance.as_ref()
+    }
+
+    pub(crate) const fn last_advanced(&self) -> Option<ManipulationPositionKey> {
+        self.last_advanced
+    }
+
+    pub(crate) const fn current_pointer(
+        &self,
+        initial_pointer: Option<LogicalPoint>,
+    ) -> Option<LogicalPoint> {
+        if let Some(position) = self.last_advanced
+            && let Some(point) = position.logical_point()
+        {
+            return Some(point);
+        }
+        if let Some(point) = self.last_logical_point {
+            return Some(point);
+        }
+        initial_pointer
+    }
+
+    pub(crate) const fn acquisition(&self) -> Option<TargetAcquisition> {
+        match &self.preview {
+            DragPreviewState::Published { acquisition, .. } => *acquisition,
+            DragPreviewState::Unresolved { .. } => None,
+        }
+    }
+
+    fn magnetic_targeting_allowed_at(&self, position: ManipulationPositionKey) -> bool {
+        self.magnetic_source_gate.allows_at(position)
+    }
+
+    pub(crate) const fn preview(&self) -> Option<&PublishedPreview> {
+        match &self.preview {
+            DragPreviewState::Published { preview, .. } => Some(preview),
+            DragPreviewState::Unresolved { .. } => None,
+        }
+    }
+
+    fn preview_mut(&mut self) -> Option<&mut PublishedPreview> {
+        match &mut self.preview {
+            DragPreviewState::Published { preview, .. } => Some(preview),
+            DragPreviewState::Unresolved { .. } => None,
+        }
+    }
+
+    pub(crate) const fn status(&self) -> PreviewResolutionStatus {
+        match &self.preview {
+            DragPreviewState::Published { .. } => PreviewResolutionStatus::Resolved,
+            DragPreviewState::Unresolved { status, .. } => *status,
+        }
+    }
+
+    fn publish(&mut self, preview: PublishedPreview, acquisition: Option<TargetAcquisition>) {
+        self.preview = DragPreviewState::Published {
+            preview,
+            acquisition,
+        };
+    }
+
+    fn clear_preview(&mut self, status: PreviewResolutionStatus) -> bool {
+        let changed = matches!(self.preview, DragPreviewState::Published { .. });
+        self.preview = DragPreviewState::Unresolved { status };
+        changed
+    }
+
+    fn set_acquisition(&mut self, acquisition: Option<TargetAcquisition>) {
+        match &mut self.preview {
+            DragPreviewState::Published {
+                acquisition: current,
+                ..
+            } => *current = acquisition,
+            DragPreviewState::Unresolved { .. } => {}
+        }
+    }
+
+    fn clear_feedback(&mut self, status: PreviewResolutionStatus) -> bool {
+        self.last_advanced = None;
+        let affordance_cleared = self.affordance.take().is_some();
+        let preview_cleared = self.clear_preview(status);
+        affordance_cleared || preview_cleared
+    }
+
+    fn reconcile_acquisition(
+        &self,
+        observation: TargetObservation,
+        point: Option<LogicalPoint>,
+        release_hysteresis: f64,
+    ) -> TargetLatchDecision {
+        reconcile_target(self.acquisition(), observation, point, release_hysteresis)
+    }
+
+    fn set_affordance(&mut self, affordance: Option<DropAffordance>) {
+        self.affordance = affordance;
+    }
+
+    fn set_last_advanced(&mut self, position: ManipulationPositionKey) {
+        self.magnetic_source_gate.observe(position);
+        if let Some(point) = position.logical_point() {
+            self.last_logical_point = Some(point);
+        }
+        self.last_advanced = Some(position);
+    }
+
+    fn invalidate_last_advanced(&mut self) {
+        self.last_advanced = None;
     }
 }
 
@@ -1960,10 +2291,17 @@ pub(crate) struct FrozenContainedDragOrigin {
     pub(crate) surface: SurfaceId,
     pub(crate) root: RootId,
     pub(crate) floating: FloatingPresentationId,
+    pub(crate) intent: ContainedDragIntent,
     pub(crate) source_rect: LogicalRect,
     pub(crate) source_roster: ContainedRosterSource,
     pub(crate) initial_pointer: LogicalPoint,
     pub(crate) minimum_size: LogicalSize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContainedDragIntent {
+    MoveWindow,
+    DockContent,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2001,7 +2339,6 @@ pub(crate) struct ActiveDrag {
     pub(crate) payload: MovePayload,
     pub(crate) source_surface: SurfaceId,
     pub(crate) initial_pointer: Option<LogicalPoint>,
-    pub(crate) current_pointer: Option<LogicalPoint>,
     pub(crate) complete_root: Option<NodeSource>,
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
@@ -2014,8 +2351,41 @@ pub(crate) struct ActiveDrag {
     pub(crate) contained_offer: Option<ContainedPresentationOffer>,
     pub(crate) surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     pub(crate) native_offer: Option<NativePresentationOffer>,
-    pub(crate) affordance: Option<DropAffordance>,
-    pub(crate) preview: Option<PublishedPreview>,
+    pub(crate) target: DragTargetState,
+}
+
+impl ActiveDrag {
+    pub(crate) const fn preview(&self) -> Option<&PublishedPreview> {
+        self.target.preview()
+    }
+
+    pub(crate) fn preview_mut(&mut self) -> Option<&mut PublishedPreview> {
+        self.target.preview_mut()
+    }
+
+    pub(crate) const fn preview_status(&self) -> PreviewResolutionStatus {
+        self.target.status()
+    }
+
+    pub(crate) const fn drop_affordance(&self) -> Option<&DropAffordance> {
+        self.target.affordance()
+    }
+
+    pub(crate) const fn last_advanced_position(&self) -> Option<ManipulationPositionKey> {
+        self.target.last_advanced()
+    }
+
+    pub(crate) const fn target_acquisition(&self) -> Option<TargetAcquisition> {
+        self.target.acquisition()
+    }
+
+    pub(crate) fn magnetic_targeting_allowed_at(&self, position: ManipulationPositionKey) -> bool {
+        self.target.magnetic_targeting_allowed_at(position)
+    }
+
+    pub(crate) const fn current_pointer(&self) -> Option<LogicalPoint> {
+        self.target.current_pointer(self.initial_pointer)
+    }
 }
 
 /// Core-minted identities frozen to one journal drag session.
@@ -2455,7 +2825,7 @@ impl InteractionState {
                 owner: drag.owner,
                 button: drag.button,
                 payload: &drag.payload,
-                current_pointer: drag.current_pointer,
+                current_pointer: drag.current_pointer(),
                 origin: &drag.origin,
                 contained_offer: drag.contained_offer.as_ref(),
                 surface_background_offer: drag.surface_background_offer.as_ref(),
@@ -2535,7 +2905,7 @@ impl InteractionState {
     #[must_use]
     pub fn preview(&self) -> Option<&InteractionPreview> {
         match &self.active {
-            ActiveGesture::Dragging(drag) => drag.preview.as_ref().map(PublishedPreview::public),
+            ActiveGesture::Dragging(drag) => drag.preview().map(PublishedPreview::public),
             ActiveGesture::Idle
             | ActiveGesture::Pressed(_)
             | ActiveGesture::Armed(_)
@@ -2552,7 +2922,7 @@ impl InteractionState {
     #[must_use]
     pub fn drop_affordance(&self) -> Option<&DropAffordance> {
         match &self.active {
-            ActiveGesture::Dragging(drag) => drag.affordance.as_ref(),
+            ActiveGesture::Dragging(drag) => drag.drop_affordance(),
             ActiveGesture::Idle
             | ActiveGesture::Pressed(_)
             | ActiveGesture::Armed(_)
@@ -2630,6 +3000,7 @@ impl InteractionState {
         if armed.button != button {
             return Err(InteractionRejection::ButtonMismatch);
         }
+        let target = DragTargetState::new(&armed.origin);
         self.active = ActiveGesture::Dragging(Box::new(ActiveDrag {
             session: armed.session,
             owner: armed.owner,
@@ -2638,7 +3009,6 @@ impl InteractionState {
             payload: armed.payload.clone(),
             source_surface: armed.source_surface,
             initial_pointer: armed.initial_pointer,
-            current_pointer: armed.initial_pointer,
             complete_root: armed.complete_root.clone(),
             partial_detachable: armed.partial_detachable,
             origin: armed.origin.clone(),
@@ -2651,8 +3021,7 @@ impl InteractionState {
             contained_offer: None,
             surface_background_offer: None,
             native_offer: None,
-            affordance: None,
-            preview: None,
+            target,
         }));
         Ok(())
     }
@@ -2820,14 +3189,23 @@ impl InteractionState {
         scene: SurfaceSceneStamp,
         visual: PreviewVisual,
         proof: PreviewProof,
+        acquisition: Option<TargetAcquisition>,
     ) -> Result<(InteractionPreview, bool), InteractionCounterError> {
+        if !preview_acquisition_matches(scene, &proof, acquisition) {
+            return Err(InteractionCounterError::StateInvariant);
+        }
         if let Ok(drag) = self.active_drag(session)
-            && let Some(existing) = &drag.preview
+            && let Some(existing) = drag.preview()
             && existing.public.token.scene == scene
             && existing.public.visual == visual
             && existing.proof == proof
         {
-            return Ok((existing.public.clone(), false));
+            let existing = existing.public.clone();
+            self.active_drag_mut(session)
+                .map_err(|_| InteractionCounterError::StateInvariant)?
+                .target
+                .set_acquisition(acquisition);
+            return Ok((existing, false));
         }
         let sequence = self
             .last_preview_sequence
@@ -2845,27 +3223,57 @@ impl InteractionState {
         let drag = self
             .active_drag_mut(session)
             .map_err(|_| InteractionCounterError::StateInvariant)?;
-        drag.preview = Some(PublishedPreview {
-            public: preview.clone(),
-            proof,
-            painted: false,
-        });
+        drag.target.publish(
+            PublishedPreview {
+                public: preview.clone(),
+                proof,
+                painted: false,
+            },
+            acquisition,
+        );
         Ok((preview, true))
     }
 
     pub(crate) fn clear_preview(
         &mut self,
         session: DragSessionId,
+        status: PreviewResolutionStatus,
     ) -> Result<bool, InteractionRejection> {
-        Ok(self.active_drag_mut(session)?.preview.take().is_some())
+        Ok(self.active_drag_mut(session)?.target.clear_preview(status))
     }
 
-    pub(crate) fn set_drag_current_pointer(
+    pub(crate) fn set_drag_position(
         &mut self,
         session: DragSessionId,
-        current: LogicalPoint,
+        position: ManipulationPositionKey,
     ) -> Result<(), InteractionRejection> {
-        self.active_drag_mut(session)?.current_pointer = Some(current);
+        self.active_drag_mut(session)?
+            .target
+            .set_last_advanced(position);
+        Ok(())
+    }
+
+    pub(crate) fn reconcile_drag_target(
+        &self,
+        session: DragSessionId,
+        observation: TargetObservation,
+        point: Option<LogicalPoint>,
+        release_hysteresis: f64,
+    ) -> Result<TargetLatchDecision, InteractionRejection> {
+        Ok(self.active_drag(session)?.target.reconcile_acquisition(
+            observation,
+            point,
+            release_hysteresis,
+        ))
+    }
+
+    pub(crate) fn invalidate_drag_position(
+        &mut self,
+        session: DragSessionId,
+    ) -> Result<(), InteractionRejection> {
+        self.active_drag_mut(session)?
+            .target
+            .invalidate_last_advanced();
         Ok(())
     }
 
@@ -2874,9 +3282,9 @@ impl InteractionState {
         session: DragSessionId,
     ) -> Result<bool, InteractionRejection> {
         let drag = self.active_drag_mut(session)?;
-        let affordance_cleared = drag.affordance.take().is_some();
-        let preview_cleared = drag.preview.take().is_some();
-        Ok(affordance_cleared || preview_cleared)
+        Ok(drag
+            .target
+            .clear_feedback(PreviewResolutionStatus::Unavailable))
     }
 
     pub(crate) fn set_drop_affordance(
@@ -2884,7 +3292,9 @@ impl InteractionState {
         session: DragSessionId,
         affordance: Option<DropAffordance>,
     ) -> Result<(), InteractionRejection> {
-        self.active_drag_mut(session)?.affordance = affordance;
+        self.active_drag_mut(session)?
+            .target
+            .set_affordance(affordance);
         Ok(())
     }
 
@@ -2894,7 +3304,7 @@ impl InteractionState {
     ) -> Result<(DragSessionId, bool), InteractionRejection> {
         let session = acknowledgement.token.session;
         let drag = self.active_drag_mut(session)?;
-        let Some(preview) = drag.preview.as_mut() else {
+        let Some(preview) = drag.target.preview_mut() else {
             return Err(InteractionRejection::PreviewAcknowledgementMismatch);
         };
         let changed = preview.acknowledge(acknowledgement)?;
@@ -2909,7 +3319,7 @@ impl InteractionState {
         let ActiveGesture::Dragging(drag) = &mut self.active else {
             return false;
         };
-        let Some(preview) = drag.preview.as_mut() else {
+        let Some(preview) = drag.target.preview_mut() else {
             return false;
         };
         if preview.public.token != token || preview.public.visual.surface() != surface {
@@ -3471,5 +3881,31 @@ mod tests {
         assert_eq!(Arc::strong_count(&action), 3);
         drop(clone);
         assert_eq!(Arc::strong_count(&action), 2);
+    }
+
+    #[test]
+    fn invalidating_position_preserves_latest_logical_point_for_revalidation() {
+        let surface = SurfaceId::new(21);
+        let ticket = SurfaceMeasurementTicket::new(
+            EngineAuthorityDomainId::new_for_test(22),
+            WorkspaceEpoch::new(23),
+            PresentationConfigRevision::new(1),
+            crate::policy::PolicyRevision::new(1),
+            SurfaceRequirementRevision::new(1),
+            surface,
+        );
+        let scene = SurfaceSceneStamp::new(ticket, SurfaceSceneRevision::new(1));
+        let latest = LogicalPoint::new(42.0, 18.0).expect("test point must be finite");
+        let initial = LogicalPoint::new(4.0, 3.0).expect("test point must be finite");
+        let mut target = DragTargetState::new(&FrozenDragOrigin::Workspace);
+
+        target.set_last_advanced(ManipulationPositionKey::Local {
+            scene,
+            pointer: SurfacePointer::new(surface, latest),
+        });
+        target.invalidate_last_advanced();
+
+        assert_eq!(target.last_advanced(), None);
+        assert_eq!(target.current_pointer(Some(initial)), Some(latest));
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::drop_target::DropDestination;
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::graph::{Axis, ContainedFloating, RootRecord, SurfacePresentation};
 use crate::ids::{ItemId, WorkspaceEpoch, WorkspaceRevision};
@@ -46,14 +47,40 @@ fn compile_default_ready_plan(
     surface: SurfaceId,
     bounds: LogicalRect,
 ) -> PresentationPlan {
+    compile_ready_plan(workspace, surface, bounds, true)
+}
+
+fn compile_ready_plan(
+    workspace: &Workspace,
+    surface: SurfaceId,
+    bounds: LogicalRect,
+    emit_guides: bool,
+) -> PresentationPlan {
     let policy = policy_snapshot();
     let config = DockPresentationConfig::default();
+    let plan =
+        compile_ready_plan_with_config(workspace, surface, bounds, emit_guides, &policy, &config)
+            .expect("complete measurements should compile");
+    PresentationPlanValidator::new(workspace, &policy)
+        .expect("validator should initialize")
+        .validate_and_canonicalize(plan)
+        .expect("compiled plan should validate")
+}
+
+fn compile_ready_plan_with_config(
+    workspace: &Workspace,
+    surface: SurfaceId,
+    bounds: LogicalRect,
+    emit_guides: bool,
+    policy: &DockPolicySnapshot,
+    config: &DockPresentationConfig,
+) -> Result<PresentationPlan, PresentationCompilationError> {
     let draft = derive_scene_requirement_draft(
         authority_domain(),
         workspace,
         version(),
         PresentationConfigRevision::new(7),
-        &policy,
+        policy,
         RequirementRevision::new(9),
         &surface_revisions([surface]),
     )
@@ -107,21 +134,269 @@ fn compile_default_ready_plan(
     let manifest = draft
         .finalize(PopupPlaneRequirement::default())
         .expect("inactive requirements should finalize");
-    let plan = compile_surface_measurements(
-        workspace,
-        version(),
-        &policy,
-        &config,
-        &manifest,
-        &measurements,
-        &TabStripStateStore::default(),
-        &[],
+    let plan = if emit_guides {
+        compile_surface_measurements(
+            workspace,
+            version(),
+            policy,
+            config,
+            &manifest,
+            &measurements,
+            &TabStripStateStore::default(),
+            &[],
+        )
+    } else {
+        compile_surface_measurements_without_guides(
+            workspace,
+            version(),
+            policy,
+            config,
+            &manifest,
+            &measurements,
+            &TabStripStateStore::default(),
+            &[],
+        )
+    }?;
+    Ok(plan)
+}
+
+#[test]
+fn compiler_emits_the_same_magnetic_catalog_when_guides_are_disabled() {
+    let surface = SurfaceId::new(821);
+    let root = RootId::new(822);
+    let item = ItemId::new(823);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([item]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder
+        .build()
+        .expect("guide-independent compiler workspace must be valid");
+    let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0)
+        .expect("guide-independent compiler bounds must be valid");
+
+    let guided = compile_ready_plan(&workspace, surface, bounds, true);
+    let unguided = compile_ready_plan(&workspace, surface, bounds, false);
+
+    assert!(!guided.drop_guide_clusters().is_empty());
+    assert!(unguided.drop_guide_clusters().is_empty());
+    assert_eq!(
+        guided
+            .drop_targets()
+            .iter()
+            .map(|target| target.id())
+            .collect::<Vec<_>>(),
+        unguided
+            .drop_targets()
+            .iter()
+            .map(|target| target.id())
+            .collect::<Vec<_>>(),
+        "guide emission must not own the canonical semantic target catalog"
+    );
+    assert!(
+        unguided
+            .surface_program()
+            .blocks()
+            .iter()
+            .all(|block| !matches!(block, crate::scene::SurfaceProgramBlock::DropGuide(_))),
+        "a guide-disabled program must not retain invisible guide operations"
+    );
+
+    let content = unguided
+        .pane_records()
+        .iter()
+        .find(|pane| pane.id().tabs == tabs)
+        .expect("guide-disabled pane must remain compiled")
+        .content_bounds();
+    let center_point = LogicalPoint::new(
+        content.x() + content.width() * 0.65,
+        content.y() + content.height() * 0.65,
     )
-    .expect("complete measurements should compile");
-    PresentationPlanValidator::new(workspace, &policy)
+    .expect("magnetic center point must be finite");
+    let candidate = unguided
+        .magnetic_target_at(center_point, SceneLayerKey::surface_base(), |_| true)
+        .expect("guide-disabled compilation must retain magnetic acquisition");
+    assert_eq!(
+        candidate.target(),
+        DropTargetId::Center {
+            surface,
+            root,
+            tabs,
+        }
+    );
+}
+
+#[test]
+fn guide_disabled_compilation_does_not_evaluate_unrepresentable_guide_geometry() {
+    let surface = SurfaceId::new(825);
+    let root = RootId::new(826);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(827)]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder
+        .build()
+        .expect("guide-independent geometry workspace must be valid");
+    let policy = policy_snapshot();
+    let config = DockPresentationConfig::builder()
+        .guide_extent(1.0e-300)
+        .guide_gap(1.0e-300)
+        .guide_hit_padding(0.0)
+        .guide_outer_inset(1.0e-300)
+        .build()
+        .expect("subnormal guide metrics remain a valid semantic configuration");
+    let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0)
+        .expect("guide-independent geometry bounds must be valid");
+
+    assert!(matches!(
+        compile_ready_plan_with_config(&workspace, surface, bounds, true, &policy, &config),
+        Err(PresentationCompilationError::Scene(
+            SceneCompilationError::UnrepresentableGuideGeometry { .. }
+        ))
+    ));
+    let unguided =
+        compile_ready_plan_with_config(&workspace, surface, bounds, false, &policy, &config)
+            .expect("magnetic target compilation must not evaluate optional guide geometry");
+    let unguided = PresentationPlanValidator::new(&workspace, &policy)
         .expect("validator should initialize")
-        .validate_and_canonicalize(plan)
-        .expect("compiled plan should validate")
+        .validate_and_canonicalize(unguided)
+        .expect("guide-independent magnetic catalog must seal");
+    assert!(unguided.drop_guide_clusters().is_empty());
+    assert_eq!(
+        unguided
+            .drop_targets()
+            .iter()
+            .filter(|target| {
+                matches!(
+                    target.id().kind(),
+                    crate::drop_target::DropTargetKind::Center
+                        | crate::drop_target::DropTargetKind::InnerEdge
+                        | crate::drop_target::DropTargetKind::OuterEdge
+                )
+            })
+            .count(),
+        5,
+        "one center and four outer targets remain available without guide geometry"
+    );
+}
+
+#[test]
+fn scene_validation_requires_the_complete_compiled_magnetic_target_field() {
+    let surface = SurfaceId::new(831);
+    let root = RootId::new(832);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(833)]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder
+        .build()
+        .expect("magnetic-field validation workspace must be valid");
+    let policy = policy_snapshot();
+    let surface_bounds =
+        LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("surface bounds must be valid");
+
+    let mut missing = compile_default_ready_plan(&workspace, surface, surface_bounds);
+    missing.clear_magnetic_target_field_for_test();
+    assert!(matches!(
+        PresentationPlanValidator::new(&workspace, &policy)
+            .expect("validator should initialize")
+            .validate_and_canonicalize(missing),
+        Err(SceneBuildError::InvalidMagneticTargetField { surface: actual })
+            if actual == surface
+    ));
+
+    let mut duplicate = compile_default_ready_plan(&workspace, surface, surface_bounds);
+    duplicate.push_magnetic_root_field(
+        root,
+        SceneLayerKey::surface_base(),
+        surface_bounds,
+        MagneticEdgeTargets::new(
+            DropTargetId::OuterEdge {
+                surface,
+                root,
+                node: tabs,
+                edge: Edge::Left,
+            },
+            DropTargetId::OuterEdge {
+                surface,
+                root,
+                node: tabs,
+                edge: Edge::Right,
+            },
+            DropTargetId::OuterEdge {
+                surface,
+                root,
+                node: tabs,
+                edge: Edge::Top,
+            },
+            DropTargetId::OuterEdge {
+                surface,
+                root,
+                node: tabs,
+                edge: Edge::Bottom,
+            },
+        ),
+        &DockPresentationConfig::default(),
+    );
+    assert!(matches!(
+        PresentationPlanValidator::new(&workspace, &policy)
+            .expect("validator should initialize")
+            .validate_and_canonicalize(duplicate),
+        Err(SceneBuildError::InvalidMagneticTargetField { surface: actual })
+            if actual == surface
+    ));
+}
+
+#[test]
+fn scene_validation_rejects_a_magnetic_edge_with_a_foreign_fraction() {
+    let surface = SurfaceId::new(835);
+    let root = RootId::new(836);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(837)]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder
+        .build()
+        .expect("fraction-validation workspace must be valid");
+    let policy = policy_snapshot();
+    let mut plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("fraction-validation bounds must be valid"),
+    );
+    let target_id = DropTargetId::OuterEdge {
+        surface,
+        root,
+        node: tabs,
+        edge: Edge::Left,
+    };
+    let target = plan
+        .drop_target(target_id)
+        .expect("compiled root must expose its outer-left target")
+        .clone();
+    let DropDestination::Topology(DockTarget::OuterEdge(mut edge)) = target.destination().clone()
+    else {
+        panic!("outer-left target must carry an outer-edge destination");
+    };
+    edge.fraction = DockFraction::new(0.9).expect("test fraction must be valid");
+    assert!(
+        plan.replace_drop_target_for_test(Arc::new(DropTargetRecord::new(
+            target_id,
+            DockTarget::OuterEdge(edge),
+            target.availability(),
+            target.region(),
+            target.layer(),
+            target.visual(),
+        )))
+    );
+
+    assert!(matches!(
+        PresentationPlanValidator::new(&workspace, &policy)
+            .expect("validator should initialize")
+            .validate_and_canonicalize(plan),
+        Err(SceneBuildError::InvalidMagneticTargetField { surface: actual })
+            if actual == surface
+    ));
 }
 
 #[test]
@@ -981,7 +1256,7 @@ fn measured_future_drop_preview_does_not_reindex_the_candidate_workspace() {
             .find(|cluster| matches!(cluster.id().scope, crate::drop_guide::DropGuideScope::Outer))
             .and_then(|cluster| cluster.target(crate::drop_guide::DropGuideSlot::Edge(Edge::Left)))
             .expect("compiled root should expose its outer-left guide");
-        let hit = target.target().region().rect();
+        let hit = target.hit().rect();
         let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
             .expect("guide center should be finite");
         let stamp = SurfaceSceneStamp::new(measurements.ticket(), SurfaceSceneRevision::new(1));

@@ -1,6 +1,8 @@
 //! Validation and canonicalization of complete semantic presentation plans.
 
 use super::*;
+use crate::command::Edge;
+use crate::target_field::{pane_center_basin, root_edge_band};
 use crate::workspace::WorkspaceIndexView;
 
 /// Reusable validator for one complete surface presentation plan.
@@ -69,6 +71,11 @@ impl<'a> PresentationPlanValidator<'a> {
             });
         }
         validate_semantic_uniqueness(&ready)?;
+        let drop_target_index = ready
+            .drop_targets
+            .iter()
+            .map(|target| (target.id(), target))
+            .collect::<BTreeMap<_, _>>();
         validate_popup_plane(&ready)?;
         if !rect_has_area(ready.bounds) {
             return Err(SceneBuildError::EmptyReadySurfaceBounds { surface });
@@ -128,8 +135,20 @@ impl<'a> PresentationPlanValidator<'a> {
             validate_drop_target(&ready, target, self.workspace, &self.workspace_index)?;
         }
         for cluster in &ready.drop_guide_clusters {
-            validate_drop_guide_cluster(&ready, cluster, self.workspace, &self.workspace_index)?;
+            validate_drop_guide_cluster(
+                &ready,
+                &drop_target_index,
+                cluster,
+                self.workspace,
+                &self.workspace_index,
+            )?;
         }
+        validate_magnetic_target_field(
+            &ready,
+            &drop_target_index,
+            self.workspace,
+            &self.workspace_index,
+        )?;
         validate_contained_minimums(&ready, &self.workspace_index)?;
         canonicalize_ready(
             &mut ready,
@@ -139,6 +158,236 @@ impl<'a> PresentationPlanValidator<'a> {
         );
         Ok(ready)
     }
+}
+
+fn validate_magnetic_target_field(
+    ready: &PresentationPlan,
+    target_index: &BTreeMap<DropTargetId, &Arc<DropTargetRecord>>,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+) -> Result<(), SceneBuildError> {
+    let invalid = || SceneBuildError::InvalidMagneticTargetField {
+        surface: ready.surface,
+    };
+    let Some(layout) = ready.layout_facts() else {
+        return if ready.magnetic_target_field.is_empty() {
+            Ok(())
+        } else {
+            Err(invalid())
+        };
+    };
+    let config = layout.config();
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "validated presentation fractions use the command layer's f32 representation"
+    )]
+    let expected_fraction = config.dock_fraction() as f32;
+    let mut expected_magnetic_targets = BTreeSet::new();
+
+    let mut depths = BTreeMap::new();
+    for facts in layout.roots() {
+        let root = facts.root();
+        let root_record = workspace.root(root).ok_or_else(&invalid)?;
+        let mut pending = vec![(root_record.node, 0_usize)];
+        while let Some((node, depth)) = pending.pop() {
+            if depths.insert((root, node), depth).is_some() {
+                return Err(invalid());
+            }
+            match workspace.node(node).ok_or_else(&invalid)? {
+                Node::Tabs { .. } => {}
+                Node::Split { children, .. } => pending.extend(
+                    children
+                        .iter()
+                        .rev()
+                        .copied()
+                        .map(|child| (child, depth + 1)),
+                ),
+            }
+        }
+    }
+
+    let mut roots = BTreeMap::new();
+    for field in ready.magnetic_target_field.roots() {
+        if roots.insert(field.root(), field).is_some() {
+            return Err(invalid());
+        }
+    }
+    if roots.len() != layout.roots().count() {
+        return Err(invalid());
+    }
+    for facts in layout.roots() {
+        let root = facts.root();
+        let field = roots.get(&root).copied().ok_or_else(&invalid)?;
+        let root_record = workspace.root(root).ok_or_else(&invalid)?;
+        let layer = workspace_index.root_layer(root).ok_or_else(&invalid)?;
+        let expected_edges = MagneticEdgeTargets::new(
+            DropTargetId::OuterEdge {
+                surface: ready.surface,
+                root,
+                node: root_record.node,
+                edge: Edge::Left,
+            },
+            DropTargetId::OuterEdge {
+                surface: ready.surface,
+                root,
+                node: root_record.node,
+                edge: Edge::Right,
+            },
+            DropTargetId::OuterEdge {
+                surface: ready.surface,
+                root,
+                node: root_record.node,
+                edge: Edge::Top,
+            },
+            DropTargetId::OuterEdge {
+                surface: ready.surface,
+                root,
+                node: root_record.node,
+                edge: Edge::Bottom,
+            },
+        );
+        expected_magnetic_targets.extend(expected_edges.targets());
+        if field.layer() != layer
+            || field.bounds() != facts.bounds()
+            || field.edge_band().to_bits() != root_edge_band(facts.bounds(), config).to_bits()
+            || field.edges() != expected_edges
+            || !magnetic_targets_are_canonical(
+                ready,
+                target_index,
+                expected_edges.targets(),
+                layer,
+                expected_fraction,
+            )
+        {
+            return Err(invalid());
+        }
+    }
+
+    let expected_panes = ready
+        .pane_records
+        .iter()
+        .filter(|pane| rect_has_area(pane.content_bounds()))
+        .map(|pane| (pane.id(), pane))
+        .collect::<BTreeMap<_, _>>();
+    let mut panes = BTreeMap::new();
+    for field in ready.magnetic_target_field.panes() {
+        let id = PaneSceneId {
+            root: field.root(),
+            tabs: field.tabs(),
+        };
+        if panes.insert(id, field).is_some() {
+            return Err(invalid());
+        }
+    }
+    if panes.len() != expected_panes.len() {
+        return Err(invalid());
+    }
+    for (id, pane) in expected_panes {
+        let field = panes.get(&id).copied().ok_or_else(&invalid)?;
+        let root_record = workspace.root(id.root).ok_or_else(&invalid)?;
+        let layer = workspace_index.root_layer(id.root).ok_or_else(&invalid)?;
+        let depth = depths
+            .get(&(id.root, id.tabs))
+            .copied()
+            .ok_or_else(&invalid)?;
+        let center_target = DropTargetId::Center {
+            surface: ready.surface,
+            root: id.root,
+            tabs: id.tabs,
+        };
+        let edge_target = |edge| {
+            if root_record.node == id.tabs && root_record.central == Some(id.tabs) {
+                DropTargetId::OuterEdge {
+                    surface: ready.surface,
+                    root: id.root,
+                    node: id.tabs,
+                    edge,
+                }
+            } else {
+                DropTargetId::InnerEdge {
+                    surface: ready.surface,
+                    root: id.root,
+                    node: id.tabs,
+                    edge,
+                }
+            }
+        };
+        let expected_edges = MagneticEdgeTargets::new(
+            edge_target(Edge::Left),
+            edge_target(Edge::Right),
+            edge_target(Edge::Top),
+            edge_target(Edge::Bottom),
+        );
+        expected_magnetic_targets.insert(center_target);
+        expected_magnetic_targets.extend(expected_edges.targets());
+        if field.layer() != layer
+            || field.depth() != depth
+            || field.content() != pane.content_bounds()
+            || field.center()
+                != pane_center_basin(pane.content_bounds(), config).map_err(|_| invalid())?
+            || field.center_target() != center_target
+            || field.edges() != expected_edges
+            || !magnetic_targets_are_canonical(
+                ready,
+                target_index,
+                std::iter::once(center_target).chain(expected_edges.targets()),
+                layer,
+                expected_fraction,
+            )
+        {
+            return Err(invalid());
+        }
+    }
+    let expected_target_catalog = ready
+        .drop_guide_clusters()
+        .iter()
+        .flat_map(|cluster| cluster.targets().map(|(_, target)| target.id()))
+        .chain(expected_magnetic_targets)
+        .collect::<BTreeSet<_>>();
+    let actual_target_catalog = target_index
+        .keys()
+        .copied()
+        .filter(|target| {
+            matches!(
+                target.kind(),
+                DropTargetKind::Center | DropTargetKind::InnerEdge | DropTargetKind::OuterEdge
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    if actual_target_catalog != expected_target_catalog {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn magnetic_targets_are_canonical(
+    ready: &PresentationPlan,
+    target_index: &BTreeMap<DropTargetId, &Arc<DropTargetRecord>>,
+    targets: impl IntoIterator<Item = DropTargetId>,
+    layer: SceneLayerKey,
+    expected_fraction: f32,
+) -> bool {
+    targets.into_iter().all(|target| {
+        target.surface() == ready.surface
+            && target_index.get(&target).is_some_and(|record| {
+                record.layer() == layer
+                    && match record.destination() {
+                        DropDestination::Topology(DockTarget::Center(_)) => {
+                            target.kind() == DropTargetKind::Center
+                        }
+                        DropDestination::Topology(
+                            DockTarget::InnerEdge(edge) | DockTarget::OuterEdge(edge),
+                        ) => {
+                            matches!(
+                                target.kind(),
+                                DropTargetKind::InnerEdge | DropTargetKind::OuterEdge
+                            ) && edge.fraction().get().to_bits() == expected_fraction.to_bits()
+                        }
+                        DropDestination::Topology(DockTarget::TabGap { .. })
+                        | DropDestination::SurfaceBackground(_) => false,
+                    }
+            })
+    })
 }
 
 fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError> {
@@ -271,14 +520,15 @@ fn validate_semantic_uniqueness(ready: &PresentationPlan) -> Result<(), SceneBui
         .surface_background
         .iter()
         .map(DropTargetRecord::id)
-        .chain(ready.drop_targets.iter().map(DropTargetRecord::id))
-        .chain(
-            ready
-                .drop_guide_clusters
-                .iter()
-                .flat_map(|cluster| cluster.targets().map(|(_, guide_target)| guide_target.id())),
-        );
+        .chain(ready.drop_targets.iter().map(|target| target.id()));
     if let Some(id) = stable_duplicate(targets) {
+        return Err(SceneBuildError::DuplicateDropTarget { id });
+    }
+    let guide_targets = ready
+        .drop_guide_clusters
+        .iter()
+        .flat_map(|cluster| cluster.targets().map(|(_, guide_target)| guide_target.id()));
+    if let Some(id) = stable_duplicate(guide_targets) {
         return Err(SceneBuildError::DuplicateDropTarget { id });
     }
     Ok(())
@@ -1492,21 +1742,30 @@ fn canonicalize_ready(
         .sort_unstable_by_key(DropGuideClusterRecord::id);
     ready
         .drop_targets
-        .sort_unstable_by_key(DropTargetRecord::id);
+        .sort_unstable_by_key(|target| target.id());
+    ready.magnetic_target_field.canonicalize();
 
     let surface = ready.surface;
     for target in &mut ready.drop_targets {
-        canonicalize_drop_target(target, workspace, workspace_index, surface, policy);
+        canonicalize_drop_target(
+            Arc::make_mut(target),
+            workspace,
+            workspace_index,
+            surface,
+            policy,
+        );
     }
+    let canonical_targets = ready
+        .drop_targets
+        .iter()
+        .map(|target| (target.id(), Arc::clone(target)))
+        .collect::<BTreeMap<_, _>>();
     for cluster in &mut ready.drop_guide_clusters {
-        cluster.for_each_target_mut(|_, guide_target| {
-            canonicalize_drop_target(
-                guide_target.target_mut(),
-                workspace,
-                workspace_index,
-                surface,
-                policy,
-            );
+        cluster.for_each_target_mut(|guide| {
+            let target = canonical_targets
+                .get(&guide.id())
+                .expect("validated guide target remains in the canonical catalog");
+            guide.rebind_target(Arc::clone(target));
         });
     }
 }
@@ -1543,6 +1802,7 @@ fn canonicalize_drop_target(
 
 fn validate_drop_guide_cluster(
     ready: &PresentationPlan,
+    target_index: &BTreeMap<DropTargetId, &Arc<DropTargetRecord>>,
     cluster: &DropGuideClusterRecord,
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
@@ -1567,6 +1827,7 @@ fn validate_drop_guide_cluster(
     for (slot, guide_target) in cluster.targets() {
         validate_drop_guide_target(
             ready,
+            target_index,
             cluster,
             activation,
             slot,
@@ -1575,7 +1836,7 @@ fn validate_drop_guide_cluster(
             workspace_index,
         )?;
     }
-    validate_drop_guide_hit_separation(ready.surface, cluster)
+    validate_drop_guide_hit_separation(ready.surface, target_index, cluster)
 }
 
 fn validate_drop_guide_cluster_identity(
@@ -1629,6 +1890,7 @@ fn validate_drop_guide_activation(
 
 fn validate_drop_guide_target(
     ready: &PresentationPlan,
+    target_index: &BTreeMap<DropTargetId, &Arc<DropTargetRecord>>,
     cluster: &DropGuideClusterRecord,
     activation: LogicalRect,
     slot: DropGuideSlot,
@@ -1637,18 +1899,31 @@ fn validate_drop_guide_target(
     workspace_index: &SceneWorkspaceIndex,
 ) -> Result<(), SceneBuildError> {
     let cluster_id = cluster.id();
-    let target = guide_target.target();
-    if !drop_guide_slot_matches(cluster_id, slot, target.id(), workspace, workspace_index) {
+    let target_id = guide_target.id();
+    let Some(target) = target_index.get(&target_id).copied() else {
+        return Err(SceneBuildError::TargetSemanticMismatch {
+            surface: ready.surface,
+            target: target_id,
+        });
+    };
+    if !guide_target.shares_target(target) {
+        return Err(SceneBuildError::TargetSemanticMismatch {
+            surface: ready.surface,
+            target: target_id,
+        });
+    }
+    let target = target.as_ref();
+    if !drop_guide_slot_matches(cluster_id, slot, target_id, workspace, workspace_index) {
         return Err(SceneBuildError::DropGuideTargetSlotMismatch {
             cluster: cluster_id,
             slot,
-            target: target.id(),
+            target: target_id,
         });
     }
     if target.layer() != cluster.layer() {
         return Err(SceneBuildError::DropGuideTargetLayerMismatch {
             cluster: cluster_id,
-            target: target.id(),
+            target: target_id,
             cluster_layer: cluster.layer(),
             target_layer: target.layer(),
         });
@@ -1659,21 +1934,21 @@ fn validate_drop_guide_target(
         return Err(SceneBuildError::EmptyDropGuideHitRegion {
             surface: ready.surface,
             cluster: cluster_id,
-            target: target.id(),
+            target: target_id,
         });
     }
     if !rect_contains(ready.bounds, hit) {
         return Err(SceneBuildError::DropGuideHitRegionOutsideSurface {
             surface: ready.surface,
             cluster: cluster_id,
-            target: target.id(),
+            target: target_id,
         });
     }
     if !rect_contains(activation, hit) {
         return Err(SceneBuildError::DropGuideHitRegionOutsideActivation {
             surface: ready.surface,
             cluster: cluster_id,
-            target: target.id(),
+            target: target_id,
         });
     }
 
@@ -1682,24 +1957,23 @@ fn validate_drop_guide_target(
         return Err(SceneBuildError::EmptyDropGuideDraw {
             surface: ready.surface,
             cluster: cluster_id,
-            target: target.id(),
+            target: target_id,
         });
     }
     if !rect_contains(hit, draw) {
         return Err(SceneBuildError::DropGuideDrawOutsideHitRegion {
             surface: ready.surface,
             cluster: cluster_id,
-            target: target.id(),
+            target: target_id,
         });
     }
 
-    validate_drop_target(ready, target, workspace, workspace_index)?;
     let preview = target.visual().rect();
     if !rect_contains(activation, preview) {
         return Err(SceneBuildError::DropGuidePreviewOutsideActivation {
             surface: ready.surface,
             cluster: cluster_id,
-            target: target.id(),
+            target: target_id,
         });
     }
     Ok(())
@@ -1707,14 +1981,25 @@ fn validate_drop_guide_target(
 
 fn validate_drop_guide_hit_separation(
     surface: SurfaceId,
+    target_index: &BTreeMap<DropTargetId, &Arc<DropTargetRecord>>,
     cluster: &DropGuideClusterRecord,
 ) -> Result<(), SceneBuildError> {
     for (index, (first_slot, first)) in cluster.targets().enumerate() {
         for (second_slot, second) in cluster.targets().skip(index + 1) {
-            if rects_overlap_with_area(
-                first.target().region().rect(),
-                second.target().region().rect(),
-            ) {
+            let Some(first_target) = target_index.get(&first.id()).copied() else {
+                return Err(SceneBuildError::TargetSemanticMismatch {
+                    surface,
+                    target: first.id(),
+                });
+            };
+            let Some(second_target) = target_index.get(&second.id()).copied() else {
+                return Err(SceneBuildError::TargetSemanticMismatch {
+                    surface,
+                    target: second.id(),
+                });
+            };
+            if rects_overlap_with_area(first_target.region().rect(), second_target.region().rect())
+            {
                 return Err(SceneBuildError::OverlappingDropGuideHitRegions {
                     surface,
                     cluster: cluster.id(),

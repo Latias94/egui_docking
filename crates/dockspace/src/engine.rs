@@ -32,7 +32,8 @@ mod tab_strip_input;
 
 pub use self::pointer_proof::PointerReceiverGeometryError;
 use self::pointer_proof::{
-    is_tab_list_menu_click, pointer_receiver_candidate_spec, validated_desktop_delivery_route,
+    is_tab_list_menu_click, journal_position_key, pointer_receiver_candidate_spec,
+    validated_desktop_delivery_route,
 };
 
 #[cfg(test)]
@@ -104,7 +105,7 @@ use crate::coordinates::{
     solve_tear_off_placement,
 };
 use crate::drop_resolver::{
-    DropAffordance, DropResolution, DropResolutionError, resolve_presented_drop,
+    DropAffordance, DropResolution, DropResolutionError, resolve_presented_drop_with_magnetic,
 };
 use crate::effect::{
     EffectDispatchResult, EffectId, EffectResult, EffectTransition, NativeCloseResolution,
@@ -129,7 +130,7 @@ use crate::intent::{
     TabGestureSource,
 };
 use crate::interaction::{
-    ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart,
+    ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart, ContainedDragIntent,
     ContainedTransformGestureAuthority, ContainedTransformPaintAcknowledgement,
     ContainedTransformPlacement, ContainedTransformPreview, ContainedTransformSessionId,
     ContainedTransformStart, DragArmStart, DragGestureAuthority, EscapeDelivery, FrozenClickAction,
@@ -139,10 +140,11 @@ use crate::interaction::{
     GestureOwner, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
     InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
     InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
-    PaintAcknowledgement, PreviewProof, PreviewResolutionStatus, PreviewVisual,
-    ResizeGestureAuthority, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
-    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
-    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
+    ManipulationPositionKey, PaintAcknowledgement, PreviewProof, PreviewResolutionStatus,
+    PreviewVisual, ResizeGestureAuthority, ResizeStart, SceneGestureContinuation,
+    SceneGestureContinuationDraft, SceneGestureContinuationSource, SceneGestureSession,
+    ScrollApplication, ScrollReductionOutcome, ScrollSessionId, ScrollSuppressionReason,
+    ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
@@ -1761,6 +1763,7 @@ struct PendingPresentationRehome {
 struct PreviewEvaluation {
     decision: PreviewDecision,
     affordance: Option<DropAffordance>,
+    observation: crate::runtime::direct_manipulation::TargetObservation,
 }
 
 struct StagedJournalWorkspaceCommand {
@@ -1770,15 +1773,32 @@ struct StagedJournalWorkspaceCommand {
 }
 
 impl PreviewEvaluation {
-    const fn new(decision: PreviewDecision, affordance: Option<DropAffordance>) -> Self {
+    const fn new(
+        decision: PreviewDecision,
+        affordance: Option<DropAffordance>,
+        observation: crate::runtime::direct_manipulation::TargetObservation,
+    ) -> Self {
         Self {
             decision,
             affordance,
+            observation,
         }
     }
 
     const fn without_affordance(decision: PreviewDecision) -> Self {
-        Self::new(decision, None)
+        Self::new(
+            decision,
+            None,
+            crate::runtime::direct_manipulation::TargetObservation::Unavailable,
+        )
+    }
+
+    const fn outside_all(decision: PreviewDecision) -> Self {
+        Self::new(
+            decision,
+            None,
+            crate::runtime::direct_manipulation::TargetObservation::OutsideAll,
+        )
     }
 }
 
@@ -2838,7 +2858,7 @@ impl DockEngine {
             .or_else(|| {
                 self.pending_drag_release
                     .as_ref()
-                    .and_then(|pending| pending.drag.preview.as_ref())
+                    .and_then(|pending| pending.drag.preview())
                     .map(crate::interaction::PublishedPreview::public)
             })
             .or_else(|| {
@@ -3688,7 +3708,7 @@ impl DockEngine {
                 let acknowledged = engine
                     .pending_drag_release
                     .as_mut()
-                    .and_then(|pending| pending.drag.preview.as_mut())
+                    .and_then(|pending| pending.drag.preview_mut())
                     .ok_or(EngineError::ReductionCauseInvariant {
                         detail: "a local pending drag release lost its preview",
                     })?

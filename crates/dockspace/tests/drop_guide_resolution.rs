@@ -280,7 +280,7 @@ fn guide_point(
     scope: DropGuideScope,
     slot: DropGuideSlot,
 ) -> LogicalPoint {
-    midpoint(guide(plan, root, scope, slot).target().region().rect())
+    midpoint(guide(plan, root, scope, slot).hit().rect())
 }
 
 fn target_region(plan: &PresentationPlan, id: DropTargetId) -> LogicalRect {
@@ -323,7 +323,7 @@ fn guide_free_point(plan: &PresentationPlan, cluster: &DropGuideClusterRecord) -
         .drop_guide_clusters()
         .iter()
         .flat_map(DropGuideClusterRecord::targets)
-        .map(|(_, target)| target.target().region().rect())
+        .map(|(_, target)| target.hit().rect())
         .chain(
             plan.drop_targets()
                 .iter()
@@ -469,7 +469,7 @@ fn outer_cluster_resolves_without_an_active_inner_cluster() {
         })
         .map(|cluster| cluster.activation().rect())
         .collect::<Vec<_>>();
-    let at = point_in_region_excluding(outer_top.target().region().rect(), &inner_activations);
+    let at = point_in_region_excluding(outer_top.hit().rect(), &inner_activations);
 
     let result = query(
         &fixture,
@@ -500,7 +500,7 @@ fn outer_cluster_resolves_without_an_active_inner_cluster() {
 }
 
 #[test]
-fn activation_without_button_or_tab_gap_hit_returns_guide_only_affordance() {
+fn activation_without_button_or_tab_gap_hit_resolves_a_magnetic_target() {
     let fixture = fixture();
     let scene = painted_scene_set(&fixture);
     let plan = target_plan(&scene);
@@ -515,14 +515,15 @@ fn activation_without_button_or_tab_gap_hit_returns_guide_only_affordance() {
         at,
     );
 
-    assert!(matches!(result.resolution(), DropResolution::KnownNone(_)));
-    assert_eq!(
-        result
-            .affordance()
-            .expect("guides are visible")
-            .active_target(),
-        None
-    );
+    let active = result
+        .affordance()
+        .expect("guides are visible")
+        .active_target()
+        .expect("the magnetic winner highlights its explanatory guide");
+    assert!(matches!(
+        result.resolution(),
+        DropResolution::Resolved(resolved) if resolved.target_id() == active.target_id()
+    ));
 }
 
 #[test]
@@ -634,8 +635,7 @@ fn adjacent_guide_hit_regions_are_half_open_at_the_shared_edge() {
         DropGuideScope::Inner(fixture.target_tabs),
         DropGuideSlot::Center,
     )
-    .target()
-    .region()
+    .hit()
     .rect();
     let y = hit.y() + hit.height() * 0.5;
 
@@ -925,7 +925,13 @@ fn core_compiled_targets_expose_only_core_owned_availability_states() {
             .iter()
             .flat_map(DropGuideClusterRecord::targets)
             .all(|(_, target)| {
-                target.target().availability() == DropTargetAvailability::Available
+                target_plan(&scene)
+                    .drop_targets()
+                    .iter()
+                    .find(|canonical| canonical.id() == target.id())
+                    .is_some_and(|canonical| {
+                        canonical.availability() == DropTargetAvailability::Available
+                    })
             })
     );
 }

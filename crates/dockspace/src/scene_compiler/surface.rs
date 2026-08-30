@@ -30,6 +30,7 @@ pub(crate) fn compile_surface_scene(
     popup: PopupPlaneRequirement,
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
+    emit_guides: bool,
 ) -> Result<PresentationPlan, SceneCompilationError> {
     let expected = requirements.ticket();
     let actual = measurements.ticket();
@@ -99,6 +100,7 @@ pub(crate) fn compile_surface_scene(
             tab_strip_states,
             resize_overrides,
             true,
+            emit_guides,
             &mut ready,
         )?;
         ready.end_surface_program_root(root)?;
@@ -168,6 +170,7 @@ pub(crate) fn compile_surface_scene(
                 tab_strip_states,
                 resize_overrides,
                 false,
+                emit_guides,
                 &mut ready,
             )?;
         }
@@ -249,6 +252,55 @@ pub(crate) fn compile_surface_measurements(
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
 ) -> Result<PresentationPlan, PresentationCompilationError> {
+    compile_surface_measurements_with_guide_emission(
+        workspace,
+        workspace_version,
+        policy,
+        config,
+        manifest,
+        measurements,
+        tab_strip_states,
+        resize_overrides,
+        true,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn compile_surface_measurements_without_guides(
+    workspace: &Workspace,
+    workspace_version: WorkspaceVersion,
+    policy: &DockPolicySnapshot,
+    config: &DockPresentationConfig,
+    manifest: &SceneRequirementManifest,
+    measurements: &SurfaceMeasurements,
+    tab_strip_states: &TabStripStateStore,
+    resize_overrides: &[SplitWeightOverride<'_>],
+) -> Result<PresentationPlan, PresentationCompilationError> {
+    compile_surface_measurements_with_guide_emission(
+        workspace,
+        workspace_version,
+        policy,
+        config,
+        manifest,
+        measurements,
+        tab_strip_states,
+        resize_overrides,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_surface_measurements_with_guide_emission(
+    workspace: &Workspace,
+    workspace_version: WorkspaceVersion,
+    policy: &DockPolicySnapshot,
+    config: &DockPresentationConfig,
+    manifest: &SceneRequirementManifest,
+    measurements: &SurfaceMeasurements,
+    tab_strip_states: &TabStripStateStore,
+    resize_overrides: &[SplitWeightOverride<'_>],
+    emit_guides: bool,
+) -> Result<PresentationPlan, PresentationCompilationError> {
     #[cfg(test)]
     SURFACE_COMPILATION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
 
@@ -275,6 +327,7 @@ pub(crate) fn compile_surface_measurements(
         manifest.popup(),
         tab_strip_states,
         resize_overrides,
+        emit_guides,
     )
     .map_err(PresentationCompilationError::Scene)
 }
@@ -572,6 +625,7 @@ fn compile_root(
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
     publish_presentation_menu_in_tab_bar: bool,
+    emit_guides: bool,
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     let root_record = workspace
@@ -602,6 +656,29 @@ fn compile_root(
         metrics,
         &root_overrides,
     )?;
+    let mut node_depths = BTreeMap::new();
+    let mut pending_depths = vec![(root_record.node, 0_usize)];
+    while let Some((node, depth)) = pending_depths.pop() {
+        if node_depths.insert(node, depth).is_some() {
+            continue;
+        }
+        match workspace
+            .node(node)
+            .ok_or(SceneCompilationError::MissingNode {
+                surface,
+                root,
+                node,
+            })? {
+            Node::Tabs { .. } => {}
+            Node::Split { children, .. } => pending_depths.extend(
+                children
+                    .iter()
+                    .rev()
+                    .copied()
+                    .map(|child| (child, depth + 1)),
+            ),
+        }
+    }
     let presentation_menu_tabs = publish_presentation_menu_in_tab_bar
         .then(|| {
             select_presentation_menu_tab_bar(
@@ -629,27 +706,38 @@ fn compile_root(
                 root,
                 node: *node,
             })? {
-            Node::Tabs { items, selected } => compile_tabs_leaf(
-                workspace,
-                workspace_index,
-                workspace_version,
-                policy,
-                config,
-                requirements,
-                measurements,
-                surface,
-                root,
-                *node,
-                rect,
-                items,
-                *selected,
-                layer,
-                fraction,
-                tab_strip_states,
-                root_record.node == *node && root_record.central == Some(*node),
-                presentation_menu_tabs == Some(*node),
-                ready,
-            )?,
+            Node::Tabs { items, selected } => {
+                let depth = *node_depths
+                    .get(node)
+                    .ok_or(SceneCompilationError::MissingNode {
+                        surface,
+                        root,
+                        node: *node,
+                    })?;
+                compile_tabs_leaf(
+                    workspace,
+                    workspace_index,
+                    workspace_version,
+                    policy,
+                    config,
+                    requirements,
+                    measurements,
+                    surface,
+                    root,
+                    *node,
+                    depth,
+                    rect,
+                    items,
+                    *selected,
+                    layer,
+                    fraction,
+                    tab_strip_states,
+                    root_record.node == *node && root_record.central == Some(*node),
+                    presentation_menu_tabs == Some(*node),
+                    emit_guides,
+                    ready,
+                )?;
+            }
             Node::Split {
                 axis,
                 children,
@@ -763,20 +851,57 @@ fn compile_root(
         }
     }
 
-    push_outer_guide(
-        workspace,
-        workspace_index,
-        workspace_version,
-        policy,
-        config,
+    if emit_guides {
+        let outer_guide = compile_outer_targets_and_guide(
+            workspace,
+            workspace_index,
+            workspace_version,
+            policy,
+            config,
+            surface,
+            root,
+            root_record.node,
+            bounds,
+            layer,
+            fraction,
+            ready,
+        )?;
+        ready.push_drop_guide_cluster(outer_guide);
+    } else {
+        compile_outer_targets_without_guide(
+            workspace,
+            workspace_index,
+            workspace_version,
+            policy,
+            config,
+            surface,
+            root,
+            root_record.node,
+            bounds,
+            layer,
+            fraction,
+            ready,
+        )?;
+    }
+    let outer_target = |edge| DropTargetId::OuterEdge {
         surface,
         root,
-        root_record.node,
-        bounds,
+        node: root_record.node,
+        edge,
+    };
+    ready.push_magnetic_root_field(
+        root,
         layer,
-        fraction,
-        ready,
-    )
+        bounds,
+        MagneticEdgeTargets::new(
+            outer_target(Edge::Left),
+            outer_target(Edge::Right),
+            outer_target(Edge::Top),
+            outer_target(Edge::Bottom),
+        ),
+        config,
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -791,6 +916,7 @@ fn compile_tabs_leaf(
     surface: SurfaceId,
     root: RootId,
     tabs: NodeId,
+    depth: usize,
     bounds: LogicalRect,
     items: &[crate::ids::ItemId],
     selected: Option<crate::ids::ItemId>,
@@ -799,6 +925,7 @@ fn compile_tabs_leaf(
     tab_strip_states: &TabStripStateStore,
     root_central: bool,
     presentation_menu_anchor: bool,
+    emit_guides: bool,
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     let bar_id = TabBarSceneId { root, tabs };
@@ -843,21 +970,78 @@ fn compile_tabs_leaf(
         )?;
     }
     if rect_has_area(bounds) {
-        push_inner_guide(
-            workspace,
-            workspace_index,
-            workspace_version,
-            policy,
-            config,
+        if emit_guides {
+            let inner_guide = compile_inner_targets_and_guide(
+                workspace,
+                workspace_index,
+                workspace_version,
+                policy,
+                config,
+                surface,
+                root,
+                tabs,
+                bounds,
+                content,
+                layer,
+                fraction,
+                root_central,
+                ready,
+            )?;
+            ready.push_drop_guide_cluster(inner_guide);
+        } else {
+            compile_inner_targets_without_guide(
+                workspace,
+                workspace_index,
+                workspace_version,
+                policy,
+                config,
+                surface,
+                root,
+                tabs,
+                bounds,
+                content,
+                layer,
+                fraction,
+                root_central,
+                ready,
+            )?;
+        }
+        let center = DropTargetId::Center {
             surface,
             root,
             tabs,
-            bounds,
-            content,
+        };
+        let edge_target = |edge| {
+            if root_central {
+                DropTargetId::OuterEdge {
+                    surface,
+                    root,
+                    node: tabs,
+                    edge,
+                }
+            } else {
+                DropTargetId::InnerEdge {
+                    surface,
+                    root,
+                    node: tabs,
+                    edge,
+                }
+            }
+        };
+        ready.push_magnetic_pane_field(
+            root,
+            tabs,
             layer,
-            fraction,
-            root_central,
-            ready,
+            depth,
+            content,
+            center,
+            MagneticEdgeTargets::new(
+                edge_target(Edge::Left),
+                edge_target(Edge::Right),
+                edge_target(Edge::Top),
+                edge_target(Edge::Bottom),
+            ),
+            config,
         )?;
     }
     Ok(())
@@ -1138,7 +1322,7 @@ fn compile_tab_strip(
             workspace_index.capture_tab_target(workspace, workspace_version, root, tabs)?;
         let availability = tab_availability(policy);
         for gap in tab_gap_geometries(viewport, &full_tabs, config.splitter_thickness())? {
-            ready.push_drop_target(DropTargetRecord::new(
+            ready.push_drop_target(Arc::new(DropTargetRecord::new(
                 DropTargetId::TabGap {
                     surface,
                     root,
@@ -1153,7 +1337,7 @@ fn compile_tab_strip(
                 HitRegion::new(gap.hit),
                 layer,
                 DropVisual::new(gap.visual),
-            ));
+            )));
         }
     }
     Ok(())
@@ -2182,7 +2366,7 @@ impl GuideEdgeGeometry {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_inner_guide(
+fn compile_inner_targets_and_guide(
     workspace: &Workspace,
     workspace_index: &WorkspaceIndex,
     workspace_version: WorkspaceVersion,
@@ -2197,7 +2381,7 @@ fn push_inner_guide(
     fraction: DockFraction,
     root_central: bool,
     ready: &mut PresentationPlan,
-) -> Result<(), SceneCompilationError> {
+) -> Result<DropGuideClusterRecord, SceneCompilationError> {
     let cluster = DropGuideClusterId::inner(surface, root, tabs);
     let placement_bounds = if rect_has_area(content) {
         content
@@ -2224,12 +2408,13 @@ fn push_inner_guide(
         metrics.hit_padding,
     )?;
     ensure_complete_guide_geometry(cluster, placement_bounds, &[center_geometry])?;
-    let center = guide_target(
-        DropTargetId::Center {
-            surface,
-            root,
-            tabs,
-        },
+    let center_id = DropTargetId::Center {
+        surface,
+        root,
+        tabs,
+    };
+    let center_target = install_canonical_drop_target(
+        center_id,
         DockTarget::Center(workspace_index.capture_tab_target(
             workspace,
             workspace_version,
@@ -2240,9 +2425,11 @@ fn push_inner_guide(
         center_geometry,
         placement_bounds,
         layer,
+        ready,
     );
+    let center = guide_target_record(center_target, center_geometry);
     if root_central {
-        ready.push_drop_guide_cluster(DropGuideClusterRecord::inner_center(
+        return Ok(DropGuideClusterRecord::inner_center(
             surface,
             root,
             tabs,
@@ -2250,7 +2437,6 @@ fn push_inner_guide(
             layer,
             center,
         ));
-        return Ok(());
     }
 
     let mut geometry = GuideEdgeGeometry {
@@ -2291,14 +2477,16 @@ fn push_inner_guide(
     let mut all = Vec::from(geometry.buttons());
     all.push(center_geometry);
     ensure_complete_guide_geometry(cluster, placement_bounds, &all)?;
-    let edge_record = |edge| {
-        Ok::<_, SceneCompilationError>(guide_target(
-            DropTargetId::InnerEdge {
-                surface,
-                root,
-                node: tabs,
-                edge,
-            },
+    let mut edge_record = |edge| {
+        let id = DropTargetId::InnerEdge {
+            surface,
+            root,
+            node: tabs,
+            edge,
+        };
+        let preview = edge_preview(node_bounds, edge, fraction)?;
+        let target = install_canonical_drop_target(
+            id,
             DockTarget::InnerEdge(workspace_index.capture_inner_edge_target(
                 workspace,
                 workspace_version,
@@ -2309,9 +2497,11 @@ fn push_inner_guide(
             )?),
             edge_availability(policy),
             geometry.get(edge),
-            edge_preview(node_bounds, edge, fraction)?,
+            preview,
             layer,
-        ))
+            ready,
+        );
+        Ok::<_, SceneCompilationError>(guide_target_record(target, geometry.get(edge)))
     };
     let edges = DropGuideEdgeSet::new(
         edge_record(Edge::Left)?,
@@ -2319,7 +2509,7 @@ fn push_inner_guide(
         edge_record(Edge::Top)?,
         edge_record(Edge::Bottom)?,
     );
-    ready.push_drop_guide_cluster(DropGuideClusterRecord::inner(
+    Ok(DropGuideClusterRecord::inner(
         surface,
         root,
         tabs,
@@ -2327,12 +2517,11 @@ fn push_inner_guide(
         layer,
         center,
         edges,
-    ));
-    Ok(())
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_outer_guide(
+fn compile_outer_targets_and_guide(
     workspace: &Workspace,
     workspace_index: &WorkspaceIndex,
     workspace_version: WorkspaceVersion,
@@ -2345,7 +2534,7 @@ fn push_outer_guide(
     layer: SceneLayerKey,
     fraction: DockFraction,
     ready: &mut PresentationPlan,
-) -> Result<(), SceneCompilationError> {
+) -> Result<DropGuideClusterRecord, SceneCompilationError> {
     let cluster = DropGuideClusterId::outer(surface, root);
     let metrics = GuideMetrics::compact(config, bounds, config.outer_guide_reference_span())
         .ok_or(SceneCompilationError::UnrepresentableGuideGeometry { cluster, bounds })?;
@@ -2387,14 +2576,16 @@ fn push_outer_guide(
     };
     separate_outer_cross_hits(bounds, &mut geometry)?;
     ensure_complete_guide_geometry(cluster, bounds, &geometry.buttons())?;
-    let edge_record = |edge| {
-        Ok::<_, SceneCompilationError>(guide_target(
-            DropTargetId::OuterEdge {
-                surface,
-                root,
-                node: root_node,
-                edge,
-            },
+    let edge_record = |edge, ready: &mut PresentationPlan| {
+        let id = DropTargetId::OuterEdge {
+            surface,
+            root,
+            node: root_node,
+            edge,
+        };
+        let preview = edge_preview(bounds, edge, fraction)?;
+        let target = install_canonical_drop_target(
+            id,
             DockTarget::OuterEdge(workspace_index.capture_outer_edge_target(
                 workspace,
                 workspace_version,
@@ -2404,44 +2595,186 @@ fn push_outer_guide(
             )?),
             edge_availability(policy),
             geometry.get(edge),
-            edge_preview(bounds, edge, fraction)?,
+            preview,
             layer,
-        ))
+            ready,
+        );
+        Ok::<_, SceneCompilationError>(guide_target_record(target, geometry.get(edge)))
     };
-    ready.push_drop_guide_cluster(DropGuideClusterRecord::outer(
+    let left = edge_record(Edge::Left, ready)?;
+    let right = edge_record(Edge::Right, ready)?;
+    let top = edge_record(Edge::Top, ready)?;
+    let bottom = edge_record(Edge::Bottom, ready)?;
+    Ok(DropGuideClusterRecord::outer(
         surface,
         root,
         HitRegion::new(bounds),
         layer,
-        DropGuideEdgeSet::new(
-            edge_record(Edge::Left)?,
-            edge_record(Edge::Right)?,
-            edge_record(Edge::Top)?,
-            edge_record(Edge::Bottom)?,
-        ),
-    ));
+        DropGuideEdgeSet::new(left, right, top, bottom),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_outer_targets_without_guide(
+    workspace: &Workspace,
+    workspace_index: &WorkspaceIndex,
+    workspace_version: WorkspaceVersion,
+    policy: &DockPolicySnapshot,
+    config: &DockPresentationConfig,
+    surface: SurfaceId,
+    root: RootId,
+    root_node: NodeId,
+    bounds: LogicalRect,
+    layer: SceneLayerKey,
+    fraction: DockFraction,
+    ready: &mut PresentationPlan,
+) -> Result<(), SceneCompilationError> {
+    for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+        let id = DropTargetId::OuterEdge {
+            surface,
+            root,
+            node: root_node,
+            edge,
+        };
+        install_canonical_drop_target_with_region(
+            id,
+            DockTarget::OuterEdge(workspace_index.capture_outer_edge_target(
+                workspace,
+                workspace_version,
+                root,
+                edge,
+                fraction,
+            )?),
+            edge_availability(policy),
+            HitRegion::new(outer_edge_region(bounds, edge, config)?),
+            edge_preview(bounds, edge, fraction)?,
+            layer,
+            ready,
+        );
+    }
     Ok(())
 }
 
-fn guide_target(
+#[allow(clippy::too_many_arguments)]
+fn compile_inner_targets_without_guide(
+    workspace: &Workspace,
+    workspace_index: &WorkspaceIndex,
+    workspace_version: WorkspaceVersion,
+    policy: &DockPolicySnapshot,
+    config: &DockPresentationConfig,
+    surface: SurfaceId,
+    root: RootId,
+    tabs: NodeId,
+    node_bounds: LogicalRect,
+    content: LogicalRect,
+    layer: SceneLayerKey,
+    fraction: DockFraction,
+    root_central: bool,
+    ready: &mut PresentationPlan,
+) -> Result<(), SceneCompilationError> {
+    let placement_bounds = if rect_has_area(content) {
+        content
+    } else {
+        node_bounds
+    };
+    let center = DropTargetId::Center {
+        surface,
+        root,
+        tabs,
+    };
+    install_canonical_drop_target_with_region(
+        center,
+        DockTarget::Center(workspace_index.capture_tab_target(
+            workspace,
+            workspace_version,
+            root,
+            tabs,
+        )?),
+        tab_availability(policy),
+        HitRegion::new(pane_center_basin(placement_bounds, config)?),
+        placement_bounds,
+        layer,
+        ready,
+    );
+
+    if root_central {
+        return Ok(());
+    }
+
+    for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+        let id = DropTargetId::InnerEdge {
+            surface,
+            root,
+            node: tabs,
+            edge,
+        };
+        let target = DockTarget::InnerEdge(workspace_index.capture_inner_edge_target(
+            workspace,
+            workspace_version,
+            root,
+            tabs,
+            edge,
+            fraction,
+        )?);
+        install_canonical_drop_target_with_region(
+            id,
+            target,
+            edge_availability(policy),
+            HitRegion::new(pane_edge_region(placement_bounds, edge, config)?),
+            edge_preview(node_bounds, edge, fraction)?,
+            layer,
+            ready,
+        );
+    }
+    Ok(())
+}
+
+fn install_canonical_drop_target(
     id: DropTargetId,
     target: DockTarget,
     availability: DropTargetAvailability,
     geometry: GuideButtonGeometry,
     preview: LogicalRect,
     layer: SceneLayerKey,
-) -> DropGuideTargetRecord {
-    DropGuideTargetRecord::new(
-        DropTargetRecord::new(
-            id,
-            target,
-            availability,
-            HitRegion::new(geometry.hit),
-            layer,
-            DropVisual::new(preview),
-        ),
-        geometry.draw,
+    ready: &mut PresentationPlan,
+) -> Arc<DropTargetRecord> {
+    install_canonical_drop_target_with_region(
+        id,
+        target,
+        availability,
+        HitRegion::new(geometry.hit),
+        preview,
+        layer,
+        ready,
     )
+}
+
+fn install_canonical_drop_target_with_region(
+    id: DropTargetId,
+    target: DockTarget,
+    availability: DropTargetAvailability,
+    region: HitRegion,
+    preview: LogicalRect,
+    layer: SceneLayerKey,
+    ready: &mut PresentationPlan,
+) -> Arc<DropTargetRecord> {
+    let record = Arc::new(DropTargetRecord::new(
+        id,
+        target,
+        availability,
+        region,
+        layer,
+        DropVisual::new(preview),
+    ));
+    ready.push_drop_target(Arc::clone(&record));
+    record
+}
+
+fn guide_target_record(
+    target: Arc<DropTargetRecord>,
+    geometry: GuideButtonGeometry,
+) -> DropGuideTargetRecord {
+    DropGuideTargetRecord::new(target, geometry.draw)
 }
 
 fn guide_button(
@@ -2468,6 +2801,74 @@ fn guide_button(
         draw: clip_rect(draw, bounds)?,
         hit: clip_rect(expanded, bounds)?,
     })
+}
+
+fn pane_edge_region(
+    bounds: LogicalRect,
+    edge: Edge,
+    config: &DockPresentationConfig,
+) -> Result<LogicalRect, GeometryError> {
+    let center = pane_center_basin(bounds, config)?;
+    match edge {
+        Edge::Left => LogicalRect::new(
+            bounds.x(),
+            bounds.y(),
+            (center.x() - bounds.x()).max(0.0),
+            bounds.height(),
+        ),
+        Edge::Right => LogicalRect::new(
+            center.max().x(),
+            bounds.y(),
+            (bounds.max().x() - center.max().x()).max(0.0),
+            bounds.height(),
+        ),
+        Edge::Top => LogicalRect::new(
+            bounds.x(),
+            bounds.y(),
+            bounds.width(),
+            (center.y() - bounds.y()).max(0.0),
+        ),
+        Edge::Bottom => LogicalRect::new(
+            bounds.x(),
+            center.max().y(),
+            bounds.width(),
+            (bounds.max().y() - center.max().y()).max(0.0),
+        ),
+    }
+}
+
+fn outer_edge_region(
+    bounds: LogicalRect,
+    edge: Edge,
+    config: &DockPresentationConfig,
+) -> Result<LogicalRect, GeometryError> {
+    let band = root_edge_band(bounds, config);
+    match edge {
+        Edge::Left => LogicalRect::new(
+            bounds.x(),
+            bounds.y(),
+            band.min(bounds.width()),
+            bounds.height(),
+        ),
+        Edge::Right => LogicalRect::new(
+            (bounds.max().x() - band).max(bounds.x()),
+            bounds.y(),
+            band.min(bounds.width()),
+            bounds.height(),
+        ),
+        Edge::Top => LogicalRect::new(
+            bounds.x(),
+            bounds.y(),
+            bounds.width(),
+            band.min(bounds.height()),
+        ),
+        Edge::Bottom => LogicalRect::new(
+            bounds.x(),
+            (bounds.max().y() - band).max(bounds.y()),
+            bounds.width(),
+            band.min(bounds.height()),
+        ),
+    }
 }
 
 fn separate_inner_cross_hits(

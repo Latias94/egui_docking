@@ -203,6 +203,7 @@ fn engine_presented_drop_reuses_the_requirement_workspace_index() {
                 1_000,
             ))),
             point,
+            true,
         )
         .expect("current engine presentation must resolve without rebuilding its index");
     assert!(matches!(

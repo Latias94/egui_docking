@@ -340,15 +340,16 @@ fn center_guide(
     root: RootId,
     tabs: NodeId,
     layer: SceneLayerKey,
-) -> DropGuideClusterRecord {
+) -> (Arc<DropTargetRecord>, DropGuideClusterRecord) {
     let hit = LogicalRect::new(340.0, 250.0, 120.0, 100.0).expect("guide hit is valid");
     let draw = LogicalRect::new(370.0, 280.0, 60.0, 40.0).expect("guide draw is valid");
-    let target = DropTargetRecord::new(
-        DropTargetId::Center {
-            surface,
-            root,
-            tabs,
-        },
+    let target_id = DropTargetId::Center {
+        surface,
+        root,
+        tabs,
+    };
+    let target = Arc::new(DropTargetRecord::new(
+        target_id,
         DockTarget::Center(
             workspace
                 .capture_tab_target(root, tabs)
@@ -356,16 +357,19 @@ fn center_guide(
         ),
         DropTargetAvailability::Available,
         HitRegion::new(hit),
-        layer,
+        SceneLayerKey::surface_base(),
         DropVisual::new(bounds()),
-    );
-    DropGuideClusterRecord::inner_center(
-        surface,
-        root,
-        tabs,
-        HitRegion::new(bounds()),
-        layer,
-        DropGuideTargetRecord::new(target, draw),
+    ));
+    (
+        Arc::clone(&target),
+        DropGuideClusterRecord::inner_center(
+            surface,
+            root,
+            tabs,
+            HitRegion::new(bounds()),
+            layer,
+            DropGuideTargetRecord::new(Arc::clone(&target), draw),
+        ),
     )
 }
 
@@ -587,24 +591,16 @@ fn guide_cluster_layer_is_derived_from_root_presentation() {
     let (workspace, tabs) = rooted_workspace(surface, root, ItemId::new(72));
 
     let mut valid = PresentationPlan::new(surface, bounds());
-    valid.push_drop_guide_cluster(center_guide(
-        &workspace,
-        surface,
-        root,
-        tabs,
-        SceneLayerKey::new(1),
-    ));
+    let (target, guide) = center_guide(&workspace, surface, root, tabs, SceneLayerKey::new(1));
+    valid.push_drop_target(target);
+    valid.push_drop_guide_cluster(guide);
     let valid = validate(&workspace, valid).expect("main-layer guide validates");
     assert_eq!(valid.drop_guide_clusters().len(), 1);
 
     let mut invalid = PresentationPlan::new(surface, bounds());
-    invalid.push_drop_guide_cluster(center_guide(
-        &workspace,
-        surface,
-        root,
-        tabs,
-        SceneLayerKey::new(2),
-    ));
+    let (target, guide) = center_guide(&workspace, surface, root, tabs, SceneLayerKey::new(2));
+    invalid.push_drop_target(target);
+    invalid.push_drop_guide_cluster(guide);
     assert!(matches!(
         validate(&workspace, invalid),
         Err(SceneBuildError::DropGuideClusterLayerMismatch {

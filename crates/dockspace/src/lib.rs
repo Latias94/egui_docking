@@ -212,6 +212,7 @@ pub mod surface_recovery;
 mod surface_recovery;
 #[allow(dead_code)]
 mod tab_strip;
+mod target_field;
 #[allow(dead_code, unused_imports)]
 mod transaction;
 #[cfg(test)]

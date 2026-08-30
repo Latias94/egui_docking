@@ -148,7 +148,7 @@ fn expected_kinds(plan: &PresentationPlan) -> BTreeSet<PresentationHitRegionKind
         }
         for (_, target) in cluster
             .targets()
-            .filter(|(_, target)| has_area(target.target().region().rect()))
+            .filter(|(_, target)| has_area(target.hit().rect()))
         {
             expected.insert(PresentationHitRegionKind::DropTarget(target.id()));
         }
@@ -156,6 +156,7 @@ fn expected_kinds(plan: &PresentationPlan) -> BTreeSet<PresentationHitRegionKind
     for target in plan
         .drop_targets()
         .iter()
+        .map(AsRef::as_ref)
         .chain(plan.surface_background())
         .filter(|target| has_area(target.region().rect()))
     {

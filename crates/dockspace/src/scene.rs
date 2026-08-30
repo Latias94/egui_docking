@@ -55,6 +55,7 @@ use crate::splitter_junction_index::derive_splitter_junction_candidates;
 use crate::tab_strip::{PopupPlaneRequirement, TabStripControlId, TabStripStateKey};
 #[cfg(test)]
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId};
+use crate::target_field::{MagneticEdgeTargets, MagneticTargetCandidate, MagneticTargetField};
 use crate::transition::WorkspaceVersion;
 use crate::viewport::{CoordinateGeneration, ViewportBinding};
 use crate::viewport_registry::ViewportLifecycle;
@@ -484,7 +485,8 @@ pub struct PresentationPlan {
     surface_background: Option<DropTargetRecord>,
     drop_occlusions: Vec<DropOcclusionRecord>,
     drop_guide_clusters: Vec<DropGuideClusterRecord>,
-    drop_targets: Vec<DropTargetRecord>,
+    drop_targets: Vec<Arc<DropTargetRecord>>,
+    magnetic_target_field: MagneticTargetField,
     surface_program: SurfaceProgram,
 }
 
@@ -557,6 +559,7 @@ impl PresentationPlan {
             drop_occlusions: Vec::new(),
             drop_guide_clusters: Vec::new(),
             drop_targets: Vec::new(),
+            magnetic_target_field: MagneticTargetField::default(),
             surface_program: SurfaceProgram::default(),
         }
     }
@@ -981,6 +984,35 @@ impl PresentationPlan {
         self.surface_program.blocks.len() != before
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_magnetic_target_field_for_test(&mut self) {
+        self.magnetic_target_field = MagneticTargetField::default();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_drop_target_for_test(
+        &mut self,
+        replacement: Arc<DropTargetRecord>,
+    ) -> bool {
+        let id = replacement.id();
+        let Some(target) = self
+            .drop_targets
+            .iter_mut()
+            .find(|target| target.id() == id)
+        else {
+            return false;
+        };
+        *target = Arc::clone(&replacement);
+        for cluster in &mut self.drop_guide_clusters {
+            cluster.for_each_target_mut(|guide| {
+                if guide.id() == id {
+                    guide.rebind_target(Arc::clone(&replacement));
+                }
+            });
+        }
+        true
+    }
+
     pub(crate) const fn layout_facts(&self) -> Option<&PresentationLayoutFacts> {
         self.layout_facts.as_ref()
     }
@@ -988,6 +1020,12 @@ impl PresentationPlan {
     #[cfg(test)]
     pub(crate) fn clone_layout_facts_from(&mut self, source: &Self) {
         self.layout_facts.clone_from(&source.layout_facts);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_magnetic_target_field_from(&mut self, source: &Self) {
+        self.magnetic_target_field
+            .clone_from(&source.magnetic_target_field);
     }
 
     /// Returns the exact manifest ticket which authorized this compiled plan.
@@ -1131,8 +1169,44 @@ impl PresentationPlan {
     }
 
     /// Adds one structural drop target before this fact is submitted to a scene.
-    pub(crate) fn push_drop_target(&mut self, target: DropTargetRecord) {
+    pub(crate) fn push_drop_target(&mut self, target: Arc<DropTargetRecord>) {
         self.drop_targets.push(target);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_magnetic_pane_field(
+        &mut self,
+        root: RootId,
+        tabs: NodeId,
+        layer: SceneLayerKey,
+        depth: usize,
+        content: LogicalRect,
+        center_target: DropTargetId,
+        edges: MagneticEdgeTargets,
+        config: &DockPresentationConfig,
+    ) -> Result<(), GeometryError> {
+        self.magnetic_target_field.push_pane(
+            root,
+            tabs,
+            layer,
+            depth,
+            content,
+            center_target,
+            edges,
+            config,
+        )
+    }
+
+    pub(crate) fn push_magnetic_root_field(
+        &mut self,
+        root: RootId,
+        layer: SceneLayerKey,
+        bounds: LogicalRect,
+        edges: MagneticEdgeTargets,
+        config: &DockPresentationConfig,
+    ) {
+        self.magnetic_target_field
+            .push_root(root, layer, bounds, edges, config);
     }
 
     /// Returns core-compiled tabs-leaf and pane-content records.
@@ -1341,26 +1415,36 @@ impl PresentationPlan {
 
     /// Returns drop targets in canonical structural-identity order after sealing.
     #[must_use]
-    pub fn drop_targets(&self) -> &[DropTargetRecord] {
+    pub fn drop_targets(&self) -> &[Arc<DropTargetRecord>] {
         &self.drop_targets
     }
 
     /// Returns one exact drop target regardless of its paint ownership.
     ///
-    /// Surface backgrounds, unguided tab gaps, and guide-owned center or edge
-    /// targets share one validated identity namespace. Semantic consumers must
-    /// not infer which record collection owns a target from its kind.
+    /// Surface backgrounds, tab gaps, and canonical center or edge targets share
+    /// one validated identity namespace. Guide records reference these targets;
+    /// they never own availability, destination, or command semantics.
     #[must_use]
     pub(crate) fn drop_target(&self, id: DropTargetId) -> Option<&DropTargetRecord> {
         self.surface_background
-            .iter()
-            .chain(self.drop_targets.iter())
-            .chain(self.drop_guide_clusters.iter().flat_map(|cluster| {
-                cluster
-                    .targets()
-                    .map(|(_, guide_target)| guide_target.target())
-            }))
-            .find(|record| record.id() == id)
+            .as_ref()
+            .filter(|record| record.id() == id)
+            .or_else(|| {
+                self.drop_targets
+                    .binary_search_by_key(&id, |record| record.id())
+                    .ok()
+                    .map(|index| self.drop_targets[index].as_ref())
+            })
+    }
+
+    pub(crate) fn magnetic_target_at(
+        &self,
+        point: crate::geometry::LogicalPoint,
+        layer: SceneLayerKey,
+        permits: impl FnMut(DropTargetId) -> bool,
+    ) -> Option<MagneticTargetCandidate> {
+        self.magnetic_target_field
+            .candidate_at(point, layer, permits)
     }
 }
 
@@ -1371,6 +1455,12 @@ pub enum SceneBuildError {
     #[error("surface {surface} contains an invalid ordered surface program")]
     InvalidSurfaceProgram {
         /// Surface whose program and canonical records disagree.
+        surface: SurfaceId,
+    },
+    /// The core-owned magnetic target field disagreed with the sealed scene topology.
+    #[error("surface {surface} contains an invalid magnetic target field")]
+    InvalidMagneticTargetField {
+        /// Surface whose acquisition field and canonical scene records disagree.
         surface: SurfaceId,
     },
     /// A surface plan omitted or contradicted its global popup-plane requirement.
