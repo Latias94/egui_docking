@@ -94,6 +94,10 @@ pub(crate) fn paint_controls(
     contained: ContainedPaintRecord<'_>,
     root: &SurfacePaintProgramRoot<'_>,
 ) {
+    let title_text_color = context
+        .style
+        .resolved_contained_window(context.ui.style(), contained.is_frontmost())
+        .title_text_color;
     let paint_omitted = context
         .plan
         .drag_decoration()
@@ -117,15 +121,28 @@ pub(crate) fn paint_controls(
                 .then(|| context.plan.receiver_for_contained_title(contained))
                 .flatten(),
         );
+        let response = if enabled {
+            response.on_hover_text("Drag to move floating window")
+        } else {
+            response
+        };
         let label = title_label(context, root);
         context.ui.ctx().accesskit_node_builder(id, |node| {
             node.set_role(Role::TitleBar);
             node.set_bounds(accesskit_bounds(title));
             node.set_label(label);
+            node.set_description("Drag to move floating window");
             if !enabled {
                 node.set_disabled();
             }
         });
+        if !paint_omitted {
+            paint_title_grip(
+                context.ui,
+                title,
+                context.interaction_stroke(&response, Some(title_text_color)),
+            );
+        }
         let locally_dragged = enabled && context.response_dragged_locally(&response);
         if enabled && (response.hovered() || locally_dragged) {
             context.ui.ctx().set_cursor_icon(if locally_dragged {
@@ -289,6 +306,24 @@ pub(crate) fn paint_controls(
                 context.claim_contained_activation(contained);
             }
             context.push_local_action(action);
+        }
+    }
+}
+
+fn paint_title_grip(ui: &egui::Ui, title: egui::Rect, stroke: egui::Stroke) {
+    let grip = egui::Rect::from_center_size(
+        egui::pos2(title.left() + 10.0, title.center().y),
+        egui::vec2(10.0, 14.0),
+    );
+    let spacing = 3.5_f32.min(grip.width() * 0.22).min(grip.height() * 0.22);
+    let radius = 1.0_f32.min(spacing * 0.32);
+    for x in [-0.5, 0.5] {
+        for y in [-1.0, 0.0, 1.0] {
+            ui.painter().circle_filled(
+                grip.center() + egui::vec2(x * spacing, y * spacing),
+                radius,
+                stroke.color,
+            );
         }
     }
 }

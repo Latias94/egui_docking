@@ -1433,6 +1433,11 @@ fn default_features_contained_chrome_exposes_focusable_accessibility_controls() 
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let (title, title_node) = accesskit_node(&stable.output, Role::TitleBar, "Second");
     assert!(title_node.supports_action(Action::Focus));
+    assert_eq!(
+        title_node.description(),
+        Some("Drag to move floating window"),
+        "the title bar must expose its direct-manipulation affordance"
+    );
     let (_, close_node) = accesskit_node(&stable.output, Role::Button, "Close floating Second");
     assert!(close_node.supports_action(Action::Focus));
     assert!(close_node.supports_action(Action::Click));

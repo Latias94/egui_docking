@@ -57,6 +57,13 @@ impl eframe::App for DockspaceApp {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             });
         }
+        egui::Panel::top("dockspace-help").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Dockspace interaction");
+                ui.separator();
+                ui.small("Drag a tab into a pane to dock; drag the dotted Inspector title grip to move it; use ⋮ for window actions.");
+            });
+        });
         egui::CentralPanel::default().show(ui, |ui| {
             match self
                 .dockspace
