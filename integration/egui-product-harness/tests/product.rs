@@ -53,6 +53,30 @@ fn instrumented_style() -> DockStyle {
 
 struct Panes;
 
+struct TextPanes {
+    texts: std::collections::BTreeMap<ItemId, String>,
+    pane_rects: std::collections::BTreeMap<ItemId, Cell<Rect>>,
+}
+
+impl TextPanes {
+    fn new(items: impl IntoIterator<Item = (ItemId, &'static str)>) -> Self {
+        Self {
+            texts: items
+                .into_iter()
+                .map(|(item, text)| (item, text.to_owned()))
+                .collect(),
+            pane_rects: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn pane_rect(&self, item: ItemId) -> Rect {
+        self.pane_rects
+            .get(&item)
+            .map(Cell::get)
+            .expect("the text pane published its content rectangle")
+    }
+}
+
 struct FocusPanes {
     target: egui::Id,
     target_rect: Cell<Option<Rect>>,
@@ -168,6 +192,32 @@ impl PaneView for Panes {
     }
 }
 
+impl PaneView for TextPanes {
+    fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+        match item {
+            FIRST => Some("Editor".into()),
+            SECOND => Some("Preview".into()),
+            THIRD => Some("Outline".into()),
+            _ => None,
+        }
+    }
+
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        self.pane_rects
+            .entry(item)
+            .or_insert_with(|| Cell::new(Rect::NOTHING))
+            .set(ui.available_rect_before_wrap());
+        let Some(text) = self.texts.get_mut(&item) else {
+            return;
+        };
+        ui.add(
+            egui::TextEdit::multiline(text)
+                .desired_width(f32::INFINITY)
+                .desired_rows(12),
+        );
+    }
+}
+
 impl PaneView for FocusPanes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
         Panes.title(item)
@@ -241,6 +291,22 @@ fn layout() -> DockspaceLayout {
         DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
     )])
     .expect("the product fixture is valid")
+}
+
+fn editor_layout() -> DockspaceLayout {
+    let main = DockspaceNode::split(
+        DockspaceAxis::Horizontal,
+        [
+            (DockspaceNode::tabs([THIRD]), 0.24),
+            (DockspaceNode::central_tabs([FIRST, SECOND]), 0.76),
+        ],
+    )
+    .expect("the editor split fixture is valid");
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, main),
+    )])
+    .expect("the editor product layout is valid")
 }
 
 fn overflow_layout() -> DockspaceLayout {
@@ -401,6 +467,15 @@ fn run_frame(
     panes: &mut Panes,
     events: Vec<Event>,
 ) -> FrameOutput {
+    run_pane_frame(context, dockspace, panes, events)
+}
+
+fn run_pane_frame(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut dyn PaneView,
+    events: Vec<Event>,
+) -> FrameOutput {
     let mut close_requests = Vec::new();
     let input = input(events);
     let mut output = context.run_ui(input, |ui| {
@@ -414,6 +489,35 @@ fn run_frame(
         output,
         close_requests,
     }
+}
+
+fn run_pane_frame_with_mutation(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut dyn PaneView,
+    events: Vec<Event>,
+) -> (FrameOutput, bool, bool) {
+    let mut close_requests = Vec::new();
+    let mut workspace_changed = false;
+    let mut published_state_changed = false;
+    let input = input(events);
+    let mut output = context.run_ui(input, |ui| {
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, panes)
+            .expect("the product frame advances");
+        close_requests.extend(response.close_request_events().iter().cloned());
+        workspace_changed = response.mutation().workspace_changed();
+        published_state_changed = response.mutation().published_state_changed();
+    });
+    output.textures_delta.clear();
+    (
+        FrameOutput {
+            output,
+            close_requests,
+        },
+        workspace_changed,
+        published_state_changed,
+    )
 }
 
 fn run_disabled_frame(
@@ -3882,6 +3986,102 @@ fn ordinary_pane_center_release_uses_magnetic_merge_without_guide_aiming() {
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(root_tabs(&dockspace), stable_topology);
     assert_eq!(context.dragged_id(), None);
+}
+
+#[test]
+fn interactive_text_pane_still_accepts_magnetic_tab_dock() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-text-pane-magnetic-dock", editor_layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the editor product facade initializes");
+    let mut panes = TextPanes::new([
+        (FIRST, "fn main() {}"),
+        (SECOND, "Preview output"),
+        (THIRD, "Outline"),
+    ]);
+
+    let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = node_center(&stable.output, Role::Tab, "Preview");
+    let target_pane = panes.pane_rect(THIRD);
+    let target = Pos2::new(
+        egui::lerp(target_pane.x_range(), 0.50),
+        target_pane.min.y + target_pane.height() * 0.75,
+    );
+    assert!(target_pane.contains(target));
+
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(24.0, 8.0))],
+    );
+    let mut preview = None;
+    for _ in 0..8 {
+        let frame = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+        if rect_with_fill(
+            &frame.output,
+            dockspace
+                .style()
+                .visuals
+                .drop_fill
+                .expect("the fixture fixes its preview fill"),
+        )
+        .is_some_and(|rect| rect.contains(target) || rect.width() > 100.0)
+        {
+            preview = Some(frame);
+            break;
+        }
+    }
+    assert!(
+        preview.is_some(),
+        "dragging a tab over an interactive pane must publish a magnetic preview"
+    );
+
+    let (_released, workspace_changed, published_state_changed) = run_pane_frame_with_mutation(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+    assert!(workspace_changed, "releasing a valid magnetic target mutates the workspace");
+    assert!(
+        published_state_changed,
+        "releasing a valid magnetic target publishes the committed state"
+    );
+    for _ in 0..8 {
+        if root_split(&dockspace).is_some_and(|(_, children)| {
+            children
+                .iter()
+                .any(|items| items.contains(&SECOND))
+                && children.iter().any(|items| items.contains(&THIRD))
+                && children.iter().any(|items| items.contains(&FIRST))
+        }) {
+            break;
+        }
+        let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    }
+    let split = root_split(&dockspace).expect("the editor split remains present");
+    assert!(
+        split.1[0].contains(&SECOND),
+        "Preview must dock into the Outline tab stack when released over its text editor: {split:?}"
+    );
 }
 
 #[test]
