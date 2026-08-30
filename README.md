@@ -5,8 +5,8 @@ docking core plus thin UI and platform adapters. There is no compatibility
 layer for the former `egui_docking`, `egui_tiles`, or pre-refactor persistence
 interfaces.
 
-The current interaction and multiview conformance sequence lives in
-[`docs/plans/2026-08-18-001-interaction-floating-multiview-conformance-plan.md`](docs/plans/2026-08-18-001-interaction-floating-multiview-conformance-plan.md).
+The current direct-manipulation parity sequence lives in
+[`docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md`](docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
 The earlier product-boundary plan remains the authority for the underlying
 ownership and persistence model.
 
@@ -15,7 +15,7 @@ ownership and persistence model.
 | Layer | Current product capability | Deliberate limit |
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
-| `egui_dockspace` | Interactive official-egui single-surface docking: tab select/close/reorder, center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | Does not expose native multi-viewport ownership |
+| `egui_dockspace` | Caller-owned official-egui runs support tab select/close/reorder, magnetic center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | An unmodified `eframe::App::ui` callback cannot prove terminal presentation; preview-qualified drag and pane-focus settlement are typed unavailable there |
 | `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Physical cross-window drag is certified only for capability-complete backends; the automated reference lane is X11 on the first X screen with one exact active-CRTC work-area authority |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
@@ -68,19 +68,33 @@ this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 
-Hosts built against official crates.io egui can call the product facade from an
-ordinary `eframe::App::ui` callback:
+Hosts that own official crates.io egui's complete run use the Dockspace wrapper
+to mint terminal-output proof without exposing a receipt or frame count:
 
 ```rust,ignore
-dockspace
-    .show_single_surface(surface, ui, panes)
-    .expect("the Dockspace frame advances");
+let output = egui_dockspace::run_ui(&context, raw_input, |ui| {
+    dockspace
+        .show_single_surface(surface, ui, panes)
+        .expect("the Dockspace frame advances");
+});
 ```
 
-Final-pass evidence is accepted on the next successful egui frame by comparing
-egui-owned frame and pass counters. Discarded passes, interrupted runs, manual
-`begin_pass` / `end_pass` calls, unrelated contexts, and omitted terminal paints
-fail closed without a caller-provided output token.
+`egui_dockspace::run_ui` opens a private run identity, clears discarded-pass
+evidence before every repeated callback, and admits only the terminal egui
+output after all output hooks return. Its private shape receipt proves exact
+final-output emission, not GPU submission or physical presentation. Panic,
+manual `begin_pass` / `end_pass`, a different context or viewport, repeated
+entry, and an omitted terminal paint all fail closed. Callers cannot submit or
+impersonate a `FullOutput` receipt.
+
+An unmodified `eframe::App::ui` callback may still call
+`show_single_surface` directly for rendering, selection, close, menus, and
+discrete keyboard or AccessKit actions. Because eframe owns the surrounding
+`RawInput` and `FullOutput`, that response reports
+`PresentationSettlementRequired`; tab/group/contained pointer drags are not
+started instead of showing a preview that can never settle. The fork-backed
+native adapter owns the stronger post-plugin finalizer and exact unwind
+abandonment required for editor-grade native multiview.
 
 Dear ImGui and `dear-imgui-rs` are behavioral references for frame phases,
 viewport lifecycle, wakeups, geometry/DPI facts, and teardown coverage. Their
@@ -109,18 +123,27 @@ The fork-backed native workspace uses one thin Cargo launcher:
 python3 scripts/run_egui_fork_harness.py
 ```
 
-The ordinary `crates/egui_dockspace/examples/basic.rs` example exercises the
-default interactive single-surface facade:
+To run the supported official-crates.io tier in a real window, use the small
+caller-owned `egui-winit`/`egui-wgpu` host. It calls
+`egui_dockspace::run_ui` around the complete frame, so tab drag, magnetic dock,
+and contained-window movement have terminal-output settlement without any fork:
+
+```text
+cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked -j1
+```
+
+The ordinary `crates/egui_dockspace/examples/basic.rs` example demonstrates the
+honest unmodified-eframe boundary: rendering, selection, close, menus, and
+keyboard adjustments remain available while the status strip explains why
+preview-qualified drag is disabled:
 
 ```text
 cargo run --manifest-path crates/egui_dockspace/Cargo.toml --features example-app --example basic --locked -j1
 ```
 
-In that example, drag the center-left part of a contained window's title strip
-to move it; keep the pointer away from the menu, close button, and resize edges.
-Drag a tab body (not its close button) into the middle or an edge of a pane and
-release only after the preview target appears. To inspect the fork-backed
-native path, run the separate example. It starts with the Inspector group as
+To exercise draggable tabs, magnetic docking, contained movement, and the
+fork-backed exact-output path, run the separate native example. It starts with
+the Inspector group as
 an egui-styled contained window in the root surface; it does not open a child
 OS window automatically:
 

@@ -43,7 +43,10 @@ pub trait PaneView {
     ///
     /// The adapter uses this identity only to request or surrender focus. Merely
     /// selecting the item's tab, rendering the pane, or issuing a request never
-    /// acknowledges a core pane-focus intent.
+    /// acknowledges a core pane-focus intent. In a caller-owned non-root
+    /// viewport, terminal confirmation requires this identity to appear in the
+    /// viewport's final AccessKit tree; otherwise the adapter reports the
+    /// binding as unavailable rather than consulting root-viewport memory.
     fn focus_target(&self, _item: ItemId) -> Option<Id> {
         None
     }

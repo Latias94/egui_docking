@@ -91,6 +91,8 @@ impl eframe::App for PersistenceApp {
                     self.restore();
                 }
                 ui.label(&self.status);
+                ui.separator();
+                ui.weak("This unmodified eframe example focuses on persistence; preview-qualified drag is intentionally unavailable.");
             });
         });
         egui::CentralPanel::default().show(ui, |ui| {

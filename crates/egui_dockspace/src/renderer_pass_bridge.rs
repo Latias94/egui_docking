@@ -1,8 +1,9 @@
-//! Sealed renderer-pass settlement used by deterministic adapter tests.
+//! Sealed renderer-pass settlement shared by proof-strength adapters.
 //!
 //! The bridge owns staged artifacts. Callers only carry affine pass bindings
 //! and terminal receipts, so a late or foreign proof cannot replace the
-//! current artifact for a viewport.
+//! current artifact for a viewport. Production adapters keep those authorities
+//! private; deterministic tests mint all three terminal dispositions directly.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +38,7 @@ pub(super) struct OpenPassBinding {
 
 /// Affine deterministic host adapter used to mint one terminal receipt.
 #[derive(Debug)]
-pub(super) struct DeterministicReceiptIssuer {
+pub(super) struct RendererPassReceiptIssuer {
     key: PassKey,
 }
 
@@ -95,6 +96,11 @@ pub(super) enum RendererPassSettlement<A> {
 }
 
 impl<A> RendererPassBridge<A> {
+    #[cfg(test)]
+    pub(super) fn staged_len(&self) -> usize {
+        self.staged.len()
+    }
+
     pub(super) fn new() -> Self {
         let issuer = NEXT_ISSUER.fetch_add(1, Ordering::Relaxed);
         Self {
@@ -109,7 +115,7 @@ impl<A> RendererPassBridge<A> {
     pub(super) fn open_pass(
         &mut self,
         viewport: ViewportId,
-    ) -> Result<(OpenPassBinding, DeterministicReceiptIssuer), BridgeOpenError> {
+    ) -> Result<(OpenPassBinding, RendererPassReceiptIssuer), BridgeOpenError> {
         let serial = self
             .next_serial
             .checked_add(1)
@@ -123,7 +129,7 @@ impl<A> RendererPassBridge<A> {
         if let Some(previous) = self.latest.insert(viewport, key) {
             self.retire(previous);
         }
-        Ok((OpenPassBinding { key }, DeterministicReceiptIssuer { key }))
+        Ok((OpenPassBinding { key }, RendererPassReceiptIssuer { key }))
     }
 
     pub(super) fn stage(
@@ -219,7 +225,7 @@ impl<A> Default for RendererPassBridge<A> {
     }
 }
 
-impl DeterministicReceiptIssuer {
+impl RendererPassReceiptIssuer {
     pub(super) fn presented(self) -> RendererPassReceipt {
         self.receipt(OutputPassDisposition::Presented)
     }

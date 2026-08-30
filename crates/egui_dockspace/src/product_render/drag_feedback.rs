@@ -7,7 +7,7 @@ use super::RenderContext;
 use super::geometry::egui_rect;
 
 pub(super) fn paint(context: &mut RenderContext<'_, '_, '_>) {
-    let Some(decoration) = context.plan.drag_decoration() else {
+    let Some(decoration) = context.drag_decoration() else {
         return;
     };
     let Some(source) = egui_rect(decoration.source_bounds()) else {

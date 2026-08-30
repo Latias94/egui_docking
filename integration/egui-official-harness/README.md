@@ -11,6 +11,33 @@ failure caused by a fork-only API is the result this harness is intended to
 expose. Keeping this package independent also prevents a future development-only
 root patch from silently changing the compatibility gate.
 
+The tests keep two official-host tiers distinct:
+
+- A caller that owns `Context::run_ui` uses `egui_dockspace::run_ui` and
+  receives exact terminal-output settlement without a public receipt token.
+- An unmodified `eframe::App::ui` callback keeps rendering and current-pass
+  local actions, but reports `PresentationSettlementRequired` for preview and
+  pane-focus finality because eframe owns the surrounding input and output.
+
+Passing the second test is a capability-negative result, not a claim that
+ordinary eframe provides full draggable docking.
+
+The caller-owned receipt proves that the exact Dockspace compound survived into
+the returned final `FullOutput`; it does not prove renderer submission or
+physical presentation. Those stronger facts remain native-host responsibilities.
+
+Run the real-window supported tier with official crates.io egui, winit, and
+wgpu:
+
+```text
+cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked -j1
+```
+
+This host owns `RawInput`, the complete `run_ui` call, terminal `FullOutput`, and
+GPU submission. Drag tab bodies to magnetic center/edge targets and drag the
+dotted contained title strip to move the complete floating window. It is a
+portable receipt-path demonstration, not native multiview evidence.
+
 Run the gate from the repository root:
 
 ```text

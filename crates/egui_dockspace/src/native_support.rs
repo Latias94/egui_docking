@@ -271,6 +271,7 @@ pub fn paint_surface(
         panes,
         style,
         product_render::PointerActionAuthority::ExternalJournal,
+        None,
         Some(scroll_registrar),
     )
     .map_err(DockspaceError::from_detail)?;

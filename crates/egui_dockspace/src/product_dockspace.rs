@@ -24,7 +24,8 @@ use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
 use crate::pass_settlement::{
-    PreviousPassSettlement, ProductPassSettlement, ProductPassSettlementBatch,
+    PresentationSettlementFailure, ProductPassEnrollment, ProductPassSettlement,
+    ProductPassSettlementBatch,
 };
 use crate::product_render;
 use crate::response::DockspaceMutation;
@@ -40,6 +41,7 @@ pub struct Dockspace {
     session: DockspaceSession,
     style: DockStyle,
     pass_settlement: ProductPassSettlement,
+    presentation_settlement_was_available: bool,
 }
 
 impl Dockspace {
@@ -65,6 +67,7 @@ impl Dockspace {
             session,
             style,
             pass_settlement: ProductPassSettlement::default(),
+            presentation_settlement_was_available: false,
         })
     }
 
@@ -91,6 +94,7 @@ impl Dockspace {
             session,
             style,
             pass_settlement: ProductPassSettlement::default(),
+            presentation_settlement_was_available: false,
         })
     }
 
@@ -128,6 +132,7 @@ impl Dockspace {
             session,
             style,
             pass_settlement: ProductPassSettlement::default(),
+            presentation_settlement_was_available: false,
         })
     }
 
@@ -621,12 +626,11 @@ impl Dockspace {
     /// pointer authority from callback order.
     ///
     /// Local actions commit in the current call. Presentation acknowledgements
-    /// and pane-focus observations become eligible on the next successful
-    /// [`egui::Context::run_ui`] frame. Dockspace compares egui-owned frame and
-    /// pass counters, so discarded passes, interrupted runs, unrelated
-    /// contexts, and low-level manual passes cannot impersonate a terminal
-    /// output. This works inside ordinary `eframe::App::update` callbacks;
-    /// applications do not need access to `RawInput` or `FullOutput`.
+    /// and pane-focus observations become eligible only when this call is inside
+    /// [`crate::run_ui`], whose private guard owns the complete egui run.
+    /// Direct calls from an unmodified `eframe::App` remain useful for rendering,
+    /// selection, close, and other actions that do not require terminal proof,
+    /// but report presentation settlement as unavailable.
     ///
     /// # Errors
     ///
@@ -655,13 +659,29 @@ impl Dockspace {
             return Err(DockspaceErrorSource::SurfaceOutsideRoster { surface }.into());
         }
 
+        let enrollment = self.pass_settlement.enroll(ui);
+        let settlement_claim = match enrollment {
+            ProductPassEnrollment::Acquired(claim) => Some(claim),
+            ProductPassEnrollment::Unowned => None,
+            ProductPassEnrollment::Conflict => {
+                return Err(DockspaceErrorSource::PassSettlementConflict.into());
+            }
+        };
+        let presentation_proof_scope = settlement_claim
+            .as_ref()
+            .map(crate::pass_settlement::ProductPassClaim::proof_scope);
         let ready_settlement = self.pass_settlement.take_ready(ui);
-        for action in ready_settlement.batch.presentation_actions {
+        let presentation_failure = ready_settlement.presentation_failure;
+        let presentation_settlement_available =
+            settlement_claim.is_some() && presentation_failure.is_none();
+        let cancel_active_gesture = presentation_failure.is_some()
+            || (self.presentation_settlement_was_available && !presentation_settlement_available);
+        for action in ready_settlement.presentation_actions {
             frame
                 .submit_surface_action(action)
                 .map_err(DockspaceError::from_detail)?;
         }
-        if let Some(observation) = ready_settlement.batch.pane_focus_observation {
+        if let Some(observation) = ready_settlement.pane_focus_observation {
             frame
                 .submit_pane_focus_observation(observation)
                 .map_err(DockspaceError::from_detail)?;
@@ -669,8 +689,9 @@ impl Dockspace {
 
         let mut missing = BTreeSet::new();
         let mut defer_measurement = false;
-        let mut presentation_actions = Vec::new();
+        let mut presentation_evidence = Vec::new();
         let mut pane_focus_observation = None;
+        let mut pane_focus_pending = None;
         let mut pane_focus_capability =
             DockspaceCapability::Unavailable(DockspaceUnavailableReason::SurfaceBoundsUnavailable);
         let had_plan = if let Some(plan) = frame
@@ -683,15 +704,21 @@ impl Dockspace {
                 plan,
                 panes,
                 &self.style,
-                product_render::PointerActionAuthority::LocalResponses,
+                product_render::PointerActionAuthority::LocalResponses {
+                    local_actions: true,
+                    presentation_settlement: presentation_settlement_available,
+                    cancel_active_gesture,
+                },
+                presentation_proof_scope.as_ref(),
                 #[cfg(feature = "native-render-support")]
                 None,
             )
             .map_err(DockspaceError::from_detail)?;
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;
-            presentation_actions = paint.presentation_actions;
+            presentation_evidence = paint.presentation_evidence;
             pane_focus_observation = paint.pane_focus_observation;
+            pane_focus_pending = paint.pane_focus_pending;
             pane_focus_capability = paint.pane_focus_capability;
             for action in paint.local_actions {
                 frame
@@ -735,27 +762,52 @@ impl Dockspace {
                 "egui_dockspace: paint newly ready surface in the terminal pass",
             );
         }
-        let needs_presentation_settlement =
-            !presentation_actions.is_empty() || pane_focus_observation.is_some();
-        let settlement_staged = self.pass_settlement.stage(
-            ui,
-            ProductPassSettlementBatch {
-                presentation_actions,
+        let needs_presentation_settlement = !presentation_evidence.is_empty()
+            || pane_focus_observation.is_some()
+            || pane_focus_pending.is_some();
+        let settlement_staged = settlement_claim.is_some_and(|claim| {
+            claim.stage(ProductPassSettlementBatch {
+                presentation_evidence,
                 pane_focus_observation,
-            },
-        );
-        if !settlement_staged || ready_settlement.previous == PreviousPassSettlement::Rejected {
+                pane_focus_pending,
+            })
+        });
+        let presentation_settlement_capability = match presentation_failure {
+            Some(PresentationSettlementFailure::OutputMismatch) => {
+                DockspaceCapability::Unavailable(
+                    DockspaceUnavailableReason::PresentationOutputMismatch,
+                )
+            }
+            Some(PresentationSettlementFailure::Abandoned) => DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PresentationSettlementAbandoned,
+            ),
+            None if settlement_staged => DockspaceCapability::Supported,
+            None => DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PresentationSettlementRequired,
+            ),
+        };
+        if !settlement_staged {
             pane_focus_capability = DockspaceCapability::Unavailable(
                 DockspaceUnavailableReason::PresentationSettlementRequired,
             );
         }
+        self.presentation_settlement_was_available =
+            presentation_settlement_available && settlement_staged;
         if needs_presentation_settlement && settlement_staged {
             ui.ctx().request_repaint();
         }
         if !had_plan || report.repaint_surfaces().contains(&surface) {
             ui.ctx().request_repaint();
         }
-        product_response(&report, surface, missing, had_plan, pane_focus_capability)
+        product_response(
+            &report,
+            surface,
+            missing,
+            had_plan,
+            had_plan,
+            presentation_settlement_capability,
+            pane_focus_capability,
+        )
     }
 }
 
@@ -763,19 +815,22 @@ fn product_response(
     report: &HostFrameReport,
     surface: SurfaceId,
     missing: BTreeSet<ItemId>,
+    local_actions_current: bool,
     had_plan: bool,
+    presentation_settlement_capability: DockspaceCapability,
     pane_focus_capability: DockspaceCapability,
 ) -> Result<DockspaceResponse, DockspaceError> {
     DockspaceResponse::from_product_report(
         report,
         surface,
         missing.into_iter().collect(),
-        had_plan,
+        local_actions_current,
         if had_plan {
             DockspaceSurfaceStatus::Ready
         } else {
             DockspaceSurfaceStatus::Bootstrap
         },
+        presentation_settlement_capability,
         pane_focus_capability,
     )
     .ok_or(DockspaceErrorSource::ApplicationOutcomeUnavailable {

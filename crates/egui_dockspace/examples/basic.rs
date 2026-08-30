@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use eframe::egui;
 use egui_dockspace::{
-    Dockspace, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
-    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
-    PaneView, RootId, SurfaceId,
+    Dockspace, DockspaceAxis, DockspaceCapability, DockspaceContainedLayout, DockspaceLayout,
+    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceUnavailableReason,
+    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -35,6 +35,7 @@ struct DockspaceApp {
     dockspace: Dockspace,
     panes: ExamplePanes,
     error: Option<String>,
+    presentation_settlement: DockspaceCapability,
 }
 
 impl DockspaceApp {
@@ -46,6 +47,9 @@ impl DockspaceApp {
             dockspace,
             panes: ExamplePanes::new(),
             error: None,
+            presentation_settlement: DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PresentationSettlementRequired,
+            ),
         }
     }
 }
@@ -59,9 +63,17 @@ impl eframe::App for DockspaceApp {
         }
         egui::Panel::top("dockspace-help").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.strong("Dockspace interaction");
+                ui.strong("Unmodified eframe compatibility demo");
                 ui.separator();
-                ui.small("Drag a tab into a pane to dock; drag the dotted Inspector title grip to move it; use ⋮ for window actions.");
+                match self.presentation_settlement {
+                    DockspaceCapability::Supported => {
+                        ui.small("Drag tabs into panes; use the dotted title grip to move Inspector.");
+                    }
+                    DockspaceCapability::Unavailable(reason) => {
+                        ui.small("Selection, close, menus, and keyboard resize work. Drag docking and floating-window movement are disabled because eframe owns terminal output.");
+                        ui.weak(format!("Capability: {reason:?}"));
+                    }
+                }
             });
         });
         egui::CentralPanel::default().show(ui, |ui| {
@@ -69,7 +81,10 @@ impl eframe::App for DockspaceApp {
                 .dockspace
                 .show_single_surface(SURFACE, ui, &mut self.panes)
             {
-                Ok(_) => self.error = None,
+                Ok(response) => {
+                    self.presentation_settlement = response.presentation_settlement_capability();
+                    self.error = None;
+                }
                 Err(error) => self.error = Some(error.to_string()),
             }
         });

@@ -3,6 +3,7 @@ use dockspace_host_conformance::scenario::{
     ScenarioAdmission, ScenarioAxis, ScenarioCapability, ScenarioEdge, ScenarioId,
     SemanticAction as ScenarioAction, SemanticSelector,
 };
+use dockspace::policy::DockPolicy;
 use egui::accesskit::{Action, ActionRequest, Orientation, Role, TreeId};
 use egui::{
     Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, RepaintCause,
@@ -14,7 +15,7 @@ use egui_dockspace::{
     DockspaceCloseRequestRejection, DockspaceCloseRequestStatus, DockspaceContainedLayout,
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
     DockspaceUnavailableReason, FloatingPresentationId, ItemId, LogicalRect, PaneFocusState,
-    PaneView, RootId, SurfaceId,
+    PaneView, RootId, SurfaceId, run_ui,
 };
 use egui_kittest::{Harness, kittest::Queryable as _};
 use std::cell::Cell;
@@ -117,6 +118,7 @@ struct KittestProductState {
     dockspace: Dockspace,
     panes: Panes,
     close_requests: Vec<DockspaceCloseRequest>,
+    presentation_settlement_capability: Option<DockspaceCapability>,
 }
 
 struct KittestDockspaceHarness(Harness<'static, KittestProductState>);
@@ -151,6 +153,7 @@ impl DerefMut for KittestDockspaceHarness {
 struct LateDiscardPlugin {
     remaining: usize,
     panic_once: bool,
+    strip_callback_compounds_once: bool,
 }
 
 impl egui::plugin::Plugin for LateDiscardPlugin {
@@ -163,6 +166,12 @@ impl egui::plugin::Plugin for LateDiscardPlugin {
             self.panic_once = false;
             panic!("late output hook interrupted the egui run");
         }
+        if self.strip_callback_compounds_once {
+            self.strip_callback_compounds_once = false;
+            output
+                .shapes
+                .retain(|shape| !shape_contains_callback(&shape.shape));
+        }
         if self.remaining == 0 {
             return;
         }
@@ -173,6 +182,23 @@ impl egui::plugin::Plugin for LateDiscardPlugin {
             .push(RepaintCause::new_reason(
                 "discard after dockspace final-pass settlement runs",
             ));
+    }
+}
+
+fn shape_contains_callback(shape: &egui::Shape) -> bool {
+    match shape {
+        egui::Shape::Callback(_) => true,
+        egui::Shape::Vec(shapes) => shapes.iter().any(shape_contains_callback),
+        egui::Shape::Noop
+        | egui::Shape::Circle(_)
+        | egui::Shape::Ellipse(_)
+        | egui::Shape::LineSegment { .. }
+        | egui::Shape::Path(_)
+        | egui::Shape::Rect(_)
+        | egui::Shape::Text(_)
+        | egui::Shape::Mesh(_)
+        | egui::Shape::QuadraticBezier(_)
+        | egui::Shape::CubicBezier(_) => false,
     }
 }
 
@@ -273,11 +299,14 @@ fn kittest_harness(id: &'static str, layout: DockspaceLayout) -> KittestDockspac
                 state
                     .close_requests
                     .extend(response.close_request_events().iter().cloned());
+                state.presentation_settlement_capability =
+                    Some(response.presentation_settlement_capability());
             },
             KittestProductState {
                 dockspace,
                 panes: Panes,
                 close_requests: Vec::new(),
+                presentation_settlement_capability: None,
             },
         );
     let mut harness = KittestDockspaceHarness(harness);
@@ -478,7 +507,7 @@ fn run_pane_frame(
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
     let input = input(events);
-    let mut output = context.run_ui(input, |ui| {
+    let mut output = run_ui(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
@@ -501,7 +530,7 @@ fn run_pane_frame_with_mutation(
     let mut workspace_changed = false;
     let mut published_state_changed = false;
     let input = input(events);
-    let mut output = context.run_ui(input, |ui| {
+    let mut output = run_ui(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
@@ -528,7 +557,7 @@ fn run_disabled_frame(
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
     let input = input(events);
-    let mut output = context.run_ui(input, |ui| {
+    let mut output = run_ui(context, input, |ui| {
         ui.add_enabled_ui(false, |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, panes)
@@ -552,7 +581,7 @@ fn run_frame_with_discard_after_dockspace(
     let mut close_requests = Vec::new();
     let mut passes = 0;
     let input = input(events);
-    let mut output = context.run_ui(input, |ui| {
+    let mut output = run_ui(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product multipass frame advances");
@@ -581,7 +610,7 @@ fn run_two_discarded_dockspace_passes(
 ) -> usize {
     let mut passes = 0;
     let input = input(events);
-    let mut output = context.run_ui(input, |ui| {
+    let mut output = run_ui(context, input, |ui| {
         passes += 1;
         if ui.ctx().current_pass_index() < 2 {
             dockspace
@@ -604,7 +633,7 @@ fn run_focus_frame(
     let mut close_requests = Vec::new();
     let mut pane_focus_capability = None;
     let input = input(events);
-    let mut output = context.run_ui(input, |ui| {
+    let mut output = run_ui(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the pane-focus product frame advances");
@@ -846,18 +875,34 @@ fn nearest_guide_center(
 }
 
 fn rect_fill_count(output: &egui::FullOutput, fill: egui::Color32) -> usize {
+    fn count(shape: &egui::Shape, fill: egui::Color32) -> usize {
+        match shape {
+            egui::Shape::Rect(rect) if rect.fill == fill => 1,
+            egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, fill)).sum(),
+            _ => 0,
+        }
+    }
+
     output
         .shapes
         .iter()
-        .filter(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == fill))
-        .count()
+        .map(|shape| count(&shape.shape, fill))
+        .sum()
 }
 
 fn rect_with_fill(output: &egui::FullOutput, fill: egui::Color32) -> Option<Rect> {
-    output.shapes.iter().find_map(|shape| match &shape.shape {
-        egui::Shape::Rect(rect) if rect.fill == fill => Some(rect.rect),
-        _ => None,
-    })
+    fn find(shape: &egui::Shape, fill: egui::Color32) -> Option<Rect> {
+        match shape {
+            egui::Shape::Rect(rect) if rect.fill == fill => Some(rect.rect),
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, fill)),
+            _ => None,
+        }
+    }
+
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| find(&shape.shape, fill))
 }
 
 fn last_rect_fill_index(output: &egui::FullOutput, fills: &[egui::Color32]) -> Option<usize> {
@@ -4065,16 +4110,17 @@ fn interactive_text_pane_still_accepts_magnetic_tab_dock() {
         &mut panes,
         vec![Event::PointerMoved(target), pointer_button(target, false)],
     );
-    assert!(workspace_changed, "releasing a valid magnetic target mutates the workspace");
+    assert!(
+        workspace_changed,
+        "releasing a valid magnetic target mutates the workspace"
+    );
     assert!(
         published_state_changed,
         "releasing a valid magnetic target publishes the committed state"
     );
     for _ in 0..8 {
         if root_split(&dockspace).is_some_and(|(_, children)| {
-            children
-                .iter()
-                .any(|items| items.contains(&SECOND))
+            children.iter().any(|items| items.contains(&SECOND))
                 && children.iter().any(|items| items.contains(&THIRD))
                 && children.iter().any(|items| items.contains(&FIRST))
         }) {
@@ -4461,6 +4507,12 @@ fn default_features_splitter_junction_exposes_independent_axis_semantics() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let (_, group_node) = accesskit_node(&stable.output, Role::Group, "Resize pane grid");
+    assert_eq!(
+        group_node.description(),
+        Some(
+            "Drag to resize rows and columns, or use the horizontal and vertical splitter controls",
+        ),
+    );
     let (horizontal, horizontal_node) = accesskit_node(
         &stable.output,
         Role::Splitter,
@@ -5003,6 +5055,7 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
     let context = Context::default();
     context.enable_accesskit();
     let mut dockspace = Dockspace::builder("product-interrupted-preview", split_layout())
+        .style(instrumented_style())
         .build()
         .expect("the product interrupted-preview facade initializes");
     let mut panes = Panes;
@@ -5033,7 +5086,7 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         .panic_once = true;
     let interrupted = catch_unwind(AssertUnwindSafe(|| {
         let input = input(vec![Event::PointerMoved(bottom)]);
-        let mut output = context.run_ui(input, |ui| {
+        let mut output = run_ui(&context, input, |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the interrupted product pass advances");
@@ -5045,11 +5098,21 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         "the late output hook must interrupt the run"
     );
 
-    let _ = run_frame(
+    let recovered = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerMoved(bottom), pointer_button(bottom, false)],
+    );
+    assert_eq!(
+        rect_fill_count(&recovered.output, instrumented_style().visuals.ghost_fill.unwrap()),
+        0,
+        "abandonment suppresses the stale pointer ghost in the recovery frame",
+    );
+    assert_eq!(
+        rect_fill_count(&recovered.output, instrumented_style().visuals.drop_fill.unwrap()),
+        0,
+        "abandonment suppresses the stale dock preview in the recovery frame",
     );
     assert_eq!(
         root_split(&dockspace).map(|(axis, _)| axis),
@@ -5059,13 +5122,14 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
 }
 
 #[test]
-fn default_features_ordinary_run_ui_settles_without_a_host_token() {
+fn default_features_unowned_run_ui_is_capability_negative() {
     let context = Context::default();
     let mut dockspace = Dockspace::builder("product-automatic-run-settlement", layout())
         .build()
         .expect("the product automatic-settlement facade initializes");
     let mut panes = Panes;
-    let mut capability = None;
+    let mut presentation_capability = None;
+    let mut pane_focus_capability = None;
     let mut local_actions_current = false;
 
     for _ in 0..3 {
@@ -5073,7 +5137,8 @@ fn default_features_ordinary_run_ui_settles_without_a_host_token() {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the paint-only product frame advances");
-            capability = Some(response.pane_focus_capability());
+            presentation_capability = Some(response.presentation_settlement_capability());
+            pane_focus_capability = Some(response.pane_focus_capability());
             local_actions_current |= response.interaction_capabilities().local_actions_current();
         });
         output.textures_delta.clear();
@@ -5083,12 +5148,373 @@ fn default_features_ordinary_run_ui_settles_without_a_host_token() {
         local_actions_current,
         "ordinary eframe-style callbacks keep current-pass local actions",
     );
-    assert_ne!(
+    assert_eq!(
+        presentation_capability,
+        Some(DockspaceCapability::Unavailable(
+            DockspaceUnavailableReason::PresentationSettlementRequired,
+        )),
+        "an unowned egui callback cannot mint terminal presentation proof",
+    );
+    assert_eq!(
+        pane_focus_capability,
+        Some(DockspaceCapability::Unavailable(
+            DockspaceUnavailableReason::PresentationSettlementRequired,
+        )),
+        "pane focus remains capability-negative without terminal presentation proof",
+    );
+}
+
+#[test]
+fn unowned_splitter_junction_advertises_only_available_semantic_controls() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "product-unowned-splitter-junction",
+        splitter_junction_layout(),
+    )
+    .build()
+    .expect("the unowned junction facade initializes");
+    let mut panes = Panes;
+    let mut stable = None;
+
+    for _ in 0..3 {
+        let mut output = context.run_ui(input(Vec::new()), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the unowned junction frame advances");
+        });
+        if output.platform_output.accesskit_update.is_some() {
+            stable = Some(output.platform_output.accesskit_update.clone());
+        }
+        output.textures_delta.clear();
+    }
+
+    let update = stable
+        .flatten()
+        .expect("the unowned junction publishes accessibility semantics");
+    let group = update
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            (node.role() == Role::Group && node.label() == Some("Resize pane grid")).then_some(node)
+        })
+        .expect("the unowned junction publishes its semantic group");
+    assert_eq!(
+        group.description(),
+        Some("Use the horizontal and vertical splitter controls to resize rows and columns"),
+    );
+}
+
+#[test]
+fn unowned_splitter_junction_describes_one_enabled_axis_exactly() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut policy = DockPolicy::default();
+    policy.set_allow_resize_axis(DockspaceAxis::Vertical, false);
+    let mut dockspace = Dockspace::builder(
+        "product-unowned-single-axis-junction",
+        splitter_junction_layout(),
+    )
+    .policy(policy)
+    .build()
+    .expect("the single-axis junction facade initializes");
+    let mut panes = Panes;
+    let mut stable = None;
+
+    for _ in 0..3 {
+        let mut output = context.run_ui(input(Vec::new()), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the single-axis junction frame advances");
+        });
+        if output.platform_output.accesskit_update.is_some() {
+            stable = Some(output.platform_output.accesskit_update.clone());
+        }
+        output.textures_delta.clear();
+    }
+
+    let update = stable
+        .flatten()
+        .expect("the single-axis junction publishes accessibility semantics");
+    let node_by_label = |role, label| {
+        update
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.role() == role && node.label() == Some(label)).then_some(node)
+            })
+            .expect("the requested junction semantic node is present")
+    };
+    let group = node_by_label(Role::Group, "Resize pane grid");
+    assert_eq!(
+        group.description(),
+        Some("Use the horizontal splitter control to resize columns"),
+    );
+    let horizontal = node_by_label(Role::Splitter, "Resize pane grid horizontally");
+    assert!(!horizontal.is_disabled());
+    assert!(horizontal.supports_action(Action::Increment));
+    let vertical = node_by_label(Role::Splitter, "Resize pane grid vertically");
+    assert!(vertical.is_disabled());
+    assert!(!vertical.supports_action(Action::Increment));
+    assert!(!vertical.supports_action(Action::Decrement));
+}
+
+#[test]
+fn unowned_run_ui_does_not_start_a_preview_qualified_tab_drag() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-unowned-tab-drag", layout())
+        .build()
+        .expect("the unowned tab-drag facade initializes");
+    let mut panes = Panes;
+    let before = root_tabs(&dockspace).expect("the root remains a tab group");
+
+    let mut run_unowned = |events| {
+        let mut capability = None;
+        let mut dragged_id = None;
+        let mut output = context.run_ui(input(events), |ui| {
+            let response = dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the unowned product frame advances");
+            capability = Some(response.presentation_settlement_capability());
+            dragged_id = ui.ctx().dragged_id();
+        });
+        output.textures_delta.clear();
+        (output, capability, dragged_id)
+    };
+
+    let _ = run_unowned(Vec::new());
+    let (stable, capability, _) = run_unowned(Vec::new());
+    assert_eq!(
         capability,
         Some(DockspaceCapability::Unavailable(
             DockspaceUnavailableReason::PresentationSettlementRequired,
         )),
-        "egui-owned frame counters settle a successful run without a caller token",
+    );
+    let source = tab_center(&stable, "Second");
+    let target = tab_center(&stable, "First");
+
+    let (_, _, pressed_dragged_id) = run_unowned(vec![
+        Event::PointerMoved(source),
+        pointer_button(source, true),
+    ]);
+    let (_, _, moved_dragged_id) = run_unowned(vec![Event::PointerMoved(target)]);
+    let _ = run_unowned(vec![
+        Event::PointerMoved(target),
+        pointer_button(target, false),
+    ]);
+    drop(run_unowned);
+
+    assert!(
+        pressed_dragged_id.is_none() && moved_dragged_id.is_none(),
+        "a capability-negative tab remains clickable without claiming egui drag ownership",
+    );
+
+    assert_eq!(
+        root_tabs(&dockspace).expect("the root remains a tab group"),
+        before,
+        "an unowned callback must not begin or commit a preview-qualified tab drag",
+    );
+}
+
+#[test]
+fn owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut style = instrumented_style();
+    let active_fill = egui::Color32::from_rgb(47, 103, 157);
+    style.visuals.tab_active_fill = Some(active_fill);
+    let ghost_fill = style.visuals.ghost_fill.expect("the fixture sets ghost fill");
+    let drop_fill = style.visuals.drop_fill.expect("the fixture sets drop fill");
+    let passive_guide = style
+        .visuals
+        .drop_guide_fill
+        .expect("the fixture sets passive guide fill");
+    let active_guide = style
+        .visuals
+        .drop_guide_active_fill
+        .expect("the fixture sets active guide fill");
+    let mut dockspace = Dockspace::builder("product-owned-unowned-downgrade", layout())
+        .style(style)
+        .build()
+        .expect("the downgrade fixture initializes");
+    let mut panes = Panes;
+    let before = root_tabs(&dockspace).expect("the fixture remains a tab group");
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source_rect = node_rect(&stable.output, Role::Tab, "Second");
+    let source = source_rect.center();
+    let target = tab_center(&stable.output, "First");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+    assert!(
+        rect_fill_count(&dragging.output, ghost_fill) > 0
+            || rect_fill_count(&dragging.output, drop_fill) > 0,
+        "the owned path must first establish a visible drag",
+    );
+    assert_eq!(
+        rect_fill_count_in(&dragging.output, active_fill, source_rect),
+        0,
+        "the owned drag establishes a source gap before authority is downgraded",
+    );
+
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let mut capability = None;
+    let mut downgraded = context.run_ui(input(Vec::new()), |ui| {
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the capability downgrade cancels the active gesture");
+        capability = Some(response.presentation_settlement_capability());
+    });
+    downgraded.textures_delta.clear();
+    assert_eq!(
+        capability,
+        Some(DockspaceCapability::Unavailable(
+            DockspaceUnavailableReason::PresentationSettlementRequired,
+        )),
+    );
+    assert_eq!(
+        downgraded.platform_output.num_completed_passes, 1,
+        "the fixture denies the cancellation discard so the first pass is terminal",
+    );
+    assert_eq!(rect_fill_count(&downgraded, ghost_fill), 0);
+    assert_eq!(rect_fill_count(&downgraded, drop_fill), 0);
+    assert_eq!(
+        guide_button_count(&downgraded, passive_guide, active_guide),
+        0,
+        "authority cancellation suppresses the stale guide cluster in the terminal pass",
+    );
+    assert!(
+        rect_fill_count_in(&downgraded, active_fill, source_rect) > 0,
+        "authority cancellation restores the source tab instead of retaining its gap",
+    );
+    assert!(context.dragged_id().is_none());
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+    assert_eq!(
+        root_tabs(&dockspace).expect("the downgrade restores the source tabs"),
+        before,
+    );
+}
+
+#[test]
+fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut style = instrumented_style();
+    let active_fill = egui::Color32::from_rgb(43, 97, 151);
+    style.visuals.tab_active_fill = Some(active_fill);
+    let ghost_fill = style.visuals.ghost_fill.expect("the fixture sets ghost fill");
+    let drop_fill = style.visuals.drop_fill.expect("the fixture sets drop fill");
+    let passive_guide = style
+        .visuals
+        .drop_guide_fill
+        .expect("the fixture sets passive guide fill");
+    let active_guide = style
+        .visuals
+        .drop_guide_active_fill
+        .expect("the fixture sets active guide fill");
+    let mut dockspace = Dockspace::builder("product-output-marker-mismatch", layout())
+        .style(style)
+        .build()
+        .expect("the output-mismatch fixture initializes");
+    let mut panes = Panes;
+    let before = root_tabs(&dockspace).expect("the fixture remains a tab group");
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source_rect = node_rect(&stable.output, Role::Tab, "Second");
+    let source = source_rect.center();
+    let target = tab_center(&stable.output, "First");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+    assert!(
+        rect_fill_count(&dragging.output, ghost_fill) > 0
+            || rect_fill_count(&dragging.output, drop_fill) > 0,
+        "the owned path establishes presentation-qualified drag output",
+    );
+
+    context
+        .plugin_or_default::<LateDiscardPlugin>()
+        .lock()
+        .strip_callback_compounds_once = true;
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+    let mut capability = None;
+    let mut recovered = run_ui(&context, input(Vec::new()), |ui| {
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the output mismatch cancels the active gesture");
+        capability = Some(response.presentation_settlement_capability());
+    });
+    recovered.textures_delta.clear();
+
+    assert_eq!(
+        capability,
+        Some(DockspaceCapability::Unavailable(
+            DockspaceUnavailableReason::PresentationOutputMismatch,
+        )),
+    );
+    assert_eq!(
+        recovered.platform_output.num_completed_passes, 1,
+        "the mismatch cancellation remains clean when no discard pass is available",
+    );
+    assert_eq!(rect_fill_count(&recovered, ghost_fill), 0);
+    assert_eq!(rect_fill_count(&recovered, drop_fill), 0);
+    assert_eq!(
+        guide_button_count(&recovered, passive_guide, active_guide),
+        0,
+        "the mismatch terminal output contains no stale docking guide",
+    );
+    assert!(
+        rect_fill_count_in(&recovered, active_fill, source_rect) > 0,
+        "the mismatch terminal output restores the source tab",
+    );
+    assert!(context.dragged_id().is_none());
+    assert_eq!(
+        root_tabs(&dockspace).expect("the source tab group remains present"),
+        before,
+        "a forged or missing final-output proof cannot mutate topology",
     );
 }
 
@@ -5664,9 +6090,16 @@ fn disabled_tab_bar_is_paint_only_for_pointer_keyboard_and_accessibility() {
 }
 
 #[test]
-fn kittest_moves_and_resizes_contained_content_semantically() {
+fn kittest_reports_unowned_contained_drag_but_keeps_semantic_resize() {
     let mut harness = kittest_harness("product-kittest-contained", contained_layout());
     let initial = contained_rect(&harness.state().dockspace);
+    assert_eq!(
+        harness.state().presentation_settlement_capability,
+        Some(DockspaceCapability::Unavailable(
+            DockspaceUnavailableReason::PresentationSettlementRequired,
+        )),
+        "egui_kittest owns its run boundary, so drag settlement must remain unavailable",
+    );
     let source = harness
         .get_by_role_and_label(Role::TitleBar, "Second")
         .rect()
@@ -5682,10 +6115,11 @@ fn kittest_moves_and_resizes_contained_content_semantically() {
     harness.drop_at(destination);
     harness.run_steps(3);
 
-    let moved = contained_rect(&harness.state().dockspace);
-    assert_eq!(moved.size(), initial.size());
-    assert!((moved.min().x() - (initial.min().x() - 80.0)).abs() < 0.5);
-    assert!((moved.min().y() - (initial.min().y() + 60.0)).abs() < 0.5);
+    let after_drag = contained_rect(&harness.state().dockspace);
+    assert_eq!(
+        after_drag, initial,
+        "an unowned callback must not start a preview-qualified contained drag",
+    );
     assert_eq!(
         surface_ids(&harness.state().dockspace),
         [SURFACE],
@@ -5700,9 +6134,9 @@ fn kittest_moves_and_resizes_contained_content_semantically() {
     harness.run_steps(3);
 
     let resized = contained_rect(&harness.state().dockspace);
-    assert_eq!(resized.min(), moved.min());
-    assert!(resized.width() > moved.width());
-    assert_eq!(resized.height(), moved.height());
+    assert_eq!(resized.min(), after_drag.min());
+    assert!(resized.width() > after_drag.width());
+    assert_eq!(resized.height(), after_drag.height());
     assert_eq!(
         surface_ids(&harness.state().dockspace),
         [SURFACE],

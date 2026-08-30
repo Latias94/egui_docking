@@ -26,7 +26,6 @@ pub(crate) fn paint_background(
         return;
     };
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(contained.visual_id()));
     if !paint_omitted {
@@ -99,11 +98,11 @@ pub(crate) fn paint_controls(
         .resolved_contained_window(context.ui.style(), contained.is_frontmost())
         .title_text_color;
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(contained.visual_id()));
     if let Some(title) = egui_rect(contained.title_drag_bounds()) {
-        let enabled = contained.title_operable() && context.ui.is_enabled();
+        let core_enabled = contained.title_operable() && context.ui.is_enabled();
+        let enabled = core_enabled && context.pointer_authority.supports_preview_gestures();
         let id = context.ui.make_persistent_id((
             context.instance_id,
             "contained-title",
@@ -121,8 +120,15 @@ pub(crate) fn paint_controls(
                 .then(|| context.plan.receiver_for_contained_title(contained))
                 .flatten(),
         );
+        let description = if enabled {
+            "Drag to move floating window"
+        } else if core_enabled {
+            "Moving requires a host-owned terminal egui run"
+        } else {
+            "Floating window movement is unavailable"
+        };
         let response = if enabled {
-            response.on_hover_text("Drag to move floating window")
+            response.on_hover_text(description)
         } else {
             response
         };
@@ -131,12 +137,12 @@ pub(crate) fn paint_controls(
             node.set_role(Role::TitleBar);
             node.set_bounds(accesskit_bounds(title));
             node.set_label(label);
-            node.set_description("Drag to move floating window");
+            node.set_description(description);
             if !enabled {
                 node.set_disabled();
             }
         });
-        if !paint_omitted {
+        if !paint_omitted && enabled {
             paint_title_grip(
                 context.ui,
                 title,
@@ -151,7 +157,7 @@ pub(crate) fn paint_controls(
                 CursorIcon::Grab
             });
         }
-        let phase = (enabled && context.pointer_authority.accepts_local_pointer_actions())
+        let phase = (enabled && context.pointer_authority.emits_local_preview_gestures())
             .then(|| gesture_phase(&response))
             .flatten();
         if let Some(phase) = phase
@@ -232,15 +238,17 @@ pub(crate) fn paint_controls(
         ));
         let cardinal = cardinal_resize_axis(resize.direction());
         let enabled = resize.operable() && context.ui.is_enabled();
+        let drag_enabled = enabled && context.pointer_authority.supports_preview_gestures();
         let response = context.interact_receiver(
             bounds,
             id,
-            match (enabled, cardinal) {
-                (true, Some(_)) => Sense::drag(),
-                (true, None) => Sense::DRAG,
-                (false, _) => Sense::hover(),
+            match (drag_enabled, cardinal, enabled) {
+                (true, Some(_), _) => Sense::drag(),
+                (true, None, _) => Sense::DRAG,
+                (false, Some(_), true) => Sense::focusable_noninteractive(),
+                (false, _, _) => Sense::hover(),
             },
-            enabled
+            drag_enabled
                 .then(|| {
                     context
                         .plan
@@ -286,13 +294,13 @@ pub(crate) fn paint_controls(
                 context.push_local_action(action);
             }
         }
-        if enabled && (response.hovered() || context.response_dragged_locally(&response)) {
+        if drag_enabled && (response.hovered() || context.response_dragged_locally(&response)) {
             context
                 .ui
                 .ctx()
                 .set_cursor_icon(resize_cursor(resize.direction()));
         }
-        let phase = (enabled && context.pointer_authority.accepts_local_pointer_actions())
+        let phase = (drag_enabled && context.pointer_authority.emits_local_preview_gestures())
             .then(|| gesture_phase(&response))
             .flatten();
         if let Some(phase) = phase

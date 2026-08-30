@@ -60,7 +60,6 @@ pub(super) fn paint(
     };
 
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(anchor.visual_id()));
     if !paint_omitted {

@@ -48,7 +48,6 @@ pub(crate) fn paint_pane(
 ) {
     let pane_fill = visual_context.pane_fill(context.visuals.workspace_fill);
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(pane.visual_id()));
     let Some(bounds) = egui_rect(pane.bounds()) else {
@@ -97,11 +96,13 @@ pub(crate) fn paint_pane(
         if context
             .pane_focus_request
             .is_some_and(|request| request.item() == item)
+            && context.pointer_authority.supports_preview_gestures()
             && !*context.pane_focus_target_requested
             && let Some(target) = context.panes.focus_target(item)
         {
             context.ui.memory_mut(|memory| memory.request_focus(target));
             *context.pane_focus_target_requested = true;
+            *context.pane_focus_target = Some(target);
         }
         context.panes.ui(item, &mut child);
     }
@@ -113,7 +114,6 @@ pub(crate) fn paint_tab_bar(
     contained: Option<ContainedPaintRecord<'_>>,
 ) {
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(bar.visual_id()));
     if !paint_omitted && let Some(bounds) = egui_rect(bar.bounds()) {
@@ -148,7 +148,10 @@ fn paint_group_drag_regions(
             region.visual_id(),
         ));
         let receiver = context.plan.receiver_for_tab_group_drag_region(region);
-        let enabled = effective_enabled(context.ui, receiver.is_some());
+        let enabled = effective_enabled(
+            context.ui,
+            receiver.is_some() && context.pointer_authority.supports_preview_gestures(),
+        );
         let response = context.interact_receiver(
             bounds,
             id,
@@ -174,10 +177,9 @@ fn paint_group_drag_regions(
         }
         if region.kind() == TabGroupDragRegionKind::LeadingGrip {
             let paint_omitted = context
-                .plan
                 .drag_decoration()
                 .is_some_and(|decoration| decoration.omits_visual(region.visual_id()));
-            if !paint_omitted {
+            if !paint_omitted && enabled {
                 paint_group_grip_icon(
                     context.ui,
                     bounds,
@@ -185,7 +187,7 @@ fn paint_group_drag_regions(
                 );
             }
         }
-        let phase = (enabled && context.pointer_authority.accepts_local_pointer_actions())
+        let phase = (enabled && context.pointer_authority.emits_local_preview_gestures())
             .then(|| gesture_phase(&response))
             .flatten();
         if let Some(phase) = phase
@@ -247,21 +249,24 @@ pub(crate) fn paint_tab(
     };
     let id = tab_id(context.ui, context.instance_id, tab);
     let operable = tab.operable() && context.ui.is_enabled();
-    let receiver = operable
+    let preview_gestures_available = context.pointer_authority.supports_preview_gestures();
+    let receiver = (operable && preview_gestures_available)
         .then(|| context.plan.receiver_for_tab_body(tab))
         .flatten();
     let response = context.interact_receiver(
         drag,
         id,
-        if operable {
+        if operable && preview_gestures_available {
             Sense::click_and_drag()
+        } else if operable {
+            Sense::click()
         } else {
             Sense::hover()
         },
         receiver,
     );
     let locally_dragged = context.response_dragged_locally(&response);
-    if operable && (response.hovered() || locally_dragged) {
+    if operable && preview_gestures_available && (response.hovered() || locally_dragged) {
         context.ui.ctx().set_cursor_icon(if locally_dragged {
             CursorIcon::Grabbing
         } else {
@@ -269,7 +274,6 @@ pub(crate) fn paint_tab(
         });
     }
     let source_gap = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(tab.visual_id()));
     let selected = tab.selected();
@@ -345,7 +349,7 @@ fn capture_tab_actions(
     let id = response.id;
     let phase = context
         .pointer_authority
-        .accepts_local_pointer_actions()
+        .emits_local_preview_gestures()
         .then(|| gesture_phase(response))
         .flatten();
     let keyboard_activation = focused

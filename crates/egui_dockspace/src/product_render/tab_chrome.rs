@@ -52,7 +52,6 @@ fn paint_control_records(
                 .flatten(),
         );
         let paint_omitted = context
-            .plan
             .drag_decoration()
             .is_some_and(|decoration| decoration.omits_visual(control.visual_id()));
         if !paint_omitted {
@@ -235,7 +234,6 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
     context.register_scroll_receiver(frame_scroll_id, frame_receiver);
     let _ = context.interact_receiver(bounds, frame_id, Sense::hover(), frame_receiver);
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(menu.visual_id()));
     if !paint_omitted {
@@ -316,7 +314,6 @@ fn paint_menu_row(
         )
     });
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(row.visual_id()));
     let fill = if row.focused() {
@@ -433,7 +430,6 @@ fn paint_scrollbar(
         receiver,
     );
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(menu.visual_id()));
     if !paint_omitted {

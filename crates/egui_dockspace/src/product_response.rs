@@ -355,8 +355,12 @@ pub enum DockspaceSurfaceStatus {
 /// Why one product operation is unavailable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockspaceUnavailableReason {
-    /// The callback-only path cannot prove final renderer presentation.
+    /// The callback-only path cannot prove terminal-output emission.
     PresentationSettlementRequired,
+    /// The exact Dockspace emission was missing or duplicated in terminal output.
+    PresentationOutputMismatch,
+    /// The exact caller-owned run was abandoned or poisoned before settlement.
+    PresentationSettlementAbandoned,
     /// No ready scene can authorize placement.
     SurfaceBoundsUnavailable,
     /// The surface is absent.
@@ -428,6 +432,7 @@ struct SurfacePaintResponse {
     missing_panes: Vec<ItemId>,
     interaction_capabilities: DockspaceInteractionCapabilities,
     surface_status: DockspaceSurfaceStatus,
+    presentation_settlement_capability: DockspaceCapability,
     pane_focus_capability: DockspaceCapability,
 }
 
@@ -447,6 +452,7 @@ impl DockspaceResponse {
         missing_panes: Vec<ItemId>,
         local_actions_current: bool,
         surface_status: DockspaceSurfaceStatus,
+        presentation_settlement_capability: DockspaceCapability,
         pane_focus_capability: DockspaceCapability,
     ) -> Option<Self> {
         let mut surface_commits = report
@@ -483,6 +489,7 @@ impl DockspaceResponse {
                     local_actions_current,
                 ),
                 surface_status,
+                presentation_settlement_capability,
                 pane_focus_capability,
             },
             surface_commit_status: status,
@@ -529,6 +536,12 @@ impl DockspaceResponse {
     #[must_use]
     pub const fn surface_status(&self) -> DockspaceSurfaceStatus {
         self.paint.surface_status
+    }
+
+    /// Returns whether this host can terminally settle preview-qualified output.
+    #[must_use]
+    pub const fn presentation_settlement_capability(&self) -> DockspaceCapability {
+        self.paint.presentation_settlement_capability
     }
 
     /// Returns pane-focus observation availability.

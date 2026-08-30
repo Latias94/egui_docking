@@ -75,7 +75,7 @@ That comparison belongs to the later lifecycle replacement unit.
 | --- | --- | --- | --- |
 | `core-host` | L08 shared command scenario passes; gesture-preview rows remain characterization or gap | Programmatic lifecycle scenario passes | Unsupported without `NativePhysicalAuthority` |
 | `egui-product-headless` | L08 shared command scenario and ordinary L03 center basin pass; four-edge/hysteresis rows remain gaps | Capability-negative | Capability-negative |
-| `egui-official-harness` | Public local facade only | Capability-negative | Capability-negative |
+| `egui-official-harness` | Public local facade; the caller-owned demo supports exact terminal-output settlement, while unmodified eframe examples remain capability-negative | Capability-negative | Capability-negative |
 | `native-coordinator-trace` / `egui-native-smoke` | Adapter-specific evidence | Programmatic lifecycle evidence | Physical X11 evidence only |
 
 Capability-negative is a successful result when the exact missing fact and

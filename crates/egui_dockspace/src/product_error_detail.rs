@@ -39,6 +39,9 @@ pub(crate) enum DockspaceErrorSource {
     /// The convenience API requires exactly one logical surface.
     #[error("show_single_surface requires exactly one surface, found {count}")]
     SingleSurfaceRequiresOne { count: usize },
+    /// The same Dockspace pass was entered through an ambiguous or foreign UI scope.
+    #[error("dockspace show conflicts with another renderer pass contribution")]
+    PassSettlementConflict,
 }
 
 impl DockspaceErrorSource {
@@ -47,7 +50,9 @@ impl DockspaceErrorSource {
             Self::Style(_) | Self::PresentationConfig(_) | Self::InvalidMeasurement { .. } => {
                 DockspaceErrorKind::InvalidConfiguration
             }
-            Self::SingleSurfaceRequiresOne { .. } => DockspaceErrorKind::OperationConflict,
+            Self::SingleSurfaceRequiresOne { .. } | Self::PassSettlementConflict => {
+                DockspaceErrorKind::OperationConflict
+            }
             Self::SurfaceOutsideRoster { .. } => DockspaceErrorKind::HostProtocol,
             #[cfg(feature = "serde")]
             Self::Persistence(_) => DockspaceErrorKind::Persistence,

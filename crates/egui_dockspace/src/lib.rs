@@ -23,7 +23,6 @@ mod guide_paint;
 pub mod native_support;
 mod pass_settlement;
 mod product_render;
-#[cfg(test)]
 mod renderer_pass_bridge;
 #[path = "product_response.rs"]
 mod response;
@@ -56,6 +55,7 @@ pub use dockspace::runtime::{
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneView};
+pub use pass_settlement::run_ui;
 pub use response::{
     DockspaceActionResult, DockspaceActionStatus, DockspaceCapability, DockspaceCloseItem,
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRequest, DockspaceCloseRequestResult,

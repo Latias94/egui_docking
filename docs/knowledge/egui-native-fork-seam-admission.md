@@ -13,12 +13,18 @@ The product contract remains simple:
   native product no longer depends on that fact.
 
 The publishable crates.io adapter does not depend on the native post-output
-fork seam. On the next paint it accepts evidence only when egui's own frame and
-pass counters prove that the preceding `Context::run_ui` returned successfully
-and that Dockspace painted its terminal pass. Manual passes, interrupted runs,
-unrelated contexts, and omitted terminal paints fail closed. The native host
-still needs a host-owned finalization seam because eframe also binds renderer
-output tokens and physical viewport obligations at the same boundary.
+fork seam. A caller-owned raw-egui integration may use
+`egui_dockspace::run_ui`, which wraps the complete `Context::run_ui` with a
+private run identity, clears discarded-pass evidence before each repeated
+callback, admits only the final output after all output hooks return, and
+abandons the exact run on unwind. Its private shape receipt proves exact
+final-output emission, not renderer submission or physical presentation.
+Manual passes, repeated entry, unrelated contexts or viewports, interrupted
+runs, and omitted terminal paints fail closed without frame counters or a
+public bookkeeping token. An unmodified `eframe::App::ui` callback cannot mint
+this proof and remains typed capability-negative. The native host still needs
+its fork seam because eframe also binds renderer output tokens and physical
+viewport obligations at the same boundary.
 
 Baselines:
 

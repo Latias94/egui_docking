@@ -22,21 +22,23 @@ pub(crate) fn paint_splitter(
         .ui
         .make_persistent_id((context.instance_id, "splitter", splitter.visual_id()));
     let enabled = effective_enabled(context.ui, splitter.operable());
-    let sense = if enabled {
+    let drag_enabled = enabled && context.pointer_authority.supports_preview_gestures();
+    let sense = if drag_enabled {
         Sense::drag()
+    } else if enabled {
+        Sense::focusable_noninteractive()
     } else {
         Sense::hover()
     };
-    let receiver = enabled
+    let receiver = drag_enabled
         .then(|| context.plan.receiver_for_splitter(splitter))
         .flatten();
     let response = context.interact_receiver(hit, id, sense, receiver);
     configure_accessibility(context.ui, &response, splitter, enabled);
     let focused = enabled && response.has_focus();
-    let emphasized =
-        enabled && (response.hovered() || context.response_dragged_locally(&response) || focused);
+    let emphasized = focused
+        || (drag_enabled && (response.hovered() || context.response_dragged_locally(&response)));
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(splitter.visual_id()));
     if !paint_omitted {
@@ -69,13 +71,13 @@ pub(crate) fn paint_splitter(
     }) {
         context.push_local_action(action);
     }
-    if response.hovered() || context.response_dragged_locally(&response) {
+    if drag_enabled && (response.hovered() || context.response_dragged_locally(&response)) {
         context.ui.ctx().set_cursor_icon(match splitter.axis() {
             DockspaceAxis::Horizontal => CursorIcon::ResizeHorizontal,
             DockspaceAxis::Vertical => CursorIcon::ResizeVertical,
         });
     }
-    if context.pointer_authority.accepts_local_pointer_actions()
+    if context.pointer_authority.emits_local_preview_gestures()
         && let Some(phase) = gesture_phase(&response)
         && let Some(action) = context
             .plan
@@ -99,22 +101,24 @@ pub(crate) fn paint_junction(
     ));
     let core_operable = context.plan.splitter_junction_operable(junction);
     let operable = effective_enabled(context.ui, core_operable);
+    let drag_operable = operable && context.pointer_authority.supports_preview_gestures();
     let axis_operability = [DockspaceAxis::Horizontal, DockspaceAxis::Vertical].map(|axis| {
-        let core_operable =
-            junction.has_axis(axis) && context.plan.splitter_junction_axis_operable(junction, axis);
+        let present = junction.has_axis(axis);
+        let core_operable = present && context.plan.splitter_junction_axis_operable(junction, axis);
         (
             axis,
+            present,
             core_operable,
             effective_enabled(context.ui, core_operable),
         )
     });
-    let receiver = operable
+    let receiver = drag_operable
         .then(|| context.plan.receiver_for_splitter_junction(junction))
         .flatten();
     let response = context.interact_receiver(
         hit,
         id,
-        if operable {
+        if drag_operable {
             Sense::DRAG
         } else {
             Sense::hover()
@@ -125,16 +129,23 @@ pub(crate) fn paint_junction(
         .ui
         .ctx()
         .accesskit_node_builder(response.id, |node| {
+            let horizontal_operable = axis_operability[0].3;
+            let vertical_operable = axis_operability[1].3;
+            let any_axis_operable = horizontal_operable || vertical_operable;
             node.set_role(Role::Group);
             node.set_label("Resize pane grid");
-            node.set_description("Drag to resize rows and columns");
+            node.set_description(junction_description(
+                drag_operable,
+                horizontal_operable,
+                vertical_operable,
+            ));
             node.set_bounds(accesskit_bounds(hit));
-            if !operable && axis_operability.iter().all(|(_, _, operable)| !operable) {
+            if !drag_operable && !any_axis_operable {
                 node.set_disabled();
             }
         });
-    for (axis, core_axis_operable, axis_operable) in axis_operability {
-        if !core_axis_operable {
+    for (axis, present, _core_axis_operable, axis_operable) in axis_operability {
+        if !present {
             continue;
         }
         let axis_response =
@@ -172,11 +183,10 @@ pub(crate) fn paint_junction(
         }
     }
     let paint_omitted = context
-        .plan
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(junction.visual_id()));
     if !paint_omitted
-        && operable
+        && drag_operable
         && (response.hovered() || context.response_dragged_locally(&response))
     {
         context.ui.ctx().set_cursor_icon(CursorIcon::AllScroll);
@@ -185,14 +195,39 @@ pub(crate) fn paint_junction(
             .painter()
             .rect_filled(hit, 0.0, context.splitter_fill(&response, true));
     }
-    if operable
-        && context.pointer_authority.accepts_local_pointer_actions()
+    if drag_operable
+        && context.pointer_authority.emits_local_preview_gestures()
         && let Some(phase) = gesture_phase(&response)
         && let Some(action) = context
             .plan
             .prepare_splitter_gesture(junction.visual_id(), phase)
     {
         context.push_local_action(action);
+    }
+}
+
+fn junction_description(
+    drag_operable: bool,
+    horizontal_operable: bool,
+    vertical_operable: bool,
+) -> &'static str {
+    match (drag_operable, horizontal_operable, vertical_operable) {
+        (true, true, true) => {
+            "Drag to resize rows and columns, or use the horizontal and vertical splitter controls"
+        }
+        (true, true, false) => {
+            "Drag to resize rows and columns, or use the horizontal splitter control"
+        }
+        (true, false, true) => {
+            "Drag to resize rows and columns, or use the vertical splitter control"
+        }
+        (true, false, false) => "Drag to resize rows and columns",
+        (false, true, true) => {
+            "Use the horizontal and vertical splitter controls to resize rows and columns"
+        }
+        (false, true, false) => "Use the horizontal splitter control to resize columns",
+        (false, false, true) => "Use the vertical splitter control to resize rows",
+        (false, false, false) => "Pane grid resizing is unavailable",
     }
 }
 

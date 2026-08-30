@@ -7,7 +7,7 @@ guides, and contained floating presentations.
 
 ```rust
 use egui_dockspace::{
-    Dockspace, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    run_ui, Dockspace, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 
@@ -24,9 +24,49 @@ assert!(dockspace.view().item(item).is_some());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Call `Dockspace::show_single_surface` from an egui UI and provide a `PaneView`
-implementation to measure and paint application panes. See the packaged
-`basic` and `workspace_persistence` examples for complete usage.
+Provide a `PaneView` implementation to measure and paint application panes.
+When the integration owns the complete official-egui run, use
+`egui_dockspace::run_ui` so Dockspace can terminally settle previews after every
+output hook succeeds:
+
+```rust,ignore
+let output = run_ui(&context, raw_input, |ui| {
+    let response = dockspace
+        .show_single_surface(surface, ui, panes)
+        .expect("the Dockspace frame advances");
+    assert_eq!(
+        response.presentation_settlement_capability(),
+        egui_dockspace::DockspaceCapability::Supported,
+    );
+});
+```
+
+The callback can run more than once when egui discards a pass. Dockspace keeps
+the run identity private, admits only the terminal output after `run_ui`
+returns, and abandons the active evidence on unwind. The receipt proves exact
+final-output emission; it does not claim GPU submission or physical window
+presentation. It does not accept a caller-supplied output token or frame count.
+
+The repository includes a real-window official-egui host that exercises this
+supported tier directly:
+
+```text
+cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked -j1
+```
+
+An unmodified `eframe::App::ui` callback can call
+`Dockspace::show_single_surface` directly, but eframe does not expose the
+surrounding `RawInput` and terminal `FullOutput`. That path truthfully reports
+`PresentationSettlementRequired`: rendering, selection, close, menus, and
+discrete keyboard/AccessKit actions remain available, while pointer gestures
+that require preview or focus settlement are disabled. See the packaged
+`basic` example for this boundary and the fork-backed native example for the
+full draggable editor path.
+
+For a non-root caller-owned viewport, terminal pane-focus confirmation uses the
+viewport's final AccessKit tree. Enable AccessKit and ensure the `focus_target`
+identity belongs to the pane's emitted accessibility node; otherwise Dockspace
+settles that request as unavailable rather than guessing from the root viewport.
 
 ## Styling
 
