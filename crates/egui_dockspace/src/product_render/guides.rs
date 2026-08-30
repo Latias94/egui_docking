@@ -45,7 +45,12 @@ fn paint_target(
             context
                 .ui
                 .make_persistent_id((context.instance_id, "drop-target", target.visual_id()));
+        #[cfg(test)]
+        let response = context.interact_receiver(hit, id, Sense::hover(), Some(receiver));
+        #[cfg(not(test))]
         let _ = context.interact_receiver(hit, id, Sense::hover(), Some(receiver));
+        #[cfg(test)]
+        context.observe_drop_target(target.direction(), target.visual_id(), &response, receiver);
         if target.direction() == DockspaceDropDirection::Center {
             context.ui.ctx().accesskit_node_builder(id, |node| {
                 node.set_role(Role::Label);

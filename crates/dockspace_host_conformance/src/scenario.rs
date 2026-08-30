@@ -30,7 +30,7 @@ pub enum JourneyId {
 }
 
 /// Input cadence named without prescribing frames or coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CadenceProfile {
     /// Press, motion, and release arrive in one bounded burst.
     Burst,
@@ -103,6 +103,8 @@ impl JourneySpec {
 /// Stable identifier for one semantic product scenario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScenarioId {
+    /// Exercise center and cardinal magnetic docking basins.
+    MagneticDockingBasins,
     /// Exercise local tab, close, splitter, and contained semantics.
     LocalTabCloseSplitterAndContained,
     /// Exercise one managed native create, first-live, redock, and retirement lifecycle.
@@ -127,6 +129,51 @@ pub enum ScenarioAxis {
     Horizontal,
     /// Top-to-bottom split adjustment.
     Vertical,
+}
+
+/// Core-owned magnetic basin selected by an ordinary pane-content release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MagneticDockBasin {
+    /// Merge into the target tab stack.
+    Center,
+    /// Split above the target.
+    North,
+    /// Split below the target.
+    South,
+    /// Split to the target's right.
+    East,
+    /// Split to the target's left.
+    West,
+}
+
+/// Strictly inset point normalized to the executor's current target pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NormalizedInsetSample {
+    x_per_mille: u16,
+    y_per_mille: u16,
+}
+
+impl NormalizedInsetSample {
+    const fn new(x_per_mille: u16, y_per_mille: u16) -> Self {
+        assert!(x_per_mille > 0 && x_per_mille < 1_000);
+        assert!(y_per_mille > 0 && y_per_mille < 1_000);
+        Self {
+            x_per_mille,
+            y_per_mille,
+        }
+    }
+
+    /// Returns the horizontal pane fraction in the open interval `(0, 1)`.
+    #[must_use]
+    pub fn x(self) -> f64 {
+        f64::from(self.x_per_mille) / 1_000.0
+    }
+
+    /// Returns the vertical pane fraction in the open interval `(0, 1)`.
+    #[must_use]
+    pub fn y(self) -> f64 {
+        f64::from(self.y_per_mille) / 1_000.0
+    }
 }
 
 /// Scenario-local contained edge.
@@ -205,6 +252,13 @@ pub enum SemanticObservation {
         item: ItemAlias,
         /// Cardinal edge advanced by the action.
         edge: ScenarioEdge,
+    },
+    /// The named item committed through one ordinary magnetic basin.
+    ItemDocked {
+        /// Item moved by the shared journey.
+        item: ItemAlias,
+        /// Core-owned target basin selected by the preview and release.
+        basin: MagneticDockBasin,
     },
     /// One product request reached an explicit terminal status.
     ActionTerminal {
@@ -315,6 +369,157 @@ pub struct SemanticScenario {
     journey: JourneyId,
     required_capabilities: &'static [ScenarioCapability],
     steps: &'static [SemanticStep],
+}
+
+/// One finite L03 input case shared by the core-host and product executors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MagneticDockCase {
+    source: ItemAlias,
+    target: ItemAlias,
+    basin: MagneticDockBasin,
+    sample: NormalizedInsetSample,
+    cadence: CadenceProfile,
+}
+
+impl MagneticDockCase {
+    /// Returns the tab item moved by this case.
+    #[must_use]
+    pub const fn source(self) -> ItemAlias {
+        self.source
+    }
+
+    /// Returns the item whose pane defines the normalized target point.
+    #[must_use]
+    pub const fn target(self) -> ItemAlias {
+        self.target
+    }
+
+    /// Returns the required magnetic basin.
+    #[must_use]
+    pub const fn basin(self) -> MagneticDockBasin {
+        self.basin
+    }
+
+    /// Returns the non-guide point normalized to the current target pane.
+    #[must_use]
+    pub const fn sample(self) -> NormalizedInsetSample {
+        self.sample
+    }
+
+    /// Returns the bounded input cadence used by this case.
+    #[must_use]
+    pub const fn cadence(self) -> CadenceProfile {
+        self.cadence
+    }
+
+    /// Returns the normalized observations required after execution.
+    #[must_use]
+    pub const fn expected_observations(self) -> [SemanticObservation; 2] {
+        [
+            SemanticObservation::ItemDocked {
+                item: self.source,
+                basin: self.basin,
+            },
+            SemanticObservation::Quiescent,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MagneticDockSample {
+    basin: MagneticDockBasin,
+    point: NormalizedInsetSample,
+}
+
+impl MagneticDockSample {
+    const fn new(basin: MagneticDockBasin, x_per_mille: u16, y_per_mille: u16) -> Self {
+        Self {
+            basin,
+            point: NormalizedInsetSample::new(x_per_mille, y_per_mille),
+        }
+    }
+}
+
+/// Finite L03 matrix; this deliberately does not model arbitrary GUI actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MagneticDockScenario {
+    id: ScenarioId,
+    journey: JourneyId,
+    source: ItemAlias,
+    target: ItemAlias,
+    required_capabilities: &'static [ScenarioCapability],
+    samples: &'static [MagneticDockSample],
+    cadences: &'static [CadenceProfile],
+}
+
+impl MagneticDockScenario {
+    const fn new(
+        id: ScenarioId,
+        journey: JourneyId,
+        source: ItemAlias,
+        target: ItemAlias,
+        required_capabilities: &'static [ScenarioCapability],
+        samples: &'static [MagneticDockSample],
+        cadences: &'static [CadenceProfile],
+    ) -> Self {
+        Self {
+            id,
+            journey,
+            source,
+            target,
+            required_capabilities,
+            samples,
+            cadences,
+        }
+    }
+
+    /// Returns the stable semantic scenario identifier.
+    #[must_use]
+    pub const fn id(self) -> ScenarioId {
+        self.id
+    }
+
+    /// Returns the behavior-spine journey implemented by this scenario.
+    #[must_use]
+    pub const fn journey(self) -> JourneyId {
+        self.journey
+    }
+
+    /// Returns capabilities that an executor must prove before running.
+    #[must_use]
+    pub const fn required_capabilities(self) -> &'static [ScenarioCapability] {
+        self.required_capabilities
+    }
+
+    /// Decides whether an executor may schedule this scenario.
+    #[must_use]
+    pub fn admission(self, supported: &[ScenarioCapability]) -> ScenarioAdmission {
+        scenario_admission(self.required_capabilities, supported)
+    }
+
+    /// Expands the fixed basin/sample/cadence product into executable cases.
+    pub fn cases(self) -> impl Iterator<Item = MagneticDockCase> {
+        self.cadences.iter().copied().flat_map(move |cadence| {
+            self.samples
+                .iter()
+                .copied()
+                .map(move |sample| MagneticDockCase {
+                    source: self.source,
+                    target: self.target,
+                    basin: sample.basin,
+                    sample: sample.point,
+                    cadence,
+                })
+        })
+    }
+
+    /// Collects normalized outcomes in the same order as [`Self::cases`].
+    #[must_use]
+    pub fn expected_observations(self) -> Vec<SemanticObservation> {
+        self.cases()
+            .flat_map(MagneticDockCase::expected_observations)
+            .collect()
+    }
 }
 
 /// Immutable lifecycle scenario consumed only by executors with native facts.
@@ -438,6 +643,12 @@ fn scenario_admission(
 }
 
 const BASIC_CADENCES: &[CadenceProfile] = &[CadenceProfile::Burst, CadenceProfile::Stepwise];
+const L03_CADENCES: &[CadenceProfile] = &[
+    CadenceProfile::Stepwise,
+    CadenceProfile::Hesitant,
+    CadenceProfile::ReleaseWithFinalMove,
+    CadenceProfile::Burst,
+];
 const DOCK_CADENCES: &[CadenceProfile] = &[
     CadenceProfile::Stepwise,
     CadenceProfile::Hesitant,
@@ -505,7 +716,7 @@ pub const JOURNEY_CATALOG: &[JourneySpec] = &[
     JourneySpec::new(
         JourneyId::L03,
         "center and edge docking basins",
-        DOCK_CADENCES,
+        L03_CADENCES,
         LOCAL_DOCK,
     ),
     JourneySpec::new(
@@ -551,6 +762,35 @@ pub const JOURNEY_CATALOG: &[JourneySpec] = &[
         PHYSICAL,
     ),
 ];
+
+const MAGNETIC_DOCK_SAMPLES: &[MagneticDockSample] = &[
+    MagneticDockSample::new(MagneticDockBasin::Center, 280, 280),
+    MagneticDockSample::new(MagneticDockBasin::Center, 720, 280),
+    MagneticDockSample::new(MagneticDockBasin::Center, 720, 720),
+    MagneticDockSample::new(MagneticDockBasin::North, 200, 80),
+    MagneticDockSample::new(MagneticDockBasin::North, 800, 120),
+    MagneticDockSample::new(MagneticDockBasin::North, 300, 160),
+    MagneticDockSample::new(MagneticDockBasin::South, 200, 840),
+    MagneticDockSample::new(MagneticDockBasin::South, 800, 880),
+    MagneticDockSample::new(MagneticDockBasin::South, 300, 920),
+    MagneticDockSample::new(MagneticDockBasin::East, 840, 250),
+    MagneticDockSample::new(MagneticDockBasin::East, 880, 750),
+    MagneticDockSample::new(MagneticDockBasin::East, 920, 300),
+    MagneticDockSample::new(MagneticDockBasin::West, 80, 250),
+    MagneticDockSample::new(MagneticDockBasin::West, 120, 750),
+    MagneticDockSample::new(MagneticDockBasin::West, 160, 300),
+];
+
+/// Shared L03 journey executed by both local conformance adapters.
+pub const MAGNETIC_DOCKING_BASINS: MagneticDockScenario = MagneticDockScenario::new(
+    ScenarioId::MagneticDockingBasins,
+    JourneyId::L03,
+    ItemAlias::Secondary,
+    ItemAlias::Primary,
+    LOCAL_DOCK,
+    MAGNETIC_DOCK_SAMPLES,
+    L03_CADENCES,
+);
 
 const LOCAL_INTERACTION_CAPABILITIES: &[ScenarioCapability] = &[
     ScenarioCapability::LocalTabSelection,

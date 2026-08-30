@@ -42,6 +42,8 @@ pub struct Dockspace {
     style: DockStyle,
     pass_settlement: ProductPassSettlement,
     presentation_settlement_was_available: bool,
+    #[cfg(test)]
+    drop_target_observations: Vec<product_render::RegisteredDropTargetObservation>,
 }
 
 impl Dockspace {
@@ -68,6 +70,8 @@ impl Dockspace {
             style,
             pass_settlement: ProductPassSettlement::default(),
             presentation_settlement_was_available: false,
+            #[cfg(test)]
+            drop_target_observations: Vec::new(),
         })
     }
 
@@ -95,6 +99,8 @@ impl Dockspace {
             style,
             pass_settlement: ProductPassSettlement::default(),
             presentation_settlement_was_available: false,
+            #[cfg(test)]
+            drop_target_observations: Vec::new(),
         })
     }
 
@@ -133,6 +139,8 @@ impl Dockspace {
             style,
             pass_settlement: ProductPassSettlement::default(),
             presentation_settlement_was_available: false,
+            #[cfg(test)]
+            drop_target_observations: Vec::new(),
         })
     }
 
@@ -642,6 +650,8 @@ impl Dockspace {
         ui: &mut Ui,
         panes: &mut dyn PaneView,
     ) -> Result<DockspaceResponse, DockspaceError> {
+        #[cfg(test)]
+        self.drop_target_observations.clear();
         let dock_rect = ui.available_rect_before_wrap();
         let popup_rect = ui.ctx().input(egui::InputState::content_rect).round_ui();
         let mut frame = self
@@ -720,6 +730,10 @@ impl Dockspace {
             pane_focus_observation = paint.pane_focus_observation;
             pane_focus_pending = paint.pane_focus_pending;
             pane_focus_capability = paint.pane_focus_capability;
+            #[cfg(test)]
+            {
+                self.drop_target_observations = paint.drop_target_observations;
+            }
             for action in paint.local_actions {
                 frame
                     .submit_surface_action(action)
@@ -809,7 +823,18 @@ impl Dockspace {
             pane_focus_capability,
         )
     }
+
+    #[cfg(test)]
+    fn registered_drop_target_observations(
+        &self,
+    ) -> &[product_render::RegisteredDropTargetObservation] {
+        &self.drop_target_observations
+    }
 }
+
+#[cfg(test)]
+#[path = "product_dockspace_tests.rs"]
+mod tests;
 
 fn product_response(
     report: &HostFrameReport,

@@ -603,6 +603,7 @@ name = "egui_dockspace"
 version = "0.1.0"
 dependencies = [
  "dockspace",
+ "dockspace_host_conformance",
  "eframe",
  "egui",
  "thiserror 2.0.18",

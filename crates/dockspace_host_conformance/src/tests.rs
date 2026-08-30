@@ -4,17 +4,17 @@ use dockspace::geometry::{
 };
 use dockspace::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome, DockspaceAxis,
-    DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, DockspaceTabsView, DockspaceView, FloatingPresentationId, ItemId,
-    RootId, SurfaceId, WorkspaceVersion,
+    DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceNodeView,
+    DockspaceRootLayout, DockspaceRootView, DockspaceSurfaceLayout, DockspaceTabsView,
+    DockspaceView, FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceVersion,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     ContainedResizeDirection, DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseResolution,
     DockspaceDropDirection, DockspaceDropEligibility, DockspaceHostFrame,
-    DockspaceInteractionError, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-    DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin, HostFrameReport,
-    HostInputOutcome, HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken,
+    DockspaceInteractionError, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin,
+    HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken,
     NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition,
     NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
     NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativePointerButton,
@@ -26,8 +26,9 @@ use dockspace::runtime::{
     NativeWindowInputState, NativeWindowPlacement, NativeWindowPresentationState,
     NativeWorkAreaFacts, NativeWorkAreaRoster, PresentedDockReceiver, PresentedDockspaceSurface,
     SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
-    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
-    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
     SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
     SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
     SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabStripMetrics, UniformSurfaceMetrics,
@@ -42,6 +43,8 @@ const A: ItemId = ItemId::new(1);
 const B: ItemId = ItemId::new(2);
 const C: ItemId = ItemId::new(3);
 const X: ItemId = ItemId::new(4);
+const Y: ItemId = ItemId::new(5);
+const Z: ItemId = ItemId::new(6);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
 const SECOND_WINDOW: HostWindowToken = HostWindowToken::new(42);
 
@@ -364,8 +367,74 @@ fn shared_semantic_layout() -> DockspaceLayout {
     .expect("the shared semantic layout is valid")
 }
 
+fn magnetic_semantic_layout() -> DockspaceLayout {
+    let middle = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [
+            DockspaceNode::tabs([B, C]),
+            DockspaceNode::tabs([A]),
+            DockspaceNode::tabs([Y]),
+        ],
+    )
+    .expect("the magnetic semantic row is valid");
+    let root = DockspaceNode::equal_split(
+        DockspaceAxis::Vertical,
+        [DockspaceNode::tabs([X]), middle, DockspaceNode::tabs([Z])],
+    )
+    .expect("the magnetic semantic column is valid");
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, root),
+    )])
+    .expect("the magnetic semantic layout is valid")
+}
+
 fn tabs_containing(view: DockspaceView<'_>, item: ItemId) -> Option<DockspaceTabsView<'_>> {
     view.item(item).map(|item| item.tabs())
+}
+
+fn node_contains_item(node: DockspaceNodeView<'_>, item: ItemId) -> bool {
+    if let Some(tabs) = node.tabs() {
+        return tabs.items().contains(&item);
+    }
+    node.split().is_some_and(|split| {
+        split
+            .children()
+            .any(|child| node_contains_item(child, item))
+    })
+}
+
+fn item_split_relation(
+    node: DockspaceNodeView<'_>,
+    source: ItemId,
+    target: ItemId,
+) -> Option<(DockspaceAxis, bool)> {
+    let split = node.split()?;
+    let children = split.children().collect::<Vec<_>>();
+    let source_index = children
+        .iter()
+        .position(|child| node_contains_item(*child, source))?;
+    let target_index = children
+        .iter()
+        .position(|child| node_contains_item(*child, target))?;
+    if source_index != target_index {
+        return Some((split.axis(), source_index < target_index));
+    }
+    item_split_relation(children[source_index], source, target)
+}
+
+fn expected_magnetic_split(
+    basin: crate::scenario::MagneticDockBasin,
+) -> Option<(DockspaceAxis, bool)> {
+    use crate::scenario::MagneticDockBasin;
+
+    match basin {
+        MagneticDockBasin::Center => None,
+        MagneticDockBasin::North => Some((DockspaceAxis::Vertical, true)),
+        MagneticDockBasin::South => Some((DockspaceAxis::Vertical, false)),
+        MagneticDockBasin::East => Some((DockspaceAxis::Horizontal, false)),
+        MagneticDockBasin::West => Some((DockspaceAxis::Horizontal, true)),
+    }
 }
 
 fn item_snapshot(
@@ -387,6 +456,439 @@ fn item_snapshot(
         tabs.items().to_vec(),
         tabs.selected(),
     )
+}
+
+fn magnetic_basin_from_direction(
+    direction: DockspaceDropDirection,
+) -> crate::scenario::MagneticDockBasin {
+    use crate::scenario::MagneticDockBasin;
+
+    match direction {
+        DockspaceDropDirection::Center => MagneticDockBasin::Center,
+        DockspaceDropDirection::Left => MagneticDockBasin::West,
+        DockspaceDropDirection::Right => MagneticDockBasin::East,
+        DockspaceDropDirection::Top => MagneticDockBasin::North,
+        DockspaceDropDirection::Bottom => MagneticDockBasin::South,
+    }
+}
+
+fn magnetic_basin_from_preview_rect(
+    preview: LogicalRect,
+    target: LogicalRect,
+) -> crate::scenario::MagneticDockBasin {
+    use crate::scenario::MagneticDockBasin;
+
+    let width_ratio = preview.width() / target.width();
+    let height_ratio = preview.height() / target.height();
+    if width_ratio >= 0.8 && height_ratio >= 0.8 {
+        return MagneticDockBasin::Center;
+    }
+    if width_ratio < height_ratio {
+        if preview.x() + preview.width() * 0.5 < target.x() + target.width() * 0.5 {
+            MagneticDockBasin::West
+        } else {
+            MagneticDockBasin::East
+        }
+    } else if preview.y() + preview.height() * 0.5 < target.y() + target.height() * 0.5 {
+        MagneticDockBasin::North
+    } else {
+        MagneticDockBasin::South
+    }
+}
+
+struct MagneticJourneyFixture {
+    host: DeterministicHost,
+    metrics: UniformSurfaceMetrics,
+    source: DockspaceReceiverDescriptor,
+    target_bounds: LogicalRect,
+}
+
+impl MagneticJourneyFixture {
+    fn new() -> Self {
+        let mut host = DeterministicHost::new(magnetic_semantic_layout());
+        let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("the L03 bounds are valid");
+        let minimum = LogicalSize::new(0.0, 0.0).expect("the L03 minimum is valid");
+        let metrics =
+            UniformSurfaceMetrics::new(bounds, minimum, 72.0).expect("the L03 metrics are valid");
+        host.run(|frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the L03 fixture measures its complete surface");
+        });
+
+        let mut source = None;
+        let mut target_bounds = None;
+        let paint = host.run(|frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the initial L03 plan lookup succeeds")
+                .expect("the initial L03 plan is ready");
+            source = plan.tab_receiver(B);
+            plan.visit_surface_program(|step| {
+                if let SurfacePaintProgramStep::Operation {
+                    operation: SurfacePaintProgramOperation::Pane(pane),
+                    ..
+                } = step
+                    && pane.selected() == Some(A)
+                {
+                    target_bounds = Some(pane.content_bounds());
+                }
+                Ok::<(), ()>(())
+            })
+            .expect("the initial L03 surface program is valid");
+            frame
+                .confirm_surface_painted(SURFACE)
+                .expect("the initial L03 output was painted");
+        });
+        host.observe_painted_outputs(paint);
+        host.session
+            .enable_surface_pointer(SURFACE)
+            .expect("the L03 surface admits one local pointer provider");
+
+        Self {
+            host,
+            metrics,
+            source: source.expect("the L03 source tab exposes one receiver"),
+            target_bounds: target_bounds.expect("the L03 target pane exposes content bounds"),
+        }
+    }
+
+    fn source(&self) -> PresentedDockReceiver {
+        self.host
+            .session
+            .bind_presented_receiver(&self.source)
+            .expect("the L03 source receiver belongs to the presented output")
+    }
+
+    fn surface(&self) -> PresentedDockspaceSurface {
+        self.host
+            .session
+            .presented_surface(SURFACE)
+            .expect("the L03 surface remains presented")
+    }
+
+    fn point(&self, sample: crate::scenario::NormalizedInsetSample) -> LogicalPoint {
+        LogicalPoint::new(
+            self.target_bounds.x() + self.target_bounds.width() * sample.x(),
+            self.target_bounds.y() + self.target_bounds.height() * sample.y(),
+        )
+        .expect("the normalized L03 point is finite")
+    }
+
+    fn tangent_point(
+        &self,
+        point: LogicalPoint,
+        basin: crate::scenario::MagneticDockBasin,
+        delta: f64,
+    ) -> LogicalPoint {
+        use crate::scenario::MagneticDockBasin;
+
+        let (x, y) = match basin {
+            MagneticDockBasin::Center | MagneticDockBasin::North | MagneticDockBasin::South => {
+                (point.x() + delta, point.y())
+            }
+            MagneticDockBasin::East | MagneticDockBasin::West => (point.x(), point.y() + delta),
+        };
+        let point = LogicalPoint::new(x, y).expect("the L03 tangent point is finite");
+        assert!(self.target_bounds.contains(point));
+        point
+    }
+
+    fn submit_press(&mut self) {
+        let source = self.source();
+        let press = source.center();
+        self.host.run(|frame| {
+            frame
+                .submit_surface_pointer(SurfacePointerInput::new(
+                    SurfacePointerId::new(1),
+                    SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                    SurfacePointerPosition::Known(press),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::delivery(&source),
+                ))
+                .expect("the shared L03 source receives one press");
+        });
+    }
+
+    fn submit_threshold_move(&mut self) {
+        let source = self.source();
+        let surface = self.surface();
+        let press = source.center();
+        let moved = LogicalPoint::new(press.x() + 24.0, press.y() + 24.0)
+            .expect("the shared L03 threshold point is finite");
+        self.host.run(|frame| {
+            frame
+                .submit_surface_pointer(SurfacePointerInput::new(
+                    SurfacePointerId::new(1),
+                    SurfacePointerEvent::Moved,
+                    SurfacePointerPosition::Known(moved),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::no_hover(&surface),
+                ))
+                .expect("the shared L03 threshold move starts one drag");
+        });
+    }
+
+    fn submit_target_move(&mut self, point: LogicalPoint) {
+        let surface = self.surface();
+        self.host.run(|frame| {
+            frame
+                .submit_surface_pointer(SurfacePointerInput::new(
+                    SurfacePointerId::new(1),
+                    SurfacePointerEvent::Moved,
+                    SurfacePointerPosition::Known(point),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::no_hover(&surface),
+                ))
+                .expect("the ordinary L03 pane point reports a known-empty hover result");
+        });
+    }
+
+    fn submit_release(&mut self, point: LogicalPoint) {
+        let surface = self.surface();
+        self.host.run(|frame| {
+            frame
+                .submit_surface_pointer(SurfacePointerInput::new(
+                    SurfacePointerId::new(1),
+                    SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                    SurfacePointerPosition::Known(point),
+                    SurfacePointerCapture::None,
+                    SurfacePointerReceiverFacts::no_hover(&surface),
+                ))
+                .expect("the shared L03 release uses the current pane observation");
+        });
+    }
+
+    fn submit_burst(&mut self, point: LogicalPoint) {
+        let source = self.source();
+        let surface = self.surface();
+        let press = source.center();
+        let moved = LogicalPoint::new(press.x() + 24.0, press.y() + 24.0)
+            .expect("the shared L03 threshold point is finite");
+        self.host.run(|frame| {
+            frame
+                .submit_surface_pointer_batch([
+                    SurfacePointerInput::new(
+                        SurfacePointerId::new(1),
+                        SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                        SurfacePointerPosition::Known(press),
+                        SurfacePointerCapture::ProviderEndpoint,
+                        SurfacePointerReceiverFacts::delivery(&source),
+                    ),
+                    SurfacePointerInput::new(
+                        SurfacePointerId::new(1),
+                        SurfacePointerEvent::Moved,
+                        SurfacePointerPosition::Known(moved),
+                        SurfacePointerCapture::ProviderEndpoint,
+                        SurfacePointerReceiverFacts::no_hover(&surface),
+                    ),
+                    SurfacePointerInput::new(
+                        SurfacePointerId::new(1),
+                        SurfacePointerEvent::Moved,
+                        SurfacePointerPosition::Known(point),
+                        SurfacePointerCapture::ProviderEndpoint,
+                        SurfacePointerReceiverFacts::no_hover(&surface),
+                    ),
+                    SurfacePointerInput::new(
+                        SurfacePointerId::new(1),
+                        SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                        SurfacePointerPosition::Known(point),
+                        SurfacePointerCapture::None,
+                        SurfacePointerReceiverFacts::no_hover(&surface),
+                    ),
+                ])
+                .expect("the shared L03 burst preserves press, motion, and release order");
+        });
+    }
+
+    fn submit_final_move_and_release(&mut self, point: LogicalPoint) {
+        let surface = self.surface();
+        self.host.run(|frame| {
+            frame
+                .submit_surface_pointer_batch([
+                    SurfacePointerInput::new(
+                        SurfacePointerId::new(1),
+                        SurfacePointerEvent::Moved,
+                        SurfacePointerPosition::Known(point),
+                        SurfacePointerCapture::ProviderEndpoint,
+                        SurfacePointerReceiverFacts::no_hover(&surface),
+                    ),
+                    SurfacePointerInput::new(
+                        SurfacePointerId::new(1),
+                        SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                        SurfacePointerPosition::Known(point),
+                        SurfacePointerCapture::None,
+                        SurfacePointerReceiverFacts::no_hover(&surface),
+                    ),
+                ])
+                .expect("the final L03 move and release share one public input batch");
+        });
+    }
+
+    fn present_preview(&mut self, point: LogicalPoint) -> crate::scenario::MagneticDockBasin {
+        let mut observed = None;
+        let preview_report = self.host.run(|frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the L03 preview plan lookup succeeds")
+                .expect("the active L03 drag retains one paint plan");
+            let mut point_intersects_guide = false;
+            let mut active_guide = None;
+            plan.visit_surface_program(|step| {
+                let SurfacePaintProgramStep::DropGuide {
+                    affordance: Some(cluster),
+                    ..
+                } = step
+                else {
+                    return Ok::<(), ()>(());
+                };
+                for target in cluster.targets() {
+                    if plan
+                        .receiver_for_drop_target(target)
+                        .is_some_and(|receiver| receiver.bounds().contains(point))
+                    {
+                        point_intersects_guide = true;
+                    }
+                    if target.is_active() {
+                        active_guide = Some((target.direction(), target.eligibility()));
+                    }
+                }
+                Ok::<(), ()>(())
+            })
+            .expect("the preview-bearing L03 surface program is valid");
+            assert!(
+                !point_intersects_guide,
+                "the normalized L03 sample must remain outside every guide target: {point:?}",
+            );
+            let preview = plan
+                .drag_preview()
+                .expect("the ordinary pane point publishes a docking preview");
+            let DockspacePreviewVisual::Dock {
+                surface: SURFACE,
+                rect,
+            } = preview.visual()
+            else {
+                panic!("the ordinary L03 point must publish a local Dock preview");
+            };
+            let basin = magnetic_basin_from_preview_rect(rect, self.target_bounds);
+            if let Some((direction, eligibility)) = active_guide {
+                assert_eq!(eligibility, DockspaceDropEligibility::Eligible);
+                assert_eq!(magnetic_basin_from_direction(direction), basin);
+            }
+            observed = Some(basin);
+            frame
+                .confirm_surface_painted(SURFACE)
+                .expect("the preview-bearing L03 output was painted");
+        });
+        self.host.observe_painted_outputs(preview_report);
+        observed.expect("the L03 preview reports one active direction")
+    }
+
+    fn assert_committed_and_quiescent(&mut self, basin: crate::scenario::MagneticDockBasin) {
+        use crate::scenario::MagneticDockBasin;
+
+        let moved = self
+            .host
+            .view()
+            .item(B)
+            .expect("the L03 source item remains open after docking");
+        assert_eq!(moved.surface(), SURFACE);
+        assert_eq!(moved.root(), ROOT);
+        assert_eq!(moved.contained(), None);
+        assert!(moved.is_selected());
+        let content = self
+            .host
+            .view()
+            .root(ROOT)
+            .and_then(DockspaceRootView::content)
+            .expect("the committed L03 main root retains content");
+        let split_relation = item_split_relation(content, B, A);
+        assert_eq!(split_relation, expected_magnetic_split(basin));
+        match basin {
+            MagneticDockBasin::Center => {
+                assert_eq!(moved.tabs().items(), &[A, B]);
+            }
+            MagneticDockBasin::North
+            | MagneticDockBasin::South
+            | MagneticDockBasin::East
+            | MagneticDockBasin::West => {
+                assert_eq!(moved.tabs().items(), &[B]);
+                assert_eq!(tabs_containing(self.host.view(), A).unwrap().items(), &[A]);
+            }
+        }
+        assert_eq!(tabs_containing(self.host.view(), C).unwrap().items(), &[C]);
+
+        let settled_version = self.host.version();
+        let metrics = self.metrics;
+        self.host.run(|frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the committed L03 layout is remeasured");
+        });
+        let paint = self.host.run(|frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the settled L03 plan lookup succeeds")
+                .expect("the settled L03 plan is ready");
+            assert!(plan.drag_preview().is_none());
+            assert!(plan.drag_decoration().is_none());
+            assert!(plan.drop_affordance().is_none());
+            frame
+                .confirm_surface_painted(SURFACE)
+                .expect("the settled L03 output was painted");
+        });
+        self.host.observe_painted_outputs(paint);
+        assert_eq!(self.host.version(), settled_version);
+    }
+
+    fn execute(
+        mut self,
+        case: crate::scenario::MagneticDockCase,
+    ) -> [crate::scenario::SemanticObservation; 2] {
+        use crate::scenario::{CadenceProfile, ItemAlias};
+
+        assert_eq!(case.source(), ItemAlias::Secondary);
+        assert_eq!(case.target(), ItemAlias::Primary);
+        let target = self.point(case.sample());
+        let observed = match case.cadence() {
+            CadenceProfile::Burst => {
+                self.submit_burst(target);
+                self.present_preview(target)
+            }
+            CadenceProfile::Stepwise => {
+                self.submit_press();
+                self.submit_threshold_move();
+                self.submit_target_move(target);
+                let observed = self.present_preview(target);
+                self.submit_release(target);
+                observed
+            }
+            CadenceProfile::Hesitant => {
+                self.submit_press();
+                self.submit_threshold_move();
+                self.submit_target_move(target);
+                self.submit_target_move(self.tangent_point(target, case.basin(), 3.0));
+                self.submit_target_move(self.tangent_point(target, case.basin(), -3.0));
+                self.submit_target_move(target);
+                let observed = self.present_preview(target);
+                self.submit_release(target);
+                observed
+            }
+            CadenceProfile::ReleaseWithFinalMove => {
+                self.submit_press();
+                self.submit_threshold_move();
+                let acquired = self.tangent_point(target, case.basin(), -4.0);
+                self.submit_target_move(acquired);
+                let observed = self.present_preview(acquired);
+                self.submit_final_move_and_release(target);
+                observed
+            }
+            cadence => panic!("unsupported L03 cadence: {cadence:?}"),
+        };
+        assert_eq!(observed, case.basin());
+        self.assert_committed_and_quiescent(observed);
+        case.expected_observations()
+    }
 }
 
 fn assert_product_dock_applied(report: &HostFrameReport, item: ItemId) {
@@ -870,6 +1372,86 @@ fn u1_journey_catalog_has_all_ids_and_cadence_profiles() {
             .iter()
             .all(|journey| !journey.title().is_empty()
                 && !journey.required_capabilities().is_empty())
+    );
+}
+
+#[test]
+fn shared_l03_catalog_covers_five_basins_three_insets_and_four_cadences() {
+    use crate::scenario::{CadenceProfile, MAGNETIC_DOCKING_BASINS, MagneticDockBasin};
+
+    let cases = MAGNETIC_DOCKING_BASINS.cases().collect::<Vec<_>>();
+    assert_eq!(cases.len(), 5 * 3 * 4);
+    for basin in [
+        MagneticDockBasin::Center,
+        MagneticDockBasin::North,
+        MagneticDockBasin::South,
+        MagneticDockBasin::East,
+        MagneticDockBasin::West,
+    ] {
+        let basin_cases = cases
+            .iter()
+            .filter(|case| case.basin() == basin)
+            .collect::<Vec<_>>();
+        assert_eq!(basin_cases.len(), 3 * 4);
+        for cadence in [
+            CadenceProfile::Burst,
+            CadenceProfile::Stepwise,
+            CadenceProfile::Hesitant,
+            CadenceProfile::ReleaseWithFinalMove,
+        ] {
+            assert_eq!(
+                basin_cases
+                    .iter()
+                    .filter(|case| case.cadence() == cadence)
+                    .count(),
+                3,
+            );
+        }
+    }
+}
+
+#[test]
+fn shared_l03_magnetic_docking_scenario_maps_to_core_host_semantics() {
+    use crate::scenario::{
+        JourneyId, MAGNETIC_DOCKING_BASINS, ScenarioAdmission, ScenarioCapability, ScenarioId,
+    };
+
+    assert_eq!(
+        MAGNETIC_DOCKING_BASINS.id(),
+        ScenarioId::MagneticDockingBasins,
+    );
+    assert_eq!(MAGNETIC_DOCKING_BASINS.journey(), JourneyId::L03);
+    let supported = [
+        ScenarioCapability::LocalDirectManipulation,
+        ScenarioCapability::SemanticDockBasins,
+        ScenarioCapability::PresentedCandidate,
+    ];
+    assert_eq!(
+        MAGNETIC_DOCKING_BASINS.admission(&supported),
+        ScenarioAdmission::Ready,
+    );
+
+    let mut observations = Vec::new();
+    for case in MAGNETIC_DOCKING_BASINS.cases() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            MagneticJourneyFixture::new().execute(case)
+        }));
+        match result {
+            Ok(case_observations) => observations.extend(case_observations),
+            Err(payload) => {
+                let detail = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("non-string panic payload");
+                panic!("shared core-host L03 case failed: {case:?}: {detail}");
+            }
+        }
+    }
+    assert_eq!(
+        observations,
+        MAGNETIC_DOCKING_BASINS.expected_observations(),
+        "the core-host executor must map every shared L03 case to normalized docking and quiescence observations",
     );
 }
 

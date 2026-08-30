@@ -1,9 +1,10 @@
-use dockspace_host_conformance::scenario::{
-    ItemAlias, JourneyId, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED, NATIVE_CREATE_REDOCK_RETIREMENT,
-    ScenarioAdmission, ScenarioAxis, ScenarioCapability, ScenarioEdge, ScenarioId,
-    SemanticAction as ScenarioAction, SemanticSelector,
-};
 use dockspace::policy::DockPolicy;
+use dockspace_host_conformance::scenario::{
+    CadenceProfile, ItemAlias, JourneyId, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED,
+    MAGNETIC_DOCKING_BASINS, MagneticDockBasin, MagneticDockCase, NATIVE_CREATE_REDOCK_RETIREMENT,
+    ScenarioAdmission, ScenarioAxis, ScenarioCapability, ScenarioEdge, ScenarioId,
+    SemanticAction as ScenarioAction, SemanticObservation, SemanticSelector,
+};
 use egui::accesskit::{Action, ActionRequest, Orientation, Role, TreeId};
 use egui::{
     Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, RepaintCause,
@@ -13,7 +14,7 @@ use egui_dockspace::{
     CloseDecision, ClosePlanTarget, DockPlacement, DockStyle, Dockspace, DockspaceActionOutcome,
     DockspaceActionStatus, DockspaceAxis, DockspaceCapability, DockspaceCloseRequest,
     DockspaceCloseRequestRejection, DockspaceCloseRequestStatus, DockspaceContainedLayout,
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    DockspaceLayout, DockspaceNode, DockspaceNodeView, DockspaceRootLayout, DockspaceSurfaceLayout,
     DockspaceUnavailableReason, FloatingPresentationId, ItemId, LogicalRect, PaneFocusState,
     PaneView, RootId, SurfaceId, run_ui,
 };
@@ -32,6 +33,8 @@ const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
 const FOURTH: ItemId = ItemId::new(4);
+const FIFTH: ItemId = ItemId::new(5);
+const SIXTH: ItemId = ItemId::new(6);
 
 fn surface_ids(dockspace: &Dockspace) -> Vec<SurfaceId> {
     dockspace
@@ -84,6 +87,22 @@ struct FocusPanes {
     pane_rect: Cell<Option<Rect>>,
     expose_target: bool,
     target_requests: Cell<usize>,
+}
+
+struct MagneticPanes {
+    target_rect: Cell<Option<Rect>>,
+}
+
+impl MagneticPanes {
+    fn new() -> Self {
+        Self {
+            target_rect: Cell::new(None),
+        }
+    }
+
+    fn target_rect(&self) -> Option<Rect> {
+        self.target_rect.get()
+    }
 }
 
 impl FocusPanes {
@@ -209,12 +228,27 @@ impl PaneView for Panes {
             SECOND => Some("Second".into()),
             THIRD => Some("Third".into()),
             FOURTH => Some("Fourth".into()),
+            FIFTH => Some("Fifth".into()),
+            SIXTH => Some("Sixth".into()),
             _ => None,
         }
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
         ui.label(format!("Pane {}", item.get()));
+    }
+}
+
+impl PaneView for MagneticPanes {
+    fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+        Panes.title(item)
+    }
+
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        if item == FIRST {
+            self.target_rect.set(Some(ui.available_rect_before_wrap()));
+        }
+        Panes.ui(item, ui);
     }
 }
 
@@ -370,6 +404,32 @@ fn split_layout() -> DockspaceLayout {
         ),
     )])
     .expect("the product split layout is valid")
+}
+
+fn magnetic_semantic_layout() -> DockspaceLayout {
+    let middle = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [
+            DockspaceNode::tabs([SECOND, THIRD]),
+            DockspaceNode::tabs([FIRST]),
+            DockspaceNode::tabs([FIFTH]),
+        ],
+    )
+    .expect("the magnetic semantic row is valid");
+    let root = DockspaceNode::equal_split(
+        DockspaceAxis::Vertical,
+        [
+            DockspaceNode::tabs([FOURTH]),
+            middle,
+            DockspaceNode::tabs([SIXTH]),
+        ],
+    )
+    .expect("the magnetic semantic column is valid");
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, root),
+    )])
+    .expect("the magnetic semantic product layout is valid")
 }
 
 fn shared_semantic_layout() -> DockspaceLayout {
@@ -655,6 +715,42 @@ struct FrameOutput {
     close_requests: Vec<DockspaceCloseRequest>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct CausalSettlementTimeout {
+    budget: usize,
+    missing: Vec<&'static str>,
+}
+
+impl std::fmt::Display for CausalSettlementTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "causal settlement exceeded {} observations; missing {}",
+            self.budget,
+            self.missing.join(", "),
+        )
+    }
+}
+
+fn settle_until<T>(
+    budget: usize,
+    mut observe: impl FnMut() -> (T, Vec<&'static str>),
+) -> Result<T, CausalSettlementTimeout> {
+    assert!(budget > 0, "a causal settlement budget must be non-zero");
+    let mut last_missing = Vec::new();
+    for _ in 0..budget {
+        let (value, missing) = observe();
+        if missing.is_empty() {
+            return Ok(value);
+        }
+        last_missing = missing;
+    }
+    Err(CausalSettlementTimeout {
+        budget,
+        missing: last_missing,
+    })
+}
+
 fn node_center(output: &egui::FullOutput, role: Role, label: &str) -> Pos2 {
     node_rect(output, role, label).center()
 }
@@ -662,6 +758,13 @@ fn node_center(output: &egui::FullOutput, role: Role, label: &str) -> Pos2 {
 fn node_rect(output: &egui::FullOutput, role: Role, label: &str) -> Rect {
     let (_, node) = accesskit_node(output, role, label);
     accesskit_node_rect(node)
+}
+
+fn try_node_rect(output: &egui::FullOutput, role: Role, label: &str) -> Option<Rect> {
+    let tree = output.platform_output.accesskit_update.as_ref()?;
+    tree.nodes.iter().find_map(|(_, node)| {
+        (node.role() == role && node.label() == Some(label)).then(|| accesskit_node_rect(node))
+    })
 }
 
 fn accesskit_node_rect(node: &egui::accesskit::Node) -> Rect {
@@ -903,6 +1006,213 @@ fn rect_with_fill(output: &egui::FullOutput, fill: egui::Color32) -> Option<Rect
         .shapes
         .iter()
         .find_map(|shape| find(&shape.shape, fill))
+}
+
+fn rects_with_fill(output: &egui::FullOutput, fills: &[egui::Color32]) -> Vec<Rect> {
+    fn collect(shape: &egui::Shape, fills: &[egui::Color32], found: &mut Vec<Rect>) {
+        match shape {
+            egui::Shape::Rect(rect) if fills.contains(&rect.fill) => found.push(rect.rect),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, fills, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = Vec::new();
+    for shape in &output.shapes {
+        collect(&shape.shape, fills, &mut found);
+    }
+    found
+}
+
+fn magnetic_preview_rect(
+    output: &egui::FullOutput,
+    fill: egui::Color32,
+    target: Rect,
+) -> Option<Rect> {
+    rects_with_fill(output, &[fill])
+        .into_iter()
+        .filter(|rect| rect.area() >= target.area() * 0.2)
+        .max_by(|left, right| left.area().total_cmp(&right.area()))
+}
+
+fn magnetic_basin_from_preview(preview: Rect, target: Rect) -> MagneticDockBasin {
+    let width_ratio = preview.width() / target.width();
+    let height_ratio = preview.height() / target.height();
+    if width_ratio >= 0.8 && height_ratio >= 0.8 {
+        return MagneticDockBasin::Center;
+    }
+    if width_ratio < height_ratio {
+        if preview.center().x < target.center().x {
+            MagneticDockBasin::West
+        } else {
+            MagneticDockBasin::East
+        }
+    } else if preview.center().y < target.center().y {
+        MagneticDockBasin::North
+    } else {
+        MagneticDockBasin::South
+    }
+}
+
+fn normalized_pane_point(rect: Rect, case: MagneticDockCase) -> Pos2 {
+    let sample = case.sample();
+    Pos2::new(
+        egui::lerp(rect.x_range(), sample.x() as f32),
+        egui::lerp(rect.y_range(), sample.y() as f32),
+    )
+}
+
+fn tangent_pane_point(point: Pos2, basin: MagneticDockBasin, delta: f32) -> Pos2 {
+    match basin {
+        MagneticDockBasin::Center | MagneticDockBasin::North | MagneticDockBasin::South => {
+            point + vec2(delta, 0.0)
+        }
+        MagneticDockBasin::East | MagneticDockBasin::West => point + vec2(0.0, delta),
+    }
+}
+
+fn preview_readiness(
+    frame: &FrameOutput,
+    target_rect: Rect,
+    target_point: Pos2,
+    expected: MagneticDockBasin,
+    drop_fill: egui::Color32,
+) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    let preview = magnetic_preview_rect(&frame.output, drop_fill, target_rect);
+    if preview.is_none() {
+        missing.push("magnetic Dock preview");
+    }
+    if let Some(preview) = preview {
+        assert_eq!(
+            magnetic_basin_from_preview(preview, target_rect),
+            expected,
+            "the painted magnetic preview must match the shared basin: preview={preview:?} target={target_rect:?} point={target_point:?}",
+        );
+    }
+    missing
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProductMagneticSnapshot {
+    source_tabs: Vec<ItemId>,
+    target_tabs: Vec<ItemId>,
+    split_relation: Option<(DockspaceAxis, bool)>,
+    source_selected: bool,
+    source_surface: SurfaceId,
+    source_root: RootId,
+    source_contained: Option<FloatingPresentationId>,
+}
+
+fn node_contains_item(node: DockspaceNodeView<'_>, item: ItemId) -> bool {
+    if let Some(tabs) = node.tabs() {
+        return tabs.items().contains(&item);
+    }
+    node.split()
+        .is_some_and(|split| split.children().any(|child| node_contains_item(child, item)))
+}
+
+fn item_split_relation(
+    node: DockspaceNodeView<'_>,
+    source: ItemId,
+    target: ItemId,
+) -> Option<(DockspaceAxis, bool)> {
+    let split = node.split()?;
+    let children = split.children().collect::<Vec<_>>();
+    let source_index = children
+        .iter()
+        .position(|child| node_contains_item(*child, source))?;
+    let target_index = children
+        .iter()
+        .position(|child| node_contains_item(*child, target))?;
+    if source_index != target_index {
+        return Some((split.axis(), source_index < target_index));
+    }
+    item_split_relation(children[source_index], source, target)
+}
+
+fn expected_magnetic_split(basin: MagneticDockBasin) -> Option<(DockspaceAxis, bool)> {
+    match basin {
+        MagneticDockBasin::Center => None,
+        MagneticDockBasin::North => Some((DockspaceAxis::Vertical, true)),
+        MagneticDockBasin::South => Some((DockspaceAxis::Vertical, false)),
+        MagneticDockBasin::East => Some((DockspaceAxis::Horizontal, false)),
+        MagneticDockBasin::West => Some((DockspaceAxis::Horizontal, true)),
+    }
+}
+
+fn product_magnetic_snapshot(dockspace: &Dockspace) -> Option<ProductMagneticSnapshot> {
+    let source = dockspace.view().item(SECOND)?;
+    let target = dockspace.view().item(FIRST)?;
+    let split_relation = dockspace
+        .view()
+        .root(ROOT)?
+        .content()
+        .and_then(|content| item_split_relation(content, SECOND, FIRST));
+    Some(ProductMagneticSnapshot {
+        source_tabs: source.tabs().items().to_vec(),
+        target_tabs: target.tabs().items().to_vec(),
+        split_relation,
+        source_selected: source.is_selected(),
+        source_surface: source.surface(),
+        source_root: source.root(),
+        source_contained: source.contained(),
+    })
+}
+
+fn magnetic_outcome_missing(
+    snapshot: Option<&ProductMagneticSnapshot>,
+    basin: MagneticDockBasin,
+    dragging: bool,
+    previous_ready: Option<&ProductMagneticSnapshot>,
+) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    let Some(snapshot) = snapshot else {
+        return vec![
+            "source item ownership",
+            "terminal drag state",
+            "stable quiescence",
+        ];
+    };
+    if snapshot.source_surface != SURFACE
+        || snapshot.source_root != ROOT
+        || snapshot.source_contained.is_some()
+        || !snapshot.source_selected
+    {
+        missing.push("committed main-root ownership");
+    }
+    match basin {
+        MagneticDockBasin::Center => {
+            if snapshot.source_tabs != [FIRST, SECOND]
+                || snapshot.target_tabs != [FIRST, SECOND]
+                || snapshot.split_relation.is_some()
+            {
+                missing.push("center-merge topology");
+            }
+        }
+        MagneticDockBasin::North
+        | MagneticDockBasin::South
+        | MagneticDockBasin::East
+        | MagneticDockBasin::West => {
+            if snapshot.source_tabs != [SECOND]
+                || snapshot.target_tabs != [FIRST]
+                || snapshot.split_relation != expected_magnetic_split(basin)
+            {
+                missing.push("edge-split topology");
+            }
+        }
+    }
+    if dragging {
+        missing.push("terminal drag state");
+    }
+    if !missing.is_empty() || previous_ready != Some(snapshot) {
+        missing.push("stable quiescence");
+    }
+    missing
 }
 
 fn last_rect_fill_index(output: &egui::FullOutput, fills: &[egui::Color32]) -> Option<usize> {
@@ -3742,6 +4052,338 @@ fn stale_prepared_dock_action_is_inert_in_the_product_executor() {
     assert_eq!(selected(&dockspace), Some(SECOND));
 }
 
+fn settle_product_magnetic_preview(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut MagneticPanes,
+    mut initial: Option<FrameOutput>,
+    motion_point: Pos2,
+    target_rect: Rect,
+    case: MagneticDockCase,
+) -> MagneticDockBasin {
+    let drop_fill = dockspace
+        .style()
+        .visuals
+        .drop_fill
+        .expect("the fixture fixes its preview fill");
+    let frame = settle_until(8, || {
+        let frame = initial.take().unwrap_or_else(|| {
+            run_pane_frame(
+                context,
+                dockspace,
+                panes,
+                vec![Event::PointerMoved(motion_point)],
+            )
+        });
+        let missing = preview_readiness(
+            &frame,
+            target_rect,
+            motion_point,
+            case.basin(),
+            drop_fill,
+        );
+        (frame, missing)
+    })
+    .unwrap_or_else(|timeout| panic!("shared L03 preview failed for {case:?}: {timeout}"));
+    let preview = magnetic_preview_rect(&frame.output, drop_fill, target_rect)
+        .expect("causal preview readiness requires one Dock preview");
+    magnetic_basin_from_preview(preview, target_rect)
+}
+
+fn settle_product_magnetic_outcome(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut MagneticPanes,
+    case: MagneticDockCase,
+) {
+    let mut previous_ready = None;
+    settle_until(8, || {
+        let _ = run_pane_frame(context, dockspace, panes, Vec::new());
+        let snapshot = product_magnetic_snapshot(dockspace);
+        let missing = magnetic_outcome_missing(
+            snapshot.as_ref(),
+            case.basin(),
+            context.dragged_id().is_some(),
+            previous_ready.as_ref(),
+        );
+        if missing == ["stable quiescence"] {
+            previous_ready = snapshot.clone();
+        } else if !missing.is_empty() {
+            previous_ready = None;
+        }
+        (snapshot, missing)
+    })
+    .unwrap_or_else(|timeout| panic!("shared L03 outcome failed for {case:?}: {timeout}"))
+    .expect("causal L03 settlement retains the moved source item");
+}
+
+fn run_product_magnetic_case(case: MagneticDockCase) -> [SemanticObservation; 2] {
+    assert_eq!(case.source(), ItemAlias::Secondary);
+    assert_eq!(case.target(), ItemAlias::Primary);
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder(
+        ("product-shared-magnetic", case.basin(), case.cadence()),
+        magnetic_semantic_layout(),
+    )
+    .style(instrumented_style())
+    .build()
+    .expect("the shared magnetic product facade initializes");
+    let mut panes = MagneticPanes::new();
+
+    let (source, target_rect) = settle_until(8, || {
+        let frame = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let source = try_node_rect(&frame.output, Role::Tab, "Second").map(|rect| rect.center());
+        let target_rect = panes.target_rect();
+        let mut missing = Vec::new();
+        if source.is_none() {
+            missing.push("source tab semantics");
+        }
+        if target_rect.is_none_or(|rect| !rect.is_positive()) {
+            missing.push("target pane bounds");
+        }
+        ((source, target_rect), missing)
+    })
+    .unwrap_or_else(|timeout| {
+        panic!("shared L03 fixture readiness failed for {case:?}: {timeout}")
+    });
+    let source = source.expect("causal fixture readiness publishes the source tab");
+    let target_rect = target_rect.expect("causal fixture readiness publishes target pane bounds");
+    let target = normalized_pane_point(target_rect, case);
+    assert!(target_rect.contains(target));
+    let threshold = source + vec2(12.0, 8.0);
+    let observed_basin = match case.cadence() {
+        CadenceProfile::Burst => {
+            let initial = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![
+                    Event::PointerMoved(source),
+                    pointer_button(source, true),
+                    Event::PointerMoved(threshold),
+                    Event::PointerMoved(target),
+                    pointer_button(target, false),
+                ],
+            );
+            settle_product_magnetic_preview(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                Some(initial),
+                target,
+                target_rect,
+                case,
+            )
+        }
+        CadenceProfile::Stepwise => {
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(source), pointer_button(source, true)],
+            );
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(threshold)],
+            );
+            let initial = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(target)],
+            );
+            let observed = settle_product_magnetic_preview(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                Some(initial),
+                target,
+                target_rect,
+                case,
+            );
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![pointer_button(target, false)],
+            );
+            observed
+        }
+        CadenceProfile::Hesitant => {
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(source), pointer_button(source, true)],
+            );
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(threshold)],
+            );
+            for point in [
+                target,
+                tangent_pane_point(target, case.basin(), 3.0),
+                tangent_pane_point(target, case.basin(), -3.0),
+            ] {
+                let _ = run_pane_frame(
+                    &context,
+                    &mut dockspace,
+                    &mut panes,
+                    vec![Event::PointerMoved(point)],
+                );
+            }
+            let initial = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(target)],
+            );
+            let observed = settle_product_magnetic_preview(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                Some(initial),
+                target,
+                target_rect,
+                case,
+            );
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![pointer_button(target, false)],
+            );
+            observed
+        }
+        CadenceProfile::ReleaseWithFinalMove => {
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(source), pointer_button(source, true)],
+            );
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(threshold)],
+            );
+            let acquired = tangent_pane_point(target, case.basin(), -4.0);
+            let initial = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(acquired)],
+            );
+            let observed = settle_product_magnetic_preview(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                Some(initial),
+                acquired,
+                target_rect,
+                case,
+            );
+            let _ = run_pane_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![Event::PointerMoved(target), pointer_button(target, false)],
+            );
+            observed
+        }
+        cadence => panic!("unsupported shared L03 cadence: {cadence:?}"),
+    };
+    assert_eq!(observed_basin, case.basin());
+    settle_product_magnetic_outcome(&context, &mut dockspace, &mut panes, case);
+
+    [
+        SemanticObservation::ItemDocked {
+            item: ItemAlias::Secondary,
+            basin: observed_basin,
+        },
+        SemanticObservation::Quiescent,
+    ]
+}
+
+#[test]
+fn causal_settlement_timeout_names_the_missing_observations() {
+    let timeout = settle_until(2, || {
+        ((), vec!["magnetic Dock preview", "terminal drag state"])
+    })
+    .expect_err("the predicate never becomes causally ready");
+    assert_eq!(
+        timeout.to_string(),
+        "causal settlement exceeded 2 observations; missing magnetic Dock preview, terminal drag state",
+    );
+}
+
+#[test]
+fn shared_l03_supported_magnetic_docking_maps_to_egui_product_semantics() {
+    assert_eq!(
+        MAGNETIC_DOCKING_BASINS.id(),
+        ScenarioId::MagneticDockingBasins,
+    );
+    assert_eq!(MAGNETIC_DOCKING_BASINS.journey(), JourneyId::L03);
+    let supported = [
+        ScenarioCapability::LocalDirectManipulation,
+        ScenarioCapability::SemanticDockBasins,
+        ScenarioCapability::PresentedCandidate,
+    ];
+    assert_eq!(
+        MAGNETIC_DOCKING_BASINS.admission(&supported),
+        ScenarioAdmission::Ready,
+    );
+
+    let cases = MAGNETIC_DOCKING_BASINS
+        .cases()
+        .filter(|case| {
+            matches!(
+                case.cadence(),
+                CadenceProfile::Stepwise
+                    | CadenceProfile::Hesitant
+                    | CadenceProfile::ReleaseWithFinalMove
+            )
+        })
+        .collect::<Vec<_>>();
+    let observations = cases
+        .iter()
+        .copied()
+        .flat_map(run_product_magnetic_case)
+        .collect::<Vec<_>>();
+    let expected = cases
+        .iter()
+        .copied()
+        .flat_map(MagneticDockCase::expected_observations)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observations, expected,
+        "the egui product executor must map every currently supported shared L03 cadence to normalized docking and quiescence observations",
+    );
+}
+
+#[test]
+#[ignore = "Burst release on first target observation does not publish a product preview yet"]
+fn shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics() {
+    let observations = MAGNETIC_DOCKING_BASINS
+        .cases()
+        .flat_map(run_product_magnetic_case)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observations,
+        MAGNETIC_DOCKING_BASINS.expected_observations(),
+        "the complete egui product L03 matrix must eventually match core-host normalized observations",
+    );
+}
+
 #[test]
 fn default_features_paint_outer_guides_and_dock_each_edge() {
     for (name, target, expected_axis, expected_items) in [
@@ -5105,12 +5747,18 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         vec![Event::PointerMoved(bottom), pointer_button(bottom, false)],
     );
     assert_eq!(
-        rect_fill_count(&recovered.output, instrumented_style().visuals.ghost_fill.unwrap()),
+        rect_fill_count(
+            &recovered.output,
+            instrumented_style().visuals.ghost_fill.unwrap()
+        ),
         0,
         "abandonment suppresses the stale pointer ghost in the recovery frame",
     );
     assert_eq!(
-        rect_fill_count(&recovered.output, instrumented_style().visuals.drop_fill.unwrap()),
+        rect_fill_count(
+            &recovered.output,
+            instrumented_style().visuals.drop_fill.unwrap()
+        ),
         0,
         "abandonment suppresses the stale dock preview in the recovery frame",
     );
@@ -5324,7 +5972,10 @@ fn owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame() {
     let mut style = instrumented_style();
     let active_fill = egui::Color32::from_rgb(47, 103, 157);
     style.visuals.tab_active_fill = Some(active_fill);
-    let ghost_fill = style.visuals.ghost_fill.expect("the fixture sets ghost fill");
+    let ghost_fill = style
+        .visuals
+        .ghost_fill
+        .expect("the fixture sets ghost fill");
     let drop_fill = style.visuals.drop_fill.expect("the fixture sets drop fill");
     let passive_guide = style
         .visuals
@@ -5426,7 +6077,10 @@ fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
     let mut style = instrumented_style();
     let active_fill = egui::Color32::from_rgb(43, 97, 151);
     style.visuals.tab_active_fill = Some(active_fill);
-    let ghost_fill = style.visuals.ghost_fill.expect("the fixture sets ghost fill");
+    let ghost_fill = style
+        .visuals
+        .ghost_fill
+        .expect("the fixture sets ghost fill");
     let drop_fill = style.visuals.drop_fill.expect("the fixture sets drop fill");
     let passive_guide = style
         .visuals

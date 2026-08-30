@@ -23,6 +23,8 @@ use dockspace::runtime::{
     SurfaceGesturePhase, SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramRoot,
     SurfacePaintProgramRootKind, SurfacePaintProgramStep, SurfacePaintProgramVisitError,
 };
+#[cfg(test)]
+use dockspace::runtime::{DockspaceDropDirection, DockspaceVisualId};
 use egui::{Color32, Id, Key, Modifiers, Response, Sense, Shape, Stroke, StrokeKind, Ui};
 
 use crate::pane::{PaneFocusState, PaneView};
@@ -129,6 +131,8 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     presentation_proof_scope: Option<&'ui PresentationProofScope>,
     #[cfg(feature = "native-render-support")]
     receivers: &'ui mut Vec<ProductReceiverBinding>,
+    #[cfg(test)]
+    drop_target_observations: &'ui mut Vec<RegisteredDropTargetObservation>,
     #[cfg(feature = "native-render-support")]
     scroll_registrar: Option<&'scroll mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId)>,
     #[cfg(feature = "native-render-support")]
@@ -339,6 +343,24 @@ impl RenderContext<'_, '_, '_> {
         response
     }
 
+    #[cfg(test)]
+    fn observe_drop_target(
+        &mut self,
+        direction: DockspaceDropDirection,
+        visual_id: DockspaceVisualId,
+        response: &Response,
+        receiver: DockspaceReceiverDescriptor,
+    ) {
+        self.drop_target_observations
+            .push(RegisteredDropTargetObservation {
+                direction,
+                visual_id,
+                widget_id: response.id,
+                layer_id: response.layer_id,
+                receiver,
+            });
+    }
+
     fn register_scroll_receiver(
         &mut self,
         _id: Id,
@@ -374,6 +396,16 @@ pub(crate) struct ProductScrollReceiverBinding {
     pub(crate) receiver: DockspaceReceiverDescriptor,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RegisteredDropTargetObservation {
+    pub(crate) direction: DockspaceDropDirection,
+    pub(crate) visual_id: DockspaceVisualId,
+    pub(crate) widget_id: Id,
+    pub(crate) layer_id: egui::LayerId,
+    pub(crate) receiver: DockspaceReceiverDescriptor,
+}
+
 pub(crate) struct ProductPaintOutput {
     pub(crate) local_actions: Vec<PreparedSurfaceAction>,
     #[cfg(feature = "native-render-support")]
@@ -385,6 +417,8 @@ pub(crate) struct ProductPaintOutput {
     pub(crate) missing_items: BTreeSet<ItemId>,
     #[cfg(feature = "native-render-support")]
     pub(crate) receivers: Vec<ProductReceiverBinding>,
+    #[cfg(test)]
+    pub(crate) drop_target_observations: Vec<RegisteredDropTargetObservation>,
     #[cfg(feature = "native-render-support")]
     pub(crate) scroll_receivers: Vec<ProductScrollReceiverBinding>,
     pub(crate) defer_measurement: bool,
@@ -413,6 +447,8 @@ pub(crate) fn paint_surface(
     let mut presentation_evidence = Vec::new();
     #[cfg(feature = "native-render-support")]
     let mut receivers = Vec::new();
+    #[cfg(test)]
+    let mut drop_target_observations = Vec::new();
     #[cfg(feature = "native-render-support")]
     let mut scroll_receivers = Vec::new();
     let mut defer_measurement = false;
@@ -441,6 +477,8 @@ pub(crate) fn paint_surface(
             presentation_proof_scope,
             #[cfg(feature = "native-render-support")]
             receivers: &mut receivers,
+            #[cfg(test)]
+            drop_target_observations: &mut drop_target_observations,
             #[cfg(feature = "native-render-support")]
             scroll_registrar,
             #[cfg(feature = "native-render-support")]
@@ -676,6 +714,8 @@ pub(crate) fn paint_surface(
         missing_items: resources.missing_items().collect(),
         #[cfg(feature = "native-render-support")]
         receivers,
+        #[cfg(test)]
+        drop_target_observations,
         #[cfg(feature = "native-render-support")]
         scroll_receivers,
         defer_measurement,

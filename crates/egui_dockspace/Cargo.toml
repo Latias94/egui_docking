@@ -27,6 +27,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 dockspace = { workspace = true, default-features = false }
+dockspace_host_conformance = { path = "../dockspace_host_conformance" }
 egui = { workspace = true, features = ["default_fonts"] }
 
 [[example]]
