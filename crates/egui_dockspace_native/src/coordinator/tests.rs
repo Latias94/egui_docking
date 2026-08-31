@@ -7,7 +7,8 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     HostFrameReport, HostInputOutcome, NativeCloseState, NativeHostCapabilities,
     NativeWindowInputState, NativeWindowPresentationState, SurfaceGesturePhase,
-    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use eframe::{NativeViewportVisibilityStatus, egui};
 use winit::event::WindowEvent;
@@ -524,10 +525,19 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
         .paint_plan(FIRST_SURFACE)
         .expect("the local gesture plan resolves")
         .expect("the first surface remains paintable");
-    let tab = plan
-        .tabs()
-        .next()
-        .expect("the first surface exposes its tab");
+    let mut tab = None;
+    plan.visit_surface_program(|step| {
+        if let SurfacePaintProgramStep::Operation {
+            operation: SurfacePaintProgramOperation::Tab(record),
+            ..
+        } = step
+        {
+            assert!(tab.replace(record).is_none());
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("the local gesture paint program resolves");
+    let tab = tab.expect("the first surface exposes its tab");
     let point = plan
         .receiver_for_tab_body(tab)
         .expect("the tab has an exact drag receiver")

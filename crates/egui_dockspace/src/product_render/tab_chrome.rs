@@ -1,8 +1,9 @@
 //! Tab-strip overflow controls and the core-owned tab-list popup.
 
 use dockspace::runtime::{
-    SurfaceTabListNavigation, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
-    TabListMenuRowPaintRecord, TabStripControlKind, TabStripControlPaintRecord,
+    SurfacePaintDisposition, SurfaceTabListNavigation, TabListMenuBackdropPaintRecord,
+    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabStripControlKind,
+    TabStripControlPaintRecord,
 };
 use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -14,17 +15,15 @@ use super::geometry::{accesskit_bounds, egui_rect};
 pub(crate) fn paint_control_record(
     context: &mut RenderContext<'_, '_, '_>,
     control: TabStripControlPaintRecord,
+    paint: SurfacePaintDisposition,
 ) {
-    paint_control_records(context, std::iter::once(control));
-}
-
-pub(crate) fn paint_popups(context: &mut RenderContext<'_, '_, '_>) {
-    paint_popup(context);
+    paint_control_records(context, std::iter::once(control), paint);
 }
 
 fn paint_control_records(
     context: &mut RenderContext<'_, '_, '_>,
     controls: impl IntoIterator<Item = TabStripControlPaintRecord>,
+    paint: SurfacePaintDisposition,
 ) {
     for control in controls {
         let Some(bounds) = egui_rect(control.bounds()) else {
@@ -51,9 +50,7 @@ fn paint_control_records(
                 .then(|| context.plan.receiver_for_tab_strip_control(control))
                 .flatten(),
         );
-        let paint_omitted = context
-            .drag_decoration()
-            .is_some_and(|decoration| decoration.omits_visual(control.visual_id()));
+        let paint_omitted = context.source_gap_active(paint);
         if !paint_omitted {
             paint_control(context, control, bounds, &response, enabled);
         }
@@ -133,11 +130,7 @@ fn configure_control_accessibility(
     bounds: Rect,
     enabled: bool,
 ) {
-    let menu_open = control.kind() == TabStripControlKind::TabListMenu
-        && context
-            .plan
-            .tab_list_menus()
-            .any(|menu| menu.tab_bar_visual_id() == control.tab_bar_visual_id());
+    let menu_open = control.kind() == TabStripControlKind::TabListMenu && control.menu_open();
     context.ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(Role::Button);
         node.set_bounds(accesskit_bounds(bounds));
@@ -158,19 +151,7 @@ fn configure_control_accessibility(
     });
 }
 
-fn paint_popup(context: &mut RenderContext<'_, '_, '_>) {
-    let backdrops = context.plan.tab_list_menu_backdrops().collect::<Vec<_>>();
-    for backdrop in backdrops {
-        paint_backdrop(context, backdrop);
-    }
-
-    let menus = context.plan.tab_list_menus().collect::<Vec<_>>();
-    for menu in menus {
-        paint_menu(context, menu);
-    }
-}
-
-fn paint_backdrop(
+pub(crate) fn paint_backdrop(
     context: &mut RenderContext<'_, '_, '_>,
     backdrop: TabListMenuBackdropPaintRecord,
 ) {
@@ -211,7 +192,11 @@ fn paint_backdrop(
     }
 }
 
-fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRecord<'_>) {
+pub(crate) fn paint_menu(
+    context: &mut RenderContext<'_, '_, '_>,
+    menu: TabListMenuPaintRecord<'_>,
+    paint: SurfacePaintDisposition,
+) {
     let Some(bounds) = egui_rect(menu.bounds()) else {
         return;
     };
@@ -233,9 +218,7 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
     ));
     context.register_scroll_receiver(frame_scroll_id, frame_receiver);
     let _ = context.interact_receiver(bounds, frame_id, Sense::hover(), frame_receiver);
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(menu.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted {
         context.ui.painter().rect(
             bounds,
@@ -266,9 +249,9 @@ fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRec
 
     let rows = menu.rows().collect::<Vec<_>>();
     for row in rows.iter().copied() {
-        paint_menu_row(context, menu, row, viewport);
+        paint_menu_row(context, menu, row, viewport, paint);
     }
-    paint_scrollbar(context, menu, viewport, bounds);
+    paint_scrollbar(context, menu, viewport, bounds, paint);
     capture_menu_keyboard(context, menu, &rows);
 }
 
@@ -277,6 +260,7 @@ fn paint_menu_row(
     menu: TabListMenuPaintRecord<'_>,
     row: TabListMenuRowPaintRecord,
     viewport: Rect,
+    paint: SurfacePaintDisposition,
 ) {
     let Some(bounds) = egui_rect(row.bounds()) else {
         return;
@@ -313,9 +297,7 @@ fn paint_menu_row(
             receiver,
         )
     });
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(row.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     let fill = if row.focused() {
         context
             .style
@@ -402,6 +384,7 @@ fn paint_scrollbar(
     menu: TabListMenuPaintRecord<'_>,
     viewport: Rect,
     bounds: Rect,
+    paint: SurfacePaintDisposition,
 ) {
     if menu.maximum_scroll_offset() <= 0.0 || bounds.max.x <= viewport.max.x {
         return;
@@ -429,9 +412,7 @@ fn paint_scrollbar(
         },
         receiver,
     );
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(menu.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted {
         context
             .ui
@@ -624,11 +605,7 @@ fn capture_menu_keyboard(
     if context
         .ui
         .input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape))
-        && let Some(backdrop) = context
-            .plan
-            .tab_list_menu_backdrops()
-            .find(|backdrop| backdrop.menu_visual_id() == menu.visual_id())
-        && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(backdrop)
+        && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(menu.backdrop())
     {
         context.push_local_action(action);
     }

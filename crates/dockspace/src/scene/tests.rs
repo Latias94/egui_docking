@@ -14,10 +14,43 @@ use crate::scene_manifest::{
     PolicyRevision, RequirementRevision, SceneRequirementDraft, SurfaceRequirementRevision,
     SurfaceRequirements,
 };
+use crate::tab_strip::{TabListMenuSessionId, TabStripStateKey};
 use crate::transition::WorkspaceVersion;
 
 fn bounds() -> LogicalRect {
     LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("valid bounds")
+}
+
+#[test]
+fn surface_program_requires_popup_backdrop_and_menu_pair() {
+    let owner = TabStripStateKey::new(
+        SurfaceId::new(1),
+        TabBarSceneId {
+            root: RootId::new(2),
+            tabs: crate::ids::NodeId::default(),
+        },
+    );
+    let session = TabListMenuSessionId::new_for_test(owner, 1);
+
+    let mut menu_only = SurfaceProgram::default();
+    menu_only.defer_popup_menu(session);
+    assert_eq!(
+        menu_only.finish(),
+        Err(SurfaceProgramBuildError::PopupMenuWithoutBackdrop { session })
+    );
+
+    let mut backdrop_only = SurfaceProgram::default();
+    backdrop_only.defer_popup_backdrop(session);
+    backdrop_only
+        .finish()
+        .expect("a non-owner surface may retain only the popup backdrop");
+
+    let mut paired = SurfaceProgram::default();
+    paired.defer_popup_backdrop(session);
+    paired.defer_popup_menu(session);
+    paired
+        .finish()
+        .expect("a popup session with both layers seals");
 }
 
 fn occlusion(floating: u64, rect: LogicalRect, layer: u64) -> DropOcclusionRecord {
@@ -158,7 +191,15 @@ fn manifest(
 }
 
 fn measured_candidate(ticket: SurfaceMeasurementTicket) -> PresentationPlan {
-    PresentationPlan::from_measurements(ticket, PopupPlaneRequirement::default(), bounds(), None)
+    let mut plan = PresentationPlan::from_measurements(
+        ticket,
+        PopupPlaneRequirement::default(),
+        bounds(),
+        None,
+    );
+    plan.finish_surface_program()
+        .expect("empty scene fixture program should finish");
+    plan
 }
 
 fn headless_capture() -> SurfaceCoordinateCapture {

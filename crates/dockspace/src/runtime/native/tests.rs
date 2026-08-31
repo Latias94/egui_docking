@@ -10,8 +10,9 @@ use crate::policy::DockPolicy;
 use crate::runtime::native_effect::{NativeEffectDropQueue, NativeEffectRequest};
 use crate::runtime::{
     DockspaceSemanticOutput, HostFrameReport, NativeDispatchFailure, NativeReceiverPurpose,
-    NativeReceiverQuery, PaintedSurfaceOutput, PresentedDockspaceSurface,
-    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    NativeReceiverQuery, PaintedSurfaceOutput, PresentedDockspaceSurface, SurfacePaintPlan,
+    SurfacePaintProgramStep, SurfacePresentationResult, SurfaceUnavailableReason,
+    UniformSurfaceMetrics,
 };
 use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
@@ -21,6 +22,22 @@ const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const ITEM: ItemId = ItemId::new(1);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
+
+fn program_has_drag_preview(plan: SurfacePaintPlan<'_>) -> bool {
+    let mut previewed = false;
+    plan.visit_surface_program(|step| {
+        if matches!(step, SurfacePaintProgramStep::DragPreview(_)) {
+            assert!(
+                !previewed,
+                "one paint program cannot publish duplicate previews"
+            );
+            previewed = true;
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("the native paint plan must expose one valid surface program");
+    previewed
+}
 
 #[test]
 fn native_surface_close_defaults_to_presentation_recovery() {

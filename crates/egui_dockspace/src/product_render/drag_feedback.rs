@@ -6,10 +6,10 @@ use egui::{CursorIcon, Rect, Stroke, StrokeKind, pos2};
 use super::RenderContext;
 use super::geometry::egui_rect;
 
-pub(super) fn paint(context: &mut RenderContext<'_, '_, '_>) {
-    let Some(decoration) = context.drag_decoration() else {
-        return;
-    };
+pub(super) fn paint(
+    context: &mut RenderContext<'_, '_, '_>,
+    decoration: dockspace::runtime::DockspaceDragDecoration<'_>,
+) {
     let Some(source) = egui_rect(decoration.source_bounds()) else {
         return;
     };

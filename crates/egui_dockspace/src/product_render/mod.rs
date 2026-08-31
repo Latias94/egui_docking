@@ -17,11 +17,12 @@ mod tabs;
 
 use dockspace::model::{FloatingPresentationId, ItemId};
 use dockspace::runtime::{
-    ContainedPaintRecord, DockspaceDragDecoration, DockspacePaneFocusObservation,
-    DockspacePaneFocusRequest, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceRuntimeError, PreparedPaneFocusObservation, PreparedSurfaceAction,
-    SurfaceGesturePhase, SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramRoot,
-    SurfacePaintProgramRootKind, SurfacePaintProgramStep, SurfacePaintProgramVisitError,
+    ContainedPaintRecord, DockspaceContainedTransformPreview, DockspaceDragPreview,
+    DockspacePaneFocusObservation, DockspacePaneFocusRequest, DockspacePreviewVisual,
+    DockspaceReceiverDescriptor, DockspaceRuntimeError, PreparedPaneFocusObservation,
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfacePaintDisposition, SurfacePaintPlan,
+    SurfacePaintProgramOperation, SurfacePaintProgramRoot, SurfacePaintProgramRootKind,
+    SurfacePaintProgramStep, SurfacePaintProgramVisitError,
 };
 #[cfg(test)]
 use dockspace::runtime::{DockspaceDropDirection, DockspaceVisualId};
@@ -202,10 +203,8 @@ impl RenderContext<'_, '_, '_> {
         self.pointer_authority.emits_local_preview_gestures() && response.dragged()
     }
 
-    fn drag_decoration(&self) -> Option<DockspaceDragDecoration<'_>> {
-        (!self.pointer_authority.cancels_active_gesture())
-            .then(|| self.plan.drag_decoration())
-            .flatten()
+    fn source_gap_active(&self, paint: SurfacePaintDisposition) -> bool {
+        !self.pointer_authority.cancels_active_gesture() && paint.is_source_gap()
     }
 
     fn splitter_fill(&self, response: &Response, emphasized: bool) -> Color32 {
@@ -439,7 +438,7 @@ pub(crate) fn paint_surface(
     >,
 ) -> Result<ProductPaintOutput, DockspaceRuntimeError> {
     let visuals = style.resolved_visuals(ui.visuals());
-    let resources = PaintResources::from_plan(plan, ui, panes, style);
+    let resources = PaintResources::from_plan(plan, ui, panes, style)?;
     let pane_focus_request = plan.pane_focus_request();
     let mut pane_focus_target_requested = false;
     let mut pane_focus_target = None;
@@ -453,6 +452,7 @@ pub(crate) fn paint_surface(
     let mut scroll_receivers = Vec::new();
     let mut defer_measurement = false;
     let mut transient_visuals_complete = true;
+    let mut terminal_semantic_output = None;
     let local_primary_presses = actions::local_primary_presses(ui, pointer_authority);
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
         ui.allocate_rect(bounds, Sense::hover());
@@ -494,7 +494,7 @@ pub(crate) fn paint_surface(
             .plan
             .visit_surface_program(|step| -> Result<(), DockspaceRuntimeError> {
                 match step {
-                    SurfacePaintProgramStep::RootBegin(root) => {
+                    SurfacePaintProgramStep::RootBegin { root, paint } => {
                         if let SurfacePaintProgramRootKind::Contained(record) = root.kind() {
                             let window_visuals = context.style.resolved_contained_window(
                                 context.ui.style(),
@@ -505,10 +505,15 @@ pub(crate) fn paint_surface(
                                 record,
                                 &root,
                                 window_visuals,
+                                paint,
                             );
                         }
                     }
-                    SurfacePaintProgramStep::Operation { root, operation } => {
+                    SurfacePaintProgramStep::Operation {
+                        root,
+                        operation,
+                        paint,
+                    } => {
                         let visual_context = match root.kind() {
                             SurfacePaintProgramRootKind::Main => tabs::RootVisualContext::Main,
                             SurfacePaintProgramRootKind::Contained(record) => {
@@ -527,6 +532,7 @@ pub(crate) fn paint_surface(
                             &root,
                             &operation,
                             visual_context,
+                            paint,
                         )?;
                     }
                     SurfacePaintProgramStep::RootEnd(root) => {
@@ -534,12 +540,16 @@ pub(crate) fn paint_surface(
                             context.flush_contained_activation(record);
                         }
                     }
-                    SurfacePaintProgramStep::ProjectionPlane => {
-                        tab_chrome::paint_popups(&mut context);
+                    SurfacePaintProgramStep::PopupBackdrop(backdrop) => {
+                        tab_chrome::paint_backdrop(&mut context, backdrop);
+                    }
+                    SurfacePaintProgramStep::PopupMenu { menu, paint } => {
+                        tab_chrome::paint_menu(&mut context, menu, paint);
+                    }
+                    SurfacePaintProgramStep::DragPreview(preview) => {
                         let suppress_gesture_visuals =
                             context.pointer_authority.cancels_active_gesture();
-                        let drag_preview_required =
-                            !suppress_gesture_visuals && context.plan.drag_preview().is_some();
+                        let drag_preview_required = !suppress_gesture_visuals;
                         let (drag_preview_painted, drag_preview_proof) = if suppress_gesture_visuals
                         {
                             (false, None)
@@ -547,6 +557,7 @@ pub(crate) fn paint_surface(
                             paint_preview(
                                 context.ui,
                                 context.plan,
+                                preview,
                                 context.visuals,
                                 context
                                     .pointer_authority
@@ -565,6 +576,7 @@ pub(crate) fn paint_surface(
                             *context.defer_measurement = true;
                         }
                     }
+                    SurfacePaintProgramStep::DropTarget(_) => {}
                     SurfacePaintProgramStep::DropGuide { affordance, .. } => {
                         if !context.pointer_authority.cancels_active_gesture()
                             && let Some(cluster) = affordance
@@ -572,11 +584,10 @@ pub(crate) fn paint_surface(
                             guides::paint_cluster(&mut context, cluster);
                         }
                     }
-                    SurfacePaintProgramStep::FeedbackPlane => {
+                    SurfacePaintProgramStep::ContainedTransformPreview(preview) => {
                         let suppress_gesture_visuals =
                             context.pointer_authority.cancels_active_gesture();
-                        let contained_preview_required = !suppress_gesture_visuals
-                            && context.plan.contained_transform_preview().is_some();
+                        let contained_preview_required = !suppress_gesture_visuals;
                         let (contained_preview_painted, contained_preview_proof) =
                             if suppress_gesture_visuals {
                                 (false, None)
@@ -584,6 +595,7 @@ pub(crate) fn paint_surface(
                                 paint_contained_transform_preview(
                                     context.ui,
                                     context.plan,
+                                    preview,
                                     context.visuals,
                                     context
                                         .pointer_authority
@@ -601,7 +613,14 @@ pub(crate) fn paint_surface(
                         {
                             context.push_presentation_evidence(action, contained_preview_proof);
                         }
-                        drag_feedback::paint(&mut context);
+                    }
+                    SurfacePaintProgramStep::DragDecoration(decoration)
+                        if !context.pointer_authority.cancels_active_gesture() =>
+                    {
+                        drag_feedback::paint(&mut context, decoration);
+                    }
+                    SurfacePaintProgramStep::DragDecoration(_) => {}
+                    SurfacePaintProgramStep::InteractionFeedback => {
                         if context.pointer_authority.cancels_active_gesture()
                             && let Some(action) = context.plan.prepare_escape_cancel()
                         {
@@ -629,11 +648,19 @@ pub(crate) fn paint_surface(
                             context.push_local_action(action);
                         }
                     }
+                    SurfacePaintProgramStep::SurfaceEnd { semantic_output } => {
+                        terminal_semantic_output = Some(semantic_output);
+                    }
                 }
                 Ok(())
             })
             .map_err(SurfacePaintProgramVisitError::into_runtime_error)?;
     }
+    debug_assert_eq!(
+        terminal_semantic_output,
+        Some(plan.semantic_output()),
+        "the paint program must terminate with its exact candidate output"
+    );
     let (pane_focus_observation, pane_focus_pending, pane_focus_capability) = pane_focus_request
         .map_or((None, None, DockspaceCapability::Supported), |request| {
             let (observation, capability) = if pane_focus_target_requested {
@@ -729,31 +756,32 @@ fn paint_surface_program_operation(
     root: &SurfacePaintProgramRoot<'_>,
     operation: &SurfacePaintProgramOperation<'_>,
     visual_context: tabs::RootVisualContext<'_>,
+    paint: SurfacePaintDisposition,
 ) -> Result<(), DockspaceRuntimeError> {
     match *operation {
         SurfacePaintProgramOperation::Pane(pane) => {
-            tabs::paint_pane(context, pane, visual_context);
+            tabs::paint_pane(context, pane, visual_context, paint);
         }
         SurfacePaintProgramOperation::TabBar(bar) => {
-            tabs::paint_tab_bar(context, bar, visual_context.contained());
+            tabs::paint_tab_bar(context, bar, visual_context.contained(), paint);
         }
         SurfacePaintProgramOperation::Tab(tab) => {
-            tabs::paint_tab_record(context, tab, visual_context.contained());
+            tabs::paint_tab_record(context, tab, visual_context.contained(), paint);
         }
         SurfacePaintProgramOperation::Splitter(splitter) => {
-            splitters::paint_splitter(context, splitter);
+            splitters::paint_splitter(context, splitter, paint);
         }
         SurfacePaintProgramOperation::SplitterJunction(junction) => {
-            splitters::paint_junction(context, junction);
+            splitters::paint_junction(context, junction, paint);
         }
         SurfacePaintProgramOperation::TabStripControl(control) => {
-            tab_chrome::paint_control_record(context, control);
+            tab_chrome::paint_control_record(context, control, paint);
         }
         SurfacePaintProgramOperation::ContainedControls(record) => {
-            contained::paint_controls(context, record, root);
+            contained::paint_controls(context, record, root, paint);
         }
         SurfacePaintProgramOperation::PresentationMenuAnchor(anchor) => {
-            presentation_menu::paint(context, anchor)?;
+            presentation_menu::paint(context, anchor, root.contained(), paint)?;
         }
     }
     Ok(())
@@ -762,12 +790,10 @@ fn paint_surface_program_operation(
 fn paint_preview(
     ui: &Ui,
     plan: SurfacePaintPlan<'_>,
+    preview: DockspaceDragPreview<'_>,
     visuals: ResolvedDockVisuals,
     proof_scope: Option<&PresentationProofScope>,
 ) -> (bool, Option<FinalOutputShapeProof>) {
-    let Some(preview) = plan.drag_preview() else {
-        return (false, None);
-    };
     let visual = preview.visual();
     let Some(bounds) = geometry::egui_rect(plan.bounds()) else {
         return (false, None);
@@ -861,12 +887,10 @@ fn preview_rect(
 fn paint_contained_transform_preview(
     ui: &Ui,
     plan: SurfacePaintPlan<'_>,
+    preview: DockspaceContainedTransformPreview<'_>,
     visuals: ResolvedDockVisuals,
     proof_scope: Option<&PresentationProofScope>,
 ) -> (bool, Option<FinalOutputShapeProof>) {
-    let Some(preview) = plan.contained_transform_preview() else {
-        return (false, None);
-    };
     if preview.surface() != plan.surface() {
         return (false, None);
     }

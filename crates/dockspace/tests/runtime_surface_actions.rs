@@ -9,13 +9,14 @@ use crate::policy::{
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
 };
 use crate::runtime::{
-    ContainedResizeDirection, DockspaceDragSourceKind, DockspacePaneFocusObservation,
-    DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
-    DockspacePresentationMenuAnchorKind, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-    DockspaceRuntimeErrorKind, DockspaceSession, DockspaceVisualId, DockspaceVisualKind,
-    HostCloseRequestOrigin, HostInputOutcome, PreparedSurfaceAction,
-    SurfaceContainedResizeAdjustment, SurfaceGesturePhase, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
+    ContainedResizeDirection, DockspaceDragDecoration, DockspaceDragPreview,
+    DockspaceDragSourceKind, DockspacePaneFocusObservation, DockspacePresentationCommandKind,
+    DockspacePresentationCommandUnavailable, DockspacePresentationMenuAnchorKind,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceRuntimeErrorKind,
+    DockspaceSession, DockspaceVisualId, DockspaceVisualKind, HostCloseRequestOrigin,
+    HostInputOutcome, PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
+    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePaintDisposition, SurfacePaintPlan,
+    SurfacePaintProgramStep, SurfacePointerButton, SurfacePointerCancelReason,
     SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
     SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
     SurfaceSplitterAdjustment, SurfaceTabNavigation, SurfaceUnavailableReason,
@@ -35,6 +36,73 @@ const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
 const FOURTH: ItemId = ItemId::new(4);
+const FIFTH: ItemId = ItemId::new(5);
+const SIXTH: ItemId = ItemId::new(6);
+const SEVENTH: ItemId = ItemId::new(7);
+const EIGHTH: ItemId = ItemId::new(8);
+
+fn program_drag_decoration<'frame>(
+    plan: SurfacePaintPlan<'frame>,
+) -> Option<DockspaceDragDecoration<'frame>> {
+    let mut decoration = None;
+    plan.visit_surface_program(|step| {
+        if let SurfacePaintProgramStep::DragDecoration(current) = step {
+            assert!(decoration.replace(current).is_none());
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("paint plan should expose one valid surface program");
+    decoration
+}
+
+fn program_drag_preview<'frame>(
+    plan: SurfacePaintPlan<'frame>,
+) -> Option<DockspaceDragPreview<'frame>> {
+    let mut preview = None;
+    plan.visit_surface_program(|step| {
+        if let SurfacePaintProgramStep::DragPreview(current) = step {
+            assert!(preview.replace(current).is_none());
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("paint plan should expose one valid surface program");
+    preview
+}
+
+fn program_paint_disposition(
+    plan: SurfacePaintPlan<'_>,
+    visual: DockspaceVisualId,
+) -> Option<SurfacePaintDisposition> {
+    let mut disposition = None;
+    plan.visit_surface_program(|step| {
+        let current = match step {
+            SurfacePaintProgramStep::RootBegin { root, paint }
+                if root
+                    .contained()
+                    .is_some_and(|record| record.visual_id() == visual) =>
+            {
+                Some(paint)
+            }
+            SurfacePaintProgramStep::Operation {
+                operation, paint, ..
+            } if operation.visual_id() == visual => Some(paint),
+            SurfacePaintProgramStep::PopupMenu { menu, paint } if menu.visual_id() == visual => {
+                Some(paint)
+            }
+            _ => None,
+        };
+        if let Some(current) = current {
+            assert!(
+                disposition.is_none_or(|existing| existing == current),
+                "one visual must not receive conflicting paint dispositions"
+            );
+            disposition = Some(current);
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("paint plan should expose one valid surface program");
+    disposition
+}
 
 fn session() -> DockspaceSession {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -133,6 +201,28 @@ fn overflow_session() -> DockspaceSession {
     .expect("overflow surface-action layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("overflow surface-action session initializes")
+}
+
+fn multiview_overflow_session() -> DockspaceSession {
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                ROOT,
+                DockspaceNode::central_tabs([FIRST, SECOND, THIRD, FOURTH]),
+            ),
+        ),
+        DockspaceSurfaceLayout::new(
+            TARGET_SURFACE,
+            DockspaceRootLayout::new(
+                TARGET_ROOT,
+                DockspaceNode::central_tabs([FIFTH, SIXTH, SEVENTH, EIGHTH]),
+            ),
+        ),
+    ])
+    .expect("multiview overflow surface-action layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("multiview overflow surface-action session initializes")
 }
 
 fn contained_session(policy: DockPolicy) -> DockspaceSession {
@@ -461,8 +551,15 @@ fn overflow_measurement(request: SurfaceMeasurementRequest) -> SurfaceMeasuremen
 }
 
 fn measure_overflow_surface(frame: &mut crate::runtime::DockspaceHostFrame<'_>) {
+    measure_overflow_surface_on(frame, SURFACE);
+}
+
+fn measure_overflow_surface_on(
+    frame: &mut crate::runtime::DockspaceHostFrame<'_>,
+    surface: SurfaceId,
+) {
     frame
-        .measure_surface_with(SURFACE, overflow_measurement)
+        .measure_surface_with(surface, overflow_measurement)
         .expect("overflow surface measurement succeeds");
 }
 
@@ -539,36 +636,40 @@ fn external_journal_drag_exposes_core_drag_decoration_without_local_response() {
     ])
     .expect("the lossless journal crosses the core drag threshold");
     {
-        let decoration = drag
+        let plan = drag
             .paint_plan(SURFACE)
             .expect("source drag paint plan lookup succeeds")
-            .expect("the presented source candidate remains paintable")
-            .drag_decoration()
+            .expect("the presented source candidate remains paintable");
+        let decoration = program_drag_decoration(plan)
             .expect("journal reduction owns the active source decoration");
         assert_eq!(decoration.source_surface(), SURFACE);
         assert_eq!(decoration.kind(), DockspaceDragSourceKind::Item);
         assert_eq!(decoration.item(), Some(FIRST));
         assert_eq!(decoration.source_visual(), source_visual);
-        assert!(decoration.omits_visual(source_visual));
+        assert_eq!(
+            program_paint_disposition(plan, source_visual),
+            Some(SurfacePaintDisposition::SourceGap),
+            "the exact source operation owns the source-gap decision"
+        );
         let debug = format!("{decoration:?}");
         assert!(!debug.contains("NodeId"));
         assert!(!debug.contains("fingerprint"));
     }
     {
-        let decoration = drag
+        let plan = drag
             .paint_plan(TARGET_SURFACE)
             .expect("target drag paint plan lookup succeeds")
-            .expect("the target candidate remains paintable")
-            .drag_decoration()
+            .expect("the target candidate remains paintable");
+        let decoration = program_drag_decoration(plan)
             .expect("the same core decoration reaches the second ready surface");
         assert_eq!(decoration.source_surface(), SURFACE);
         assert_eq!(decoration.kind(), DockspaceDragSourceKind::Item);
         assert_eq!(decoration.item(), Some(FIRST));
         assert_eq!(decoration.source_visual(), source_visual);
-        assert!(decoration.omits_visual(source_visual));
-        assert!(
-            !decoration.omits_visual(target_visual),
-            "only the exact source visual is omitted on a target surface"
+        assert_eq!(
+            program_paint_disposition(plan, target_visual),
+            Some(SurfacePaintDisposition::Visible),
+            "the target surface keeps its own tab operation visible"
         );
     }
     drag.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -590,13 +691,12 @@ fn external_journal_drag_exposes_core_drag_decoration_without_local_response() {
         ))
         .expect("the provider explicitly cancels the active stream");
     for surface in [SURFACE, TARGET_SURFACE] {
+        let plan = cancel
+            .paint_plan(surface)
+            .expect("cancelled paint plan lookup succeeds")
+            .expect("the retained candidate remains paintable");
         assert!(
-            cancel
-                .paint_plan(surface)
-                .expect("cancelled paint plan lookup succeeds")
-                .expect("the retained candidate remains paintable")
-                .drag_decoration()
-                .is_none(),
+            program_drag_decoration(plan).is_none(),
             "the core decoration disappears from every cancellation record"
         );
     }
@@ -624,13 +724,12 @@ fn external_journal_drag_exposes_core_drag_decoration_without_local_response() {
             ),
         ])
         .expect("a fresh journal stream starts after explicit cancellation");
+    let restarted = restart
+        .paint_plan(SURFACE)
+        .expect("restarted paint plan lookup succeeds")
+        .expect("the retained source remains paintable");
     assert!(
-        restart
-            .paint_plan(SURFACE)
-            .expect("restarted paint plan lookup succeeds")
-            .expect("the retained source remains paintable")
-            .drag_decoration()
-            .is_some(),
+        program_drag_decoration(restarted).is_some(),
         "cancellation leaves no core or adapter owner blocking the next press"
     );
     restart
@@ -990,11 +1089,11 @@ fn local_tab_drag_into_its_source_pane_center_publishes_a_contained_preview() {
     let mut inspection = session
         .begin_host_frame()
         .expect("preview inspection frame begins");
-    let preview = inspection
+    let inspection_plan = inspection
         .paint_plan(SURFACE)
         .expect("preview paint plan lookup succeeds")
-        .expect("the dragging surface remains paintable")
-        .drag_preview()
+        .expect("the dragging surface remains paintable");
+    let preview = program_drag_preview(inspection_plan)
         .expect("a no-target local drag publishes a contained preview");
     assert!(matches!(
         preview.visual(),
@@ -1073,13 +1172,12 @@ fn local_tab_drag_outside_the_surface_cancels_without_contained_preview() {
     let mut inspection = session
         .begin_host_frame()
         .expect("outside preview inspection begins");
+    let outside_plan = inspection
+        .paint_plan(SURFACE)
+        .expect("outside preview paint plan lookup succeeds")
+        .expect("the dragging surface remains paintable");
     assert!(
-        inspection
-            .paint_plan(SURFACE)
-            .expect("outside preview paint plan lookup succeeds")
-            .expect("the dragging surface remains paintable")
-            .drag_preview()
-            .is_none(),
+        program_drag_preview(outside_plan).is_none(),
         "surface-external local coordinates cannot authorize contained placement"
     );
     inspection
@@ -1464,11 +1562,11 @@ fn rear_contained_title_begin_atomically_raises_and_starts_the_local_drag() {
         .expect("contained drag feedback plan lookup succeeds")
         .expect("raised contained candidate remains paintable");
     assert!(
-        plan.drag_decoration().is_some(),
+        program_drag_decoration(plan).is_some(),
         "the raised source remains decorated in the terminal scene"
     );
     assert!(
-        plan.drag_preview().is_some(),
+        program_drag_preview(plan).is_some(),
         "the threshold-crossing preview is rebased onto the terminal scene"
     );
     inspection
@@ -1542,11 +1640,11 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
     let mut paint = session
         .begin_host_frame()
         .expect("contained magnetic-preview paint begins");
-    let preview = paint
+    let paint_plan = paint
         .paint_plan(SURFACE)
         .expect("contained magnetic-preview plan lookup succeeds")
-        .expect("contained magnetic-preview candidate remains paintable")
-        .drag_preview()
+        .expect("contained magnetic-preview candidate remains paintable");
+    let preview = program_drag_preview(paint_plan)
         .expect("leaving the source rectangle acquires a pane target");
     assert!(matches!(
         preview.visual(),
@@ -1600,12 +1698,12 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
         let mut paint = session
             .begin_host_frame()
             .expect("release-pending magnetic preview paint begins");
+        let release_plan = paint
+            .paint_plan(SURFACE)
+            .expect("release-pending plan lookup succeeds")
+            .expect("release-pending candidate remains paintable");
         assert!(matches!(
-            paint
-                .paint_plan(SURFACE)
-                .expect("release-pending plan lookup succeeds")
-                .expect("release-pending candidate remains paintable")
-                .drag_preview()
+            program_drag_preview(release_plan)
                 .expect("the release-pending target remains visible")
                 .visual(),
             crate::runtime::DockspacePreviewVisual::Dock {
@@ -2621,4 +2719,172 @@ fn exact_surface_tab_list_actions_open_and_select_from_the_current_candidate() {
             .expect("fourth item remains open")
             .is_selected()
     );
+}
+
+#[test]
+fn non_owner_popup_backdrop_dismisses_the_active_menu() {
+    let mut session = multiview_overflow_session();
+    let mut initial = session
+        .begin_host_frame()
+        .expect("multiview overflow measurement frame begins");
+    for surface in [SURFACE, TARGET_SURFACE] {
+        measure_overflow_surface_on(&mut initial, surface);
+    }
+    initial
+        .commit()
+        .expect("multiview overflow candidates commit");
+
+    let mut prepare_open = session
+        .begin_host_frame()
+        .expect("target menu control paint frame begins");
+    let target_plan = prepare_open
+        .paint_plan(TARGET_SURFACE)
+        .expect("target menu control plan lookup succeeds")
+        .expect("target menu control plan is paintable");
+    let target_control = target_plan
+        .tab_strip_controls()
+        .find(|control| control.kind() == TabStripControlKind::TabListMenu)
+        .expect("target overflow plan exposes the menu control");
+    let open = target_plan
+        .prepare_tab_strip_control_activation(target_control)
+        .expect("target menu control prepares an action");
+    prepare_open
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("target control plan retains all surfaces");
+    prepare_open
+        .commit()
+        .expect("target control paint frame commits");
+
+    let mut open_frame = session
+        .begin_host_frame()
+        .expect("target menu open frame begins");
+    open_frame
+        .submit_surface_action(open)
+        .expect("target menu open action is accepted");
+    open_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("target menu open defers remeasurement");
+    open_frame.commit().expect("target menu open commits");
+
+    let mut publish_popup = session
+        .begin_host_frame()
+        .expect("cross-surface popup publication frame begins");
+    for surface in [SURFACE, TARGET_SURFACE] {
+        measure_overflow_surface_on(&mut publish_popup, surface);
+    }
+    publish_popup
+        .commit()
+        .expect("cross-surface popup candidates commit");
+
+    let mut prepare_dismiss = session
+        .begin_host_frame()
+        .expect("non-owner backdrop paint frame begins");
+    let dismiss = {
+        let non_owner = prepare_dismiss
+            .paint_plan(SURFACE)
+            .expect("non-owner popup plan lookup succeeds")
+            .expect("non-owner popup plan is paintable");
+        let control = non_owner
+            .tab_strip_controls()
+            .find(|control| control.kind() == TabStripControlKind::TabListMenu)
+            .expect("non-owner overflow plan exposes the menu control");
+        assert!(
+            !control.menu_open(),
+            "only the popup owner may expose an expanded menu control"
+        );
+        let mut backdrop = None;
+        let mut popup_menu_seen = false;
+        non_owner
+            .visit_surface_program(|step| {
+                match step {
+                    SurfacePaintProgramStep::PopupBackdrop(current) => {
+                        assert!(backdrop.replace(current).is_none());
+                    }
+                    SurfacePaintProgramStep::PopupMenu { .. } => popup_menu_seen = true,
+                    _ => {}
+                }
+                Ok::<(), ()>(())
+            })
+            .expect("the non-owner popup program is valid");
+        assert!(
+            !popup_menu_seen,
+            "a non-owner surface must not reconstruct the owner's menu"
+        );
+        non_owner
+            .prepare_tab_list_menu_dismiss(
+                backdrop.expect("the non-owner surface retains the popup backdrop"),
+            )
+            .expect("the non-owner backdrop prepares a dismiss action")
+    };
+    {
+        let owner = prepare_dismiss
+            .paint_plan(TARGET_SURFACE)
+            .expect("owner popup plan lookup succeeds")
+            .expect("owner popup plan is paintable");
+        let control = owner
+            .tab_strip_controls()
+            .find(|control| control.kind() == TabStripControlKind::TabListMenu)
+            .expect("owner overflow plan exposes the menu control");
+        assert!(
+            control.menu_open(),
+            "the popup owner must expose an expanded menu control"
+        );
+    }
+    prepare_dismiss
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("popup inspection retains both surface candidates");
+    prepare_dismiss
+        .commit()
+        .expect("popup inspection frame commits");
+
+    let mut dismiss_frame = session
+        .begin_host_frame()
+        .expect("non-owner backdrop dismiss frame begins");
+    dismiss_frame
+        .submit_surface_action(dismiss)
+        .expect("non-owner backdrop dismiss action is accepted");
+    dismiss_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("non-owner backdrop dismissal defers remeasurement");
+    dismiss_frame
+        .commit()
+        .expect("non-owner backdrop dismissal commits");
+
+    let mut publish_closed = session
+        .begin_host_frame()
+        .expect("closed popup publication frame begins");
+    for surface in [SURFACE, TARGET_SURFACE] {
+        measure_overflow_surface_on(&mut publish_closed, surface);
+    }
+    publish_closed
+        .commit()
+        .expect("closed popup candidates commit");
+
+    let mut verify = session
+        .begin_host_frame()
+        .expect("closed popup verification frame begins");
+    for surface in [SURFACE, TARGET_SURFACE] {
+        let plan = verify
+            .paint_plan(surface)
+            .expect("closed popup plan lookup succeeds")
+            .expect("closed popup plan is paintable");
+        let control = plan
+            .tab_strip_controls()
+            .find(|control| control.kind() == TabStripControlKind::TabListMenu)
+            .expect("closed overflow plan exposes the menu control");
+        assert!(!control.menu_open());
+        plan.visit_surface_program(|step| {
+            assert!(!matches!(
+                step,
+                SurfacePaintProgramStep::PopupBackdrop(_)
+                    | SurfacePaintProgramStep::PopupMenu { .. }
+            ));
+            Ok::<(), ()>(())
+        })
+        .expect("the closed popup program is valid");
+    }
+    verify
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("closed popup verification retains both surfaces");
+    verify.commit().expect("closed popup verification commits");
 }

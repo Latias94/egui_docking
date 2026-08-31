@@ -360,8 +360,8 @@ mod tests {
         NativePointerOwner, NativePointerRoster, NativeScrollDelta, NativeScrollDeviceId,
         NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
         NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-        NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
-        UniformSurfaceMetrics,
+        NativeWorkAreaRoster, SurfacePaintProgramOperation, SurfacePaintProgramStep,
+        SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
     };
     use egui::{Id, RawInput, Rect, Sense, Ui, Vec2};
     use egui_dockspace::{DockStyle, PaneView, native_support};
@@ -541,10 +541,19 @@ mod tests {
                     .paint_plan(SURFACE)
                     .expect("presentation-menu paint plan resolves")
                     .expect("presentation-menu paint plan is ready");
-                let anchor = plan
-                    .presentation_menu_anchors()
-                    .next()
-                    .expect("main root publishes one presentation-menu anchor");
+                let mut anchor = None;
+                plan.visit_surface_program(|step| {
+                    if let SurfacePaintProgramStep::Operation {
+                        operation: SurfacePaintProgramOperation::PresentationMenuAnchor(record),
+                        ..
+                    } = step
+                    {
+                        assert!(anchor.replace(record).is_none());
+                    }
+                    Ok::<(), ()>(())
+                })
+                .expect("presentation-menu paint program resolves");
+                let anchor = anchor.expect("main root publishes one presentation-menu anchor");
                 let bounds = anchor.bounds();
                 let center = LogicalPoint::new(
                     bounds.x() + bounds.width() * 0.5,
@@ -669,9 +678,21 @@ mod tests {
                     .paint_plan(SURFACE)
                     .expect("overlapping receiver paint plan resolves")
                     .expect("overlapping receiver paint plan is ready");
-                let control = plan
-                    .tab_strip_controls()
-                    .find(|control| control.root() == main_root)
+                let mut control = None;
+                plan.visit_surface_program(|step| {
+                    if let SurfacePaintProgramStep::Operation {
+                        operation: SurfacePaintProgramOperation::TabStripControl(record),
+                        ..
+                    } = step
+                        && record.root() == main_root
+                        && control.is_none()
+                    {
+                        control = Some(record);
+                    }
+                    Ok::<(), ()>(())
+                })
+                .expect("overlapping receiver paint program resolves");
+                let control = control
                     .expect("the overflowing main strip publishes one control");
                 let hit_bounds = control.hit_bounds();
                 let point = LogicalPoint::new(
@@ -911,7 +932,19 @@ mod tests {
                 tab_point = plan
                     .tab_receiver(ItemId::new(1))
                     .map(|receiver| receiver.center());
-                pane_point = plan.panes().next().and_then(|pane| {
+                let mut pane = None;
+                plan.visit_surface_program(|step| {
+                    if let SurfacePaintProgramStep::Operation {
+                        operation: SurfacePaintProgramOperation::Pane(record),
+                        ..
+                    } = step
+                    {
+                        assert!(pane.replace(record).is_none());
+                    }
+                    Ok::<(), ()>(())
+                })
+                .expect("native unclaimed-hover paint program resolves");
+                pane_point = pane.and_then(|pane| {
                     let bounds = plan.receiver_for_pane(pane)?.bounds();
                     LogicalPoint::new(
                         bounds.x() + bounds.width() * 0.15,
@@ -1203,7 +1236,19 @@ mod tests {
                     .paint_plan(SURFACE)
                     .expect("native paint plan resolves")
                     .expect("native paint plan is ready");
-                receiver_point = plan.tab_bars().find_map(|bar| {
+                let mut bar = None;
+                plan.visit_surface_program(|step| {
+                    if let SurfacePaintProgramStep::Operation {
+                        operation: SurfacePaintProgramOperation::TabBar(record),
+                        ..
+                    } = step
+                    {
+                        assert!(bar.replace(record).is_none());
+                    }
+                    Ok::<(), ()>(())
+                })
+                .expect("native scroll paint program resolves");
+                receiver_point = bar.and_then(|bar| {
                     plan.receiver_for_tab_strip_scroll(bar)
                         .map(|receiver| receiver.center())
                 });

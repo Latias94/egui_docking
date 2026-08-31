@@ -7,9 +7,10 @@ use dockspace::geometry::LogicalSize;
 use dockspace::model::{ItemId, SurfaceId};
 use dockspace::policy::TabBarVisibility;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceVisualId, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
-    SurfaceUnavailableReason, TabListMenuMetrics, TabStripControlMetric, TabStripControlMetrics,
-    TabStripControlPlacement, TabStripMetrics,
+    DockspaceHostFrame, DockspaceRuntimeError, DockspaceVisualId, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePaintProgramOperation, SurfacePaintProgramStep,
+    SurfacePaintProgramVisitError, SurfaceUnavailableReason, TabListMenuMetrics,
+    TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
 };
 use egui::{FontSelection, Galley, TextStyle, TextWrapMode, Ui};
 
@@ -30,6 +31,7 @@ pub(crate) struct TabPaintResource {
 #[derive(Default)]
 pub(crate) struct PaintResources {
     tabs: BTreeMap<DockspaceVisualId, TabPaintResource>,
+    tab_visuals: BTreeMap<ItemId, DockspaceVisualId>,
     items: BTreeMap<ItemId, TabPaintResource>,
     missing: BTreeSet<ItemId>,
 }
@@ -40,20 +42,47 @@ impl PaintResources {
         ui: &Ui,
         panes: &dyn PaneView,
         style: &DockStyle,
-    ) -> Self {
+    ) -> Result<Self, DockspaceRuntimeError> {
         let mut resources = Self::default();
-        for tab in plan.tabs() {
-            resources.insert_tab(tab.visual_id(), tab.item(), ui, panes, style);
-        }
-        for row in plan.tab_list_menus().flat_map(|menu| menu.rows()) {
-            resources.insert_tab(row.tab_visual_id(), row.item(), ui, panes, style);
-        }
-        if let Some(decoration) = plan.drag_decoration()
-            && let Some(item) = decoration.ghost_item()
-        {
-            resources.insert_tab(decoration.source_visual(), item, ui, panes, style);
-        }
-        resources
+        plan.visit_surface_program(|step| -> Result<(), DockspaceRuntimeError> {
+            match step {
+                SurfacePaintProgramStep::Operation {
+                    operation: SurfacePaintProgramOperation::Tab(tab),
+                    ..
+                } => {
+                    resources.insert_tab(tab.visual_id(), tab.item(), ui, panes, style);
+                }
+                SurfacePaintProgramStep::PopupMenu { menu, .. } => {
+                    for row in menu.rows() {
+                        resources.insert_tab(row.tab_visual_id(), row.item(), ui, panes, style);
+                    }
+                }
+                SurfacePaintProgramStep::DragDecoration(decoration) => {
+                    if let Some(item) = decoration.ghost_item() {
+                        resources.insert_tab(decoration.source_visual(), item, ui, panes, style);
+                    }
+                }
+                SurfacePaintProgramStep::RootBegin { .. }
+                | SurfacePaintProgramStep::Operation { .. }
+                | SurfacePaintProgramStep::RootEnd(_)
+                | SurfacePaintProgramStep::PopupBackdrop(_)
+                | SurfacePaintProgramStep::DragPreview(_)
+                | SurfacePaintProgramStep::DropTarget(_)
+                | SurfacePaintProgramStep::DropGuide { .. }
+                | SurfacePaintProgramStep::ContainedTransformPreview(_)
+                | SurfacePaintProgramStep::InteractionFeedback => {}
+                SurfacePaintProgramStep::SurfaceEnd { semantic_output } => {
+                    debug_assert_eq!(
+                        semantic_output,
+                        plan.semantic_output(),
+                        "the measurement pass must terminate with its exact candidate output"
+                    );
+                }
+            }
+            Ok(())
+        })
+        .map_err(SurfacePaintProgramVisitError::into_runtime_error)?;
+        Ok(resources)
     }
 
     fn insert_tab(
@@ -72,11 +101,20 @@ impl PaintResources {
             self.items.insert(item, resource.clone());
             resource
         });
+        // The focus map must point at the visible tab widget, never at a
+        // popup row or a drag ghost which happens to reuse the same item.
+        if visual.kind() == dockspace::runtime::DockspaceVisualKind::Tab {
+            self.tab_visuals.entry(item).or_insert(visual);
+        }
         self.tabs.insert(visual, resource);
     }
 
     pub(crate) fn tab(&self, visual: DockspaceVisualId) -> Option<&TabPaintResource> {
         self.tabs.get(&visual)
+    }
+
+    pub(crate) fn tab_visual(&self, item: ItemId) -> Option<DockspaceVisualId> {
+        self.tab_visuals.get(&item).copied()
     }
 
     pub(crate) fn missing_items(&self) -> impl Iterator<Item = ItemId> + '_ {

@@ -159,15 +159,17 @@ public phase required to make a decision. Detailed plan authority, native
 destruction/cancellation state, and effect correlation remain private; stable
 close decisions and target values live under `dockspace::close`.
 
-The primary docking-geometry slice is now renderer-complete. A borrowed
-`SurfacePaintPlan` exposes panes, tabs, tab bars, splitters, splitter junctions,
-contained presentations, docking-guide clusters and targets, the active
-semantic receiver roster, and transient drag preview geometry. Stable opaque
-visual identities hide `NodeId`, scene stamps, reducer ticks, and coordinate
-generations. The host-conformance executor proves that this geometry roster can
-be traversed without reconstructing projection state, that guide clusters
-include center and four directional targets, and that visual identities remain
-stable across distinct presented outputs.
+The primary docking-geometry slice now has one renderer traversal authority. A
+borrowed `SurfacePaintPlan` exposes the core-owned ordered
+`visit_surface_program` walk; each root, operation, popup, preview, guide,
+source-gap, and feedback step carries stable opaque identities while the
+surface-wide flat iterators remain crate-private or test-only. Those identities
+hide `NodeId`, scene stamps, reducer ticks, and coordinate generations. The
+host-conformance executor proves that the same ordered program drives geometry,
+guide clusters include center and four directional targets, and visual
+identities remain stable across distinct presented outputs. Complete execution
+receipts and atomic presented-artifact promotion remain a later settlement
+slice.
 
 The native slice adds opaque window and work-area bindings without exposing
 provider leases or `ViewportBinding`. An adapter supplies reusable host tokens,

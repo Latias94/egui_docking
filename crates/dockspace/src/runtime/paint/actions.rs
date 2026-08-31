@@ -2,7 +2,9 @@
 
 use crate::geometry::LogicalPoint;
 use crate::ids::{FloatingPresentationId, ItemId};
-use crate::interaction::{FrozenTabListMenuRowClick, FrozenTabStripControlClick};
+use crate::interaction::{
+    FrozenTabListMenuBackdropClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
+};
 use crate::scene::{
     ContainedResizeDirection as CoreContainedResizeDirection, SplitterResizeTarget,
 };
@@ -168,28 +170,40 @@ impl SurfacePaintPlan<'_> {
         self,
         backdrop: TabListMenuBackdropPaintRecord,
     ) -> Option<PreparedSurfaceAction> {
-        let record = self
-            .plan
-            .tab_list_menu_records()
-            .iter()
-            .find(|record| record.session() == backdrop.record.session())?
-            .clone();
         let projected = self
             .plan
             .tab_list_menu_backdrop_records()
             .iter()
             .copied()
             .find(|record| *record == backdrop.record)?;
+        let action = self
+            .plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|record| record.session() == projected.session())
+            .cloned()
+            .map_or_else(
+                || {
+                    crate::engine::LocalTabChromeAction::DismissMenuFromBackdrop(
+                        FrozenTabListMenuBackdropClick {
+                            session: projected.session(),
+                            record: projected,
+                            revision: projected.revision(),
+                        },
+                    )
+                },
+                |record| crate::engine::LocalTabChromeAction::DismissMenu {
+                    session: projected.session(),
+                    revision: projected.revision(),
+                    record,
+                    backdrop: projected,
+                },
+            );
         Some(PreparedSurfaceAction::tab_chrome(
             self.authority_domain,
             self.version,
             self.scene,
-            crate::engine::LocalTabChromeAction::DismissMenu {
-                session: projected.session(),
-                revision: projected.revision(),
-                record,
-                backdrop: projected,
-            },
+            action,
         ))
     }
 

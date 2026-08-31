@@ -6,7 +6,6 @@
 //! docking receiver.
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
 use std::convert::Infallible;
 
 use crate::drop_guide::{DropGuideClusterRecord, DropGuideScope};
@@ -17,7 +16,8 @@ use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
     ContainedResizeDirection, PaneSceneId, PresentationPlan, ResolvedSurfaceProgramOperation,
     ResolvedSurfaceProgramStep, SceneBuildError, SplitterJunctionId, SplitterSceneId,
-    TabBarSceneId, TabGroupDragRegionKind, TabSceneId,
+    TabBarSceneId, TabGroupDragRegionKind, TabListMenuBackdropRecord, TabListMenuRecord,
+    TabSceneId,
 };
 use crate::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use crate::{drop_guide::DropGuideClusterId, drop_target::DropTargetId};
@@ -413,15 +413,25 @@ impl PresentationHitManifest {
                 ResolvedSurfaceProgramStep::Operation { operation, .. } => {
                     push_operation_regions(&mut regions, surface, operation);
                 }
-                ResolvedSurfaceProgramStep::ProjectionPlane => {
-                    push_projection_regions(&mut regions, surface, plan);
+                ResolvedSurfaceProgramStep::PopupBackdrop(backdrop) => {
+                    push_popup_backdrop_region(&mut regions, surface, backdrop);
+                }
+                ResolvedSurfaceProgramStep::PopupMenu(menu) => {
+                    push_popup_menu_regions(&mut regions, surface, menu);
+                }
+                ResolvedSurfaceProgramStep::DropTarget(target) => {
+                    push_drop_target_region(&mut regions, surface, target);
                 }
                 ResolvedSurfaceProgramStep::DropGuide(cluster) => {
                     push_guide_regions(&mut regions, surface, cluster);
                 }
                 ResolvedSurfaceProgramStep::RootBegin(_)
                 | ResolvedSurfaceProgramStep::RootEnd(_)
-                | ResolvedSurfaceProgramStep::FeedbackPlane => {}
+                | ResolvedSurfaceProgramStep::DragPreview
+                | ResolvedSurfaceProgramStep::ContainedTransformPreview
+                | ResolvedSurfaceProgramStep::DragDecoration
+                | ResolvedSurfaceProgramStep::InteractionFeedback
+                | ResolvedSurfaceProgramStep::SurfaceEnd => {}
             }
             Ok::<(), Infallible>(())
         })
@@ -738,112 +748,99 @@ fn push_operation_regions(
         }
         ResolvedSurfaceProgramOperation::Splitter(_)
         | ResolvedSurfaceProgramOperation::SplitterJunction(_)
-        | ResolvedSurfaceProgramOperation::PresentationMenuAnchor => {}
+        | ResolvedSurfaceProgramOperation::PresentationMenuAnchor(_) => {}
     }
 }
 
-fn push_projection_regions(
+fn push_popup_backdrop_region(
     regions: &mut Vec<PresentationHitRegion>,
     surface: SurfaceId,
-    plan: &PresentationPlan,
+    backdrop: &TabListMenuBackdropRecord,
 ) {
-    for backdrop in plan.tab_list_menu_backdrop_records() {
-        let session = backdrop.session();
+    let session = backdrop.session();
+    push_region_if_hittable(
+        regions,
+        PresentationHitRegion::new(
+            PresentationHitRegionId::new(
+                surface,
+                PresentationHitRegionKind::TabListMenuBackdrop(session),
+            ),
+            HitRegion::new(backdrop.bounds()),
+            PresentationPointerLanes::ALL,
+            PresentationHitStackKey::popup(
+                session,
+                PopupHitRole::Backdrop,
+                PresentationHitPrecedence::FallbackBlocker,
+            ),
+            PresentationHitBehavior::ExclusiveReceiver,
+        ),
+    );
+}
+
+fn push_popup_menu_regions(
+    regions: &mut Vec<PresentationHitRegion>,
+    surface: SurfaceId,
+    menu: &TabListMenuRecord,
+) {
+    let session = menu.session();
+    push_region_if_hittable(
+        regions,
+        PresentationHitRegion::new(
+            PresentationHitRegionId::new(
+                surface,
+                PresentationHitRegionKind::TabListMenuBlocker(session),
+            ),
+            HitRegion::new(menu.bounds()),
+            PresentationPointerLanes::ALL,
+            PresentationHitStackKey::popup(
+                session,
+                PopupHitRole::FrameBlocker,
+                PresentationHitPrecedence::FallbackBlocker,
+            ),
+            PresentationHitBehavior::FallbackBlocker,
+        ),
+    );
+    push_region_if_hittable(
+        regions,
+        PresentationHitRegion::new(
+            PresentationHitRegionId::new(
+                surface,
+                PresentationHitRegionKind::TabListMenuScroll(session),
+            ),
+            HitRegion::new(menu.viewport()),
+            PresentationPointerLanes::SCROLL,
+            PresentationHitStackKey::popup(
+                session,
+                PopupHitRole::Scroll,
+                PresentationHitPrecedence::PopupScroll,
+            ),
+            PresentationHitBehavior::ExclusiveReceiver,
+        ),
+    );
+    for row in menu.rows() {
+        let Some(hit) = row.hit() else {
+            continue;
+        };
         push_region_if_hittable(
             regions,
             PresentationHitRegion::new(
                 PresentationHitRegionId::new(
                     surface,
-                    PresentationHitRegionKind::TabListMenuBackdrop(session),
+                    PresentationHitRegionKind::TabListMenuRow {
+                        menu: session,
+                        tab: row.tab(),
+                    },
                 ),
-                HitRegion::new(backdrop.bounds()),
-                PresentationPointerLanes::ALL,
+                hit,
+                PresentationPointerLanes::CLICK,
                 PresentationHitStackKey::popup(
                     session,
-                    PopupHitRole::Backdrop,
-                    PresentationHitPrecedence::FallbackBlocker,
+                    PopupHitRole::Row,
+                    PresentationHitPrecedence::PopupRow,
                 ),
                 PresentationHitBehavior::ExclusiveReceiver,
             ),
         );
-    }
-    for menu in plan.tab_list_menu_records() {
-        let session = menu.session();
-        push_region_if_hittable(
-            regions,
-            PresentationHitRegion::new(
-                PresentationHitRegionId::new(
-                    surface,
-                    PresentationHitRegionKind::TabListMenuBlocker(session),
-                ),
-                HitRegion::new(menu.bounds()),
-                PresentationPointerLanes::ALL,
-                PresentationHitStackKey::popup(
-                    session,
-                    PopupHitRole::FrameBlocker,
-                    PresentationHitPrecedence::FallbackBlocker,
-                ),
-                PresentationHitBehavior::FallbackBlocker,
-            ),
-        );
-        push_region_if_hittable(
-            regions,
-            PresentationHitRegion::new(
-                PresentationHitRegionId::new(
-                    surface,
-                    PresentationHitRegionKind::TabListMenuScroll(session),
-                ),
-                HitRegion::new(menu.viewport()),
-                PresentationPointerLanes::SCROLL,
-                PresentationHitStackKey::popup(
-                    session,
-                    PopupHitRole::Scroll,
-                    PresentationHitPrecedence::PopupScroll,
-                ),
-                PresentationHitBehavior::ExclusiveReceiver,
-            ),
-        );
-        for row in menu.rows() {
-            let Some(hit) = row.hit() else {
-                continue;
-            };
-            push_region_if_hittable(
-                regions,
-                PresentationHitRegion::new(
-                    PresentationHitRegionId::new(
-                        surface,
-                        PresentationHitRegionKind::TabListMenuRow {
-                            menu: session,
-                            tab: row.tab(),
-                        },
-                    ),
-                    hit,
-                    PresentationPointerLanes::CLICK,
-                    PresentationHitStackKey::popup(
-                        session,
-                        PopupHitRole::Row,
-                        PresentationHitPrecedence::PopupRow,
-                    ),
-                    PresentationHitBehavior::ExclusiveReceiver,
-                ),
-            );
-        }
-    }
-    let guide_targets: BTreeSet<_> = plan
-        .drop_guide_clusters()
-        .iter()
-        .flat_map(DropGuideClusterRecord::targets)
-        .map(|(_, guide)| guide.id())
-        .collect();
-    for target in plan.drop_targets() {
-        if target.id().kind() == crate::drop_target::DropTargetKind::TabGap
-            && !guide_targets.contains(&target.id())
-        {
-            push_drop_target_region(regions, surface, target);
-        }
-    }
-    if let Some(background) = plan.surface_background() {
-        push_drop_target_region(regions, surface, background);
     }
 }
 

@@ -516,6 +516,9 @@ impl DockEngine {
             } => self.finish_tab_list_menu_dismiss(
                 cause, &plan, *session, *revision, record, *backdrop,
             )?,
+            LocalTabChromeAction::DismissMenuFromBackdrop(backdrop) => {
+                self.finish_journal_tab_list_menu_backdrop(cause, backdrop, &plan)?
+            }
             LocalTabChromeAction::ScrollMenu {
                 session,
                 revision,

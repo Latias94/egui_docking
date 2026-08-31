@@ -5,7 +5,7 @@ use dockspace::model::{
 use dockspace::runtime::{
     NativeEffectOperation, NativeInputEffectAcknowledgement, NativePointerRoster,
     NativeWindowInputState, NativeWindowPresentationState, SurfacePresentationResult,
-    UniformSurfaceMetrics,
+    SurfacePaintPlan, SurfacePaintProgramStep, UniformSurfaceMetrics,
 };
 use eframe::NativeViewportPointerPassthroughStatus;
 use winit::dpi::PhysicalPosition;
@@ -21,6 +21,19 @@ use crate::work_area::FrozenWorkAreaRoster;
 const SOURCE_SURFACE: SurfaceId = SurfaceId::new(41);
 const SOURCE_ROOT: RootId = RootId::new(51);
 const SOURCE_ITEM: ItemId = ItemId::new(61);
+
+fn program_has_drag_preview(plan: SurfacePaintPlan<'_>) -> bool {
+    let mut previewed = false;
+    plan.visit_surface_program(|step| {
+        if matches!(step, SurfacePaintProgramStep::DragPreview(_)) {
+            assert!(!previewed, "one paint program cannot publish duplicate previews");
+            previewed = true;
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("the native paint plan must expose one valid surface program");
+    previewed
+}
 
 fn source_window() -> WindowId {
     WindowId::from(71)
@@ -434,10 +447,7 @@ fn request_native_child(
         .paint_plan(SOURCE_SURFACE)
         .expect("preview paint plan lookup succeeds")
         .expect("source remains paintable while native creation is pending");
-    assert!(
-        plan.drag_preview().is_some(),
-        "outside move publishes a preview"
-    );
+    assert!(program_has_drag_preview(plan), "outside move publishes a preview");
     preview
         .confirm_surface_painted(SOURCE_SURFACE)
         .expect("complete preview paint confirms");

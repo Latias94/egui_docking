@@ -2,8 +2,9 @@
 
 use dockspace::model::DockspaceActionRejection;
 use dockspace::runtime::{
-    DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
-    DockspacePresentationMenuAnchorKind, DockspaceRuntimeError, PresentationMenuAnchorPaintRecord,
+    ContainedPaintRecord, DockspacePresentationCommandKind,
+    DockspacePresentationCommandUnavailable, DockspacePresentationMenuAnchorKind,
+    DockspaceRuntimeError, PresentationMenuAnchorPaintRecord, SurfacePaintDisposition,
 };
 use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Button, Popup, Sense, vec2};
@@ -25,6 +26,8 @@ const COMMANDS: [DockspacePresentationCommandKind; 8] = [
 pub(super) fn paint(
     context: &mut RenderContext<'_, '_, '_>,
     anchor: PresentationMenuAnchorPaintRecord<'_>,
+    contained: Option<ContainedPaintRecord<'_>>,
+    paint: SurfacePaintDisposition,
 ) -> Result<(), DockspaceRuntimeError> {
     let Some(bounds) = egui_rect(anchor.bounds()) else {
         return Ok(());
@@ -59,11 +62,9 @@ pub(super) fn paint(
         false
     };
 
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(anchor.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted {
-        paint_anchor_icon(context, anchor, bounds, &response);
+        paint_anchor_icon(context, anchor, contained, bounds, &response);
     }
     context.ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(Role::Button);
@@ -137,6 +138,7 @@ pub(super) fn paint(
 fn paint_anchor_icon(
     context: &RenderContext<'_, '_, '_>,
     anchor: PresentationMenuAnchorPaintRecord<'_>,
+    contained: Option<ContainedPaintRecord<'_>>,
     bounds: egui::Rect,
     response: &egui::Response,
 ) {
@@ -146,11 +148,8 @@ fn paint_anchor_icon(
             context.style.visuals.tab_text_color,
         ),
         DockspacePresentationMenuAnchorKind::ContainedTitle => {
-            let contained = context
-                .plan
-                .contained()
-                .find(|contained| contained.root() == anchor.root());
             let title_text_color = contained
+                .filter(|contained| contained.root() == anchor.root())
                 .map(|contained| {
                     context
                         .style

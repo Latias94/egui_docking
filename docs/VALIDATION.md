@@ -41,6 +41,36 @@ with a diagnostic upper bound.
 N01 uses the existing lifecycle scenario and remains a separate capability
 boundary. P01 is never inferred from a local or official-egui run.
 
+## U2a ordered SurfaceProgram evidence
+
+The ordered traversal slice is verified independently from the later atomic
+presented-artifact and host-terminal-settlement work. Core, product-headless,
+and fork-backed native tests now consume `SurfacePaintPlan::visit_surface_program`
+for root operations, popups, previews, guides, source-gap disposition, and
+feedback. Surface-wide flat plan iterators are crate-private or test-only, and
+the deleted synthetic walker cannot recreate a missing operation from parallel
+records. This evidence proves traversal membership and renderer order; it does
+not claim `RendererPassBridge` promotion, final host settlement, or unwind
+abandonment.
+
+Current gates:
+
+- `cargo nextest run -p dockspace --lib --locked -j1 --no-fail-fast`:
+  1430/1430 passed on 2026-08-31.
+- `cargo nextest run --manifest-path crates/dockspace_host_conformance/Cargo.toml --locked -j1`:
+  37/37 passed on 2026-08-31.
+- `cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --locked -j1`:
+  86/86 passed with one explicitly skipped test on 2026-08-31.
+- `cargo nextest run --manifest-path crates/egui_dockspace_native/Cargo.toml --locked -j1`:
+  178/178 passed on 2026-08-31.
+- `cargo check -p egui_dockspace --all-targets --locked -j1`: passed.
+- `cargo check --manifest-path integration/egui-fork-workspace/Cargo.toml --workspace --all-targets --locked -j1`:
+  passed.
+
+The remaining atomic artifact, durable discarded-pass action queue, official
+host finalizer, and native unwind/retirement paths stay deferred to the next
+settlement slice.
+
 ## Oracle matrix
 
 Each row is classified as `normative`, `characterization-only`, or

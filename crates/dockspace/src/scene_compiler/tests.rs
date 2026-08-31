@@ -682,27 +682,27 @@ fn surface_program_keeps_root_chrome_pane_contained_and_guide_order_in_core() {
         }
     }
 
-    let projection = blocks
+    let drag_preview = blocks
         .iter()
-        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::ProjectionPlane))
-        .expect("the program should contain one projection boundary");
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::DragPreview))
+        .expect("the program should contain one drag-preview operation");
     assert_eq!(
         blocks
             .iter()
-            .filter(|block| matches!(block, crate::scene::SurfaceProgramBlock::ProjectionPlane))
+            .filter(|block| matches!(block, crate::scene::SurfaceProgramBlock::DragPreview))
             .count(),
         1
     );
     let last_root_end = blocks
         .iter()
         .rposition(|block| matches!(block, crate::scene::SurfaceProgramBlock::RootEnd { .. }))
-        .expect("the program should close every root before projection");
-    assert!(last_root_end < projection);
+        .expect("the program should close every root before projection operations");
+    assert!(last_root_end < drag_preview);
     let first_guide = blocks
         .iter()
         .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::DropGuide(_)))
         .expect("compiled docking roots should publish guides");
-    assert!(projection < first_guide);
+    assert!(drag_preview < first_guide);
     let last_guide = blocks
         .iter()
         .rposition(|block| matches!(block, crate::scene::SurfaceProgramBlock::DropGuide(_)))
@@ -714,19 +714,58 @@ fn surface_program_keeps_root_chrome_pane_contained_and_guide_order_in_core() {
             .count(),
         plan.drop_guide_clusters().len()
     );
-    let feedback = blocks
+    let contained_preview = blocks
         .iter()
-        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::FeedbackPlane))
-        .expect("the program should contain one feedback boundary");
+        .position(|block| {
+            matches!(
+                block,
+                crate::scene::SurfaceProgramBlock::ContainedTransformPreview
+            )
+        })
+        .expect("the program should contain one contained-preview operation");
     assert_eq!(
         blocks
             .iter()
-            .filter(|block| matches!(block, crate::scene::SurfaceProgramBlock::FeedbackPlane))
+            .filter(|block| {
+                matches!(
+                    block,
+                    crate::scene::SurfaceProgramBlock::ContainedTransformPreview
+                )
+            })
             .count(),
         1
     );
-    assert!(last_guide < feedback);
-    assert_eq!(feedback, blocks.len() - 1);
+    let drag_decoration = blocks
+        .iter()
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::DragDecoration))
+        .expect("the program should contain one drag-decoration operation");
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| matches!(block, crate::scene::SurfaceProgramBlock::DragDecoration))
+            .count(),
+        1
+    );
+    let interaction_feedback = blocks
+        .iter()
+        .position(|block| {
+            matches!(
+                block,
+                crate::scene::SurfaceProgramBlock::InteractionFeedback
+            )
+        })
+        .expect("the program should contain one interaction-feedback operation");
+    let surface_end = blocks
+        .iter()
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::SurfaceEnd))
+        .expect("the program should contain one surface-end operation");
+    assert!(
+        last_guide < contained_preview
+            && contained_preview < drag_decoration
+            && drag_decoration < interaction_feedback
+            && interaction_feedback < surface_end
+    );
+    assert_eq!(surface_end, blocks.len() - 1);
 }
 
 #[test]
@@ -780,6 +819,134 @@ fn hit_and_semantic_manifests_follow_surface_program_membership() {
     assert!(
         !semantic.contains(PresentationHitRegionKind::TabBody(tab)),
         "semantic authority must not resurrect an operation omitted by the program"
+    );
+}
+
+#[test]
+fn popup_hit_and_semantic_authority_cannot_resurrect_from_flat_records() {
+    let (workspace, manifest, measurements, states, _surface, _, _) =
+        overflowing_tab_strip_fixture();
+    let plan = compile_surface_measurements(
+        &workspace,
+        version(),
+        &policy_snapshot(),
+        &DockPresentationConfig::default(),
+        &manifest,
+        &measurements,
+        &states,
+        &[],
+    )
+    .expect("complete measurements should compile");
+    let mut plan = PresentationPlanValidator::new(&workspace, &policy_snapshot())
+        .expect("validator should initialize")
+        .validate_and_canonicalize(plan)
+        .expect("compiled popup records should be strictly valid");
+    let session = plan
+        .tab_list_menu_records()
+        .first()
+        .expect("the fixture should compile an active popup")
+        .session();
+    assert!(
+        plan.remove_surface_program_popup_menu_for_test(session),
+        "the test must remove the exact popup program operation"
+    );
+    assert!(
+        plan.tab_list_menu_records()
+            .iter()
+            .any(|record| record.session() == session),
+        "the flat popup record intentionally remains to catch independent rescans"
+    );
+
+    let scene = SurfaceSceneStamp::new(measurements.ticket(), SurfaceSceneRevision::new(1));
+    let output = SurfacePresentationOutputTicket::mint(
+        authority_domain(),
+        PresentationOutputSerial::new_for_test(1),
+        scene,
+    );
+    let hit = PresentationHitManifest::compile(output, &plan)
+        .expect("the mutated program should still resolve without the popup menu operation");
+    let semantic = PresentationSemanticManifest::compile(output, &plan)
+        .expect("semantic authority should follow the same mutated program");
+    assert!(
+        hit.regions().iter().all(|region| !matches!(
+            region.id().kind(),
+            PresentationHitRegionKind::TabListMenuBlocker(actual)
+                | PresentationHitRegionKind::TabListMenuScroll(actual)
+                if actual == session
+        ) && !matches!(
+            region.id().kind(),
+            PresentationHitRegionKind::TabListMenuRow { menu: actual, .. }
+                if actual == session
+        )),
+        "hit authority must not resurrect popup members omitted by the program"
+    );
+    assert!(
+        semantic.receivers().iter().all(|receiver| !matches!(
+            receiver,
+            PresentationHitRegionKind::TabListMenuScroll(actual) if *actual == session
+        ) && !matches!(
+            receiver,
+            PresentationHitRegionKind::TabListMenuRow { menu: actual, .. }
+                if *actual == session
+        )),
+        "semantic authority must not resurrect popup members omitted by the program"
+    );
+}
+
+#[test]
+fn drop_target_hit_authority_cannot_resurrect_from_flat_records() {
+    let surface = SurfaceId::new(871);
+    let root = RootId::new(872);
+    let floating = FloatingPresentationId::new(873);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(874)]));
+    builder.set_root(root, RootRecord::new(tabs));
+    builder.set_surface(surface, SurfacePresentation::rootless());
+    builder.set_contained_floating(
+        floating,
+        ContainedFloating::new(
+            root,
+            LogicalRect::new(80.0, 60.0, 240.0, 180.0).expect("floating bounds should be valid"),
+        ),
+    );
+    builder
+        .attach_contained(surface, floating)
+        .expect("surface should exist");
+    let workspace = builder.build().expect("fixture should validate");
+    let mut plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 480.0, 320.0).expect("bounds should be valid"),
+    );
+    let target = plan
+        .surface_background()
+        .expect("a rootless surface should compile one background target")
+        .id();
+    assert!(
+        plan.remove_surface_program_drop_target_for_test(target),
+        "the test must remove the exact drop-target program operation"
+    );
+    assert_eq!(
+        plan.surface_background().map(|record| record.id()),
+        Some(target),
+        "the flat target record intentionally remains to catch independent rescans"
+    );
+
+    let ticket = plan
+        .measurement_ticket()
+        .expect("compiled plan should retain its measurement ticket");
+    let output = SurfacePresentationOutputTicket::mint(
+        ticket.authority_domain(),
+        PresentationOutputSerial::new_for_test(1),
+        SurfaceSceneStamp::new(ticket, SurfaceSceneRevision::new(1)),
+    );
+    let hit = PresentationHitManifest::compile(output, &plan)
+        .expect("the mutated program should resolve without the drop-target operation");
+    assert!(
+        hit.regions()
+            .iter()
+            .all(|region| { region.id().kind() != PresentationHitRegionKind::DropTarget(target) }),
+        "hit authority must not resurrect a drop target omitted by the program"
     );
 }
 
@@ -1556,6 +1723,51 @@ fn overflow_compiles_stable_controls_membership_and_menu_roster() {
     assert_eq!(backdrop.bounds(), plan.bounds());
     assert_eq!(menu.bar(), bar);
     assert_eq!(menu.session().key(), TabStripStateKey::new(surface, bar));
+    let blocks = plan.surface_program().blocks();
+    let drag_decoration = blocks
+        .iter()
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::DragDecoration))
+        .expect("the overlay section should contain drag decoration");
+    let backdrop_step = blocks
+        .iter()
+        .position(|block| {
+            matches!(
+                block,
+                crate::scene::SurfaceProgramBlock::PopupBackdrop(session)
+                    if *session == backdrop.session()
+            )
+        })
+        .expect("the popup backdrop must be a concrete program member");
+    let menu_step = blocks
+        .iter()
+        .position(|block| {
+            matches!(
+                block,
+                crate::scene::SurfaceProgramBlock::PopupMenu(session)
+                    if *session == menu.session()
+            )
+        })
+        .expect("the popup menu must be a concrete program member");
+    let feedback = blocks
+        .iter()
+        .position(|block| {
+            matches!(
+                block,
+                crate::scene::SurfaceProgramBlock::InteractionFeedback
+            )
+        })
+        .expect("typed feedback must follow popup input");
+    let surface_end = blocks
+        .iter()
+        .position(|block| matches!(block, crate::scene::SurfaceProgramBlock::SurfaceEnd))
+        .expect("the program must terminate explicitly");
+    assert!(
+        drag_decoration < backdrop_step
+            && backdrop_step < menu_step
+            && menu_step < feedback
+            && feedback < surface_end,
+        "core must order overlays before popup blockers and feedback"
+    );
     assert_eq!(
         menu.rows()
             .iter()

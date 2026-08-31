@@ -119,7 +119,7 @@ impl DockspaceDragDecoration<'_> {
     /// identity while leaving a real visual gap. Structural membership remains
     /// core-owned and no graph identity crosses this boundary.
     #[must_use]
-    pub fn omits_visual(self, visual: DockspaceVisualId) -> bool {
+    pub(super) fn omits_visual(self, visual: DockspaceVisualId) -> bool {
         match self.source {
             DragDecorationSource::Item(tab) => {
                 matches!(visual.0, VisualIdentity::Tab(candidate) if candidate == tab)
@@ -272,7 +272,6 @@ fn visual_belongs_to_tabs_leaf(visual: DockspaceVisualId, pane: PaneSceneId) -> 
         VisualIdentity::PresentationMenuAnchor(_) => false,
         VisualIdentity::DragSource { .. }
         | VisualIdentity::Splitter(_)
-        | VisualIdentity::SplitterGap(_)
         | VisualIdentity::SplitterJunction(_)
         | VisualIdentity::Contained(_)
         | VisualIdentity::DropGuide(_)
@@ -318,7 +317,7 @@ fn visual_belongs_to_subtree(
                 && (complete_root || subtree_contains_node(fingerprint, source, bar.tabs))
         }
         VisualIdentity::PresentationMenuAnchor(candidate) => candidate == root && complete_root,
-        VisualIdentity::Splitter(splitter) | VisualIdentity::SplitterGap(splitter) => {
+        VisualIdentity::Splitter(splitter) => {
             splitter.root == root
                 && (complete_root || subtree_contains_node(fingerprint, source, splitter.split))
         }

@@ -2,8 +2,8 @@
 
 use dockspace::model::ItemId;
 use dockspace::runtime::{
-    ContainedPaintRecord, PanePaintRecord, SurfaceGesturePhase, SurfaceTabNavigation,
-    TabGroupDragRegionKind, TabPaintRecord,
+    ContainedPaintRecord, DockspaceVisualId, PanePaintRecord, SurfaceGesturePhase,
+    SurfacePaintDisposition, SurfaceTabNavigation, TabGroupDragRegionKind, TabPaintRecord,
 };
 use egui::accesskit::{Action, Role};
 use egui::{
@@ -45,11 +45,10 @@ pub(crate) fn paint_pane(
     context: &mut RenderContext<'_, '_, '_>,
     pane: PanePaintRecord<'_>,
     visual_context: RootVisualContext<'_>,
+    paint: SurfacePaintDisposition,
 ) {
     let pane_fill = visual_context.pane_fill(context.visuals.workspace_fill);
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(pane.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     let Some(bounds) = egui_rect(pane.bounds()) else {
         return;
     };
@@ -112,10 +111,9 @@ pub(crate) fn paint_tab_bar(
     context: &mut RenderContext<'_, '_, '_>,
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
     contained: Option<ContainedPaintRecord<'_>>,
+    paint: SurfacePaintDisposition,
 ) {
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(bar.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted && let Some(bounds) = egui_rect(bar.bounds()) {
         context
             .ui
@@ -130,13 +128,14 @@ pub(crate) fn paint_tab_bar(
         .then(|| context.plan.receiver_for_tab_strip_scroll(bar))
         .flatten();
     context.register_scroll_receiver(id, receiver);
-    paint_group_drag_regions(context, bar, contained);
+    paint_group_drag_regions(context, bar, contained, paint);
 }
 
 fn paint_group_drag_regions(
     context: &mut RenderContext<'_, '_, '_>,
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
     contained: Option<ContainedPaintRecord<'_>>,
+    paint: SurfacePaintDisposition,
 ) {
     for region in bar.group_drag_regions() {
         let Some(bounds) = egui_rect(region.bounds()) else {
@@ -176,9 +175,7 @@ fn paint_group_drag_regions(
             });
         }
         if region.kind() == TabGroupDragRegionKind::LeadingGrip {
-            let paint_omitted = context
-                .drag_decoration()
-                .is_some_and(|decoration| decoration.omits_visual(region.visual_id()));
+            let paint_omitted = context.source_gap_active(paint);
             if !paint_omitted && enabled {
                 paint_group_grip_icon(
                     context.ui,
@@ -228,11 +225,12 @@ pub(crate) fn paint_tab_record(
     context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
     contained: Option<ContainedPaintRecord<'_>>,
+    paint: SurfacePaintDisposition,
 ) {
     let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
         return;
     };
-    paint_tab(context, tab, &resource, contained);
+    paint_tab(context, tab, &resource, contained, paint);
 }
 
 pub(crate) fn paint_tab(
@@ -240,6 +238,7 @@ pub(crate) fn paint_tab(
     tab: TabPaintRecord<'_>,
     resource: &TabPaintResource,
     contained: Option<ContainedPaintRecord<'_>>,
+    paint: SurfacePaintDisposition,
 ) {
     let Some(visible) = egui_rect(tab.visible_bounds()) else {
         return;
@@ -273,9 +272,7 @@ pub(crate) fn paint_tab(
             CursorIcon::Grab
         });
     }
-    let source_gap = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(tab.visual_id()));
+    let source_gap = context.source_gap_active(paint);
     let selected = tab.selected();
     let focused = response.has_focus();
     if !source_gap {
@@ -334,7 +331,11 @@ pub(crate) fn paint_tab(
 }
 
 fn tab_id(ui: &Ui, instance_id: Id, tab: TabPaintRecord<'_>) -> Id {
-    ui.make_persistent_id((instance_id, "tab", tab.visual_id()))
+    tab_id_for_visual(ui, instance_id, tab.visual_id())
+}
+
+fn tab_id_for_visual(ui: &Ui, instance_id: Id, visual: DockspaceVisualId) -> Id {
+    ui.make_persistent_id((instance_id, "tab", visual))
 }
 
 fn capture_tab_actions(
@@ -403,10 +404,14 @@ fn capture_tab_actions(
                 .ui
                 .memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
             if let Some(target) = action.tab_focus_target()
-                && let Some(target_tab) = context.plan.tabs().find(|tab| tab.item() == target)
+                && let Some(target_visual) = context.resources.tab_visual(target)
             {
                 context.ui.memory_mut(|memory| {
-                    memory.request_focus(tab_id(context.ui, context.instance_id, target_tab));
+                    memory.request_focus(tab_id_for_visual(
+                        context.ui,
+                        context.instance_id,
+                        target_visual,
+                    ));
                 });
             }
             context.push_local_action(action);

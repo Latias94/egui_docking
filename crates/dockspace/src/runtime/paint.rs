@@ -1,5 +1,6 @@
 //! Renderer-neutral measurement and primary read-only docking paint capabilities.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::drop_guide::DropGuideClusterId;
@@ -18,11 +19,13 @@ use crate::presentation_observation::SurfacePresentationOutputTicket;
 pub use crate::scene::TabGroupDragRegionKind;
 use crate::scene::{
     ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
-    PresentationMenuAnchorRecord, PresentationPlan, SplitterGapPresentation, SplitterGapRecord,
-    SplitterJunctionDirection, SplitterJunctionId, SplitterJunctionRecord, SplitterRecord,
-    SplitterSceneId, SurfaceProgramBlock, SurfaceProgramRootOperation,
-    SurfaceProgramRootPresentation, SurfaceScene, TabBarSceneId, TabSceneId,
+    PresentationMenuAnchorRecord, PresentationPlan, ResolvedSurfaceProgramOperation,
+    ResolvedSurfaceProgramRoot, ResolvedSurfaceProgramStep, SplitterJunctionDirection,
+    SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId,
+    SurfaceProgramBlock, SurfaceScene, TabBarSceneId, TabSceneId,
 };
+#[cfg(test)]
+use crate::scene::{SurfaceProgramRootOperation, SurfaceProgramRootPresentation};
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
 
 use super::{
@@ -107,7 +110,6 @@ enum VisualIdentity {
     },
     PresentationMenuAnchor(RootId),
     Splitter(SplitterSceneId),
-    SplitterGap(SplitterSceneId),
     SplitterJunction(SplitterJunctionId),
     Contained(FloatingPresentationId),
     DropGuide(DropGuideClusterId),
@@ -140,8 +142,6 @@ pub enum DockspaceVisualKind {
     PresentationMenuAnchor,
     /// One ordinary splitter.
     Splitter,
-    /// One structural splitter gap, including collapsed gaps.
-    SplitterGap,
     /// One atomic multi-splitter junction.
     SplitterJunction,
     /// One contained-floating presentation.
@@ -152,6 +152,27 @@ pub enum DockspaceVisualKind {
     DropTarget,
     /// One semantic receiver without a standalone paint record.
     Receiver,
+}
+
+/// Core-derived decision for painting one exact visual in the current program.
+///
+/// A source gap suppresses only pixels. The adapter must retain the visual's
+/// widget identity, semantic receiver, and accessibility registration while a
+/// drag projection represents the omitted source elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SurfacePaintDisposition {
+    /// Paint the visual normally.
+    Visible,
+    /// Preserve interaction identity but omit the visual's pixels.
+    SourceGap,
+}
+
+impl SurfacePaintDisposition {
+    /// Returns whether the current program requires a source gap for this visual.
+    #[must_use]
+    pub const fn is_source_gap(self) -> bool {
+        matches!(self, Self::SourceGap)
+    }
 }
 
 impl DockspaceVisualId {
@@ -184,7 +205,6 @@ impl DockspaceVisualId {
                 DockspaceVisualKind::PresentationMenuAnchor
             }
             VisualIdentity::Splitter(_) => DockspaceVisualKind::Splitter,
-            VisualIdentity::SplitterGap(_) => DockspaceVisualKind::SplitterGap,
             VisualIdentity::SplitterJunction(_) => DockspaceVisualKind::SplitterJunction,
             VisualIdentity::Contained(_) => DockspaceVisualKind::Contained,
             VisualIdentity::DropGuide(_) => DockspaceVisualKind::DropGuide,
@@ -200,6 +220,17 @@ impl fmt::Debug for DockspaceVisualId {
             .debug_tuple("DockspaceVisualId")
             .field(&self.kind())
             .finish()
+    }
+}
+
+pub(super) fn paint_disposition(
+    decoration: Option<DockspaceDragDecoration<'_>>,
+    visual: DockspaceVisualId,
+) -> SurfacePaintDisposition {
+    if decoration.is_some_and(|decoration| decoration.omits_visual(visual)) {
+        SurfacePaintDisposition::SourceGap
+    } else {
+        SurfacePaintDisposition::Visible
     }
 }
 
@@ -411,36 +442,6 @@ impl DockspaceContainedTransformPreview<'_> {
     #[must_use]
     pub const fn rect(self) -> LogicalRect {
         self.preview.rect()
-    }
-}
-
-/// Product-level visibility of one structural splitter gap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SplitterGapVisibility {
-    /// The gap has a positive-area splitter presentation.
-    Rendered,
-    /// Compression removed the positive-area splitter presentation.
-    Collapsed,
-}
-
-/// Read-only structural splitter-gap status.
-#[derive(Debug, Clone, Copy)]
-pub struct StructuralSplitterGapStatus {
-    record: SplitterGapRecord,
-}
-
-impl StructuralSplitterGapStatus {
-    #[must_use]
-    pub const fn visual_id(self) -> DockspaceVisualId {
-        DockspaceVisualId(VisualIdentity::SplitterGap(self.record.id()))
-    }
-
-    #[must_use]
-    pub const fn visibility(self) -> SplitterGapVisibility {
-        match self.record.presentation() {
-            SplitterGapPresentation::Rendered => SplitterGapVisibility::Rendered,
-            SplitterGapPresentation::Collapsed => SplitterGapVisibility::Collapsed,
-        }
     }
 }
 
@@ -951,6 +952,7 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) contained_transform_preview: Option<&'frame ContainedTransformPreview>,
     pub(super) pane_focus_request: Option<DockspacePaneFocusRequest>,
     pub(super) candidate: crate::engine::HostFrameView<'frame>,
+    pub(super) program_valid: bool,
 }
 
 /// Root presentation kind in the core-owned surface paint program.
@@ -983,6 +985,23 @@ pub enum SurfacePaintProgramOperation<'frame> {
     ContainedControls(ContainedPaintRecord<'frame>),
     /// Paint one root-scoped presentation-menu anchor.
     PresentationMenuAnchor(PresentationMenuAnchorPaintRecord<'frame>),
+}
+
+impl SurfacePaintProgramOperation<'_> {
+    /// Returns the exact stable visual identity executed by this operation.
+    #[must_use]
+    pub const fn visual_id(self) -> DockspaceVisualId {
+        match self {
+            Self::Pane(record) => record.visual_id(),
+            Self::TabBar(record) => record.visual_id(),
+            Self::Tab(record) => record.visual_id(),
+            Self::Splitter(record) => record.visual_id(),
+            Self::SplitterJunction(record) => record.visual_id(),
+            Self::TabStripControl(record) => record.visual_id(),
+            Self::ContainedControls(record) => record.visual_id(),
+            Self::PresentationMenuAnchor(record) => record.visual_id(),
+        }
+    }
 }
 
 /// One root header in the core-owned paint program.
@@ -1028,18 +1047,36 @@ impl SurfacePaintProgramRoot<'_> {
 #[derive(Debug, Clone, Copy)]
 pub enum SurfacePaintProgramStep<'frame> {
     /// Starts one main or contained root segment.
-    RootBegin(SurfacePaintProgramRoot<'frame>),
+    RootBegin {
+        /// Core-owned root segment being opened.
+        root: SurfacePaintProgramRoot<'frame>,
+        /// Paint disposition for contained frame chrome; main roots are always visible.
+        paint: SurfacePaintDisposition,
+    },
     /// Executes one root-scoped operation.
     Operation {
         /// Core-owned root segment containing the operation.
         root: SurfacePaintProgramRoot<'frame>,
         /// Exact paint operation.
         operation: SurfacePaintProgramOperation<'frame>,
+        /// Core-derived paint disposition for this exact operation.
+        paint: SurfacePaintDisposition,
     },
     /// Ends the active root segment.
     RootEnd(SurfacePaintProgramRoot<'frame>),
-    /// Starts popup, preview, guide, and feedback projection.
-    ProjectionPlane,
+    /// Paints one workspace-global popup backdrop.
+    PopupBackdrop(TabListMenuBackdropPaintRecord),
+    /// Paints one workspace-global tab-list menu.
+    PopupMenu {
+        /// Exact popup operation.
+        menu: TabListMenuPaintRecord<'frame>,
+        /// Core-derived disposition shared by its frame, rows, and scrollbar.
+        paint: SurfacePaintDisposition,
+    },
+    /// Paints the current docking or rehome preview.
+    DragPreview(DockspaceDragPreview<'frame>),
+    /// Publishes one non-visual drop target through the ordered program.
+    DropTarget(DockspaceReceiverDescriptor),
     /// Paints one guide cluster in core order.
     DropGuide {
         /// Structural guide identity and geometry compiled into the scene.
@@ -1047,8 +1084,17 @@ pub enum SurfacePaintProgramStep<'frame> {
         /// Payload-specific visible guide state for the current drag point.
         affordance: Option<DropAffordanceClusterPaintRecord<'frame>>,
     },
-    /// Paints contained preview and terminal drag feedback after all guides.
-    FeedbackPlane,
+    /// Paints the current contained transform preview.
+    ContainedTransformPreview(DockspaceContainedTransformPreview<'frame>),
+    /// Paints the current drag ghost before popup projection.
+    DragDecoration(DockspaceDragDecoration<'frame>),
+    /// Resolves typed interaction feedback after popup input has run.
+    InteractionFeedback,
+    /// Seals the ordered traversal for this exact semantic output.
+    SurfaceEnd {
+        /// Candidate output represented by every preceding operation.
+        semantic_output: DockspaceSemanticOutput,
+    },
 }
 
 /// Failure while resolving or executing one compiled paint program.
@@ -1122,7 +1168,7 @@ impl DockspaceHostFrame<'_> {
                     intent,
                 )
             });
-        Ok(Some(SurfacePaintPlan {
+        let plan = SurfacePaintPlan {
             surface,
             authority_domain: self.session.engine.authority_domain(),
             version,
@@ -1138,6 +1184,12 @@ impl DockspaceHostFrame<'_> {
             contained_transform_preview: view.presentation_contained_transform_preview(surface),
             pane_focus_request,
             candidate: view,
+            program_valid: false,
+        };
+        let program_valid = plan.validate_surface_program();
+        Ok(Some(SurfacePaintPlan {
+            program_valid,
+            ..plan
         }))
     }
 
@@ -1171,10 +1223,11 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     /// Visits the single ordered program for this exact surface candidate.
     ///
-    /// The visitor receives core order directly. It cannot regroup roots or
-    /// retain a second owned schedule, and any stale record identity fails the
-    /// whole traversal before the visitor sees any step, rather than silently
-    /// omitting paint or leaving a partial renderer output.
+    /// The visitor receives the core-owned order directly. Official adapters
+    /// execute that order without rebuilding a second surface-wide schedule;
+    /// test helpers may still collect a trace for assertions. Any stale record
+    /// identity fails the whole traversal before the visitor sees any step,
+    /// rather than silently omitting paint or leaving a partial renderer output.
     ///
     /// # Errors
     ///
@@ -1187,250 +1240,209 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         mut visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
     ) -> Result<(), SurfacePaintProgramVisitError<E>> {
-        // Resolve the immutable tape first without renderer side effects so a
-        // late invariant failure cannot leave a partially painted output.
-        match self.walk_surface_program(|_| Ok::<(), std::convert::Infallible>(())) {
-            Ok(()) => {}
-            Err(SurfacePaintProgramVisitError::InvalidProgram { surface }) => {
-                return Err(SurfacePaintProgramVisitError::InvalidProgram { surface });
-            }
-            Err(SurfacePaintProgramVisitError::Sink(never)) => match never {},
+        if !self.program_valid {
+            return Err(SurfacePaintProgramVisitError::InvalidProgram {
+                surface: self.surface,
+            });
         }
 
-        self.walk_surface_program(&mut visitor)
-    }
-
-    fn walk_surface_program<E>(
-        self,
-        mut visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
-    ) -> Result<(), SurfacePaintProgramVisitError<E>> {
-        let invalid = || SurfacePaintProgramVisitError::InvalidProgram {
-            surface: self.surface,
-        };
-        let mut active_root = None;
-        let mut contained_records = self.plan.contained_records().iter();
-        let mut projection_seen = false;
-        let mut feedback_seen = false;
-
-        for block in self.plan.surface_program().blocks() {
-            match block {
-                SurfaceProgramBlock::RootBegin {
-                    root,
-                    presentation,
-                    title_item,
-                } => {
-                    if active_root.is_some() || projection_seen {
-                        return Err(invalid());
-                    }
-                    let kind = match presentation {
-                        SurfaceProgramRootPresentation::Main => SurfacePaintProgramRootKind::Main,
-                        SurfaceProgramRootPresentation::Contained(floating) => {
-                            let Some(record) = contained_records.next().filter(|record| {
-                                record.floating() == *floating && record.root() == *root
-                            }) else {
-                                return Err(invalid());
-                            };
-                            SurfacePaintProgramRootKind::Contained(ContainedPaintRecord {
-                                record,
-                                plan: self.plan,
-                            })
-                        }
-                    };
-                    let header = SurfacePaintProgramRoot {
-                        root: *root,
-                        kind,
-                        title_item: *title_item,
-                    };
-                    active_root = Some((header, *presentation));
-                    visitor(SurfacePaintProgramStep::RootBegin(header))
-                        .map_err(SurfacePaintProgramVisitError::Sink)?;
-                }
-                SurfaceProgramBlock::RootOperation(operation) => {
-                    let Some((root, presentation)) = active_root else {
-                        return Err(invalid());
-                    };
-                    let Some(operation) = self.resolve_surface_program_operation(
-                        *operation,
-                        root.root(),
-                        presentation,
-                    ) else {
-                        return Err(invalid());
-                    };
-                    visitor(SurfacePaintProgramStep::Operation { root, operation })
-                        .map_err(SurfacePaintProgramVisitError::Sink)?;
-                }
-                SurfaceProgramBlock::RootEnd { root } => {
-                    let Some((active, _)) = active_root.take() else {
-                        return Err(invalid());
-                    };
-                    if active.root() != *root {
-                        return Err(invalid());
-                    }
-                    visitor(SurfacePaintProgramStep::RootEnd(active))
-                        .map_err(SurfacePaintProgramVisitError::Sink)?;
-                }
-                SurfaceProgramBlock::ProjectionPlane => {
-                    if active_root.is_some() || projection_seen {
-                        return Err(invalid());
-                    }
-                    projection_seen = true;
-                    visitor(SurfacePaintProgramStep::ProjectionPlane)
-                        .map_err(SurfacePaintProgramVisitError::Sink)?;
-                }
-                SurfaceProgramBlock::DropGuide(id) => {
-                    if active_root.is_some() || !projection_seen || feedback_seen {
-                        return Err(invalid());
-                    }
-                    let Ok(index) = self
-                        .plan
-                        .drop_guide_clusters()
-                        .binary_search_by_key(id, |record| record.id())
-                    else {
-                        return Err(invalid());
-                    };
-                    let structural = DropGuidePaintRecord {
-                        record: &self.plan.drop_guide_clusters()[index],
-                    };
-                    let affordance = self.drop_affordance().and_then(|affordance| {
-                        affordance
-                            .clusters()
-                            .find(|cluster| cluster.visual_id() == structural.visual_id())
-                    });
-                    visitor(SurfacePaintProgramStep::DropGuide {
-                        structural,
-                        affordance,
-                    })
-                    .map_err(SurfacePaintProgramVisitError::Sink)?;
-                }
-                SurfaceProgramBlock::FeedbackPlane => {
-                    if active_root.is_some() || !projection_seen || feedback_seen {
-                        return Err(invalid());
-                    }
-                    feedback_seen = true;
-                    visitor(SurfacePaintProgramStep::FeedbackPlane)
-                        .map_err(SurfacePaintProgramVisitError::Sink)?;
+        let menu_open_bars = self.program_menu_open_bars();
+        let mut sink_error = None;
+        let traversal = self.plan.visit_surface_program(|step| {
+            let resolved = match self.resolve_surface_program_step(step, &menu_open_bars) {
+                Ok(Some(step)) => step,
+                Ok(None) => return Ok(()),
+                Err(()) => return Err(()),
+            };
+            match visitor(resolved) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    sink_error = Some(error);
+                    Err(())
                 }
             }
+        });
+        if let Some(error) = sink_error {
+            return Err(SurfacePaintProgramVisitError::Sink(error));
         }
-
-        if active_root.is_some()
-            || !projection_seen
-            || !feedback_seen
-            || contained_records.next().is_some()
-        {
-            return Err(invalid());
+        if traversal.is_err() {
+            return Err(SurfacePaintProgramVisitError::InvalidProgram {
+                surface: self.surface,
+            });
         }
         Ok(())
     }
 
-    fn resolve_surface_program_operation(
+    fn validate_surface_program(self) -> bool {
+        let menu_open_bars = self.program_menu_open_bars();
+        self.plan
+            .visit_surface_program(|step| {
+                self.resolve_surface_program_step(step, &menu_open_bars)
+                    .map(|_| ())
+            })
+            .is_ok()
+    }
+
+    fn resolve_surface_program_step(
         self,
-        operation: SurfaceProgramRootOperation,
-        active_root: RootId,
-        presentation: SurfaceProgramRootPresentation,
+        step: ResolvedSurfaceProgramStep<'frame>,
+        menu_open_bars: &HashSet<TabBarSceneId>,
+    ) -> Result<Option<SurfacePaintProgramStep<'frame>>, ()> {
+        Ok(match step {
+            ResolvedSurfaceProgramStep::RootBegin(root) => {
+                let root = self.resolve_surface_program_root(root).ok_or(())?;
+                let paint = root
+                    .contained()
+                    .map_or(SurfacePaintDisposition::Visible, |record| {
+                        paint_disposition(self.drag_decoration, record.visual_id())
+                    });
+                Some(SurfacePaintProgramStep::RootBegin { root, paint })
+            }
+            ResolvedSurfaceProgramStep::Operation { root, operation } => {
+                let root = self.resolve_surface_program_root(root).ok_or(())?;
+                let operation = self
+                    .resolve_surface_program_operation_record(operation, menu_open_bars)
+                    .ok_or(())?;
+                let paint = paint_disposition(self.drag_decoration, operation.visual_id());
+                Some(SurfacePaintProgramStep::Operation {
+                    root,
+                    operation,
+                    paint,
+                })
+            }
+            ResolvedSurfaceProgramStep::RootEnd(root) => Some(SurfacePaintProgramStep::RootEnd(
+                self.resolve_surface_program_root(root).ok_or(())?,
+            )),
+            ResolvedSurfaceProgramStep::PopupBackdrop(record) => Some(
+                SurfacePaintProgramStep::PopupBackdrop(TabListMenuBackdropPaintRecord {
+                    surface: self.surface,
+                    record: *record,
+                }),
+            ),
+            ResolvedSurfaceProgramStep::PopupMenu(record) => {
+                let backdrop = *self
+                    .plan
+                    .tab_list_menu_backdrop_records()
+                    .iter()
+                    .find(|backdrop| backdrop.session() == record.session())
+                    .ok_or(())?;
+                let menu = TabListMenuPaintRecord {
+                    record,
+                    surface: self.surface,
+                    backdrop,
+                };
+                let paint = paint_disposition(self.drag_decoration, menu.visual_id());
+                Some(SurfacePaintProgramStep::PopupMenu { menu, paint })
+            }
+            ResolvedSurfaceProgramStep::DragPreview => self
+                .drag_preview()
+                .map(SurfacePaintProgramStep::DragPreview),
+            ResolvedSurfaceProgramStep::DropTarget(record) => {
+                Some(SurfacePaintProgramStep::DropTarget(
+                    self.receiver(PresentationHitRegionKind::DropTarget(record.id()))
+                        .ok_or(())?,
+                ))
+            }
+            ResolvedSurfaceProgramStep::DropGuide(record) => {
+                let structural = DropGuidePaintRecord { record };
+                let affordance = self.drop_affordance().and_then(|affordance| {
+                    affordance
+                        .clusters()
+                        .find(|cluster| cluster.visual_id() == structural.visual_id())
+                });
+                Some(SurfacePaintProgramStep::DropGuide {
+                    structural,
+                    affordance,
+                })
+            }
+            ResolvedSurfaceProgramStep::ContainedTransformPreview => self
+                .contained_transform_preview()
+                .map(SurfacePaintProgramStep::ContainedTransformPreview),
+            ResolvedSurfaceProgramStep::DragDecoration => self
+                .drag_decoration()
+                .map(SurfacePaintProgramStep::DragDecoration),
+            ResolvedSurfaceProgramStep::InteractionFeedback => {
+                Some(SurfacePaintProgramStep::InteractionFeedback)
+            }
+            ResolvedSurfaceProgramStep::SurfaceEnd => Some(SurfacePaintProgramStep::SurfaceEnd {
+                semantic_output: self.semantic_output(),
+            }),
+        })
+    }
+
+    fn resolve_surface_program_root(
+        self,
+        root: ResolvedSurfaceProgramRoot,
+    ) -> Option<SurfacePaintProgramRoot<'frame>> {
+        let kind = match root.contained() {
+            None => SurfacePaintProgramRootKind::Main,
+            Some(floating) => {
+                let record =
+                    self.plan.contained_records().iter().find(|record| {
+                        record.floating() == floating && record.root() == root.root()
+                    })?;
+                SurfacePaintProgramRootKind::Contained(ContainedPaintRecord {
+                    record,
+                    plan: self.plan,
+                })
+            }
+        };
+        Some(SurfacePaintProgramRoot {
+            root: root.root(),
+            kind,
+            title_item: root.title_item(),
+        })
+    }
+
+    fn resolve_surface_program_operation_record(
+        self,
+        operation: ResolvedSurfaceProgramOperation<'frame>,
+        menu_open_bars: &HashSet<TabBarSceneId>,
     ) -> Option<SurfacePaintProgramOperation<'frame>> {
-        match operation {
-            SurfaceProgramRootOperation::Pane(id) if id.root == active_root => {
-                let index = self
-                    .plan
-                    .pane_records()
-                    .binary_search_by_key(&id, crate::scene::PaneRecord::id)
-                    .ok()?;
-                Some(SurfacePaintProgramOperation::Pane(PanePaintRecord {
-                    record: &self.plan.pane_records()[index],
-                }))
+        Some(match operation {
+            ResolvedSurfaceProgramOperation::Pane(record) => {
+                SurfacePaintProgramOperation::Pane(PanePaintRecord { record })
             }
-            SurfaceProgramRootOperation::TabBar(id) if id.root == active_root => {
-                let index = self
-                    .plan
-                    .tab_bar_records()
-                    .binary_search_by(|record| record.id().cmp(&id))
-                    .ok()?;
-                Some(SurfacePaintProgramOperation::TabBar(TabBarPaintRecord {
-                    record: &self.plan.tab_bar_records()[index],
-                }))
+            ResolvedSurfaceProgramOperation::TabBar(record) => {
+                SurfacePaintProgramOperation::TabBar(TabBarPaintRecord { record })
             }
-            SurfaceProgramRootOperation::Tab(id) if id.root == active_root => {
-                let index = self
-                    .plan
-                    .tab_records()
-                    .binary_search_by(|record| record.id().cmp(&id))
-                    .ok()?;
-                let record = &self.plan.tab_records()[index];
-                Some(SurfacePaintProgramOperation::Tab(TabPaintRecord {
+            ResolvedSurfaceProgramOperation::Tab(record) => {
+                SurfacePaintProgramOperation::Tab(TabPaintRecord {
                     record,
                     operable: self.tab_is_operable(record),
-                }))
+                })
             }
-            SurfaceProgramRootOperation::Splitter(id) if id.root == active_root => {
-                let index = self
-                    .plan
-                    .splitter_records()
-                    .binary_search_by(|record| record.id().cmp(&id))
-                    .ok()?;
-                Some(SurfacePaintProgramOperation::Splitter(
-                    SplitterPaintRecord {
-                        record: &self.plan.splitter_records()[index],
-                    },
-                ))
+            ResolvedSurfaceProgramOperation::Splitter(record) => {
+                SurfacePaintProgramOperation::Splitter(SplitterPaintRecord { record })
             }
-            SurfaceProgramRootOperation::SplitterJunction(id) if id.root() == active_root => {
-                let index = self
-                    .plan
-                    .splitter_junction_records()
-                    .binary_search_by_key(&id, SplitterJunctionRecord::id)
-                    .ok()?;
-                Some(SurfacePaintProgramOperation::SplitterJunction(
-                    SplitterJunctionPaintRecord {
-                        record: &self.plan.splitter_junction_records()[index],
-                    },
-                ))
+            ResolvedSurfaceProgramOperation::SplitterJunction(record) => {
+                SurfacePaintProgramOperation::SplitterJunction(SplitterJunctionPaintRecord {
+                    record,
+                })
             }
-            SurfaceProgramRootOperation::TabStripControl(id) if id.bar().root == active_root => {
-                let index = self
-                    .plan
-                    .tab_strip_control_records()
-                    .binary_search_by_key(&id, |record| record.id())
-                    .ok()?;
-                Some(SurfacePaintProgramOperation::TabStripControl(
-                    TabStripControlPaintRecord {
-                        record: self.plan.tab_strip_control_records()[index],
-                    },
-                ))
+            ResolvedSurfaceProgramOperation::TabStripControl(record) => {
+                SurfacePaintProgramOperation::TabStripControl(TabStripControlPaintRecord {
+                    record: *record,
+                    menu_open: menu_open_bars.contains(&record.id().bar()),
+                })
             }
-            SurfaceProgramRootOperation::ContainedControls(floating)
-                if presentation == SurfaceProgramRootPresentation::Contained(floating) =>
-            {
-                let record = self
-                    .plan
-                    .contained_records()
-                    .iter()
-                    .find(|record| record.floating() == floating)?;
-                Some(SurfacePaintProgramOperation::ContainedControls(
-                    ContainedPaintRecord {
-                        record,
-                        plan: self.plan,
-                    },
-                ))
+            ResolvedSurfaceProgramOperation::ContainedControls(record) => {
+                SurfacePaintProgramOperation::ContainedControls(ContainedPaintRecord {
+                    record,
+                    plan: self.plan,
+                })
             }
-            SurfaceProgramRootOperation::PresentationMenuAnchor(root) if root == active_root => {
-                let index = self
-                    .plan
-                    .presentation_menu_anchor_records()
-                    .binary_search_by_key(&root, |record| record.root())
-                    .ok()?;
-                let record = &self.plan.presentation_menu_anchor_records()[index];
+            ResolvedSurfaceProgramOperation::PresentationMenuAnchor(record) => {
                 let bounds = record.ready_bounds()?;
-                Some(SurfacePaintProgramOperation::PresentationMenuAnchor(
+                SurfacePaintProgramOperation::PresentationMenuAnchor(
                     PresentationMenuAnchorPaintRecord {
                         record,
                         bounds,
                         operable: self.plan.region_is_operable(bounds, record.layer()),
                     },
-                ))
+                )
             }
-            _ => None,
-        }
+        })
     }
 
     /// Returns the exact semantic output represented by this paint plan.
@@ -1722,18 +1734,20 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// acknowledgement. It exists only after the core enters its active
     /// dragging phase and disappears with the terminal or cancelled gesture.
     #[must_use]
-    pub const fn drag_decoration(self) -> Option<DockspaceDragDecoration<'frame>> {
+    const fn drag_decoration(self) -> Option<DockspaceDragDecoration<'frame>> {
         self.drag_decoration
     }
 
-    pub fn panes(self) -> impl ExactSizeIterator<Item = PanePaintRecord<'frame>> {
+    #[cfg(test)]
+    pub(crate) fn panes(self) -> impl ExactSizeIterator<Item = PanePaintRecord<'frame>> {
         self.plan
             .pane_records()
             .iter()
             .map(|record| PanePaintRecord { record })
     }
 
-    pub fn tabs(self) -> impl ExactSizeIterator<Item = TabPaintRecord<'frame>> {
+    #[cfg(test)]
+    pub(crate) fn tabs(self) -> impl ExactSizeIterator<Item = TabPaintRecord<'frame>> {
         self.plan
             .tab_records()
             .iter()
@@ -1743,7 +1757,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
             })
     }
 
-    pub fn tab_bars(self) -> impl ExactSizeIterator<Item = TabBarPaintRecord<'frame>> {
+    #[cfg(test)]
+    pub(crate) fn tab_bars(self) -> impl ExactSizeIterator<Item = TabBarPaintRecord<'frame>> {
         self.plan
             .tab_bar_records()
             .iter()
@@ -1751,7 +1766,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     /// Returns one exact core-selected presentation menu anchor per visible root.
-    pub fn presentation_menu_anchors(
+    #[cfg(test)]
+    pub(crate) fn presentation_menu_anchors(
         self,
     ) -> impl Iterator<Item = PresentationMenuAnchorPaintRecord<'frame>> {
         self.plan
@@ -1768,52 +1784,48 @@ impl<'frame> SurfacePaintPlan<'frame> {
             })
     }
 
-    pub fn tab_strip_controls(
+    #[cfg(test)]
+    pub(crate) fn tab_strip_controls(
         self,
     ) -> impl ExactSizeIterator<Item = TabStripControlPaintRecord> + 'frame {
+        let menu_open_bars = self.program_menu_open_bars();
         self.plan
             .tab_strip_control_records()
             .iter()
             .copied()
-            .map(|record| TabStripControlPaintRecord { record })
+            .map(move |record| TabStripControlPaintRecord {
+                menu_open: menu_open_bars.contains(&record.id().bar()),
+                record,
+            })
     }
 
-    pub fn tab_list_menus(self) -> impl ExactSizeIterator<Item = TabListMenuPaintRecord<'frame>> {
-        self.plan
-            .tab_list_menu_records()
-            .iter()
-            .map(|record| TabListMenuPaintRecord { record })
-    }
-
-    pub fn tab_list_menu_backdrops(
-        self,
-    ) -> impl ExactSizeIterator<Item = TabListMenuBackdropPaintRecord> + 'frame {
+    pub(crate) fn tab_list_menus(self) -> impl Iterator<Item = TabListMenuPaintRecord<'frame>> {
         let surface = self.surface;
-        self.plan
-            .tab_list_menu_backdrop_records()
+        let plan = self.plan;
+        plan.tab_list_menu_records()
             .iter()
-            .copied()
-            .map(move |record| TabListMenuBackdropPaintRecord { surface, record })
+            .filter_map(move |record| {
+                let backdrop = *plan
+                    .tab_list_menu_backdrop_records()
+                    .iter()
+                    .find(|backdrop| backdrop.session() == record.session())?;
+                Some(TabListMenuPaintRecord {
+                    record,
+                    surface,
+                    backdrop,
+                })
+            })
     }
 
-    pub fn splitter_gap_statuses(
-        self,
-    ) -> impl ExactSizeIterator<Item = StructuralSplitterGapStatus> + 'frame {
-        self.plan
-            .splitter_gap_records()
-            .iter()
-            .copied()
-            .map(|record| StructuralSplitterGapStatus { record })
-    }
-
-    pub fn splitters(self) -> impl ExactSizeIterator<Item = SplitterPaintRecord<'frame>> {
+    #[cfg(test)]
+    pub(crate) fn splitters(self) -> impl ExactSizeIterator<Item = SplitterPaintRecord<'frame>> {
         self.plan
             .splitter_records()
             .iter()
             .map(|record| SplitterPaintRecord { record })
     }
 
-    pub fn splitter_junctions(
+    pub(crate) fn splitter_junctions(
         self,
     ) -> impl ExactSizeIterator<Item = SplitterJunctionPaintRecord<'frame>> {
         self.plan
@@ -1822,7 +1834,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .map(|record| SplitterJunctionPaintRecord { record })
     }
 
-    pub fn contained(self) -> impl ExactSizeIterator<Item = ContainedPaintRecord<'frame>> {
+    #[cfg(test)]
+    pub(crate) fn contained(self) -> impl ExactSizeIterator<Item = ContainedPaintRecord<'frame>> {
         let plan = self.plan;
         self.plan
             .contained_records()
@@ -1830,7 +1843,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .map(move |record| ContainedPaintRecord { record, plan })
     }
 
-    pub fn drop_guides(self) -> impl ExactSizeIterator<Item = DropGuidePaintRecord<'frame>> {
+    #[cfg(test)]
+    pub(crate) fn drop_guides(self) -> impl ExactSizeIterator<Item = DropGuidePaintRecord<'frame>> {
         self.plan
             .drop_guide_clusters()
             .iter()
@@ -1843,13 +1857,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// remains visible while the pointer is between buttons or over a rejected
     /// target. The renderer must not infer active or disabled state from geometry.
     #[must_use]
-    pub fn drop_affordance(self) -> Option<DropAffordancePaintRecord<'frame>> {
+    fn drop_affordance(self) -> Option<DropAffordancePaintRecord<'frame>> {
         self.drop_affordance
             .map(|affordance| DropAffordancePaintRecord { affordance })
     }
 
     /// Returns every active semantic receiver in deterministic hit-stack order.
-    pub fn receivers(self) -> impl Iterator<Item = DockspaceReceiverDescriptor> + 'frame {
+    #[cfg(test)]
+    pub(crate) fn receivers(self) -> impl Iterator<Item = DockspaceReceiverDescriptor> + 'frame {
         self.hit_manifest
             .regions()
             .iter()
@@ -2157,14 +2172,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     #[must_use]
-    pub fn drag_preview(self) -> Option<DockspaceDragPreview<'frame>> {
+    fn drag_preview(self) -> Option<DockspaceDragPreview<'frame>> {
         self.drag_preview
             .map(|preview| DockspaceDragPreview { preview })
     }
 
     /// Returns the exact contained resize preview which this surface must paint.
     #[must_use]
-    pub fn contained_transform_preview(self) -> Option<DockspaceContainedTransformPreview<'frame>> {
+    fn contained_transform_preview(self) -> Option<DockspaceContainedTransformPreview<'frame>> {
         self.contained_transform_preview
             .map(|preview| DockspaceContainedTransformPreview { preview })
     }
@@ -2200,6 +2215,26 @@ impl<'frame> SurfacePaintPlan<'frame> {
             region.lanes(),
             region.hit().rect(),
         )
+    }
+
+    /// Returns tab bars whose popup menu is present in the ordered program.
+    fn program_menu_open_bars(self) -> HashSet<TabBarSceneId> {
+        let popup_sessions = self
+            .plan
+            .surface_program()
+            .blocks()
+            .iter()
+            .filter_map(|block| match block {
+                SurfaceProgramBlock::PopupMenu(session) => Some(*session),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        self.plan
+            .tab_list_menu_records()
+            .iter()
+            .filter(|menu| popup_sessions.contains(&menu.session()))
+            .map(|menu| menu.bar())
+            .collect()
     }
 }
 
@@ -2242,7 +2277,9 @@ const fn receiver_role(kind: PresentationHitRegionKind) -> Option<DockspaceRecei
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drop_target::{DropTargetRecord, DropVisual, SurfaceBackground};
     use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use crate::hit_region::HitRegion;
     use crate::policy::DockPolicy;
     use crate::runtime::{DockspaceSession, UniformSurfaceMetrics};
     use crate::scene::PaneSceneId;
@@ -2282,6 +2319,10 @@ mod tests {
             .paint_plan(surface)
             .expect("the paint plan lookup succeeds")
             .expect("the measured surface is paintable");
+        assert!(
+            valid.program_valid,
+            "ready plans must preflight their program"
+        );
         let mut malformed = PresentationPlan::new(surface, valid.bounds());
         malformed
             .begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)
@@ -2300,8 +2341,18 @@ mod tests {
             .expect("the malformed program seals structurally");
         let malformed = SurfacePaintPlan {
             plan: &malformed,
+            program_valid: false,
             ..valid
         };
+        let malformed = SurfacePaintPlan {
+            program_valid: malformed.validate_surface_program(),
+            ..malformed
+        };
+
+        assert!(
+            !malformed.program_valid,
+            "the preflight must reject a program referencing a missing pane record"
+        );
 
         let mut emitted_steps = 0;
         let result = malformed.visit_surface_program(|_| {
@@ -2318,6 +2369,85 @@ mod tests {
         assert_eq!(
             emitted_steps, 0,
             "an invalid program must fail before the renderer can paint a partial output"
+        );
+    }
+
+    #[test]
+    fn drop_target_without_receiver_invalidates_the_whole_surface_program() {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(2);
+        let item = ItemId::new(3);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([item]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().expect("the test workspace validates"),
+            DockPolicy::default(),
+        )
+        .expect("the runtime initializes");
+        let bounds = LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate");
+        let metrics = UniformSurfaceMetrics::new(
+            bounds,
+            LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+            80.0,
+        )
+        .expect("test metrics validate");
+        let mut measurement_frame = session
+            .begin_host_frame()
+            .expect("the measurement frame begins");
+        measurement_frame
+            .measure_surface(surface, metrics)
+            .expect("the surface measurement stages");
+        measurement_frame
+            .commit()
+            .expect("the surface measurement commits");
+
+        let mut paint_frame = session.begin_host_frame().expect("the paint frame begins");
+        let valid = paint_frame
+            .paint_plan(surface)
+            .expect("the paint plan lookup succeeds")
+            .expect("the measured surface is paintable");
+        let mut malformed = PresentationPlan::new(surface, bounds);
+        malformed
+            .set_surface_background(DropTargetRecord::surface_background(
+                SurfaceBackground::new(surface),
+                HitRegion::new(bounds),
+                DropVisual::new(bounds),
+            ))
+            .expect("the background target stages");
+        malformed
+            .finish_surface_program()
+            .expect("the target program seals structurally");
+        let malformed = SurfacePaintPlan {
+            plan: &malformed,
+            program_valid: false,
+            ..valid
+        };
+        let malformed = SurfacePaintPlan {
+            program_valid: malformed.validate_surface_program(),
+            ..malformed
+        };
+
+        assert!(
+            !malformed.program_valid,
+            "a program drop target without the exact receiver must fail preflight"
+        );
+        let mut emitted_steps = 0;
+        let result = malformed.visit_surface_program(|_| {
+            emitted_steps += 1;
+            Ok::<(), ()>(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(SurfacePaintProgramVisitError::InvalidProgram {
+                surface: rejected
+            }) if rejected == surface
+        ));
+        assert_eq!(
+            emitted_steps, 0,
+            "the missing receiver must not degrade into a partially painted program"
         );
     }
 }

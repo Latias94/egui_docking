@@ -646,6 +646,14 @@ impl DockEngine {
             ));
         }
 
+        self.close_tab_list_menu(cause, session)
+    }
+
+    fn close_tab_list_menu(
+        &mut self,
+        cause: ReductionCause,
+        session: crate::tab_strip::TabListMenuSessionId,
+    ) -> Result<InteractionOutcome, EngineError> {
         let mut states = self.presentation_authority.tab_strip_states.clone();
         let delta = states
             .close_tab_list_menu(session)

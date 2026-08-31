@@ -1,7 +1,7 @@
 ---
 title: "Dockspace Interaction Module Inventory"
 status: "Verified"
-reviewed: "2026-08-21"
+reviewed: "2026-08-31"
 ---
 
 # Dockspace Interaction Module Inventory
@@ -23,8 +23,8 @@ not a source manifest or a stability promise.
 | `product_render/drag_feedback.rs` | Paint source gaps, ghosts, and drag decoration. | Consumes core drag-decoration records. | Does not own gesture state or release authority. |
 | `product_render/presentation_menu.rs` | Render root-scoped presentation commands. | Activates core-minted command records. | Does not derive native placement or docking direction. |
 | `product_render/measurement.rs` | Report renderer intrinsics and exact surface bounds. | Produces measurement contributions for core tickets. | Does not publish scene authority. |
-| `product_render/schedule.rs` | Preserve core paint/layer order. | Iterates the frozen paint plan. | Does not invent z-order or occlusion. |
-| `product_render/mod.rs` | Orchestrate one surface render and final pass settlement. | Joins the private renderer modules around `SurfacePaintPlan`. | Does not own a second graph, gesture machine, or output ledger. |
+| `SurfacePaintPlan::visit_surface_program` | Execute the core-owned root, popup, preview, guide, and feedback order. | Supplies one validated ordered step stream to the renderer. | Does not mint presentation proof or own durable topology. |
+| `product_render/mod.rs` | Orchestrate one surface render and final pass settlement. | Consumes the ordered `SurfacePaintPlan` program and joins private renderer modules. | Does not own a second graph, gesture machine, schedule, or output ledger. |
 
 ## Native coordinator
 

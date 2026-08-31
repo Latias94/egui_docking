@@ -68,26 +68,30 @@ impl PresentationSemanticManifest {
                     | ResolvedSurfaceProgramOperation::Splitter(_)
                     | ResolvedSurfaceProgramOperation::SplitterJunction(_)
                     | ResolvedSurfaceProgramOperation::TabStripControl(_)
-                    | ResolvedSurfaceProgramOperation::PresentationMenuAnchor => {}
+                    | ResolvedSurfaceProgramOperation::PresentationMenuAnchor(_) => {}
                 },
-                ResolvedSurfaceProgramStep::ProjectionPlane => {
-                    for menu in plan.tab_list_menu_records() {
-                        if menu.maximum_scroll_offset() > 0.0 {
-                            receivers
-                                .push(PresentationHitRegionKind::TabListMenuScroll(menu.session()));
-                        }
-                        receivers.extend(menu.rows().iter().map(|row| {
-                            PresentationHitRegionKind::TabListMenuRow {
-                                menu: menu.session(),
-                                tab: row.tab(),
-                            }
-                        }));
+                ResolvedSurfaceProgramStep::PopupMenu(menu) => {
+                    if menu.maximum_scroll_offset() > 0.0 {
+                        receivers
+                            .push(PresentationHitRegionKind::TabListMenuScroll(menu.session()));
                     }
+                    receivers.extend(menu.rows().iter().map(|row| {
+                        PresentationHitRegionKind::TabListMenuRow {
+                            menu: menu.session(),
+                            tab: row.tab(),
+                        }
+                    }));
                 }
                 ResolvedSurfaceProgramStep::RootBegin(_)
                 | ResolvedSurfaceProgramStep::RootEnd(_)
+                | ResolvedSurfaceProgramStep::PopupBackdrop(_)
+                | ResolvedSurfaceProgramStep::DragPreview
+                | ResolvedSurfaceProgramStep::DropTarget(_)
                 | ResolvedSurfaceProgramStep::DropGuide(_)
-                | ResolvedSurfaceProgramStep::FeedbackPlane => {}
+                | ResolvedSurfaceProgramStep::ContainedTransformPreview
+                | ResolvedSurfaceProgramStep::DragDecoration
+                | ResolvedSurfaceProgramStep::InteractionFeedback
+                | ResolvedSurfaceProgramStep::SurfaceEnd => {}
             }
             Ok::<(), Infallible>(())
         })

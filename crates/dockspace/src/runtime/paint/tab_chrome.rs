@@ -24,6 +24,7 @@ pub enum TabStripControlKind {
 #[derive(Debug, Clone, Copy)]
 pub struct TabStripControlPaintRecord {
     pub(super) record: TabStripControlRecord,
+    pub(super) menu_open: bool,
 }
 
 impl TabStripControlPaintRecord {
@@ -64,6 +65,12 @@ impl TabStripControlPaintRecord {
     #[must_use]
     pub const fn enabled(self) -> bool {
         self.record.enabled()
+    }
+
+    /// Returns whether this control owns the currently open tab-list menu.
+    #[must_use]
+    pub const fn menu_open(self) -> bool {
+        self.menu_open
     }
 
     #[must_use]
@@ -131,6 +138,8 @@ impl TabListMenuRowPaintRecord {
 #[derive(Debug, Clone, Copy)]
 pub struct TabListMenuPaintRecord<'plan> {
     pub(super) record: &'plan TabListMenuRecord,
+    pub(super) surface: SurfaceId,
+    pub(super) backdrop: TabListMenuBackdropRecord,
 }
 
 impl<'plan> TabListMenuPaintRecord<'plan> {
@@ -176,6 +185,15 @@ impl<'plan> TabListMenuPaintRecord<'plan> {
     #[must_use]
     pub const fn layer(self) -> DockspacePaintLayer {
         DockspacePaintLayer::from_core(self.record.layer())
+    }
+
+    /// Returns the exact full-surface backdrop paired with this menu.
+    #[must_use]
+    pub const fn backdrop(self) -> TabListMenuBackdropPaintRecord {
+        TabListMenuBackdropPaintRecord {
+            surface: self.surface,
+            record: self.backdrop,
+        }
     }
 }
 

@@ -353,51 +353,7 @@ fn bind_measurement_ticket(
     plan: &PresentationPlan,
     ticket: SurfaceMeasurementTicket,
 ) -> PresentationPlan {
-    let mut measured = PresentationPlan::from_measurements(
-        ticket,
-        crate::tab_strip::PopupPlaneRequirement::default(),
-        plan.bounds(),
-        None,
-    );
-    for record in plan.pane_records().iter().cloned() {
-        measured.push_pane_record(record);
-    }
-    for record in plan.tab_records().iter().cloned() {
-        measured.push_tab_record(record);
-    }
-    for record in plan.tab_bar_records().iter().cloned() {
-        measured.push_tab_bar_record(record);
-    }
-    for record in plan.splitter_gap_records().iter().copied() {
-        measured.push_splitter_gap_record(record);
-    }
-    for record in plan.splitter_records().iter().cloned() {
-        measured.push_splitter_record(record);
-    }
-    for record in plan.splitter_junction_records().iter().cloned() {
-        measured.push_splitter_junction_record(record);
-    }
-    for record in plan.contained_records().iter().cloned() {
-        measured.push_contained_record(record);
-    }
-    for minimum in plan.contained_minimums().iter().copied() {
-        measured.push_contained_minimum(minimum);
-    }
-    if let Some(background) = plan.surface_background().cloned() {
-        measured
-            .set_surface_background(background)
-            .expect("validated background remains unique");
-    }
-    for occlusion in plan.drop_occlusions().iter().copied() {
-        measured.push_drop_occlusion(occlusion);
-    }
-    for cluster in plan.drop_guide_clusters().iter().cloned() {
-        measured.push_drop_guide_cluster(cluster);
-    }
-    for target in plan.drop_targets().iter().cloned() {
-        measured.push_drop_target(target);
-    }
-    measured
+    plan.rebind_measurement_ticket_for_test(ticket)
 }
 
 fn fixture_measurements(
@@ -475,6 +431,12 @@ fn publish_ready(
     painted: bool,
 ) -> Result<SurfaceSceneSet, SceneBuildError> {
     let surface = ready.surface();
+    let mut ready = ready;
+    if ready.surface_program().blocks().is_empty() {
+        ready
+            .finish_surface_program()
+            .expect("synthetic fixture program should finish exactly once");
+    }
     let ready =
         PresentationPlanValidator::new(workspace, policy)?.validate_and_canonicalize(ready)?;
     let engine = DockEngine::new(workspace.clone(), policy.to_policy())
@@ -1072,6 +1034,8 @@ fn unpainted_next_candidate_does_not_replace_the_painted_hit_authority() {
     );
     next.push_drop_occlusion(floating_occlusion(rect(20.0, 20.0, 60.0, 60.0), 2));
     next.push_contained_minimum(floating_minimum());
+    next.finish_surface_program()
+        .expect("next projection program should finish after its targets are installed");
     let next = PresentationPlanValidator::new(&fixture.workspace, &policy)
         .expect("fixture validator must initialize")
         .validate_and_canonicalize(next)

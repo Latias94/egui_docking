@@ -97,12 +97,15 @@ fn candidate_with_popup(
     popup: PopupPlaneRequirement,
 ) -> PresentationPlan {
     let bounds = LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("positive bounds");
-    PresentationPlan::from_measurements(
+    let mut plan = PresentationPlan::from_measurements(
         ticket,
         popup,
         bounds,
         matches!(popup, PopupPlaneRequirement::Active { .. }).then_some(bounds),
-    )
+    );
+    plan.finish_surface_program()
+        .expect("empty lifecycle fixture program should finish");
+    plan
 }
 
 fn headless_capture() -> SurfaceCoordinateCapture {

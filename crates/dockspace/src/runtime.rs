@@ -93,14 +93,13 @@ pub use paint::{
     DockspaceReceiverRole, DockspaceSemanticOutput, DockspaceVisualId, DockspaceVisualKind,
     DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
     DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord,
-    PresentationCommandPaintRecord, PresentationMenuAnchorPaintRecord, SplitterGapVisibility,
-    SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
-    SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramRoot,
-    SurfacePaintProgramRootKind, SurfacePaintProgramStep, SurfacePaintProgramVisitError,
-    TabBarPaintRecord, TabGroupDragRegionKind, TabGroupDragRegionPaintRecord,
-    TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
-    TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord, TabStripMemberPaintRecord,
-    TabStripMemberVisibility,
+    PresentationCommandPaintRecord, PresentationMenuAnchorPaintRecord, SplitterJunctionPaintRecord,
+    SplitterPaintRecord, SurfacePaintDisposition, SurfacePaintPlan, SurfacePaintProgramOperation,
+    SurfacePaintProgramRoot, SurfacePaintProgramRootKind, SurfacePaintProgramStep,
+    SurfacePaintProgramVisitError, TabBarPaintRecord, TabGroupDragRegionKind,
+    TabGroupDragRegionPaintRecord, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
+    TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord,
+    TabStripMemberPaintRecord, TabStripMemberVisibility,
 };
 #[cfg(feature = "serde")]
 pub use persistence::{

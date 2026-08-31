@@ -52,9 +52,11 @@ use crate::scene_manifest::{
 };
 use crate::semantic_manifest::PresentationSemanticManifest;
 use crate::splitter_junction_index::derive_splitter_junction_candidates;
-use crate::tab_strip::{PopupPlaneRequirement, TabStripControlId, TabStripStateKey};
 #[cfg(test)]
-use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId};
+use crate::tab_strip::PopupRoutingRevision;
+use crate::tab_strip::{
+    PopupPlaneRequirement, TabListMenuSessionId, TabStripControlId, TabStripStateKey,
+};
 use crate::target_field::{MagneticEdgeTargets, MagneticTargetCandidate, MagneticTargetField};
 use crate::transition::WorkspaceVersion;
 use crate::viewport::{CoordinateGeneration, ViewportBinding};
@@ -218,15 +220,22 @@ pub(crate) enum SurfaceProgramBlock {
     RootEnd {
         root: RootId,
     },
-    ProjectionPlane,
+    PopupBackdrop(TabListMenuSessionId),
+    PopupMenu(TabListMenuSessionId),
+    DragPreview,
+    DropTarget(DropTargetId),
     DropGuide(DropGuideClusterId),
-    FeedbackPlane,
+    ContainedTransformPreview,
+    DragDecoration,
+    InteractionFeedback,
+    SurfaceEnd,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedSurfaceProgramRoot {
     root: RootId,
     contained: Option<FloatingPresentationId>,
+    title_item: Option<ItemId>,
 }
 
 impl ResolvedSurfaceProgramRoot {
@@ -236,6 +245,10 @@ impl ResolvedSurfaceProgramRoot {
 
     pub(crate) const fn contained(self) -> Option<FloatingPresentationId> {
         self.contained
+    }
+
+    pub(crate) const fn title_item(self) -> Option<ItemId> {
+        self.title_item
     }
 }
 
@@ -248,7 +261,7 @@ pub(crate) enum ResolvedSurfaceProgramOperation<'a> {
     SplitterJunction(&'a SplitterJunctionRecord),
     TabStripControl(&'a TabStripControlRecord),
     ContainedControls(&'a ContainedRecord),
-    PresentationMenuAnchor,
+    PresentationMenuAnchor(&'a PresentationMenuAnchorRecord),
 }
 
 #[allow(
@@ -263,9 +276,15 @@ pub(crate) enum ResolvedSurfaceProgramStep<'a> {
         operation: ResolvedSurfaceProgramOperation<'a>,
     },
     RootEnd(ResolvedSurfaceProgramRoot),
-    ProjectionPlane,
+    PopupBackdrop(&'a TabListMenuBackdropRecord),
+    PopupMenu(&'a TabListMenuRecord),
+    DragPreview,
+    DropTarget(&'a DropTargetRecord),
     DropGuide(&'a DropGuideClusterRecord),
-    FeedbackPlane,
+    ContainedTransformPreview,
+    DragDecoration,
+    InteractionFeedback,
+    SurfaceEnd,
 }
 
 #[derive(Debug)]
@@ -295,6 +314,14 @@ pub(crate) enum SurfaceProgramBuildError {
     },
     #[error("surface program repeats guide cluster {id:?}")]
     DuplicateGuide { id: DropGuideClusterId },
+    #[error("surface program repeats popup backdrop {session:?}")]
+    DuplicatePopupBackdrop { session: TabListMenuSessionId },
+    #[error("surface program repeats popup menu {session:?}")]
+    DuplicatePopupMenu { session: TabListMenuSessionId },
+    #[error("surface program popup session {session:?} has no backdrop")]
+    PopupMenuWithoutBackdrop { session: TabListMenuSessionId },
+    #[error("surface program repeats drop target {id:?}")]
+    DuplicateDropTarget { id: DropTargetId },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -303,7 +330,12 @@ pub(crate) struct SurfaceProgram {
     root_drafts: Vec<SurfaceProgramRootDraft>,
     root_indices: std::collections::BTreeMap<RootId, usize>,
     active_root: Option<usize>,
+    deferred_popup_backdrops: Vec<TabListMenuSessionId>,
+    deferred_popup_menus: Vec<TabListMenuSessionId>,
+    deferred_drop_targets: Vec<DropTargetId>,
+    deferred_surface_background: Option<DropTargetId>,
     deferred_guides: Vec<DropGuideClusterId>,
+    deferred_guide_targets: Vec<DropTargetId>,
     finished: bool,
 }
 
@@ -386,8 +418,26 @@ impl SurfaceProgram {
         Ok(())
     }
 
-    fn defer_guide(&mut self, id: DropGuideClusterId) {
-        self.deferred_guides.push(id);
+    fn defer_popup_backdrop(&mut self, session: TabListMenuSessionId) {
+        self.deferred_popup_backdrops.push(session);
+    }
+
+    fn defer_popup_menu(&mut self, session: TabListMenuSessionId) {
+        self.deferred_popup_menus.push(session);
+    }
+
+    fn defer_drop_target(&mut self, id: DropTargetId) {
+        self.deferred_drop_targets.push(id);
+    }
+
+    fn defer_surface_background(&mut self, id: DropTargetId) {
+        self.deferred_surface_background = Some(id);
+    }
+
+    fn defer_guide(&mut self, cluster: &DropGuideClusterRecord) {
+        self.deferred_guides.push(cluster.id());
+        self.deferred_guide_targets
+            .extend(cluster.targets().map(|(_, target)| target.id()));
     }
 
     fn finish(&mut self) -> Result<(), SurfaceProgramBuildError> {
@@ -401,6 +451,33 @@ impl SurfaceProgram {
         for id in &self.deferred_guides {
             if !seen_guides.insert(*id) {
                 return Err(SurfaceProgramBuildError::DuplicateGuide { id: *id });
+            }
+        }
+        let mut seen_popup_backdrops = std::collections::HashSet::new();
+        for session in &self.deferred_popup_backdrops {
+            if !seen_popup_backdrops.insert(*session) {
+                return Err(SurfaceProgramBuildError::DuplicatePopupBackdrop { session: *session });
+            }
+        }
+        let mut seen_popup_menus = std::collections::HashSet::new();
+        for session in &self.deferred_popup_menus {
+            if !seen_popup_menus.insert(*session) {
+                return Err(SurfaceProgramBuildError::DuplicatePopupMenu { session: *session });
+            }
+        }
+        for session in &self.deferred_popup_menus {
+            if !seen_popup_backdrops.contains(session) {
+                return Err(SurfaceProgramBuildError::PopupMenuWithoutBackdrop {
+                    session: *session,
+                });
+            }
+        }
+        // A non-owner surface may legitimately retain only the workspace
+        // backdrop while another surface owns the popup menu.
+        let mut seen_drop_targets = std::collections::HashSet::new();
+        for id in &self.deferred_drop_targets {
+            if !seen_drop_targets.insert(*id) {
+                return Err(SurfaceProgramBuildError::DuplicateDropTarget { id: *id });
             }
         }
         for root in &self.root_drafts {
@@ -433,11 +510,37 @@ impl SurfaceProgram {
             self.blocks
                 .push(SurfaceProgramBlock::RootEnd { root: root.root });
         }
-        self.blocks.push(SurfaceProgramBlock::ProjectionPlane);
+        self.blocks.push(SurfaceProgramBlock::DragPreview);
+        if let Some(id) = self.deferred_surface_background.take() {
+            self.blocks.push(SurfaceProgramBlock::DropTarget(id));
+        }
+        let guide_targets = std::mem::take(&mut self.deferred_guide_targets)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        self.blocks.extend(
+            std::mem::take(&mut self.deferred_drop_targets)
+                .into_iter()
+                .filter(|id| id.kind() == DropTargetKind::TabGap && !guide_targets.contains(id))
+                .map(SurfaceProgramBlock::DropTarget),
+        );
         for id in std::mem::take(&mut self.deferred_guides) {
             self.blocks.push(SurfaceProgramBlock::DropGuide(id));
         }
-        self.blocks.push(SurfaceProgramBlock::FeedbackPlane);
+        self.blocks
+            .push(SurfaceProgramBlock::ContainedTransformPreview);
+        self.blocks.push(SurfaceProgramBlock::DragDecoration);
+        self.blocks.extend(
+            std::mem::take(&mut self.deferred_popup_backdrops)
+                .into_iter()
+                .map(SurfaceProgramBlock::PopupBackdrop),
+        );
+        self.blocks.extend(
+            std::mem::take(&mut self.deferred_popup_menus)
+                .into_iter()
+                .map(SurfaceProgramBlock::PopupMenu),
+        );
+        self.blocks.push(SurfaceProgramBlock::InteractionFeedback);
+        self.blocks.push(SurfaceProgramBlock::SurfaceEnd);
         self.finished = true;
         Ok(())
     }
@@ -527,6 +630,23 @@ impl PresentationPlan {
             bounds,
             popup_plane_bounds,
         )
+    }
+
+    /// Rebinds a test fixture to an exact measurement ticket without rebuilding
+    /// any record arena or losing its already-finished surface program.
+    #[cfg(test)]
+    pub(crate) fn rebind_measurement_ticket_for_test(
+        &self,
+        ticket: SurfaceMeasurementTicket,
+    ) -> Self {
+        assert_eq!(
+            ticket.surface(),
+            self.surface,
+            "a test plan may only rebind a ticket for its own surface"
+        );
+        let mut rebound = self.clone();
+        rebound.provenance = PresentationPlanProvenance::Measured(ticket);
+        rebound
     }
 
     fn with_provenance(
@@ -655,25 +775,29 @@ impl PresentationPlan {
         &self.surface_program
     }
 
-    pub(crate) fn visit_surface_program<E>(
-        &self,
-        mut visitor: impl FnMut(ResolvedSurfaceProgramStep<'_>) -> Result<(), E>,
+    pub(crate) fn visit_surface_program<'plan, E>(
+        &'plan self,
+        mut visitor: impl FnMut(ResolvedSurfaceProgramStep<'plan>) -> Result<(), E>,
     ) -> Result<(), SurfaceProgramVisitError<E>> {
-        #[cfg(test)]
-        if self.surface_program.blocks().is_empty() {
-            return self.visit_synthetic_surface_program(visitor);
-        }
         let mut active_root = None;
         let mut contained_records = self.contained_records.iter();
-        let mut projection_seen = false;
-        let mut feedback_seen = false;
+        let mut roots_closed = false;
+        let mut popup_menu_seen = false;
+        let mut drag_preview_seen = false;
+        let mut drop_guide_seen = false;
+        let mut contained_preview_seen = false;
+        let mut drag_decoration_seen = false;
+        let mut interaction_feedback_seen = false;
+        let mut surface_end_seen = false;
 
         for block in self.surface_program.blocks() {
             match block {
                 SurfaceProgramBlock::RootBegin {
-                    root, presentation, ..
+                    root,
+                    presentation,
+                    title_item,
                 } => {
-                    if active_root.is_some() || projection_seen {
+                    if active_root.is_some() || roots_closed {
                         return Err(SurfaceProgramVisitError::InvalidProgram);
                     }
                     let contained = match presentation {
@@ -690,6 +814,7 @@ impl PresentationPlan {
                     let root = ResolvedSurfaceProgramRoot {
                         root: *root,
                         contained,
+                        title_item: *title_item,
                     };
                     active_root = Some(root);
                     visitor(ResolvedSurfaceProgramStep::RootBegin(root))
@@ -716,18 +841,97 @@ impl PresentationPlan {
                     visitor(ResolvedSurfaceProgramStep::RootEnd(active))
                         .map_err(SurfaceProgramVisitError::Sink)?;
                 }
-                SurfaceProgramBlock::ProjectionPlane => {
-                    if active_root.is_some() || projection_seen {
+                SurfaceProgramBlock::PopupBackdrop(session) => {
+                    if active_root.is_some()
+                        || !drag_decoration_seen
+                        || popup_menu_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
                         return Err(SurfaceProgramVisitError::InvalidProgram);
                     }
-                    projection_seen = true;
-                    visitor(ResolvedSurfaceProgramStep::ProjectionPlane)
+                    roots_closed = true;
+                    let Some(backdrop) = self
+                        .tab_list_menu_backdrop_records
+                        .iter()
+                        .find(|record| record.session() == *session)
+                    else {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    };
+                    visitor(ResolvedSurfaceProgramStep::PopupBackdrop(backdrop))
+                        .map_err(SurfaceProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::PopupMenu(session) => {
+                    if active_root.is_some()
+                        || !drag_decoration_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    }
+                    roots_closed = true;
+                    popup_menu_seen = true;
+                    let Some(menu) = self
+                        .tab_list_menu_records
+                        .iter()
+                        .find(|record| record.session() == *session)
+                    else {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    };
+                    visitor(ResolvedSurfaceProgramStep::PopupMenu(menu))
+                        .map_err(SurfaceProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::DragPreview => {
+                    if active_root.is_some()
+                        || drag_preview_seen
+                        || contained_preview_seen
+                        || drag_decoration_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    }
+                    roots_closed = true;
+                    drag_preview_seen = true;
+                    visitor(ResolvedSurfaceProgramStep::DragPreview)
+                        .map_err(SurfaceProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::DropTarget(id) => {
+                    if active_root.is_some()
+                        || !drag_preview_seen
+                        || drop_guide_seen
+                        || contained_preview_seen
+                        || drag_decoration_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    }
+                    let record = self
+                        .surface_background
+                        .as_ref()
+                        .filter(|record| record.id() == *id)
+                        .or_else(|| {
+                            self.drop_targets
+                                .iter()
+                                .find(|record| record.id() == *id)
+                                .map(AsRef::as_ref)
+                        })
+                        .ok_or(SurfaceProgramVisitError::InvalidProgram)?;
+                    visitor(ResolvedSurfaceProgramStep::DropTarget(record))
                         .map_err(SurfaceProgramVisitError::Sink)?;
                 }
                 SurfaceProgramBlock::DropGuide(id) => {
-                    if active_root.is_some() || !projection_seen || feedback_seen {
+                    if active_root.is_some()
+                        || !drag_preview_seen
+                        || contained_preview_seen
+                        || drag_decoration_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
                         return Err(SurfaceProgramVisitError::InvalidProgram);
                     }
+                    drop_guide_seen = true;
                     let Ok(index) = self
                         .drop_guide_clusters
                         .binary_search_by_key(id, DropGuideClusterRecord::id)
@@ -739,20 +943,62 @@ impl PresentationPlan {
                     ))
                     .map_err(SurfaceProgramVisitError::Sink)?;
                 }
-                SurfaceProgramBlock::FeedbackPlane => {
-                    if active_root.is_some() || !projection_seen || feedback_seen {
+                SurfaceProgramBlock::ContainedTransformPreview => {
+                    if active_root.is_some()
+                        || !drag_preview_seen
+                        || contained_preview_seen
+                        || drag_decoration_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
                         return Err(SurfaceProgramVisitError::InvalidProgram);
                     }
-                    feedback_seen = true;
-                    visitor(ResolvedSurfaceProgramStep::FeedbackPlane)
+                    contained_preview_seen = true;
+                    visitor(ResolvedSurfaceProgramStep::ContainedTransformPreview)
+                        .map_err(SurfaceProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::DragDecoration => {
+                    if active_root.is_some()
+                        || !contained_preview_seen
+                        || drag_decoration_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    }
+                    drag_decoration_seen = true;
+                    visitor(ResolvedSurfaceProgramStep::DragDecoration)
+                        .map_err(SurfaceProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::InteractionFeedback => {
+                    if active_root.is_some()
+                        || !drag_decoration_seen
+                        || interaction_feedback_seen
+                        || surface_end_seen
+                    {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    }
+                    interaction_feedback_seen = true;
+                    visitor(ResolvedSurfaceProgramStep::InteractionFeedback)
+                        .map_err(SurfaceProgramVisitError::Sink)?;
+                }
+                SurfaceProgramBlock::SurfaceEnd => {
+                    if active_root.is_some() || !interaction_feedback_seen || surface_end_seen {
+                        return Err(SurfaceProgramVisitError::InvalidProgram);
+                    }
+                    surface_end_seen = true;
+                    visitor(ResolvedSurfaceProgramStep::SurfaceEnd)
                         .map_err(SurfaceProgramVisitError::Sink)?;
                 }
             }
         }
 
         if active_root.is_some()
-            || !projection_seen
-            || !feedback_seen
+            || !drag_preview_seen
+            || !contained_preview_seen
+            || !drag_decoration_seen
+            || !interaction_feedback_seen
+            || !surface_end_seen
             || contained_records.next().is_some()
         {
             return Err(SurfaceProgramVisitError::InvalidProgram);
@@ -760,156 +1006,11 @@ impl PresentationPlan {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn visit_synthetic_surface_program<E>(
-        &self,
-        mut visitor: impl FnMut(ResolvedSurfaceProgramStep<'_>) -> Result<(), E>,
-    ) -> Result<(), SurfaceProgramVisitError<E>> {
-        let mut roots = BTreeMap::<RootId, Option<FloatingPresentationId>>::new();
-        for pane in &self.pane_records {
-            roots.entry(pane.id().root).or_insert(None);
-        }
-        for bar in &self.tab_bar_records {
-            roots.entry(bar.id().root).or_insert(None);
-        }
-        for tab in &self.tab_records {
-            roots.entry(tab.id().root).or_insert(None);
-        }
-        for splitter in &self.splitter_records {
-            roots.entry(splitter.id().root).or_insert(None);
-        }
-        for junction in &self.splitter_junction_records {
-            if let Some(splitter) = junction.id().splitters().first() {
-                roots.entry(splitter.root).or_insert(None);
-            }
-        }
-        for control in &self.tab_strip_control_records {
-            roots.entry(control.id().bar().root).or_insert(None);
-        }
-        for contained in &self.contained_records {
-            roots.insert(contained.root(), Some(contained.floating()));
-        }
-        for anchor in &self.presentation_menu_anchor_records {
-            roots.entry(anchor.root()).or_insert(None);
-        }
-
-        for (root_id, contained) in roots {
-            let root = ResolvedSurfaceProgramRoot {
-                root: root_id,
-                contained,
-            };
-            visitor(ResolvedSurfaceProgramStep::RootBegin(root))
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            for pane in self
-                .pane_records
-                .iter()
-                .filter(|pane| pane.id().root == root_id)
-            {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::Pane(pane),
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            for bar in self
-                .tab_bar_records
-                .iter()
-                .filter(|bar| bar.id().root == root_id)
-            {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::TabBar(bar),
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            for tab in self
-                .tab_records
-                .iter()
-                .filter(|tab| tab.id().root == root_id)
-            {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::Tab(tab),
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            for splitter in self
-                .splitter_records
-                .iter()
-                .filter(|splitter| splitter.id().root == root_id)
-            {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::Splitter(splitter),
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            for junction in self.splitter_junction_records.iter().filter(|junction| {
-                junction
-                    .id()
-                    .splitters()
-                    .first()
-                    .is_some_and(|splitter| splitter.root == root_id)
-            }) {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::SplitterJunction(junction),
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            for control in self
-                .tab_strip_control_records
-                .iter()
-                .filter(|control| control.id().bar().root == root_id)
-            {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::TabStripControl(control),
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            if let Some(floating) = contained
-                && let Some(record) = self
-                    .contained_records
-                    .iter()
-                    .find(|record| record.floating() == floating)
-            {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::ContainedControls(record),
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            for _ in self
-                .presentation_menu_anchor_records
-                .iter()
-                .filter(|anchor| anchor.root() == root_id)
-            {
-                visitor(ResolvedSurfaceProgramStep::Operation {
-                    root,
-                    operation: ResolvedSurfaceProgramOperation::PresentationMenuAnchor,
-                })
-                .map_err(SurfaceProgramVisitError::Sink)?;
-            }
-            visitor(ResolvedSurfaceProgramStep::RootEnd(root))
-                .map_err(SurfaceProgramVisitError::Sink)?;
-        }
-        visitor(ResolvedSurfaceProgramStep::ProjectionPlane)
-            .map_err(SurfaceProgramVisitError::Sink)?;
-        for cluster in &self.drop_guide_clusters {
-            visitor(ResolvedSurfaceProgramStep::DropGuide(cluster))
-                .map_err(SurfaceProgramVisitError::Sink)?;
-        }
-        visitor(ResolvedSurfaceProgramStep::FeedbackPlane)
-            .map_err(SurfaceProgramVisitError::Sink)?;
-        Ok(())
-    }
-
-    fn resolve_surface_program_operation(
-        &self,
+    fn resolve_surface_program_operation<'plan>(
+        &'plan self,
         operation: SurfaceProgramRootOperation,
         root: ResolvedSurfaceProgramRoot,
-    ) -> Option<ResolvedSurfaceProgramOperation<'_>> {
+    ) -> Option<ResolvedSurfaceProgramOperation<'plan>> {
         match operation {
             SurfaceProgramRootOperation::Pane(id) if id.root == root.root() => self
                 .pane_records
@@ -966,7 +1067,11 @@ impl PresentationPlan {
                 self.presentation_menu_anchor_records
                     .binary_search_by_key(&expected, |record| record.root())
                     .ok()
-                    .map(|_| ResolvedSurfaceProgramOperation::PresentationMenuAnchor)
+                    .map(|index| {
+                        ResolvedSurfaceProgramOperation::PresentationMenuAnchor(
+                            &self.presentation_menu_anchor_records[index],
+                        )
+                    })
             }
             _ => None,
         }
@@ -980,6 +1085,30 @@ impl PresentationPlan {
         let before = self.surface_program.blocks.len();
         self.surface_program.blocks.retain(|block| {
             !matches!(block, SurfaceProgramBlock::RootOperation(current) if *current == operation)
+        });
+        self.surface_program.blocks.len() != before
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_surface_program_popup_menu_for_test(
+        &mut self,
+        session: TabListMenuSessionId,
+    ) -> bool {
+        let before = self.surface_program.blocks.len();
+        self.surface_program.blocks.retain(|block| {
+            !matches!(block, SurfaceProgramBlock::PopupMenu(current) if *current == session)
+        });
+        self.surface_program.blocks.len() != before
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_surface_program_drop_target_for_test(
+        &mut self,
+        target: DropTargetId,
+    ) -> bool {
+        let before = self.surface_program.blocks.len();
+        self.surface_program.blocks.retain(|block| {
+            !matches!(block, SurfaceProgramBlock::DropTarget(current) if *current == target)
         });
         self.surface_program.blocks.len() != before
     }
@@ -1017,17 +1146,6 @@ impl PresentationPlan {
         self.layout_facts.as_ref()
     }
 
-    #[cfg(test)]
-    pub(crate) fn clone_layout_facts_from(&mut self, source: &Self) {
-        self.layout_facts.clone_from(&source.layout_facts);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clone_magnetic_target_field_from(&mut self, source: &Self) {
-        self.magnetic_target_field
-            .clone_from(&source.magnetic_target_field);
-    }
-
     /// Returns the exact manifest ticket which authorized this compiled plan.
     ///
     /// Production plans always return `Some`. `None` exists only for crate-local
@@ -1058,10 +1176,12 @@ impl PresentationPlan {
     }
 
     pub(crate) fn push_tab_list_menu_record(&mut self, record: TabListMenuRecord) {
+        self.surface_program.defer_popup_menu(record.session());
         self.tab_list_menu_records.push(record);
     }
 
     pub(crate) fn push_tab_list_menu_backdrop_record(&mut self, record: TabListMenuBackdropRecord) {
+        self.surface_program.defer_popup_backdrop(record.session());
         self.tab_list_menu_backdrop_records.push(record);
     }
 
@@ -1153,6 +1273,8 @@ impl PresentationPlan {
                 surface: self.surface,
             });
         }
+        self.surface_program
+            .defer_surface_background(background.id());
         self.surface_background = Some(background);
         Ok(())
     }
@@ -1164,12 +1286,13 @@ impl PresentationPlan {
 
     /// Adds one complete docking-guide cluster before scene submission.
     pub(crate) fn push_drop_guide_cluster(&mut self, cluster: DropGuideClusterRecord) {
-        self.surface_program.defer_guide(cluster.id());
+        self.surface_program.defer_guide(&cluster);
         self.drop_guide_clusters.push(cluster);
     }
 
     /// Adds one structural drop target before this fact is submitted to a scene.
     pub(crate) fn push_drop_target(&mut self, target: Arc<DropTargetRecord>) {
+        self.surface_program.defer_drop_target(target.id());
         self.drop_targets.push(target);
     }
 

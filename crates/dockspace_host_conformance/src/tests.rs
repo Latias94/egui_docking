@@ -10,28 +10,32 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    ContainedResizeDirection, DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseResolution,
+    ContainedPaintRecord, ContainedResizeDirection, DockspaceCloseOutcome, DockspaceClosePlan,
+    DockspaceCloseResolution, DockspaceDragDecoration, DockspaceDragPreview,
     DockspaceDropDirection, DockspaceDropEligibility, DockspaceHostFrame,
     DockspaceInteractionError, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin,
-    HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken,
-    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
-    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativePointerButton,
-    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
-    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
-    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
-    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPlacement, NativeWindowPresentationState,
-    NativeWorkAreaFacts, NativeWorkAreaRoster, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
-    SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
-    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
-    SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabStripMetrics, UniformSurfaceMetrics,
+    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, DropAffordanceTargetPaintRecord,
+    DropGuidePaintRecord, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
+    HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken, NativeCloseState,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeEffectAcknowledgement,
+    NativeEffectOperation, NativeEffectRequest, NativeHostCapabilities, NativeHostCapability,
+    NativeHostErrorKind, NativePointerButton, NativePointerEvent, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
+    NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId,
+    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
+    NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeStagingPresentationPhase,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPlacement,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord,
+    PresentedDockReceiver, PresentedDockspaceSurface, SplitterJunctionPaintRecord,
+    SplitterPaintRecord, SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePaintPlan, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, SurfacePointerButton, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
+    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
+    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceSplitterAdjustment,
+    SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord, TabStripMetrics,
+    UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -47,6 +51,92 @@ const Y: ItemId = ItemId::new(5);
 const Z: ItemId = ItemId::new(6);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
 const SECOND_WINDOW: HostWindowToken = HostWindowToken::new(42);
+
+fn program_drag_preview<'frame>(
+    plan: SurfacePaintPlan<'frame>,
+) -> Option<DockspaceDragPreview<'frame>> {
+    let mut preview = None;
+    plan.visit_surface_program(|step| {
+        if let SurfacePaintProgramStep::DragPreview(current) = step {
+            assert!(preview.replace(current).is_none());
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("the paint plan must expose one valid surface program");
+    preview
+}
+
+fn program_drag_decoration<'frame>(
+    plan: SurfacePaintPlan<'frame>,
+) -> Option<DockspaceDragDecoration<'frame>> {
+    let mut decoration = None;
+    plan.visit_surface_program(|step| {
+        if let SurfacePaintProgramStep::DragDecoration(current) = step {
+            assert!(decoration.replace(current).is_none());
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("the paint plan must expose one valid surface program");
+    decoration
+}
+
+#[derive(Default)]
+struct ProgramRecords<'frame> {
+    panes: Vec<PanePaintRecord<'frame>>,
+    tabs: Vec<TabPaintRecord<'frame>>,
+    tab_bars: Vec<TabBarPaintRecord<'frame>>,
+    splitters: Vec<SplitterPaintRecord<'frame>>,
+    splitter_junctions: Vec<SplitterJunctionPaintRecord<'frame>>,
+    contained: Vec<ContainedPaintRecord<'frame>>,
+    guides: Vec<DropGuidePaintRecord<'frame>>,
+    affordance_targets: Vec<DropAffordanceTargetPaintRecord<'frame>>,
+}
+
+fn program_records<'frame>(plan: SurfacePaintPlan<'frame>) -> ProgramRecords<'frame> {
+    let mut records = ProgramRecords::default();
+    plan.visit_surface_program(|step| {
+        match step {
+            SurfacePaintProgramStep::RootBegin { .. } => {}
+            SurfacePaintProgramStep::Operation { operation, .. } => match operation {
+                SurfacePaintProgramOperation::Pane(pane) => records.panes.push(pane),
+                SurfacePaintProgramOperation::Tab(tab) => records.tabs.push(tab),
+                SurfacePaintProgramOperation::TabBar(bar) => records.tab_bars.push(bar),
+                SurfacePaintProgramOperation::Splitter(splitter) => {
+                    records.splitters.push(splitter)
+                }
+                SurfacePaintProgramOperation::SplitterJunction(junction) => {
+                    records.splitter_junctions.push(junction)
+                }
+                SurfacePaintProgramOperation::ContainedControls(contained) => {
+                    records.contained.push(contained)
+                }
+                SurfacePaintProgramOperation::TabStripControl(_)
+                | SurfacePaintProgramOperation::PresentationMenuAnchor(_) => {}
+            },
+            SurfacePaintProgramStep::DropGuide {
+                structural,
+                affordance,
+            } => {
+                records.guides.push(structural);
+                if let Some(affordance) = affordance {
+                    records.affordance_targets.extend(affordance.targets());
+                }
+            }
+            SurfacePaintProgramStep::RootEnd(_)
+            | SurfacePaintProgramStep::PopupBackdrop(_)
+            | SurfacePaintProgramStep::PopupMenu { .. }
+            | SurfacePaintProgramStep::DragPreview(_)
+            | SurfacePaintProgramStep::DropTarget(_)
+            | SurfacePaintProgramStep::ContainedTransformPreview(_)
+            | SurfacePaintProgramStep::DragDecoration(_)
+            | SurfacePaintProgramStep::InteractionFeedback
+            | SurfacePaintProgramStep::SurfaceEnd { .. } => {}
+        }
+        Ok::<(), ()>(())
+    })
+    .expect("the paint plan must expose one valid surface program");
+    records
+}
 
 fn full_managed_capabilities() -> NativeHostCapabilities {
     [
@@ -760,8 +850,7 @@ impl MagneticJourneyFixture {
                 !point_intersects_guide,
                 "the normalized L03 sample must remain outside every guide target: {point:?}",
             );
-            let preview = plan
-                .drag_preview()
+            let preview = program_drag_preview(plan)
                 .expect("the ordinary pane point publishes a docking preview");
             let DockspacePreviewVisual::Dock {
                 surface: SURFACE,
@@ -830,9 +919,9 @@ impl MagneticJourneyFixture {
                 .paint_plan(SURFACE)
                 .expect("the settled L03 plan lookup succeeds")
                 .expect("the settled L03 plan is ready");
-            assert!(plan.drag_preview().is_none());
-            assert!(plan.drag_decoration().is_none());
-            assert!(plan.drop_affordance().is_none());
+            assert!(program_drag_preview(plan).is_none());
+            assert!(program_drag_decoration(plan).is_none());
+            assert!(program_records(plan).affordance_targets.is_empty());
             frame
                 .confirm_surface_painted(SURFACE)
                 .expect("the settled L03 output was painted");
@@ -1007,8 +1096,9 @@ fn shared_local_interaction_scenario_maps_to_core_host_semantics() {
                         .paint_plan(SURFACE)
                         .expect("the shared splitter plan lookup succeeds")
                         .expect("the shared splitter plan is ready");
-                    let splitter = plan
-                        .splitters()
+                    let splitter = program_records(plan)
+                        .splitters
+                        .into_iter()
                         .find(|splitter| splitter.axis() == DockspaceAxis::Horizontal)
                         .expect("the shared scenario exposes one horizontal splitter");
                     let action = plan
@@ -1052,8 +1142,9 @@ fn shared_local_interaction_scenario_maps_to_core_host_semantics() {
                         .paint_plan(SURFACE)
                         .expect("the contained plan lookup succeeds")
                         .expect("the contained plan is ready");
-                    let contained = plan
-                        .contained()
+                    let contained = program_records(plan)
+                        .contained
+                        .into_iter()
                         .find(|contained| contained.floating() == FLOATING)
                         .expect("the shared contained presentation is painted");
                     let action = plan
@@ -1939,7 +2030,7 @@ fn private_multi_surface_fixture_unknown_owner_cannot_start_a_drag() {
             .paint_plan(SURFACE)
             .expect("the unknown-owner plan resolves")
             .expect("the source surface remains paintable");
-        assert!(plan.drag_preview().is_none());
+        assert!(program_drag_preview(plan).is_none());
     });
     assert_eq!(fixture.host.version(), before);
     assert_eq!(
@@ -2120,7 +2211,7 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                     .expect("the route-request plan resolves")
                 {
                     assert!(
-                        plan.drag_preview().is_none(),
+                        program_drag_preview(plan).is_none(),
                         "an unconfirmed physical route cannot publish a preview",
                     );
                     if surface == SURFACE {
@@ -2199,7 +2290,7 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                     .paint_plan(surface)
                     .expect("the confirmed drag plan resolves")
                 {
-                    previewed |= plan.drag_preview().is_some();
+                    previewed |= program_drag_preview(plan).is_some();
                     frame
                         .confirm_surface_painted(surface)
                         .expect("the confirmed preview output is painted");
@@ -2256,11 +2347,10 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                 .expect("the surviving source plan resolves")
                 .expect("the surviving source remains paintable");
             assert!(
-                plan.drag_preview().is_none(),
+                program_drag_preview(plan).is_none(),
                 "closing the target window must clear its preview",
             );
-            let decoration = plan
-                .drag_decoration()
+            let decoration = program_drag_decoration(plan)
                 .expect("the source-owned drag must survive target-window close");
             assert_eq!(decoration.source_surface(), SURFACE);
             assert_eq!(decoration.item(), Some(A));
@@ -2286,12 +2376,18 @@ fn pointer_close_host() -> (DeterministicHost, DockspaceReceiverDescriptor) {
             .paint_plan(SURFACE)
             .expect("the pointer phase closes before paint")
             .expect("the measured surface is ready");
-        let close_bounds = plan
-            .tabs()
+        let close_bounds = program_records(plan)
+            .tabs
+            .into_iter()
             .find(|tab| tab.item() == A)
             .and_then(|tab| tab.close_bounds())
             .expect("item A exposes a close control");
-        close = plan.receivers().find(|receiver| {
+        let tab = program_records(plan)
+            .tabs
+            .into_iter()
+            .find(|tab| tab.item() == A)
+            .expect("item A remains in the ordered tab program");
+        close = plan.receiver_for_tab_close(tab).filter(|receiver| {
             receiver.role() == DockspaceReceiverRole::TabClose && receiver.bounds() == close_bounds
         });
         frame
@@ -2635,7 +2731,8 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
         assert_eq!(plan.surface(), SURFACE);
         assert_eq!(plan.bounds(), bounds);
 
-        let panes = plan.panes().collect::<Vec<_>>();
+        let records = program_records(plan);
+        let panes = records.panes;
         assert_eq!(panes.len(), 2);
         assert!(panes.iter().all(|pane| pane.root() == ROOT));
         assert_eq!(
@@ -2647,7 +2744,7 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
         );
         first_visuals.extend(panes.iter().map(|pane| pane.visual_id()));
 
-        let tabs = plan.tabs().collect::<Vec<_>>();
+        let tabs = records.tabs;
         assert_eq!(
             tabs.iter().map(|tab| tab.item()).collect::<Vec<_>>(),
             [A, B]
@@ -2655,31 +2752,36 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
         assert!(tabs.iter().all(|tab| tab.selected()));
         first_visuals.extend(tabs.iter().map(|tab| tab.visual_id()));
 
-        let tab_bars = plan.tab_bars().collect::<Vec<_>>();
+        let tab_bars = records.tab_bars;
         assert_eq!(tab_bars.len(), 2);
         assert!(tab_bars.iter().all(|bar| bar.members().len() == 1));
         first_visuals.extend(tab_bars.iter().map(|bar| bar.visual_id()));
 
-        let splitters = plan.splitters().collect::<Vec<_>>();
+        let splitters = records.splitters;
         assert_eq!(splitters.len(), 1);
         assert_eq!(splitters[0].axis(), DockspaceAxis::Horizontal);
         assert!(splitters[0].operable());
         assert!(splitters[0].hit_bounds().width() > 0.0);
         first_visuals.push(splitters[0].visual_id());
 
-        assert_eq!(plan.splitter_junctions().len(), 0);
-        assert_eq!(plan.contained().len(), 0);
-        let guides = plan.drop_guides().collect::<Vec<_>>();
+        assert_eq!(records.splitter_junctions.len(), 0);
+        assert_eq!(records.contained.len(), 0);
+        let guides = records.guides;
         assert!(!guides.is_empty());
         assert!(guides.iter().all(|guide| guide.targets().count() >= 4));
         first_visuals.extend(guides.iter().map(|guide| guide.visual_id()));
-        let roles = plan
-            .receivers()
-            .map(|receiver| receiver.role())
-            .collect::<Vec<_>>();
-        assert!(roles.contains(&DockspaceReceiverRole::PaneBody));
-        assert!(roles.contains(&DockspaceReceiverRole::TabBody));
-        assert!(roles.contains(&DockspaceReceiverRole::Splitter));
+        assert!(panes.iter().any(|pane| {
+            plan.receiver_for_pane(*pane)
+                .is_some_and(|receiver| receiver.role() == DockspaceReceiverRole::PaneBody)
+        }));
+        assert!(tabs.iter().any(|tab| {
+            plan.receiver_for_tab_body(*tab)
+                .is_some_and(|receiver| receiver.role() == DockspaceReceiverRole::TabBody)
+        }));
+        assert!(splitters.iter().any(|splitter| {
+            plan.receiver_for_splitter(*splitter)
+                .is_some_and(|receiver| receiver.role() == DockspaceReceiverRole::Splitter)
+        }));
         assert!(first_visuals.iter().all(|id| {
             matches!(
                 id.kind(),
@@ -2702,13 +2804,25 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
             .paint_plan(SURFACE)
             .expect("the retained paint phase is available")
             .expect("the retained surface remains paintable");
-        let mut current = plan
-            .panes()
+        let records = program_records(plan);
+        let mut current = records
+            .panes
+            .into_iter()
             .map(|record| record.visual_id())
-            .chain(plan.tabs().map(|record| record.visual_id()))
-            .chain(plan.tab_bars().map(|record| record.visual_id()))
-            .chain(plan.splitters().map(|record| record.visual_id()))
-            .chain(plan.drop_guides().map(|record| record.visual_id()))
+            .chain(records.tabs.into_iter().map(|record| record.visual_id()))
+            .chain(
+                records
+                    .tab_bars
+                    .into_iter()
+                    .map(|record| record.visual_id()),
+            )
+            .chain(
+                records
+                    .splitters
+                    .into_iter()
+                    .map(|record| record.visual_id()),
+            )
+            .chain(records.guides.into_iter().map(|record| record.visual_id()))
             .collect::<Vec<_>>();
         first_visuals.sort_unstable();
         current.sort_unstable();
@@ -3167,7 +3281,7 @@ impl InteractionFixture {
                 plan.center_drop_receiver_for_item(C)
                     .expect("the target stack exposes its exact center receiver"),
             );
-            assert!(plan.drag_preview().is_none());
+            assert!(program_drag_preview(plan).is_none());
             frame
                 .confirm_surface_painted(SURFACE)
                 .expect("the host records the exact plan it painted");
@@ -3255,10 +3369,11 @@ impl InteractionFixture {
                 .expect("the pointer-input phase must close before paint")
                 .expect("the active drag retains one paint plan");
             assert!(
-                plan.drag_preview().is_some(),
+                program_drag_preview(plan).is_some(),
                 "the renderer must actually see the preview it confirms"
             );
-            let guides = plan.drop_guides().collect::<Vec<_>>();
+            let records = program_records(plan);
+            let guides = records.guides;
             assert!(
                 !guides.is_empty(),
                 "an active docking preview exposes its complete guide cluster"
@@ -3267,13 +3382,7 @@ impl InteractionFixture {
                 guides.iter().any(|guide| guide.targets().count() >= 5),
                 "one guide cluster exposes center and four directional targets"
             );
-            let affordance = plan
-                .drop_affordance()
-                .expect("the exact target publishes core-owned guide state");
-            let targets = affordance
-                .clusters()
-                .flat_map(|cluster| cluster.targets())
-                .collect::<Vec<_>>();
+            let targets = records.affordance_targets;
             assert!(
                 targets.len() >= 5,
                 "the dynamic affordance retains the complete guide cluster"
@@ -3389,7 +3498,7 @@ fn runtime_pointer_batch_preserves_order_and_explicit_cancellation() {
             .expect("the cancelled surface remains paintable")
             .expect("the retained surface has one paint plan");
         assert!(
-            plan.drag_preview().is_none(),
+            program_drag_preview(plan).is_none(),
             "the explicit terminal edge must not leave a drag session behind"
         );
     });
@@ -3444,7 +3553,7 @@ fn runtime_pointer_batch_prevalidates_before_reducing_any_prefix() {
             .expect("the rejected batch leaves the surface paintable")
             .expect("the retained surface has one paint plan");
         assert!(
-            plan.drag_preview().is_none(),
+            program_drag_preview(plan).is_none(),
             "the valid prefix was never reduced"
         );
     });
@@ -3469,12 +3578,16 @@ fn runtime_pointer_batch_routes_discrete_and_smooth_scroll_to_the_core_owner() {
             .paint_plan(SURFACE)
             .expect("the overflow strip is paintable")
             .expect("the measured surface has one paint plan");
-        let bar = plan.tab_bars().next().expect("the tabs expose one bar");
+        let bar = program_records(plan)
+            .tab_bars
+            .into_iter()
+            .next()
+            .expect("the tabs expose one bar");
         assert!(bar.maximum_scroll_offset() > 0.0);
         assert_eq!(bar.scroll_offset(), 0.0);
         scroll_receiver = plan
-            .receivers()
-            .find(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
+            .receiver_for_tab_strip_scroll(bar)
+            .filter(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
         frame
             .confirm_surface_painted(SURFACE)
             .expect("the initial overflow output was painted");
@@ -3566,7 +3679,11 @@ fn runtime_pointer_batch_routes_discrete_and_smooth_scroll_to_the_core_owner() {
             .paint_plan(SURFACE)
             .expect("the scrolled surface remains paintable")
             .expect("the scrolled surface has one paint plan");
-        let bar = plan.tab_bars().next().expect("the tabs retain one bar");
+        let bar = program_records(plan)
+            .tab_bars
+            .into_iter()
+            .next()
+            .expect("the tabs retain one bar");
         assert!(
             bar.scroll_offset() > 0.0,
             "the offset is owned and changed by dockspace; offset={}, maximum={}",
@@ -3717,7 +3834,7 @@ fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
             .paint_plan(SURFACE)
             .expect("the invalidated surface remains a valid frame member");
         assert!(
-            plan.is_none() || plan.is_some_and(|plan| plan.drag_preview().is_none()),
+            plan.is_none() || plan.is_some_and(|plan| program_drag_preview(plan).is_none()),
             "the replacement paint may never carry stale routed interaction state"
         );
     });
@@ -3903,9 +4020,14 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
                 .paint_plan(SURFACE)
                 .expect("the native strip is paintable")
                 .expect("the native surface has one paint plan");
+            let bar = program_records(plan)
+                .tab_bars
+                .into_iter()
+                .next()
+                .expect("the native tabs expose one bar");
             scroll_receiver = plan
-                .receivers()
-                .find(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
+                .receiver_for_tab_strip_scroll(bar)
+                .filter(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
             frame
                 .confirm_surface_painted(SURFACE)
                 .expect("the native overflow output was painted");
@@ -4042,7 +4164,11 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
                 .paint_plan(SURFACE)
                 .expect("the native strip remains paintable")
                 .expect("the native surface retains one paint plan");
-            let bar = plan.tab_bars().next().expect("the tabs retain one bar");
+            let bar = program_records(plan)
+                .tab_bars
+                .into_iter()
+                .next()
+                .expect("the tabs retain one bar");
             assert!(
                 bar.scroll_offset() > 0.0,
                 "native scroll changed the core-owned offset"

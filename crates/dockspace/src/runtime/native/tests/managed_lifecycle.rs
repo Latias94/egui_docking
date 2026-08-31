@@ -812,12 +812,12 @@ fn request_native_create() -> PendingNativeCreate {
         .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
         .expect("the native drag frame begins");
     assert!(
-        route
-            .paint_plan(SURFACE)
-            .expect("the source plan resolves")
-            .expect("the source remains paintable")
-            .drag_preview()
-            .is_none(),
+        !program_has_drag_preview(
+            route
+                .paint_plan(SURFACE)
+                .expect("the source plan resolves")
+                .expect("the source remains paintable")
+        ),
         "an unconfirmed pointer route must not expose a native preview"
     );
     route
@@ -868,12 +868,12 @@ fn request_native_create() -> PendingNativeCreate {
         .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
         .expect("the confirmed native preview frame begins");
     assert!(
-        preview
-            .paint_plan(SURFACE)
-            .expect("the confirmed source plan resolves")
-            .expect("the confirmed source remains paintable")
-            .drag_preview()
-            .is_some(),
+        program_has_drag_preview(
+            preview
+                .paint_plan(SURFACE)
+                .expect("the confirmed source plan resolves")
+                .expect("the confirmed source remains paintable")
+        ),
         "the confirmed outside-all move must expose a core-owned native preview"
     );
     preview

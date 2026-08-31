@@ -5,7 +5,8 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceReceiverRole, DockspaceSession, DockspaceVisualId, UniformSurfaceMetrics,
+    DockspaceReceiverRole, DockspaceSession, DockspaceVisualId, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, UniformSurfaceMetrics,
 };
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{
@@ -129,20 +130,42 @@ fn run_surface_frame(
             .paint_plan(SURFACE)
             .expect("paint plan lookup succeeds")
         {
-            pane_center = plan
-                .panes()
-                .next()
-                .map(|pane| logical_center(pane.content_bounds()));
-            if let Some(tab) = plan.tabs().find(|tab| tab.item() == SECOND) {
+            let mut pane = None;
+            let mut second_tab = None;
+            let mut bars = Vec::new();
+            plan.visit_surface_program(|step| {
+                if let SurfacePaintProgramStep::Operation { operation, .. } = step {
+                    match operation {
+                        SurfacePaintProgramOperation::Pane(record) => {
+                            assert!(pane.replace(record).is_none());
+                        }
+                        SurfacePaintProgramOperation::Tab(record) if record.item() == SECOND => {
+                            assert!(second_tab.replace(record).is_none());
+                        }
+                        SurfacePaintProgramOperation::TabBar(record) => bars.push(record),
+                        SurfacePaintProgramOperation::Tab(_)
+                        | SurfacePaintProgramOperation::Splitter(_)
+                        | SurfacePaintProgramOperation::SplitterJunction(_)
+                        | SurfacePaintProgramOperation::TabStripControl(_)
+                        | SurfacePaintProgramOperation::ContainedControls(_)
+                        | SurfacePaintProgramOperation::PresentationMenuAnchor(_) => {}
+                    }
+                }
+                Ok::<(), ()>(())
+            })
+            .expect("interaction authority paint program resolves");
+            pane_center = pane.map(|pane| logical_center(pane.content_bounds()));
+            if let Some(tab) = second_tab {
                 second_tab_center = Some(logical_center(tab.drag_bounds()));
                 second_tab_receiver = plan
                     .receiver_for_tab_body(tab)
                     .map(|receiver| receiver.visual_id());
             }
-            group_grip_center = plan
-                .tab_bars()
+            group_grip_center = bars
+                .iter()
+                .copied()
                 .find_map(|bar| bar.group_grip_bounds().map(logical_center));
-            tab_strip_scroll_center = plan.tab_bars().find_map(|bar| {
+            tab_strip_scroll_center = bars.into_iter().find_map(|bar| {
                 plan.receiver_for_tab_strip_scroll(bar)
                     .map(|receiver| logical_center(receiver.bounds()))
             });

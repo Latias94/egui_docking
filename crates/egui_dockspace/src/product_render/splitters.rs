@@ -1,7 +1,9 @@
 //! Splitter rendering and current-pass pointer gestures.
 
 use dockspace::model::DockspaceAxis;
-use dockspace::runtime::{SplitterJunctionPaintRecord, SurfaceSplitterAdjustment};
+use dockspace::runtime::{
+    SplitterJunctionPaintRecord, SurfacePaintDisposition, SurfaceSplitterAdjustment,
+};
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense, UiBuilder};
 
@@ -11,6 +13,7 @@ use super::geometry::{accesskit_bounds, egui_rect};
 pub(crate) fn paint_splitter(
     context: &mut RenderContext<'_, '_, '_>,
     splitter: dockspace::runtime::SplitterPaintRecord<'_>,
+    paint: SurfacePaintDisposition,
 ) {
     let Some(draw) = egui_rect(splitter.draw_bounds()) else {
         return;
@@ -38,9 +41,7 @@ pub(crate) fn paint_splitter(
     let focused = enabled && response.has_focus();
     let emphasized = focused
         || (drag_enabled && (response.hovered() || context.response_dragged_locally(&response)));
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(splitter.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted {
         context
             .ui
@@ -90,6 +91,7 @@ pub(crate) fn paint_splitter(
 pub(crate) fn paint_junction(
     context: &mut RenderContext<'_, '_, '_>,
     junction: SplitterJunctionPaintRecord<'_>,
+    paint: SurfacePaintDisposition,
 ) {
     let Some(hit) = egui_rect(junction.hit_bounds()) else {
         return;
@@ -182,9 +184,7 @@ pub(crate) fn paint_junction(
             context.push_local_action(action);
         }
     }
-    let paint_omitted = context
-        .drag_decoration()
-        .is_some_and(|decoration| decoration.omits_visual(junction.visual_id()));
+    let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted
         && drag_operable
         && (response.hovered() || context.response_dragged_locally(&response))

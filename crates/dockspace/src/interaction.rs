@@ -3750,7 +3750,10 @@ mod tests {
     use crate::presentation_observation::{
         PresentationOutputSerial, SurfacePresentationOutputTicket,
     };
-    use crate::scene::{PresentationPlan, TabBarSceneId, TabStripControlRecord};
+    use crate::scene::{
+        PresentationPlan, SurfaceProgramRootOperation, SurfaceProgramRootPresentation,
+        TabBarSceneId, TabStripControlRecord,
+    };
     use crate::scene_manifest::{SurfaceRequirementRevision, SurfaceSceneRevision};
     use crate::tab_strip::{TabStripControlId, TabStripStateKey};
     use crate::viewport::CoordinateGeneration;
@@ -3796,6 +3799,16 @@ mod tests {
         );
         let mut plan = PresentationPlan::new(surface, bounds);
         plan.push_tab_strip_control_record(record);
+        plan.begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)
+            .expect("test control root opens");
+        plan.push_surface_program_root_operation(SurfaceProgramRootOperation::TabStripControl(
+            record.id(),
+        ))
+        .expect("test control enters the surface program");
+        plan.end_surface_program_root(root)
+            .expect("test control root closes");
+        plan.finish_surface_program()
+            .expect("test control program finishes");
         let authority = EngineAuthorityDomainId::new_for_test(13);
         let ticket = SurfaceMeasurementTicket::new(
             authority,
