@@ -1432,6 +1432,32 @@ impl BackendIngressRecorder {
         )
     }
 
+    /// Selects an ordinary bounded prefix or just the first indivisible group.
+    /// Oversized groups are computed cooperatively by one private core cursor;
+    /// their later independent suffix is never cloned into that attempt.
+    pub(crate) fn replay_prefix_after(
+        &self,
+        committed_through: BackendIngressOrdinal,
+        max_records: NonZeroUsize,
+    ) -> Result<BackendIngressBatch, BackendIngressError> {
+        match self.batch_prefix_after(committed_through, max_records) {
+            Err(BackendIngressError::AtomicGroupExceedsPrefixLimit { .. }) => {
+                let start = self
+                    .records
+                    .partition_point(|record| record.ordinal <= committed_through);
+                let length = self.records[start..]
+                    .iter()
+                    .position(BackendIngressRecord::is_commit_boundary)
+                    .and_then(|index| NonZeroUsize::new(index + 1))
+                    .ok_or(BackendIngressError::AtomicGroupIncomplete {
+                        through: self.last_ordinal,
+                    })?;
+                self.batch_prefix_after(committed_through, length)
+            }
+            result => result,
+        }
+    }
+
     /// Reclaims the exact prefix proven committed by the core.
     ///
     /// # Errors

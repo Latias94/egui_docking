@@ -1,5 +1,6 @@
 //! Opaque native-window lifecycle facts and bindings for renderer-neutral hosts.
 
+mod budget;
 mod compiler;
 mod input_batch;
 mod pointer;
@@ -17,7 +18,9 @@ use super::native_effect::{
     NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
 };
 use super::{DockspaceRuntimeError, DockspaceSession};
-use crate::backend_ingress::{BackendIngressPrefixRetirementReceipt, BackendIngressRecorder};
+use crate::backend_ingress::{
+    BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt, BackendIngressRecorder,
+};
 use crate::engine::EngineInput;
 use crate::geometry::{PhysicalRect, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};
@@ -31,9 +34,11 @@ use crate::viewport::{
     WorkAreaToken,
 };
 use crate::viewport_registry::ViewportAdmission;
+pub use budget::{NativeInputBudget, NativeMonotonicClock};
 use compiler::{
     compile_focus_observation, compile_platform_snapshot, compile_unknown_inventory_snapshot,
 };
+pub(super) use input_batch::PendingNativeReplay;
 pub use pointer::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
     NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
@@ -721,6 +726,9 @@ pub(super) enum NativePlatformError {
     /// A preceding roster mutation has not reached a committed host boundary.
     #[error("native binding roster is not yet settled")]
     BindingRosterUnsettled,
+    /// Earlier accepted native facts have not yet reached the publication prefix.
+    #[error("earlier native input must commit before application input")]
+    InputPending,
     /// A binding is still live and therefore cannot be declared permanently quiescent.
     #[error("native surface {surface} is still live and cannot be quiesced")]
     BindingStillLive {
@@ -815,6 +823,7 @@ impl NativePlatformError {
             }
             Self::PointerProviderAlreadyEnabled
             | Self::BindingRosterUnsettled
+            | Self::InputPending
             | Self::BindingStillLive { .. }
             | Self::BindingNotRetired { .. }
             | Self::FocusAuthorityUnavailable
@@ -837,8 +846,9 @@ pub(super) struct RuntimeNativeState {
     managed_capabilities: Option<NativeHostCapabilities>,
     recorder: BackendIngressRecorder,
     pending_prefix_retirement: Option<BackendIngressPrefixRetirementReceipt>,
+    pending_replay: Option<PendingNativeReplay>,
     snapshot_generation: u64,
-    binding_roster_unsettled: bool,
+    binding_roster_unsettled_through: Option<BackendIngressOrdinal>,
     bindings: BTreeMap<SurfaceId, NativeSurfaceBinding>,
     binding_admissions: BTreeMap<ViewportBinding, ViewportAdmission>,
     retired_bindings: BTreeSet<ViewportBinding>,
@@ -863,8 +873,9 @@ impl RuntimeNativeState {
             managed_capabilities: None,
             recorder,
             pending_prefix_retirement: None,
+            pending_replay: None,
             snapshot_generation: 0,
-            binding_roster_unsettled: false,
+            binding_roster_unsettled_through: None,
             bindings: BTreeMap::new(),
             binding_admissions: BTreeMap::new(),
             retired_bindings: BTreeSet::new(),
@@ -1094,7 +1105,7 @@ impl RuntimeNativeState {
         &self,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
     ) -> Result<BTreeMap<ViewportBinding, NativeWindowFacts>, NativePlatformError> {
-        if self.binding_roster_unsettled {
+        if self.binding_roster_unsettled_through.is_some() {
             return Err(NativePlatformError::BindingRosterUnsettled);
         }
         let mut supplied = BTreeMap::new();
@@ -1160,12 +1171,14 @@ impl RuntimeNativeState {
             &supplied,
             &work_areas,
         )?;
-        self.recorder
+        let ordinal = self
+            .recorder
             .record_platform_snapshot(expected_epoch, snapshot)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-        self.binding_roster_unsettled = supplied
+        self.binding_roster_unsettled_through = supplied
             .values()
-            .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }));
+            .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }))
+            .then_some(ordinal);
         self.snapshot_generation = generation;
         self.window_observation_generations
             .extend(window_observation_generations);
@@ -1237,10 +1250,11 @@ impl RuntimeNativeState {
         surface: SurfaceId,
         token: WindowToken,
     ) -> Result<(), NativePlatformError> {
-        self.recorder
+        let ordinal = self
+            .recorder
             .record_viewport_registration(expected, surface, token, ViewportRole::Root, None)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-        self.binding_roster_unsettled = true;
+        self.binding_roster_unsettled_through = Some(ordinal);
         Ok(())
     }
 
@@ -1251,10 +1265,11 @@ impl RuntimeNativeState {
         token: WindowToken,
         recovery: crate::surface_recovery::SurfaceRecoveryBootstrap,
     ) -> Result<(), NativePlatformError> {
-        self.recorder
+        let ordinal = self
+            .recorder
             .record_child_viewport_bootstrap(expected, surface, token, recovery)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-        self.binding_roster_unsettled = true;
+        self.binding_roster_unsettled_through = Some(ordinal);
         Ok(())
     }
 
@@ -1313,11 +1328,18 @@ impl RuntimeNativeState {
                 .is_some_and(|current| current.binding == *binding)
                 || self.retired_bindings.contains(binding)
         });
-        self.binding_roster_unsettled = false;
+        let committed = engine.backend_ingress_committed_through();
+        if self
+            .binding_roster_unsettled_through
+            .is_some_and(|through| through <= committed)
+        {
+            self.binding_roster_unsettled_through = None;
+        }
         NativeHostCommit {
             provider: self.provider(),
             admissions: native_admissions,
             bindings: self.bindings.values().copied().collect(),
+            input_pending: self.recorder.recorded_through() > committed,
         }
     }
 }
@@ -1326,6 +1348,7 @@ pub(super) struct NativeHostCommit {
     pub(super) provider: PlatformObservationLease,
     pub(super) admissions: Vec<NativeSurfaceBinding>,
     pub(super) bindings: Vec<NativeSurfaceBinding>,
+    pub(super) input_pending: bool,
 }
 
 fn newly_admitted_bindings(

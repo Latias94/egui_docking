@@ -42,6 +42,7 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) next_source_sequence: u64,
     pub(super) next_pointer_sequence: Option<u64>,
     pub(super) pointer_input_submitted: bool,
+    pub(super) native_input_pending: bool,
     pub(super) submitted_presentation: presentation::SubmittedPresentationObservation,
     pub(super) painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
     pub(super) painted_native_staging:
@@ -51,6 +52,15 @@ pub struct DockspaceHostFrame<'session> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Returns whether accepted native input remains after this candidate prefix.
+    ///
+    /// Render and commit this prefix, then poll again before taking an application
+    /// action. Application semantic and configuration input is rejected meanwhile.
+    #[must_use]
+    pub const fn native_input_pending(&self) -> bool {
+        self.native_input_pending
+    }
+
     /// Returns the post-input product view without exposing runtime node identities.
     #[must_use]
     pub fn view(&self) -> DockspaceView<'_> {
@@ -247,6 +257,7 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         prepared: PreparedDockAction,
     ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
         let input = self
             .session
             .engine
@@ -275,6 +286,7 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         prepared: PreparedSurfaceAction,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
         let input = prepared
             .into_engine_input(self.session.engine.authority_domain())
             .map_err(DockspaceRuntimeError::prepared_surface_action_authority_mismatch)?;
@@ -294,6 +306,7 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         prepared: PreparedPaneFocusObservation,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
         let authority = self.session.engine.authority_domain();
         prepared
             .validate_authority(authority)
@@ -320,6 +333,7 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         prepared: PreparedCloseRequest,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
         let input = prepared
             .into_engine_input(self.session.engine.authority_domain())
             .map_err(DockspaceRuntimeError::prepared_close_request_authority_mismatch)?;
@@ -530,6 +544,7 @@ impl DockspaceHostFrame<'_> {
             next_source_sequence,
             next_pointer_sequence: _,
             pointer_input_submitted: _,
+            native_input_pending: _,
             submitted_presentation,
             painted_surfaces,
             painted_native_staging,
@@ -643,6 +658,9 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn ensure_semantic_input_allowed(&self) -> Result<(), DockspaceRuntimeError> {
+        if self.native_input_pending {
+            return Err(NativePlatformError::InputPending.into());
+        }
         #[cfg(feature = "serde")]
         if self.document_restore.is_some() {
             return Err(DockspaceRuntimeError::document_restore_already_submitted());

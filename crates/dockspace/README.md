@@ -110,6 +110,38 @@ this contract without egui or native hosting. The common public-host and egui ge
 single-batch input. Optional native consolidation and platform qualification
 remain separate; see `docs/VALIDATION.md` for evidence and limits.
 
+## Budgeted Native Input
+
+Buffered native hosts can create a shared `NativeMonotonicClock` and start one
+`NativeInputBudget` before claiming an immutable input prefix. Pass that same
+budget to `DockspaceSession::poll_native_host_frame`; do not reset it between
+translation, receiver queries and reduction. A budget permits 256 completed
+records or two elapsed milliseconds, whichever comes first. The time limit is
+cooperative: an already started record and its exact receiver queries finish
+before yielding, even if that record alone exceeds the deadline.
+
+`None` means core retains an unpublished candidate for the next scheduling turn.
+Do not treat it as an error or an empty queue. A returned frame is committable,
+but `native_input_pending()` may still be true. Render/settle that prefix, retain
+the host's input/output barrier, and poll again with the next scheduling budget.
+Only a committed report with `native_input_pending() == false` permits releasing
+that barrier. Earlier accepted native input gates application semantic and
+configuration commands without advancing their source sequence.
+
+`record_native_pointer_sequence` admits all edges or none while preserving a
+commit boundary after each edge. `record_native_pointer_batch` instead preserves
+one indivisible commit group, suitable for complete terminal rosters. A large
+group can pause computation across polls but cannot publish a partial roster.
+Later accepted records never join the already frozen candidate. Dropping a
+returned frame or failing an attempt leaves its input retryable.
+
+The synchronous `begin_native_host_frame` convenience remains available for
+hosts deliberately draining a complete interval; it does not enforce a time
+budget. The repository's egui native coordinator has not yet migrated to the
+budgeted protocol. In particular, deferred close needs exact neutral hold
+semantics rather than fabricating a policy cancellation. This API checkpoint
+does not qualify native queue capacity, release latency or physical OS behavior.
+
 ## Application Close Decisions
 
 A tab close requests that item; a contained-window close or `Close Group`

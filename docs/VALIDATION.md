@@ -15,6 +15,80 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U7 budgeted runtime continuation checkpoint (in progress)
+
+The renderer-neutral runtime exposes `NativeMonotonicClock`, `NativeInputBudget`
+and `DockspaceSession::poll_native_host_frame`. One caller-owned budget starts
+before prefix claim and remains the same through selection, receiver resolution
+and reduction. It yields after 256 completed records or an inclusive two-ms
+deadline. This is a cooperative boundary, not a hard real-time promise: one
+already started record and all of its exact receiver receipts finish first.
+
+Ordinary input seals the actual completed prefix. An unfinished indivisible
+group instead returns `None` and retains the same unpublished core candidate and
+submitted presentation observation inside the existing runtime native owner.
+The next poll continues that candidate rather than rebuilding its processed
+records or recapturing sidecar observations. Recorder selection clones at most
+the ordinary prefix or the first complete oversized atomic group, never its
+later independent suffix. Later appends cannot join a frozen attempt.
+
+Returned frames and committed reports expose `native_input_pending()`. Until the
+earlier accepted suffix drains, application semantic/configuration input is
+rejected before prepared-action conversion, source-sequence assignment or
+pane-focus generation allocation. Hosts must check the pending flag before
+taking their own affine queued actions. Rendering and explicit surface settlement
+remain possible.
+Binding-roster admission now records the exact unsettled ordinal; an unrelated
+earlier prefix commit cannot clear it. Presentation sidecars settle only the
+stream/generation reports actually present in the committed transition.
+
+Deterministic tests cover 257 independent records as 256+1; a 257-record atomic
+group as an unpublished 256-record attempt plus one resumed record; later append
+exclusion; already expired budgets; dropped/revoked candidates and reused
+ordinals; application gates; two presentation streams split across commits; and
+the exact unsettled roster boundary. A real presented tab receiver callback moves
+the injected clock to three ms: the current press completes and seals, while the
+release remains unstarted until the next poll. A separate integration test uses
+only public API types for ordinary and atomic continuation.
+
+The synchronous `begin_native_host_frame` convenience still deliberately drains
+without a time budget and reuses the same reducer. The egui native coordinator
+has not switched to budgeted polling yet. Its migration must share one dispatch
+budget across Repeat/finalization/close, retain submitted-output reservations and
+queued snapshot/close state across partial reports, and avoid taking queued
+application/local actions while yielding. In particular the current eframe seam
+can close a window in the same update before a delayed core decision: an exact
+neutral close hold is required; `CancelClose` would incorrectly cancel the real
+request. Read-only fork inspection confirmed this against the pinned source.
+
+No adapter-wide throughput, admission-capacity, overload, release-latency or
+physical-platform qualification is claimed by this runtime API checkpoint.
+
+Independent static review found one P2: a native document restore after a budget
+pause reused the old frame's item-identity scope and rejected a newly restored
+item. A public regression first failed with `ItemIdentityOutsideScope(ItemId(2))`.
+The restore entry now discards only that unpublished attempt and rebuilds from
+the committed watermark under the restore's expanded identity scope. Ordinary
+polls still preserve their exact candidate. The same regression passes, and a
+separate follow-up review closes the finding; the original review is preserved.
+
+Fresh checkpoint gates:
+
+| Gate | Result |
+| --- | --- |
+| Root workspace, all features and all targets | 1,647 passed |
+| Fork-backed native workspace, all targets | 203 passed (synchronous compatibility, not budgeted adapter qualification) |
+| Budget tests without default features, including the public consumer binary | 18 passed |
+| Budget and restore tests, all features, debug assertions disabled | 19 passed |
+| Real receiver callback advancing controlled time to three ms | Passed |
+| Root/native correctness and suspicious Clippy groups | Passed with both groups denied |
+| Core/adapter doctests | 10 passed |
+| Strict core/adapter rustdoc, formatting and diff whitespace | Passed |
+
+All Cargo verification uses one build job and one nextest test thread. Existing
+style/dead-code warnings remain outside the denied Clippy groups. These are core
+protocol and adapter compatibility results, not new OS or GPU evidence.
+
 ## 2026-10-28 U7 core record-boundary replay checkpoint (in progress)
 
 Core ingress replay now reduces at most one record per explicit advance. A pointer

@@ -32,3 +32,7 @@ workspace = true
 [[test]]
 name = "managed_native_lifecycle"
 path = "tests/managed_native_lifecycle.rs"
+
+[[test]]
+name = "native_input_budget"
+path = "tests/native_input_budget.rs"

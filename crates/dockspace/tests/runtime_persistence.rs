@@ -492,6 +492,82 @@ fn managed_native_restore_joins_the_native_host_frame_atomically() {
 }
 
 #[test]
+fn managed_restore_rebuilds_a_budget_paused_candidate_with_the_new_identity_scope() {
+    use dockspace::runtime::{
+        NativeDesktopPointerLocation, NativeDesktopPosition, NativeInputBudget,
+        NativeMonotonicClock, NativePointerEvent, NativePointerHover, NativePointerId,
+        NativePointerInput, NativePointerOwner,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    let (bytes, first, second) = saved_document_with_two_items();
+    let (mut target, target_first) = persistent_session_with_first_item();
+    assert_eq!(first, target_first);
+    target
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the native host must enroll");
+    let mut initial = target
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the initial pointer checkpoint must begin");
+    initial
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    initial
+        .commit()
+        .expect("the initial checkpoint must commit");
+    let prepared = target
+        .prepare_document_restore_json(&bytes, |document, key| {
+            document == DOCUMENT && matches!(key, "pane:first" | "pane:second")
+        })
+        .expect("the restore with a new item must prepare");
+    let before = target.version();
+    target
+        .record_native_pointer(NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::Moved,
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::Unknown,
+                None,
+            ),
+            NativePointerOwner::Unknown,
+            NativePointerOwner::Unknown,
+        ))
+        .expect("a native predecessor must record");
+    let nanos = Arc::new(AtomicU64::new(0));
+    let source = Arc::clone(&nanos);
+    let clock =
+        NativeMonotonicClock::new(move || Duration::from_nanos(source.load(Ordering::SeqCst)));
+    let mut budget = NativeInputBudget::new(&clock);
+    nanos.store(2_000_000, Ordering::SeqCst);
+    assert!(
+        target
+            .poll_native_host_frame(&mut budget, |_| NativeReceiverAnswer::Unknown)
+            .expect("the expired budget must retain an unpublished candidate")
+            .is_none()
+    );
+    assert_eq!(target.version(), before);
+    assert!(target.view().item(second).is_none());
+
+    let mut restore = target
+        .begin_native_document_restore_frame(&prepared, |_| NativeReceiverAnswer::Unknown)
+        .expect("a restore must rebuild the paused candidate with its expanded identity scope");
+    assert!(restore.view().item(second).is_some());
+    assert_eq!(restore.external_key_for_item(second), Some("pane:second"));
+    restore
+        .measure_surface(SURFACE, metrics())
+        .expect("the restored surface must measure");
+    let report = restore
+        .commit()
+        .expect("the native predecessor and document restore must commit together");
+    assert!(!report.native_input_pending());
+    assert!(target.view().item(second).is_some());
+    assert_eq!(target.item_id_for_external_key("pane:second"), Some(second));
+}
+
+#[test]
 fn managed_restore_reports_the_complete_multi_binding_roster() {
     let mut source_bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
     let source_first = source_bootstrap

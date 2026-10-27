@@ -1,5 +1,7 @@
 use super::*;
 
+mod budget;
+
 use crate::geometry::PhysicalPoint;
 use crate::graph::ContainedFloating;
 use crate::model::{DockAnchor, DockPlacement, FloatingPresentationId};

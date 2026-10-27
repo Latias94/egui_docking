@@ -17,8 +17,8 @@ use super::close::PreparedCloseRequest;
 use super::host_frame::DockspaceHostFrame;
 use super::{
     DockPresentationConfig, DockspacePresentationCommands, DockspaceRuntimeError,
-    NativePlatformError, NativeReceiverAnswer, NativeReceiverQuery, NativeWindowPlacement,
-    PreparedDockAction,
+    NativeInputBudget, NativePlatformError, NativeReceiverAnswer, NativeReceiverQuery,
+    NativeWindowPlacement, PreparedDockAction,
 };
 use super::{interaction, native, native_effect, presentation};
 
@@ -318,6 +318,8 @@ impl DockspaceSession {
     /// The callback never sees pointer leases, provider sequences, backend
     /// ordinals, candidate identities, or receipts. A failed frame retains the
     /// original native edge for an exact retry.
+    /// This synchronous convenience drains its selected interval without a time
+    /// budget. Buffered event loops should use [`Self::poll_native_host_frame`].
     ///
     /// # Errors
     ///
@@ -329,6 +331,28 @@ impl DockspaceSession {
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
         self.ensure_managed_native_host_available()?;
         self.begin_host_frame_with_native_resolver(Some(&mut resolve))
+    }
+
+    /// Polls native input using one budget started before the host's prefix claim.
+    ///
+    /// `None` retains an unpublished candidate for the next scheduling turn. A
+    /// returned frame may still have [`DockspaceHostFrame::native_input_pending`];
+    /// render/commit that prefix and poll again before taking application input.
+    /// The budget includes receiver queries and stops only between full records.
+    /// An indivisible terminal group can span polls but publishes as one group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unavailable managed host, invalid receiver facts,
+    /// or a rejected rollbackable candidate. Failed attempts remain retryable
+    /// from the last published input watermark.
+    pub fn poll_native_host_frame(
+        &mut self,
+        budget: &mut NativeInputBudget,
+        mut resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
+    ) -> Result<Option<DockspaceHostFrame<'_>>, DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        self.poll_host_frame_with_options(Some(&mut resolve), Some(budget), None)
     }
 
     fn require_native_host(&self) -> Result<&native::RuntimeNativeState, DockspaceRuntimeError> {
@@ -377,59 +401,113 @@ impl DockspaceSession {
     pub(super) fn begin_host_frame_with_options(
         &mut self,
         resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
-        #[cfg(feature = "serde")] mut document_restore: Option<PreparedRuntimeDocumentRestore>,
+        #[cfg(feature = "serde")] document_restore: Option<PreparedRuntimeDocumentRestore>,
         #[cfg(not(feature = "serde"))] _document_restore: Option<()>,
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
-        self.reconcile_pointer_provider()?;
-        self.presentation
-            .reclaim_quiescent_streams(&mut self.engine, self.presentation_host)?;
-        if let Some(native) = self.native.as_mut() {
-            native.record_abandoned_effects(&self.abandoned_native_effects)?;
-            let prefix_retirement = native.reclaim_committed_prefix(&mut self.engine);
-            self.presentation.reclaim_compacted_streams(&self.engine);
-            prefix_retirement?;
-        }
-        let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
+        self.poll_host_frame_with_options(
+            resolver,
+            None,
+            #[cfg(feature = "serde")]
+            document_restore,
+            #[cfg(not(feature = "serde"))]
+            _document_restore,
+        )?
+        .ok_or_else(|| NativePlatformError::ProtocolInvariant.into())
+    }
+
+    fn poll_host_frame_with_options(
+        &mut self,
+        resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
+        budget: Option<&mut NativeInputBudget>,
+        #[cfg(feature = "serde")] mut document_restore: Option<PreparedRuntimeDocumentRestore>,
+        #[cfg(not(feature = "serde"))] _document_restore: Option<()>,
+    ) -> Result<Option<DockspaceHostFrame<'_>>, DockspaceRuntimeError> {
+        let pending = self
+            .native
+            .as_mut()
+            .and_then(native::RuntimeNativeState::take_pending_replay);
         #[cfg(feature = "serde")]
-        if let Some(restore) = document_restore.as_ref() {
-            prelude.restrict_item_identity_scope(restore.item_identity_scope());
-        } else if let Some(document) = self.document.as_ref() {
-            prelude.restrict_item_identity_scope(document.item_identity_scope());
-        }
-        let submitted_presentation = if let Some(native) = self.native.as_mut() {
-            self.presentation.submit_backend_observation(
-                &mut prelude,
-                &self.engine,
-                native.recorder_mut(),
-            )?
+        let pending = if document_restore.is_some() {
+            // A restore changes the frame's permitted item identities. Replay
+            // retained ingress under that scope instead of reusing the old one.
+            drop(pending);
+            None
         } else {
-            self.presentation.submit_observation(&mut prelude)?
+            pending
         };
-        let frame = prelude.seal(&self.engine)?;
+        let (mut frame, submitted_presentation, ingress_pending) = if let Some(pending) = pending {
+            (pending.frame, pending.submitted_presentation, true)
+        } else {
+            self.reconcile_pointer_provider()?;
+            self.presentation
+                .reclaim_quiescent_streams(&mut self.engine, self.presentation_host)?;
+            if let Some(native) = self.native.as_mut() {
+                native.record_abandoned_effects(&self.abandoned_native_effects)?;
+                let prefix_retirement = native.reclaim_committed_prefix(&mut self.engine);
+                self.presentation.reclaim_compacted_streams(&self.engine);
+                prefix_retirement?;
+            }
+            let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
+            #[cfg(feature = "serde")]
+            if let Some(restore) = document_restore.as_ref() {
+                prelude.restrict_item_identity_scope(restore.item_identity_scope());
+            } else if let Some(document) = self.document.as_ref() {
+                prelude.restrict_item_identity_scope(document.item_identity_scope());
+            }
+            let submitted_presentation = if let Some(native) = self.native.as_mut() {
+                self.presentation.submit_backend_observation(
+                    &mut prelude,
+                    &self.engine,
+                    native.recorder_mut(),
+                )?
+            } else {
+                self.presentation.submit_observation(&mut prelude)?
+            };
+            let mut frame = prelude.seal(&self.engine)?;
+            let ingress_pending = if let Some(native) = self.native.as_ref() {
+                native.prepare_pending_input(&self.engine, &mut frame, budget.is_some())?
+            } else {
+                false
+            };
+            (frame, submitted_presentation, ingress_pending)
+        };
+        if ingress_pending {
+            let native = self
+                .native
+                .as_mut()
+                .ok_or(NativePlatformError::ProtocolInvariant)?;
+            if !native.reduce_pending_input(&mut frame, budget, resolver)? {
+                native.retain_pending_replay(native::PendingNativeReplay {
+                    frame,
+                    submitted_presentation,
+                });
+                return Ok(None);
+            }
+        }
+        let native_input_pending = self
+            .native
+            .as_ref()
+            .is_some_and(|native| native.input_pending_after(&frame));
         let next_source_sequence = self.committed_source_sequence;
         let next_pointer_sequence = self
             .pointer
             .as_ref()
             .map(interaction::RuntimePointerState::committed_sequence);
-        let mut host_frame = DockspaceHostFrame {
+        let host_frame = DockspaceHostFrame {
             session: self,
             frame,
             next_source_sequence,
             next_pointer_sequence,
             pointer_input_submitted: false,
+            native_input_pending,
             submitted_presentation,
             painted_surfaces: BTreeMap::new(),
             painted_native_staging: BTreeSet::new(),
             #[cfg(feature = "serde")]
             document_restore: None,
         };
-        if let Some(native) = host_frame.session.native.as_mut() {
-            native.reduce_pending_input(
-                &host_frame.session.engine,
-                &mut host_frame.frame,
-                resolver,
-            )?;
-        }
+        #[cfg(feature = "serde")]
+        let mut host_frame = host_frame;
         #[cfg(feature = "serde")]
         if let Some(restore) = document_restore.take() {
             let (input, pending) = restore
@@ -438,6 +516,6 @@ impl DockspaceSession {
             host_frame.append(input)?;
             host_frame.document_restore = Some(pending);
         }
-        Ok(host_frame)
+        Ok(Some(host_frame))
     }
 }

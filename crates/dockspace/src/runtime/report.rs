@@ -28,10 +28,18 @@ impl HostFrameReport {
         native_commit: Option<super::native::NativeHostCommit>,
         abandoned_native_effects: native_effect::NativeEffectDropQueue,
     ) -> Self {
-        let (native_admissions, native_bindings, native_provider) = native_commit.map_or_else(
-            || (Vec::new(), Vec::new(), None),
-            |native| (native.admissions, native.bindings, Some(native.provider)),
-        );
+        let (native_admissions, native_bindings, native_provider, native_input_pending) =
+            native_commit.map_or_else(
+                || (Vec::new(), Vec::new(), None, false),
+                |native| {
+                    (
+                        native.admissions,
+                        native.bindings,
+                        Some(native.provider),
+                        native.input_pending,
+                    )
+                },
+            );
         let mut ordered_inputs = Vec::new();
         let document_restore = transition.reduced_inputs().iter().find_map(|reduced| {
             let InputOutcome::WorkspaceReplaced {
@@ -288,6 +296,7 @@ impl HostFrameReport {
             surface_presentation_commits,
             native_admissions,
             native_bindings,
+            native_input_pending,
             native_effects,
             repaint_surfaces,
         }

@@ -1332,6 +1332,10 @@ impl CoreHostFrame {
         self.backend_ingress
     }
 
+    pub(crate) const fn backend_ingress_through(&self) -> BackendIngressOrdinal {
+        self.candidate.backend_ingress.committed_through()
+    }
+
     /// Returns the typed reduction failure retained after
     /// [`CoreHostFrameError::InputPrefixReductionFailed`].
     ///
@@ -1360,6 +1364,14 @@ impl CoreHostFrame {
         &mut self,
         batch: BackendIngressBatch,
     ) -> Result<BackendIngressProgress, CoreHostFrameError> {
+        self.prepare_backend_ingress(batch)?;
+        self.advance_backend_ingress()
+    }
+
+    pub(crate) fn prepare_backend_ingress(
+        &mut self,
+        batch: BackendIngressBatch,
+    ) -> Result<(), CoreHostFrameError> {
         if let Some(error) = self.poison {
             return Err(error);
         }
@@ -1374,7 +1386,7 @@ impl CoreHostFrame {
         }
         self.backend_ingress_batch_submitted = true;
         self.pending_backend_ingress = Some(HostBackendIngressCursor::new(batch));
-        self.advance_backend_ingress()
+        Ok(())
     }
 
     /// Answers and completes the paused pointer record without starting its successor.

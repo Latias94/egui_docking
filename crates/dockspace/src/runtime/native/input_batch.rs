@@ -1,31 +1,95 @@
 //! Ordered native input replay and receiver settlement.
 
 use super::receiver::resolve_receiver_observation;
-use super::{NativePlatformError, NativeReceiverAnswer, NativeReceiverQuery, RuntimeNativeState};
+use super::{
+    NativeInputBudget, NativePlatformError, NativeReceiverAnswer, NativeReceiverQuery,
+    RuntimeNativeState,
+};
 use crate::engine::{BackendIngressProgress, CoreHostFrame, DockEngine};
 use crate::pointer_receiver::{PointerReceiverObservation, PointerReceiverReceiptBatch};
 use crate::runtime::DockspaceRuntimeError;
+use crate::runtime::presentation::SubmittedPresentationObservation;
+use std::num::NonZeroUsize;
+
+/// One unpublished candidate retained while its atomic group cannot seal.
+#[derive(Debug)]
+pub(in crate::runtime) struct PendingNativeReplay {
+    pub(in crate::runtime) frame: CoreHostFrame,
+    pub(in crate::runtime) submitted_presentation: SubmittedPresentationObservation,
+}
 
 impl RuntimeNativeState {
-    /// Replays the recorder suffix and settles every receiver challenge before
-    /// returning control to the product host frame.
-    pub(in crate::runtime) fn reduce_pending_input(
-        &mut self,
+    pub(in crate::runtime) fn prepare_pending_input(
+        &self,
         engine: &DockEngine,
         frame: &mut CoreHostFrame,
-        mut resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
-    ) -> Result<(), DockspaceRuntimeError> {
+        budgeted: bool,
+    ) -> Result<bool, DockspaceRuntimeError> {
         let committed = engine.backend_ingress_committed_through();
-        let batch = self
-            .recorder
-            .batch_after(committed)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-        let mut progress = frame.submit_backend_ingress(batch)?;
+        let batch = if budgeted {
+            self.recorder.replay_prefix_after(
+                committed,
+                NonZeroUsize::new(256).expect("the native record limit is nonzero"),
+            )
+        } else {
+            self.recorder.batch_after(committed)
+        }
+        .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+        if batch.is_empty() {
+            frame.submit_backend_ingress(batch)?;
+            Ok(false)
+        } else {
+            frame.prepare_backend_ingress(batch)?;
+            Ok(true)
+        }
+    }
+
+    pub(in crate::runtime) fn input_pending_after(&self, frame: &CoreHostFrame) -> bool {
+        self.recorder.recorded_through() > frame.backend_ingress_through()
+    }
+
+    pub(in crate::runtime) fn take_pending_replay(&mut self) -> Option<PendingNativeReplay> {
+        self.pending_replay.take()
+    }
+
+    pub(in crate::runtime) fn retain_pending_replay(&mut self, pending: PendingNativeReplay) {
+        debug_assert!(self.pending_replay.is_none());
+        self.pending_replay = Some(pending);
+    }
+
+    /// Drives the existing cursor until a completed-record budget boundary.
+    /// False retains a private atomic group or an attempt whose budget expired
+    /// before its first record. Receiver resolution uses the caller's budget.
+    pub(in crate::runtime) fn reduce_pending_input(
+        &mut self,
+        frame: &mut CoreHostFrame,
+        budget: Option<&mut NativeInputBudget>,
+        mut resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
+    ) -> Result<bool, DockspaceRuntimeError> {
+        let mut budget = budget;
+        if budget.as_ref().is_some_and(|budget| budget.is_exhausted()) {
+            return Ok(false);
+        }
+        let mut progress = frame.resume_backend_ingress()?;
 
         loop {
             match progress {
-                BackendIngressProgress::Complete => break,
-                BackendIngressProgress::RecordBoundary { .. } => {
+                BackendIngressProgress::Complete => {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.complete_record();
+                    }
+                    return Ok(true);
+                }
+                BackendIngressProgress::RecordBoundary { can_seal, .. } => {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.complete_record();
+                        if budget.is_exhausted() {
+                            if can_seal {
+                                frame.seal_backend_ingress_prefix()?;
+                            }
+                            return Ok(can_seal);
+                        }
+                    }
                     progress = frame.resume_backend_ingress()?;
                 }
                 BackendIngressProgress::ReceiverReceiptsRequired => {
@@ -53,7 +117,5 @@ impl RuntimeNativeState {
                 }
             }
         }
-
-        Ok(())
     }
 }

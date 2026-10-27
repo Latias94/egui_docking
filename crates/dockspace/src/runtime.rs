@@ -76,15 +76,16 @@ pub use measurement::{
 pub use native::{
     HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
     NativeDesktopPosition, NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability,
-    NativeHostErrorKind, NativePointerButton, NativePointerCancelReason, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer,
-    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
-    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
-    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
-    NativeSurfaceCloseAction, NativeSurfaceCloseRejection, NativeSurfaceCloseRequest,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaBinding, NativeWorkAreaFacts, NativeWorkAreaRoster,
+    NativeHostErrorKind, NativeInputBudget, NativeMonotonicClock, NativePointerButton,
+    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativePointerRoster, NativePointerState,
+    NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
+    NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
+    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
+    NativeScrollSequenceId, NativeSurfaceBinding, NativeSurfaceCloseAction,
+    NativeSurfaceCloseRejection, NativeSurfaceCloseRequest, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaBinding,
+    NativeWorkAreaFacts, NativeWorkAreaRoster,
 };
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseDisposition,
@@ -493,11 +494,21 @@ pub struct HostFrameReport {
     surface_presentation_commits: Vec<SurfacePresentationCommit>,
     native_admissions: Vec<NativeSurfaceBinding>,
     native_bindings: Vec<NativeSurfaceBinding>,
+    native_input_pending: bool,
     native_effects: Vec<NativeEffectRequest>,
     repaint_surfaces: Vec<SurfaceId>,
 }
 
 impl HostFrameReport {
+    /// Returns whether earlier accepted native records still await reduction.
+    ///
+    /// Retain the ingress barrier and poll again before a later callback or
+    /// application command can overtake these records.
+    #[must_use]
+    pub const fn native_input_pending(&self) -> bool {
+        self.native_input_pending
+    }
+
     /// Returns the workspace version before the frame.
     #[must_use]
     pub const fn before(&self) -> WorkspaceVersion {
