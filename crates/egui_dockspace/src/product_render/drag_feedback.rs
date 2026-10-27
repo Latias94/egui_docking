@@ -10,13 +10,13 @@ pub(super) fn paint(
     context: &mut RenderContext<'_, '_, '_>,
     decoration: dockspace::runtime::DockspaceDragDecoration<'_>,
 ) {
+    context.ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
     let Some(source) = egui_rect(decoration.source_bounds()) else {
         return;
     };
     let Some(pointer) = context.ui.input(|input| input.pointer.hover_pos()) else {
         return;
     };
-    context.ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
     let resource = decoration
         .ghost_item()
         .and_then(|item| context.resources.item(item))

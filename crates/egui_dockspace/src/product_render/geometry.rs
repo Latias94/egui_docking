@@ -1,7 +1,7 @@
 //! Lossless-enough conversion at the egui/product geometry boundary.
 
-use dockspace::geometry::{LogicalPoint, LogicalRect};
-use egui::{Pos2, Rect, pos2, vec2};
+use dockspace::geometry::LogicalRect;
+use egui::{Rect, pos2, vec2};
 
 pub(crate) fn logical_rect(rect: Rect) -> Result<LogicalRect, ()> {
     LogicalRect::new(
@@ -28,10 +28,6 @@ fn finite_f32(value: f64) -> Option<f32> {
     // unavoidable loss here a precision reduction at the adapter boundary.
     #[allow(clippy::cast_possible_truncation)]
     Some(value as f32)
-}
-
-pub(crate) fn logical_point(point: Pos2) -> Option<LogicalPoint> {
-    LogicalPoint::new(f64::from(point.x), f64::from(point.y)).ok()
 }
 
 pub(crate) fn accesskit_bounds(rect: Rect) -> egui::accesskit::Rect {

@@ -14,6 +14,87 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U3b ordered egui transport checkpoint
+
+The official adapter now captures the raw event packet at `run_ui` entry,
+qualifies each event position against an exact accepted output, and submits the
+ordered batch before measurement or paint. Run identity prevents replay during
+egui discard reruns. A failed packet cannot silently retry with different facts;
+the next run cancels the previous owner before accepting fresh events. Explicit
+touch cancellation, focus loss and Escape terminate the same journal owner.
+Changing egui Context or viewport retires the previous affine producer before
+the adapter clears its routing cache.
+
+Click and drag delivery are independent semantic lanes. In particular, contained
+frame click fallbacks cannot replace title/resize drag receivers. Rear contained
+content activation now uses the journal's exact click fact and the core's checked
+Raise command rather than a second renderer activation frontend. Pending release
+retains its frozen drop affordance as well as its preview until output settlement.
+
+The renderer no longer reconstructs docking gesture phases from `Response`.
+Keyboard, AccessKit, application commands and the existing scroll subsystem keep
+their semantic paths. All remaining internal preview-only ACK inputs, factories
+and reducers are deleted; their fixtures use complete output execution and exact
+presentation observations instead.
+
+Portable egui qualification is deliberately conservative. Receiver declarations
+belong to one accepted output and one exact completed egui pass. The previous
+pass's anonymous interactive rectangles cannot be borrowed by an older output
+accepted late. Content registrations read only `this_pass.widgets`; qualification
+reads only `prev_pass.widgets`, without `read_response`'s cross-pass fallback.
+Both emission-time and input-time coordinates must use identity layer transforms;
+an invalid coordinate domain cancels the stream and never supplies a Known raw
+manipulation route. Unknown interactive widgets block this lane.
+`PaneView::docking_content_widgets` lets the application
+explicitly declare ordinary widgets belonging to its content slot; it is not an
+automatic ancestry resolver and must not include popup/modal/foreign controls.
+Each exact widget ID removes at most one anonymous rectangle, so duplicate
+declarations cannot erase an unknown equal-rectangle blocker.
+
+New product regressions cover raw close-click replay after output-hook discard,
+explicit touch cancel and fresh-press recovery, late presentation versus newer
+unpresented receiver facts, registered/unregistered contained content, and a
+duplicate content declaration overlapping an unknown same-rectangle widget.
+Context rebinding without a queued output report, transformed output followed by
+an identity transform, and coordinate changes during an active resize all cancel
+or reject stale authority and preserve durable placement.
+Discarded-preview tests require cancellation without later implicit delivery,
+then prove a fresh qualified gesture works. The resize test checks the actually
+painted transient move output; it no longer requires a redundant release-frame
+ghost when that preview was already accepted before release.
+
+The original complete L03 magnetic matrix is no longer ignored. Its Burst
+executor still delivers press, threshold move, target move and release in the
+same raw packet; no compensating input frames were added. Ordinary rendering
+and exact output settlement may happen afterward.
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Root workspace, all features and targets | 1,587 passed | Core, conformance and official adapter |
+| Public engine host, default and serde | 20 passed each | Public renderer-neutral contract, no native enrollment |
+| Product harness, default | 93 passed, none ignored | Includes the unchanged complete Burst matrix |
+| Product harness, all features | 97 passed, none ignored | Adds persistence to the same product gates |
+| Official harness, all features and targets | 12 passed | Includes caller-owned demo compilation |
+| Native workspace, all targets | 198 passed | Recording/unit tests on the pinned fork; not physical certification |
+| Strict rustdoc and documentation tests | Passed; 10 doc tests | Public API and compile-fail documentation |
+| Correctness/suspicious Clippy and formatting | Passed | One Cargo worker and Nextest test thread |
+
+Two independent static reviews found and closed Click/Drag lane conflation,
+touch cancellation, Context/viewport retirement and transformed-coordinate
+continuation boundaries. The core contained activation review found no blocker
+within its scoped change. Temporarily accepting a newer pass's receiver facts
+and allowing one widget ID to consume multiple anonymous rectangles made the
+late-presentation and equal-rectangle blocker regressions fail respectively.
+Both mutations were restored before the final passing gates.
+
+This is not U3 completion. The remaining core `LocalResponse` owner, gesture
+preparation APIs and local reducer frontends still require deletion and useful
+test migration. Full contained content projection (U4), broader egui blocker
+interoperability (U5), accepted semantic focus bridging (U6), public host
+readiness/cost certification (U12), and physical native certification are not
+established by these headless results. The following U3a/U2 sections retain their
+historical gate counts and pre-transport boundaries.
+
 ## 2026-10-27 U3a host input domain and terminal convergence
 
 The public host now owns one affine pointer producer across logical surfaces.

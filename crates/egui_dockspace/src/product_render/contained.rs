@@ -1,8 +1,8 @@
-//! Contained-floating chrome and local pointer gestures.
+//! Contained-floating chrome and semantic keyboard/accessibility actions.
 
 use dockspace::runtime::{
     ContainedPaintRecord, ContainedResizeDirection, SurfaceContainedResizeAdjustment,
-    SurfaceGesturePhase, SurfacePaintDisposition, SurfacePaintProgramRoot,
+    SurfacePaintDisposition, SurfacePaintProgramRoot,
 };
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense};
@@ -10,7 +10,7 @@ use egui::{CursorIcon, EventFilter, Key, Sense};
 use crate::style::ResolvedContainedWindowVisuals;
 
 use super::RenderContext;
-use super::actions::{button_activated, gesture_phase};
+use super::actions::button_activated;
 use super::geometry::{accesskit_bounds, egui_rect};
 
 pub(crate) fn paint_background(
@@ -147,31 +147,12 @@ pub(crate) fn paint_controls(
                 context.interaction_stroke(&response, Some(title_text_color)),
             );
         }
-        let locally_dragged = enabled && context.response_dragged_locally(&response);
-        if enabled && (response.hovered() || locally_dragged) {
-            context.ui.ctx().set_cursor_icon(if locally_dragged {
+        if enabled && (response.hovered() || paint_omitted) {
+            context.ui.ctx().set_cursor_icon(if paint_omitted {
                 CursorIcon::Grabbing
             } else {
                 CursorIcon::Grab
             });
-        }
-        let phase = (enabled && context.pointer_authority.emits_local_preview_gestures())
-            .then(|| gesture_phase(&response))
-            .flatten();
-        if let Some(phase) = phase
-            && let Some(action) = context
-                .plan
-                .prepare_contained_title_gesture(contained.floating(), phase)
-            && context.accept_drag_phase_once(
-                response.id,
-                phase,
-                "egui_dockspace: settle contained drag decoration",
-            )
-        {
-            if matches!(phase, SurfaceGesturePhase::Begin { .. }) {
-                context.claim_contained_activation(contained);
-            }
-            context.push_preview_gesture_action(action, phase);
         }
     }
 
@@ -292,26 +273,11 @@ pub(crate) fn paint_controls(
                 context.push_local_action(action);
             }
         }
-        if drag_enabled && (response.hovered() || context.response_dragged_locally(&response)) {
+        if drag_enabled && response.hovered() {
             context
                 .ui
                 .ctx()
                 .set_cursor_icon(resize_cursor(resize.direction()));
-        }
-        let phase = (drag_enabled && context.pointer_authority.emits_local_preview_gestures())
-            .then(|| gesture_phase(&response))
-            .flatten();
-        if let Some(phase) = phase
-            && let Some(action) = context.plan.prepare_contained_resize_gesture(
-                contained.floating(),
-                resize.direction(),
-                phase,
-            )
-        {
-            if matches!(phase, SurfaceGesturePhase::Begin { .. }) {
-                context.claim_contained_activation(contained);
-            }
-            context.push_local_action(action);
         }
     }
 }

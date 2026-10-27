@@ -47,8 +47,8 @@ pub use focus::{
     DockspacePaneFocusObservation, DockspacePaneFocusRequest, PreparedPaneFocusObservation,
 };
 pub use interaction::{
-    DockspaceInteractionError, HostPointerInput, HostPointerRetirement, HostPointerRoute,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
+    DockspaceInteractionError, HostPointerHit, HostPointerInput, HostPointerRetirement,
+    HostPointerRoute, PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
     SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
     SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
     SurfacePointerRetirement, SurfaceScrollCancelReason, SurfaceScrollDelta, SurfaceScrollDeviceId,

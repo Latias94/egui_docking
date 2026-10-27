@@ -296,13 +296,30 @@ fn observe_supported_cadence(
             let acquired_frame =
                 settle_drop_target_receipt(context, dockspace, panes, Some(initial), acquired);
             assert_registered_non_guide_point(&acquired_frame, acquired, case);
+            let before_release = dockspace.version();
             let terminal = run_frame(
                 context,
                 dockspace,
                 panes,
                 vec![Event::PointerMoved(target), pointer_button(target, false)],
             );
-            assert_registered_non_guide_point(&terminal, target, case);
+            if terminal.drop_targets.is_empty() {
+                assert_ne!(
+                    dockspace.version(),
+                    before_release,
+                    "guide-free release output requires an already committed exact preview"
+                );
+                let committed = dockspace.version();
+                let settled = run_frame(context, dockspace, panes, Vec::new());
+                assert_eq!(
+                    dockspace.version(),
+                    committed,
+                    "an immediately committed release must not commit again during settlement"
+                );
+                assert!(settled.drop_targets.is_empty());
+            } else {
+                assert_registered_non_guide_point(&terminal, target, case);
+            }
         }
         cadence => panic!("unsupported shared L03 cadence: {cadence:?}"),
     }

@@ -71,7 +71,6 @@ const REGISTRATION_SOURCE: StableInputSourceId = StableInputSourceId::new(300);
 const RENDERER_SOURCE: StableInputSourceId = StableInputSourceId::new(400);
 const NATIVE_LIFECYCLE_SOURCE: StableInputSourceId = StableInputSourceId::new(500);
 const NATIVE_PLATFORM_SOURCE: StableInputSourceId = StableInputSourceId::new(600);
-const NATIVE_RENDERER_SOURCE: StableInputSourceId = StableInputSourceId::new(700);
 const NATIVE_COMMAND_SOURCE: StableInputSourceId = StableInputSourceId::new(800);
 
 fn rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
@@ -750,24 +749,40 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
     ));
     fixture.pointer_sequence += 1;
 
-    let acknowledgement = fixture
+    let preview_token = fixture
         .engine
         .interaction()
         .preview()
         .expect("outside-all move publishes a native preview")
-        .acknowledgement();
-    let mut release_frame = fixture.presentation_host.begin(&fixture.engine);
-    let mut input_stream =
-        support::TestInputStream::resume(&fixture.engine, NATIVE_RENDERER_SOURCE);
-    input_stream
-        .append(
-            &mut release_frame,
-            EngineInput::AcknowledgePreview {
-                expected: fixture.engine.version(),
-                acknowledgement,
-            },
+        .token();
+    let mut paint_frame = fixture.presentation_host.begin(&fixture.engine);
+    let pointer_sequence = PointerEdgeSequence::new(fixture.pointer_sequence);
+    paint_frame
+        .submit_pointer_journal(
+            pointer_provider,
+            PointerEdgeJournal::new(pointer_sequence, pointer_sequence, Vec::new())
+                .expect("preview paint preserves the pointer watermark"),
         )
-        .expect("native preview acknowledgement stages before release");
+        .expect("preview paint pointer checkpoint stages");
+    paint_frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::new())
+                .expect("preview paint has no pointer receiver probes"),
+        )
+        .expect("preview paint receiver checkpoint stages");
+    let paint_frame =
+        support::complete_host_frame_with_current_outputs(&fixture.engine, paint_frame);
+    let painted = fixture
+        .presentation_host
+        .finish_presentation(paint_frame, &mut fixture.engine);
+    assert!(painted.presentation_emissions().iter().any(|emission| {
+        emission
+            .output()
+            .payload()
+            .interaction()
+            .is_some_and(|interaction| interaction.drag_preview() == Some(preview_token))
+    }));
+    let mut release_frame = fixture.presentation_host.begin(&fixture.engine);
     release_frame
         .submit_pointer_journal(
             pointer_provider,

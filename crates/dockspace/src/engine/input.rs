@@ -794,20 +794,6 @@ pub enum EngineInput {
         /// Authoritative endpoint which delivered the Escape press.
         delivery: EscapeDelivery,
     },
-    /// Confirm that the adapter actually painted one exact drag preview.
-    AcknowledgePreview {
-        /// Workspace version from which the preview was painted.
-        expected: WorkspaceVersion,
-        /// Core-minted preview identity returned by the painted scene.
-        acknowledgement: PaintAcknowledgement,
-    },
-    /// Confirm that the adapter actually painted one exact contained-transform preview.
-    AcknowledgeContainedTransformPreview {
-        /// Workspace version from which the preview was painted.
-        expected: WorkspaceVersion,
-        /// Core-minted preview identity returned by the painted scene.
-        acknowledgement: ContainedTransformPaintAcknowledgement,
-    },
     /// Resolve one exact provider-observed native close edge with a complete
     /// core-frozen surface operation. The request cannot name an arbitrary
     /// surface or rely on the current viewport; the edge carries the exact
@@ -923,8 +909,6 @@ impl EngineInput {
             | Self::NavigateTabListMenu { .. }
             | Self::ApplyContainedPlacement { .. }
             | Self::CancelActiveInteractionWithEscape { .. }
-            | Self::AcknowledgePreview { .. }
-            | Self::AcknowledgeContainedTransformPreview { .. }
             | Self::RequestSurfaceClose { .. }
             | Self::CancelSurfaceClose { .. }
             | Self::ResolveClose { .. }

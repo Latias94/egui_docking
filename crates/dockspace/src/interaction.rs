@@ -308,36 +308,6 @@ impl InteractionPreview {
     pub const fn visual(&self) -> &PreviewVisual {
         &self.visual
     }
-
-    /// Constructs the exact acknowledgement submitted only after this visual was painted.
-    #[must_use]
-    pub fn acknowledgement(&self) -> PaintAcknowledgement {
-        PaintAcknowledgement {
-            token: self.token,
-            visual: self.visual.clone(),
-        }
-    }
-}
-
-/// Exact proof that one published preview was painted.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PaintAcknowledgement {
-    token: PreviewToken,
-    visual: PreviewVisual,
-}
-
-impl PaintAcknowledgement {
-    /// Returns the opaque preview identity.
-    #[must_use]
-    pub const fn token(&self) -> PreviewToken {
-        self.token
-    }
-
-    /// Returns the visual claimed to have been painted.
-    #[must_use]
-    pub const fn visual(&self) -> &PreviewVisual {
-        &self.visual
-    }
 }
 
 /// Opaque identity of one exact contained transform preview publication.
@@ -401,42 +371,6 @@ impl ContainedTransformPreview {
     }
 
     /// Returns the exact rectangle which must be painted.
-    #[must_use]
-    pub const fn rect(self) -> LogicalRect {
-        self.rect
-    }
-
-    /// Constructs the exact acknowledgement submitted only after this rectangle was painted.
-    #[must_use]
-    pub const fn acknowledgement(self) -> ContainedTransformPaintAcknowledgement {
-        ContainedTransformPaintAcknowledgement {
-            token: self.token,
-            surface: self.surface,
-            root: self.root,
-            floating: self.floating,
-            rect: self.rect,
-        }
-    }
-}
-
-/// Exact proof that one contained transform preview was painted.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ContainedTransformPaintAcknowledgement {
-    token: ContainedTransformPreviewToken,
-    surface: SurfaceId,
-    root: RootId,
-    floating: FloatingPresentationId,
-    rect: LogicalRect,
-}
-
-impl ContainedTransformPaintAcknowledgement {
-    /// Returns the opaque preview identity.
-    #[must_use]
-    pub const fn token(self) -> ContainedTransformPreviewToken {
-        self.token
-    }
-
-    /// Returns the exact rectangle claimed to have been painted.
     #[must_use]
     pub const fn rect(self) -> LogicalRect {
         self.rect
@@ -1206,8 +1140,6 @@ pub enum InteractionRejection {
     TargetChanged,
     /// The proposed workspace command was rejected during final revalidation.
     CommandRejected(crate::error::CommandError),
-    /// The preview acknowledgement does not match the current publication.
-    PreviewAcknowledgementMismatch,
     /// Split weights were rejected during candidate validation.
     ResizeRejected(crate::error::CommandError),
     /// The pressed point lies outside the claimed painted surface.
@@ -1246,8 +1178,6 @@ pub enum InteractionRejection {
     ContainedTransformGeometryUnavailable,
     /// The current scene cannot authorize the contained transform placement.
     ContainedPlacementUnavailable(crate::intent::ContainedPlacementUnavailable),
-    /// The acknowledgement does not match the exact current contained transform preview.
-    ContainedTransformPreviewAcknowledgementMismatch,
     /// Release re-resolution no longer matches the exact painted transform proof.
     ContainedTransformChanged,
 }
@@ -1560,11 +1490,6 @@ pub enum InteractionOutcome {
         preview: Option<InteractionPreview>,
         status: PreviewResolutionStatus,
     },
-    /// The exact current preview was acknowledged, idempotently if repeated.
-    PreviewAcknowledged {
-        session: DragSessionId,
-        changed: bool,
-    },
     /// The first authoritative matching release delivered exactly once.
     DragDelivered {
         session: DragSessionId,
@@ -1618,11 +1543,6 @@ pub enum InteractionOutcome {
     ContainedTransformPreviewUpdated {
         session: ContainedTransformSessionId,
         preview: ContainedTransformPreview,
-    },
-    /// The exact current contained transform preview was acknowledged.
-    ContainedTransformPreviewAcknowledged {
-        session: ContainedTransformSessionId,
-        changed: bool,
     },
     /// Release was consumed, but the exact contained rectangle is waiting for
     /// a final-presentation observation before it can become durable.
@@ -1936,20 +1856,6 @@ impl PublishedPreview {
 
     pub(crate) const fn painted(&self) -> bool {
         self.painted
-    }
-
-    pub(crate) fn acknowledge(
-        &mut self,
-        acknowledgement: &PaintAcknowledgement,
-    ) -> Result<bool, InteractionRejection> {
-        if self.public.token != acknowledgement.token
-            || self.public.visual != acknowledgement.visual
-        {
-            return Err(InteractionRejection::PreviewAcknowledgementMismatch);
-        }
-        let changed = !self.painted;
-        self.painted = true;
-        Ok(changed)
     }
 }
 
@@ -2382,10 +2288,6 @@ impl ActiveDrag {
         self.target.preview()
     }
 
-    pub(crate) fn preview_mut(&mut self) -> Option<&mut PublishedPreview> {
-        self.target.preview_mut()
-    }
-
     pub(crate) const fn preview_status(&self) -> PreviewResolutionStatus {
         self.target.status()
     }
@@ -2488,18 +2390,6 @@ impl PublishedContainedTransformPreview {
 
     pub(crate) const fn painted(&self) -> bool {
         self.painted
-    }
-
-    pub(crate) fn acknowledge(
-        &mut self,
-        acknowledgement: ContainedTransformPaintAcknowledgement,
-    ) -> Result<bool, InteractionRejection> {
-        if self.public.acknowledgement() != acknowledgement {
-            return Err(InteractionRejection::ContainedTransformPreviewAcknowledgementMismatch);
-        }
-        let changed = !self.painted;
-        self.painted = true;
-        Ok(changed)
     }
 }
 
@@ -3321,19 +3211,6 @@ impl InteractionState {
         Ok(())
     }
 
-    pub(crate) fn acknowledge_preview(
-        &mut self,
-        acknowledgement: &PaintAcknowledgement,
-    ) -> Result<(DragSessionId, bool), InteractionRejection> {
-        let session = acknowledgement.token.session;
-        let drag = self.active_drag_mut(session)?;
-        let Some(preview) = drag.target.preview_mut() else {
-            return Err(InteractionRejection::PreviewAcknowledgementMismatch);
-        };
-        let changed = preview.acknowledge(acknowledgement)?;
-        Ok((session, changed))
-    }
-
     pub(crate) fn observe_presented_preview(
         &mut self,
         surface: SurfaceId,
@@ -3577,19 +3454,6 @@ impl InteractionState {
             painted: false,
         });
         Ok((preview, true))
-    }
-
-    pub(crate) fn acknowledge_contained_transform_preview(
-        &mut self,
-        acknowledgement: ContainedTransformPaintAcknowledgement,
-    ) -> Result<(ContainedTransformSessionId, bool), InteractionRejection> {
-        let session = acknowledgement.token.session;
-        let transform = self.active_contained_transform_mut(session)?;
-        let Some(preview) = transform.preview.as_mut() else {
-            return Err(InteractionRejection::ContainedTransformPreviewAcknowledgementMismatch);
-        };
-        let changed = preview.acknowledge(acknowledgement)?;
-        Ok((session, changed))
     }
 
     pub(crate) fn observe_presented_contained_transform_preview(

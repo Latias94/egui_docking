@@ -2,7 +2,7 @@
 title: Dockspace engine host architecture and direct manipulation - Plan
 type: refactor
 date: 2026-08-21
-revised: 2026-10-27
+revised: 2026-10-28
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -490,7 +490,24 @@ The public consumer executes complete ordered cross-surface releases, including
 an unselected source, through actual owned recording-output settlement. Review
 regressions cover source-only continuation after Raise, foreign pointer rejection
 and presentation-stream takeover. See `docs/VALIDATION.md` for serialized final
-gates and mutation-red evidence. U3b and U3c remain open.
+gates and mutation-red evidence.
+
+U3b transport progress (2026-10-28): the official egui adapter captures raw
+events once at the owned run boundary and submits them before measurement and
+paint. Reruns cannot replay successful or rejected packets. Click and drag
+receiver lanes remain independent; exact output and completed-pass identities
+bind the controlled chrome facts. Explicitly registered ordinary pane widgets
+can pass the docking lane; unknown widgets and unsupported layer transforms
+remain blocked. This does not certify arbitrary egui widget ancestry or popup
+interoperability. Internal preview-only ACK reducers and renderer response-based
+docking gesture producers are deleted. The original complete L03 product matrix,
+including its unchanged single-batch Burst executor, now passes without ignore.
+
+U3 remains open until the remaining core `LocalResponse` owner, local gesture
+preparation APIs and reducer frontends are retired and their useful tests migrate
+to the public host lane. U3c's passing matrix is evidence for the new transport,
+not permission to keep the old owner. U4 full live-content projection, U5 broader
+blocker qualification and U6 semantic focus integration remain separate gates.
 
 ### U4. Complete magnetic behavior and live contained content
 

@@ -47,6 +47,26 @@ pub trait PaneView {
     /// to the host renderer contract; shape comparison cannot inspect them.
     fn ui(&mut self, item: ItemId, ui: &mut Ui);
 
+    /// Returns application-declared ordinary content widget IDs for `item`.
+    ///
+    /// The adapter reads this list immediately after [`Self::ui`], while that
+    /// callback's child UI is still alive. Return only IDs actually registered
+    /// during that callback, refreshing the per-item list whenever it renders.
+    /// Accepted widgets allow docking hover to pass through and permit
+    /// containing-window activation; they retain their ordinary egui input.
+    ///
+    /// The adapter accepts only enabled, interactive responses on the child UI's
+    /// layer whose already-clipped interaction rectangles are finite, positive,
+    /// and fully contained within the pane's valid content bounds. Never declare
+    /// popup, modal, or foreign-overlay widgets, even if their geometry fits.
+    ///
+    /// These are explicit host-application ownership facts, not an automatic
+    /// widget-tree resolver or a general inference of platform hit eligibility.
+    /// The default declares nothing; unknown widgets remain docking blockers.
+    fn docking_content_widgets(&self, _item: ItemId) -> &[Id] {
+        &[]
+    }
+
     /// Returns the stable egui focus identity registered by `item`'s pane UI.
     ///
     /// The adapter uses this identity only to request or surrender focus. Merely

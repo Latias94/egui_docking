@@ -1,4 +1,4 @@
-//! Splitter rendering and current-pass pointer gestures.
+//! Splitter rendering and semantic keyboard/accessibility actions.
 
 use dockspace::model::DockspaceAxis;
 use dockspace::runtime::{
@@ -8,7 +8,7 @@ use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense, UiBuilder};
 
 use super::RenderContext;
-use super::actions::{effective_enabled, gesture_phase};
+use super::actions::effective_enabled;
 use super::geometry::{accesskit_bounds, egui_rect};
 pub(crate) fn paint_splitter(
     context: &mut RenderContext<'_, '_, '_>,
@@ -39,8 +39,7 @@ pub(crate) fn paint_splitter(
     let response = context.interact_receiver(hit, id, sense, receiver);
     configure_accessibility(context.ui, &response, splitter, enabled);
     let focused = enabled && response.has_focus();
-    let emphasized = focused
-        || (drag_enabled && (response.hovered() || context.response_dragged_locally(&response)));
+    let emphasized = focused || (drag_enabled && response.hovered());
     let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted {
         context
@@ -72,19 +71,11 @@ pub(crate) fn paint_splitter(
     }) {
         context.push_local_action(action);
     }
-    if drag_enabled && (response.hovered() || context.response_dragged_locally(&response)) {
+    if drag_enabled && response.hovered() {
         context.ui.ctx().set_cursor_icon(match splitter.axis() {
             DockspaceAxis::Horizontal => CursorIcon::ResizeHorizontal,
             DockspaceAxis::Vertical => CursorIcon::ResizeVertical,
         });
-    }
-    if context.pointer_authority.emits_local_preview_gestures()
-        && let Some(phase) = gesture_phase(&response)
-        && let Some(action) = context
-            .plan
-            .prepare_splitter_gesture(splitter.visual_id(), phase)
-    {
-        context.push_local_action(action);
     }
 }
 
@@ -185,24 +176,12 @@ pub(crate) fn paint_junction(
         }
     }
     let paint_omitted = context.source_gap_active(paint);
-    if !paint_omitted
-        && drag_operable
-        && (response.hovered() || context.response_dragged_locally(&response))
-    {
+    if !paint_omitted && drag_operable && response.hovered() {
         context.ui.ctx().set_cursor_icon(CursorIcon::AllScroll);
         context
             .ui
             .painter()
             .rect_filled(hit, 0.0, context.splitter_fill(&response, true));
-    }
-    if drag_operable
-        && context.pointer_authority.emits_local_preview_gestures()
-        && let Some(phase) = gesture_phase(&response)
-        && let Some(action) = context
-            .plan
-            .prepare_splitter_gesture(junction.visual_id(), phase)
-    {
-        context.push_local_action(action);
     }
 }
 

@@ -60,6 +60,7 @@ struct Panes;
 struct TextPanes {
     texts: std::collections::BTreeMap<ItemId, String>,
     pane_rects: std::collections::BTreeMap<ItemId, Cell<Rect>>,
+    content_widgets: std::collections::BTreeMap<ItemId, [egui::Id; 1]>,
 }
 
 impl TextPanes {
@@ -70,6 +71,7 @@ impl TextPanes {
                 .map(|(item, text)| (item, text.to_owned()))
                 .collect(),
             pane_rects: std::collections::BTreeMap::new(),
+            content_widgets: std::collections::BTreeMap::new(),
         }
     }
 
@@ -87,6 +89,9 @@ struct FocusPanes {
     pane_rect: Cell<Option<Rect>>,
     expose_target: bool,
     target_requests: Cell<usize>,
+    docking_content: bool,
+    content_widgets: Vec<egui::Id>,
+    overlapping_blocker: bool,
 }
 
 struct MagneticPanes {
@@ -107,12 +112,16 @@ impl MagneticPanes {
 
 impl FocusPanes {
     fn new(id_salt: &'static str, expose_target: bool) -> Self {
+        let target = egui::Id::unique((id_salt, "pane-focus-target"));
         Self {
-            target: egui::Id::unique((id_salt, "pane-focus-target")),
+            target,
             target_rect: Cell::new(None),
             pane_rect: Cell::new(None),
             expose_target,
             target_requests: Cell::new(0),
+            docking_content: true,
+            content_widgets: vec![target],
+            overlapping_blocker: false,
         }
     }
 
@@ -271,11 +280,18 @@ impl PaneView for TextPanes {
         let Some(text) = self.texts.get_mut(&item) else {
             return;
         };
-        ui.add(
+        let response = ui.add(
             egui::TextEdit::multiline(text)
                 .desired_width(f32::INFINITY)
                 .desired_rows(12),
         );
+        self.content_widgets.insert(item, [response.id]);
+    }
+
+    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
+        self.content_widgets
+            .get(&item)
+            .map_or(&[], |widgets| widgets.as_slice())
     }
 }
 
@@ -291,6 +307,13 @@ impl PaneView for FocusPanes {
             let rect = Rect::from_min_size(pane_rect.min, vec2(120.0, 24.0));
             self.target_rect.set(Some(rect));
             let _ = ui.interact(rect, self.target, egui::Sense::click_and_drag());
+            if self.overlapping_blocker {
+                let _ = ui.interact(
+                    rect,
+                    self.target.with("unknown-blocker"),
+                    egui::Sense::click_and_drag(),
+                );
+            }
         }
         ui.label(format!("Pane {}", item.get()));
     }
@@ -302,6 +325,14 @@ impl PaneView for FocusPanes {
         self.target_requests
             .set(self.target_requests.get().saturating_add(1));
         self.expose_target.then_some(self.target)
+    }
+
+    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
+        if item == SECOND && self.docking_content {
+            &self.content_widgets
+        } else {
+            &[]
+        }
     }
 
     fn focus_state(&self, item: ItemId, context: &Context) -> PaneFocusState {
@@ -3435,10 +3466,6 @@ fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
         vec![Event::PointerMoved(dragged)],
     );
     assert_eq!(
-        dragging.output.platform_output.num_completed_passes, 2,
-        "the threshold-crossing pass is discarded so the final output uses core drag state"
-    );
-    assert_eq!(
         rect_fill_count_in(&dragging.output, active_fill, source_rect),
         0,
         "the active source tab must become a real visual gap"
@@ -3477,7 +3504,7 @@ fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
 }
 
 #[test]
-fn rejected_drag_begin_requests_only_one_settlement_pass() {
+fn rejected_drag_keeps_the_source_visible_without_a_ghost() {
     let context = Context::default();
     context.enable_accesskit();
     context.options_mut(|options| {
@@ -3518,12 +3545,13 @@ fn rejected_drag_begin_requests_only_one_settlement_pass() {
         vec![Event::PointerMoved(source + vec2(24.0, 8.0))],
     );
 
-    assert_eq!(
-        rejected.output.platform_output.num_completed_passes, 2,
-        "a rejected Begin is marked per logical frame instead of discarding until max_passes"
-    );
     assert!(rect_fill_count_in(&rejected.output, active_fill, source_rect) > 0);
     assert_eq!(rect_fill_count(&rejected.output, ghost_fill), 0);
+    assert_ne!(
+        rejected.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing,
+        "a rejected source must not advertise an active core drag"
+    );
 }
 
 #[test]
@@ -3596,10 +3624,6 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
     assert_eq!(
         dragging.output.platform_output.cursor_icon,
         egui::CursorIcon::Grabbing
-    );
-    assert_eq!(
-        dragging.output.platform_output.num_completed_passes, 2,
-        "the threshold-crossing pass is discarded so the final output uses core group state"
     );
     assert_eq!(
         rect_fill_count_in(&dragging.output, group_fill, second),
@@ -3737,7 +3761,6 @@ fn contained_title_drag_paints_a_full_window_preview_in_the_same_run() {
         &mut panes,
         vec![Event::PointerMoved(source + vec2(24.0, 8.0))],
     );
-    assert_eq!(dragging.output.platform_output.num_completed_passes, 2);
     assert_eq!(
         rect_fill_count_in(&dragging.output, source_fill, source_rect),
         0,
@@ -3760,6 +3783,390 @@ fn contained_title_drag_paints_a_full_window_preview_in_the_same_run() {
         dragging.output.platform_output.cursor_icon,
         egui::CursorIcon::Grabbing
     );
+}
+
+#[test]
+fn raw_pointer_close_request_is_not_replayed_after_an_output_hook_discard() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-raw-pointer-rerun", layout())
+        .build()
+        .expect("the raw-pointer rerun facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let close = node_center(&stable.output, Role::Button, "Close First");
+    let before = root_tabs(&dockspace);
+    context
+        .plugin_or_default::<LateDiscardPlugin>()
+        .lock()
+        .remaining = 1;
+
+    let mut requests_per_pass = Vec::new();
+    let mut requests = Vec::new();
+    let output = run_headless(
+        &context,
+        input(vec![
+            Event::PointerMoved(close),
+            pointer_button(close, true),
+            pointer_button(close, false),
+        ]),
+        |ui| {
+            let response = dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("every rerun preserves the committed raw input");
+            requests_per_pass.push(response.close_request_events().len());
+            requests.extend(response.close_request_events().iter().cloned());
+        },
+    );
+    output.drop_without_applying_deltas();
+
+    assert!(
+        requests_per_pass.len() > 1,
+        "the late output hook must force an actual UI rerun"
+    );
+    assert_eq!(
+        requests_per_pass[0], 1,
+        "the original press/release batch opens its close request before paint"
+    );
+    assert!(
+        requests_per_pass[1..].iter().all(|count| *count == 0),
+        "reruns must not replay the raw click or emit a reused close request"
+    );
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].reused());
+    assert_eq!(root_tabs(&dockspace), before);
+
+    let idle = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        idle.close_requests.is_empty(),
+        "the next run must not retain an already consumed raw click"
+    );
+    assert_eq!(root_tabs(&dockspace), before);
+}
+
+#[test]
+fn explicit_touch_cancel_terminates_the_host_gesture_and_allows_a_fresh_press() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-raw-touch-cancel", layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the touch cancellation fixture initializes");
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "Second");
+    let target = tab_center(&stable.output, "First");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let before = dockspace.version();
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+    let ghost = dockspace
+        .style()
+        .visuals
+        .ghost_fill
+        .expect("the ghost fill is fixed");
+    assert!(rect_fill_count(&dragging.output, ghost) > 0);
+    let cancelled = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::Touch {
+                device_id: egui::TouchDeviceId(1),
+                id: egui::TouchId(1),
+                phase: egui::TouchPhase::Cancel,
+                pos: target,
+                force: None,
+            },
+            Event::PointerGone,
+        ],
+    );
+    assert_eq!(dockspace.version(), before);
+    assert_eq!(root_tabs(&dockspace), Some(vec![FIRST, SECOND]));
+    assert_eq!(rect_fill_count(&cancelled.output, ghost), 0);
+    assert_ne!(
+        cancelled.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            pointer_button(source, true),
+            Event::PointerMoved(target),
+            pointer_button(target, false),
+        ],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(root_tabs(&dockspace), Some(vec![SECOND, FIRST]));
+}
+
+#[test]
+fn late_presentation_cannot_borrow_receivers_from_a_newer_unpresented_egui_pass() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-exact-receiver-pass", layout())
+        .build()
+        .expect("the late presentation fixture initializes");
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let close = node_center(&stable.output, Role::Button, "Close First");
+    let (_, earlier) = run_ui(&context, input(Vec::new()), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the earlier output compiles");
+    })
+    .into_parts();
+    let (_, later) = run_ui(&context, input(Vec::new()), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the later output compiles without presentation");
+    })
+    .into_parts();
+    earlier.report(SurfacePresentationResult::Presented);
+    let stale = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(close),
+            pointer_button(close, true),
+            pointer_button(close, false),
+        ],
+    );
+    assert!(
+        stale.close_requests.is_empty(),
+        "identical geometry in a newer unpresented pass cannot authorize the older output"
+    );
+    later.report(SurfacePresentationResult::Dropped);
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let fresh = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(close),
+            pointer_button(close, true),
+            pointer_button(close, false),
+        ],
+    );
+    assert_eq!(
+        fresh.close_requests.len(),
+        1,
+        "a fresh qualified presentation restores ordinary controls"
+    );
+}
+
+#[test]
+fn rebinding_context_retires_the_old_pointer_owner_without_a_pending_output_report() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-pointer-context-rebind", layout())
+        .style(instrumented_style())
+        .build()
+        .expect("the context rebind fixture initializes");
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "Second");
+    let target = tab_center(&stable.output, "First");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let dragging = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+    let ghost = dockspace
+        .style()
+        .visuals
+        .ghost_fill
+        .expect("the ghost fill is fixed");
+    assert!(rect_fill_count(&dragging.output, ghost) > 0);
+    let (_, old_receipt) = run_ui(&context, input(Vec::new()), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the last old-context output drains the prior report");
+    })
+    .into_parts();
+    let before = dockspace.version();
+    let replacement = Context::default();
+    replacement.enable_accesskit();
+    let rebound = run_frame(&replacement, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(dockspace.version(), before);
+    assert_eq!(root_tabs(&dockspace), Some(vec![FIRST, SECOND]));
+    assert_eq!(rect_fill_count(&rebound.output, ghost), 0);
+    assert_ne!(
+        rebound.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+    old_receipt.report(SurfacePresentationResult::Presented);
+    let stable = run_frame(&replacement, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "Second");
+    let target = tab_center(&stable.output, "First");
+    let _ = run_frame(
+        &replacement,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            pointer_button(source, true),
+            Event::PointerMoved(target),
+            pointer_button(target, false),
+        ],
+    );
+    let _ = run_frame(&replacement, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(root_tabs(&dockspace), Some(vec![SECOND, FIRST]));
+}
+
+#[test]
+fn transformed_output_cannot_gain_pointer_authority_when_the_transform_is_removed() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-pointer-emitted-transform", layout())
+        .build()
+        .expect("the transformed output fixture initializes");
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let close = node_center(&stable.output, Role::Button, "Close First");
+    let _ = run_headless(&context, input(Vec::new()), |ui| {
+        ui.ctx().set_transform_layer(
+            ui.layer_id(),
+            egui::emath::TSTransform::from_translation(vec2(150.0, 80.0)),
+        );
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("complete transformed output can still be presented");
+    });
+    let mut requests = Vec::new();
+    let _ = run_headless(
+        &context,
+        input(vec![
+            Event::PointerMoved(close),
+            pointer_button(close, true),
+            pointer_button(close, false),
+        ]),
+        |ui| {
+            ui.ctx()
+                .set_transform_layer(ui.layer_id(), egui::emath::TSTransform::IDENTITY);
+            let response = dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("unsupported source coordinates remain capability-negative");
+            requests.extend(response.close_request_events().iter().cloned());
+        },
+    );
+    assert!(
+        requests.is_empty(),
+        "current identity transform cannot reinterpret a transformed presented output"
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let fresh = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(close),
+            pointer_button(close, true),
+            pointer_button(close, false),
+        ],
+    );
+    assert_eq!(fresh.close_requests.len(), 1);
+}
+
+#[test]
+fn changing_layer_coordinates_cancels_resize_before_interpreting_a_release() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "product-pointer-transform-during-resize",
+        contained_layout(),
+    )
+    .style(instrumented_style())
+    .build()
+    .expect("the resize coordinate fixture initializes");
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let initial = dockspace
+        .view()
+        .contained(FLOATING)
+        .expect("the inspector exists")
+        .rect();
+    let source = Pos2::new(
+        initial.max().x() as f32 - 1.0,
+        initial.min().y() as f32 + 100.0,
+    );
+    let moved = source + vec2(30.0, 0.0);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(moved)],
+    );
+    let before = dockspace.version();
+    let cancelled = run_headless(
+        &context,
+        input(vec![
+            Event::PointerMoved(moved),
+            pointer_button(moved, false),
+        ]),
+        |ui| {
+            ui.ctx().set_transform_layer(
+                ui.layer_id(),
+                egui::emath::TSTransform::from_translation(vec2(150.0, 80.0)),
+            );
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("coordinate invalidation cancels the prior owner");
+        },
+    );
+    assert_eq!(dockspace.version(), before);
+    assert_eq!(
+        dockspace
+            .view()
+            .contained(FLOATING)
+            .expect("the inspector survives")
+            .rect(),
+        initial
+    );
+    let ghost = dockspace
+        .style()
+        .visuals
+        .ghost_fill
+        .expect("the ghost fill is fixed");
+    assert_eq!(rect_fill_count(&cancelled, ghost), 0);
 }
 
 #[test]
@@ -3847,7 +4254,6 @@ fn rear_contained_selected_tab_press_raises_before_any_drag_motion() {
         vec![Event::PointerMoved(source), pointer_button(source, true)],
     );
 
-    assert!(pressed.output.platform_output.num_completed_passes >= 2);
     let _ = accesskit_node(&pressed.output, Role::TitleBar, "Second");
     let _ = accesskit_node(&pressed.output, Role::TitleBar, "Fourth");
     assert_eq!(
@@ -3865,51 +4271,63 @@ fn rear_contained_selected_tab_press_raises_before_any_drag_motion() {
 
 #[test]
 fn rear_contained_child_press_uses_event_time_position_even_when_released_in_the_same_frame() {
-    let context = Context::default();
-    context.enable_accesskit();
-    context.options_mut(|options| {
-        options.max_passes = 4.try_into().expect("four is non-zero");
-    });
-    let mut dockspace = Dockspace::builder(
-        "product-contained-child-first-effective-press",
-        stacked_contained_layout(),
-    )
-    .build()
-    .expect("the stacked contained facade initializes");
-    let mut panes = FocusPanes::new("contained-child-first-effective-press", true);
+    for (registered, blocked) in [(false, false), (true, false), (true, true)] {
+        let context = Context::default();
+        context.enable_accesskit();
+        context.options_mut(|options| {
+            options.max_passes = 4.try_into().expect("four is non-zero");
+        });
+        let mut dockspace = Dockspace::builder(
+            "product-contained-child-first-effective-press",
+            stacked_contained_layout(),
+        )
+        .build()
+        .expect("the stacked contained facade initializes");
+        let mut panes = FocusPanes::new("contained-child-first-effective-press", true);
+        panes.docking_content = registered;
+        panes.overlapping_blocker = blocked;
+        if blocked {
+            panes.content_widgets.push(panes.target);
+        }
+        let qualified = registered && !blocked;
 
-    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let source = panes.target_rect().center();
-    let released_at = contained_title_point(&dockspace);
-    let (pressed, _) = run_focus_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(source),
-            pointer_button(source, true),
-            Event::PointerMoved(released_at),
-            pointer_button(released_at, false),
-        ],
-    );
+        let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let source = panes.target_rect().center();
+        let released_at = contained_title_point(&dockspace);
+        let _ = run_focus_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![
+                Event::PointerMoved(source),
+                pointer_button(source, true),
+                Event::PointerMoved(released_at),
+                pointer_button(released_at, false),
+            ],
+        );
 
-    assert!(pressed.output.platform_output.num_completed_passes >= 2);
-    assert_eq!(
-        dockspace
-            .view()
-            .surface(SURFACE)
-            .expect("the stacked surface remains present")
-            .contained()
-            .map(|contained| contained.id())
-            .collect::<Vec<_>>(),
-        [FRONT_FLOATING, FLOATING],
-        "an application-owned child response still raises its containing presentation",
-    );
-    assert!(
-        panes.target_requests() > 0,
-        "the event-time pane hit publishes the exact pane focus request"
-    );
+        assert_eq!(
+            dockspace
+                .view()
+                .surface(SURFACE)
+                .expect("the stacked surface remains present")
+                .contained()
+                .map(|contained| contained.id())
+                .collect::<Vec<_>>(),
+            if qualified {
+                [FRONT_FLOATING, FLOATING]
+            } else {
+                [FLOATING, FRONT_FLOATING]
+            },
+            "only explicitly registered application content can raise its containing presentation",
+        );
+        assert_eq!(
+            panes.target_requests() > 0,
+            qualified,
+            "only a qualified event-time pane hit publishes the exact pane focus request"
+        );
+    }
 }
 
 #[test]
@@ -4380,7 +4798,6 @@ fn shared_l03_supported_magnetic_docking_maps_to_egui_product_semantics() {
 }
 
 #[test]
-#[ignore = "Burst release on first target observation does not publish a product preview yet"]
 fn shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics() {
     let observations = MAGNETIC_DOCKING_BASINS
         .cases()
@@ -5453,6 +5870,7 @@ fn default_features_discarded_preview_cannot_release_a_drag() {
         options.max_passes = 4.try_into().expect("four is non-zero");
     });
     let mut dockspace = Dockspace::builder("product-discarded-preview", split_layout())
+        .style(instrumented_style())
         .build()
         .expect("the product discarded-preview facade initializes");
     let mut panes = Panes;
@@ -5505,11 +5923,52 @@ fn default_features_discarded_preview_cannot_release_a_drag() {
         "a preview painted only by discarded passes cannot release the drag",
     );
 
+    let cancelled_version = dockspace.version();
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let cancelled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        root_split(&dockspace),
+        Some((DockspaceAxis::Horizontal, vec![vec![FIRST], vec![SECOND]],)),
+        "a later presentation cannot authorize a release whose exact target authority was lost",
+    );
+    assert_eq!(dockspace.version(), cancelled_version);
+    let ghost_fill = instrumented_style().visuals.ghost_fill.unwrap();
+    let drop_fill = instrumented_style().visuals.drop_fill.unwrap();
+    assert_eq!(rect_fill_count(&cancelled.output, ghost_fill), 0);
+    assert_eq!(rect_fill_count(&cancelled.output, drop_fill), 0);
+    assert_ne!(
+        cancelled.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing,
+        "idle must not retain a pending drag after the unknown-authority release"
+    );
+    assert!(context.dragged_id().is_none());
+
+    let source = tab_center(&cancelled.output, "Second");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let fresh_drag = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(bottom)],
+    );
+    assert!(rect_fill_count(&fresh_drag.output, drop_fill) > 0);
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(bottom, false)],
+    );
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(
         root_split(&dockspace),
         Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]],)),
-        "the release settles after a terminal pass paints the exact preview",
+        "a fresh press after presentation recovery can complete a new exact-preview gesture",
     );
 }
 
@@ -5521,6 +5980,7 @@ fn discarded_contained_move_preview_cannot_commit_release() {
         options.max_passes = 4.try_into().expect("four is non-zero");
     });
     let mut dockspace = Dockspace::builder("product-discarded-contained-move", contained_layout())
+        .style(instrumented_style())
         .build()
         .expect("the discarded contained-move facade initializes");
     let mut panes = Panes;
@@ -5573,6 +6033,49 @@ fn discarded_contained_move_preview_cannot_commit_release() {
         "a discarded contained move preview cannot release or mutate durable geometry"
     );
 
+    let cancelled_version = dockspace.version();
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let cancelled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        contained_rect(&dockspace),
+        initial,
+        "a later presentation must not revive a contained release with unknown target authority"
+    );
+    assert_eq!(dockspace.version(), cancelled_version);
+    let ghost_fill = instrumented_style().visuals.ghost_fill.unwrap();
+    let drop_fill = instrumented_style().visuals.drop_fill.unwrap();
+    assert_eq!(rect_fill_count(&cancelled.output, ghost_fill), 0);
+    assert_eq!(rect_fill_count(&cancelled.output, drop_fill), 0);
+    assert_ne!(
+        cancelled.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing,
+        "idle must not retain a pending contained transform after cancellation"
+    );
+    assert!(context.dragged_id().is_none());
+
+    let source = contained_title_point(&dockspace);
+    let destination = source + vec2(-120.0, 80.0);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let fresh_drag = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(destination)],
+    );
+    assert!(rect_fill_count(&fresh_drag.output, ghost_fill) > 0);
+    assert_eq!(contained_rect(&dockspace), initial);
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(destination, false)],
+    );
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let committed = contained_rect(&dockspace);
     assert_eq!(committed.width(), initial.width());
@@ -5580,12 +6083,12 @@ fn discarded_contained_move_preview_cannot_commit_release() {
     assert_eq!(
         committed.min().x(),
         initial.min().x() - 120.0,
-        "the terminal product pass may settle the exact contained move on x"
+        "a fresh gesture after presentation recovery commits the exact contained move on x"
     );
     assert_eq!(
         committed.min().y(),
         initial.min().y() + 80.0,
-        "the terminal product pass may settle the exact contained move on y"
+        "a fresh gesture after presentation recovery commits the exact contained move on y"
     );
 }
 
@@ -6214,11 +6717,22 @@ fn default_features_contained_resize_commits_a_painted_preview() {
         &mut panes,
         vec![Event::PointerMoved(source), pointer_button(source, true)],
     );
-    let _ = run_frame(
+    let preview = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerMoved(moved)],
+    );
+    assert!(
+        rect_fill_count(
+            &preview.output,
+            dockspace
+                .style()
+                .visuals
+                .ghost_fill
+                .expect("the fixture fixes its ghost fill"),
+        ) > 0,
+        "the exact contained transform preview is painted while placement is transient",
     );
     assert_eq!(
         dockspace
@@ -6230,22 +6744,11 @@ fn default_features_contained_resize_commits_a_painted_preview() {
         "resize motion remains transient until release",
     );
 
-    let released = run_frame(
+    let _ = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerMoved(moved), pointer_button(moved, false)],
-    );
-    assert!(
-        rect_fill_count(
-            &released.output,
-            dockspace
-                .style()
-                .visuals
-                .ghost_fill
-                .expect("the fixture fixes its ghost fill"),
-        ) > 0,
-        "the exact contained transform preview must be painted before release settles",
     );
     let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = accesskit_node(&settled.output, Role::TitleBar, "Second");

@@ -45,6 +45,7 @@ pub struct Dockspace {
     presentation_settlement_was_available: bool,
     measurement_deferred: bool,
     pending_focus: Vec<(SurfacePresentationArtifact, PreparedPaneFocusObservation)>,
+    pointer: crate::product_pointer::ProductPointer,
     #[cfg(test)]
     drop_target_observations: Vec<product_render::RegisteredDropTargetObservation>,
 }
@@ -75,6 +76,7 @@ impl Dockspace {
             presentation_settlement_was_available: false,
             measurement_deferred: false,
             pending_focus: Vec::new(),
+            pointer: crate::product_pointer::ProductPointer::default(),
             #[cfg(test)]
             drop_target_observations: Vec::new(),
         })
@@ -106,6 +108,7 @@ impl Dockspace {
             presentation_settlement_was_available: false,
             measurement_deferred: false,
             pending_focus: Vec::new(),
+            pointer: crate::product_pointer::ProductPointer::default(),
             #[cfg(test)]
             drop_target_observations: Vec::new(),
         })
@@ -148,6 +151,7 @@ impl Dockspace {
             presentation_settlement_was_available: false,
             measurement_deferred: false,
             pending_focus: Vec::new(),
+            pointer: crate::product_pointer::ProductPointer::default(),
             #[cfg(test)]
             drop_target_observations: Vec::new(),
         })
@@ -664,6 +668,15 @@ impl Dockspace {
         ui: &mut Ui,
         panes: &mut dyn PaneView,
     ) -> Result<DockspaceResponse, DockspaceError> {
+        let mut surfaces = self.session.view().surfaces();
+        let first = surfaces.next().map(|surface| surface.id());
+        let count = usize::from(first.is_some()) + surfaces.count();
+        if count != 1 {
+            return Err(DockspaceErrorSource::SingleSurfaceRequiresOne { count }.into());
+        }
+        if first != Some(surface) {
+            return Err(DockspaceErrorSource::SurfaceOutsideRoster { surface }.into());
+        }
         #[cfg(test)]
         self.drop_target_observations.clear();
         let dock_rect = ui.available_rect_before_wrap();
@@ -678,7 +691,16 @@ impl Dockspace {
         };
         let ready_settlement = self.pass_settlement.take_ready(ui);
         if ready_settlement.lane_changed {
+            if let Some(retired) = self
+                .session
+                .disable_host_pointer()
+                .map_err(DockspaceError::from_detail)?
+                && retired.repaint_required()
+            {
+                ui.ctx().request_repaint();
+            }
             self.pending_focus.clear();
+            self.pointer.clear();
         }
         let presentation_failure = ready_settlement.presentation_failure;
         let presentation_settlement_available =
@@ -722,6 +744,8 @@ impl Dockspace {
                     self.pending_focus.push((artifact, focus));
                 }
             }
+            self.pointer
+                .observe(observation_report.surface_presentation_commits());
             preceding_reports.push(observation_report);
         }
         if !accepted_focus.is_empty() {
@@ -740,25 +764,38 @@ impl Dockspace {
             preceding_reports.push(focus_frame.commit().map_err(DockspaceError::from_detail)?);
         }
 
+        if presentation_settlement_available {
+            self.session
+                .enable_host_pointer()
+                .map_err(DockspaceError::from_detail)?;
+            if let Some(report) = self
+                .pointer
+                .submit(&mut self.session, surface, ui, cancel_active_gesture)
+                .map_err(DockspaceError::from_detail)?
+            {
+                preceding_reports.push(report);
+            }
+        } else if let Some(retired) = self
+            .session
+            .disable_host_pointer()
+            .map_err(DockspaceError::from_detail)?
+        {
+            if retired.repaint_required() {
+                ui.ctx().request_repaint();
+            }
+        }
+
+        let active_pointer = self.session.has_active_gesture();
         let mut frame = self
             .session
             .begin_host_frame()
             .map_err(DockspaceError::from_detail)?;
-        let surfaces = frame.surfaces();
-        if surfaces.len() != 1 {
-            return Err(DockspaceErrorSource::SingleSurfaceRequiresOne {
-                count: surfaces.len(),
-            }
-            .into());
-        }
-        if surfaces.first().copied() != Some(surface) {
-            return Err(DockspaceErrorSource::SurfaceOutsideRoster { surface }.into());
-        }
-        let should_measure = !self.measurement_deferred
-            || frame
-                .paint_plan(surface)
-                .map_err(DockspaceError::from_detail)?
-                .is_none();
+        let should_measure = frame
+            .paint_plan(surface)
+            .map_err(DockspaceError::from_detail)?
+            .is_none_or(|plan| {
+                !(self.measurement_deferred || active_pointer || plan.has_manipulation_preview())
+            });
         let mut missing = BTreeSet::new();
         if should_measure {
             missing.extend(product_render::measure_surface(
@@ -789,6 +826,7 @@ impl Dockspace {
         let mut pane_focus_capability =
             DockspaceCapability::Unavailable(DockspaceUnavailableReason::SurfaceBoundsUnavailable);
         let mut local_actions = Vec::new();
+        let mut pointer_receivers = Vec::new();
         let had_plan = if let Some(plan) = frame
             .paint_plan(surface)
             .map_err(DockspaceError::from_detail)?
@@ -799,10 +837,14 @@ impl Dockspace {
                 plan,
                 panes,
                 &self.style,
-                product_render::PointerActionAuthority::LocalResponses {
-                    local_actions: true,
-                    presentation_settlement: presentation_settlement_available,
-                    cancel_active_gesture,
+                if presentation_settlement_available {
+                    product_render::PointerActionAuthority::HostJournal
+                } else {
+                    product_render::PointerActionAuthority::LocalResponses {
+                        local_actions: true,
+                        presentation_settlement: false,
+                        cancel_active_gesture,
+                    }
                 },
                 #[cfg(feature = "native-render-support")]
                 None,
@@ -818,6 +860,7 @@ impl Dockspace {
                 self.drop_target_observations = paint.drop_target_observations;
             }
             local_actions = paint.local_actions;
+            pointer_receivers = paint.receivers;
             if settlement_claim.is_some()
                 && let Some(receipt) = paint.execution_receipt
             {
@@ -839,6 +882,17 @@ impl Dockspace {
             .map_err(DockspaceError::from_detail)?;
         let mut paint_report = frame.commit().map_err(DockspaceError::from_detail)?;
         let output = paint_report.take_painted_outputs().into_iter().next();
+        if let Some(output) = output.as_ref() {
+            self.pointer.emitted(
+                output.presentation_artifact(),
+                ui.layer_id(),
+                ui.ctx().cumulative_pass_nr().saturating_add(1),
+                ui.ctx()
+                    .layer_transform_to_global(ui.layer_id())
+                    .is_none_or(|transform| transform == egui::emath::TSTransform::IDENTITY),
+                pointer_receivers,
+            );
+        }
 
         // Input cannot mutate the interaction captured by an already executed
         // paint plan. It commits in a subsequent core frame, preserving exact

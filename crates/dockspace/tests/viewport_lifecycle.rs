@@ -1518,16 +1518,26 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
 
     let outside =
         PhysicalPoint::new(1_850.0, 900.0).expect("outside-all desktop point must be finite");
-    let acknowledgement = fixture
+    let preview_token = fixture
         .engine
         .interaction()
         .preview()
         .expect("outside-all move must publish a native preview")
-        .acknowledgement();
-    let preview_acknowledgement = EngineInput::AcknowledgePreview {
-        expected: fixture.engine.version(),
-        acknowledgement,
-    };
+        .token();
+    let mut paint_frame = fixture.presentation_host.begin(&fixture.engine);
+    stage_pointer_checkpoint(fixture, &mut paint_frame);
+    let paint_frame =
+        support::complete_host_frame_with_current_outputs(&fixture.engine, paint_frame);
+    let painted = fixture
+        .presentation_host
+        .finish_presentation(paint_frame, &mut fixture.engine);
+    assert!(painted.presentation_emissions().iter().any(|emission| {
+        emission
+            .output()
+            .payload()
+            .interaction()
+            .is_some_and(|interaction| interaction.drag_preview() == Some(preview_token))
+    }));
     let release = pointer_journal(
         fixture.pointer_sequence,
         PointerEdgeKind::ButtonReleased(PointerButton::Primary),
@@ -1539,18 +1549,14 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
     );
     let joined = fixture.presentation_host.has_joined_backend();
     let mut release_frame = if joined {
-        let (frame, progress) = fixture.presentation_host.begin_joined_pointer_frame(
-            &fixture.engine,
-            [preview_acknowledgement],
-            release,
-        );
+        let (frame, progress) =
+            fixture
+                .presentation_host
+                .begin_joined_pointer_frame(&fixture.engine, [], release);
         assert_eq!(progress, BackendIngressProgress::ReceiverReceiptsRequired);
         frame
     } else {
         let mut frame = fixture.presentation_host.begin(&fixture.engine);
-        support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE)
-            .append(&mut frame, preview_acknowledgement)
-            .expect("native preview acknowledgement must stage before release");
         frame
             .submit_pointer_journal(drag.provider, release)
             .expect("outside-all release must stage");

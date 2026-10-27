@@ -405,7 +405,7 @@ fn paint_scrollbar(
     let response = context.interact_receiver(
         track,
         id,
-        if enabled && context.pointer_authority.accepts_local_pointer_actions() {
+        if enabled {
             Sense::click_and_drag()
         } else {
             Sense::hover()
@@ -484,10 +484,8 @@ fn capture_scrollbar_pointer(
     thumb: Rect,
     response: &egui::Response,
 ) {
-    if !effective_enabled(
-        context.ui,
-        context.pointer_authority.accepts_local_pointer_actions(),
-    ) {
+    // Scrollbar responses belong to the scroll subsystem under every pointer authority.
+    if !effective_enabled(context.ui, response.enabled()) {
         return;
     }
 

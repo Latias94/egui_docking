@@ -1,4 +1,7 @@
 //! Default single-surface renderer over the headless product session.
+//!
+//! Pointer ownership, receiver facts, and migration contracts are documented in
+//! `README.md` alongside this module.
 
 use std::collections::BTreeSet;
 #[cfg(not(feature = "native-render-support"))]
@@ -15,14 +18,14 @@ mod splitters;
 mod tab_chrome;
 mod tabs;
 
-use dockspace::model::{FloatingPresentationId, ItemId};
+use dockspace::model::ItemId;
 use dockspace::runtime::{
-    ContainedPaintRecord, DockspaceContainedTransformPreview, DockspaceDragPreview,
-    DockspacePaneFocusObservation, DockspacePaneFocusRequest, DockspacePreviewVisual,
-    DockspaceReceiverDescriptor, DockspaceRuntimeError, PreparedPaneFocusObservation,
-    PreparedSurfaceAction, SurfaceGesturePhase, SurfacePaintDisposition, SurfacePaintPlan,
-    SurfacePaintProgramOperation, SurfacePaintProgramRoot, SurfacePaintProgramRootKind,
-    SurfacePaintProgramStep, SurfacePaintProgramVisitError, SurfaceProgramExecutionReceipt,
+    DockspaceContainedTransformPreview, DockspaceDragPreview, DockspacePaneFocusObservation,
+    DockspacePaneFocusRequest, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceRuntimeError, PreparedPaneFocusObservation,
+    PreparedSurfaceAction, SurfacePaintDisposition, SurfacePaintPlan, SurfacePaintProgramOperation,
+    SurfacePaintProgramRoot, SurfacePaintProgramRootKind, SurfacePaintProgramStep,
+    SurfacePaintProgramVisitError, SurfaceProgramExecutionReceipt,
 };
 #[cfg(test)]
 use dockspace::runtime::{DockspaceDropDirection, DockspaceVisualId};
@@ -57,6 +60,7 @@ fn native_drag_preview_diagnostic_enabled(context: &egui::Context) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PointerActionAuthority {
+    HostJournal,
     LocalResponses {
         local_actions: bool,
         presentation_settlement: bool,
@@ -70,6 +74,7 @@ impl PointerActionAuthority {
     const fn accepts_local_pointer_actions(self) -> bool {
         match self {
             Self::LocalResponses { local_actions, .. } => local_actions,
+            Self::HostJournal => false,
             #[cfg(feature = "native-render-support")]
             Self::ExternalJournal => false,
         }
@@ -77,25 +82,14 @@ impl PointerActionAuthority {
 
     const fn supports_preview_gestures(self) -> bool {
         match self {
+            Self::HostJournal => true,
             Self::LocalResponses {
-                local_actions: _,
                 presentation_settlement,
-                cancel_active_gesture: _,
+                ..
             } => presentation_settlement,
             #[cfg(feature = "native-render-support")]
             Self::ExternalJournal => true,
         }
-    }
-
-    const fn emits_local_preview_gestures(self) -> bool {
-        matches!(
-            self,
-            Self::LocalResponses {
-                local_actions: _,
-                presentation_settlement: true,
-                cancel_active_gesture: _,
-            }
-        )
     }
 
     const fn cancels_active_gesture(self) -> bool {
@@ -121,7 +115,6 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     pane_focus_target_requested: &'ui mut bool,
     pane_focus_target: &'ui mut Option<Id>,
     local_actions: &'ui mut Vec<PreparedSurfaceAction>,
-    #[cfg(feature = "native-render-support")]
     receivers: &'ui mut Vec<ProductReceiverBinding>,
     #[cfg(test)]
     drop_target_observations: &'ui mut Vec<RegisteredDropTargetObservation>,
@@ -134,8 +127,6 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     defer_measurement: &'ui mut bool,
     pane_output_valid: &'ui mut bool,
     pointer_authority: PointerActionAuthority,
-    local_primary_presses: Vec<actions::LocalPrimaryPress>,
-    claimed_contained_activations: Vec<FloatingPresentationId>,
 }
 
 pub(crate) fn request_discard_once(ui: &Ui, marker: Id, reason: &'static str) -> bool {
@@ -191,10 +182,6 @@ impl RenderContext<'_, '_, '_> {
             .unwrap_or_else(|| self.ui.style().interact(response).weak_bg_fill)
     }
 
-    fn response_dragged_locally(&self, response: &Response) -> bool {
-        self.pointer_authority.emits_local_preview_gestures() && response.dragged()
-    }
-
     fn source_gap_active(&self, paint: SurfacePaintDisposition) -> bool {
         !self.pointer_authority.cancels_active_gesture() && paint.is_source_gap()
     }
@@ -210,89 +197,6 @@ impl RenderContext<'_, '_, '_> {
         }
     }
 
-    fn push_preview_gesture_action(
-        &mut self,
-        action: PreparedSurfaceAction,
-        phase: SurfaceGesturePhase,
-    ) {
-        if !matches!(phase, SurfaceGesturePhase::Begin { .. }) {
-            *self.defer_measurement = true;
-        }
-        self.local_actions.push(action);
-    }
-
-    fn accept_drag_phase_once(
-        &mut self,
-        widget: Id,
-        phase: SurfaceGesturePhase,
-        discard_reason: &'static str,
-    ) -> bool {
-        if !matches!(phase, SurfaceGesturePhase::Begin { .. }) {
-            return true;
-        }
-        let marker = self
-            .ui
-            .make_persistent_id((self.instance_id, "drag-begin-frame", widget));
-        request_discard_once(self.ui, marker, discard_reason)
-    }
-
-    fn accept_contained_activation_once(
-        &mut self,
-        contained: ContainedPaintRecord<'_>,
-        press: actions::LocalPrimaryPress,
-    ) -> bool {
-        let marker = self.ui.make_persistent_id((
-            self.instance_id,
-            "contained-activation-frame",
-            contained.visual_id(),
-            press.ordinal(),
-        ));
-        request_discard_once(
-            self.ui,
-            marker,
-            "egui_dockspace: settle contained activation",
-        )
-    }
-
-    fn claim_contained_activation(&mut self, contained: ContainedPaintRecord<'_>) {
-        if !self
-            .claimed_contained_activations
-            .contains(&contained.floating())
-        {
-            self.claimed_contained_activations
-                .push(contained.floating());
-        }
-    }
-
-    fn flush_contained_activation(&mut self, contained: ContainedPaintRecord<'_>) {
-        if self
-            .claimed_contained_activations
-            .contains(&contained.floating())
-        {
-            return;
-        }
-        let activation = self
-            .local_primary_presses
-            .iter()
-            .copied()
-            .find_map(|press| {
-                (self.ui.ctx().layer_id_at(press.position()) == Some(self.ui.layer_id()))
-                    .then(|| {
-                        self.plan
-                            .prepare_contained_activation(contained.floating(), press.point())
-                            .map(|action| (press, action))
-                    })
-                    .flatten()
-            });
-        let Some((press, action)) = activation else {
-            return;
-        };
-        if self.accept_contained_activation_once(contained, press) {
-            self.claim_contained_activation(contained);
-            self.push_local_action(action);
-        }
-    }
-
     fn push_local_action(&mut self, action: PreparedSurfaceAction) {
         self.local_actions.push(action);
     }
@@ -302,21 +206,36 @@ impl RenderContext<'_, '_, '_> {
         rect: egui::Rect,
         id: Id,
         sense: Sense,
-        _receiver: Option<DockspaceReceiverDescriptor>,
+        receiver: Option<DockspaceReceiverDescriptor>,
     ) -> egui::Response {
         let response = self.ui.interact(rect, id, sense);
-        #[cfg(feature = "native-render-support")]
-        if self.pointer_authority == PointerActionAuthority::ExternalJournal
-            && sense.senses_drag()
+        if !matches!(
+            self.pointer_authority,
+            PointerActionAuthority::LocalResponses { .. }
+        ) && sense.senses_drag()
+            && receiver.is_some_and(|receiver| {
+                matches!(
+                    receiver.role(),
+                    DockspaceReceiverRole::TabBody
+                        | DockspaceReceiverRole::TabGroupGrip
+                        | DockspaceReceiverRole::TabGroupTrailingEmpty
+                        | DockspaceReceiverRole::Splitter
+                        | DockspaceReceiverRole::SplitterJunction
+                        | DockspaceReceiverRole::ContainedTitle
+                        | DockspaceReceiverRole::ContainedResize
+                )
+            })
             && self.ui.ctx().dragged_id() == Some(response.id)
         {
-            // The native pointer journal owns docking gestures. Retain egui's
+            // The host pointer journal owns docking gestures. Retain egui's
             // completed-pass hit record, but release this widget's local owner.
+            // Scroll widgets keep their response-driven drag ownership.
             self.ui.ctx().stop_dragging();
         }
-        #[cfg(feature = "native-render-support")]
-        if let Some(receiver) = _receiver {
+        if let Some(receiver) = receiver {
             self.receivers.push(ProductReceiverBinding {
+                interact_rect: response.interact_rect,
+                interactive: sense.interactive() && response.enabled(),
                 widget_id: response.id,
                 layer_id: response.layer_id,
                 receiver,
@@ -362,9 +281,10 @@ impl RenderContext<'_, '_, '_> {
     }
 }
 
-#[cfg(feature = "native-render-support")]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProductReceiverBinding {
+    pub(crate) interact_rect: egui::Rect,
+    pub(crate) interactive: bool,
     pub(crate) widget_id: Id,
     pub(crate) layer_id: egui::LayerId,
     pub(crate) receiver: DockspaceReceiverDescriptor,
@@ -397,7 +317,6 @@ pub(crate) struct ProductPaintOutput {
     pub(crate) pane_focus_pending: Option<PendingPaneFocusObservation>,
     pub(crate) pane_focus_capability: DockspaceCapability,
     pub(crate) missing_items: BTreeSet<ItemId>,
-    #[cfg(feature = "native-render-support")]
     pub(crate) receivers: Vec<ProductReceiverBinding>,
     #[cfg(test)]
     pub(crate) drop_target_observations: Vec<RegisteredDropTargetObservation>,
@@ -425,7 +344,6 @@ pub(crate) fn paint_surface(
     let mut pane_focus_target_requested = false;
     let mut pane_focus_target = None;
     let mut local_actions = Vec::new();
-    #[cfg(feature = "native-render-support")]
     let mut receivers = Vec::new();
     #[cfg(test)]
     let mut drop_target_observations = Vec::new();
@@ -436,7 +354,6 @@ pub(crate) fn paint_surface(
     let mut pane_output_valid = true;
     let mut terminal_semantic_output = None;
     let execution_receipt;
-    let local_primary_presses = actions::local_primary_presses(ui, pointer_authority);
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
         ui.allocate_rect(bounds, Sense::hover());
         ui.painter()
@@ -456,7 +373,6 @@ pub(crate) fn paint_surface(
             pane_focus_target_requested: &mut pane_focus_target_requested,
             pane_focus_target: &mut pane_focus_target,
             local_actions: &mut local_actions,
-            #[cfg(feature = "native-render-support")]
             receivers: &mut receivers,
             #[cfg(test)]
             drop_target_observations: &mut drop_target_observations,
@@ -469,8 +385,6 @@ pub(crate) fn paint_surface(
             defer_measurement: &mut defer_measurement,
             pane_output_valid: &mut pane_output_valid,
             pointer_authority,
-            local_primary_presses,
-            claimed_contained_activations: Vec::new(),
         };
         let completed_program = context
             .plan
@@ -504,7 +418,6 @@ pub(crate) fn paint_surface(
                                     record.is_frontmost(),
                                 );
                                 tabs::RootVisualContext::Contained {
-                                    record,
                                     pane_fill: window_visuals.frame.fill,
                                 }
                             }
@@ -517,11 +430,7 @@ pub(crate) fn paint_surface(
                             paint,
                         )?;
                     }
-                    SurfacePaintProgramStep::RootEnd(root) => {
-                        if let Some(record) = root.contained() {
-                            context.flush_contained_activation(record);
-                        }
-                    }
+                    SurfacePaintProgramStep::RootEnd(_) => {}
                     SurfacePaintProgramStep::PopupBackdrop(backdrop) => {
                         tab_chrome::paint_backdrop(&mut context, backdrop);
                     }
@@ -539,7 +448,7 @@ pub(crate) fn paint_surface(
                         };
                         transient_visuals_complete &=
                             !drag_preview_required || drag_preview_painted;
-                        if context.pointer_authority.emits_local_preview_gestures()
+                        if context.pointer_authority.supports_preview_gestures()
                             && drag_preview_painted
                         {
                             *context.defer_measurement = true;
@@ -569,7 +478,7 @@ pub(crate) fn paint_surface(
                         };
                         transient_visuals_complete &=
                             !contained_preview_required || contained_preview_painted;
-                        if context.pointer_authority.emits_local_preview_gestures()
+                        if context.pointer_authority.supports_preview_gestures()
                             && contained_preview_painted
                         {
                             *context.defer_measurement = true;
@@ -597,10 +506,8 @@ pub(crate) fn paint_surface(
                                 marker,
                                 "egui_dockspace: settle presentation-authority cancellation",
                             );
-                        } else if actions::effective_enabled(
-                            context.ui,
-                            context.pointer_authority.accepts_local_pointer_actions(),
-                        ) && let Some(action) = context.plan.prepare_escape_cancel()
+                        } else if actions::effective_enabled(context.ui, true)
+                            && let Some(action) = context.plan.prepare_escape_cancel()
                             && context
                                 .ui
                                 .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
@@ -632,7 +539,7 @@ pub(crate) fn paint_surface(
         && pane_focus_target_requested
         && matches!(
             pointer_authority,
-            PointerActionAuthority::LocalResponses { .. }
+            PointerActionAuthority::LocalResponses { .. } | PointerActionAuthority::HostJournal
         ))
     .then(|| crate::output_proof::PaintAppendCheck::begin(ui.painter()));
     let (pane_focus_observation, pane_focus_pending, pane_focus_capability) = pane_focus_request
@@ -714,7 +621,6 @@ pub(crate) fn paint_surface(
         pane_focus_pending,
         pane_focus_capability,
         missing_items: resources.missing_items().collect(),
-        #[cfg(feature = "native-render-support")]
         receivers,
         #[cfg(test)]
         drop_target_observations,
@@ -730,7 +636,7 @@ fn paint_surface_program_operation(
     context: &mut RenderContext<'_, '_, '_>,
     root: &SurfacePaintProgramRoot<'_>,
     operation: &SurfacePaintProgramOperation<'_>,
-    visual_context: tabs::RootVisualContext<'_>,
+    visual_context: tabs::RootVisualContext,
     paint: SurfacePaintDisposition,
 ) -> Result<(), DockspaceRuntimeError> {
     match *operation {
@@ -738,10 +644,10 @@ fn paint_surface_program_operation(
             tabs::paint_pane(context, pane, visual_context, paint);
         }
         SurfacePaintProgramOperation::TabBar(bar) => {
-            tabs::paint_tab_bar(context, bar, visual_context.contained(), paint);
+            tabs::paint_tab_bar(context, bar, paint);
         }
         SurfacePaintProgramOperation::Tab(tab) => {
-            tabs::paint_tab_record(context, tab, visual_context.contained(), paint);
+            tabs::paint_tab_record(context, tab, paint);
         }
         SurfacePaintProgramOperation::Splitter(splitter) => {
             splitters::paint_splitter(context, splitter, paint);
@@ -874,6 +780,49 @@ fn paint_contained_transform_preview(
 }
 
 #[cfg(test)]
+mod pointer_authority_contract_tests {
+    use super::PointerActionAuthority;
+
+    #[test]
+    fn host_journal_contract() {
+        let authority = PointerActionAuthority::HostJournal;
+        assert!(!authority.accepts_local_pointer_actions());
+        assert!(authority.supports_preview_gestures());
+        assert!(!authority.cancels_active_gesture());
+    }
+
+    #[test]
+    fn local_responses_legacy_flags_contract() {
+        for local_actions in [false, true] {
+            for presentation_settlement in [false, true] {
+                for cancel_active_gesture in [false, true] {
+                    let authority = PointerActionAuthority::LocalResponses {
+                        local_actions,
+                        presentation_settlement,
+                        cancel_active_gesture,
+                    };
+                    assert_eq!(authority.accepts_local_pointer_actions(), local_actions);
+                    assert_eq!(
+                        authority.supports_preview_gestures(),
+                        presentation_settlement
+                    );
+                    assert_eq!(authority.cancels_active_gesture(), cancel_active_gesture);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "native-render-support")]
+    #[test]
+    fn external_journal_contract() {
+        let authority = PointerActionAuthority::ExternalJournal;
+        assert!(!authority.accepts_local_pointer_actions());
+        assert!(authority.supports_preview_gestures());
+        assert!(!authority.cancels_active_gesture());
+    }
+}
+
+#[cfg(test)]
 mod discard_tests {
     use egui::{Context, Id, RawInput, Ui, UiBuilder};
 
@@ -922,35 +871,9 @@ mod tests {
     use egui::{Rect, pos2, vec2};
 
     use super::{
-        DockspacePreviewVisual, PointerActionAuthority, enable_native_drag_preview_diagnostic,
+        DockspacePreviewVisual, enable_native_drag_preview_diagnostic,
         native_drag_preview_diagnostic_enabled, preview_rect,
     };
-
-    #[test]
-    fn local_preview_gestures_require_presentation_settlement() {
-        assert!(
-            PointerActionAuthority::LocalResponses {
-                local_actions: true,
-                presentation_settlement: true,
-                cancel_active_gesture: false,
-            }
-            .emits_local_preview_gestures(),
-            "local preview gestures require presentation settlement authority"
-        );
-        assert!(
-            !PointerActionAuthority::LocalResponses {
-                local_actions: true,
-                presentation_settlement: false,
-                cancel_active_gesture: false,
-            }
-            .emits_local_preview_gestures(),
-            "an unowned eframe callback cannot emit local preview gestures"
-        );
-        assert!(
-            !PointerActionAuthority::ExternalJournal.emits_local_preview_gestures(),
-            "native preview gestures are driven by the external pointer journal"
-        );
-    }
 
     #[test]
     fn native_preview_paints_a_source_hosted_cue() {

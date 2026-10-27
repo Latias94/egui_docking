@@ -34,6 +34,7 @@ use dockspace::pointer_receiver::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::PresentationHitRegionKind;
+use dockspace::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::transition::InputOutcome;
 use dockspace::viewport::{
     CoordinateObservationGeneration, InputObservationGeneration, PresentationObservationGeneration,
@@ -2481,13 +2482,41 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
         }] if matches!(preview.visual(), PreviewVisual::Native { .. })
     ));
     assert_eq!(engine.workspace(), &before);
-    let acknowledgement = engine
+    let preview_token = engine
         .interaction()
         .preview()
         .expect("outside-all move publishes a native preview")
-        .acknowledgement();
+        .token();
+    let mut paint_frame = host.begin(&engine);
+    let pointer_sequence = moved.reduced_pointer_edges()[0].edge().sequence();
+    paint_frame
+        .submit_pointer_journal(
+            provider,
+            PointerEdgeJournal::new(pointer_sequence, pointer_sequence, Vec::new())
+                .expect("preview paint preserves the pointer watermark"),
+        )
+        .expect("preview paint pointer checkpoint stages");
+    paint_frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::new())
+                .expect("preview paint has no pointer receiver probes"),
+        )
+        .expect("preview paint receiver checkpoint stages");
+    let paint_frame = complete_host_frame_with_current_outputs(&engine, paint_frame);
+    let painted = host.finish_presentation(paint_frame, &mut engine);
+    let preview_output = painted
+        .presentation_emissions()
+        .iter()
+        .map(|emission| emission.output())
+        .find(|output| {
+            output
+                .payload()
+                .interaction()
+                .is_some_and(|interaction| interaction.drag_preview() == Some(preview_token))
+        })
+        .expect("preview paint emits the exact active preview token");
     let release_journal = pointer_edge_journal_with_delivery(
-        ACTIVE_DRAG_POINTER_THROUGH + 1,
+        pointer_sequence.get(),
         PointerEdgeKind::ButtonReleased(PointerButton::Primary),
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
@@ -2496,21 +2525,6 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
         Authority::Known(PointerCaptureOwner::None),
     );
     let mut release_frame = host.begin(&engine);
-    let input_sequence = engine
-        .semantic_input_watermark()
-        .expect("native fixture already published semantic input")
-        .checked_next()
-        .expect("test input sequence does not exhaust");
-    release_frame
-        .append_input(
-            INPUT_SOURCE,
-            input_sequence,
-            EngineInput::AcknowledgePreview {
-                expected: engine.version(),
-                acknowledgement,
-            },
-        )
-        .expect("native preview acknowledgement stages before release");
     release_frame
         .submit_pointer_journal(provider, release_journal)
         .expect("outside-all release stages");
@@ -2520,14 +2534,25 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
     complete(&engine, &mut release_frame);
     let released = host.finish(release_frame, &mut engine);
 
-    assert!(matches!(
-        released.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::PreviewAcknowledged { changed: true, .. },
-            ..
-        }
-    ));
-
+    assert!(
+        released
+            .presentation_observations()
+            .iter()
+            .any(|observation| {
+                matches!(
+                    observation,
+                    HostPresentationObservationOutcome::Retired {
+                        stream,
+                        settled_through,
+                        presented: Authority::Known(Some(presented)),
+                        promotion_eligible: true,
+                        ..
+                    } if *stream == preview_output.stream()
+                        && *settled_through == preview_output.key()
+                        && *presented == preview_output.key()
+                )
+            })
+    );
     let requested = released.reduced_pointer_edges()[0]
         .interaction_outcomes()
         .iter()

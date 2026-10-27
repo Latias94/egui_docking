@@ -2,8 +2,8 @@
 
 use dockspace::model::ItemId;
 use dockspace::runtime::{
-    ContainedPaintRecord, DockspaceVisualId, PanePaintRecord, SurfaceGesturePhase,
-    SurfacePaintDisposition, SurfaceTabNavigation, TabGroupDragRegionKind, TabPaintRecord,
+    DockspaceVisualId, PanePaintRecord, SurfacePaintDisposition, SurfaceTabNavigation,
+    TabGroupDragRegionKind, TabPaintRecord,
 };
 use egui::accesskit::{Action, Role};
 use egui::{
@@ -11,28 +11,18 @@ use egui::{
     UiBuilder, pos2,
 };
 
-use super::RenderContext;
-use super::actions::{button_activated, effective_enabled, gesture_phase};
+use super::actions::{button_activated, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
+use super::{ProductReceiverBinding, RenderContext};
 
 #[derive(Clone, Copy)]
-pub(crate) enum RootVisualContext<'plan> {
+pub(crate) enum RootVisualContext {
     Main,
-    Contained {
-        record: ContainedPaintRecord<'plan>,
-        pane_fill: egui::Color32,
-    },
+    Contained { pane_fill: egui::Color32 },
 }
 
-impl<'plan> RootVisualContext<'plan> {
-    pub(crate) const fn contained(self) -> Option<ContainedPaintRecord<'plan>> {
-        match self {
-            Self::Main => None,
-            Self::Contained { record, .. } => Some(record),
-        }
-    }
-
+impl RootVisualContext {
     const fn pane_fill(self, workspace_fill: egui::Color32) -> egui::Color32 {
         match self {
             Self::Main => workspace_fill,
@@ -44,7 +34,7 @@ impl<'plan> RootVisualContext<'plan> {
 pub(crate) fn paint_pane(
     context: &mut RenderContext<'_, '_, '_>,
     pane: PanePaintRecord<'_>,
-    visual_context: RootVisualContext<'_>,
+    visual_context: RootVisualContext,
     paint: SurfacePaintDisposition,
 ) {
     let pane_fill = visual_context.pane_fill(context.visuals.workspace_fill);
@@ -62,12 +52,9 @@ pub(crate) fn paint_pane(
         context
             .ui
             .make_persistent_id((context.instance_id, "pane-body", pane.visual_id()));
-    let _response = context.interact_receiver(
-        pane_rect,
-        pane_id,
-        Sense::click_and_drag(),
-        context.plan.receiver_for_pane(pane),
-    );
+    let pane_receiver = context.plan.receiver_for_pane(pane);
+    let _response =
+        context.interact_receiver(pane_rect, pane_id, Sense::click_and_drag(), pane_receiver);
     let Some(item) = pane.selected() else {
         return;
     };
@@ -86,6 +73,7 @@ pub(crate) fn paint_pane(
     let append_check = matches!(
         context.pointer_authority,
         super::PointerActionAuthority::LocalResponses { .. }
+            | super::PointerActionAuthority::HostJournal
     )
     .then(|| crate::output_proof::PaintAppendCheck::begin(child.painter()));
     if context
@@ -109,6 +97,34 @@ pub(crate) fn paint_pane(
             *context.pane_focus_target = Some(target);
         }
         context.panes.ui(item, &mut child);
+        if let Some(receiver) = pane_receiver
+            && pane_rect.is_finite()
+            && pane_rect.is_positive()
+        {
+            for &widget_id in context.panes.docking_content_widgets(item) {
+                let Some(widget) = child
+                    .ctx()
+                    .viewport(|viewport| viewport.this_pass.widgets.get(widget_id).copied())
+                else {
+                    continue;
+                };
+                if widget.enabled
+                    && widget.sense.interactive()
+                    && widget.layer_id == child.layer_id()
+                    && widget.interact_rect.is_finite()
+                    && widget.interact_rect.is_positive()
+                    && pane_rect.contains_rect(widget.interact_rect)
+                {
+                    context.receivers.push(ProductReceiverBinding {
+                        interact_rect: widget.interact_rect,
+                        interactive: true,
+                        widget_id: widget.id,
+                        layer_id: widget.layer_id,
+                        receiver,
+                    });
+                }
+            }
+        }
     }
     drop(child);
     if let Some(check) = append_check {
@@ -119,7 +135,6 @@ pub(crate) fn paint_pane(
 pub(crate) fn paint_tab_bar(
     context: &mut RenderContext<'_, '_, '_>,
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
-    contained: Option<ContainedPaintRecord<'_>>,
     paint: SurfacePaintDisposition,
 ) {
     let paint_omitted = context.source_gap_active(paint);
@@ -137,13 +152,12 @@ pub(crate) fn paint_tab_bar(
         .then(|| context.plan.receiver_for_tab_strip_scroll(bar))
         .flatten();
     context.register_scroll_receiver(id, receiver);
-    paint_group_drag_regions(context, bar, contained, paint);
+    paint_group_drag_regions(context, bar, paint);
 }
 
 fn paint_group_drag_regions(
     context: &mut RenderContext<'_, '_, '_>,
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
-    contained: Option<ContainedPaintRecord<'_>>,
     paint: SurfacePaintDisposition,
 ) {
     for region in bar.group_drag_regions() {
@@ -175,9 +189,9 @@ fn paint_group_drag_regions(
         } else {
             response
         };
-        let locally_dragged = enabled && context.response_dragged_locally(&response);
-        if enabled && (response.hovered() || locally_dragged) {
-            context.ui.ctx().set_cursor_icon(if locally_dragged {
+        let source_gap = context.source_gap_active(paint);
+        if enabled && (response.hovered() || source_gap) {
+            context.ui.ctx().set_cursor_icon(if source_gap {
                 CursorIcon::Grabbing
             } else {
                 CursorIcon::Grab
@@ -192,26 +206,6 @@ fn paint_group_drag_regions(
                     context.interaction_stroke(&response, context.style.visuals.tab_text_color),
                 );
             }
-        }
-        let phase = (enabled && context.pointer_authority.emits_local_preview_gestures())
-            .then(|| gesture_phase(&response))
-            .flatten();
-        if let Some(phase) = phase
-            && let Some(action) = context
-                .plan
-                .prepare_tab_group_gesture(bar.visual_id(), phase)
-            && context.accept_drag_phase_once(
-                response.id,
-                phase,
-                "egui_dockspace: settle tab-group drag decoration",
-            )
-        {
-            if matches!(phase, SurfaceGesturePhase::Begin { .. })
-                && let Some(contained) = contained
-            {
-                context.claim_contained_activation(contained);
-            }
-            context.push_preview_gesture_action(action, phase);
         }
     }
 }
@@ -233,20 +227,18 @@ fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, stroke: Stroke) {
 pub(crate) fn paint_tab_record(
     context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
-    contained: Option<ContainedPaintRecord<'_>>,
     paint: SurfacePaintDisposition,
 ) {
     let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
         return;
     };
-    paint_tab(context, tab, &resource, contained, paint);
+    paint_tab(context, tab, &resource, paint);
 }
 
 pub(crate) fn paint_tab(
     context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
     resource: &TabPaintResource,
-    contained: Option<ContainedPaintRecord<'_>>,
     paint: SurfacePaintDisposition,
 ) {
     let Some(visible) = egui_rect(tab.visible_bounds()) else {
@@ -273,15 +265,14 @@ pub(crate) fn paint_tab(
         },
         receiver,
     );
-    let locally_dragged = context.response_dragged_locally(&response);
-    if operable && preview_gestures_available && (response.hovered() || locally_dragged) {
-        context.ui.ctx().set_cursor_icon(if locally_dragged {
+    let source_gap = context.source_gap_active(paint);
+    if operable && preview_gestures_available && (response.hovered() || source_gap) {
+        context.ui.ctx().set_cursor_icon(if source_gap {
             CursorIcon::Grabbing
         } else {
             CursorIcon::Grab
         });
     }
-    let source_gap = context.source_gap_active(paint);
     let selected = tab.selected();
     let focused = response.has_focus();
     if !source_gap {
@@ -327,15 +318,7 @@ pub(crate) fn paint_tab(
         operable,
     );
     if operable {
-        capture_tab_actions(
-            context,
-            tab,
-            resource,
-            &response,
-            focused,
-            !source_gap,
-            contained,
-        );
+        capture_tab_actions(context, tab, resource, &response, focused, !source_gap);
     }
 }
 
@@ -354,14 +337,8 @@ fn capture_tab_actions(
     response: &egui::Response,
     focused: bool,
     paint_close_icon: bool,
-    contained: Option<ContainedPaintRecord<'_>>,
 ) {
     let id = response.id;
-    let phase = context
-        .pointer_authority
-        .emits_local_preview_gestures()
-        .then(|| gesture_phase(response))
-        .flatten();
     let keyboard_activation = focused
         && context.ui.input(|input| {
             input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
@@ -377,9 +354,6 @@ fn capture_tab_actions(
         if (!tab.selected() || keyboard_activation || accesskit_activation)
             && let Some(action) = context.plan.prepare_tab_select(tab.item())
         {
-            if pointer_activation && let Some(contained) = contained {
-                context.claim_contained_activation(contained);
-            }
             context.push_local_action(action);
         }
     }
@@ -426,22 +400,6 @@ fn capture_tab_actions(
             context.push_local_action(action);
         }
     }
-    if let Some(phase) = phase
-        && let Some(action) = context.plan.prepare_tab_gesture(tab.item(), phase)
-        && context.accept_drag_phase_once(
-            response.id,
-            phase,
-            "egui_dockspace: settle tab drag decoration",
-        )
-    {
-        if matches!(phase, SurfaceGesturePhase::Begin { .. })
-            && let Some(contained) = contained
-        {
-            context.claim_contained_activation(contained);
-        }
-        context.push_preview_gesture_action(action, phase);
-    }
-
     if let Some(close_bounds) = tab.close_bounds().and_then(egui_rect) {
         paint_close(
             context,

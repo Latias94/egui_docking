@@ -1211,9 +1211,7 @@ impl DockspaceHostFrame<'_> {
             return Ok(None);
         };
         let candidate = scene.candidate();
-        let drop_affordance = view.interaction().drop_affordance().filter(|affordance| {
-            affordance.surface() == surface && affordance.scene() == candidate.stamp()
-        });
+        let drop_affordance = view.presentation_drop_affordance(surface);
         let drag_decoration = view
             .interaction()
             .active_drag_view()
@@ -1307,6 +1305,15 @@ impl DockspaceHostFrame<'_> {
 }
 
 impl<'frame> SurfacePaintPlan<'frame> {
+    /// Returns whether this exact program includes a manipulation preview.
+    ///
+    /// Hosts preserve the current candidate until its release presentation
+    /// obligation settles, including after the physical pointer was released.
+    #[must_use]
+    pub const fn has_manipulation_preview(self) -> bool {
+        self.drag_preview.is_some() || self.contained_transform_preview.is_some()
+    }
+
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
         self.surface

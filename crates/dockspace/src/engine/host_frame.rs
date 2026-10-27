@@ -57,7 +57,6 @@ const fn pointer_move_outcome_allows_local_presentation_refresh(
         | InteractionOutcome::TabListMenuScrolled { .. }
         | InteractionOutcome::TabListMenuFocusMoved { .. }
         | InteractionOutcome::DragArmed { .. }
-        | InteractionOutcome::PreviewAcknowledged { .. }
         | InteractionOutcome::DragDelivered { .. }
         | InteractionOutcome::ReleasePending { .. }
         | InteractionOutcome::ResizeBegan { .. }
@@ -65,7 +64,6 @@ const fn pointer_move_outcome_allows_local_presentation_refresh(
         | InteractionOutcome::ResizeDelivered { .. }
         | InteractionOutcome::ContainedPlacementApplied { .. }
         | InteractionOutcome::ContainedTransformBegan { .. }
-        | InteractionOutcome::ContainedTransformPreviewAcknowledged { .. }
         | InteractionOutcome::ContainedTransformReleasePending { .. }
         | InteractionOutcome::ContainedTransformDelivered { .. } => false,
     }

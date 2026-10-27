@@ -77,7 +77,9 @@ impl PresentedDockspaceSurface {
         self.output == output.ticket
     }
 
-    pub(super) fn matches_presentation_artifact(
+    /// Returns whether this capability names the exact committed renderer artifact.
+    #[must_use]
+    pub fn matches_presentation_artifact(
         self,
         artifact: super::SurfacePresentationArtifact,
     ) -> bool {
@@ -100,6 +102,11 @@ pub struct PresentedDockReceiver {
 }
 
 impl PresentedDockReceiver {
+    /// Returns the semantic descriptor bound to this exact presented output.
+    #[must_use]
+    pub const fn descriptor(self) -> DockspaceReceiverDescriptor {
+        self.descriptor
+    }
     pub(super) fn from_projection_region(
         projection: crate::scene::SurfaceInteractionProjection<'_>,
         region: crate::presentation_hit::PresentationHitRegionId,
@@ -131,6 +138,44 @@ impl PresentedDockReceiver {
 
     pub(super) const fn region(self) -> crate::presentation_hit::PresentationHitRegionId {
         self.descriptor.region
+    }
+}
+
+/// Core-owned receiver candidates at one point in a presented logical surface.
+///
+/// This identifies docking's semantic winners. The host must separately prove
+/// framework delivery or hover eligibility before submitting receiver facts.
+#[derive(Debug, Clone, Copy)]
+pub struct HostPointerHit {
+    surface: PresentedDockspaceSurface,
+    delivery: Option<PresentedDockReceiver>,
+    drag_delivery: Option<PresentedDockReceiver>,
+    hover: Option<PresentedDockReceiver>,
+}
+
+impl HostPointerHit {
+    /// Returns the exact presentation used for this query.
+    #[must_use]
+    pub const fn surface(self) -> PresentedDockspaceSurface {
+        self.surface
+    }
+
+    /// Returns the independent click-delivery winner at the queried point.
+    #[must_use]
+    pub const fn delivery(self) -> Option<PresentedDockReceiver> {
+        self.delivery
+    }
+
+    /// Returns the independent drag-lane winner, which may differ from click.
+    #[must_use]
+    pub const fn drag_delivery(self) -> Option<PresentedDockReceiver> {
+        self.drag_delivery
+    }
+
+    /// Returns the core-owned hover/drop receiver at the queried point.
+    #[must_use]
+    pub const fn hover(self) -> Option<PresentedDockReceiver> {
+        self.hover
     }
 }
 
@@ -415,6 +460,7 @@ enum ReceiverFact<'receiver> {
 #[derive(Debug, Clone, Copy)]
 pub struct SurfacePointerReceiverFacts<'receiver> {
     delivery: ReceiverFact<'receiver>,
+    drag_delivery: Option<ReceiverFact<'receiver>>,
     hover: ReceiverFact<'receiver>,
 }
 
@@ -525,11 +571,29 @@ impl<'receiver> SurfacePointerInput<'receiver> {
 }
 
 impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
+    /// Overrides only the drag-delivery lane with an exact receiver.
+    #[must_use]
+    pub const fn with_drag_delivery(mut self, receiver: &'receiver PresentedDockReceiver) -> Self {
+        self.drag_delivery = Some(ReceiverFact::Dock(receiver));
+        self
+    }
+
+    /// Reports known-empty drag delivery independently from click delivery.
+    #[must_use]
+    pub const fn with_no_drag_delivery(
+        mut self,
+        surface: &'receiver PresentedDockspaceSurface,
+    ) -> Self {
+        self.drag_delivery = Some(ReceiverFact::NoReceiver(surface));
+        self
+    }
+
     /// Reports no authoritative receiver fact for either lane.
     #[must_use]
     pub const fn unknown() -> Self {
         Self {
             delivery: ReceiverFact::Unknown,
+            drag_delivery: None,
             hover: ReceiverFact::Unknown,
         }
     }
@@ -539,6 +603,7 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
     pub const fn delivery(receiver: &'receiver PresentedDockReceiver) -> Self {
         Self {
             delivery: ReceiverFact::Dock(receiver),
+            drag_delivery: None,
             hover: ReceiverFact::Unknown,
         }
     }
@@ -548,6 +613,7 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
     pub const fn hover(receiver: &'receiver PresentedDockReceiver) -> Self {
         Self {
             delivery: ReceiverFact::Unknown,
+            drag_delivery: None,
             hover: ReceiverFact::Dock(receiver),
         }
     }
@@ -557,6 +623,7 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
     pub const fn no_hover(surface: &'receiver PresentedDockspaceSurface) -> Self {
         Self {
             delivery: ReceiverFact::Unknown,
+            drag_delivery: None,
             hover: ReceiverFact::NoReceiver(surface),
         }
     }
@@ -566,6 +633,7 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
     pub const fn blocked_hover(surface: &'receiver PresentedDockspaceSurface) -> Self {
         Self {
             delivery: ReceiverFact::Unknown,
+            drag_delivery: None,
             hover: ReceiverFact::Blocked(surface),
         }
     }
@@ -769,6 +837,37 @@ impl SurfacePointerRetirement {
 }
 
 impl DockspaceSession {
+    /// Queries docking's semantic receiver winners in one exact current output.
+    ///
+    /// Framework overlays and application widgets may still block these candidates.
+    /// This query grants neither event delivery nor capture authority by itself.
+    #[must_use]
+    pub fn host_pointer_hit(
+        &self,
+        surface: SurfaceId,
+        point: LogicalPoint,
+    ) -> Option<HostPointerHit> {
+        use crate::presentation_hit::PresentationPointerLane;
+        let projection = self.engine.interaction_projection(surface)?;
+        let resolve = |lane| {
+            projection
+                .hit_manifest()
+                .resolve_exclusive(lane, point)
+                .ok()
+                .map(|region| {
+                    region.and_then(|region| {
+                        PresentedDockReceiver::from_projection_region(projection, region.id())
+                    })
+                })
+        };
+        Some(HostPointerHit {
+            surface: PresentedDockspaceSurface::from_projection(projection),
+            delivery: resolve(PresentationPointerLane::Click)?,
+            drag_delivery: resolve(PresentationPointerLane::Drag)?,
+            hover: resolve(PresentationPointerLane::HoverDrop)?,
+        })
+    }
+
     /// Enables one affine input producer spanning this host's logical surfaces.
     ///
     /// No native window or already-presented surface is required. Each edge
@@ -1285,10 +1384,22 @@ impl DockspaceHostFrame<'_> {
             .probes()
             .requires(crate::pointer_receiver::PointerReceiverProbe::Delivery)
         {
-            probes.push(PointerReceiverProbeReceipt::Delivery(delivery_fact(
-                delivery_projection.as_ref(),
-                facts.delivery,
-            )?));
+            let delivery = delivery_fact(delivery_projection.as_ref(), facts.delivery)?;
+            let delivery = if let (Some(projection), Some(drag_fact)) =
+                (delivery_projection, facts.drag_delivery)
+            {
+                let drag = delivery_fact(Some(&projection), drag_fact)?;
+                PointerReceiverDelivery::from_lanes_with_scroll(
+                    projection,
+                    delivery.click(),
+                    drag.drag(),
+                    delivery.scroll(),
+                )
+                .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?
+            } else {
+                delivery
+            };
+            probes.push(PointerReceiverProbeReceipt::Delivery(delivery));
         }
         if candidate
             .probes()

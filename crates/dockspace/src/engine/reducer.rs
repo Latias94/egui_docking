@@ -1776,28 +1776,6 @@ impl DockEngine {
             EngineInput::CancelActiveInteractionWithEscape { expected, delivery } => {
                 self.reduce_escape_input(input.sequence, *expected, *delivery, interaction_events)
             }
-            EngineInput::AcknowledgePreview {
-                expected,
-                acknowledgement,
-            } => self.reduce_preview_acknowledgement(
-                cause,
-                *expected,
-                acknowledgement,
-                tick_start.policy,
-                events,
-                interaction_events,
-            ),
-            EngineInput::AcknowledgeContainedTransformPreview {
-                expected,
-                acknowledgement,
-            } => self.reduce_contained_transform_preview_acknowledgement(
-                cause,
-                *expected,
-                *acknowledgement,
-                tick_start.policy,
-                events,
-                interaction_events,
-            ),
             EngineInput::RequestSurfaceClose {
                 expected,
                 edge,

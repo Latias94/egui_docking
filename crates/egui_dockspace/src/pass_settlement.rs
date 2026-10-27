@@ -110,7 +110,7 @@ pub fn run_ui(
     input: RawInput,
     mut add_contents: impl FnMut(&mut Ui),
 ) -> DockspaceOutput {
-    let run = ProductPassSettlementRun::begin(context, input.viewport_id);
+    let run = ProductPassSettlementRun::begin(context, input.viewport_id, input.events.clone());
     let mut output = context.run_ui(input, |ui| {
         let scope = run
             .begin_pass(ui)
@@ -347,7 +347,7 @@ struct ProductPassSettlementRun {
 }
 
 impl ProductPassSettlementRun {
-    fn begin(context: &Context, viewport: ViewportId) -> Self {
+    fn begin(context: &Context, viewport: ViewportId, events: Vec<egui::Event>) -> Self {
         if let Some(active) = active_run_portal(context) {
             active
                 .lock()
@@ -357,6 +357,7 @@ impl ProductPassSettlementRun {
         }
         let portal = Arc::new(Mutex::new(ActiveRunPortal {
             run: Arc::new(RunIdentity),
+            events: Arc::new(events),
             viewport,
             next_pass: 0,
             current_pass: None,
@@ -539,12 +540,39 @@ impl Drop for ProductPassSettlementRun {
 }
 
 struct ActiveRunPortal {
+    events: Arc<Vec<egui::Event>>,
     run: Arc<RunIdentity>,
     viewport: ViewportId,
     next_pass: u64,
     current_pass: Option<u64>,
     poisoned: bool,
     participants: Vec<Weak<Mutex<PassSettlementState>>>,
+}
+
+#[derive(Clone)]
+pub(super) struct ProductPointerPacket {
+    run: Arc<RunIdentity>,
+    events: Arc<Vec<egui::Event>>,
+}
+
+impl ProductPointerPacket {
+    pub(super) fn same_run(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.run, &other.run)
+    }
+
+    pub(super) fn events(&self) -> &[egui::Event] {
+        &self.events
+    }
+}
+
+pub(super) fn pointer_packet(ui: &Ui) -> Option<ProductPointerPacket> {
+    let portal = active_run_portal(ui.ctx())?;
+    let portal = portal.lock().unwrap_or_else(PoisonError::into_inner);
+    let scope = ui_run_scope(ui)?;
+    (!portal.poisoned && Arc::ptr_eq(&scope.run, &portal.run)).then(|| ProductPointerPacket {
+        run: Arc::clone(&portal.run),
+        events: Arc::clone(&portal.events),
+    })
 }
 
 #[derive(Clone)]

@@ -925,7 +925,21 @@ impl DockEngine {
                     .to_owned(),
             }),
             (Some(delivery), None) | (None, Some(delivery)) => Ok(Some(delivery)),
-            (None, None) => Ok(None),
+            (None, None) => Self::journal_delivery_region_for_lane(
+                cause,
+                receipt,
+                snapshot,
+                PresentationPointerLane::Click,
+            )
+            .map(|delivery| {
+                delivery.filter(|(region, _)| {
+                    matches!(
+                        region.kind(),
+                        PresentationHitRegionKind::PaneBody(_)
+                            | PresentationHitRegionKind::ContainedFrameBlocker(_)
+                    )
+                })
+            }),
         }
     }
 

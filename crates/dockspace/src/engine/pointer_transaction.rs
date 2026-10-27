@@ -334,8 +334,122 @@ impl DockEngine {
                 )
                 .map(Some)
             }
+            PresentationHitRegionKind::PaneBody(_)
+            | PresentationHitRegionKind::ContainedFrameBlocker(_) => self
+                .activate_journal_contained_content(
+                    cause,
+                    focus_causal,
+                    presentation,
+                    region,
+                    point,
+                    policy,
+                    events,
+                ),
             _ => Ok(None),
         }
+    }
+
+    fn activate_journal_contained_content(
+        &mut self,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        presentation: &JournalSurfacePresentation,
+        region: PresentationHitRegionId,
+        point: LogicalPoint,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<Option<InteractionOutcome>, EngineError> {
+        let plan = presentation.plan();
+        let (contained, focus_item) = match region.kind() {
+            PresentationHitRegionKind::PaneBody(pane) => (
+                plan.contained_records()
+                    .iter()
+                    .find(|record| record.root() == pane.root),
+                plan.pane_records()
+                    .iter()
+                    .find(|record| record.id() == pane)
+                    .and_then(crate::scene::PaneRecord::selected),
+            ),
+            PresentationHitRegionKind::ContainedFrameBlocker(floating) => {
+                (plan.contained_record(floating), None)
+            }
+            _ => return Ok(None),
+        };
+        let Some(contained) = contained else {
+            return Ok(None);
+        };
+        if contained.is_frontmost() {
+            return Ok(None);
+        }
+        if !contained.outer_bounds().contains(point)
+            || !plan.point_is_on_authoritative_layer(point, contained.layer())
+        {
+            return Ok(Some(InteractionOutcome::Rejected(
+                InteractionRejection::SemanticReceiverUnavailable {
+                    target: region.kind(),
+                },
+            )));
+        }
+        let surface = presentation.surface();
+        let floating = contained.floating();
+        let root = contained.root();
+        if self.root_has_pending_presentation_transition(root) {
+            return Ok(Some(InteractionOutcome::Rejected(
+                InteractionRejection::PresentationTransitionPending,
+            )));
+        }
+        if self.workspace.presentation_for_root(root)
+            != Some(crate::RootPresentationOwner::Contained { surface, floating })
+        {
+            return Ok(Some(InteractionOutcome::Rejected(
+                InteractionRejection::StaleScene,
+            )));
+        }
+        let command = self
+            .workspace
+            .root(root)
+            .ok_or(CommandError::MissingRoot { root })
+            .and_then(|record| self.workspace.capture_node_source(root, record.node))
+            .and_then(|source| {
+                self.workspace
+                    .capture_contained_roster(surface)
+                    .map(|expected_roster| WorkspaceCommand::RaiseContained {
+                        source,
+                        floating,
+                        expected_roster,
+                    })
+            });
+        let command = match command {
+            Ok(command) => command,
+            Err(error) => {
+                return Ok(Some(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(error),
+                )));
+            }
+        };
+        let (_, changed) =
+            match self.apply_journal_workspace_command(cause, &command, policy, events)? {
+                Ok(result) => result,
+                Err(error) => {
+                    return Ok(Some(InteractionOutcome::Rejected(
+                        InteractionRejection::CommandRejected(error),
+                    )));
+                }
+            };
+        if let Some(item) = focus_item {
+            let native_guard = self.viewport_focus_binding(surface);
+            self.viewport_focus
+                .request_local_pane_focus(surface, item, native_guard, focus_causal)
+                .map_err(|source| EngineError::CausedViewportFocus { cause, source })?;
+        }
+        Ok(Some(InteractionOutcome::ProductActionApplied(
+            crate::model::DockspaceActionOutcome::ContainedRaised {
+                root,
+                surface,
+                floating,
+                changed,
+            },
+        )))
     }
 
     fn journal_drag_threshold_origin(
