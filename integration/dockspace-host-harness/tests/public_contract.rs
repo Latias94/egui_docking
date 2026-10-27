@@ -1263,3 +1263,201 @@ fn host_pointer_foreign_session_routes_and_receivers_cannot_authorize_matching_s
     assert_eq!(foreign_session.view().item(FIRST).unwrap().surface(), A);
     assert!(!foreign_session.has_active_gesture());
 }
+
+#[test]
+fn host_pointer_stale_and_foreign_manipulation_cannot_cross_an_armed_source_threshold() {
+    for foreign in [false, true] {
+        let (mut session, mut scene) = host_pointer_fixture();
+        let stale = scene.a;
+        let (recording, output) = paint(&mut session, A);
+        session
+            .report_surface_presentation(output, ResultKind::Presented)
+            .unwrap();
+        settle(&mut session);
+        scene.a = session.presented_surface(A).unwrap();
+        scene.source = session
+            .bind_presented_receiver(&tab_receiver(&recording))
+            .unwrap();
+        assert_ne!(stale, scene.a);
+        let invalid = if foreign {
+            host_pointer_fixture().1.a
+        } else {
+            stale
+        };
+        assert_eq!(invalid.surface(), scene.a.surface());
+        let before = session.version();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .submit_host_pointer_batch([
+                scene.press(),
+                HostPointerInput::new(
+                    SurfacePointerId::new(1),
+                    SurfacePointerEvent::Moved,
+                    HostPointerRoute::new(invalid, LogicalPoint::new(700.0, 500.0).unwrap()),
+                    HostPointerRoute::new(scene.b, scene.target.center()),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::hover(&scene.target),
+                ),
+                scene.target_edge(SurfacePointerEvent::ButtonReleased(
+                    SurfacePointerButton::Primary,
+                )),
+            ])
+            .unwrap();
+        let recordings = record_host_pointer_surfaces(&mut frame);
+        assert_no_pointer_preview(&recordings);
+        assert!(recordings[0].records.iter().any(|record| matches!(record,
+            OwnedRecord::Geometry { visual, paint: SurfacePaintDisposition::Visible, .. }
+                if *visual == scene.source_visual
+        )));
+        let mut report = frame.commit().unwrap();
+        assert!(!report.workspace_changed());
+        assert_eq!(session.version(), before);
+        assert!(!session.has_active_gesture());
+        let settled = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
+        assert!(!settled.workspace_changed());
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+        assert!(session.disable_host_pointer().unwrap().is_some());
+    }
+}
+
+#[test]
+fn host_pointer_stale_and_foreign_hover_cannot_authorize_a_captured_drop() {
+    for foreign in [false, true] {
+        let (mut session, mut scene) = host_pointer_fixture();
+        let stale = scene.b;
+        let mut inspect = session.begin_host_frame().unwrap();
+        let descriptor = inspect
+            .paint_plan(B)
+            .unwrap()
+            .unwrap()
+            .center_drop_receiver_for_item(THIRD)
+            .unwrap();
+        drop(inspect);
+        let (_, output) = paint(&mut session, B);
+        session
+            .report_surface_presentation(output, ResultKind::Presented)
+            .unwrap();
+        settle(&mut session);
+        scene.b = session.presented_surface(B).unwrap();
+        scene.target = session.bind_presented_receiver(&descriptor).unwrap();
+        assert_ne!(stale, scene.b);
+        let invalid = if foreign {
+            host_pointer_fixture().1.b
+        } else {
+            stale
+        };
+        assert_eq!(invalid.surface(), scene.b.surface());
+        let invalid_hover = |event| {
+            HostPointerInput::new(
+                SurfacePointerId::new(1),
+                event,
+                HostPointerRoute::new(scene.a, scene.moved),
+                HostPointerRoute::new(invalid, scene.target.center()),
+                SurfacePointerCapture::ProviderEndpoint,
+                SurfacePointerReceiverFacts::hover(&scene.target),
+            )
+        };
+        let before = session.version();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .submit_host_pointer_batch([
+                scene.press(),
+                invalid_hover(SurfacePointerEvent::Moved),
+                invalid_hover(SurfacePointerEvent::ButtonReleased(
+                    SurfacePointerButton::Primary,
+                )),
+            ])
+            .unwrap();
+        let recordings = record_host_pointer_surfaces(&mut frame);
+        assert_no_pointer_preview(&recordings);
+        let mut report = frame.commit().unwrap();
+        assert!(!report.workspace_changed());
+        assert_eq!(session.version(), before);
+        assert!(!session.has_active_gesture());
+        let settled = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
+        assert!(!settled.workspace_changed());
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+        assert!(session.disable_host_pointer().unwrap().is_some());
+    }
+}
+
+#[test]
+fn host_pointer_wrong_winner_suffix_rolls_back_its_valid_prefix_and_retries_once() {
+    let (mut session, scene) = host_pointer_fixture_for_item(SECOND);
+    let before = session.version();
+    let a_before = session.presented_surface(A).unwrap();
+    let b_before = session.presented_surface(B).unwrap();
+    let mut failed = session.begin_host_frame().unwrap();
+    assert!(
+        failed
+            .submit_host_pointer_batch([
+                scene.press(),
+                scene.target_edge(SurfacePointerEvent::Moved),
+                HostPointerInput::new(
+                    SurfacePointerId::new(1),
+                    SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                    HostPointerRoute::new(scene.a, scene.moved),
+                    HostPointerRoute::new(scene.b, scene.target.center()),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::no_hover(&scene.b),
+                ),
+            ])
+            .is_err(),
+        "the release claims no receiver at B's actual current drop winner"
+    );
+    assert_ne!(failed.version(), before);
+    assert!(failed.view().item(SECOND).unwrap().is_selected());
+    drop(failed);
+
+    assert_eq!(session.version(), before);
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    assert!(!session.view().item(SECOND).unwrap().is_selected());
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
+    assert!(!session.has_active_gesture());
+    assert_eq!(session.presented_surface(A), Some(a_before));
+    assert_eq!(session.presented_surface(B), Some(b_before));
+
+    let mut retry = session.begin_host_frame().unwrap();
+    retry
+        .submit_host_pointer_batch(scene.batch())
+        .expect("the original event order and provider watermark remain retryable");
+    measure(&mut retry, 800.0);
+    retry
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut input_report = retry.commit().unwrap();
+    assert!(input_report.take_painted_outputs().is_empty());
+    assert!(session.view().item(SECOND).unwrap().is_selected());
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
+    assert!(!session.has_active_gesture());
+
+    let mut paint_frame = session.begin_host_frame().unwrap();
+    let recordings = record_host_pointer_surfaces(&mut paint_frame);
+    assert_target_preview(&recordings[1]);
+    let mut report = paint_frame.commit().unwrap();
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
+    let delivered = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
+    assert!(delivered.workspace_changed());
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+    assert_eq!(
+        session
+            .view()
+            .item(SECOND)
+            .unwrap()
+            .tabs()
+            .items()
+            .iter()
+            .filter(|item| **item == SECOND)
+            .count(),
+        1,
+    );
+    let delivered_version = session.version();
+    let unchanged = settle(&mut session);
+    assert_eq!(session.version(), delivered_version);
+    assert!(!unchanged.workspace_changed());
+    assert!(unchanged.surface_presentation_commits().is_empty());
+    assert!(unchanged.presentation_transitions().is_empty());
+    assert!(!session.has_active_gesture());
+    assert!(session.disable_host_pointer().unwrap().is_some());
+}

@@ -18,7 +18,11 @@ The U3 host input tests submit complete ordered batches across two logical
 surfaces with identical bounds. Source manipulation and target hover carry
 independent exact presentation routes. Release waits for actual recording-output
 settlement, with no synthetic pointer events. Negative journeys exercise unknown
-routes, stale authority, failed frames, and producer retirement.
+routes, stale or foreign authority during an active gesture, failed frames, and
+producer retirement. A wrong-winner release after a selection-changing valid
+prefix must roll back the published version, selection, interaction and surface
+proofs; retrying the same ordered edges must deliver exactly once. The retry
+contract also detects producer watermarks advancing during rollback.
 
 This is public-contract and renderer-neutral input evidence. It does not prove
 physical OS event delivery, actual GPU presentation, or completion of the full

@@ -33,10 +33,11 @@ cancels the frozen release. No follow-up pointer events are synthesized. A
 selection-changing press uses a separate measurement/paint cycle after the
 complete input batch; pending release survives this real rendering lifecycle.
 
-The seven new public journeys cover actual target-output settlement,
+The ten new public journeys cover actual target-output settlement,
 selection-changing activation, source/hover coordinate isolation, unknown
 hover, dropped-frame retry and repeated release, stale route/current receiver
-mixing, and foreign-session capabilities. Additional core tests cover local
+mixing, foreign-session capabilities, invalid manipulation after a valid press,
+invalid hover during capture, and failed-suffix rollback. Additional core tests cover local
 owner cancellation without panic, rear-contained Raise/resize/release,
 HostLocal producer lifecycle and ledger boundaries, and locked scroll tails
 whose event-time route or receiver becomes unknown.
@@ -52,7 +53,7 @@ remain explicitly scheduled for U3b retirement.
 | Gate | Result | Scope |
 | --- | --- | --- |
 | Root workspace, all features and targets | 1,585 passed | Core, conformance and official adapter; includes source-continuation, locked-scroll and exact hover-emission regressions |
-| Public engine host, default and serde | 17 passed each | Seven new public pointer journeys; normal dependencies contain no egui, Winit or WGPU |
+| Public engine host, default and serde | 20 passed each | Ten new public pointer journeys; normal dependencies contain no egui, Winit or WGPU |
 | Product harness, all features | 90 passed, 1 ignored | Original single-call Burst exclusion remains open |
 | Official harness, all features | 12 passed | Includes caller-owned WGPU demo compilation |
 | Native workspace, all targets | 198 passed | Existing egui 0.37 fork pin; physical scenarios not executed |
@@ -85,6 +86,20 @@ Removing this check makes the regression fail. The workspace, both public-host
 feature gates, correctness/suspicious Clippy, strict rustdoc and formatting were
 rerun after restoration. Preview position remains derived from the validated hover
 position; delivery and threshold continue using the independent manipulation route.
+
+Public rollback coverage now includes a valid prefix that selects an unselected
+source and begins dragging, followed by a release claiming no receiver where B's
+current drop receiver wins. The batch fails after the private candidate's version
+has changed. Dropping the poisoned frame preserves published selection, version,
+surface proofs and interaction state. Retrying the original event order with the
+correct release fact succeeds, then exact preview presentation delivers once.
+This verifies producer-watermark rollback through the public retry contract,
+without exposing private stream IDs or counters. Separate active-source cases
+reject stale and foreign manipulation even with a valid current hover, and reject
+stale and foreign hover even with valid capture and manipulation. Temporarily
+reading the raw manipulation route or advancing the producer watermark from the
+frame guard's Drop makes the corresponding public regression fail. Both changes
+were restored before the default and serde gates passed all 20 tests each.
 
 U3 remains open. The egui adapter still reconstructs pointer phases from its
 frame-level `Response`, and its original single-call Burst matrix is still
