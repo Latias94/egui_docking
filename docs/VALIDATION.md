@@ -15,6 +15,69 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U7 core record-boundary replay checkpoint (in progress)
+
+Core ingress replay now reduces at most one record per explicit advance. A pointer
+record remains incomplete until its exact receiver receipts validate and reduce;
+submitting those receipts does not implicitly start its successor. The existing
+cursor owns both the fetched and completed positions, with no alternate reducer.
+`RecordBoundary` reports the completed count and whether the boundary permits
+publication. Callers explicitly resume or seal the actual processed prefix.
+
+Sealing truncates the immutable batch before constructing the existing commit
+guard. Only processed records advance the candidate watermark or enter that guard.
+Selected but unprocessed tail records remain recorder-owned and rollbackable both
+before and after prefix publication. A discarded candidate replays from the live
+engine watermark; revoking and reusing a processed ordinal cannot revive the old
+append identity. Pending pointer receipts, completed/empty cursors and indivisible
+group interiors reject invalid continuation or seal operations.
+
+`record_native_pointer_batch` now freezes explicit indivisible commit groups.
+The new `record_native_pointer_sequence` shares its all-or-none admission and
+iterator-unwind protection, while preserving a commit boundary after each edge.
+The native cursor-claim path uses the sequence API. Device removal and both
+Destroyed stages retain their original atomic-batch API. No callback payload can
+escape the private append transaction before its group metadata is frozen.
+Bounded recorder selection stops before a group which would cross its limit and
+returns a typed error when even the first pending group cannot fit. It cannot
+silently split the terminal roster or accept an interior committed watermark.
+
+Eight direct core regressions cover precise 256-record sealing, identity-sensitive
+retry, dropped frames, tail ownership before and after publication, pending pointer
+receipts, empty/complete cursor misuse and atomic group boundaries. The 257-record
+atomic case retains the same private candidate after record 256 and publishes the
+whole group only after record 257; this proves the core continuation mechanism,
+not runtime scheduling. Three native admission regressions compare batch/sequence
+boundaries and verify invalid suffix and iterator-panic rollback in both modes.
+
+The runtime currently drives these explicit boundaries until its complete suffix
+finishes. The injected 256-record/2-ms scheduling budget, runtime-owned suspended
+atomic attempts, pending-suffix mailbox/action gates and capacity/overload work
+remain unfinished. This checkpoint does not qualify U7 or platform input latency.
+
+An independent static review checked record/receipt advancement, exact guard
+membership, rollback/reused identities, private metadata freezing, group-aware
+selection and native terminal call sites. It found no confirmed defect. This is
+separate from the executable gates below and excludes future runtime scheduling.
+
+Fresh checkpoint gates:
+
+| Gate | Result |
+| --- | --- |
+| Root workspace, all features and all targets | 1,627 passed before the last test-only strengthening |
+| Final core prefix regressions, including the additional eighth case | 8 passed |
+| Ingress/admission focused run before the final prefix-only addition | 37 passed |
+| Fork-backed native workspace, all targets | 203 passed |
+| Final core prefix, group-selection and admission tests with debug assertions disabled | 16 passed |
+| Root/native correctness and suspicious Clippy groups | Passed with both groups denied |
+| Core doctests | 9 passed |
+| Strict core/adapter rustdoc, both workspace format checks and diff whitespace | Passed |
+
+The final test-only strengthening adds post-publication tail rollback and checks
+revocation after the producer reuses the processed ordinal. Production behavior
+did not change after the full workspace run. Existing style/dead-code warnings
+remain outside the denied Clippy groups.
+
 ## 2026-10-28 U7 first bounded-cursor prefix checkpoint (in progress)
 
 The native coordinator now claims up to 256 consecutive cursor records on one

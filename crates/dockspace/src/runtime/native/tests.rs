@@ -17,6 +17,7 @@ use crate::runtime::{
 use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
 mod managed_lifecycle;
+mod pointer_sequence;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);

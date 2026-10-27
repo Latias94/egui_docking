@@ -2,6 +2,58 @@ use super::tests::authority_and_recorder;
 use super::*;
 
 #[test]
+fn bounded_selection_stops_before_atomic_groups_and_rejects_interior_watermarks() {
+    let (mut authority, mut recorder) = authority_and_recorder(1);
+    recorder
+        .record_semantic_input(EngineInput::ValidateWorkspace)
+        .expect("the independent predecessor must append");
+    let group = recorder.savepoint();
+    for _ in 0..3 {
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the atomic-group record must append");
+    }
+    recorder
+        .finish_atomic_append(group)
+        .expect("the group must finalize");
+    let limit = NonZeroUsize::new(2).expect("the prefix limit must be nonzero");
+    let prefix = recorder
+        .batch_prefix_after(authority.committed_through(), limit)
+        .expect("the predecessor fits without splitting the following group");
+    assert_eq!(prefix.len(), 1);
+    authority
+        .commit_batch(&prefix)
+        .expect("the predecessor must commit");
+    assert_eq!(
+        recorder.batch_prefix_after(authority.committed_through(), limit),
+        Err(BackendIngressError::AtomicGroupExceedsPrefixLimit {
+            first: BackendIngressOrdinal(2),
+            max_records: limit,
+        }),
+    );
+    assert_eq!(
+        recorder.batch_after(BackendIngressOrdinal(2)),
+        Err(BackendIngressError::AtomicGroupIncomplete {
+            through: BackendIngressOrdinal(2),
+        }),
+    );
+    let whole_group = recorder
+        .batch_prefix_after(authority.committed_through(), NonZeroUsize::new(3).unwrap())
+        .expect("the complete group must fit at its exact size");
+    assert_eq!(whole_group.len(), 3);
+    assert!(
+        whole_group.records()[..2]
+            .iter()
+            .all(|record| !record.is_commit_boundary())
+    );
+    assert!(whole_group.records()[2].is_commit_boundary());
+    authority
+        .commit_batch(&whole_group)
+        .expect("the whole group must commit together");
+    assert_eq!(authority.committed_through(), BackendIngressOrdinal(4));
+}
+
+#[test]
 fn bounded_prefix_continues_257_records_as_256_then_one_without_consuming() {
     let (mut authority, mut recorder) = authority_and_recorder(1);
     let max_records = NonZeroUsize::new(256).expect("the record cap must be nonzero");

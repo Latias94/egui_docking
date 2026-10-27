@@ -1342,13 +1342,20 @@ impl CoreHostFrame {
         self.input_prefix_error.as_ref()
     }
 
-    /// Replays one immutable backend-captured interval in exact capture order.
+    /// Starts one immutable backend interval and reduces at most its first record.
     ///
     /// Platform records reduce immediately. A pointer record pauses replay after
     /// freezing its receiver challenge; the caller must answer it through
-    /// [`Self::submit_backend_pointer_receiver_receipts`]. The candidate ingress
-    /// watermark advances only after the final record and remains rollbackable
-    /// until this host frame commits.
+    /// [`Self::submit_backend_pointer_receiver_receipts`]. At a complete record
+    /// boundary the caller explicitly resumes through [`Self::resume_backend_ingress`]
+    /// or seals the processed prefix through [`Self::seal_backend_ingress_prefix`].
+    /// The candidate watermark advances only at seal or batch completion and
+    /// remains rollbackable until this host frame commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unavailable provider, a second batch, invalid
+    /// interval or append authority, a poisoned frame, or failed record reduction.
     pub fn submit_backend_ingress(
         &mut self,
         batch: BackendIngressBatch,
@@ -1370,7 +1377,12 @@ impl CoreHostFrame {
         self.advance_backend_ingress()
     }
 
-    /// Answers the paused pointer record and resumes the same immutable batch.
+    /// Answers and completes the paused pointer record without starting its successor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a pending pointer challenge, for inexact receipts,
+    /// or when the frame or pointer reduction rejects the submitted evidence.
     pub fn submit_backend_pointer_receiver_receipts(
         &mut self,
         receipts: PointerReceiverReceiptBatch,
@@ -1379,124 +1391,210 @@ impl CoreHostFrame {
             return self.reject_value(CoreHostFrameError::BackendIngressReceiptsUnexpected);
         }
         self.submit_pointer_receiver_receipts_inner(receipts, true)?;
+        self.complete_backend_ingress_record()
+    }
+
+    /// Reduces at most the next record after a complete record boundary.
+    ///
+    /// A pointer record remains incomplete until its exact receiver receipts
+    /// reduce successfully. No successor starts while that challenge is pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a live complete-record boundary, for a poisoned
+    /// frame, or when reduction of the next record fails.
+    pub fn resume_backend_ingress(&mut self) -> Result<BackendIngressProgress, CoreHostFrameError> {
+        self.ensure_backend_ingress_boundary()?;
         self.advance_backend_ingress()
     }
 
-    fn advance_backend_ingress(&mut self) -> Result<BackendIngressProgress, CoreHostFrameError> {
-        loop {
-            let next = {
-                let Some(cursor) = self.pending_backend_ingress.as_mut() else {
-                    return self.reject_value(CoreHostFrameError::BackendIngressIncomplete);
-                };
-                let Some(next) = cursor.next() else {
-                    let cursor = self
-                        .pending_backend_ingress
-                        .take()
-                        .expect("checked backend ingress cursor remains present");
-                    let batch = cursor.into_batch();
-                    if let Err(source) = self.candidate.backend_ingress.commit_batch(&batch) {
-                        return self
-                            .reject_value(CoreHostFrameError::BackendIngressRejected { source });
-                    }
-                    self.backend_ingress_commit_guard = Some(batch.commit_guard());
-                    self.backend_ingress_complete = true;
-                    return Ok(BackendIngressProgress::Complete);
-                };
-                next
-            };
+    /// Seals only the fully reduced prefix of the submitted immutable batch.
+    ///
+    /// The suffix never enters the commit guard and remains recorder-owned for
+    /// retry. Sealing is forbidden while a pointer receiver challenge is pending.
+    /// An indivisible append group must also reach its final record before seal.
+    /// The returned watermark remains private until the whole host frame commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a pending pointer challenge, an incomplete atomic
+    /// group, a missing cursor, a poisoned frame, or revoked prefix authority.
+    pub fn seal_backend_ingress_prefix(
+        &mut self,
+    ) -> Result<BackendIngressOrdinal, CoreHostFrameError> {
+        self.ensure_backend_ingress_boundary()?;
+        let cursor = self
+            .pending_backend_ingress
+            .take()
+            .expect("validated backend ingress boundary retains its cursor");
+        let batch = match cursor.into_completed_prefix() {
+            Ok(batch) => batch,
+            Err(source) => {
+                return self.reject_value(CoreHostFrameError::BackendIngressRejected { source });
+            }
+        };
+        self.finish_backend_ingress(batch)
+    }
 
-            let (ordinal, payload) = next;
-            match payload {
-                BackendIngressPayload::PlatformSnapshot {
-                    expected_epoch,
-                    snapshot,
-                } => {
-                    let provider = self
-                        .backend_ingress
-                        .expect("validated backend ingress remains frozen")
-                        .platform_provider();
-                    self.append_backend_input(
-                        ordinal,
-                        EngineInput::PublishPlatformSnapshot {
-                            provider,
-                            expected_epoch,
-                            snapshot,
-                        },
-                    )?;
-                }
-                BackendIngressPayload::PlatformBindingQuiesced { .. } => {
-                    // This is an adapter-retention fact, not a semantic mutation. The recorder
-                    // turns it into an affine proof only after this complete batch commits.
-                }
-                BackendIngressPayload::NativeCloseObservation {
-                    expected_epoch,
-                    observation,
-                } => {
-                    let provider = self
-                        .backend_ingress
-                        .expect("validated backend ingress remains frozen")
-                        .platform_provider();
-                    self.append_backend_input(
-                        ordinal,
-                        EngineInput::PublishNativeCloseObservation {
-                            provider,
-                            expected_epoch,
-                            observation,
-                        },
-                    )?;
-                }
-                BackendIngressPayload::GlobalFocusObservation {
-                    expected_epoch,
-                    observation,
-                } => {
-                    let provider = self
-                        .backend_ingress
-                        .expect("validated backend ingress remains frozen")
-                        .platform_provider();
-                    self.append_backend_input(
-                        ordinal,
-                        EngineInput::PublishGlobalFocusObservation {
-                            provider,
-                            expected_epoch,
-                            observation,
-                        },
-                    )?;
-                }
-                BackendIngressPayload::PlatformEffectResult(result) => {
-                    let provider = self
-                        .backend_ingress
-                        .expect("validated backend ingress remains frozen")
-                        .platform_provider();
-                    self.append_backend_input(
-                        ordinal,
-                        EngineInput::ReportPlatformEffect {
-                            provider,
-                            expected_epoch: result.receipt_epoch(),
-                            result,
-                        },
-                    )?;
-                }
-                BackendIngressPayload::SemanticInput(input) => {
-                    self.append_backend_semantic_input(ordinal, input)?;
-                }
-                BackendIngressPayload::PresentationObservation { host, entry } => {
-                    self.reduce_backend_presentation_observation(ordinal, host, entry)?;
-                }
-                BackendIngressPayload::PointerSegment(segment) => {
-                    let provider = self
-                        .backend_ingress
-                        .expect("validated backend ingress remains frozen")
-                        .pointer_provider();
-                    self.submit_pointer_journal_inner(
+    fn ensure_backend_ingress_boundary(&mut self) -> Result<(), CoreHostFrameError> {
+        if let Some(error) = self.poison {
+            return Err(error);
+        }
+        if self.pending_pointer_segment.is_some()
+            || !self
+                .pending_backend_ingress
+                .as_ref()
+                .is_some_and(HostBackendIngressCursor::at_record_boundary)
+        {
+            return self.reject(CoreHostFrameError::BackendIngressBoundaryRequired);
+        }
+        Ok(())
+    }
+
+    fn complete_backend_ingress_record(
+        &mut self,
+    ) -> Result<BackendIngressProgress, CoreHostFrameError> {
+        let Some(cursor) = self.pending_backend_ingress.as_mut() else {
+            return self.reject_value(CoreHostFrameError::BackendIngressIncomplete);
+        };
+        cursor.complete_record();
+        if cursor.is_complete() {
+            let cursor = self
+                .pending_backend_ingress
+                .take()
+                .expect("completed backend ingress retains its cursor");
+            self.finish_backend_ingress(cursor.into_batch())?;
+            Ok(BackendIngressProgress::Complete)
+        } else {
+            Ok(BackendIngressProgress::RecordBoundary {
+                completed_records: cursor.completed_records(),
+                can_seal: cursor.can_seal(),
+            })
+        }
+    }
+
+    fn finish_backend_ingress(
+        &mut self,
+        batch: BackendIngressBatch,
+    ) -> Result<BackendIngressOrdinal, CoreHostFrameError> {
+        if let Err(source) = self.candidate.backend_ingress.commit_batch(&batch) {
+            return self.reject_value(CoreHostFrameError::BackendIngressRejected { source });
+        }
+        let through = batch.through();
+        self.backend_ingress_commit_guard = Some(batch.commit_guard());
+        self.backend_ingress_complete = true;
+        Ok(through)
+    }
+
+    fn advance_backend_ingress(&mut self) -> Result<BackendIngressProgress, CoreHostFrameError> {
+        let next = {
+            let Some(cursor) = self.pending_backend_ingress.as_mut() else {
+                return self.reject_value(CoreHostFrameError::BackendIngressIncomplete);
+            };
+            let Some(next) = cursor.next() else {
+                let cursor = self
+                    .pending_backend_ingress
+                    .take()
+                    .expect("checked backend ingress cursor remains present");
+                let batch = cursor.into_batch();
+                self.finish_backend_ingress(batch)?;
+                return Ok(BackendIngressProgress::Complete);
+            };
+            next
+        };
+
+        let (ordinal, payload) = next;
+        match payload {
+            BackendIngressPayload::PlatformSnapshot {
+                expected_epoch,
+                snapshot,
+            } => {
+                let provider = self
+                    .backend_ingress
+                    .expect("validated backend ingress remains frozen")
+                    .platform_provider();
+                self.append_backend_input(
+                    ordinal,
+                    EngineInput::PublishPlatformSnapshot {
                         provider,
-                        segment,
-                        PointerJournalSubmissionAuthority::BackendIngress,
-                        None,
-                    )?;
-                    return Ok(BackendIngressProgress::ReceiverReceiptsRequired);
-                }
+                        expected_epoch,
+                        snapshot,
+                    },
+                )?;
+            }
+            BackendIngressPayload::PlatformBindingQuiesced { .. } => {
+                // This is an adapter-retention fact, not a semantic mutation. The recorder
+                // turns it into an affine proof only after this complete batch commits.
+            }
+            BackendIngressPayload::NativeCloseObservation {
+                expected_epoch,
+                observation,
+            } => {
+                let provider = self
+                    .backend_ingress
+                    .expect("validated backend ingress remains frozen")
+                    .platform_provider();
+                self.append_backend_input(
+                    ordinal,
+                    EngineInput::PublishNativeCloseObservation {
+                        provider,
+                        expected_epoch,
+                        observation,
+                    },
+                )?;
+            }
+            BackendIngressPayload::GlobalFocusObservation {
+                expected_epoch,
+                observation,
+            } => {
+                let provider = self
+                    .backend_ingress
+                    .expect("validated backend ingress remains frozen")
+                    .platform_provider();
+                self.append_backend_input(
+                    ordinal,
+                    EngineInput::PublishGlobalFocusObservation {
+                        provider,
+                        expected_epoch,
+                        observation,
+                    },
+                )?;
+            }
+            BackendIngressPayload::PlatformEffectResult(result) => {
+                let provider = self
+                    .backend_ingress
+                    .expect("validated backend ingress remains frozen")
+                    .platform_provider();
+                self.append_backend_input(
+                    ordinal,
+                    EngineInput::ReportPlatformEffect {
+                        provider,
+                        expected_epoch: result.receipt_epoch(),
+                        result,
+                    },
+                )?;
+            }
+            BackendIngressPayload::SemanticInput(input) => {
+                self.append_backend_semantic_input(ordinal, input)?;
+            }
+            BackendIngressPayload::PresentationObservation { host, entry } => {
+                self.reduce_backend_presentation_observation(ordinal, host, entry)?;
+            }
+            BackendIngressPayload::PointerSegment(segment) => {
+                let provider = self
+                    .backend_ingress
+                    .expect("validated backend ingress remains frozen")
+                    .pointer_provider();
+                self.submit_pointer_journal_inner(
+                    provider,
+                    segment,
+                    PointerJournalSubmissionAuthority::BackendIngress,
+                    None,
+                )?;
+                return Ok(BackendIngressProgress::ReceiverReceiptsRequired);
             }
         }
+        self.complete_backend_ingress_record()
     }
 
     fn reduce_backend_presentation_observation(

@@ -1,5 +1,7 @@
 use super::*;
 
+mod backend_ingress_prefix;
+
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation};
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceEpoch};
@@ -390,26 +392,30 @@ fn record_empty_backend_checkpoint(recorder: &mut BackendIngressRecorder) -> Bac
 }
 
 fn submit_empty_backend_batch(frame: &mut CoreHostFrame, batch: BackendIngressBatch) {
-    assert_eq!(
-        frame
-            .submit_backend_ingress(batch)
-            .expect("joined backend batch must validate"),
-        BackendIngressProgress::ReceiverReceiptsRequired,
-    );
-    assert!(
-        frame
-            .pointer_receiver_candidates()
-            .is_some_and(|roster| roster.candidates().is_empty())
-    );
-    assert_eq!(
-        frame
-            .submit_backend_pointer_receiver_receipts(
-                PointerReceiverReceiptBatch::new([])
-                    .expect("empty receipt roster must be canonical"),
-            )
-            .expect("empty pointer checkpoint must reduce"),
-        BackendIngressProgress::Complete,
-    );
+    let mut progress = frame
+        .submit_backend_ingress(batch)
+        .expect("joined backend batch must validate");
+    loop {
+        progress = match progress {
+            BackendIngressProgress::Complete => break,
+            BackendIngressProgress::RecordBoundary { .. } => frame
+                .resume_backend_ingress()
+                .expect("the next complete backend record must reduce"),
+            BackendIngressProgress::ReceiverReceiptsRequired => {
+                assert!(
+                    frame
+                        .pointer_receiver_candidates()
+                        .is_some_and(|roster| roster.candidates().is_empty())
+                );
+                frame
+                    .submit_backend_pointer_receiver_receipts(
+                        PointerReceiverReceiptBatch::new([])
+                            .expect("empty receipt roster must be canonical"),
+                    )
+                    .expect("empty pointer checkpoint must reduce")
+            }
+        };
+    }
 }
 
 #[test]
@@ -1480,8 +1486,20 @@ fn backend_ingress_interleaves_semantic_input_between_pointer_checkpoints() {
                 PointerReceiverReceiptBatch::new([])
                     .expect("first empty receipt batch must be canonical"),
             )
-            .expect("semantic command must reduce before the second checkpoint"),
-        BackendIngressProgress::ReceiverReceiptsRequired,
+            .expect("first checkpoint must complete before starting its successor"),
+        BackendIngressProgress::RecordBoundary {
+            completed_records: 1,
+            can_seal: true,
+        },
+    );
+    assert_eq!(
+        frame
+            .resume_backend_ingress()
+            .expect("semantic command must reduce as one record"),
+        BackendIngressProgress::RecordBoundary {
+            completed_records: 2,
+            can_seal: true,
+        },
     );
     assert!(matches!(
         frame.view().workspace().node(tabs),
@@ -1490,6 +1508,12 @@ fn backend_ingress_interleaves_semantic_input_between_pointer_checkpoints() {
             ..
         }) if *item == ItemId::new(2)
     ));
+    assert_eq!(
+        frame
+            .resume_backend_ingress()
+            .expect("second checkpoint must start after the semantic record"),
+        BackendIngressProgress::ReceiverReceiptsRequired,
+    );
     assert_eq!(
         frame
             .submit_backend_pointer_receiver_receipts(

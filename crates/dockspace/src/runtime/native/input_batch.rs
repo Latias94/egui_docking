@@ -25,6 +25,9 @@ impl RuntimeNativeState {
         loop {
             match progress {
                 BackendIngressProgress::Complete => break,
+                BackendIngressProgress::RecordBoundary { .. } => {
+                    progress = frame.resume_backend_ingress()?;
+                }
                 BackendIngressProgress::ReceiverReceiptsRequired => {
                     let candidates = frame
                         .pointer_receiver_candidates()

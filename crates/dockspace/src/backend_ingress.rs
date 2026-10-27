@@ -628,6 +628,7 @@ pub struct BackendIngressRecord {
     identity: BackendIngressRecordIdentity,
     payload: BackendIngressPayload,
     liveness: BackendIngressRecordLiveness,
+    commit_boundary_after: bool,
 }
 
 impl BackendIngressRecord {
@@ -641,6 +642,15 @@ impl BackendIngressRecord {
     #[must_use]
     pub const fn payload(&self) -> &BackendIngressPayload {
         &self.payload
+    }
+
+    /// Returns whether a host frame may publish a prefix ending at this record.
+    ///
+    /// Records inside one causally indivisible append group can be reduced
+    /// cooperatively, but only the group's final record is a commit boundary.
+    #[must_use]
+    pub const fn is_commit_boundary(&self) -> bool {
+        self.commit_boundary_after
     }
 }
 
@@ -776,6 +786,20 @@ impl BackendIngressBatch {
         self.records.is_empty()
     }
 
+    pub(crate) fn into_prefix(
+        mut self,
+        completed_records: usize,
+    ) -> Result<Self, BackendIngressError> {
+        debug_assert!(completed_records <= self.records.len());
+        self.records.truncate(completed_records);
+        self.through = self
+            .records
+            .last()
+            .map_or(self.previous, |record| record.ordinal);
+        self.validate_commit_boundary()?;
+        Ok(self)
+    }
+
     /// Validates this batch against the engine-owned provider and committed watermark.
     fn validate_against(
         &self,
@@ -829,6 +853,19 @@ impl BackendIngressBatch {
             return Err(BackendIngressError::BatchThroughMismatch {
                 expected: cursor,
                 submitted: self.through,
+            });
+        }
+        self.validate_commit_boundary()
+    }
+
+    fn validate_commit_boundary(&self) -> Result<(), BackendIngressError> {
+        if self
+            .records
+            .last()
+            .is_some_and(|record| !record.is_commit_boundary())
+        {
+            return Err(BackendIngressError::AtomicGroupIncomplete {
+                through: self.through,
             });
         }
         Ok(())
@@ -987,6 +1024,64 @@ impl BackendIngressRecorder {
         &mut self,
         savepoint: BackendIngressSavepoint,
     ) -> Result<(), BackendIngressError> {
+        self.validate_savepoint(&savepoint)?;
+        let _coordination = self.coordination.lock();
+        for record in &self.records[savepoint.record_count..] {
+            match record.liveness.state() {
+                BackendIngressRecordState::Live => {}
+                BackendIngressRecordState::Publishing | BackendIngressRecordState::Committed => {
+                    return Err(BackendIngressError::RollbackCrossesPublishedRecord {
+                        ordinal: record.ordinal,
+                    });
+                }
+                BackendIngressRecordState::Revoked => {
+                    return Err(BackendIngressError::RecordRevoked {
+                        ordinal: record.ordinal,
+                    });
+                }
+            }
+        }
+        for record in &self.records[savepoint.record_count..] {
+            record.liveness.revoke_live();
+        }
+        self.records.truncate(savepoint.record_count);
+        self.last_ordinal = savepoint.recorded_through;
+        self.pointer_through = savepoint.pointer_through;
+        Ok(())
+    }
+
+    /// Finalizes an unexposed runtime-owned append transaction as one commit group.
+    ///
+    /// The runtime collects user iterators before opening the transaction and
+    /// does not expose its recorder while appending. Consequently no batch or
+    /// record clone can escape before these commit boundaries are frozen.
+    pub(crate) fn finish_atomic_append(
+        &mut self,
+        savepoint: BackendIngressSavepoint,
+    ) -> Result<(), BackendIngressError> {
+        self.validate_savepoint(&savepoint)?;
+        let _coordination = self.coordination.lock();
+        let appended = &mut self.records[savepoint.record_count..];
+        for record in appended.iter() {
+            if record.liveness.state() != BackendIngressRecordState::Live {
+                return Err(BackendIngressError::AtomicAppendNotLive {
+                    ordinal: record.ordinal,
+                });
+            }
+        }
+        if let Some((last, interior)) = appended.split_last_mut() {
+            for record in interior {
+                record.commit_boundary_after = false;
+            }
+            last.commit_boundary_after = true;
+        }
+        Ok(())
+    }
+
+    fn validate_savepoint(
+        &self,
+        savepoint: &BackendIngressSavepoint,
+    ) -> Result<(), BackendIngressError> {
         if savepoint.lease != self.lease {
             return Err(BackendIngressError::SavepointLeaseMismatch {
                 expected: self.lease,
@@ -1021,28 +1116,6 @@ impl BackendIngressRecorder {
                 boundary: savepoint.recorded_through,
             });
         }
-        let _coordination = self.coordination.lock();
-        for record in &self.records[savepoint.record_count..] {
-            match record.liveness.state() {
-                BackendIngressRecordState::Live => {}
-                BackendIngressRecordState::Publishing | BackendIngressRecordState::Committed => {
-                    return Err(BackendIngressError::RollbackCrossesPublishedRecord {
-                        ordinal: record.ordinal,
-                    });
-                }
-                BackendIngressRecordState::Revoked => {
-                    return Err(BackendIngressError::RecordRevoked {
-                        ordinal: record.ordinal,
-                    });
-                }
-            }
-        }
-        for record in &self.records[savepoint.record_count..] {
-            record.liveness.revoke_live();
-        }
-        self.records.truncate(savepoint.record_count);
-        self.last_ordinal = savepoint.recorded_through;
-        self.pointer_through = savepoint.pointer_through;
         Ok(())
     }
 
@@ -1288,11 +1361,13 @@ impl BackendIngressRecorder {
     /// The batch ends at its actual last record, or at `committed_through` when
     /// the suffix is empty. Repeating the selection before more facts are recorded
     /// returns an exactly equal batch suitable for atomic retry.
+    /// A selection stops before an atomic group which would cross the limit.
     ///
     /// # Errors
     ///
     /// Returns an error when the watermark predates the retired prefix, advances
-    /// beyond captured input, or no longer identifies a retained record.
+    /// beyond captured input, no longer identifies a retained commit boundary,
+    /// or the first pending atomic group cannot fit within the requested limit.
     pub fn batch_prefix_after(
         &self,
         committed_through: BackendIngressOrdinal,
@@ -1323,11 +1398,27 @@ impl BackendIngressRecorder {
                     ordinal: committed_through,
                 })?
         };
-        let records: Vec<_> = self.records[start..]
+        if self
+            .record_count_boundary(start)
+            .is_some_and(|record| !record.is_commit_boundary())
+        {
+            return Err(BackendIngressError::AtomicGroupIncomplete {
+                through: committed_through,
+            });
+        }
+        let selected = &self.records[start..];
+        let end = selected.len().min(max_records.get());
+        let complete_end = selected[..end]
             .iter()
-            .take(max_records.get())
-            .cloned()
-            .collect();
+            .rposition(BackendIngressRecord::is_commit_boundary)
+            .map_or(0, |index| index + 1);
+        if end > 0 && complete_end == 0 {
+            return Err(BackendIngressError::AtomicGroupExceedsPrefixLimit {
+                first: selected[0].ordinal,
+                max_records,
+            });
+        }
+        let records: Vec<_> = selected[..complete_end].to_vec();
         let through = records
             .last()
             .map_or(committed_through, |record| record.ordinal);
@@ -1442,6 +1533,7 @@ impl BackendIngressRecorder {
             identity,
             payload,
             liveness,
+            commit_boundary_after: true,
         });
         self.last_ordinal = ordinal;
         self.last_record_identity = identity;
@@ -1787,6 +1879,26 @@ impl BackendIngressAuthority {
 /// Structural rejection while capturing or validating backend ingress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BackendIngressError {
+    /// A proposed prefix would publish only part of an indivisible append group.
+    #[error("backend ingress prefix through {through:?} ends inside an atomic group")]
+    AtomicGroupIncomplete {
+        /// Last record of the rejected prefix.
+        through: BackendIngressOrdinal,
+    },
+    /// No complete atomic group fits in a requested nonempty prefix.
+    #[error("backend ingress atomic group at {first:?} exceeds prefix limit {max_records}")]
+    AtomicGroupExceedsPrefixLimit {
+        /// First record of the pending atomic group.
+        first: BackendIngressOrdinal,
+        /// Maximum number of records permitted in the selection.
+        max_records: NonZeroUsize,
+    },
+    /// An internal append group was finalized after its records ceased to be live.
+    #[error("backend ingress atomic append record {ordinal:?} is no longer live")]
+    AtomicAppendNotLive {
+        /// Exact record which can no longer change its commit grouping.
+        ordinal: BackendIngressOrdinal,
+    },
     /// A joined replacement attempted to reuse an already transferred drain proof.
     #[error("backend ingress drain receipt was already consumed")]
     DrainReceiptConsumed,

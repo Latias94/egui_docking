@@ -48,6 +48,7 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
         | Error::BackendIngressUnexpected
         | Error::DuplicateBackendIngressBatch
         | Error::BackendIngressReceiptsUnexpected
+        | Error::BackendIngressBoundaryRequired
         | Error::BackendIngressIncomplete
         | Error::ReservedInputSource { .. }
         | Error::ItemIdentityOutsideScope { .. }
@@ -95,10 +96,13 @@ const fn backend_ingress_error_kind(error: &BackendIngressError) -> DockspaceRun
         | BackendIngressError::ProviderAlreadyActive { .. }
         | BackendIngressError::RecordPublicationInProgress { .. }
         | BackendIngressError::RecordAlreadyCommitted { .. }
+        | BackendIngressError::AtomicAppendNotLive { .. }
         | BackendIngressError::RollbackCrossesPublishedRecord { .. } => {
             DockspaceRuntimeErrorKind::OperationConflict
         }
         BackendIngressError::UnknownReplacementTicket
+        | BackendIngressError::AtomicGroupIncomplete { .. }
+        | BackendIngressError::AtomicGroupExceedsPrefixLimit { .. }
         | BackendIngressError::BindingQuiescenceAuthorityMismatch { .. }
         | BackendIngressError::DuplicateBindingQuiescence { .. }
         | BackendIngressError::ProviderLeaseMismatch { .. }

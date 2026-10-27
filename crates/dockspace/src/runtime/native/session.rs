@@ -227,6 +227,9 @@ impl DockspaceSession {
     /// The runtime assigns consecutive provider sequences in iterator order.
     /// If any input is rejected, every edge appended by this call is rolled
     /// back so the adapter can retry from the exact preceding boundary.
+    /// Admission and host-frame commit are both atomic: no commit boundary
+    /// occurs between these edges. Use [`Self::record_native_pointer_sequence`]
+    /// for independent records that only require all-or-none admission.
     ///
     /// # Errors
     ///
@@ -237,6 +240,27 @@ impl DockspaceSession {
         inputs: impl IntoIterator<Item = NativePointerInput>,
     ) -> Result<(), DockspaceRuntimeError> {
         self.native_state_mut()?.record_pointer_batch(inputs)?;
+        Ok(())
+    }
+
+    /// Records native pointer edges with all-or-none admission in iterator order.
+    ///
+    /// The runtime collects the complete iterator before appending any edge and
+    /// assigns consecutive provider sequences. If any input is rejected, every
+    /// edge appended by this call is rolled back to the preceding boundary.
+    /// Unlike [`Self::record_native_pointer_batch`], each admitted record retains
+    /// its own commit boundary, so host frames may commit a prefix of the
+    /// sequence and replay its remaining suffix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong host profile, stale window or work-area
+    /// bindings, contradictory route facts, or sequence exhaustion.
+    pub fn record_native_pointer_sequence(
+        &mut self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.native_state_mut()?.record_pointer_sequence(inputs)?;
         Ok(())
     }
 

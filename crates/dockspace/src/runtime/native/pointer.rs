@@ -648,6 +648,21 @@ impl RuntimeNativeState {
         &mut self,
         inputs: impl IntoIterator<Item = NativePointerInput>,
     ) -> Result<(), NativePlatformError> {
+        self.append_pointer_batch(inputs, true)
+    }
+
+    pub(super) fn record_pointer_sequence(
+        &mut self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+    ) -> Result<(), NativePlatformError> {
+        self.append_pointer_batch(inputs, false)
+    }
+
+    fn append_pointer_batch(
+        &mut self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+        atomic_commit: bool,
+    ) -> Result<(), NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
         }
@@ -663,6 +678,11 @@ impl RuntimeNativeState {
                     .map_err(|_| NativePlatformError::ProtocolInvariant)?;
                 return Err(error);
             }
+        }
+        if atomic_commit {
+            self.recorder
+                .finish_atomic_append(savepoint)
+                .map_err(|_| NativePlatformError::ProtocolInvariant)?;
         }
         Ok(())
     }

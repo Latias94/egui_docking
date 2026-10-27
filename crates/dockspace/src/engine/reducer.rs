@@ -115,6 +115,7 @@ impl HostPointerProtocolSegment {
 pub(super) struct HostBackendIngressCursor {
     batch: BackendIngressBatch,
     next_record: usize,
+    completed_records: usize,
 }
 
 impl HostBackendIngressCursor {
@@ -122,6 +123,7 @@ impl HostBackendIngressCursor {
         Self {
             batch,
             next_record: 0,
+            completed_records: 0,
         }
     }
 
@@ -133,6 +135,35 @@ impl HostBackendIngressCursor {
 
     pub(super) fn into_batch(self) -> BackendIngressBatch {
         self.batch
+    }
+
+    pub(super) fn complete_record(&mut self) {
+        debug_assert_eq!(self.next_record, self.completed_records + 1);
+        self.completed_records = self.next_record;
+    }
+
+    pub(super) const fn at_record_boundary(&self) -> bool {
+        self.next_record == self.completed_records
+    }
+
+    pub(super) const fn completed_records(&self) -> usize {
+        self.completed_records
+    }
+
+    pub(super) fn can_seal(&self) -> bool {
+        self.completed_records
+            .checked_sub(1)
+            .and_then(|index| self.batch.records().get(index))
+            .is_none_or(crate::backend_ingress::BackendIngressRecord::is_commit_boundary)
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        self.completed_records == self.batch.len()
+    }
+
+    pub(super) fn into_completed_prefix(self) -> Result<BackendIngressBatch, BackendIngressError> {
+        debug_assert!(self.at_record_boundary());
+        self.batch.into_prefix(self.completed_records)
     }
 }
 

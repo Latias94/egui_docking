@@ -272,6 +272,18 @@ pub enum HostFrameInputPhase {
 pub enum BackendIngressProgress {
     /// The current pointer record has frozen an exact receiver challenge.
     ReceiverReceiptsRequired,
+    /// One complete record reduced, and the immutable batch still has a suffix.
+    ///
+    /// The caller may resume replay, or seal the exact completed prefix when
+    /// `can_seal` is true. An atomic append group can pause computation between
+    /// records but must publish as a whole. The candidate watermark does not
+    /// advance until the prefix is sealed.
+    RecordBoundary {
+        /// Number of fully reduced records in this host-frame attempt.
+        completed_records: usize,
+        /// Whether this boundary also ends a complete atomic append group.
+        can_seal: bool,
+    },
     /// Every record reduced and the candidate ingress watermark advanced.
     Complete,
 }
@@ -298,6 +310,9 @@ pub enum CoreHostFrameError {
     /// Receiver receipts were supplied without a paused backend pointer record.
     #[error("backend pointer receipts require a paused backend ingress pointer record")]
     BackendIngressReceiptsUnexpected,
+    /// Replay was resumed or sealed without a completed backend record boundary.
+    #[error("backend ingress continuation requires a complete record boundary")]
+    BackendIngressBoundaryRequired,
     /// The caller attempted presentation before completing the joined batch.
     #[error("presentation cannot begin before the backend ingress batch completes")]
     BackendIngressIncomplete,

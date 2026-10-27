@@ -1324,7 +1324,7 @@ impl NativeCoordinator {
                 }
             }
             if !inputs.is_empty() {
-                self.record_pointer_batch(inputs)?;
+                self.session.record_native_pointer_sequence(inputs)?;
             }
             let count = prefix.record_count();
             prefix.retain();

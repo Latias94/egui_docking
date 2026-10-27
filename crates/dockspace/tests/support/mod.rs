@@ -261,7 +261,13 @@ impl TestPresentationHost {
             let mut progress = frame
                 .submit_backend_ingress(batch)
                 .expect("test joined ingress suffix must reduce");
-            while progress == BackendIngressProgress::ReceiverReceiptsRequired {
+            while progress != BackendIngressProgress::Complete {
+                if matches!(progress, BackendIngressProgress::RecordBoundary { .. }) {
+                    progress = frame
+                        .resume_backend_ingress()
+                        .expect("test joined replay must resume at its complete record boundary");
+                    continue;
+                }
                 assert!(
                     frame
                         .pointer_receiver_candidates()
@@ -317,9 +323,14 @@ impl TestPresentationHost {
             .expect("joined pointer frame retains its recorder")
             .batch_after(engine.backend_ingress_committed_through())
             .expect("joined pointer suffix must freeze");
-        let progress = frame
+        let mut progress = frame
             .submit_backend_ingress(batch)
             .expect("joined pointer suffix must reduce");
+        while matches!(progress, BackendIngressProgress::RecordBoundary { .. }) {
+            progress = frame
+                .resume_backend_ingress()
+                .expect("semantic prefix must resume before the next pointer challenge");
+        }
         (frame, progress)
     }
 
