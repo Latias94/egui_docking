@@ -6,9 +6,9 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     HostFrameReport, HostInputOutcome, NativeCloseState, NativeHostCapabilities,
-    NativeWindowInputState, NativeWindowPresentationState, SurfaceGesturePhase,
-    SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePresentationResult,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    NativeWindowInputState, NativeWindowPresentationState, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, SurfacePresentationResult, SurfaceUnavailableReason,
+    UniformSurfaceMetrics,
 };
 use eframe::{NativeViewportVisibilityStatus, egui};
 use winit::event::WindowEvent;
@@ -484,6 +484,13 @@ fn coordinator_owns_registration_and_viewport_identity() {
 
 #[test]
 fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
+    use dockspace::geometry::PhysicalPoint;
+    use dockspace::runtime::{
+        NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
+        NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+        NativePointerOwner,
+    };
+
     let mut native = coordinator();
     let (binding, second) = register_roots(&mut native);
     let window = WindowId::from(11);
@@ -517,13 +524,13 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
         80.0,
     )
     .expect("test metrics validate");
-    let mut gesture = native
+    let mut inspection = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the local gesture frame begins");
-    let plan = gesture
+        .expect("the source inspection frame begins");
+    let plan = inspection
         .frame
         .paint_plan(FIRST_SURFACE)
-        .expect("the local gesture plan resolves")
+        .expect("the source inspection plan resolves")
         .expect("the first surface remains paintable");
     let mut tab = None;
     plan.visit_surface_program(|step| {
@@ -536,25 +543,41 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
         }
         Ok::<(), ()>(())
     })
-    .expect("the local gesture paint program resolves");
+    .expect("the source inspection paint program resolves");
     let tab = tab.expect("the first surface exposes its tab");
-    let point = plan
+    let receiver = plan
         .receiver_for_tab_body(tab)
-        .expect("the tab has an exact drag receiver")
-        .center();
-    let begin = plan
-        .prepare_tab_gesture(
-            tab.item(),
-            SurfaceGesturePhase::Begin {
-                initial: point,
-                current: point,
-            },
-        )
-        .expect("the exact tab prepares a local gesture");
-    gesture
-        .frame
-        .submit_surface_action(begin)
-        .expect("the local gesture begins");
+        .expect("the tab has an exact drag receiver");
+    let point = receiver.center();
+    inspection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("source inspection retains every presented surface");
+    inspection.commit().expect("source inspection commits");
+
+    // Use the existing desktop domain without changing the idle adapter translator.
+    native
+        .record_pointer(NativePointerInput::new(
+            NativePointerId::new(100),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(
+                    PhysicalPoint::new(point.x(), point.y())
+                        .expect("the unit-scale source desktop point validates"),
+                ),
+                NativePointerHover::Dock(binding),
+                None,
+            ),
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding),
+        ))
+        .expect("the native press enters the active desktop journal");
+    let mut gesture = native
+        .begin_host_frame(|query| {
+            query
+                .bind_receiver(&receiver)
+                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+        })
+        .expect("the native gesture frame begins from the presented source");
     gesture
         .frame
         .measure_surface(FIRST_SURFACE, metrics)
@@ -562,8 +585,12 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
     gesture
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the other surface is retained");
-    gesture.commit().expect("the local gesture frame commits");
+    gesture.commit().expect("the native gesture frame commits");
     assert!(native.session.has_active_gesture());
+    assert!(
+        native.pointer_translator.can_coalesce_idle_cursor_moves(),
+        "only the active core gesture, not adapter button state, must prevent coalescing"
+    );
 
     for (ordinal, x) in [(41, 20.0), (42, 36.0)] {
         native

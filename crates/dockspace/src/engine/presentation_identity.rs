@@ -20,12 +20,6 @@ pub(super) struct DragPresentationIdentityReservation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct LocalContainedIdentityReservation {
-    root: Option<RootId>,
-    floating: FloatingPresentationId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeRootTransferIdentityReservation {
     surface: SurfaceId,
     floating: FloatingPresentationId,
@@ -51,16 +45,6 @@ impl DragPresentationIdentityReservation {
     }
 
     pub(super) const fn floating(self) -> Option<FloatingPresentationId> {
-        self.floating
-    }
-}
-
-impl LocalContainedIdentityReservation {
-    pub(super) const fn root(self) -> Option<RootId> {
-        self.root
-    }
-
-    pub(super) const fn floating(self) -> FloatingPresentationId {
         self.floating
     }
 }
@@ -236,27 +220,6 @@ impl PresentationIdentityAuthority {
             root,
             floating,
         })
-    }
-
-    pub(super) fn reserve_local_contained(
-        &mut self,
-        reserve_root: bool,
-    ) -> Result<LocalContainedIdentityReservation, EngineError> {
-        let mut candidate = self.frontier;
-        let root = if reserve_root {
-            Some(
-                candidate
-                    .reserve_root()
-                    .ok_or(EngineError::PresentationRootIdentityExhausted)?,
-            )
-        } else {
-            None
-        };
-        let floating = candidate
-            .reserve_floating()
-            .ok_or(EngineError::PresentationFloatingIdentityExhausted)?;
-        self.frontier = candidate;
-        Ok(LocalContainedIdentityReservation { root, floating })
     }
 
     pub(super) fn prepare_native_root_transfer(
@@ -522,17 +485,6 @@ impl DockEngine {
         self.presentation_identity
             .reserve_drag_presentation(reserve_root, reserve_floating)
     }
-
-    pub(super) fn reserve_local_contained_identities(
-        &mut self,
-        reserve_root: bool,
-    ) -> Result<LocalContainedIdentityReservation, EngineError> {
-        self.observe_pending_native_identity_reservations();
-        self.presentation_identity
-            .observe_workspace(&self.workspace);
-        self.presentation_identity
-            .reserve_local_contained(reserve_root)
-    }
 }
 
 #[cfg(test)]
@@ -552,12 +504,12 @@ mod tests {
     }
 
     #[test]
-    fn local_contained_reservation_is_atomic_when_the_floating_lane_is_exhausted() {
+    fn composite_drag_reservation_is_atomic_when_the_floating_lane_is_exhausted() {
         let frontier = PresentationIdentityFrontier::from_counters(0, 0, u64::MAX);
         let mut authority = PresentationIdentityAuthority { frontier };
 
         assert!(matches!(
-            authority.reserve_local_contained(true),
+            authority.reserve_drag_presentation(true, true),
             Err(EngineError::PresentationFloatingIdentityExhausted)
         ));
         assert_eq!(authority.frontier(), frontier);

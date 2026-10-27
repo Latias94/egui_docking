@@ -4,18 +4,13 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::engine::{
-    EngineInput, LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabChromeAction,
-    LocalTabGesturePhase,
-};
-use crate::geometry::LogicalPoint;
+use crate::engine::{EngineInput, LocalTabChromeAction};
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
-use crate::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
+use crate::intent::CloseSceneTarget;
 use crate::interaction::EscapeDelivery;
 use crate::model::WorkspaceVersion;
 use crate::scene::{
-    ContainedResizeDirection, SplitterJunctionId, SplitterResizeTarget, SplitterSceneId,
-    SurfaceSceneStamp, TabSceneId,
+    ContainedResizeDirection, SplitterJunctionId, SplitterSceneId, SurfaceSceneStamp, TabSceneId,
 };
 
 /// Product-facing navigation within one exact tab strip.
@@ -91,34 +86,6 @@ impl SurfaceContainedResizeAdjustment {
     }
 }
 
-/// One current-frame framework gesture expressed in surface-logical coordinates.
-///
-/// The adapter reports only the phase and exact points observed by its widget
-/// system. Structural targets, scene identity, and reducer input remain sealed
-/// inside [`PreparedSurfaceAction`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SurfaceGesturePhase {
-    /// Begins one gesture after the framework crossed its drag threshold.
-    Begin {
-        /// Logical point at which the gesture began.
-        initial: LogicalPoint,
-        /// Current logical point reported by the same framework response.
-        current: LogicalPoint,
-    },
-    /// Updates an active gesture.
-    Move {
-        /// Current logical point.
-        current: LogicalPoint,
-    },
-    /// Commits an active gesture at its exact release point.
-    Release {
-        /// Exact logical release point.
-        current: LogicalPoint,
-    },
-    /// Cancels the matching active gesture without a durable mutation.
-    Cancel,
-}
-
 /// One affine framework action captured from an exact [`super::SurfacePaintPlan`].
 ///
 /// The capability deliberately hides scene stamps, runtime tab identities, and
@@ -176,25 +143,6 @@ impl PreparedSurfaceAction {
         }
     }
 
-    pub(super) const fn activate_contained(
-        authority_domain: EngineAuthorityDomainId,
-        expected: WorkspaceVersion,
-        scene: SurfaceSceneStamp,
-        floating: FloatingPresentationId,
-        point: LogicalPoint,
-    ) -> Self {
-        Self {
-            authority_domain,
-            expected,
-            surface: scene.surface(),
-            action: SurfaceAction::ActivateContained {
-                scene,
-                floating,
-                point,
-            },
-        }
-    }
-
     pub(super) const fn presentation_command(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -206,56 +154,6 @@ impl PreparedSurfaceAction {
             expected,
             surface: scene.surface(),
             action: SurfaceAction::PresentationCommand { scene, action },
-        }
-    }
-
-    pub(super) const fn local_tab_gesture(
-        authority_domain: EngineAuthorityDomainId,
-        expected: WorkspaceVersion,
-        surface: SurfaceId,
-        source: TabGestureSource,
-        phase: LocalTabGesturePhase,
-    ) -> Self {
-        Self {
-            authority_domain,
-            expected,
-            surface,
-            action: SurfaceAction::LocalTabGesture { source, phase },
-        }
-    }
-
-    pub(super) const fn local_splitter_gesture(
-        authority_domain: EngineAuthorityDomainId,
-        expected: WorkspaceVersion,
-        surface: SurfaceId,
-        target: SplitterResizeTarget,
-        phase: LocalSplitterGesturePhase,
-    ) -> Self {
-        Self {
-            authority_domain,
-            expected,
-            surface,
-            action: SurfaceAction::LocalSplitterGesture { target, phase },
-        }
-    }
-
-    pub(super) const fn local_contained_gesture(
-        authority_domain: EngineAuthorityDomainId,
-        expected: WorkspaceVersion,
-        surface: SurfaceId,
-        floating: crate::ids::FloatingPresentationId,
-        kind: ContainedGestureKind,
-        phase: LocalContainedGesturePhase,
-    ) -> Self {
-        Self {
-            authority_domain,
-            expected,
-            surface,
-            action: SurfaceAction::LocalContainedGesture {
-                floating,
-                kind,
-                phase,
-            },
         }
     }
 
@@ -366,16 +264,12 @@ impl PreparedSurfaceAction {
             SurfaceAction::SelectTab { tab, .. } => Some(tab.item),
             SurfaceAction::Close { .. }
             | SurfaceAction::DockBack { .. }
-            | SurfaceAction::ActivateContained { .. }
             | SurfaceAction::PresentationCommand { .. }
             | SurfaceAction::TabChrome { .. }
             | SurfaceAction::AdjustSplitter { .. }
             | SurfaceAction::AdjustSplitterJunction { .. }
             | SurfaceAction::AdjustContainedResize { .. }
-            | SurfaceAction::CancelWithEscape
-            | SurfaceAction::LocalTabGesture { .. }
-            | SurfaceAction::LocalSplitterGesture { .. }
-            | SurfaceAction::LocalContainedGesture { .. } => None,
+            | SurfaceAction::CancelWithEscape => None,
         }
     }
 
@@ -402,16 +296,6 @@ impl PreparedSurfaceAction {
                 scene,
                 floating,
             },
-            SurfaceAction::ActivateContained {
-                scene,
-                floating,
-                point,
-            } => EngineInput::ActivateLocalContained {
-                expected: self.expected,
-                scene,
-                floating,
-                point,
-            },
             SurfaceAction::PresentationCommand { scene, action } => {
                 EngineInput::ApplyLocalPresentationCommand {
                     expected: self.expected,
@@ -423,31 +307,6 @@ impl PreparedSurfaceAction {
                 expected: self.expected,
                 scene,
                 action,
-            },
-            SurfaceAction::LocalTabGesture { source, phase } => EngineInput::LocalTabGesture {
-                expected: self.expected,
-                surface: self.surface,
-                source,
-                phase,
-            },
-            SurfaceAction::LocalSplitterGesture { target, phase } => {
-                EngineInput::LocalSplitterGesture {
-                    expected: self.expected,
-                    surface: self.surface,
-                    target,
-                    phase,
-                }
-            }
-            SurfaceAction::LocalContainedGesture {
-                floating,
-                kind,
-                phase,
-            } => EngineInput::LocalContainedGesture {
-                expected: self.expected,
-                surface: self.surface,
-                floating,
-                kind,
-                phase,
             },
             SurfaceAction::AdjustSplitter {
                 scene,
@@ -516,11 +375,6 @@ enum SurfaceAction {
         scene: SurfaceSceneStamp,
         floating: crate::ids::FloatingPresentationId,
     },
-    ActivateContained {
-        scene: SurfaceSceneStamp,
-        floating: FloatingPresentationId,
-        point: LogicalPoint,
-    },
     PresentationCommand {
         scene: SurfaceSceneStamp,
         action: crate::model::ProductAction,
@@ -528,19 +382,6 @@ enum SurfaceAction {
     TabChrome {
         scene: SurfaceSceneStamp,
         action: LocalTabChromeAction,
-    },
-    LocalTabGesture {
-        source: TabGestureSource,
-        phase: LocalTabGesturePhase,
-    },
-    LocalSplitterGesture {
-        target: SplitterResizeTarget,
-        phase: LocalSplitterGesturePhase,
-    },
-    LocalContainedGesture {
-        floating: crate::ids::FloatingPresentationId,
-        kind: ContainedGestureKind,
-        phase: LocalContainedGesturePhase,
     },
     AdjustSplitter {
         scene: SurfaceSceneStamp,
@@ -568,12 +409,8 @@ impl SurfaceAction {
             Self::SelectTab { .. } => "select-tab",
             Self::Close { .. } => "close",
             Self::DockBack { .. } => "dock-back",
-            Self::ActivateContained { .. } => "activate-contained",
             Self::PresentationCommand { .. } => "presentation-command",
             Self::TabChrome { .. } => "tab-chrome",
-            Self::LocalTabGesture { .. } => "tab-gesture",
-            Self::LocalSplitterGesture { .. } => "splitter-gesture",
-            Self::LocalContainedGesture { .. } => "contained-gesture",
             Self::AdjustSplitter { .. } => "adjust-splitter",
             Self::AdjustSplitterJunction { .. } => "adjust-splitter-junction",
             Self::AdjustContainedResize { .. } => "adjust-contained-resize",

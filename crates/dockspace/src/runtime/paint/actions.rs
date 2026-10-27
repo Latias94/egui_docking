@@ -5,14 +5,12 @@ use crate::ids::{FloatingPresentationId, ItemId};
 use crate::interaction::{
     FrozenTabListMenuBackdropClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
 };
-use crate::scene::{
-    ContainedResizeDirection as CoreContainedResizeDirection, SplitterResizeTarget,
-};
+use crate::scene::ContainedResizeDirection as CoreContainedResizeDirection;
 use crate::tab_strip::TabStripStateKey;
 
 use super::super::{
-    PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
-    SurfaceSplitterAdjustment, SurfaceTabListNavigation, SurfaceTabNavigation,
+    PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceSplitterAdjustment,
+    SurfaceTabListNavigation, SurfaceTabNavigation,
 };
 use super::{
     DockspaceVisualId, SurfacePaintPlan, TabBarPaintRecord, TabListMenuBackdropPaintRecord,
@@ -449,140 +447,6 @@ impl SurfacePaintPlan<'_> {
         })
     }
 
-    /// Prepares one tab drag phase from this exact candidate.
-    #[must_use]
-    pub fn prepare_tab_gesture(
-        self,
-        item: ItemId,
-        phase: SurfaceGesturePhase,
-    ) -> Option<PreparedSurfaceAction> {
-        let tab = self
-            .plan
-            .tab_records()
-            .iter()
-            .find(|record| record.id().item == item)?;
-        self.tab_is_operable(tab).then_some(())?;
-        Some(PreparedSurfaceAction::local_tab_gesture(
-            self.authority_domain,
-            self.version,
-            self.surface,
-            crate::intent::TabGestureSource::Item(*tab.id()),
-            tab_gesture_phase(self.scene, phase),
-        ))
-    }
-
-    /// Prepares one whole-tab-group drag phase from this exact candidate.
-    #[must_use]
-    pub fn prepare_tab_group_gesture(
-        self,
-        bar: DockspaceVisualId,
-        phase: SurfaceGesturePhase,
-    ) -> Option<PreparedSurfaceAction> {
-        let VisualIdentity::TabBar(bar) = bar.0 else {
-            return None;
-        };
-        self.plan
-            .tab_bar_records()
-            .iter()
-            .any(|record| *record.id() == bar)
-            .then(|| {
-                PreparedSurfaceAction::local_tab_gesture(
-                    self.authority_domain,
-                    self.version,
-                    self.surface,
-                    crate::intent::TabGestureSource::Group(bar),
-                    tab_gesture_phase(self.scene, phase),
-                )
-            })
-    }
-
-    /// Prepares one contained title drag phase from this exact candidate.
-    #[must_use]
-    pub fn prepare_contained_title_gesture(
-        self,
-        floating: FloatingPresentationId,
-        phase: SurfaceGesturePhase,
-    ) -> Option<PreparedSurfaceAction> {
-        let contained = self
-            .plan
-            .contained_records()
-            .iter()
-            .find(|record| record.floating() == floating)?;
-        self.plan
-            .region_is_operable(contained.title_drag_hit().rect(), contained.layer())
-            .then_some(())?;
-        Some(PreparedSurfaceAction::local_tab_gesture(
-            self.authority_domain,
-            self.version,
-            self.surface,
-            crate::intent::TabGestureSource::ContainedTitle {
-                root: contained.root(),
-                floating,
-            },
-            tab_gesture_phase(self.scene, phase),
-        ))
-    }
-
-    /// Prepares one splitter-handle or junction gesture phase.
-    #[must_use]
-    pub fn prepare_splitter_gesture(
-        self,
-        splitter: DockspaceVisualId,
-        phase: SurfaceGesturePhase,
-    ) -> Option<PreparedSurfaceAction> {
-        let target = match splitter.0 {
-            VisualIdentity::Splitter(id)
-                if self
-                    .plan
-                    .splitter_records()
-                    .iter()
-                    .any(|record| *record.id() == id && record.operable()) =>
-            {
-                SplitterResizeTarget::Handle(id)
-            }
-            VisualIdentity::SplitterJunction(id) if self.splitter_junction_id_operable(id) => {
-                SplitterResizeTarget::Junction(id)
-            }
-            _ => return None,
-        };
-        Some(PreparedSurfaceAction::local_splitter_gesture(
-            self.authority_domain,
-            self.version,
-            self.surface,
-            target,
-            splitter_gesture_phase(self.scene, phase),
-        ))
-    }
-
-    /// Prepares one contained-floating resize gesture phase.
-    #[must_use]
-    pub fn prepare_contained_resize_gesture(
-        self,
-        floating: FloatingPresentationId,
-        direction: ContainedResizeDirection,
-        phase: SurfaceGesturePhase,
-    ) -> Option<PreparedSurfaceAction> {
-        let direction = direction.into_core();
-        self.plan.contained_records().iter().find(|record| {
-            record.floating() == floating
-                && record.transform_operable()
-                && record.resize().iter().any(|resize| {
-                    resize.direction() == direction
-                        && self
-                            .plan
-                            .region_is_operable(resize.hit().rect(), record.layer())
-                })
-        })?;
-        Some(PreparedSurfaceAction::local_contained_gesture(
-            self.authority_domain,
-            self.version,
-            self.surface,
-            floating,
-            crate::intent::ContainedGestureKind::Resize(direction),
-            contained_gesture_phase(self.scene, phase),
-        ))
-    }
-
     fn prepare_tab_list_menu_scroll(
         self,
         menu: TabListMenuPaintRecord<'_>,
@@ -611,71 +475,5 @@ impl SurfacePaintPlan<'_> {
             .iter()
             .find(|record| *record == menu.record)
             .cloned()
-    }
-}
-
-const fn tab_gesture_phase(
-    scene: crate::scene::SurfaceSceneStamp,
-    phase: SurfaceGesturePhase,
-) -> crate::engine::LocalTabGesturePhase {
-    match phase {
-        SurfaceGesturePhase::Begin { initial, current } => {
-            crate::engine::LocalTabGesturePhase::Begin {
-                scene,
-                initial,
-                current,
-            }
-        }
-        SurfaceGesturePhase::Move { current } => {
-            crate::engine::LocalTabGesturePhase::Move { scene, current }
-        }
-        SurfaceGesturePhase::Release { current } => {
-            crate::engine::LocalTabGesturePhase::Release { scene, current }
-        }
-        SurfaceGesturePhase::Cancel => crate::engine::LocalTabGesturePhase::Cancel,
-    }
-}
-
-const fn splitter_gesture_phase(
-    scene: crate::scene::SurfaceSceneStamp,
-    phase: SurfaceGesturePhase,
-) -> crate::engine::LocalSplitterGesturePhase {
-    match phase {
-        SurfaceGesturePhase::Begin { initial, current } => {
-            crate::engine::LocalSplitterGesturePhase::Press {
-                scene,
-                initial,
-                current,
-            }
-        }
-        SurfaceGesturePhase::Move { current } => {
-            crate::engine::LocalSplitterGesturePhase::Move { current }
-        }
-        SurfaceGesturePhase::Release { current } => {
-            crate::engine::LocalSplitterGesturePhase::Release { current }
-        }
-        SurfaceGesturePhase::Cancel => crate::engine::LocalSplitterGesturePhase::Cancel,
-    }
-}
-
-const fn contained_gesture_phase(
-    scene: crate::scene::SurfaceSceneStamp,
-    phase: SurfaceGesturePhase,
-) -> crate::engine::LocalContainedGesturePhase {
-    match phase {
-        SurfaceGesturePhase::Begin { initial, current } => {
-            crate::engine::LocalContainedGesturePhase::Begin {
-                scene,
-                initial,
-                current,
-            }
-        }
-        SurfaceGesturePhase::Move { current } => {
-            crate::engine::LocalContainedGesturePhase::Move { scene, current }
-        }
-        SurfaceGesturePhase::Release { current } => {
-            crate::engine::LocalContainedGesturePhase::Release { scene, current }
-        }
-        SurfaceGesturePhase::Cancel => crate::engine::LocalContainedGesturePhase::Cancel,
     }
 }

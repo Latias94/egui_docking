@@ -2175,15 +2175,7 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
     let target_projection = fixture
         .engine
         .interaction_projection(TARGET_SURFACE)
-        .expect("the target surface has exact local response authority");
-    let target_scene = target_projection.plan_stamp();
-    let target_tab = *target_projection
-        .plan()
-        .tab_records()
-        .iter()
-        .find(|record| record.id().item == ItemId::new(3))
-        .expect("the background contained tab remains available")
-        .id();
+        .expect("the target surface has exact presented receiver authority");
     let target_region = target_projection
         .hit_manifest()
         .regions()
@@ -2204,36 +2196,15 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
     );
     let source_version = fixture.engine.version();
 
-    let staged = submit_test_batch(
+    let staged = submit_test_input(
         &mut fixture.engine,
         fixture.presentation_host,
-        [
-            EngineInput::FloatRoot {
-                expected: source_version,
-                root,
-                surface: TARGET_SURFACE,
-                rect: None,
-            },
-            EngineInput::LocalTabGesture {
-                expected: source_version,
-                surface: TARGET_SURFACE,
-                source: TabGestureSource::Item(target_tab),
-                phase: LocalTabGesturePhase::Begin {
-                    scene: target_scene,
-                    initial: target_point,
-                    current: target_point,
-                },
-            },
-            EngineInput::LocalTabGesture {
-                expected: source_version,
-                surface: TARGET_SURFACE,
-                source: TabGestureSource::Item(target_tab),
-                phase: LocalTabGesturePhase::Release {
-                    scene: target_scene,
-                    current: target_point,
-                },
-            },
-        ],
+        EngineInput::FloatRoot {
+            expected: source_version,
+            root,
+            surface: TARGET_SURFACE,
+            rect: None,
+        },
     )
     .expect("native-to-contained product action stages");
 
@@ -2254,22 +2225,6 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
         staged.reduced_inputs()[0].outcome()
     );
     assert_eq!(fixture.engine.version(), source_version);
-    assert!(matches!(
-        staged.reduced_inputs()[1].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Rejected(
-                InteractionRejection::PresentationTransitionPending
-            ),
-            ..
-        }
-    ));
-    assert!(matches!(
-        staged.reduced_inputs()[2].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Rejected(InteractionRejection::NoActiveGesture),
-            ..
-        }
-    ));
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
         Some(crate::RootPresentationOwner::Main {
@@ -2373,16 +2328,47 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
             .expect("the primary press receipt batch is exact"),
         )
         .expect("the primary press receipt stages");
+    press
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(
+                1,
+                [(
+                    PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                    target_point,
+                )],
+            ),
+        )
+        .expect("the unrelated primary release stages");
+    let release_candidate = press
+        .pointer_receiver_candidates()
+        .expect("the primary release freezes a receiver candidate")
+        .candidates()[0]
+        .clone();
+    press
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([
+                release_candidate.receipt(PointerReceiverObservation::NotApplicable)
+            ])
+            .expect("the primary release receipt batch is exact"),
+        )
+        .expect("the primary release receipt stages");
     complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut press);
     let press_transition = press
         .finish(&mut fixture.engine)
-        .expect("the unrelated primary press commits");
+        .expect("the unrelated primary press and release commit");
     assert!(matches!(
         press_transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::Rejected(
             InteractionRejection::PresentationTransitionPending
         )]
     ));
+    assert!(
+        press_transition.reduced_pointer_edges()[1]
+            .interaction_outcomes()
+            .is_empty(),
+        "a release without an active journal gesture must not alter the pending rehome"
+    );
     assert_eq!(
         fixture.engine.pending_presentation_rehome.as_ref(),
         Some(&pending_before)
@@ -2981,7 +2967,7 @@ fn root_presentation_transitions_share_one_pending_reservation() {
 }
 
 #[test]
-fn active_local_drag_rejects_programmatic_native_tear_off_atomically() {
+fn active_surface_local_drag_rejects_programmatic_native_tear_off_atomically() {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let mut fixture = background_fixture(policy);
@@ -2989,66 +2975,165 @@ fn active_local_drag_rejects_programmatic_native_tear_off_atomically() {
     let projection = fixture
         .engine
         .interaction_projection(SOURCE_SURFACE)
-        .expect("the source surface has exact local response authority");
-    let scene = projection.plan_stamp();
-    let tab = *projection
-        .plan()
-        .tab_records()
+        .expect("the source surface has exact presented receiver authority");
+    let region = projection
+        .hit_manifest()
+        .regions()
         .iter()
-        .find(|record| record.id().item == ItemId::new(1))
-        .expect("the source item has one exact tab")
+        .find(|region| {
+            matches!(
+                region.id().kind(),
+                PresentationHitRegionKind::TabBody(tab) if tab.item == ItemId::new(1)
+            )
+        })
+        .expect("the source tab has one exact hit region")
         .id();
     let point = region_center(
         projection
             .hit_manifest()
-            .regions()
-            .iter()
-            .find(|region| {
-                matches!(
-                    region.id().kind(),
-                    PresentationHitRegionKind::TabBody(id) if id == tab
-                )
-            })
-            .expect("the source tab has one exact hit region"),
+            .region(region)
+            .expect("the source tab receiver remains present"),
     );
+    let moved = LogicalPoint::new(point.x() + 24.0, point.y())
+        .expect("the drag threshold crossing point must be finite");
     let version = fixture.engine.version();
-
-    let drag = submit_test_input(
-        &mut fixture.engine,
-        fixture.presentation_host,
-        EngineInput::LocalTabGesture {
-            expected: version,
-            surface: SOURCE_SURFACE,
-            source: TabGestureSource::Item(tab),
-            phase: LocalTabGesturePhase::Begin {
-                scene,
-                initial: point,
-                current: point,
-            },
-        },
-    )
-    .expect("the local drag begins from exact source authority");
-    assert!(matches!(
-        drag.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::DragBegan { .. },
-            ..
-        }
-    ));
-
-    let rejected = submit_test_input(
-        &mut fixture.engine,
-        fixture.presentation_host,
-        EngineInput::TearOffRoot {
-            expected: version,
-            root: SOURCE_ROOT,
-            placement: crate::model::NativeWindowPlacement::new(
-                PhysicalRect::new(700.0, 100.0, 420.0, 320.0)
-                    .expect("native placement must validate"),
+    let workspace_before = fixture.engine.workspace().clone();
+    let binding = background_source_binding(&fixture);
+    let provider = fixture
+        .engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                fixture.presentation_host,
+                SurfaceLocalPointerEndpoint::Native(binding),
             ),
-        },
+            PointerEdgeSequence::new(0),
+        )
+        .expect("the native source pointer provider mints");
+    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(
+                0,
+                [(
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    point,
+                )],
+            ),
+        )
+        .expect("the source tab press stages");
+    let candidate = frame
+        .pointer_receiver_candidates()
+        .expect("the source tab press freezes a receiver candidate")
+        .candidates()[0]
+        .clone();
+    let delivery = PointerReceiverDelivery::new(
+        frame
+            .view()
+            .interaction_projection(SOURCE_SURFACE)
+            .expect("the sealed frame retains source receiver authority"),
+        PointerReceiverDeliveryDisposition::Dock(region),
     )
-    .expect("the competing tear-off reduces as a typed rejection");
+    .expect("the source tab accepts drag delivery");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(delivery),
+                    ])
+                    .expect("the tab press answers its delivery probe"),
+                ),
+            )])
+            .expect("the tab press receipt batch is exact"),
+        )
+        .expect("the tab press receipt stages");
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(1, [(PointerEdgeKind::Moved, moved)]),
+        )
+        .expect("the threshold crossing move stages");
+    let candidate = frame
+        .pointer_receiver_candidates()
+        .expect("the drag move freezes a receiver candidate")
+        .candidates()[0]
+        .clone();
+    let projection = frame
+        .view()
+        .interaction_projection(SOURCE_SURFACE)
+        .expect("the drag move retains source receiver authority");
+    let hover = projection
+        .hit_manifest()
+        .resolve_exclusive(
+            crate::presentation_hit::PresentationPointerLane::HoverDrop,
+            moved,
+        )
+        .expect("the drag move hover lookup is unambiguous")
+        .map_or(PointerReceiverHoverHitDisposition::NoReceiver, |region| {
+            PointerReceiverHoverHitDisposition::Dock(region.id())
+        });
+    let hover = PointerReceiverHoverHit::new(projection, moved, hover)
+        .expect("the move hover receipt binds the exact presented output");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::HoverHit(hover),
+                    ])
+                    .expect("the drag move answers its hover probe"),
+                ),
+            )])
+            .expect("the drag move receipt batch is exact"),
+        )
+        .expect("the drag move receipt stages");
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
+    let drag = frame
+        .finish(&mut fixture.engine)
+        .expect("the journal drag begins from exact source authority");
+    assert!(matches!(
+        drag.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::DragArmed { .. }]
+    ));
+    assert!(
+        drag.reduced_pointer_edges()[1]
+            .interaction_outcomes()
+            .iter()
+            .any(|outcome| matches!(outcome, InteractionOutcome::DragBegan { .. }))
+    );
+    assert_eq!(fixture.engine.workspace(), &workspace_before);
+
+    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(provider.committed_through().get(), []),
+        )
+        .expect("the tear-off frame stages the active producer's empty checkpoint");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([])
+                .expect("the empty checkpoint has no receiver candidates"),
+        )
+        .expect("the tear-off frame settles its empty receiver roster");
+    TestInputStream::resume(&fixture.engine, ENGINE_TEST_INPUT_SOURCE)
+        .append(
+            &mut frame,
+            EngineInput::TearOffRoot {
+                expected: version,
+                root: SOURCE_ROOT,
+                placement: crate::model::NativeWindowPlacement::new(
+                    PhysicalRect::new(700.0, 100.0, 420.0, 320.0)
+                        .expect("native placement must validate"),
+                ),
+            },
+        )
+        .expect("the competing tear-off stages after the pointer checkpoint");
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
+    let rejected = frame
+        .finish(&mut fixture.engine)
+        .expect("the competing tear-off reduces as a typed rejection");
     assert!(matches!(
         rejected.reduced_inputs()[0].outcome(),
         InputOutcome::ProductActionRejected {
@@ -3057,6 +3142,7 @@ fn active_local_drag_rejects_programmatic_native_tear_off_atomically() {
         } if *actual == version
     ));
     assert!(rejected.platform_effects().is_empty());
+    assert_eq!(fixture.engine.workspace(), &workspace_before);
     assert!(
         fixture
             .engine
@@ -3169,52 +3255,84 @@ fn pending_native_create_reserves_complete_source_root_for_shared_and_public_com
     let projection = fixture
         .engine
         .interaction_projection(SOURCE_SURFACE)
-        .expect("the source surface has exact local response authority");
-    let scene = projection.plan_stamp();
-    let tab = *projection
-        .plan()
-        .tab_records()
+        .expect("the source surface has exact presented receiver authority");
+    let region = projection
+        .hit_manifest()
+        .regions()
         .iter()
-        .find(|record| record.id().item == ItemId::new(1))
-        .expect("the source item has one exact tab")
+        .find(|region| {
+            matches!(
+                region.id().kind(),
+                PresentationHitRegionKind::TabBody(tab) if tab.item == ItemId::new(1)
+            )
+        })
+        .expect("the source tab has one exact hit region")
         .id();
     let point = region_center(
         projection
             .hit_manifest()
-            .regions()
-            .iter()
-            .find(|region| {
-                matches!(
-                    region.id().kind(),
-                    PresentationHitRegionKind::TabBody(id) if id == tab
-                )
-            })
-            .expect("the source tab has one exact hit region"),
+            .region(region)
+            .expect("the source tab receiver remains present"),
     );
-    let gesture_version = fixture.engine.version();
-    let gesture = submit_test_input(
-        &mut fixture.engine,
-        fixture.presentation_host,
-        EngineInput::LocalTabGesture {
-            expected: gesture_version,
-            surface: SOURCE_SURFACE,
-            source: TabGestureSource::Item(tab),
-            phase: LocalTabGesturePhase::Begin {
-                scene,
-                initial: point,
-                current: point,
-            },
-        },
-    )
-    .expect("the competing local gesture reduces as a typed rejection");
-    assert!(matches!(
-        gesture.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Rejected(
-                InteractionRejection::PresentationTransitionPending
+    let binding = background_source_binding(&fixture);
+    let provider = fixture
+        .engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                fixture.presentation_host,
+                SurfaceLocalPointerEndpoint::Native(binding),
             ),
-            ..
-        }
+            PointerEdgeSequence::new(0),
+        )
+        .expect("the reserved native source pointer provider mints");
+    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(
+                0,
+                [(
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    point,
+                )],
+            ),
+        )
+        .expect("the competing source tab press stages");
+    let candidate = frame
+        .pointer_receiver_candidates()
+        .expect("the competing press freezes a receiver candidate")
+        .candidates()[0]
+        .clone();
+    let delivery = PointerReceiverDelivery::new(
+        frame
+            .view()
+            .interaction_projection(SOURCE_SURFACE)
+            .expect("the sealed frame retains the reserved source receiver"),
+        PointerReceiverDeliveryDisposition::Dock(region),
+    )
+    .expect("the reserved source tab accepts receiver delivery");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(delivery),
+                    ])
+                    .expect("the competing press answers its delivery probe"),
+                ),
+            )])
+            .expect("the competing press receipt batch is exact"),
+        )
+        .expect("the competing press receipt stages");
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
+    let gesture = frame
+        .finish(&mut fixture.engine)
+        .expect("the competing journal press reduces as a typed rejection");
+    assert!(matches!(
+        gesture.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Rejected(
+            InteractionRejection::PresentationTransitionPending
+        )]
     ));
     assert_eq!(
         fixture.engine.viewport().native_create_saga(saga_id),
@@ -3258,7 +3376,7 @@ fn pending_native_create_reserves_complete_source_root_for_shared_and_public_com
                 &command,
                 fixture.engine.policy_snapshot(),
             )
-            .expect("shared pointer/local staging gate reduces"),
+            .expect("shared journal staging gate reduces"),
         Err(CommandError::SurfaceLifecycleFrozen {
             surface: SOURCE_SURFACE,
         })
@@ -3268,12 +3386,29 @@ fn pending_native_create_reserves_complete_source_root_for_shared_and_public_com
         Some(&saga_before)
     );
 
-    let rejected = submit_test_input(
-        &mut fixture.engine,
-        fixture.presentation_host,
-        EngineInput::WorkspaceCommand { expected, command },
-    )
-    .expect("public workspace command reduces as an atomic rejection");
+    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            local_pointer_journal(provider.committed_through().get(), []),
+        )
+        .expect("the command frame stages the active producer's empty checkpoint");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([])
+                .expect("the empty checkpoint has no receiver candidates"),
+        )
+        .expect("the command frame settles its empty receiver roster");
+    TestInputStream::resume(&fixture.engine, ENGINE_TEST_INPUT_SOURCE)
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand { expected, command },
+        )
+        .expect("the public workspace command stages after the pointer checkpoint");
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
+    let rejected = frame
+        .finish(&mut fixture.engine)
+        .expect("public workspace command reduces as an atomic rejection");
     assert!(matches!(
         rejected.reduced_inputs()[0].outcome(),
         InputOutcome::CommandRejected {

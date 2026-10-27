@@ -23,7 +23,7 @@ impl DockEngine {
                 detail: "journal edge, stream, and receipt sequence do not agree",
             });
         }
-        let owner = GestureOwner::Stream(stream);
+        let owner = stream;
         let mut outcomes = match edge.kind() {
             PointerEdgeKind::ButtonPressed(PointerButton::Primary) => {
                 let press = self.reduce_journal_primary_press(
@@ -130,12 +130,9 @@ impl DockEngine {
                     input: self.last_input,
                     source,
                 })?;
-            if let Some(outcome) = self.cancel_gesture_owner(
-                cause,
-                GestureOwner::Stream(stream),
-                interaction_reason,
-                interaction_events,
-            )? {
+            if let Some(outcome) =
+                self.cancel_gesture_owner(cause, stream, interaction_reason, interaction_events)?
+            {
                 outcomes.push(outcome);
             }
         }
@@ -165,9 +162,7 @@ impl DockEngine {
         let Some(point) = self.journal_logical_point(edge, desktop_delivery_route) else {
             return Ok(None);
         };
-        let stream = owner.stream().ok_or(EngineError::ReductionCauseInvariant {
-            detail: "journal primary press was reduced for a legacy owner",
-        })?;
+        let stream = owner;
         let expected_delivery = match stream.lease().scope() {
             PointerProviderScope::SurfaceLocal(_) | PointerProviderScope::HostLocal(_) => {
                 PointerEventDeliveryOwner::ProviderEndpoint
@@ -303,7 +298,7 @@ impl DockEngine {
                     cause,
                     owner,
                     capture_authority,
-                    Some(threshold_origin),
+                    threshold_origin,
                     prepared,
                     policy,
                     events,
@@ -314,6 +309,8 @@ impl DockEngine {
                 floating,
                 direction,
             } => {
+                let threshold_origin =
+                    self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let prepared = match self.prepare_journal_contained_gesture(
                     presentation,
                     floating,
@@ -327,7 +324,7 @@ impl DockEngine {
                     cause,
                     owner,
                     capture_authority,
-                    None,
+                    threshold_origin,
                     prepared,
                     policy,
                     events,
@@ -576,7 +573,7 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let mut outcomes = Vec::new();
-        if self.interaction.active_stream() != owner.stream() {
+        if self.interaction.active_stream() != Some(owner) {
             return Ok(outcomes);
         }
         let (delivery_authorized, delivery_outcome) = self.gate_journal_delivery_action(
@@ -621,11 +618,7 @@ impl DockEngine {
                     detail: "journal-owned armed drag has no initial pointer",
                 });
             }
-            let Some(threshold_origin) = armed.journal_threshold_origin else {
-                return Err(EngineError::ReductionCauseInvariant {
-                    detail: "journal-owned armed drag has no threshold coordinate origin",
-                });
-            };
+            let threshold_origin = armed.journal_threshold_origin;
             let threshold = self
                 .presentation_authority
                 .presentation_config
@@ -641,11 +634,7 @@ impl DockEngine {
             let source_surface = armed.source_surface;
             match self.interaction.begin_drag(session, owner, button) {
                 Ok(()) => {
-                    let provider_scope = owner
-                        .stream()
-                        .expect("journal gestures retain their pointer stream")
-                        .lease()
-                        .scope();
+                    let provider_scope = owner.lease().scope();
                     if provider_scope == PointerProviderScope::DesktopGlobal
                         && self
                             .viewport
@@ -702,9 +691,7 @@ impl DockEngine {
             ));
             return Ok(outcomes);
         }
-        let stream = owner.stream().ok_or(EngineError::ReductionCauseInvariant {
-            detail: "journal drag move has no pointer stream",
-        })?;
+        let stream = owner;
         let position = journal_position_key(self, stream, edge);
         let evaluation = self.resolve_journal_drag_preview(
             cause,
@@ -833,7 +820,7 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let mut outcomes = Vec::new();
-        if self.interaction.active_stream() != owner.stream() {
+        if self.interaction.active_stream() != Some(owner) {
             return Ok(outcomes);
         }
         let (delivery_authorized, delivery_outcome) = self.gate_journal_delivery_action(
@@ -911,9 +898,7 @@ impl DockEngine {
                         detail: format!("{source:?}"),
                     })?
                     .clone();
-                let stream = owner.stream().ok_or(EngineError::ReductionCauseInvariant {
-                    detail: "journal drag release has no pointer stream",
-                })?;
+                let stream = owner;
                 let position = journal_position_key(self, stream, edge);
                 let mut revalidated_preview = None;
                 // Release is always resolved against its own edge facts. This
@@ -1797,18 +1782,16 @@ impl DockEngine {
                 Ok(drag) => drag,
                 Err(error) => return Ok(InteractionOutcome::Rejected(error)),
             };
-        let physical_route = owner
-            .pointer_if_physical()
-            .and_then(|pointer| self.viewport.drag_source(pointer))
+        let physical_route = self
+            .viewport
+            .drag_source(owner.pointer())
             .filter(|binding| binding.surface() == drag.source_surface);
-        if let Some(pointer) = owner.pointer_if_physical() {
-            self.viewport
-                .end_drag_routing(pointer)
-                .map_err(|source| EngineError::Viewport {
-                    input: self.last_input,
-                    source,
-                })?;
-        }
+        self.viewport
+            .end_drag_routing(owner.pointer())
+            .map_err(|source| EngineError::Viewport {
+                input: self.last_input,
+                source,
+            })?;
         let Some(release_decision) = release_decision else {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::PreviewMissing,
@@ -1889,11 +1872,7 @@ impl DockEngine {
                 proposal.surface(),
             ),
             PreviewProof::Native { command, offer } => {
-                let Some(presentation) = drag.presentation.presented() else {
-                    return Err(EngineError::ReductionCauseInvariant {
-                        detail: "local drag produced a native delivery proof",
-                    });
-                };
+                let presentation = drag.presentation;
                 return self.finish_journal_native_delivery(
                     cause,
                     focus_causal,
@@ -2099,10 +2078,7 @@ impl DockEngine {
             ));
         }
         if presentation.surface() != drag.source_surface
-            && drag
-                .owner
-                .stream()
-                .is_some_and(|stream| stream.lease().scope() == PointerProviderScope::DesktopGlobal)
+            && drag.owner.lease().scope() == PointerProviderScope::DesktopGlobal
         {
             let capability = self.viewport.physical_cross_surface_drag_capability();
             if !capability.is_supported() || !self.physical_drag_has_route(drag) {
@@ -2249,9 +2225,7 @@ impl DockEngine {
                 PreviewResolutionStatus::NativePlacementUnavailable,
             ));
         };
-        let Some(pointer_provider) = drag.owner.stream().map(|stream| stream.lease()) else {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-        };
+        let pointer_provider = drag.owner.lease();
         if self.platform_provider() != Some(work_area_route.provider())
             || self.viewport.work_area_generation() != work_area_route.generation()
         {
@@ -2409,9 +2383,8 @@ impl DockEngine {
     }
 
     fn physical_drag_has_route(&self, drag: &crate::interaction::ActiveDrag) -> bool {
-        drag.owner
-            .pointer_if_physical()
-            .and_then(|pointer| self.viewport.confirmed_drag_source(pointer))
+        self.viewport
+            .confirmed_drag_source(drag.owner.pointer())
             .is_some_and(|binding| binding.surface() == drag.source_surface)
     }
 
@@ -2660,27 +2633,7 @@ impl DockEngine {
             plan,
             source,
             point,
-            DragGestureAuthority::Presented(Self::freeze_journal_presentation(presentation)),
-        )
-    }
-
-    pub(super) fn prepare_local_tab_gesture(
-        &self,
-        candidate: &crate::scene::SurfacePlanScene,
-        source: TabGestureSource,
-        point: crate::geometry::LogicalPoint,
-    ) -> Result<PreparedTabGesture, InteractionRejection> {
-        let surface = candidate.stamp().surface();
-        self.prepare_tab_gesture(
-            surface,
-            candidate.stamp(),
-            candidate.plan(),
-            source,
-            point,
-            DragGestureAuthority::LocalReady {
-                surface,
-                coordinates: candidate.coordinate_capture(),
-            },
+            Self::freeze_journal_presentation(presentation),
         )
     }
 
@@ -2691,7 +2644,7 @@ impl DockEngine {
         plan: &crate::scene::PresentationPlan,
         source: TabGestureSource,
         point: crate::geometry::LogicalPoint,
-        presentation: DragGestureAuthority,
+        presentation: FrozenPresentationAuthority,
     ) -> Result<PreparedTabGesture, InteractionRejection> {
         if scene.requirement().workspace_epoch() != self.version.epoch() {
             return Err(InteractionRejection::StaleScene);
@@ -2847,6 +2800,7 @@ impl DockEngine {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn activate_prepared_journal_tab_gesture(
         &mut self,
         cause: ReductionCause,
@@ -2854,30 +2808,6 @@ impl DockEngine {
         owner: GestureOwner,
         capture_authority: Authority<PointerCaptureOwner>,
         threshold_origin: JournalDragThresholdOrigin,
-        prepared: PreparedTabGesture,
-        policy: &DockPolicySnapshot,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        self.activate_prepared_tab_gesture(
-            cause,
-            focus_causal,
-            owner,
-            Some(capture_authority),
-            Some(threshold_origin),
-            prepared,
-            policy,
-            events,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn activate_prepared_tab_gesture(
-        &mut self,
-        cause: ReductionCause,
-        focus_causal: FocusCausalStamp,
-        owner: GestureOwner,
-        capture_authority: Option<Authority<PointerCaptureOwner>>,
-        threshold_origin: Option<JournalDragThresholdOrigin>,
         prepared: PreparedTabGesture,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -3037,21 +2967,7 @@ impl DockEngine {
             }
         }
         if let TabGestureSource::Item(source) = prepared.source {
-            if matches!(owner, GestureOwner::LocalResponse { .. }) {
-                let native_guard = self.viewport_focus_binding(prepared.surface);
-                let _ = self
-                    .viewport_focus
-                    .request_local_pane_focus(
-                        prepared.surface,
-                        source.item,
-                        native_guard,
-                        focus_causal,
-                    )
-                    .map_err(|source| EngineError::CausedViewportFocus {
-                        cause: focus_causal.cause(),
-                        source,
-                    })?;
-            } else if let Some(binding) = self
+            if let Some(binding) = self
                 .viewport
                 .viewport(prepared.surface)
                 .filter(|record| record.can_accept_activation())
@@ -3065,6 +2981,19 @@ impl DockEngine {
                     focus_causal,
                     &mut candidate_events,
                 )?;
+            } else {
+                let native_guard = self.viewport_focus_binding(prepared.surface);
+                self.viewport_focus
+                    .request_local_pane_focus(
+                        prepared.surface,
+                        source.item,
+                        native_guard,
+                        focus_causal,
+                    )
+                    .map_err(|source| EngineError::CausedViewportFocus {
+                        cause: focus_causal.cause(),
+                        source,
+                    })?;
             }
         }
         let payload = match prepared.source {
@@ -3123,20 +3052,18 @@ impl DockEngine {
         } else {
             FrozenDragOrigin::Workspace
         };
-        let continuation = prepared.presentation.presented().and_then(|presentation| {
-            self.scene_gesture_continuation_draft(
-                cause,
-                owner,
-                presentation,
-                SceneGestureContinuationSource::Drag {
-                    payload: payload.clone(),
-                    source_surface: drag_source.source_surface,
-                    complete_root: drag_source.complete_root.clone(),
-                    origin: origin.clone(),
-                    coordinates: self.capture_surface_coordinates(drag_source.source_surface),
-                },
-            )
-        });
+        let continuation = self.scene_gesture_continuation_draft(
+            cause,
+            owner,
+            prepared.presentation,
+            SceneGestureContinuationSource::Drag {
+                payload: payload.clone(),
+                source_surface: drag_source.source_surface,
+                complete_root: drag_source.complete_root.clone(),
+                origin: origin.clone(),
+                coordinates: self.capture_surface_coordinates(drag_source.source_surface),
+            },
+        );
         let (session, replaced) = self
             .interaction
             .arm_drag(DragArmStart {

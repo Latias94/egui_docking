@@ -14,14 +14,15 @@ use crate::runtime::{
     DockspacePresentationCommandUnavailable, DockspacePresentationMenuAnchorKind,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceRuntimeErrorKind,
     DockspaceSession, DockspaceVisualId, DockspaceVisualKind, HostCloseRequestOrigin,
-    HostInputOutcome, PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
-    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePaintDisposition, SurfacePaintPlan,
-    SurfacePaintProgramStep, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceSplitterAdjustment, SurfaceTabNavigation, SurfaceUnavailableReason,
-    TabGroupDragRegionKind, TabListMenuMetrics, TabStripControlKind, TabStripControlMetric,
-    TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
+    HostFrameReport, HostInputOutcome, HostPointerInput, HostPointerRoute, PreparedSurfaceAction,
+    SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
+    SurfacePaintDisposition, SurfacePaintPlan, SurfacePaintProgramStep, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceSplitterAdjustment, SurfaceTabNavigation,
+    SurfaceUnavailableReason, TabGroupDragRegionKind, TabListMenuMetrics, TabStripControlKind,
+    TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
+    UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -412,6 +413,136 @@ fn install_ready_candidate(session: &mut DockspaceSession) {
         .measure_surface(SURFACE, metrics())
         .expect("surface measurement succeeds");
     frame.commit().expect("ready candidate commits");
+}
+
+fn inspect_surface<R>(
+    session: &mut DockspaceSession,
+    inspect: impl FnOnce(SurfacePaintPlan<'_>) -> R,
+) -> R {
+    let mut frame = session.begin_host_frame().expect("inspection frame begins");
+    let result = inspect(
+        frame
+            .paint_plan(SURFACE)
+            .expect("inspection plan lookup succeeds")
+            .expect("the current candidate is paintable"),
+    );
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("inspection retains the surface roster");
+    frame.commit().expect("inspection finishes before input");
+    result
+}
+
+fn paint_pointer_surface(session: &mut DockspaceSession) -> crate::runtime::PaintedSurfaceOutput {
+    let mut frame = session.begin_host_frame().expect("output frame begins");
+    let receipt = frame
+        .paint_plan(SURFACE)
+        .expect("output plan lookup succeeds")
+        .expect("the current candidate is paintable")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the recording host accepts the complete surface program");
+    frame
+        .confirm_surface_painted(receipt)
+        .expect("the exact program execution is confirmed");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("output retains other surfaces");
+    let mut report = frame.commit().expect("the exact output commits");
+    let mut outputs = report.take_painted_outputs();
+    assert_eq!(outputs.len(), 1);
+    outputs.pop().expect("one complete output was emitted")
+}
+
+fn present_pointer_surface(session: &mut DockspaceSession) {
+    let output = paint_pointer_surface(session);
+    let artifact = output.presentation_artifact();
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .expect("the recording host presents its exact output");
+    let mut settle = session
+        .begin_host_frame()
+        .expect("output settlement begins");
+    settle
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("output settlement retains current candidates");
+    let report = settle.commit().expect("core accepts the presentation");
+    assert!(
+        report
+            .surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.presents(artifact))
+    );
+}
+
+fn submit_host_edges(
+    session: &mut DockspaceSession,
+    edges: &[(SurfacePointerEvent, Option<LogicalPoint>)],
+) -> HostFrameReport {
+    session
+        .enable_host_pointer()
+        .expect("one host producer owns the ordered input");
+    let hits = edges
+        .iter()
+        .map(|(_, point)| {
+            point
+                .and_then(|point| session.host_pointer_hit(SURFACE, point))
+                .map(|hit| {
+                    (
+                        hit.surface(),
+                        hit.delivery(),
+                        hit.drag_delivery(),
+                        hit.hover(),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    // This recording host has no framework overlays; core resolves every lane.
+    let inputs = edges.iter().zip(&hits).map(|((event, point), hit)| {
+        let mut facts = SurfacePointerReceiverFacts::unknown();
+        let route = if let (Some((surface, click, drag, hover)), Some(point)) = (hit, point) {
+            facts = click.as_ref().map_or_else(
+                || facts.with_no_delivery(surface),
+                |receiver| facts.with_delivery(receiver),
+            );
+            facts = drag.as_ref().map_or_else(
+                || facts.with_no_drag_delivery(surface),
+                |receiver| facts.with_drag_delivery(receiver),
+            );
+            facts = hover.as_ref().map_or_else(
+                || facts.with_no_hover(surface),
+                |receiver| facts.with_hover(receiver),
+            );
+            HostPointerRoute::new(*surface, *point)
+        } else {
+            HostPointerRoute::Unknown
+        };
+        HostPointerInput::new(
+            SurfacePointerId::new(1),
+            *event,
+            route,
+            route,
+            SurfacePointerCapture::None,
+            facts,
+        )
+    });
+    let mut frame = session.begin_host_frame().expect("host input frame begins");
+    frame
+        .submit_host_pointer_batch(inputs)
+        .expect("the complete ordered host batch is accepted");
+    if frame
+        .paint_plan(SURFACE)
+        .expect("post-input readiness lookup succeeds")
+        .is_none()
+    {
+        // Raise invalidates measurements; an existing Ready preview must remain untouched.
+        frame
+            .measure_surface(SURFACE, metrics())
+            .expect("the stale post-input surface receives current measurements");
+    }
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("input retains current surface geometry");
+    frame.commit().expect("host input commits atomically")
 }
 
 fn present_multiview_source_for_pointer(
@@ -1031,16 +1162,6 @@ fn paint_only_tabs_expose_no_receiver_or_prepared_semantic_action() {
         plan.prepare_tab_navigation(FIRST, SurfaceTabNavigation::Next)
             .is_none()
     );
-    assert!(
-        plan.prepare_tab_gesture(
-            FIRST,
-            SurfaceGesturePhase::Begin {
-                initial: LogicalPoint::new(16.0, 16.0).expect("initial point validates"),
-                current: LogicalPoint::new(24.0, 16.0).expect("current point validates"),
-            },
-        )
-        .is_none()
-    );
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the paint-only candidate is retained");
@@ -1048,176 +1169,108 @@ fn paint_only_tabs_expose_no_receiver_or_prepared_semantic_action() {
 }
 
 #[test]
-fn local_tab_drag_into_its_source_pane_center_publishes_a_contained_preview() {
+fn host_tab_drag_into_its_source_pane_center_publishes_a_contained_preview() {
     let mut session = session();
     install_ready_candidate(&mut session);
-
-    let mut frame = session.begin_host_frame().expect("gesture frame begins");
-    let plan = frame
-        .paint_plan(SURFACE)
-        .expect("paint plan lookup succeeds")
-        .expect("ready candidate is paintable");
-    let tab = plan
-        .tabs()
-        .find(|tab| tab.item() == FIRST)
-        .expect("the first tab is visible");
-    let source = plan
-        .receiver_for_tab_body(tab)
-        .expect("the first tab has an exact drag receiver")
-        .center();
-    let pane = plan
-        .panes()
-        .find(|pane| pane.root() == tab.root())
-        .expect("the source tab has an exact pane");
-    let pane_bounds = pane.content_bounds();
-    let target = LogicalPoint::new(
-        pane_bounds.x() + pane_bounds.width() * 0.65,
-        pane_bounds.y() + pane_bounds.height() * 0.65,
-    )
-    .expect("the source pane center validates");
-    let begin = plan
-        .prepare_tab_gesture(
-            FIRST,
-            SurfaceGesturePhase::Begin {
-                initial: source,
-                current: target,
-            },
+    present_pointer_surface(&mut session);
+    let (source, target) = inspect_surface(&mut session, |plan| {
+        let tab = plan
+            .tabs()
+            .find(|tab| tab.item() == FIRST)
+            .expect("the source tab is visible");
+        let source = plan
+            .receiver_for_tab_body(tab)
+            .expect("the tab has an exact receiver")
+            .center();
+        let pane = plan
+            .panes()
+            .find(|pane| pane.root() == tab.root())
+            .expect("the source pane is visible");
+        let bounds = pane.content_bounds();
+        let target = LogicalPoint::new(
+            bounds.x() + bounds.width() * 0.65,
+            bounds.y() + bounds.height() * 0.65,
         )
-        .expect("the exact tab prepares a local drag");
-    frame
-        .submit_surface_action(begin)
-        .expect("the local drag begin is accepted");
-    frame
-        .measure_surface(SURFACE, metrics())
-        .expect("the dragging surface measures");
-    frame.commit().expect("the drag begin commits");
-
-    let mut inspection = session
-        .begin_host_frame()
-        .expect("preview inspection frame begins");
-    let inspection_plan = inspection
-        .paint_plan(SURFACE)
-        .expect("preview paint plan lookup succeeds")
-        .expect("the dragging surface remains paintable");
-    let preview = program_drag_preview(inspection_plan)
-        .expect("a no-target local drag publishes a contained preview");
-    assert!(matches!(
-        preview.visual(),
-        crate::runtime::DockspacePreviewVisual::Contained {
-            surface: SURFACE,
-            fallback: false,
-            ..
-        }
-    ));
-    inspection
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the preview inspection retains the current surface");
-    inspection
-        .commit()
-        .expect("the preview inspection frame commits");
+        .expect("the pane center validates");
+        (source, target)
+    });
+    submit_host_edges(
+        &mut session,
+        &[
+            (
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                Some(source),
+            ),
+            (SurfacePointerEvent::Moved, Some(target)),
+        ],
+    );
+    assert!(session.has_active_gesture());
+    inspect_surface(&mut session, |plan| {
+        let preview =
+            program_drag_preview(plan).expect("the source pane publishes a contained preview");
+        assert!(matches!(
+            preview.visual(),
+            crate::runtime::DockspacePreviewVisual::Contained {
+                surface: SURFACE,
+                fallback: false,
+                ..
+            }
+        ));
+    });
 }
 
 #[test]
-fn local_tab_drag_outside_the_surface_cancels_without_contained_preview() {
+fn host_tab_drag_with_unknown_release_cancels_without_late_delivery() {
     let mut session = session();
     install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
     let original_version = session.version();
-
-    let mut begin_frame = session.begin_host_frame().expect("gesture frame begins");
-    let begin_plan = begin_frame
-        .paint_plan(SURFACE)
-        .expect("paint plan lookup succeeds")
-        .expect("ready candidate is paintable");
-    let tab = begin_plan
-        .tabs()
-        .find(|tab| tab.item() == FIRST)
-        .expect("the first tab is visible");
-    let source = begin_plan
-        .receiver_for_tab_body(tab)
-        .expect("the first tab has an exact drag receiver")
-        .center();
+    let source = inspect_surface(&mut session, |plan| {
+        plan.tab_receiver(FIRST)
+            .expect("the source tab has an exact receiver")
+            .center()
+    });
     let threshold =
         LogicalPoint::new(source.x() + 16.0, source.y() + 8.0).expect("threshold point validates");
-    let bounds = begin_plan.bounds();
-    let outside = LogicalPoint::new(bounds.max().x() + 32.0, bounds.max().y() + 32.0)
-        .expect("outside point validates");
-    let begin = begin_plan
-        .prepare_tab_gesture(
-            FIRST,
-            SurfaceGesturePhase::Begin {
-                initial: source,
-                current: threshold,
-            },
-        )
-        .expect("the exact tab prepares a local drag");
-    begin_frame
-        .submit_surface_action(begin)
-        .expect("the local drag begin is accepted");
-    begin_frame
-        .measure_surface(SURFACE, metrics())
-        .expect("the dragging surface measures");
-    begin_frame.commit().expect("the drag begin commits");
-
-    let mut move_frame = session
-        .begin_host_frame()
-        .expect("outside move frame begins");
-    let move_action = move_frame
-        .paint_plan(SURFACE)
-        .expect("outside move paint plan lookup succeeds")
-        .expect("the dragging surface remains paintable")
-        .prepare_tab_gesture(FIRST, SurfaceGesturePhase::Move { current: outside })
-        .expect("the active tab drag prepares an outside move");
-    move_frame
-        .submit_surface_action(move_action)
-        .expect("the outside move is accepted");
-    move_frame
-        .measure_surface(SURFACE, metrics())
-        .expect("the outside move surface measures");
-    move_frame.commit().expect("the outside move commits");
-
-    let mut inspection = session
-        .begin_host_frame()
-        .expect("outside preview inspection begins");
-    let outside_plan = inspection
-        .paint_plan(SURFACE)
-        .expect("outside preview paint plan lookup succeeds")
-        .expect("the dragging surface remains paintable");
-    assert!(
-        program_drag_preview(outside_plan).is_none(),
-        "surface-external local coordinates cannot authorize contained placement"
+    submit_host_edges(
+        &mut session,
+        &[
+            (
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                Some(source),
+            ),
+            (SurfacePointerEvent::Moved, Some(threshold)),
+        ],
     );
-    inspection
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the outside preview inspection retains the surface");
-    inspection
-        .commit()
-        .expect("the outside preview inspection commits");
-
-    let mut release_frame = session
-        .begin_host_frame()
-        .expect("outside release frame begins");
-    let release = release_frame
-        .paint_plan(SURFACE)
-        .expect("outside release paint plan lookup succeeds")
-        .expect("the dragging surface remains paintable")
-        .prepare_tab_gesture(FIRST, SurfaceGesturePhase::Release { current: outside })
-        .expect("the active tab drag prepares an outside release");
-    release_frame
-        .submit_surface_action(release)
-        .expect("the outside release is accepted as a cancellation");
-    release_frame
-        .measure_surface(SURFACE, metrics())
-        .expect("the cancelled surface measures");
-    release_frame
-        .commit()
-        .expect("the outside release cancellation commits");
-
+    assert!(session.has_active_gesture());
+    // Leaving the qualified host route does not prove desktop outside-all authority.
+    submit_host_edges(&mut session, &[(SurfacePointerEvent::Moved, None)]);
+    inspect_surface(&mut session, |plan| {
+        assert!(
+            program_drag_preview(plan).is_none(),
+            "an unknown route cannot authorize contained placement"
+        );
+    });
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+            None,
+        )],
+    );
     assert_eq!(session.version(), original_version);
     assert!(!session.has_active_gesture());
-    let item = session
-        .view()
-        .item(FIRST)
-        .expect("the dragged item remains present");
+    present_pointer_surface(&mut session);
+    inspect_surface(&mut session, |plan| {
+        assert!(program_drag_preview(plan).is_none());
+        assert!(program_drag_decoration(plan).is_none());
+    });
+    assert_eq!(
+        session.version(),
+        original_version,
+        "new presentation cannot revive an unknown-authority release"
+    );
+    let item = session.view().item(FIRST).expect("the source remains open");
     assert_eq!(item.root(), ROOT);
     assert_eq!(item.contained(), None);
     assert_eq!(
@@ -1311,43 +1364,48 @@ fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
 }
 
 #[test]
-fn rear_contained_title_press_atomically_raises_without_starting_a_gesture() {
+fn rear_contained_title_press_raises_before_any_drag_preview() {
     let mut session = stacked_contained_session();
     install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
     assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
-
-    let mut frame = session
-        .begin_host_frame()
-        .expect("contained activation frame begins");
-    let plan = frame
-        .paint_plan(SURFACE)
-        .expect("contained activation plan lookup succeeds")
-        .expect("stacked contained candidate is paintable");
-    let rear = plan
-        .contained()
-        .find(|contained| contained.floating() == FLOATING)
-        .expect("rear contained presentation is painted");
-    let bounds = rear.title_drag_bounds();
-    let point = LogicalPoint::new(
-        bounds.x() + bounds.width() * 0.5,
-        bounds.y() + bounds.height() * 0.5,
-    )
-    .expect("rear title activation point validates");
-    let activate = plan
-        .prepare_contained_activation(FLOATING, point)
-        .expect("rear contained title prepares exact activation");
-    frame
-        .submit_surface_action(activate)
-        .expect("rear contained activation is accepted");
-    frame
-        .measure_surface(SURFACE, metrics())
-        .expect("raised contained surface measures");
-    frame
-        .commit()
-        .expect("rear contained activation commits atomically");
-
+    let point = inspect_surface(&mut session, |plan| {
+        let rear = plan
+            .contained()
+            .find(|contained| contained.floating() == FLOATING)
+            .expect("the rear presentation is painted");
+        plan.receiver_for_contained_title(rear)
+            .expect("the exposed rear title has a receiver")
+            .center()
+    });
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            Some(point),
+        )],
+    );
     assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+    inspect_surface(&mut session, |plan| {
+        assert!(
+            program_drag_decoration(plan).is_none(),
+            "a press alone must not hide the source"
+        );
+        assert!(
+            program_drag_preview(plan).is_none(),
+            "the title must cross its drag threshold first"
+        );
+    });
+    present_pointer_surface(&mut session);
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+            Some(point),
+        )],
+    );
     assert!(!session.has_active_gesture());
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
 }
 
 #[test]
@@ -1379,16 +1437,6 @@ fn fully_occluded_rear_contained_chrome_has_no_surface_action_authority() {
     assert!(
         rear.resize()
             .all(|resize| plan.receiver_for_contained_resize(rear, resize).is_none())
-    );
-    assert!(
-        plan.prepare_contained_title_gesture(
-            FLOATING,
-            SurfaceGesturePhase::Begin {
-                initial: rear.title_drag_bounds().min(),
-                current: rear.title_drag_bounds().min(),
-            },
-        )
-        .is_none()
     );
     assert!(plan.prepare_contained_close(FLOATING).is_none());
     assert!(
@@ -1460,306 +1508,170 @@ fn partially_exposed_rear_contained_chrome_retains_only_exposed_authority() {
 fn rear_contained_pane_press_raises_and_requests_the_exact_selected_pane_focus() {
     let mut session = stacked_contained_session();
     install_ready_candidate(&mut session);
-
-    let mut frame = session
-        .begin_host_frame()
-        .expect("contained pane activation frame begins");
-    let plan = frame
-        .paint_plan(SURFACE)
-        .expect("contained pane activation plan lookup succeeds")
-        .expect("stacked contained candidate is paintable");
-    let pane = plan
-        .panes()
-        .find(|pane| pane.root() == FLOATING_ROOT && pane.selected() == Some(SECOND))
-        .expect("rear contained selected pane is painted");
-    let bounds = pane.content_bounds();
-    let point = LogicalPoint::new(
-        bounds.x() + bounds.width() * 0.5,
-        bounds.y() + bounds.height() * 0.5,
-    )
-    .expect("rear pane activation point validates");
-    let activate = plan
-        .prepare_contained_activation(FLOATING, point)
-        .expect("rear contained pane prepares exact activation");
-    frame
-        .submit_surface_action(activate)
-        .expect("rear contained pane activation is accepted");
-    frame
-        .measure_surface(SURFACE, metrics())
-        .expect("raised contained pane surface measures");
-    frame
-        .commit()
-        .expect("rear contained pane activation commits atomically");
-
+    present_pointer_surface(&mut session);
+    let point = inspect_surface(&mut session, |plan| {
+        let pane = plan
+            .panes()
+            .find(|pane| pane.root() == FLOATING_ROOT && pane.selected() == Some(SECOND))
+            .expect("the selected rear pane is painted");
+        plan.receiver_for_pane(pane)
+            .expect("the pane owns an exact fallback receiver")
+            .center()
+    });
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            Some(point),
+        )],
+    );
     assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
     assert!(!session.has_active_gesture());
-
-    let mut inspection = session
-        .begin_host_frame()
-        .expect("contained pane focus inspection frame begins");
-    let plan = inspection
-        .paint_plan(SURFACE)
-        .expect("contained pane focus plan lookup succeeds")
-        .expect("raised contained pane remains paintable");
-    assert_eq!(
-        plan.pane_focus_request().map(|request| request.item()),
-        Some(SECOND)
-    );
-    inspection
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("contained pane focus inspection retains the current surface");
-    inspection
-        .commit()
-        .expect("contained pane focus inspection commits");
+    inspect_surface(&mut session, |plan| {
+        assert_eq!(
+            plan.pane_focus_request().map(|request| request.item()),
+            Some(SECOND)
+        );
+    });
 }
 
 #[test]
-fn rear_contained_title_begin_atomically_raises_and_starts_the_local_drag() {
+fn rear_contained_title_press_raises_before_host_drag_motion() {
     let mut session = stacked_contained_session();
     install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
     assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
-
-    let mut frame = session
-        .begin_host_frame()
-        .expect("contained title gesture frame begins");
-    let plan = frame
-        .paint_plan(SURFACE)
-        .expect("contained paint plan lookup succeeds")
-        .expect("stacked contained candidate is paintable");
-    let rear = plan
-        .contained()
-        .find(|contained| contained.floating() == FLOATING)
-        .expect("rear contained presentation is painted");
-    let bounds = rear.title_bounds();
-    let point = LogicalPoint::new(
-        bounds.x() + bounds.width() * 0.5,
-        bounds.y() + bounds.height() * 0.5,
-    )
-    .expect("rear title center validates");
-    let moved = LogicalPoint::new(point.x() + 18.0, point.y())
-        .expect("rear title threshold movement validates");
-    let begin = plan
-        .prepare_contained_title_gesture(
-            FLOATING,
-            SurfaceGesturePhase::Begin {
-                initial: point,
-                current: moved,
-            },
-        )
-        .expect("rear contained title prepares a local drag");
-    frame
-        .submit_surface_action(begin)
-        .expect("rear contained title begin is accepted");
-    frame
-        .measure_surface(SURFACE, metrics())
-        .expect("raised contained surface measures");
-    frame
-        .commit()
-        .expect("rear contained title begin commits atomically");
-
+    let point = inspect_surface(&mut session, |plan| {
+        let rear = plan
+            .contained()
+            .find(|contained| contained.floating() == FLOATING)
+            .expect("the rear presentation is painted");
+        plan.receiver_for_contained_title(rear)
+            .expect("the rear title has an exact receiver")
+            .center()
+    });
+    let moved = LogicalPoint::new(point.x() + 18.0, point.y()).expect("title movement validates");
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            Some(point),
+        )],
+    );
     assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
     assert!(session.has_active_gesture());
-
-    let mut inspection = session
-        .begin_host_frame()
-        .expect("contained drag feedback inspection frame begins");
-    let plan = inspection
-        .paint_plan(SURFACE)
-        .expect("contained drag feedback plan lookup succeeds")
-        .expect("raised contained candidate remains paintable");
-    assert!(
-        program_drag_decoration(plan).is_some(),
-        "the raised source remains decorated in the terminal scene"
-    );
-    assert!(
-        program_drag_preview(plan).is_some(),
-        "the threshold-crossing preview is rebased onto the terminal scene"
-    );
-    inspection
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("drag feedback inspection retains the current surface");
-    inspection
-        .commit()
-        .expect("drag feedback inspection commits");
+    present_pointer_surface(&mut session);
+    submit_host_edges(&mut session, &[(SurfacePointerEvent::Moved, Some(moved))]);
+    assert!(session.has_active_gesture());
+    inspect_surface(&mut session, |plan| {
+        assert!(
+            program_drag_decoration(plan).is_some(),
+            "the raised source remains decorated"
+        );
+        assert!(
+            program_drag_preview(plan).is_some(),
+            "the threshold-crossing preview reaches the terminal candidate"
+        );
+    });
 }
 
 #[test]
 fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
     let mut session = contained_session(DockPolicy::default());
     install_ready_candidate(&mut session);
-
-    let mut begin = session
-        .begin_host_frame()
-        .expect("contained magnetic-redock frame begins");
-    let plan = begin
-        .paint_plan(SURFACE)
-        .expect("contained magnetic-redock plan lookup succeeds")
-        .expect("contained magnetic-redock candidate is paintable");
-    let contained = plan
-        .contained()
-        .find(|contained| contained.floating() == FLOATING)
-        .expect("the contained source is painted");
-    let tab = plan
-        .tabs()
-        .find(|tab| tab.item() == SECOND)
-        .expect("the contained tab is painted");
-    let initial = plan
-        .receiver_for_tab_body(tab)
-        .expect("the contained tab has an exact drag receiver")
-        .center();
-    let pane = plan
-        .panes()
-        .find(|pane| pane.root() == ROOT)
-        .expect("the main root exposes a pane basin");
-    let target = LogicalPoint::new(
-        pane.content_bounds().x() + pane.content_bounds().width() * 0.75,
-        pane.content_bounds().y() + pane.content_bounds().height() * 0.75,
-    )
-    .expect("the main pane basin point is finite");
-    assert!(
-        !contained.outer_bounds().contains(target),
-        "the first magnetic observation must leave the frozen source rectangle"
-    );
-    assert!(
-        plan.drop_guides()
-            .flat_map(|cluster| cluster.targets())
-            .all(|guide| !guide.hit_bounds().contains(target)),
-        "the redock journey must not aim at an exact guide button"
-    );
-    let action = plan
-        .prepare_tab_gesture(
-            SECOND,
-            SurfaceGesturePhase::Begin {
-                initial,
-                current: target,
-            },
+    present_pointer_surface(&mut session);
+    let (initial, target) = inspect_surface(&mut session, |plan| {
+        let contained = plan
+            .contained()
+            .find(|contained| contained.floating() == FLOATING)
+            .expect("the contained source is painted");
+        let initial = plan
+            .tab_receiver(SECOND)
+            .expect("the contained tab has an exact receiver")
+            .center();
+        let pane = plan
+            .panes()
+            .find(|pane| pane.root() == ROOT)
+            .expect("the main pane basin is painted");
+        let bounds = pane.content_bounds();
+        let target = LogicalPoint::new(
+            bounds.x() + bounds.width() * 0.75,
+            bounds.y() + bounds.height() * 0.75,
         )
-        .expect("the contained tab prepares a direct-manipulation drag");
-    begin
-        .submit_surface_action(action)
-        .expect("the contained magnetic-redock begin is accepted");
-    begin
-        .measure_surface(SURFACE, metrics())
-        .expect("the magnetic-redock surface measures");
-    begin.commit().expect("the magnetic-redock begin commits");
-
-    let mut paint = session
-        .begin_host_frame()
-        .expect("contained magnetic-preview paint begins");
-    let paint_plan = paint
-        .paint_plan(SURFACE)
-        .expect("contained magnetic-preview plan lookup succeeds")
-        .expect("contained magnetic-preview candidate remains paintable");
-    let preview = program_drag_preview(paint_plan)
-        .expect("leaving the source rectangle acquires a pane target");
-    assert!(matches!(
-        preview.visual(),
-        crate::runtime::DockspacePreviewVisual::Dock {
-            surface: SURFACE,
-            ..
-        }
-    ));
-    let receipt = paint
-        .paint_plan(SURFACE)
-        .expect("contained magnetic-preview plan lookup succeeds")
-        .expect("contained magnetic-preview candidate remains paintable")
-        .execute_surface_program(|_| Ok::<(), ()>(()))
-        .expect("the complete magnetic-preview program executes");
-    paint
-        .confirm_surface_painted(receipt)
-        .expect("the magnetic preview is painted");
-    let mut report = paint.commit().expect("the magnetic preview paint commits");
-    let output = report
-        .take_painted_outputs()
-        .pop()
-        .expect("the magnetic preview produces one output");
-    session
-        .report_surface_presentation(output, SurfacePresentationResult::Presented)
-        .expect("the magnetic preview reaches presentation");
-
-    let mut settle = session
-        .begin_host_frame()
-        .expect("magnetic preview settlement begins");
-    settle
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the settlement retains the presented surface");
-    settle.commit().expect("the magnetic preview settles");
-
-    let mut release = session
-        .begin_host_frame()
-        .expect("contained magnetic release begins");
-    let action = release
-        .paint_plan(SURFACE)
-        .expect("contained magnetic release plan lookup succeeds")
-        .expect("contained magnetic release candidate remains paintable")
-        .prepare_tab_gesture(SECOND, SurfaceGesturePhase::Release { current: target })
-        .expect("the painted magnetic target prepares release");
-    release
-        .submit_surface_action(action)
-        .expect("the magnetic release is accepted");
-    release
-        .measure_surface(SURFACE, metrics())
-        .expect("the redocked surface measures");
-    release.commit().expect("the magnetic release commits");
-
-    if session.view().contained(FLOATING).is_some() {
+        .expect("the pane basin point validates");
         assert!(
-            !session.has_active_gesture(),
-            "an unpainted release must leave interaction ownership before waiting for output"
+            !contained.outer_bounds().contains(target),
+            "the first magnetic observation must leave the source rectangle"
         );
-        let mut paint = session
-            .begin_host_frame()
-            .expect("release-pending magnetic preview paint begins");
-        let release_plan = paint
-            .paint_plan(SURFACE)
-            .expect("release-pending plan lookup succeeds")
-            .expect("release-pending candidate remains paintable");
+        assert!(
+            plan.drop_guides()
+                .flat_map(|cluster| cluster.targets())
+                .all(|guide| !guide.hit_bounds().contains(target)),
+            "the journey must not aim at an exact guide button"
+        );
+        (initial, target)
+    });
+    submit_host_edges(
+        &mut session,
+        &[
+            (
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                Some(initial),
+            ),
+            (SurfacePointerEvent::Moved, Some(target)),
+            (
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                Some(target),
+            ),
+        ],
+    );
+    assert!(
+        session.view().contained(FLOATING).is_some(),
+        "a complete Burst still waits for its exact preview presentation"
+    );
+    assert!(
+        !session.has_active_gesture(),
+        "release leaves the input owner before the output barrier settles"
+    );
+    inspect_surface(&mut session, |plan| {
         assert!(matches!(
-            program_drag_preview(release_plan)
-                .expect("the release-pending target remains visible")
+            program_drag_preview(plan)
+                .expect("the release-pending pane target remains visible")
                 .visual(),
             crate::runtime::DockspacePreviewVisual::Dock {
                 surface: SURFACE,
                 ..
             }
         ));
-        let receipt = paint
-            .paint_plan(SURFACE)
-            .expect("release-pending plan lookup succeeds")
-            .expect("release-pending candidate remains paintable")
-            .execute_surface_program(|_| Ok::<(), ()>(()))
-            .expect("the complete release-pending program executes");
-        paint
-            .confirm_surface_painted(receipt)
-            .expect("the release-pending preview is painted");
-        let mut report = paint
-            .commit()
-            .expect("the release-pending preview paint commits");
-        let output = report
-            .take_painted_outputs()
-            .pop()
-            .expect("the release-pending preview produces one output");
-        session
-            .report_surface_presentation(output, SurfacePresentationResult::Presented)
-            .expect("the release-pending preview reaches presentation");
-
-        let mut settle = session
-            .begin_host_frame()
-            .expect("release-pending magnetic settlement begins");
-        settle
-            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-            .expect("the release settlement retains unaffected surfaces");
-        settle
-            .commit()
-            .expect("the exact presented release settles");
-    }
-
+    });
+    let output = paint_pointer_surface(&mut session);
+    let artifact = output.presentation_artifact();
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .expect("the exact Burst preview reaches presentation");
+    let mut settle = session
+        .begin_host_frame()
+        .expect("the pending Burst release settlement begins");
+    settle
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("release settlement retains geometry until the exact preview is consumed");
+    let report = settle
+        .commit()
+        .expect("the presented Burst release settles");
+    assert!(
+        report.workspace_changed(),
+        "the exact output observation must deliver the redock"
+    );
+    assert!(
+        report
+            .surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.retires(artifact)),
+        "redock changes topology and retires its consumed preview, rather than granting new receiver authority"
+    );
     assert!(
         session.view().contained(FLOATING).is_none(),
-        "magnetic release did not redock: active_gesture={}, contained={:?}, moved={:?}",
-        session.has_active_gesture(),
-        contained_roster(&session),
-        session.view().item(SECOND),
+        "presenting the exact Burst preview redocks the item"
     );
     let moved = session
         .view()
@@ -1772,165 +1684,129 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
 }
 
 #[test]
-fn rear_contained_resize_begin_atomically_raises_and_starts_the_local_transform() {
+fn rear_contained_resize_press_raises_before_host_transform_motion() {
     let mut session = stacked_contained_session();
     install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
     assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
-
-    let mut frame = session
-        .begin_host_frame()
-        .expect("contained resize gesture frame begins");
-    let plan = frame
-        .paint_plan(SURFACE)
-        .expect("contained paint plan lookup succeeds")
-        .expect("stacked contained candidate is paintable");
-    let rear = plan
-        .contained()
-        .find(|contained| contained.floating() == FLOATING)
-        .expect("rear contained presentation is painted");
-    let east = rear
-        .resize()
-        .find(|resize| resize.direction() == ContainedResizeDirection::East)
-        .expect("rear contained east resize handle is painted");
-    let bounds = east.hit_bounds();
-    let point = LogicalPoint::new(
-        bounds.x() + bounds.width() * 0.5,
-        bounds.y() + bounds.height() * 0.5,
-    )
-    .expect("rear east resize center validates");
-    let moved = LogicalPoint::new(point.x() + 18.0, point.y())
-        .expect("rear east resize movement validates");
-    let begin = plan
-        .prepare_contained_resize_gesture(
-            FLOATING,
-            ContainedResizeDirection::East,
-            SurfaceGesturePhase::Begin {
-                initial: point,
-                current: moved,
-            },
-        )
-        .expect("rear contained resize prepares a local transform");
-    frame
-        .submit_surface_action(begin)
-        .expect("rear contained resize begin is accepted");
-    frame
-        .measure_surface(SURFACE, metrics())
-        .expect("raised contained surface measures");
-    frame
-        .commit()
-        .expect("rear contained resize begin commits atomically");
-
+    let original = contained_rect(&session);
+    let point = inspect_surface(&mut session, |plan| {
+        let rear = plan
+            .contained()
+            .find(|contained| contained.floating() == FLOATING)
+            .expect("the rear presentation is painted");
+        let east = rear
+            .resize()
+            .find(|resize| resize.direction() == ContainedResizeDirection::East)
+            .expect("the east handle is painted");
+        plan.receiver_for_contained_resize(rear, east)
+            .expect("the east handle has an exact receiver")
+            .center()
+    });
+    let moved = LogicalPoint::new(point.x() + 18.0, point.y()).expect("resize movement validates");
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            Some(point),
+        )],
+    );
     assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
     assert!(session.has_active_gesture());
+    present_pointer_surface(&mut session);
+    submit_host_edges(&mut session, &[(SurfacePointerEvent::Moved, Some(moved))]);
+    assert!(session.has_active_gesture());
+    assert_eq!(
+        contained_rect(&session),
+        original,
+        "resize motion stays transient until release"
+    );
+    inspect_surface(&mut session, |plan| {
+        let mut preview = None;
+        plan.visit_surface_program(|step| {
+            if let SurfacePaintProgramStep::ContainedTransformPreview(current) = step {
+                assert_eq!(current.floating(), FLOATING);
+                assert!(preview.replace(current.rect()).is_none());
+            }
+            Ok::<(), ()>(())
+        })
+        .expect("the post-Raise resize program is valid");
+        let preview = preview.expect("post-Raise motion publishes the actual resize preview");
+        assert!(preview.width() > original.width());
+        assert_eq!(preview.height(), original.height());
+    });
 }
 
 #[test]
-fn rear_contained_tab_begin_atomically_raises_starts_drag_and_requests_pane_focus() {
+fn rear_contained_tab_press_raises_before_drag_motion_and_requests_pane_focus() {
     let mut session = stacked_contained_session();
     install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
     assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
-
-    let mut frame = session
-        .begin_host_frame()
-        .expect("contained tab gesture frame begins");
-    let plan = frame
-        .paint_plan(SURFACE)
-        .expect("contained paint plan lookup succeeds")
-        .expect("stacked contained candidate is paintable");
-    let tab = plan
-        .tabs()
-        .find(|tab| tab.item() == SECOND)
-        .expect("rear contained tab is painted");
-    let bounds = tab.drag_bounds();
-    let point = LogicalPoint::new(
-        bounds.x() + bounds.width() * 0.5,
-        bounds.y() + bounds.height() * 0.5,
-    )
-    .expect("rear contained tab center validates");
-    let begin = plan
-        .prepare_tab_gesture(
-            SECOND,
-            SurfaceGesturePhase::Begin {
-                initial: point,
-                current: point,
-            },
-        )
-        .expect("rear contained tab prepares a local drag");
-    frame
-        .submit_surface_action(begin)
-        .expect("rear contained tab begin is accepted");
-    frame
-        .measure_surface(SURFACE, metrics())
-        .expect("raised contained surface measures");
-    frame
-        .commit()
-        .expect("rear contained tab begin commits atomically");
-
+    let point = inspect_surface(&mut session, |plan| {
+        plan.tab_receiver(SECOND)
+            .expect("the rear tab has an exact receiver")
+            .center()
+    });
+    let moved = LogicalPoint::new(point.x() + 18.0, point.y()).expect("tab movement validates");
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            Some(point),
+        )],
+    );
     assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
     assert!(session.has_active_gesture());
-
-    let mut inspection = session
-        .begin_host_frame()
-        .expect("contained tab focus inspection frame begins");
-    let request = inspection
-        .paint_plan(SURFACE)
-        .expect("focus paint plan lookup succeeds")
-        .expect("raised contained candidate remains paintable")
-        .pane_focus_request()
-        .expect("contained tab activation requests pane focus");
-    assert_eq!(request.surface(), SURFACE);
-    assert_eq!(request.item(), SECOND);
-    inspection
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("focus inspection retains the current surface");
-    inspection
-        .commit()
-        .expect("contained tab focus inspection commits");
+    present_pointer_surface(&mut session);
+    submit_host_edges(&mut session, &[(SurfacePointerEvent::Moved, Some(moved))]);
+    assert!(session.has_active_gesture());
+    inspect_surface(&mut session, |plan| {
+        let request = plan
+            .pane_focus_request()
+            .expect("contained tab activation requests pane focus");
+        assert_eq!(request.surface(), SURFACE);
+        assert_eq!(request.item(), SECOND);
+        assert!(
+            program_drag_decoration(plan).is_some(),
+            "the post-Raise motion crosses the real drag threshold"
+        );
+    });
 }
 
 #[test]
-fn rear_split_contained_tab_begin_raises_the_complete_root_before_dragging_an_item() {
+fn rear_split_contained_tab_batch_raises_the_complete_root_before_dragging_an_item() {
     let mut session = stacked_split_contained_session();
     install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
     assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
-
-    let mut frame = session
-        .begin_host_frame()
-        .expect("split-contained tab gesture frame begins");
-    let plan = frame
-        .paint_plan(SURFACE)
-        .expect("split-contained paint plan lookup succeeds")
-        .expect("split-contained candidate is paintable");
-    let tab = plan
-        .tabs()
-        .find(|tab| tab.item() == SECOND)
-        .expect("rear split-contained tab is painted");
-    let bounds = tab.drag_bounds();
-    let point = LogicalPoint::new(
-        bounds.x() + bounds.width() * 0.5,
-        bounds.y() + bounds.height() * 0.5,
-    )
-    .expect("rear split-contained tab center validates");
-    let begin = plan
-        .prepare_tab_gesture(
-            SECOND,
-            SurfaceGesturePhase::Begin {
-                initial: point,
-                current: point,
-            },
-        )
-        .expect("rear split-contained tab prepares a local drag");
-    frame
-        .submit_surface_action(begin)
-        .expect("rear split-contained tab begin is accepted");
-    frame
-        .measure_surface(SURFACE, metrics())
-        .expect("raised split-contained surface measures");
-    frame
-        .commit()
-        .expect("rear split-contained tab begin commits atomically");
+    let point = inspect_surface(&mut session, |plan| {
+        plan.tab_receiver(SECOND)
+            .expect("the rear split tab has an exact receiver")
+            .center()
+    });
+    let moved =
+        LogicalPoint::new(point.x() + 18.0, point.y()).expect("split tab movement validates");
+    submit_host_edges(
+        &mut session,
+        &[
+            (
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                Some(point),
+            ),
+            (SurfacePointerEvent::Moved, Some(moved)),
+        ],
+    );
     assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
     assert!(session.has_active_gesture());
+    for item in [SECOND, THIRD] {
+        let item = session
+            .view()
+            .item(item)
+            .expect("the raised root retains both panes");
+        assert_eq!(item.root(), FLOATING_ROOT);
+        assert_eq!(item.contained(), Some(FLOATING));
+    }
 }
 
 #[test]
@@ -2459,69 +2335,39 @@ fn cross_session_surface_action_is_rejected_without_poisoning_the_frame() {
 }
 
 #[test]
-fn opaque_splitter_actions_drive_the_core_resize_session() {
+fn presented_host_splitter_edges_drive_the_core_resize_session() {
     let mut session = split_session();
     install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
     assert!(!session.has_active_gesture());
     let before = split_weights(&session);
-
-    let mut prepare = session.begin_host_frame().expect("paint frame begins");
-    let plan = prepare
-        .paint_plan(SURFACE)
-        .expect("paint plan lookup succeeds")
-        .expect("split candidate is paintable");
-    let splitter = plan
-        .splitters()
-        .next()
-        .expect("the equal split has one splitter");
-    let bounds = splitter.hit_bounds();
-    let initial = LogicalPoint::new(
-        bounds.x() + bounds.width() * 0.5,
-        bounds.y() + bounds.height() * 0.5,
-    )
-    .expect("splitter center validates");
-    let released = LogicalPoint::new(initial.x() + 48.0, initial.y())
-        .expect("splitter release point validates");
-    let press = plan
-        .prepare_splitter_gesture(
-            splitter.visual_id(),
-            SurfaceGesturePhase::Begin {
-                initial,
-                current: initial,
-            },
-        )
-        .expect("the exact operable splitter prepares a press");
-    let release = plan
-        .prepare_splitter_gesture(
-            splitter.visual_id(),
-            SurfaceGesturePhase::Release { current: released },
-        )
-        .expect("the exact operable splitter prepares a release");
-    prepare
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the unchanged candidate is retained");
-    prepare.commit().expect("paint pass commits");
-
-    let mut press_frame = session.begin_host_frame().expect("press frame begins");
-    press_frame
-        .submit_surface_action(press)
-        .expect("splitter press is accepted");
-    press_frame
-        .measure_surface(SURFACE, metrics())
-        .expect("pressed surface measures");
-    press_frame.commit().expect("splitter press commits");
+    let initial = inspect_surface(&mut session, |plan| {
+        let splitter = plan
+            .splitters()
+            .next()
+            .expect("the equal split has one splitter");
+        plan.receiver_for_splitter(splitter)
+            .expect("the splitter has an exact receiver")
+            .center()
+    });
+    let released =
+        LogicalPoint::new(initial.x() + 48.0, initial.y()).expect("release point validates");
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            Some(initial),
+        )],
+    );
     assert!(session.has_active_gesture());
     assert_eq!(split_weights(&session), before);
-
-    let mut release_frame = session.begin_host_frame().expect("release frame begins");
-    release_frame
-        .submit_surface_action(release)
-        .expect("splitter release is accepted");
-    release_frame
-        .measure_surface(SURFACE, metrics())
-        .expect("released surface measures");
-    release_frame.commit().expect("splitter release commits");
-
+    submit_host_edges(
+        &mut session,
+        &[(
+            SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+            Some(released),
+        )],
+    );
     assert!(!session.has_active_gesture());
     assert_ne!(split_weights(&session), before);
 }

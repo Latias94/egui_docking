@@ -30,8 +30,8 @@ impl DockEngine {
             presentation.coordinate_capture(),
             target,
             owner,
-            Some(capture_authority),
-            ResizeGestureAuthority::Presented(Self::freeze_journal_presentation(presentation)),
+            capture_authority,
+            Self::freeze_journal_presentation(presentation),
             point,
             policy,
         )
@@ -45,8 +45,8 @@ impl DockEngine {
         coordinate_capture: SurfaceCoordinateCapture,
         target: SplitterResizeTarget,
         owner: GestureOwner,
-        journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
-        authority: ResizeGestureAuthority,
+        journal_capture_authority: Authority<PointerCaptureOwner>,
+        authority: FrozenPresentationAuthority,
         point: crate::geometry::LogicalPoint,
         policy: &DockPolicySnapshot,
     ) -> Result<ResizeStart, InteractionRejection> {
@@ -337,10 +337,7 @@ impl DockEngine {
         edge: &PointerEdge,
     ) -> Result<crate::geometry::LogicalPoint, InteractionRejection> {
         self.validate_resize_coordinate_authority(resize)?;
-        let stream = resize
-            .owner
-            .stream()
-            .ok_or(InteractionRejection::SessionMismatch)?;
+        let stream = resize.owner;
         match (stream.lease().scope(), edge.location()) {
             (PointerProviderScope::HostLocal(_), PointerEdgeLocation::HostLocal { .. }) => {
                 let route = self.journal_host_local_manipulation(edge).ok_or(

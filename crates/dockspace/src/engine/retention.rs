@@ -27,16 +27,12 @@ impl DockEngine {
             emissions.insert(active.presented.emission());
         }
         if let Some(pending) = &self.pending_drag_release {
-            if let Some(presentation) = pending.drag.presentation.presented() {
-                emissions.insert(presentation.presented.emission());
-            }
+            emissions.insert(pending.drag.presentation.presented.emission());
             emissions.extend(pending.presentation_outputs.iter().copied());
             emissions.extend(pending.presented_output);
         }
         if let Some(pending) = &self.pending_contained_transform_release {
-            if let Some(presentation) = pending.transform.presentation.presented() {
-                emissions.insert(presentation.presented.emission());
-            }
+            emissions.insert(pending.transform.presentation.presented.emission());
             emissions.extend(pending.presentation_outputs.iter().copied());
             emissions.extend(pending.presented_output);
         }

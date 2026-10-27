@@ -132,8 +132,8 @@ impl DockEngine {
                 accepted_base: self.version,
             });
         }
-        if let Err(error) = self.local_response_candidate(scene) {
-            return Ok(self.local_response_rejection(error));
+        if let Err(error) = self.semantic_candidate(scene) {
+            return Ok(self.candidate_action_rejection(error));
         }
         let Some(root) = product_presentation_transition_root(action) else {
             return Err(EngineError::ReductionCauseInvariant {

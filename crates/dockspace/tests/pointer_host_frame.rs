@@ -4535,7 +4535,7 @@ fn journal_contained_title_drag_is_owned_by_the_pointer_stream() {
         .expect("contained title move starts a journal-owned drag");
     assert_eq!(
         drag.journal_stream(),
-        Some(transition.reduced_pointer_edges()[0].stream())
+        transition.reduced_pointer_edges()[0].stream()
     );
     assert!(matches!(
         drag.payload(),
@@ -5459,7 +5459,7 @@ fn surface_local_tab_exact_threshold_move_begins_drag() {
     assert_eq!(drag.phase(), DragPhase::Dragging);
     assert_eq!(
         drag.journal_stream(),
-        Some(transition.reduced_pointer_edges()[1].stream())
+        transition.reduced_pointer_edges()[1].stream()
     );
 }
 

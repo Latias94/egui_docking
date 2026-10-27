@@ -18,32 +18,7 @@ impl DockEngine {
             floating,
             kind,
             point,
-            ContainedTransformGestureAuthority::Presented(Self::freeze_journal_presentation(
-                presentation,
-            )),
-        )
-    }
-
-    pub(super) fn prepare_local_contained_gesture(
-        &self,
-        candidate: &crate::scene::SurfacePlanScene,
-        floating: crate::ids::FloatingPresentationId,
-        kind: ContainedGestureKind,
-        point: crate::geometry::LogicalPoint,
-    ) -> Result<PreparedContainedGesture, InteractionRejection> {
-        let surface = candidate.stamp().surface();
-        self.prepare_contained_gesture(
-            surface,
-            candidate.stamp(),
-            candidate.plan(),
-            candidate.coordinate_capture(),
-            floating,
-            kind,
-            point,
-            ContainedTransformGestureAuthority::LocalReady {
-                surface,
-                coordinates: candidate.coordinate_capture(),
-            },
+            Self::freeze_journal_presentation(presentation),
         )
     }
 
@@ -57,7 +32,7 @@ impl DockEngine {
         floating: crate::ids::FloatingPresentationId,
         kind: ContainedGestureKind,
         point: crate::geometry::LogicalPoint,
-        presentation: ContainedTransformGestureAuthority,
+        presentation: FrozenPresentationAuthority,
     ) -> Result<PreparedContainedGesture, InteractionRejection> {
         if scene.requirement().workspace_epoch() != self.version.epoch() {
             return Err(InteractionRejection::StaleScene);
@@ -144,34 +119,13 @@ impl DockEngine {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn activate_prepared_journal_contained_gesture(
         &mut self,
         cause: ReductionCause,
         owner: GestureOwner,
         capture_authority: Authority<PointerCaptureOwner>,
-        threshold_origin: Option<JournalDragThresholdOrigin>,
-        prepared: PreparedContainedGesture,
-        policy: &DockPolicySnapshot,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        self.activate_prepared_contained_gesture(
-            cause,
-            owner,
-            Some(capture_authority),
-            threshold_origin,
-            prepared,
-            policy,
-            events,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn activate_prepared_contained_gesture(
-        &mut self,
-        cause: ReductionCause,
-        owner: GestureOwner,
-        capture_authority: Option<Authority<PointerCaptureOwner>>,
-        threshold_origin: Option<JournalDragThresholdOrigin>,
+        threshold_origin: JournalDragThresholdOrigin,
         prepared: PreparedContainedGesture,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -235,21 +189,19 @@ impl DockEngine {
                     minimum_size: prepared.minimum_size,
                 });
                 let continuation = if activation_changed {
-                    prepared.presentation.presented().and_then(|presentation| {
-                        self.scene_gesture_continuation_draft(
-                            cause,
-                            owner,
-                            presentation,
-                            SceneGestureContinuationSource::Drag {
-                                payload: payload.clone(),
-                                source_surface: drag_source.source_surface,
-                                complete_root: drag_source.complete_root.clone(),
-                                origin: origin.clone(),
-                                coordinates: self
-                                    .capture_surface_coordinates(drag_source.source_surface),
-                            },
-                        )
-                    })
+                    self.scene_gesture_continuation_draft(
+                        cause,
+                        owner,
+                        prepared.presentation,
+                        SceneGestureContinuationSource::Drag {
+                            payload: payload.clone(),
+                            source_surface: drag_source.source_surface,
+                            complete_root: drag_source.complete_root.clone(),
+                            origin: origin.clone(),
+                            coordinates: self
+                                .capture_surface_coordinates(drag_source.source_surface),
+                        },
+                    )
                 } else {
                     None
                 };
@@ -268,7 +220,7 @@ impl DockEngine {
                         partial_detachable: drag_source.partial_detachable,
                         origin,
                         source_validated_at: self.version,
-                        presentation: prepared.presentation.into_drag(),
+                        presentation: prepared.presentation,
                         source_layout_facts: prepared.source_layout_facts,
                         journal_source_geometry: None,
                         continuation,
@@ -285,9 +237,7 @@ impl DockEngine {
                 InteractionOutcome::DragArmed { session, replaced }
             }
             ContainedGestureKind::Resize(direction) => {
-                let continuation = if activation_changed
-                    && prepared.presentation.presented().is_some()
-                {
+                let continuation = if activation_changed {
                     let source = self
                         .workspace
                         .capture_node_source(prepared.root, prepared.source.node())
@@ -307,10 +257,7 @@ impl DockEngine {
                     self.scene_gesture_continuation_draft(
                         cause,
                         owner,
-                        prepared
-                            .presentation
-                            .presented()
-                            .expect("checked contained transform has presented authority"),
+                        prepared.presentation,
                         SceneGestureContinuationSource::ContainedTransform {
                             source,
                             surface: prepared.surface,
@@ -378,10 +325,7 @@ impl DockEngine {
                 },
             );
         }
-        let stream = transform
-            .owner
-            .stream()
-            .ok_or(InteractionRejection::SessionMismatch)?;
+        let stream = transform.owner;
         match (stream.lease().scope(), edge.location()) {
             (PointerProviderScope::HostLocal(_), PointerEdgeLocation::HostLocal { .. }) => self
                 .journal_host_local_manipulation(edge)
@@ -719,11 +663,7 @@ impl DockEngine {
             self.viewport.viewport(transform.surface),
             self.viewport
                 .surface_coordinate_authority(transform.surface),
-        ) || transform
-            .presentation
-            .local_coordinates()
-            .is_some_and(|coordinates| coordinates != transform.coordinate_capture)
-        {
+        ) {
             return Err(
                 InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable {
                     surface: transform.surface,

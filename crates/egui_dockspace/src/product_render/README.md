@@ -23,8 +23,11 @@ Cancel}` from egui responses. The following frontend paths have been removed:
   to the removed frontend. Core coordinate methods with the same name are separate
   APIs and retain their existing callers.
 
-No renderer drag owner, threshold, pending release, or gesture-phase state replaces
-these paths. `ctx().dragged_id()` is consulted only to release egui drag ownership
+Core `SurfaceGesturePhase`, local gesture preparation/input APIs, and the
+`LocalResponse` gesture owner are also deleted. Non-pointer candidate actions
+remain separate semantic commands. No renderer drag owner, threshold, pending
+release, or gesture-phase state replaces these paths. `ctx().dragged_id()` is
+consulted only to release egui drag ownership
 for journal-owned docking widgets. It does not establish a core gesture.
 
 ## Authority contract

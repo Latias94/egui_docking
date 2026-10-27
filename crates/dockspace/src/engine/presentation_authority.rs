@@ -593,22 +593,14 @@ impl DockEngine {
             }
             InteractionStatus::Resizing { session } => {
                 if let Ok(resize) = self.interaction.active_resize(session) {
-                    // A framework-local response is already bound to the
-                    // current Ready scene and has no native provider whose
-                    // binding needs to be kept alive. Only journal-owned
-                    // resizes participate in platform reconciliation.
-                    if resize.authority.presented().is_some() {
-                        self.insert_current_viewport_binding(
-                            &mut dependencies.owner_bindings,
-                            resize.surface,
-                        );
-                    }
+                    self.insert_current_viewport_binding(
+                        &mut dependencies.owner_bindings,
+                        resize.surface,
+                    );
                 }
             }
             InteractionStatus::ContainedTransforming { session } => {
-                if let Ok(transform) = self.interaction.active_contained_transform(session)
-                    && transform.presentation.presented().is_some()
-                {
+                if let Ok(transform) = self.interaction.active_contained_transform(session) {
                     self.insert_current_viewport_binding(
                         &mut dependencies.owner_bindings,
                         transform.surface,
@@ -660,9 +652,6 @@ impl DockEngine {
         let Ok(drag) = self.interaction.armed_drag(session) else {
             return;
         };
-        if drag.presentation.presented().is_none() {
-            return;
-        }
         if let Some(surface) = self.payload_surface(&drag.payload) {
             self.insert_current_viewport_binding(&mut dependencies.owner_bindings, surface);
         }
@@ -679,14 +668,7 @@ impl DockEngine {
         let Ok(drag) = self.interaction.active_drag(session) else {
             return;
         };
-        if drag.presentation.presented().is_none() {
-            return;
-        }
-        if let Some(binding) = drag
-            .owner
-            .pointer_if_physical()
-            .and_then(|pointer| self.viewport.drag_source(pointer))
-        {
+        if let Some(binding) = self.viewport.drag_source(drag.owner.pointer()) {
             dependencies.owner_bindings.insert(binding);
             dependencies.routed = true;
         } else if let Some(surface) = self.payload_surface(&drag.payload) {
@@ -1831,34 +1813,6 @@ impl DockEngine {
                     .last_advanced_position()
                     .and_then(ManipulationPositionKey::surface)
                     .is_some_and(|surface| changed_surfaces.contains(&surface));
-                if matches!(cause, ReductionCause::SurfaceContributionBatch { .. })
-                    && let GestureOwner::LocalResponse { surface } = drag.owner
-                    && surface == drag.source_surface
-                    && changed_surfaces.contains(&surface)
-                    && let Some(current) = drag.current_pointer()
-                    && let Some(scene) = self
-                        .presentation_authority
-                        .scene
-                        .ready_candidate(surface)
-                        .map(crate::scene::SurfacePlanScene::stamp)
-                {
-                    let policy = self.policy_snapshot().clone();
-                    let evaluation = self.resolve_local_tab_preview_against_ready_candidate(
-                        cause, &drag, surface, current, &policy,
-                    )?;
-                    let _ = self.apply_position_evaluation(
-                        cause,
-                        drag.owner,
-                        session,
-                        ManipulationPositionKey::Local {
-                            scene,
-                            pointer: SurfacePointer::new(surface, current),
-                        },
-                        evaluation,
-                        interaction_events,
-                    )?;
-                    return Ok(());
-                }
                 if affected || position_affected {
                     let changed =
                         self.interaction
@@ -1880,41 +1834,8 @@ impl DockEngine {
                     .interaction
                     .active_contained_transform(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?;
-                let local_owner = matches!(
-                    transform.owner,
-                    GestureOwner::LocalResponse { surface } if surface == transform.surface
-                );
-                let local_coordinates = transform.presentation.local_coordinates()
-                    == Some(transform.coordinate_capture);
-                let owner_current = self.workspace.presentation_for_root(transform.root)
-                    == Some(crate::RootPresentationOwner::Contained {
-                        surface: transform.surface,
-                        floating: transform.floating,
-                    });
-                let current = self
-                    .presentation_authority
-                    .scene
-                    .ready_candidate(transform.surface);
-                let scene_coordinates = current.is_some_and(|current| {
-                    current.coordinate_capture() == transform.coordinate_capture
-                });
-                let scene_bounds = current
-                    .is_some_and(|current| current.plan().bounds() == transform.surface_bounds);
-                let scene_record = current.is_some_and(|current| {
-                    current
-                        .plan()
-                        .contained_record(transform.floating)
-                        .is_some_and(|record| {
-                            record.root() == transform.root
-                                && record.minimum_size() == transform.minimum_size
-                        })
-                });
-                let scene_current = scene_coordinates && scene_bounds && scene_record;
-                let local_response_remains_valid =
-                    local_owner && local_coordinates && owner_current && scene_current;
-                let affected = changed_surfaces.contains(&transform.surface)
-                    && transform.preview.is_some()
-                    && !local_response_remains_valid;
+                let affected =
+                    changed_surfaces.contains(&transform.surface) && transform.preview.is_some();
                 if affected {
                     let status = self
                         .interaction

@@ -451,7 +451,7 @@ completion work.
 - **Goal:** Make a gesture's complete lifecycle local to one deep core module.
 - **Requirements:** R1-R4, R8, R9, R11, R14, R17; KTD3, KTD8, KTD10.
 - **Dependencies:** U2.
-- **Files:** `crates/dockspace/src/runtime/direct_manipulation.rs` or a focused module directory, `crates/dockspace/src/runtime/interaction.rs`, `crates/dockspace/src/{interaction,pointer_journal}.rs`, `crates/dockspace/src/engine/{host_frame,pointer_proof,provider_lifecycle,local_response,pointer_transaction,local_contained,pointer_contained,pointer_splitter}.rs`, `crates/egui_dockspace/src/product_render/actions.rs`, public-host and product gesture tests.
+- **Files:** `crates/dockspace/src/runtime/direct_manipulation.rs` or a focused module directory, `crates/dockspace/src/runtime/interaction.rs`, `crates/dockspace/src/{interaction,pointer_journal}.rs`, `crates/dockspace/src/engine/{host_frame,pointer_proof,provider_lifecycle,semantic_candidate,pointer_transaction,contained_adjustment,pointer_contained,pointer_splitter}.rs`, `crates/egui_dockspace/src/product_render/actions.rs`, public-host and product gesture tests.
 - **Approach:** Normalize ordered input boundaries and semantic commands into one transaction owner. Replace the surface-fixed producer scope with a host-local input domain and event-bound qualified surface routes; retain the existing affine journal, exact receiver validation, drain and rollback. Source manipulation coordinates and target hover coordinates remain independent, including when two surfaces use identical local bounds. A departure from all logical surfaces grants no desktop outside-all fact. Keep semantic controls/scroll separate where their existing subsystem owns them. Remove old release/cancel/ACK terminal reducers and all inference of an event's surface from the producer lease rather than forwarding through them. A single-surface convenience API may wrap the same implementation without another terminal owner.
 - **Test scenarios:** Covers AE2/AE4. Same-tick press/move/release, duplicate release, cancellation, capture/source/target loss, discarded preview, and policy changes produce one terminal outcome through both input adapters.
 - **Verification:** Complete Burst cases enter ordinary passing gates; one core release barrier and cancellation owner remain.
@@ -503,11 +503,20 @@ interoperability. Internal preview-only ACK reducers and renderer response-based
 docking gesture producers are deleted. The original complete L03 product matrix,
 including its unchanged single-batch Burst executor, now passes without ignore.
 
-U3 remains open until the remaining core `LocalResponse` owner, local gesture
-preparation APIs and reducer frontends are retired and their useful tests migrate
-to the public host lane. U3c's passing matrix is evidence for the new transport,
-not permission to keep the old owner. U4 full live-content projection, U5 broader
-blocker qualification and U6 semantic focus integration remain separate gates.
+U3 replacement gate completed (2026-10-28): the core `LocalResponse` owner,
+`SurfaceGesturePhase`, local gesture preparation/input APIs, local phase reducers,
+local position identity, and gesture-specific `LocalReady` authority alternatives
+are deleted. Every gesture now requires an admitted journal stream, a frozen
+presented proof, capture authority and a threshold origin. Non-pointer candidate
+commands remain in `semantic_candidate.rs` and `contained_adjustment.rs`; they do
+not create another gesture owner. Useful presentation, contained and native
+tests use actual host input and exact output settlement. U3c's unchanged complete
+Burst matrix passes without ignore. Independent proof/continuation review and
+fresh downstream gates are recorded in `docs/VALIDATION.md`.
+
+U3 completion does not establish U4 full live-content projection, U5 broader
+blocker qualification, U6's full command/focus contract, or U12 structural-cost
+and engine-readiness certification. These remain separate gates.
 
 ### U4. Complete magnetic behavior and live contained content
 

@@ -225,7 +225,7 @@ pub enum CloseActivation {
     /// Keyboard or accessibility activation targeted the control's stable identity.
     Semantic,
     /// Current-frame framework response targeted the control in the exact Ready candidate.
-    LocalResponse,
+    CurrentCandidate,
 }
 
 /// A point already converted into one logical surface's coordinate space.

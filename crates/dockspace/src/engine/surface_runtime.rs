@@ -283,7 +283,7 @@ impl DockEngine {
                 .interaction
                 .active_drag(session)
                 .ok()
-                .and_then(|drag| drag.owner.pointer_if_physical()),
+                .map(|drag| drag.owner.pointer()),
             InteractionStatus::Idle
             | InteractionStatus::Pressed { .. }
             | InteractionStatus::Armed { .. }
@@ -1398,7 +1398,7 @@ impl DockEngine {
                 self.interaction
                     .active_drag(session)
                     .ok()
-                    .and_then(|drag| drag.owner.pointer_if_physical())
+                    .map(|drag| drag.owner.pointer())
                     .and_then(|pointer| self.viewport.drag_route_effect(pointer))
                     == Some(result.effect())
             }

@@ -1,11 +1,10 @@
 //! Single-writer input queue and atomic headless state reducer.
 
 mod close_workflow;
+mod contained_adjustment;
 mod contained_geometry;
 mod host_frame;
 mod input;
-mod local_contained;
-mod local_response;
 mod native_admission;
 mod native_tear_off;
 mod pointer_contained;
@@ -22,6 +21,7 @@ mod provider_lifecycle;
 mod reducer;
 mod retention;
 mod scroll_interaction;
+mod semantic_candidate;
 mod semantic_keyboard;
 mod semantic_receiver;
 mod splitter_geometry;
@@ -54,10 +54,9 @@ use self::contained_geometry::{
 pub(crate) use self::input::LocalTabChromeAction;
 use self::input::TabScrollAdjustmentKind;
 pub use self::input::{
-    EngineInput, LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase,
-    PreparedTabListMenuDismiss, PreparedTabListMenuNavigation, PreparedTabListMenuRowActivation,
-    PreparedTabListMenuScroll, PreparedTabStripControlActivation, PreparedTabStripScroll,
-    TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
+    EngineInput, PreparedTabListMenuDismiss, PreparedTabListMenuNavigation,
+    PreparedTabListMenuRowActivation, PreparedTabListMenuScroll, PreparedTabStripControlActivation,
+    PreparedTabStripScroll, TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
     ValidatedWorkspaceRestore,
 };
 use self::native_admission::NativeAdmissionState;
@@ -134,19 +133,18 @@ use crate::intent::{
 };
 use crate::interaction::{
     ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart, ContainedDragIntent,
-    ContainedTransformGestureAuthority, ContainedTransformPlacement, ContainedTransformPreview,
-    ContainedTransformSessionId, ContainedTransformStart, DragArmStart, DragGestureAuthority,
-    EscapeDelivery, FrozenClickAction, FrozenCloseClick, FrozenContainedDockBackClick,
-    FrozenContainedDragOrigin, FrozenDragOrigin, FrozenPresentationAuthority, FrozenResizeHandle,
-    FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick,
-    FrozenTabStripControlClick, GestureOwner, InteractionCancelReason, InteractionCounterError,
-    InteractionDelivery, InteractionEvent, InteractionEventKind, InteractionOutcome,
-    InteractionRejection, InteractionState, InteractionStatus, JournalDragSourceGeometry,
-    JournalDragThresholdOrigin, ManipulationPositionKey, PreviewProof, PreviewResolutionStatus,
-    PreviewVisual, ResizeGestureAuthority, ResizeStart, SceneGestureContinuation,
-    SceneGestureContinuationDraft, SceneGestureContinuationSource, SceneGestureSession,
-    ScrollApplication, ScrollReductionOutcome, ScrollSessionId, ScrollSuppressionReason,
-    ScrollTerminationReason, WorkspaceDeliveryKind,
+    ContainedTransformPlacement, ContainedTransformPreview, ContainedTransformSessionId,
+    ContainedTransformStart, DragArmStart, EscapeDelivery, FrozenClickAction, FrozenCloseClick,
+    FrozenContainedDockBackClick, FrozenContainedDragOrigin, FrozenDragOrigin,
+    FrozenPresentationAuthority, FrozenResizeHandle, FrozenTabListMenuBackdropClick,
+    FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
+    GestureOwner, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
+    InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
+    InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
+    ManipulationPositionKey, PreviewProof, PreviewResolutionStatus, PreviewVisual, ResizeStart,
+    SceneGestureContinuation, SceneGestureContinuationDraft, SceneGestureContinuationSource,
+    SceneGestureSession, ScrollApplication, ScrollReductionOutcome, ScrollSessionId,
+    ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
@@ -1623,13 +1621,13 @@ enum PresentationRehomeCommitAuthority {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SplitterAdjustmentAuthority {
     PresentedCoordinates,
-    LocalReady,
+    CurrentCandidate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContainedPlacementAuthority {
     PresentedCoordinates,
-    LocalReady,
+    CurrentCandidate,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1882,7 +1880,7 @@ struct PreparedContainedGesture {
     scene: SurfaceSceneStamp,
     surface_bounds: crate::geometry::LogicalRect,
     coordinate_capture: SurfaceCoordinateCapture,
-    presentation: ContainedTransformGestureAuthority,
+    presentation: FrozenPresentationAuthority,
     source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
 }
 
@@ -1896,7 +1894,7 @@ struct PreparedTabGesture {
     source_geometry: JournalDragSourceGeometry,
     contained: Option<PreparedContainedTabOrigin>,
     initial_pointer: crate::geometry::LogicalPoint,
-    presentation: DragGestureAuthority,
+    presentation: FrozenPresentationAuthority,
     source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
 }
 
@@ -2267,7 +2265,7 @@ impl DockEngine {
         let Ok(resize) = self.interaction.active_resize(session) else {
             return false;
         };
-        if resize.authority.presented() != Some(frozen)
+        if resize.authority != frozen
             || resize.surface != frozen.surface()
             || self
                 .presentation_authority
@@ -2367,7 +2365,7 @@ impl DockEngine {
                                 && drag.source_surface == *source_surface
                                 && drag.complete_root == *complete_root
                                 && drag.origin == *origin
-                                && drag.presentation.presented() == Some(draft.origin)
+                                && drag.presentation == draft.origin
                         })
                     }
                     InteractionStatus::Dragging { session: active } if active == *session => {
@@ -2376,7 +2374,7 @@ impl DockEngine {
                                 && drag.source_surface == *source_surface
                                 && drag.complete_root == *complete_root
                                 && drag.origin == *origin
-                                && drag.presentation.presented() == Some(draft.origin)
+                                && drag.presentation == draft.origin
                         })
                     }
                     InteractionStatus::Idle
@@ -2440,7 +2438,7 @@ impl DockEngine {
                     return false;
                 };
                 draft.origin.surface() == *surface
-                    && transform.presentation.presented() == Some(draft.origin)
+                    && transform.presentation == draft.origin
                     && transform.surface == *surface
                     && transform.root == *root
                     && transform.floating == *floating
@@ -3739,8 +3737,8 @@ impl DockEngine {
             ContainedPlacementAuthority::PresentedCoordinates => {
                 self.validate_contained_placement(update.placement)
             }
-            ContainedPlacementAuthority::LocalReady => self
-                .local_response_candidate(update.placement.scene())
+            ContainedPlacementAuthority::CurrentCandidate => self
+                .semantic_candidate(update.placement.scene())
                 .map_err(|_| ContainedPlacementUnavailable::StaleScene {
                     expected: update.placement.scene(),
                     current: self
@@ -3912,25 +3910,6 @@ impl DockEngine {
         &self,
         drag: &crate::interaction::ActiveDrag,
     ) -> bool {
-        if let Some(coordinates) = drag.presentation.local_coordinates() {
-            let surface = drag.presentation.surface();
-            return surface == drag.source_surface
-                && Self::coordinate_capture_matches_current(
-                    coordinates,
-                    self.viewport.viewport(surface),
-                    self.viewport.surface_coordinate_authority(surface),
-                )
-                && self
-                    .presentation_authority
-                    .scene
-                    .surface(surface)
-                    .and_then(SurfaceScene::ready)
-                    .map(crate::scene::ReadySurfaceScene::candidate)
-                    .is_some_and(|candidate| {
-                        candidate.stamp().requirement().workspace_epoch() == self.version.epoch()
-                            && candidate.coordinate_capture() == coordinates
-                    });
-        }
         if !matches!(drag.origin, FrozenDragOrigin::Workspace) {
             return true;
         }
@@ -3997,8 +3976,8 @@ impl DockEngine {
             ContainedPlacementAuthority::PresentedCoordinates => {
                 self.validate_contained_placement(proposal.placement())
             }
-            ContainedPlacementAuthority::LocalReady => self
-                .local_response_candidate(proposal.placement().scene())
+            ContainedPlacementAuthority::CurrentCandidate => self
+                .semantic_candidate(proposal.placement().scene())
                 .map_err(|_| ContainedPlacementUnavailable::StaleScene {
                     expected: proposal.placement().scene(),
                     current: self
@@ -4270,7 +4249,7 @@ impl DockEngine {
             .interaction
             .active_drag(session)
             .ok()
-            .and_then(|drag| drag.owner.pointer_if_physical());
+            .and_then(|drag| Some(drag.owner.pointer()));
         match self.interaction.cancel_drag(session) {
             Ok(status) => {
                 if let Some(pointer) = pointer {
@@ -4360,7 +4339,7 @@ impl DockEngine {
                         && scene.requirement().workspace_epoch() == self.version.epoch()
                 })
                 .ok_or(InteractionRejection::StaleScene),
-            SplitterAdjustmentAuthority::LocalReady => self.local_response_candidate(scene),
+            SplitterAdjustmentAuthority::CurrentCandidate => self.semantic_candidate(scene),
         };
         let painted = match painted {
             Ok(painted) => painted,
@@ -4457,7 +4436,7 @@ impl DockEngine {
         let surface = scene.surface();
         let axis = axis.into();
         let handles = {
-            let painted = match self.local_response_candidate(scene) {
+            let painted = match self.semantic_candidate(scene) {
                 Ok(painted) => painted,
                 Err(error) => return Ok(InteractionOutcome::Rejected(error)),
             };

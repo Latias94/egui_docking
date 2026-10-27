@@ -1,7 +1,6 @@
 //! Public engine input protocol and opaque prepared interaction proofs.
 
 use super::*;
-use crate::intent::TabGestureSource;
 
 /// A document-validated workspace replacement carrying its opaque allocator lineage.
 ///
@@ -241,92 +240,6 @@ impl PreparedTabListMenuNavigation {
     pub const fn target(&self) -> ItemId {
         self.target
     }
-}
-
-/// One exact current-frame splitter gesture phase from a framework response.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LocalSplitterGesturePhase {
-    /// Begin one resize from an exact Ready scene and absolute logical points.
-    Press {
-        /// Exact Ready candidate which owned the pressed splitter target.
-        scene: SurfaceSceneStamp,
-        /// Absolute logical point at which the drag began.
-        initial: LogicalPoint,
-        /// Absolute logical point observed by the current response.
-        current: LogicalPoint,
-    },
-    /// Update the active resize at one absolute logical point.
-    Move {
-        /// Current absolute logical point in the owner surface.
-        current: LogicalPoint,
-    },
-    /// Commit the active resize using this release-time logical point.
-    Release {
-        /// Exact absolute release point in the owner surface.
-        current: LogicalPoint,
-    },
-    /// Cancel the matching local resize without changing durable layout.
-    Cancel,
-}
-
-/// One current-frame tab drag fact produced by an egui `Response`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LocalTabGesturePhase {
-    /// Begin a drag from the exact tab response and scene.
-    Begin {
-        /// Ready scene which owned the source response.
-        scene: SurfaceSceneStamp,
-        /// Pointer location when the framework crossed its drag threshold.
-        initial: LogicalPoint,
-        /// Current pointer location in the source surface.
-        current: LogicalPoint,
-    },
-    /// Update the active drag at an absolute logical point.
-    Move {
-        /// Current Ready scene which still authorizes the local response.
-        scene: SurfaceSceneStamp,
-        /// Current pointer location in the source surface.
-        current: LogicalPoint,
-    },
-    /// Release the active drag at an absolute logical point.
-    Release {
-        /// Current Ready scene which still authorizes the local response.
-        scene: SurfaceSceneStamp,
-        /// Current pointer location in the source surface.
-        current: LogicalPoint,
-    },
-    /// Cancel the active local drag without changing durable layout.
-    Cancel,
-}
-
-/// One current-frame contained-floating transform fact from a framework response.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LocalContainedGesturePhase {
-    /// Begin a transform from an exact Ready scene and absolute logical points.
-    Begin {
-        /// Ready scene which owned the contained chrome response.
-        scene: SurfaceSceneStamp,
-        /// Pointer location when the framework crossed its drag threshold.
-        initial: LogicalPoint,
-        /// Current pointer location in the owner surface.
-        current: LogicalPoint,
-    },
-    /// Update the active transform at an absolute logical point.
-    Move {
-        /// Current Ready scene which still authorizes the local response.
-        scene: SurfaceSceneStamp,
-        /// Current pointer location in the owner surface.
-        current: LogicalPoint,
-    },
-    /// Release the active transform against the last painted preview.
-    Release {
-        /// Current Ready scene which still authorizes the local response.
-        scene: SurfaceSceneStamp,
-        /// Exact absolute release point in the owner surface.
-        current: LogicalPoint,
-    },
-    /// Cancel the matching local transform without changing durable geometry.
-    Cancel,
 }
 
 /// One current-frame tab-strip or tab-list-menu action prepared from an exact
@@ -616,17 +529,6 @@ pub enum EngineInput {
         /// Stable contained presentation exposed by that candidate.
         floating: crate::ids::FloatingPresentationId,
     },
-    /// Raise one rear contained presentation from an exact current-frame press.
-    ActivateLocalContained {
-        /// Workspace version from which the local response was captured.
-        expected: WorkspaceVersion,
-        /// Exact Ready candidate painted by the framework callback.
-        scene: SurfaceSceneStamp,
-        /// Stable contained presentation exposed by that candidate.
-        floating: crate::ids::FloatingPresentationId,
-        /// Exact surface-logical primary press point.
-        point: crate::geometry::LogicalPoint,
-    },
     /// Select one exact tab activated by a current-frame framework response.
     SelectLocalSceneTab {
         /// Workspace version from which the local response was captured.
@@ -708,41 +610,6 @@ pub enum EngineInput {
         direction: crate::scene::ContainedResizeDirection,
         /// Signed displacement of that edge in logical surface units.
         delta: f64,
-    },
-    /// Drive one local-response splitter or junction gesture through the core resize FSM.
-    LocalSplitterGesture {
-        /// Workspace version current when the framework response was captured.
-        expected: WorkspaceVersion,
-        /// Logical surface which owns the framework response.
-        surface: SurfaceId,
-        /// Exact structural handle or junction identity owned by the response.
-        target: SplitterResizeTarget,
-        /// Press, motion, release, or explicit cancellation fact.
-        phase: LocalSplitterGesturePhase,
-    },
-    /// Drive one local-response tab drag through the core drag/drop resolver.
-    LocalTabGesture {
-        /// Workspace version current when the framework response was captured.
-        expected: WorkspaceVersion,
-        /// Logical surface which owns the framework response.
-        surface: SurfaceId,
-        /// Stable tab or tab-group identity which owns the response.
-        source: TabGestureSource,
-        /// Begin, move, release, or cancellation fact.
-        phase: LocalTabGesturePhase,
-    },
-    /// Reduce one current-frame contained-floating resize through the core transform FSM.
-    LocalContainedGesture {
-        /// Workspace version from which the response was captured.
-        expected: WorkspaceVersion,
-        /// Surface whose Ready scene owned the response.
-        surface: SurfaceId,
-        /// Stable contained presentation identity.
-        floating: FloatingPresentationId,
-        /// Exact contained chrome gesture represented by the response.
-        kind: crate::intent::ContainedGestureKind,
-        /// Current framework gesture phase.
-        phase: LocalContainedGesturePhase,
     },
     /// Activate one exact current tab-strip control without fabricating pointer delivery.
     ActivateTabStripControl {
@@ -889,7 +756,6 @@ impl EngineInput {
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }
             | Self::DockBackLocalContained { .. }
-            | Self::ActivateLocalContained { .. }
             | Self::SelectLocalSceneTab { .. }
             | Self::ApplyLocalTabChromeAction { .. }
             | Self::ApplyLocalPresentationCommand { .. }
@@ -898,9 +764,6 @@ impl EngineInput {
             | Self::AdjustLocalSplitterResize { .. }
             | Self::AdjustLocalSplitterJunctionResize { .. }
             | Self::AdjustLocalContainedResize { .. }
-            | Self::LocalSplitterGesture { .. }
-            | Self::LocalTabGesture { .. }
-            | Self::LocalContainedGesture { .. }
             | Self::ActivateTabStripControl { .. }
             | Self::ActivateTabListMenuRow { .. }
             | Self::DismissTabListMenu { .. }

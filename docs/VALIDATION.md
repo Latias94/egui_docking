@@ -14,6 +14,60 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U3 journal-only gesture replacement
+
+U3a, U3b and U3c now pass the replacement gate. `SurfaceGesturePhase`, all local
+gesture-preparation APIs and `EngineInput::Local*Gesture` variants are deleted.
+The local tab/splitter/contained phase reducers, contained primary-press action,
+local position identity and gesture-specific `LocalReady` authority variants are
+also deleted. `GestureOwner` is now a private alias for the admitted
+`PointerStreamId`, not an alternate owner enum. Capture authority and drag
+threshold origin are mandatory; `Authority::Unknown` remains an explicit fact,
+not an absent owner. Read-only gesture views return their definite pointer and
+stream identities without a legacy optional branch.
+
+Non-pointer candidate actions remain valid without pointer/native enrollment.
+Their focused modules are now `semantic_candidate.rs` and
+`contained_adjustment.rs`. Accepted host-local tab activation now publishes the
+same core pane-focus intent when no native viewport owns focus. Full command and
+focus experience certification remains U6, rather than being inferred from this
+single integration correction.
+
+Presentation feedback tests now use public host batches and complete output
+execution/presentation observations. Contained tests preserve causal press/Raise,
+measurement, actual presentation and motion boundaries. The complete contained
+redock Burst stays one input batch; its terminal artifact may retire when exact
+preview presentation commits the topology, so it is not reused as receiver
+authority. Native tests keep their actual provider domain and submit empty
+checkpoints in semantic frames. The coordinator's cursor-coalescing test now
+begins a real managed native press while its translator remains idle.
+
+Two tests tied only to the deleted local-owner state are removed. Two duplicate
+local splitter commit tests are covered by existing journal handle/junction
+journeys; their cancellation peer is migrated to a real journal stream cancel.
+The resulting root count decreases by four, without deleting presentation,
+contained or native lifecycle journeys. The obsolete local-only identity
+reservation is deleted; its atomic floating-counter exhaustion check now covers
+the canonical composite drag reservation instead.
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Root workspace, all features and targets | 1,583 passed | Journal-only kernel, semantic candidate actions and egui adapter |
+| Public engine host, default and serde | 20 passed each | Framework-neutral downstream contract |
+| Product harness, default | 93 passed, none ignored | Controlled chrome, cancellation and output-bound receiver facts |
+| Product harness, all features | 97 passed, none ignored | Includes the unchanged complete L03 Burst matrix |
+| Official harness, all features and targets | 12 passed | Public API plus caller-owned demo compilation |
+| Native workspace, all targets | 198 passed | Includes the migrated managed-domain cursor-coalescing test |
+| Strict rustdoc and documentation tests | Passed; 10 doc tests | Removed APIs have no required documentation seam |
+| Correctness/suspicious Clippy and formatting | Passed | Nextest uses one test thread; no concurrent Cargo commands |
+
+Independent read-only review found no new P1/P2 in source continuation,
+presentation revalidation, capture authority, threshold origin or exact-owner
+cancellation after deletion. These deterministic gates do not establish full
+live contained content (U4), arbitrary egui widget/blocker interoperability (U5),
+the complete application loop (U6), structural cost/readiness (U12), or native
+physical platform claims. The overall refactor remains active.
+
 ## 2026-10-28 U3b ordered egui transport checkpoint
 
 The official adapter now captures the raw event packet at `run_ui` entry,
@@ -87,9 +141,10 @@ and allowing one widget ID to consume multiple anonymous rectangles made the
 late-presentation and equal-rectangle blocker regressions fail respectively.
 Both mutations were restored before the final passing gates.
 
-This is not U3 completion. The remaining core `LocalResponse` owner, gesture
-preparation APIs and local reducer frontends still require deletion and useful
-test migration. Full contained content projection (U4), broader egui blocker
+At this earlier transport checkpoint U3 was not complete: the core
+`LocalResponse` owner and local gesture frontends still required deletion and
+test migration. The journal-only replacement section records their subsequent
+retirement. Full contained content projection (U4), broader egui blocker
 interoperability (U5), accepted semantic focus bridging (U6), public host
 readiness/cost certification (U12), and physical native certification are not
 established by these headless results. The following U3a/U2 sections retain their

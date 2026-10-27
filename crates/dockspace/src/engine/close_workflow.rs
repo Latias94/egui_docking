@@ -96,7 +96,7 @@ impl DockEngine {
     ) -> Result<InteractionOutcome, EngineError> {
         let surface = scene.surface();
         let painted = match activation {
-            CloseActivation::LocalResponse => self.local_response_candidate(scene),
+            CloseActivation::CurrentCandidate => self.semantic_candidate(scene),
             CloseActivation::Pointer { .. } | CloseActivation::Semantic => self
                 .presentation_authority
                 .scene
@@ -191,7 +191,7 @@ impl DockEngine {
                     ));
                 }
             }
-            CloseActivation::Semantic | CloseActivation::LocalResponse => {
+            CloseActivation::Semantic | CloseActivation::CurrentCandidate => {
                 if !plan.region_is_operable(close_bounds, layer) {
                     return Ok(InteractionOutcome::Rejected(
                         InteractionRejection::CloseActivationOccluded { target },

@@ -1241,7 +1241,7 @@ impl DockspaceHostFrame<'_> {
             plan: candidate.plan(),
             hit_manifest: candidate.hit_manifest(),
             splitter_keyboard_step: view.presentation_config().splitter_keyboard_step(),
-            escape_available: view.interaction().local_response_gesture_surface() == Some(surface),
+            escape_available: view.interaction().active_surface() == Some(surface),
             drop_affordance,
             drag_preview: view.presentation_drag_preview(surface),
             drag_decoration,
@@ -1826,38 +1826,6 @@ impl<'frame> SurfacePaintPlan<'frame> {
         ))
     }
 
-    /// Prepares one exact primary-press activation for a rear contained presentation.
-    ///
-    /// The core retains ownership of stacking and pane-focus selection. The
-    /// caller supplies only the current plan's opaque contained identity and
-    /// the surface-logical point observed by its framework response.
-    #[must_use]
-    pub fn prepare_contained_activation(
-        self,
-        floating: FloatingPresentationId,
-        point: LogicalPoint,
-    ) -> Option<super::PreparedSurfaceAction> {
-        let contained = self
-            .plan
-            .contained_records()
-            .iter()
-            .find(|record| record.floating() == floating)?;
-        (!contained.is_frontmost()
-            && contained.outer_bounds().contains(point)
-            && self
-                .plan
-                .point_is_on_authoritative_layer(point, contained.layer()))
-        .then(|| {
-            super::PreparedSurfaceAction::activate_contained(
-                self.authority_domain,
-                self.version,
-                self.scene,
-                floating,
-                point,
-            )
-        })
-    }
-
     #[must_use]
     pub fn bounds(self) -> LogicalRect {
         self.plan.bounds()
@@ -2222,14 +2190,6 @@ impl<'frame> SurfacePaintPlan<'frame> {
                     .splitter_record(id)
                     .is_some_and(|splitter| splitter.axis() == axis && splitter.operable())
             })
-    }
-
-    pub(super) fn splitter_junction_id_operable(self, id: SplitterJunctionId) -> bool {
-        self.plan
-            .splitter_junction_records()
-            .iter()
-            .find(|record| record.id() == id)
-            .is_some_and(SplitterJunctionRecord::operable)
     }
 
     /// Returns the exact blocker receiver for one contained floating surface.

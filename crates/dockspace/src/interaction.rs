@@ -653,17 +653,16 @@ impl<'state> ActiveResizeView<'state> {
         self.session
     }
 
-    /// Returns the physical pointer which owns this resize, when journal-backed.
+    /// Returns the provider-owned pointer identity for this resize.
     #[must_use]
-    pub const fn pointer(self) -> Option<PointerId> {
-        self.owner.pointer_if_physical()
+    pub const fn pointer(self) -> PointerId {
+        self.owner.pointer()
     }
 
-    /// Returns the exact journal stream when this resize came from the
-    /// pointer-journal protocol.
+    /// Returns the exact journal stream which owns this resize.
     #[must_use]
-    pub const fn journal_stream(self) -> Option<PointerStreamId> {
-        self.owner.stream()
+    pub const fn journal_stream(self) -> PointerStreamId {
+        self.owner
     }
 
     /// Returns the button which owns this resize.
@@ -690,12 +689,6 @@ impl<'state> ActiveResizeView<'state> {
         self.target
     }
 
-    /// Returns the local-response owner surface when no pointer provider owns the gesture.
-    #[must_use]
-    pub const fn local_response_surface(self) -> Option<SurfaceId> {
-        self.owner.local_response_surface()
-    }
-
     /// Returns the latest validated atomic transient updates.
     #[must_use]
     pub const fn updates(self) -> &'state [SplitResize] {
@@ -716,24 +709,16 @@ impl<'state> ActiveDragView<'state> {
         self.session
     }
 
-    /// Returns the physical pointer which owns the drag, when journal-backed.
+    /// Returns the provider-owned pointer identity for this drag.
     #[must_use]
-    pub const fn pointer(self) -> Option<PointerId> {
-        self.owner.pointer_if_physical()
+    pub const fn pointer(self) -> PointerId {
+        self.owner.pointer()
     }
 
-    /// Returns the exact journal stream when this drag came from the
-    /// pointer-journal protocol.
+    /// Returns the exact journal stream which owns this drag.
     #[must_use]
-    pub const fn journal_stream(self) -> Option<PointerStreamId> {
-        self.owner.stream()
-    }
-
-    /// Returns the local-response owner surface when no physical pointer
-    /// provider owns this drag.
-    #[must_use]
-    pub const fn local_response_surface(self) -> Option<SurfaceId> {
-        self.owner.local_response_surface()
+    pub const fn journal_stream(self) -> PointerStreamId {
+        self.owner
     }
 
     /// Returns the pointer button which armed the drag.
@@ -808,17 +793,16 @@ impl<'state> ActiveContainedTransformView<'state> {
         self.session
     }
 
-    /// Returns the physical pointer which owns the transform, when journal-backed.
+    /// Returns the provider-owned pointer identity for this transform.
     #[must_use]
-    pub const fn pointer(self) -> Option<PointerId> {
-        self.owner.pointer_if_physical()
+    pub const fn pointer(self) -> PointerId {
+        self.owner.pointer()
     }
 
-    /// Returns the exact journal stream when this transform came from the
-    /// pointer-journal protocol.
+    /// Returns the exact journal stream which owns this transform.
     #[must_use]
-    pub const fn journal_stream(self) -> Option<PointerStreamId> {
-        self.owner.stream()
+    pub const fn journal_stream(self) -> PointerStreamId {
+        self.owner
     }
 
     /// Returns the pointer button which began the transform.
@@ -899,8 +883,6 @@ pub enum InteractionCancelReason {
     DeliveryOwnerLost,
     /// The platform explicitly terminated the owning pointer stream.
     PointerStreamCancelled,
-    /// The current framework response explicitly cancelled its local gesture.
-    LocalResponseCancelled,
     /// The provider reported the normal terminal release of an ephemeral stream.
     PointerStreamEnded,
     /// Button state became non-authoritative.
@@ -1184,16 +1166,7 @@ pub enum InteractionRejection {
 
 impl InteractionRejection {
     fn owner_mismatch(expected: GestureOwner, actual: GestureOwner) -> Self {
-        match (expected, actual) {
-            (GestureOwner::Stream(expected), GestureOwner::Stream(actual)) => {
-                Self::PointerStreamMismatch { expected, actual }
-            }
-            (GestureOwner::LocalResponse { .. }, GestureOwner::LocalResponse { .. })
-            | (GestureOwner::Stream(_), GestureOwner::LocalResponse { .. })
-            | (GestureOwner::LocalResponse { .. }, GestureOwner::Stream(_)) => {
-                Self::SessionMismatch
-            }
-        }
+        Self::PointerStreamMismatch { expected, actual }
     }
 }
 
@@ -1705,10 +1678,6 @@ fn preview_acquisition_matches(
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ManipulationPositionKey {
-    Local {
-        scene: SurfaceSceneStamp,
-        pointer: SurfacePointer,
-    },
     JournalSurface {
         scope: PointerProviderScope,
         position: Authority<LogicalPoint>,
@@ -1723,7 +1692,6 @@ pub(crate) enum ManipulationPositionKey {
 impl ManipulationPositionKey {
     pub(crate) const fn surface(self) -> Option<SurfaceId> {
         match self {
-            Self::Local { pointer, .. } => Some(pointer.surface()),
             Self::JournalHost { hover, .. } => match hover {
                 Some(route) => Some(route.surface()),
                 None => None,
@@ -1741,7 +1709,6 @@ impl ManipulationPositionKey {
 
     pub(crate) const fn hover_probe(self) -> Option<SurfacePointer> {
         match self {
-            Self::Local { pointer, .. } => Some(pointer),
             Self::JournalHost { hover, .. } => match hover {
                 Some(route) => Some(SurfacePointer::new(route.surface(), route.position())),
                 None => None,
@@ -1780,7 +1747,6 @@ impl ManipulationPositionKey {
     /// even when the event-time logical point itself is unavailable.
     pub(crate) const fn hover_surface(self) -> Option<SurfaceId> {
         match self {
-            Self::Local { pointer, .. } => Some(pointer.surface()),
             Self::JournalHost { hover, .. } => match hover {
                 Some(route) => Some(route.surface()),
                 None => None,
@@ -1810,9 +1776,6 @@ impl ManipulationPositionKey {
 
     fn exits_contained_source(self, surface: SurfaceId, source_rect: LogicalRect) -> bool {
         match self {
-            Self::Local { pointer, .. } => {
-                pointer.surface() != surface || !source_rect.contains(pointer.position())
-            }
             Self::JournalHost { hover, .. } => hover.is_some_and(|route| {
                 route.surface() != surface || !source_rect.contains(route.position())
             }),
@@ -2047,144 +2010,23 @@ impl DragTargetState {
 }
 
 /// Exact journal stream owner of one transient gesture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GestureOwner {
-    Stream(PointerStreamId),
-    LocalResponse { surface: SurfaceId },
-}
-
-impl GestureOwner {
-    pub(crate) const fn local_response_surface(self) -> Option<SurfaceId> {
-        match self {
-            Self::Stream(_) => None,
-            Self::LocalResponse { surface } => Some(surface),
-        }
-    }
-
-    pub(crate) const fn pointer(self) -> PointerId {
-        match self {
-            Self::Stream(stream) => stream.pointer(),
-            Self::LocalResponse { .. } => {
-                panic!("a local-response gesture has no physical pointer identity")
-            }
-        }
-    }
-
-    pub(crate) const fn pointer_if_physical(self) -> Option<PointerId> {
-        match self {
-            Self::Stream(stream) => Some(stream.pointer()),
-            Self::LocalResponse { .. } => None,
-        }
-    }
-
-    pub(crate) const fn stream(self) -> Option<PointerStreamId> {
-        match self {
-            Self::Stream(stream) => Some(stream),
-            Self::LocalResponse { .. } => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResizeGestureAuthority {
-    Presented(FrozenPresentationAuthority),
-    LocalReady,
-}
-
-impl ResizeGestureAuthority {
-    pub(crate) const fn presented(self) -> Option<FrozenPresentationAuthority> {
-        match self {
-            Self::Presented(authority) => Some(authority),
-            Self::LocalReady => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum DragGestureAuthority {
-    Presented(FrozenPresentationAuthority),
-    LocalReady {
-        surface: SurfaceId,
-        coordinates: SurfaceCoordinateCapture,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum ContainedTransformGestureAuthority {
-    Presented(FrozenPresentationAuthority),
-    LocalReady {
-        surface: SurfaceId,
-        coordinates: SurfaceCoordinateCapture,
-    },
-}
-
-impl ContainedTransformGestureAuthority {
-    pub(crate) const fn presented(self) -> Option<FrozenPresentationAuthority> {
-        match self {
-            Self::Presented(authority) => Some(authority),
-            Self::LocalReady { .. } => None,
-        }
-    }
-
-    pub(crate) const fn local_coordinates(self) -> Option<SurfaceCoordinateCapture> {
-        match self {
-            Self::Presented(_) => None,
-            Self::LocalReady { coordinates, .. } => Some(coordinates),
-        }
-    }
-
-    pub(crate) const fn into_drag(self) -> DragGestureAuthority {
-        match self {
-            Self::Presented(authority) => DragGestureAuthority::Presented(authority),
-            Self::LocalReady {
-                surface,
-                coordinates,
-            } => DragGestureAuthority::LocalReady {
-                surface,
-                coordinates,
-            },
-        }
-    }
-}
-
-impl DragGestureAuthority {
-    pub(crate) const fn presented(self) -> Option<FrozenPresentationAuthority> {
-        match self {
-            Self::Presented(authority) => Some(authority),
-            Self::LocalReady { .. } => None,
-        }
-    }
-
-    pub(crate) const fn surface(self) -> SurfaceId {
-        match self {
-            Self::Presented(authority) => authority.surface(),
-            Self::LocalReady { surface, .. } => surface,
-        }
-    }
-
-    pub(crate) const fn local_coordinates(self) -> Option<SurfaceCoordinateCapture> {
-        match self {
-            Self::Presented(_) => None,
-            Self::LocalReady { coordinates, .. } => Some(coordinates),
-        }
-    }
-}
+pub(crate) type GestureOwner = PointerStreamId;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ArmedDrag {
     pub(crate) session: DragSessionId,
     pub(crate) owner: GestureOwner,
-    pub(crate) journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+    pub(crate) journal_capture_authority: Authority<PointerCaptureOwner>,
     pub(crate) button: PointerButton,
     pub(crate) payload: MovePayload,
     pub(crate) source_surface: SurfaceId,
     pub(crate) initial_pointer: Option<LogicalPoint>,
-    pub(crate) journal_threshold_origin: Option<JournalDragThresholdOrigin>,
+    pub(crate) journal_threshold_origin: JournalDragThresholdOrigin,
     pub(crate) complete_root: Option<NodeSource>,
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
-    pub(crate) presentation: DragGestureAuthority,
+    pub(crate) presentation: FrozenPresentationAuthority,
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
@@ -2243,17 +2085,17 @@ pub(crate) enum FrozenDragOrigin {
 pub(crate) struct DragArmStart {
     pub(crate) epoch: WorkspaceEpoch,
     pub(crate) owner: GestureOwner,
-    pub(crate) journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+    pub(crate) journal_capture_authority: Authority<PointerCaptureOwner>,
     pub(crate) button: PointerButton,
     pub(crate) payload: MovePayload,
     pub(crate) source_surface: SurfaceId,
     pub(crate) initial_pointer: Option<LogicalPoint>,
-    pub(crate) journal_threshold_origin: Option<JournalDragThresholdOrigin>,
+    pub(crate) journal_threshold_origin: JournalDragThresholdOrigin,
     pub(crate) complete_root: Option<NodeSource>,
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
-    pub(crate) presentation: DragGestureAuthority,
+    pub(crate) presentation: FrozenPresentationAuthority,
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuationDraft>,
@@ -2263,7 +2105,7 @@ pub(crate) struct DragArmStart {
 pub(crate) struct ActiveDrag {
     pub(crate) session: DragSessionId,
     pub(crate) owner: GestureOwner,
-    pub(crate) journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+    pub(crate) journal_capture_authority: Authority<PointerCaptureOwner>,
     pub(crate) button: PointerButton,
     pub(crate) payload: MovePayload,
     pub(crate) source_surface: SurfaceId,
@@ -2272,7 +2114,7 @@ pub(crate) struct ActiveDrag {
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
-    pub(crate) presentation: DragGestureAuthority,
+    pub(crate) presentation: FrozenPresentationAuthority,
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
@@ -2325,13 +2167,13 @@ pub(crate) struct JournalPresentationReservation {
 pub(crate) struct ActiveResize {
     pub(crate) session: ResizeSessionId,
     pub(crate) owner: GestureOwner,
-    pub(crate) journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+    pub(crate) journal_capture_authority: Authority<PointerCaptureOwner>,
     pub(crate) button: PointerButton,
     pub(crate) surface: SurfaceId,
     pub(crate) scene: SurfaceSceneStamp,
     pub(crate) target: SplitterResizeTarget,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) authority: ResizeGestureAuthority,
+    pub(crate) authority: FrozenPresentationAuthority,
     pub(crate) initial_pointer: LogicalPoint,
     pub(crate) current_pointer: LogicalPoint,
     pub(crate) axis_groups: Vec<FrozenResizeAxisGroup>,
@@ -2361,13 +2203,13 @@ pub(crate) struct ResizeDeltaInterval {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResizeStart {
     pub(crate) owner: GestureOwner,
-    pub(crate) journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+    pub(crate) journal_capture_authority: Authority<PointerCaptureOwner>,
     pub(crate) button: PointerButton,
     pub(crate) surface: SurfaceId,
     pub(crate) scene: SurfaceSceneStamp,
     pub(crate) target: SplitterResizeTarget,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) authority: ResizeGestureAuthority,
+    pub(crate) authority: FrozenPresentationAuthority,
     pub(crate) initial_pointer: LogicalPoint,
     pub(crate) axis_groups: Vec<FrozenResizeAxisGroup>,
 }
@@ -2434,7 +2276,7 @@ impl ContainedTransformPlacement {
 pub(crate) struct ActiveContainedTransform {
     pub(crate) session: ContainedTransformSessionId,
     pub(crate) owner: GestureOwner,
-    pub(crate) journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+    pub(crate) journal_capture_authority: Authority<PointerCaptureOwner>,
     pub(crate) button: PointerButton,
     pub(crate) surface: SurfaceId,
     pub(crate) root: RootId,
@@ -2447,7 +2289,7 @@ pub(crate) struct ActiveContainedTransform {
     pub(crate) scene: SurfaceSceneStamp,
     pub(crate) surface_bounds: LogicalRect,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) presentation: ContainedTransformGestureAuthority,
+    pub(crate) presentation: FrozenPresentationAuthority,
     pub(crate) continuation: Option<SceneGestureContinuation>,
     pub(crate) preview: Option<PublishedContainedTransformPreview>,
 }
@@ -2455,7 +2297,7 @@ pub(crate) struct ActiveContainedTransform {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ContainedTransformStart {
     pub(crate) owner: GestureOwner,
-    pub(crate) journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+    pub(crate) journal_capture_authority: Authority<PointerCaptureOwner>,
     pub(crate) button: PointerButton,
     pub(crate) surface: SurfaceId,
     pub(crate) root: RootId,
@@ -2467,7 +2309,7 @@ pub(crate) struct ContainedTransformStart {
     pub(crate) scene: SurfaceSceneStamp,
     pub(crate) surface_bounds: LogicalRect,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) presentation: ContainedTransformGestureAuthority,
+    pub(crate) presentation: FrozenPresentationAuthority,
     pub(crate) continuation: Option<SceneGestureContinuationDraft>,
 }
 
@@ -2526,10 +2368,14 @@ impl InteractionState {
         })
     }
 
-    pub(crate) const fn local_response_gesture_surface(&self) -> Option<SurfaceId> {
-        match self.active_owner() {
-            Some(owner) => owner.local_response_surface(),
-            None => None,
+    pub(crate) const fn active_surface(&self) -> Option<SurfaceId> {
+        match &self.active {
+            ActiveGesture::Idle => None,
+            ActiveGesture::Pressed(click) => Some(click.presentation.surface()),
+            ActiveGesture::Armed(drag) => Some(drag.source_surface),
+            ActiveGesture::Dragging(drag) => Some(drag.source_surface),
+            ActiveGesture::Resizing(resize) => Some(resize.surface),
+            ActiveGesture::ContainedTransforming(transform) => Some(transform.surface),
         }
     }
 
@@ -2570,13 +2416,9 @@ impl InteractionState {
         }
     }
 
-    /// Returns the current journal stream, if the active gesture is journal
-    /// owned rather than a legacy renderer interaction.
+    /// Returns the current gesture's journal stream.
     pub(crate) const fn active_stream(&self) -> Option<PointerStreamId> {
-        match self.active_owner() {
-            Some(owner) => owner.stream(),
-            None => None,
-        }
+        self.active_owner()
     }
 
     pub(crate) const fn active_journal_capture_authority(
@@ -2584,10 +2426,12 @@ impl InteractionState {
     ) -> Option<Authority<PointerCaptureOwner>> {
         match &self.active {
             ActiveGesture::Pressed(click) => Some(click.capture_authority),
-            ActiveGesture::Armed(drag) => drag.journal_capture_authority,
-            ActiveGesture::Dragging(drag) => drag.journal_capture_authority,
-            ActiveGesture::Resizing(resize) => resize.journal_capture_authority,
-            ActiveGesture::ContainedTransforming(transform) => transform.journal_capture_authority,
+            ActiveGesture::Armed(drag) => Some(drag.journal_capture_authority),
+            ActiveGesture::Dragging(drag) => Some(drag.journal_capture_authority),
+            ActiveGesture::Resizing(resize) => Some(resize.journal_capture_authority),
+            ActiveGesture::ContainedTransforming(transform) => {
+                Some(transform.journal_capture_authority)
+            }
             ActiveGesture::Idle => None,
         }
     }
@@ -2602,11 +2446,11 @@ impl InteractionState {
         }
         match &mut self.active {
             ActiveGesture::Pressed(click) => click.capture_authority = capture,
-            ActiveGesture::Armed(drag) => drag.journal_capture_authority = Some(capture),
-            ActiveGesture::Dragging(drag) => drag.journal_capture_authority = Some(capture),
-            ActiveGesture::Resizing(resize) => resize.journal_capture_authority = Some(capture),
+            ActiveGesture::Armed(drag) => drag.journal_capture_authority = capture,
+            ActiveGesture::Dragging(drag) => drag.journal_capture_authority = capture,
+            ActiveGesture::Resizing(resize) => resize.journal_capture_authority = capture,
             ActiveGesture::ContainedTransforming(transform) => {
-                transform.journal_capture_authority = Some(capture);
+                transform.journal_capture_authority = capture;
             }
             ActiveGesture::Idle => return false,
         }
@@ -2620,10 +2464,10 @@ impl InteractionState {
         match &self.active {
             ActiveGesture::Idle => None,
             ActiveGesture::Pressed(click) => Some(click.presentation),
-            ActiveGesture::Armed(drag) => drag.presentation.presented(),
-            ActiveGesture::Dragging(drag) => drag.presentation.presented(),
-            ActiveGesture::Resizing(resize) => resize.authority.presented(),
-            ActiveGesture::ContainedTransforming(transform) => transform.presentation.presented(),
+            ActiveGesture::Armed(drag) => Some(drag.presentation),
+            ActiveGesture::Dragging(drag) => Some(drag.presentation),
+            ActiveGesture::Resizing(resize) => Some(resize.authority),
+            ActiveGesture::ContainedTransforming(transform) => Some(transform.presentation),
         }
     }
 
@@ -2660,7 +2504,7 @@ impl InteractionState {
         &mut self,
         start: ClickStart,
     ) -> Result<(ClickSessionId, Option<InteractionStatus>), InteractionCounterError> {
-        if start.owner.stream().is_none() || start.button != PointerButton::Primary {
+        if start.button != PointerButton::Primary {
             return Err(InteractionCounterError::StateInvariant);
         }
         let generation = self
@@ -2956,7 +2800,6 @@ impl InteractionState {
             .active_drag_mut(session)
             .map_err(|_| InteractionCounterError::StateInvariant)?;
         if drag.owner != owner
-            || owner.stream().is_none()
             || drag.journal_presentation_reservation.is_some()
             || drag.contained_offer.is_some()
             || drag.surface_background_offer.is_some()
@@ -3009,53 +2852,6 @@ impl InteractionState {
             drag.surface_background_offer =
                 reserve_background_root.then_some(SurfaceBackgroundRootOffer::new(root));
         }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn freeze_local_contained_offer(
-        &mut self,
-        session: DragSessionId,
-        owner: GestureOwner,
-        root: RootId,
-        floating: FloatingPresentationId,
-        anchor: crate::intent::SurfacePointer,
-        requested_rect: LogicalRect,
-        minimum_size: LogicalSize,
-        reserve_background_root: bool,
-    ) -> Result<(), InteractionCounterError> {
-        let drag = self
-            .active_drag_mut(session)
-            .map_err(|_| InteractionCounterError::StateInvariant)?;
-        let GestureOwner::LocalResponse { surface } = owner else {
-            return Err(InteractionCounterError::StateInvariant);
-        };
-        if drag.owner != owner
-            || !matches!(drag.origin, FrozenDragOrigin::Workspace)
-            || drag.source_surface != surface
-            || anchor.surface() != surface
-            || drag.journal_presentation_reservation.is_some()
-            || drag.contained_offer.is_some()
-            || drag.surface_background_offer.is_some()
-            || drag.native_offer.is_some()
-            || drag
-                .complete_root
-                .as_ref()
-                .is_some_and(|source| source.root() != root)
-            || (drag.complete_root.is_some() && reserve_background_root)
-            || (drag.complete_root.is_none() && !reserve_background_root)
-        {
-            return Err(InteractionCounterError::StateInvariant);
-        }
-        drag.contained_offer = Some(ContainedPresentationOffer::front(
-            root,
-            floating,
-            anchor,
-            requested_rect,
-            minimum_size,
-        ));
-        drag.surface_background_offer =
-            reserve_background_root.then_some(SurfaceBackgroundRootOffer::new(root));
         Ok(())
     }
 
@@ -3727,7 +3523,7 @@ mod tests {
             .expect("compiled control must publish one click region")
             .id();
         let lease = PointerInputLease::new(authority, 1, PointerProviderScope::DesktopGlobal);
-        let owner = GestureOwner::Stream(PointerStreamId::new(lease, PointerId::new(14), 1));
+        let owner = PointerStreamId::new(lease, PointerId::new(14), 1);
         let action = Arc::new(FrozenClickAction::TabStripControl(
             FrozenTabStripControlClick {
                 key: TabStripStateKey::new(surface, bar),
@@ -3786,22 +3582,15 @@ mod tests {
     #[test]
     fn invalidating_position_preserves_latest_logical_point_for_revalidation() {
         let surface = SurfaceId::new(21);
-        let ticket = SurfaceMeasurementTicket::new(
-            EngineAuthorityDomainId::new_for_test(22),
-            WorkspaceEpoch::new(23),
-            PresentationConfigRevision::new(1),
-            crate::policy::PolicyRevision::new(1),
-            SurfaceRequirementRevision::new(1),
-            surface,
-        );
-        let scene = SurfaceSceneStamp::new(ticket, SurfaceSceneRevision::new(1));
+        let presentation = frozen_presentation(surface, WorkspaceEpoch::new(23));
         let latest = LogicalPoint::new(42.0, 18.0).expect("test point must be finite");
         let initial = LogicalPoint::new(4.0, 3.0).expect("test point must be finite");
         let mut target = DragTargetState::new(&FrozenDragOrigin::Workspace);
 
-        target.set_last_advanced(ManipulationPositionKey::Local {
-            scene,
-            pointer: SurfacePointer::new(surface, latest),
+        let route = HostLocalPointerRoute::new(presentation.presented, latest);
+        target.set_last_advanced(ManipulationPositionKey::JournalHost {
+            manipulation: Some(route),
+            hover: Some(route),
         });
         target.invalidate_last_advanced();
 
