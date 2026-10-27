@@ -144,38 +144,15 @@ impl DockEngine {
                 PresentationHitRegionKind::ContainedClose(floating),
                 SemanticReceiverAction::Key(SemanticKey::Enter | SemanticKey::Space)
                 | SemanticReceiverAction::Accessibility(SemanticAccessibilityAction::Click),
-            ) => {
-                let target = CloseSceneTarget::Contained(floating);
-                let Some(record) = projection.plan().contained_record(floating) else {
-                    return Ok(self.semantic_rejection(
-                        InteractionRejection::CloseSceneTargetUnavailable { target },
-                    ));
-                };
-                let Some(close_bounds) = record.close_bounds() else {
-                    return Ok(self.semantic_rejection(
-                        InteractionRejection::CloseControlUnavailable { target },
-                    ));
-                };
-                if !projection
-                    .plan()
-                    .region_is_operable(close_bounds, record.layer())
-                {
-                    return Ok(self.semantic_rejection(
-                        InteractionRejection::CloseActivationOccluded { target },
-                    ));
-                }
-                let root = record.root();
-                self.reduce_product_action(
+            ) => self.reduce_versioned_interaction(expected, |engine| {
+                engine.request_close_plan(
                     input,
-                    cause,
-                    focus_causal,
-                    expected,
-                    crate::model::ProductAction::DockBackRoot { root },
+                    scene,
+                    CloseSceneTarget::Contained(floating),
+                    CloseActivation::Semantic,
                     policy,
-                    events,
-                    interaction_events,
                 )
-            }
+            }),
             (
                 PresentationHitRegionKind::SplitterHandle(splitter),
                 SemanticReceiverAction::Key(key),

@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 
 use eframe::egui;
 use egui_dockspace::{
-    Dockspace, DockspaceAxis, DockspaceCapability, DockspaceContainedLayout, DockspaceLayout,
-    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceUnavailableReason,
-    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
+    CloseDecision, CloseItemDecisionState, Dockspace, DockspaceAxis, DockspaceCapability,
+    DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, DockspaceUnavailableReason, FloatingPresentationId, ItemId,
+    LogicalRect, PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -84,6 +85,30 @@ impl eframe::App for DockspaceApp {
                 Ok(response) => {
                     self.presentation_settlement = response.presentation_settlement_capability();
                     self.error = None;
+                    for request in response.close_request_events() {
+                        // Reused requests already went through the application decision path.
+                        if request.reused() {
+                            continue;
+                        }
+                        let plan = request.plan();
+                        for item in plan.items() {
+                            if item.state() != CloseItemDecisionState::Pending {
+                                continue;
+                            }
+                            match self.dockspace.resolve_close(
+                                plan.request(),
+                                item.token(),
+                                CloseDecision::Allow,
+                            ) {
+                                Ok(result) => {
+                                    if result.mutation().workspace_changed() {
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
+                                Err(error) => self.error = Some(error.to_string()),
+                            }
+                        }
+                    }
                 }
                 Err(error) => self.error = Some(error.to_string()),
             }
@@ -173,5 +198,74 @@ impl PaneView for ExamplePanes {
                 .code_editor()
                 .desired_width(f32::INFINITY),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+
+    fn run_frame(
+        context: &egui::Context,
+        app: &mut DockspaceApp,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 720.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| eframe::App::ui(app, ui, &mut frame),
+        );
+        output.textures_delta.clear();
+        assert!(app.error.is_none(), "example frame failed: {:?}", app.error);
+        output
+    }
+
+    #[test]
+    fn close_button_allows_and_removes_the_pane() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = DockspaceApp::new();
+        let _ = run_frame(&context, &mut app, Vec::new());
+        let ready = run_frame(&context, &mut app, Vec::new());
+        let close = ready
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("the example exposes its controls")
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                (node.role() == Role::Button
+                    && node.label() == Some("Close Editor")
+                    && node.supports_action(Action::Click))
+                .then_some(*id)
+            })
+            .expect("the editor has an enabled close button");
+        assert!(app.dockspace.view().item(EDITOR).is_some());
+
+        let _ = run_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::AccessKitActionRequest(ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: close,
+                data: None,
+            })],
+        );
+
+        assert!(app.dockspace.view().item(EDITOR).is_none());
+        assert!(app.dockspace.view().item(PREVIEW).is_some());
+        let closed_version = app.dockspace.version();
+        let _ = run_frame(&context, &mut app, Vec::new());
+        assert_eq!(app.dockspace.version(), closed_version);
     }
 }

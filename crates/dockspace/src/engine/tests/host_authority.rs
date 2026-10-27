@@ -1,7 +1,6 @@
 //! Host-frame, provider, identity, and presentation authority tests.
 
 use super::*;
-use crate::model::DockspaceActionOutcome;
 use crate::pointer_journal::{
     FiniteScrollVector, ScrollModifiers, ScrollMomentum, SurfaceLocalPointerRetirementDisposition,
 };
@@ -1149,7 +1148,7 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
 }
 
 #[test]
-fn real_host_frame_contained_close_docks_back_without_opening_content_close() {
+fn real_host_frame_contained_close_requests_approval_without_mutating_content() {
     let floating = FloatingPresentationId::new(9);
     let mut builder = Workspace::builder();
     let main_tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
@@ -1178,6 +1177,7 @@ fn real_host_frame_contained_close_docks_back_without_opening_content_close() {
         DockPolicy::default(),
     )
     .expect("contained close engine initializes");
+    let before = engine.workspace().clone();
     let host = engine
         .create_presentation_host()
         .expect("contained close presentation host mints");
@@ -1295,27 +1295,25 @@ fn real_host_frame_contained_close_docks_back_without_opening_content_close() {
         .finish(&mut engine)
         .expect("contained close journal frame commits");
 
-    assert!(transition.reduced_pointer_edges().iter().any(|edge| {
-        matches!(
-            edge.interaction_outcomes(),
-            [InteractionOutcome::ProductActionApplied(
-                DockspaceActionOutcome::RootDocked {
-                    root: TARGET_ROOT,
-                    items,
-                    changed: true,
-                    ..
-                }
-            )] if items == &[ItemId::new(2)]
-        )
-    }));
-    assert!(engine.workspace().contained_floating(floating).is_none());
-    assert!(
-        engine
-            .workspace()
-            .item_multiset()
-            .contains_key(&ItemId::new(2))
+    let [_, release] = transition.reduced_pointer_edges() else {
+        panic!("the host frame must preserve both press and release boundaries");
+    };
+    let [
+        InteractionOutcome::CloseRequested {
+            plan,
+            reused: false,
+        },
+    ] = release.interaction_outcomes()
+    else {
+        panic!("contained close must request approval to close the real root");
+    };
+    assert_eq!(
+        plan.target(),
+        crate::close_plan::ClosePlanTarget::Root { root: TARGET_ROOT }
     );
-    assert_eq!(engine.close.active_plans().count(), 0);
+    assert!(!transition.changed());
+    assert_eq!(engine.workspace(), &before);
+    assert_eq!(engine.close.active_plans().count(), 1);
 }
 
 #[test]

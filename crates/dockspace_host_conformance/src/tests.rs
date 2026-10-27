@@ -3157,7 +3157,7 @@ fn ogc_01_repeated_same_axis_docks_flatten_and_stale_targets_are_inert() {
 }
 
 #[test]
-fn ogc_02_merge_and_close_restore_the_previous_target_selection_atomically() {
+fn ogc_02_merge_and_close_select_the_visual_successor_atomically() {
     let target = DockspaceNode::tabs_with_selection([A, B, C], Some(C))
         .expect("the target selection is valid");
     let layout = DockspaceLayout::new([
@@ -3249,7 +3249,7 @@ fn ogc_02_merge_and_close_restore_the_previous_target_selection_atomically() {
 
     let tabs = tabs_containing(host.view(), B).expect("the target tabs remain");
     assert_eq!(tabs.items(), &[A, B, C]);
-    assert_eq!(tabs.selected(), Some(B));
+    assert_eq!(tabs.selected(), Some(C));
     assert!(tabs_containing(host.view(), X).is_none());
 }
 

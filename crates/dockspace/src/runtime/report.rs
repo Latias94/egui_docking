@@ -196,6 +196,19 @@ impl HostFrameReport {
             }
         }
         let (inputs, submitted_actions) = finish_ordered_inputs(ordered_inputs);
+        let manipulation_feedback = transition
+            .interaction_events()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| {
+                super::DockspaceManipulationFeedback::from_event(
+                    transition.authority_domain(),
+                    transition.tick(),
+                    index,
+                    event,
+                )
+            })
+            .collect();
         let presentation_transitions = transition
             .events()
             .iter()
@@ -269,6 +282,7 @@ impl HostFrameReport {
             inputs,
             submitted_actions,
             presentation_transitions,
+            manipulation_feedback,
             painted_outputs,
             painted_native_staging_outputs,
             surface_presentation_commits,

@@ -47,7 +47,10 @@ pub use dockspace::runtime::SurfacePresentationResult;
 pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePhase,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
-    DockspaceCloseResolution, PreparedCloseRequest,
+    DockspaceCloseResolution, DockspaceFocusTarget, DockspaceManipulationCancelReason,
+    DockspaceManipulationDelivery, DockspaceManipulationFeedback, DockspaceManipulationFeedbackId,
+    DockspaceManipulationId, DockspaceManipulationPendingReason, DockspaceManipulationRejection,
+    DockspaceManipulationStatus, PreparedCloseRequest,
 };
 #[cfg(feature = "serde")]
 pub use dockspace::runtime::{

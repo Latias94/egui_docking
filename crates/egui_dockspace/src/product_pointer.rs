@@ -144,13 +144,15 @@ impl ProductPointer {
                     phase: egui::TouchPhase::Cancel,
                     ..
                 }
-                | Event::WindowFocused(false)
-                | Event::Key {
+                | Event::WindowFocused(false) => Some(SurfacePointerEvent::StreamCancelled(
+                    SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                )),
+                Event::Key {
                     key: Key::Escape,
                     pressed: true,
                     ..
                 } => Some(SurfacePointerEvent::StreamCancelled(
-                    SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                    SurfacePointerCancelReason::Escape,
                 )),
                 _ => None,
             };

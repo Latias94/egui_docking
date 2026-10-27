@@ -47,6 +47,10 @@ use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegion
 use dockspace::scene::SurfaceSceneStamp;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportRole, WindowToken};
+use dockspace::viewport_focus::{
+    PaneFocusIntent, PaneFocusObservationGeneration, PaneFocusRequestObservation,
+    PaneFocusRequestObservationState, PanelFocusRecord,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -93,7 +97,7 @@ fn main_workspace() -> (Workspace, NodeId) {
         Some(SELECTED),
     ));
     builder
-        .set_tab_mru(tabs, [SELECTED, SECOND, FIRST])
+        .set_tab_mru(tabs, [SELECTED, FIRST, SECOND])
         .expect("fixture MRU is an exact selected-first permutation");
     builder.set_root(MAIN_ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
@@ -380,6 +384,52 @@ impl Harness {
             decision,
         })
     }
+
+    fn select_item(&mut self, item: ItemId) -> PaneFocusIntent {
+        support::publish_surface(
+            &mut self.engine,
+            &mut self.host,
+            SURFACE,
+            rect(0.0, 0.0, 640.0, 420.0),
+        );
+        let fact = tab_close_fact(&self.engine, item);
+        let CloseSceneTarget::Tab(tab) = fact.target else {
+            panic!("an item selection must address an exact tab");
+        };
+        self.submit(EngineInput::SelectLocalSceneTab {
+            expected: self.engine.version(),
+            scene: fact.scene,
+            tab,
+        });
+        support::publish_surface(
+            &mut self.engine,
+            &mut self.host,
+            SURFACE,
+            rect(0.0, 0.0, 640.0, 420.0),
+        );
+        let intent = self
+            .engine
+            .viewport_focus()
+            .published_pane_intent()
+            .expect("exact selection publishes a pane-focus request");
+        assert_eq!(intent.item(), Some(item));
+        intent
+    }
+
+    fn observe_focus(
+        &mut self,
+        intent: PaneFocusIntent,
+        state: PaneFocusRequestObservationState,
+    ) -> EngineTransition {
+        self.submit(EngineInput::PublishPaneFocusRequestObservation {
+            expected_epoch: self.engine.version().epoch(),
+            observation: PaneFocusRequestObservation::new(
+                PaneFocusObservationGeneration::new(self.source_sequence + 1),
+                intent,
+                state,
+            ),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -552,6 +602,14 @@ fn programmatic_item_close_uses_the_same_plan_and_commit_protocol() {
         }
     ));
     assert_eq!(selected(fixture.engine.workspace(), tabs), Some(SECOND));
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none(),
+        "closing a selected tab without focus history must not manufacture pane focus"
+    );
 }
 
 #[test]
@@ -584,7 +642,7 @@ fn programmatic_root_close_is_all_or_none_and_policy_owned() {
 }
 
 #[test]
-fn scene_bound_tab_close_waits_for_allow_then_commits_once_with_mru() {
+fn scene_bound_tab_close_waits_for_allow_then_commits_once_with_visual_predecessor() {
     let (workspace, tabs) = main_workspace();
     let mut fixture = Harness::new(workspace, DockPolicy::default());
     let fact = tab_close_fact(&fixture.engine, SELECTED);
@@ -646,9 +704,272 @@ fn scene_bound_tab_close_waits_for_allow_then_commits_once_with_mru() {
 }
 
 #[test]
+fn focused_tab_close_prefers_the_next_visual_tab_over_mru_and_requires_observation() {
+    let (workspace, tabs) = main_workspace();
+    let mut fixture = Harness::new(workspace, DockPolicy::default());
+    fixture.select_item(FIRST);
+    let focused = fixture.select_item(SECOND);
+    fixture.observe_focus(focused, PaneFocusRequestObservationState::Focused);
+    assert_eq!(
+        fixture.engine.workspace().tab_mru(tabs),
+        Some([SECOND, FIRST, SELECTED].as_slice())
+    );
+
+    let requested = fixture.submit(EngineInput::RequestContentClose {
+        expected: fixture.engine.version(),
+        target: ContentCloseTarget::Item(SECOND),
+    });
+    let InputOutcome::ContentCloseRequested { plan, .. } = only_outcome(&requested) else {
+        panic!("focused item close must open one plan");
+    };
+    assert_eq!(
+        fixture.engine.viewport_focus().panel_focus(SURFACE),
+        PanelFocusRecord::Item(SECOND)
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
+
+    let committed = fixture.resolve(plan, 0, CloseDecision::Allow);
+    assert!(matches!(
+        only_outcome(&committed),
+        InputOutcome::CloseDecisionProcessed { changed: true, .. }
+    ));
+    assert_eq!(selected(fixture.engine.workspace(), tabs), Some(SELECTED));
+    assert_eq!(
+        fixture.engine.workspace().tab_mru(tabs),
+        Some([SELECTED, FIRST].as_slice())
+    );
+    let successor = fixture
+        .engine
+        .viewport_focus()
+        .published_pane_intent()
+        .expect("committed focused close publishes its visual successor");
+    assert_eq!(successor.item(), Some(SELECTED));
+    assert_ne!(
+        fixture.engine.viewport_focus().panel_focus(SURFACE),
+        PanelFocusRecord::Item(SELECTED),
+        "publishing a successor does not establish actual pane focus"
+    );
+
+    fixture.observe_focus(successor, PaneFocusRequestObservationState::NotFocused);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(successor)
+    );
+    fixture.observe_focus(focused, PaneFocusRequestObservationState::Focused);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(successor),
+        "an obsolete closed-item acknowledgement cannot settle the successor"
+    );
+    fixture.observe_focus(successor, PaneFocusRequestObservationState::Focused);
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
+    assert_eq!(
+        fixture.engine.viewport_focus().panel_focus(SURFACE),
+        PanelFocusRecord::Item(SELECTED)
+    );
+}
+
+#[test]
+fn closing_a_tab_with_pending_focus_requests_its_visual_predecessor() {
+    let (workspace, tabs) = main_workspace();
+    let mut fixture = Harness::new(workspace, DockPolicy::default());
+    fixture.select_item(FIRST);
+    let focused = fixture.select_item(SELECTED);
+    let fact = tab_close_fact(&fixture.engine, SELECTED);
+    let (plan, _, _) = fixture.request_close(fact.scene, fact.target);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
+
+    fixture.resolve(&plan, 0, CloseDecision::Allow);
+    assert_eq!(selected(fixture.engine.workspace(), tabs), Some(SECOND));
+    assert_eq!(
+        fixture
+            .engine
+            .viewport_focus()
+            .published_pane_intent()
+            .and_then(PaneFocusIntent::item),
+        Some(SECOND)
+    );
+}
+
+#[test]
+fn deferred_allow_requests_a_successor_only_when_the_close_commits() {
+    let (workspace, tabs) = main_workspace();
+    let mut policy = DockPolicy::default();
+    let mut rule = DockItemRule::default();
+    rule.set_close_capability(Some(CloseCapability::DeferredAllowed));
+    policy.set_item_rule(SELECTED, rule);
+    let mut fixture = Harness::new(workspace, policy);
+    let focused = fixture.select_item(SELECTED);
+    let requested = fixture.submit(EngineInput::RequestContentClose {
+        expected: fixture.engine.version(),
+        target: ContentCloseTarget::Item(SELECTED),
+    });
+    let InputOutcome::ContentCloseRequested { plan, .. } = only_outcome(&requested) else {
+        panic!("deferred-capable item close must open one plan");
+    };
+    let deferred = fixture.resolve(plan, 0, CloseDecision::Deferred);
+    let InputOutcome::CloseDecisionProcessed {
+        resolution: CloseResolutionOutcome::Deferred { continuation, .. },
+        ..
+    } = only_outcome(&deferred)
+    else {
+        panic!("deferred decision must expose its exact continuation");
+    };
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
+    assert_eq!(selected(fixture.engine.workspace(), tabs), Some(SELECTED));
+
+    fixture.submit(EngineInput::ContinueDeferredClose {
+        request: plan.request(),
+        token: *continuation,
+        decision: DeferredCloseDecision::Allow,
+    });
+    assert_eq!(selected(fixture.engine.workspace(), tabs), Some(SECOND));
+    assert_eq!(
+        fixture
+            .engine
+            .viewport_focus()
+            .published_pane_intent()
+            .and_then(PaneFocusIntent::item),
+        Some(SECOND)
+    );
+}
+
+#[test]
+fn closing_an_unfocused_tab_preserves_a_newer_pending_focus_request() {
+    let (workspace, tabs) = main_workspace();
+    let mut fixture = Harness::new(workspace, DockPolicy::default());
+    let observed = fixture.select_item(SELECTED);
+    fixture.observe_focus(observed, PaneFocusRequestObservationState::Focused);
+    let newer = fixture.select_item(FIRST);
+    let requested = fixture.submit(EngineInput::RequestContentClose {
+        expected: fixture.engine.version(),
+        target: ContentCloseTarget::Item(SELECTED),
+    });
+    let InputOutcome::ContentCloseRequested { plan, .. } = only_outcome(&requested) else {
+        panic!("item close must open one plan");
+    };
+    fixture.resolve(plan, 0, CloseDecision::Allow);
+    assert!(
+        !fixture
+            .engine
+            .workspace()
+            .item_multiset()
+            .contains_key(&SELECTED)
+    );
+    assert_eq!(selected(fixture.engine.workspace(), tabs), Some(FIRST));
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(newer),
+        "historical focus in the closed tab cannot supersede a newer intent"
+    );
+}
+
+#[test]
+fn closing_a_pending_focused_group_restores_its_observed_destination_item() {
+    let (workspace, _) = contained_workspace();
+    let mut fixture = Harness::new(workspace, DockPolicy::default());
+    let destination = fixture.select_item(FIRST);
+    fixture.observe_focus(destination, PaneFocusRequestObservationState::Focused);
+    fixture.select_item(CONTAINED_FIRST);
+    let requested = fixture.submit(EngineInput::RequestContentClose {
+        expected: fixture.engine.version(),
+        target: ContentCloseTarget::Root(CONTAINED_ROOT),
+    });
+    let InputOutcome::ContentCloseRequested { plan, .. } = only_outcome(&requested) else {
+        panic!("contained close must open one root plan");
+    };
+    for index in 0..plan.items().len() {
+        fixture.resolve(plan, index, CloseDecision::Allow);
+    }
+    assert!(fixture.engine.workspace().root(CONTAINED_ROOT).is_none());
+    let successor = fixture
+        .engine
+        .viewport_focus()
+        .published_pane_intent()
+        .expect("the surviving observed destination is the group successor");
+    assert_eq!(successor.item(), Some(FIRST));
+    assert_ne!(successor.id(), destination.id());
+}
+
+#[test]
+fn closing_a_focused_standalone_root_does_not_focus_a_retired_workspace() {
+    let (workspace, _) = main_workspace();
+    let mut fixture = Harness::new(workspace, DockPolicy::default());
+    let focus = fixture.select_item(SELECTED);
+    fixture.observe_focus(focus, PaneFocusRequestObservationState::Focused);
+    let requested = fixture.submit(EngineInput::RequestContentClose {
+        expected: fixture.engine.version(),
+        target: ContentCloseTarget::Root(MAIN_ROOT),
+    });
+    let InputOutcome::ContentCloseRequested { plan, .. } = only_outcome(&requested) else {
+        panic!("root close must open one plan");
+    };
+    for index in 0..plan.items().len() {
+        fixture.resolve(plan, index, CloseDecision::Allow);
+    }
+    assert!(fixture.engine.workspace().surface(SURFACE).is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
+}
+
+#[test]
+fn closing_an_unfocused_group_preserves_the_observed_destination_focus() {
+    let (workspace, _) = contained_workspace();
+    let mut fixture = Harness::new(workspace, DockPolicy::default());
+    let destination = fixture.select_item(FIRST);
+    fixture.observe_focus(destination, PaneFocusRequestObservationState::Focused);
+    let requested = fixture.submit(EngineInput::RequestContentClose {
+        expected: fixture.engine.version(),
+        target: ContentCloseTarget::Root(CONTAINED_ROOT),
+    });
+    let InputOutcome::ContentCloseRequested { plan, .. } = only_outcome(&requested) else {
+        panic!("contained close must open one root plan");
+    };
+    for index in 0..plan.items().len() {
+        fixture.resolve(plan, index, CloseDecision::Allow);
+    }
+    assert!(fixture.engine.workspace().root(CONTAINED_ROOT).is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
+    assert_eq!(
+        fixture.engine.viewport_focus().panel_focus(SURFACE),
+        PanelFocusRecord::Item(FIRST)
+    );
+}
+
+#[test]
 fn veto_and_disabled_close_activations_never_mutate_topology() {
     let (workspace, _) = main_workspace();
     let mut veto = Harness::new(workspace.clone(), DockPolicy::default());
+    let focused = veto.select_item(SELECTED);
     let fact = tab_close_fact(&veto.engine, SELECTED);
     let before = veto.engine.workspace().clone();
     let bytes = graph_bytes(&before);
@@ -672,12 +993,17 @@ fn veto_and_disabled_close_activations_never_mutate_topology() {
         } if *request == plan.request() && current.phase() == ClosePlanPhase::Vetoed
     ));
     assert_graph_unchanged(&veto.engine, &before, &bytes);
+    assert_eq!(
+        veto.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
 
     let mut policy = DockPolicy::default();
     let mut disabled_rule = DockItemRule::default();
     disabled_rule.set_close_capability(Some(CloseCapability::Disabled));
     policy.set_item_rule(SELECTED, disabled_rule);
     let mut disabled = Harness::new(workspace.clone(), policy);
+    let focused = disabled.select_item(SELECTED);
     let disabled_fact = tab_close_fact(&disabled.engine, SELECTED);
     assert!(disabled_fact.close_point.is_none());
     assert!(disabled_fact.region.is_none());
@@ -700,6 +1026,10 @@ fn veto_and_disabled_close_activations_never_mutate_topology() {
     ));
     assert!(!rejected.published_state_changed());
     assert_graph_unchanged(&disabled.engine, &disabled_before, &disabled_bytes);
+    assert_eq!(
+        disabled.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
 }
 
 #[test]
@@ -710,6 +1040,7 @@ fn contained_root_freezes_complete_order_and_partial_decisions_remain_atomic() {
     deferred_rule.set_close_capability(Some(CloseCapability::DeferredAllowed));
     policy.set_item_rule(CONTAINED_DEFERRED, deferred_rule);
     let mut fixture = Harness::new(workspace, policy);
+    let focused = fixture.select_item(CONTAINED_DEFERRED);
     let (scene, target) = contained_close_fact(&fixture.engine);
     let before = fixture.engine.workspace().clone();
     let before_bytes = graph_bytes(&before);
@@ -734,6 +1065,10 @@ fn contained_root_freezes_complete_order_and_partial_decisions_remain_atomic() {
         ]
     );
     assert_graph_unchanged(&fixture.engine, &before, &before_bytes);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
 
     let first = fixture.resolve(&plan, 0, CloseDecision::Allow);
     assert!(matches!(
@@ -750,6 +1085,10 @@ fn contained_root_freezes_complete_order_and_partial_decisions_remain_atomic() {
         }
     ));
     assert_graph_unchanged(&fixture.engine, &before, &before_bytes);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
 
     let deferred = fixture.resolve(&plan, 1, CloseDecision::Deferred);
     let continuation = match only_outcome(&deferred) {
@@ -771,6 +1110,10 @@ fn contained_root_freezes_complete_order_and_partial_decisions_remain_atomic() {
         outcome => panic!("unexpected deferred decision outcome: {outcome:?}"),
     };
     assert_graph_unchanged(&fixture.engine, &before, &before_bytes);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
 
     let last = fixture.resolve(&plan, 2, CloseDecision::Allow);
     assert!(matches!(
@@ -787,6 +1130,10 @@ fn contained_root_freezes_complete_order_and_partial_decisions_remain_atomic() {
         }
     ));
     assert_graph_unchanged(&fixture.engine, &before, &before_bytes);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
 
     let vetoed = fixture.submit(EngineInput::ContinueDeferredClose {
         request: plan.request(),
@@ -807,6 +1154,10 @@ fn contained_root_freezes_complete_order_and_partial_decisions_remain_atomic() {
         } if current.phase() == ClosePlanPhase::Vetoed
     ));
     assert_graph_unchanged(&fixture.engine, &before, &before_bytes);
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        Some(focused)
+    );
     assert!(fixture.engine.workspace().root(CONTAINED_ROOT).is_some());
     assert!(
         fixture

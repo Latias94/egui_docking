@@ -967,7 +967,7 @@ impl DockEngine {
         }
         Ok((
             candidate,
-            SurfaceLocalPointerRetirementOutcome::retired_active(!interaction_events.is_empty()),
+            SurfaceLocalPointerRetirementOutcome::retired_active(interaction_events),
         ))
     }
 

@@ -1,3 +1,6 @@
+#[path = "product/close_commands.rs"]
+mod close_commands;
+
 use dockspace::policy::DockPolicy;
 use dockspace_host_conformance::scenario::{
     CadenceProfile, ItemAlias, JourneyId, LOCAL_TAB_CLOSE_SPLITTER_AND_CONTAINED,
@@ -2121,81 +2124,6 @@ fn default_features_contained_chrome_exposes_focusable_accessibility_controls() 
 }
 
 #[test]
-fn default_features_contained_dock_back_supports_pointer_accesskit_and_keyboard() {
-    #[derive(Clone, Copy)]
-    enum Activation {
-        Pointer,
-        AccessKit,
-        Keyboard(Key),
-    }
-
-    for (name, activation) in [
-        ("pointer", Activation::Pointer),
-        ("accesskit", Activation::AccessKit),
-        ("enter", Activation::Keyboard(Key::Enter)),
-        ("space", Activation::Keyboard(Key::Space)),
-    ] {
-        let context = Context::default();
-        context.enable_accesskit();
-        let mut dockspace = Dockspace::builder(
-            format!("product-contained-close-{name}"),
-            contained_layout(),
-        )
-        .build()
-        .expect("the product contained facade initializes");
-        let mut panes = Panes;
-
-        let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-        let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-        let (close, _) = accesskit_node(&stable.output, Role::Button, "Close floating Second");
-        let point = node_center(&stable.output, Role::Button, "Close floating Second");
-        let activated = match activation {
-            Activation::Pointer => {
-                let _ = run_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    vec![Event::PointerMoved(point), pointer_button(point, true)],
-                );
-                run_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    vec![Event::PointerMoved(point), pointer_button(point, false)],
-                )
-            }
-            Activation::AccessKit => run_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![accesskit_action(close, Action::Click)],
-            ),
-            Activation::Keyboard(key) => {
-                let _ = run_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    vec![accesskit_action(close, Action::Focus)],
-                );
-                run_frame(&context, &mut dockspace, &mut panes, key_press(key))
-            }
-        };
-
-        assert!(activated.close_requests.is_empty(), "{name}");
-        assert!(dockspace.view().contained(FLOATING).is_none(), "{name}");
-        assert!(dockspace.view().root(FLOATING_ROOT).is_none(), "{name}");
-        let tabs = dockspace
-            .view()
-            .root(ROOT)
-            .and_then(|root| root.content())
-            .and_then(|content| content.tabs())
-            .expect("the contained pane docks into the current main root");
-        assert_eq!(tabs.items(), &[FIRST, SECOND], "{name}");
-        assert_eq!(tabs.selected(), Some(SECOND), "{name}");
-    }
-}
-
-#[test]
 fn contained_move_resize_select_focus_and_dock_back_preserve_exact_ownership() {
     let context = Context::default();
     context.enable_accesskit();
@@ -2294,18 +2222,15 @@ fn contained_move_resize_select_focus_and_dock_back_preserve_exact_ownership() {
         &mut panes,
         vec![accesskit_action(second, Action::Click)],
     );
-    let (focused, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_focused, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(capability, DockspaceCapability::Supported);
     assert_eq!(panes.target_requests(), 1);
     assert!(context.memory(|memory| memory.has_focus(panes.target)));
 
-    let (close, _) = accesskit_node(&focused.output, Role::Button, "Close floating Second");
-    let _ = run_focus_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![accesskit_action(close, Action::Click)],
-    );
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    dockspace
+        .dock_root_back_current(FLOATING_ROOT)
+        .expect("the explicit Dock Back command preserves the source content");
 
     assert!(dockspace.view().contained(FLOATING).is_none());
     let tabs = dockspace
@@ -2354,13 +2279,15 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     let (menu, menu_node) = accesskit_node(&stable.output, Role::Button, "Presentation commands");
     assert!(!menu_node.is_disabled());
 
-    let _sizing = run_frame(
+    let sizing = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![accesskit_action(menu, Action::Click)],
     );
+    assert!(sizing.close_requests.is_empty());
     let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(opened.close_requests.is_empty());
     let (float, float_node) = accesskit_node(&opened.output, Role::MenuItem, "Float");
     let (_, native_node) = accesskit_node(&opened.output, Role::MenuItem, "Move to New Window");
     let (_, dock_back_node) = accesskit_node(&opened.output, Role::MenuItem, "Dock Back");
@@ -2377,20 +2304,27 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
         "the callback-only product starts with one same-context logical surface"
     );
 
-    let _ = run_frame(
+    let floated = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![accesskit_action(float, Action::Click)],
     );
-    assert!(
-        dockspace
+    assert!(floated.close_requests.is_empty());
+    let floating_id = dockspace
+        .view()
+        .item(SECOND)
+        .and_then(|item| item.contained())
+        .expect("Float must move the complete root into an egui-native contained window");
+    for item in [FIRST, SECOND] {
+        let location = dockspace
             .view()
-            .item(SECOND)
-            .and_then(|item| item.contained())
-            .is_some(),
-        "Float must move the complete root into an egui-native contained window",
-    );
+            .item(item)
+            .expect("Float preserves every item");
+        assert_eq!(location.contained(), Some(floating_id));
+        assert_eq!(location.tabs().items(), &[FIRST, SECOND]);
+        assert_eq!(location.tabs().selected(), Some(FIRST));
+    }
     assert_eq!(
         surface_ids(&dockspace),
         [SURFACE],
@@ -2398,14 +2332,17 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     );
 
     let floating = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(floating.close_requests.is_empty());
     let (menu, _) = accesskit_node(&floating.output, Role::Button, "Presentation commands");
-    let _sizing = run_frame(
+    let sizing = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![accesskit_action(menu, Action::Click)],
     );
+    assert!(sizing.close_requests.is_empty());
     let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(opened.close_requests.is_empty());
     let (_, float_node) = accesskit_node(&opened.output, Role::MenuItem, "Float");
     let (_, native_node) = accesskit_node(&opened.output, Role::MenuItem, "Move to New Window");
     let (dock_back, dock_back_node) = accesskit_node(&opened.output, Role::MenuItem, "Dock Back");
@@ -2416,24 +2353,42 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     );
     assert!(!dock_back_node.is_disabled());
 
-    let _ = run_frame(
+    let docked = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![accesskit_action(dock_back, Action::Click)],
     );
     assert!(
-        dockspace
-            .view()
-            .item(SECOND)
-            .and_then(|item| item.contained())
-            .is_none(),
-        "Dock Back must recover the complete root into the dockspace",
+        docked.close_requests.is_empty(),
+        "Dock Back must move the root without requesting permission to destroy its content",
     );
+    assert!(dockspace.view().contained(floating_id).is_none());
+    let main = dockspace
+        .view()
+        .surface(SURFACE)
+        .and_then(|surface| surface.main_root())
+        .expect("Dock Back recovers the complete root as the main presentation");
+    for item in [FIRST, SECOND] {
+        let location = dockspace
+            .view()
+            .item(item)
+            .expect("Dock Back preserves every item");
+        assert_eq!(location.root(), main.id());
+        assert_eq!(location.surface(), SURFACE);
+        assert_eq!(location.contained(), None);
+        assert_eq!(location.tabs().items(), &[FIRST, SECOND]);
+        assert_eq!(location.tabs().selected(), Some(FIRST));
+    }
     assert_eq!(
         surface_ids(&dockspace),
         [SURFACE],
         "same-context Dock Back must preserve the sole logical surface"
+    );
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        settled.close_requests.is_empty(),
+        "Dock Back must not publish a delayed close plan"
     );
 }
 

@@ -430,6 +430,15 @@ impl DockEngine {
             });
         }
 
+        let focus_item = match action {
+            ProductAction::SelectItem { item }
+            | ProductAction::DockItem { item, .. }
+            | ProductAction::FloatItem { item, .. } => Some(item),
+            ProductAction::DockRoot { root, .. }
+            | ProductAction::DockBackRoot { root }
+            | ProductAction::FloatRoot { root, .. } => self.product_root_focus_item(root),
+            _ => None,
+        };
         let plan = match self.compile_product_action(action) {
             Ok(plan) => plan,
             Err(reason) => {
@@ -483,10 +492,17 @@ impl DockEngine {
                 outcome,
                 changed,
                 version,
-            } => Ok(InputOutcome::ProductActionProcessed {
-                outcome: context.map_outcome(outcome, changed)?,
-                version,
-            }),
+            } => {
+                if (changed || matches!(action, ProductAction::SelectItem { .. }))
+                    && let Some(item) = focus_item
+                {
+                    self.request_product_item_focus(item, focus_causal)?;
+                }
+                Ok(InputOutcome::ProductActionProcessed {
+                    outcome: context.map_outcome(outcome, changed)?,
+                    version,
+                })
+            }
             InputOutcome::CommandRejected { error, version } => {
                 Ok(InputOutcome::ProductActionRejected {
                     reason: product_command_rejection(action, &error)?,
@@ -506,25 +522,56 @@ impl DockEngine {
         }
     }
 
-    pub(super) fn apply_journal_product_action(
+    fn product_root_focus_item(&self, root: RootId) -> Option<ItemId> {
+        let surface = self.root_surface(root)?;
+        let is_visible_source = |item: &ItemId| {
+            self.workspace
+                .locate_item_by_id(*item)
+                .is_some_and(|(owner, tabs, _)| {
+                    owner == root
+                        && matches!(
+                            self.workspace.node(tabs),
+                            Some(Node::Tabs { selected: Some(selected), .. }) if selected == item
+                        )
+                })
+        };
+        self.viewport_focus.pending_pane_intent()
+            .filter(|intent| intent.surface() == surface)
+            .and_then(crate::viewport_focus::PaneFocusIntent::item)
+            .filter(is_visible_source)
+            .or_else(|| match self.viewport_focus.panel_focus(surface) {
+                PanelFocusRecord::Item(item) if is_visible_source(&item) => Some(item),
+                _ => None,
+            })
+            .or_else(|| {
+                let node = self.workspace.root(root)?.node;
+                self.workspace.collect_items_in_subtree(node).into_iter().find(|item| {
+                    self.workspace.locate_item_by_id(*item).is_some_and(|(_, tabs, _)| {
+                        matches!(self.workspace.node(tabs), Some(Node::Tabs { selected: Some(selected), .. }) if selected == item)
+                    })
+                })
+            })
+    }
+
+    pub(super) fn request_product_item_focus(
         &mut self,
-        cause: ReductionCause,
-        action: ProductAction,
-        policy: &DockPolicySnapshot,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<Result<DockspaceActionOutcome, DockspaceActionRejection>, EngineError> {
-        let plan = match self.compile_product_action(action) {
-            Ok(plan) => plan,
-            Err(reason) => return Ok(Err(reason)),
+        item: ItemId,
+        causal: FocusCausalStamp,
+    ) -> Result<(), EngineError> {
+        let Some((root, _, _)) = self.workspace.locate_item_by_id(item) else {
+            return Ok(());
         };
-        let (command, context) = match plan {
-            ProductActionPlan::Noop(outcome) => return Ok(Ok(outcome)),
-            ProductActionPlan::Command { command, context } => (command, context),
+        let Some(surface) = self.root_surface(root) else {
+            return Ok(());
         };
-        match self.apply_journal_workspace_command(cause, &command, policy, events)? {
-            Ok((outcome, changed)) => Ok(Ok(context.map_outcome(outcome, changed)?)),
-            Err(error) => Ok(Err(product_command_rejection(action, &error)?)),
-        }
+        let guard = self.viewport_focus_binding(surface);
+        self.viewport_focus
+            .request_local_pane_focus(surface, item, guard, causal)
+            .map_err(|source| EngineError::CausedViewportFocus {
+                cause: causal.cause(),
+                source,
+            })?;
+        Ok(())
     }
 
     fn compile_product_action(

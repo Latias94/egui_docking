@@ -35,6 +35,13 @@ This is public-contract and renderer-neutral input evidence. It does not prove
 physical OS event delivery, actual GPU presentation, or completion of the full
 60-case product matrix. The egui ordered-input migration remains part of U3.
 
+The U6 public consumer completes item/root close plans with Allow, Veto and
+exact deferred continuations, independently of pointer registration. Feedback
+tests consume pending and terminal statuses by stable manipulation identity,
+check publication deduplication, and preserve pending cancellation on producer
+retirement. These recording tests distinguish command/feedback semantics from
+adapter focus execution and physical presentation.
+
 Run the independent gates from the repository root:
 
 ```text

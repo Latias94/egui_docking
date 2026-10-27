@@ -509,9 +509,11 @@ impl DockEngine {
         CloseAuthority::new(self.authority_domain, self.version, self.policy.revision())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_close_decision(
         &mut self,
         input: InputSequence,
+        focus_causal: FocusCausalStamp,
         request: CloseRequestId,
         token: CloseDecisionToken,
         decision: CloseDecision,
@@ -526,12 +528,21 @@ impl DockEngine {
                 input,
                 detail: source.to_string(),
             })?;
-        self.finish_close_resolution(input, request, resolution, events, interaction_events)
+        self.finish_close_resolution(
+            input,
+            focus_causal,
+            request,
+            resolution,
+            events,
+            interaction_events,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_deferred_close_decision(
         &mut self,
         input: InputSequence,
+        focus_causal: FocusCausalStamp,
         request: CloseRequestId,
         token: DeferredCloseToken,
         decision: DeferredCloseDecision,
@@ -542,12 +553,20 @@ impl DockEngine {
         let resolution = self
             .close
             .continue_deferred(request, token, authority, decision);
-        self.finish_close_resolution(input, request, resolution, events, interaction_events)
+        self.finish_close_resolution(
+            input,
+            focus_causal,
+            request,
+            resolution,
+            events,
+            interaction_events,
+        )
     }
 
     fn finish_close_resolution(
         &mut self,
         input: InputSequence,
+        focus_causal: FocusCausalStamp,
         request: CloseRequestId,
         resolution: CloseResolutionOutcome,
         events: &mut Vec<WorkspaceEvent>,
@@ -569,6 +588,7 @@ impl DockEngine {
             CloseResolutionOutcome::Approved { .. } => {
                 match self.apply_approved_content_close(
                     input,
+                    focus_causal,
                     request,
                     events,
                     interaction_events,
@@ -628,6 +648,7 @@ impl DockEngine {
     fn apply_approved_content_close(
         &mut self,
         input: InputSequence,
+        focus_causal: FocusCausalStamp,
         request: CloseRequestId,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -669,6 +690,7 @@ impl DockEngine {
             ));
         }
         let changed = commit.candidate != self.workspace;
+        let focus_successor = self.content_close_focus_successor(&prepared, &commit.candidate);
         let outcome = commit.outcome;
 
         let publication = match self.stage_workspace_publication(commit.candidate, &self.policy) {
@@ -702,8 +724,78 @@ impl DockEngine {
                 self.version,
                 WorkspaceEventKind::CloseCommitted(outcome.clone()),
             ));
+            if let Some((surface, successor)) = focus_successor {
+                match successor {
+                    PanelFocus::Item(item) => {
+                        self.request_product_item_focus(item, focus_causal)?
+                    }
+                    PanelFocus::None => {
+                        let guard = self.viewport_focus_binding(surface);
+                        self.viewport_focus
+                            .request_local_workspace_focus(surface, guard, focus_causal)
+                            .map_err(|source| EngineError::CausedViewportFocus {
+                                cause: focus_causal.cause(),
+                                source,
+                            })?;
+                    }
+                }
+            }
         }
         Ok(ContentCloseApplication::Applied { outcome, changed })
+    }
+
+    fn content_close_focus_successor(
+        &self,
+        prepared: &PreparedContentClose,
+        candidate: &Workspace,
+    ) -> Option<(SurfaceId, PanelFocus)> {
+        let root = match prepared {
+            PreparedContentClose::Item { source, .. } => source.root(),
+            PreparedContentClose::Root { source, .. } => source.root(),
+        };
+        let surface = self.root_surface(root)?;
+        candidate.surface(surface)?;
+        let observed = self.viewport_focus.panel_focus(surface);
+        // A newer intent owns focus even while an older pane observation remains.
+        let focused = match self.viewport_focus.pending_pane_intent() {
+            Some(intent) if intent.surface() == surface => intent.item(),
+            Some(_) => None,
+            None => match observed {
+                PanelFocusRecord::Item(item) => Some(item),
+                PanelFocusRecord::NoHistory | PanelFocusRecord::None => None,
+            },
+        }?;
+        let is_closed = |item| match prepared {
+            PreparedContentClose::Item { source, .. } => source.item() == item,
+            PreparedContentClose::Root { items, .. } => items.contains(&item),
+        };
+        if !is_closed(focused) {
+            return None;
+        }
+        let successor = match prepared {
+            PreparedContentClose::Item { source, .. } => {
+                let Some(Node::Tabs { items, .. }) = self.workspace.node(source.tabs()) else {
+                    return None;
+                };
+                let index = items.iter().position(|item| *item == source.item())?;
+                items
+                    .get(index + 1)
+                    .or_else(|| items[..index].last())
+                    .copied()
+            }
+            PreparedContentClose::Root { .. } => match observed {
+                PanelFocusRecord::Item(item)
+                    if !is_closed(item) && candidate.locate_item_by_id(item).is_some() =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            },
+        };
+        Some((
+            surface,
+            successor.map_or(PanelFocus::None, PanelFocus::Item),
+        ))
     }
 
     pub(super) fn reconcile_interaction_after_close(

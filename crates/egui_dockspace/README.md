@@ -82,6 +82,39 @@ viewport's final AccessKit tree. Enable AccessKit and ensure the `focus_target`
 identity belongs to the pane's emitted accessibility node; otherwise Dockspace
 settles that request as unavailable rather than guessing from the root viewport.
 
+## Closing Content And Dock Back
+
+The contained-window close button and `Close Group` menu item request approval
+to close the whole root. `DockspaceResponse::close_request_events()` returns the
+plan; the application decides each pending item through `resolve_close` and, for
+deferred decisions, `resolve_deferred_close`. Until all required decisions allow
+closure, the layout keeps every item. Veto preserves the entire group. Replayed
+tokens are inert. Both packaged examples consume these decisions and keep pane
+data owned by the application; the persistence example can restore closed panes
+from its earlier document.
+
+Use the distinct `Dock Back` menu item or `dock_root_back_current` to return
+floating content to its docking destination while keeping it open. Closing and
+Dock Back share stable item/root identities, but execute different commands.
+
+## Feedback And Focus
+
+Read `DockspaceResponse::manipulation_feedback()` for ordered pending and terminal
+statuses from a shown surface. Direct commands and close decisions return their
+own feedback through `result.mutation().manipulation_feedback()`; policy changes
+and document restore return the `DockspaceMutation` directly. Consume that result
+at the call boundary. The next shown frame does not replay it. Both paths retain
+the core's original manipulation identity and per-publication deduplication ID.
+Motion alone is quiet, and reading feedback never requests focus.
+
+Explicit selection requests pane focus even when the item was already selected.
+Dock and Float commands focus the moved visible pane; closing a focused tab uses
+its next visual sibling, or the previous sibling at the end. A focused group with
+no surviving observed destination focuses the remaining workspace. These requests
+still require the adapter's exact output and focus-observation boundary. The
+ordinary callback-only eframe examples continue to report that boundary as
+unavailable rather than claiming focus settlement.
+
 ## Styling
 
 The application owns the surrounding egui `Panel`, `Frame`, and margins.

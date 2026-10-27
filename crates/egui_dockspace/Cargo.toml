@@ -33,10 +33,12 @@ egui = { workspace = true, features = ["default_fonts"] }
 [[example]]
 name = "basic"
 required-features = ["example-app"]
+test = true
 
 [[example]]
 name = "workspace_persistence"
 required-features = ["example-app", "serde"]
+test = true
 
 [[test]]
 name = "contained_occlusion"

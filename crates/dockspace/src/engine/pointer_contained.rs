@@ -732,7 +732,9 @@ impl DockEngine {
                 pending.cause,
                 self.version,
                 InteractionEventKind::Cancelled {
-                    status: InteractionStatus::Idle,
+                    status: InteractionStatus::ContainedTransforming {
+                        session: pending.session,
+                    },
                     reason,
                 },
             ));

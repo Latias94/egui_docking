@@ -157,7 +157,12 @@ pub(crate) fn paint_controls(
     }
 
     if let Some(close) = contained.close_bounds().and_then(egui_rect) {
-        let enabled = contained.close_operable() && context.ui.is_enabled();
+        let enabled = contained.close_operable()
+            && context.ui.is_enabled()
+            && context
+                .plan
+                .prepare_contained_close(contained.floating())
+                .is_some();
         let id = context.ui.make_persistent_id((
             context.instance_id,
             "contained-close",

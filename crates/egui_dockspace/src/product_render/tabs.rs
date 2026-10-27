@@ -87,7 +87,7 @@ pub(crate) fn paint_pane(
     } else {
         if context
             .pane_focus_request
-            .is_some_and(|request| request.item() == item)
+            .is_some_and(|request| request.item() == Some(item))
             && context.pointer_authority.supports_preview_gestures()
             && !*context.pane_focus_target_requested
             && let Some(target) = context.panes.focus_target(item)

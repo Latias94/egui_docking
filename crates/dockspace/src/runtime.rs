@@ -13,6 +13,7 @@ mod focus;
 mod host_frame;
 mod interaction;
 mod local_action;
+mod manipulation_feedback;
 mod measurement;
 mod native;
 mod native_effect;
@@ -25,6 +26,12 @@ mod report;
 mod session;
 
 pub use host_frame::DockspaceHostFrame;
+pub use manipulation_feedback::{
+    DockspaceManipulationCancelReason, DockspaceManipulationDelivery,
+    DockspaceManipulationFeedback, DockspaceManipulationFeedbackId, DockspaceManipulationId,
+    DockspaceManipulationPendingReason, DockspaceManipulationRejection,
+    DockspaceManipulationStatus,
+};
 pub use session::DockspaceSession;
 
 use error_kind::{
@@ -44,7 +51,8 @@ pub use close::{
 };
 use focus::PreparedPaneFocusObservationAuthorityMismatch;
 pub use focus::{
-    DockspacePaneFocusObservation, DockspacePaneFocusRequest, PreparedPaneFocusObservation,
+    DockspaceFocusTarget, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
+    PreparedPaneFocusObservation,
 };
 pub use interaction::{
     DockspaceInteractionError, HostPointerHit, HostPointerInput, HostPointerRetirement,
@@ -479,6 +487,7 @@ pub struct HostFrameReport {
     inputs: Vec<HostInputOutcome>,
     submitted_actions: Vec<(DockspaceSubmittedAction, usize)>,
     presentation_transitions: Vec<DockspacePresentationTransition>,
+    manipulation_feedback: Vec<DockspaceManipulationFeedback>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
     painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
     surface_presentation_commits: Vec<SurfacePresentationCommit>,
@@ -556,6 +565,15 @@ impl HostFrameReport {
     #[must_use]
     pub fn presentation_transitions(&self) -> &[DockspacePresentationTransition] {
         &self.presentation_transitions
+    }
+
+    /// Returns inert manipulation feedback in the original committed event order.
+    ///
+    /// Pending and terminal records share a manipulation identity. Each record
+    /// has its own stable feedback identity for host announcement deduplication.
+    #[must_use]
+    pub fn manipulation_feedback(&self) -> &[DockspaceManipulationFeedback] {
+        &self.manipulation_feedback
     }
 
     /// Takes the affine capabilities for outputs actually painted by this frame.

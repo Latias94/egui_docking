@@ -24,6 +24,9 @@ impl DockEngine {
             });
         }
         let owner = stream;
+        let status_before = self.interaction.status();
+        let matching_owner = self.interaction.active_owner() == Some(owner);
+        let event_start = interaction_events.len();
         let mut outcomes = match edge.kind() {
             PointerEdgeKind::ButtonPressed(PointerButton::Primary) => {
                 let press = self.reduce_journal_primary_press(
@@ -81,10 +84,14 @@ impl DockEngine {
                 capture_authority_after,
                 interaction_events,
             ),
-            PointerEdgeKind::StreamCancelled(_) => self.terminate_journal_stream(
+            PointerEdgeKind::StreamCancelled(reason) => self.terminate_journal_stream(
                 cause,
                 stream,
-                InteractionCancelReason::PointerStreamCancelled,
+                if reason == crate::pointer_journal::PointerStreamCancelReason::Escape {
+                    InteractionCancelReason::Escape
+                } else {
+                    InteractionCancelReason::PointerStreamCancelled
+                },
                 ScrollTerminationReason::StreamCancelled,
                 interaction_events,
             ),
@@ -110,6 +117,67 @@ impl DockEngine {
                 ScrollTerminationReason::StreamEnded,
                 interaction_events,
             )?);
+        }
+        for outcome in &outcomes {
+            let kind = match outcome {
+                InteractionOutcome::ReleasePending { session, .. } => {
+                    Some(InteractionEventKind::ReleasePending { session: *session })
+                }
+                InteractionOutcome::ContainedTransformReleasePending { session, .. } => {
+                    Some(InteractionEventKind::ContainedTransformReleasePending {
+                        session: *session,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                interaction_events.push(InteractionEvent::new_caused(cause, self.version, kind));
+            }
+        }
+        let consumed_release = matching_owner
+            && matches!(
+                edge.kind(),
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+                    | PointerEdgeKind::ContactEnded(PointerButton::Primary)
+            )
+            && self.interaction.status() == InteractionStatus::Idle;
+        let unowned_press = status_before == InteractionStatus::Idle
+            && matches!(
+                edge.kind(),
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary)
+            );
+        let has_terminal = interaction_events[event_start..].iter().any(|event| {
+            matches!(
+                event.kind(),
+                InteractionEventKind::Cancelled { .. }
+                    | InteractionEventKind::Delivered { .. }
+                    | InteractionEventKind::ResizeDelivered { .. }
+                    | InteractionEventKind::ContainedTransformDelivered { .. }
+                    | InteractionEventKind::ReleasePending { .. }
+                    | InteractionEventKind::ContainedTransformReleasePending { .. }
+                    | InteractionEventKind::NativePresentationRequested(_)
+            )
+        });
+        if (consumed_release || unowned_press) && !has_terminal {
+            let rejection = outcomes.iter().rev().find_map(|outcome| match outcome {
+                InteractionOutcome::Rejected(reason) => Some(
+                    crate::interaction::ManipulationRejection::from_interaction(reason),
+                ),
+                InteractionOutcome::ProductActionRejected(reason) => Some(
+                    crate::interaction::ManipulationRejection::from_product(*reason),
+                ),
+                _ => None,
+            });
+            if let Some(reason) = rejection {
+                interaction_events.push(InteractionEvent::new_caused(
+                    cause,
+                    self.version,
+                    InteractionEventKind::Rejected {
+                        status: status_before,
+                        reason,
+                    },
+                ));
+            }
         }
         Ok(outcomes)
     }
@@ -1074,13 +1142,6 @@ impl DockEngine {
             FrozenClickAction::Close(close) => {
                 self.finish_journal_close_click(cause, pressed, close, policy, interaction_events)
             }
-            FrozenClickAction::DockBack(dock_back) => self.finish_journal_contained_dock_back(
-                cause,
-                dock_back,
-                presentation.plan(),
-                policy,
-                events,
-            ),
             FrozenClickAction::TabStripControl(control) => {
                 self.finish_journal_tab_strip_control(cause, control, presentation.plan())
             }
@@ -1171,36 +1232,6 @@ impl DockEngine {
             plan,
             reused: false,
         })
-    }
-
-    fn finish_journal_contained_dock_back(
-        &mut self,
-        cause: ReductionCause,
-        frozen: &FrozenContainedDockBackClick,
-        plan: &PresentationPlan,
-        policy: &DockPolicySnapshot,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let target = CloseSceneTarget::Contained(frozen.floating);
-        let Some(record) = plan.contained_record(frozen.floating) else {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CloseSceneTargetUnavailable { target },
-            ));
-        };
-        if record.root() != frozen.root || record.close_bounds().is_none() {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CloseSceneTargetUnavailable { target },
-            ));
-        }
-        match self.apply_journal_product_action(
-            cause,
-            ProductAction::DockBackRoot { root: frozen.root },
-            policy,
-            events,
-        )? {
-            Ok(outcome) => Ok(InteractionOutcome::ProductActionApplied(outcome)),
-            Err(reason) => Ok(InteractionOutcome::ProductActionRejected(reason)),
-        }
     }
 
     fn finish_journal_tab_list_menu_blocker(
@@ -1353,8 +1384,13 @@ impl DockEngine {
                 .freeze_journal_close_click(plan, point, policy, CloseSceneTarget::Tab(tab))
                 .map(FrozenClickAction::Close),
             PresentationHitRegionKind::ContainedClose(floating) => self
-                .freeze_journal_contained_dock_back(plan, point, floating)
-                .map(FrozenClickAction::DockBack),
+                .freeze_journal_close_click(
+                    plan,
+                    point,
+                    policy,
+                    CloseSceneTarget::Contained(floating),
+                )
+                .map(FrozenClickAction::Close),
             PresentationHitRegionKind::TabStripControl(control) => {
                 let record = plan
                     .tab_strip_control_records()
@@ -1554,31 +1590,6 @@ impl DockEngine {
         Ok(capture)
     }
 
-    fn freeze_journal_contained_dock_back(
-        &self,
-        plan: &PresentationPlan,
-        point: crate::geometry::LogicalPoint,
-        floating: FloatingPresentationId,
-    ) -> Result<FrozenContainedDockBackClick, InteractionRejection> {
-        let target = CloseSceneTarget::Contained(floating);
-        let Some(record) = plan.contained_record(floating) else {
-            return Err(InteractionRejection::CloseSceneTargetUnavailable { target });
-        };
-        let Some(close_bounds) = record.close_bounds() else {
-            return Err(InteractionRejection::CloseControlUnavailable { target });
-        };
-        if !close_bounds.contains(point) {
-            return Err(InteractionRejection::CloseActivationHitMismatch { target });
-        }
-        if !plan.point_is_on_authoritative_layer(point, record.layer()) {
-            return Err(InteractionRejection::CloseActivationOccluded { target });
-        }
-        Ok(FrozenContainedDockBackClick {
-            floating,
-            root: record.root(),
-        })
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(super) fn defer_drag_release(
         &mut self,
@@ -1707,7 +1718,9 @@ impl DockEngine {
                 pending.cause,
                 self.version,
                 InteractionEventKind::Cancelled {
-                    status: InteractionStatus::Idle,
+                    status: InteractionStatus::Dragging {
+                        session: pending.session,
+                    },
                     reason,
                 },
             ));

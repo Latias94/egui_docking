@@ -275,7 +275,21 @@ pub(crate) fn prepare_content_close(
             validate_item_source(&candidate, source).map_err(close_command_error)?;
             let root = source.root();
             let item = source.item();
+            let successor = match candidate.node(source.tabs()) {
+                Some(Node::Tabs { items, selected }) if *selected == Some(item) => items
+                    .iter()
+                    .position(|entry| *entry == item)
+                    .and_then(|index| items.get(index + 1).or_else(|| items[..index].last()))
+                    .copied(),
+                _ => None,
+            };
             remove_item(&mut candidate, source.tabs(), item).map_err(close_command_error)?;
+            if let Some(successor) = successor {
+                let successor = candidate
+                    .capture_item_source(root, source.tabs(), successor)
+                    .map_err(close_command_error)?;
+                select(&mut candidate, &successor).map_err(close_command_error)?;
+            }
             cleanup_item_source_root(&mut candidate, root).map_err(close_command_error)?;
             CloseCommitOutcome::ItemClosed { item, root }
         }

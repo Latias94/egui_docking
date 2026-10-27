@@ -4027,6 +4027,26 @@ impl ViewportFocusCoordinator {
         native_guard: Option<ViewportBinding>,
         causal: FocusCausalStamp,
     ) -> Result<Option<PaneFocusIntent>, ViewportFocusError> {
+        self.request_local_focus(surface, PanelFocus::Item(item), native_guard, causal)
+    }
+
+    /// Requests the logical workspace without substituting a selected pane.
+    pub(crate) fn request_local_workspace_focus(
+        &mut self,
+        surface: SurfaceId,
+        native_guard: Option<ViewportBinding>,
+        causal: FocusCausalStamp,
+    ) -> Result<Option<PaneFocusIntent>, ViewportFocusError> {
+        self.request_local_focus(surface, PanelFocus::None, native_guard, causal)
+    }
+
+    fn request_local_focus(
+        &mut self,
+        surface: SurfaceId,
+        focus: PanelFocus,
+        native_guard: Option<ViewportBinding>,
+        causal: FocusCausalStamp,
+    ) -> Result<Option<PaneFocusIntent>, ViewportFocusError> {
         let focus_observation_baseline = self
             .focus_observations
             .current()
@@ -4038,7 +4058,7 @@ impl ViewportFocusCoordinator {
             activation: None,
             surface,
             native_guard,
-            focus: PanelFocus::Item(item),
+            focus,
             source: PaneFocusIntentSource::PointerTabGesture,
             cause: Some(ViewportActivationCause::PointerTabGesture),
             focus_observation_baseline,

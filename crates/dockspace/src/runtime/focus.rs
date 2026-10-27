@@ -33,13 +33,22 @@ impl DockspacePaneFocusObservation {
     }
 }
 
-/// Opaque revision-bound request to focus one exact pane.
+/// Semantic focus destination within one logical surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DockspaceFocusTarget {
+    /// The application-owned content target of one open pane.
+    Pane(ItemId),
+    /// The surface workspace after its prior content target disappeared.
+    Workspace,
+}
+
+/// Opaque revision-bound request to focus one pane or its surface workspace.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DockspacePaneFocusRequest {
     authority_domain: EngineAuthorityDomainId,
     expected_epoch: WorkspaceEpoch,
     intent: PaneFocusIntent,
-    item: ItemId,
+    target: DockspaceFocusTarget,
 }
 
 impl DockspacePaneFocusRequest {
@@ -47,25 +56,36 @@ impl DockspacePaneFocusRequest {
         authority_domain: EngineAuthorityDomainId,
         expected_epoch: WorkspaceEpoch,
         intent: PaneFocusIntent,
-    ) -> Option<Self> {
-        Some(Self {
+    ) -> Self {
+        Self {
             authority_domain,
             expected_epoch,
             intent,
-            item: intent.item()?,
-        })
+            target: intent
+                .item()
+                .map_or(DockspaceFocusTarget::Workspace, DockspaceFocusTarget::Pane),
+        }
     }
 
-    /// Returns the logical surface whose pane must receive focus.
+    /// Returns the logical surface whose content or workspace must receive focus.
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
         self.intent.surface()
     }
 
-    /// Returns the exact stable item whose pane must receive focus.
+    /// Returns the exact pane item, or `None` for the surface workspace.
     #[must_use]
-    pub const fn item(self) -> ItemId {
-        self.item
+    pub const fn item(self) -> Option<ItemId> {
+        match self.target {
+            DockspaceFocusTarget::Pane(item) => Some(item),
+            DockspaceFocusTarget::Workspace => None,
+        }
+    }
+
+    /// Returns the exact semantic focus destination, without inferring a pane.
+    #[must_use]
+    pub const fn target(self) -> DockspaceFocusTarget {
+        self.target
     }
 }
 
@@ -74,7 +94,7 @@ impl fmt::Debug for DockspacePaneFocusRequest {
         formatter
             .debug_struct("DockspacePaneFocusRequest")
             .field("surface", &self.surface())
-            .field("item", &self.item())
+            .field("target", &self.target())
             .finish_non_exhaustive()
     }
 }

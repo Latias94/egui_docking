@@ -102,6 +102,46 @@ The independent public consumer verifies
 this contract without egui or native hosting. The complete adapter gesture
 matrix remains in progress; see `docs/VALIDATION.md` for evidence and limits.
 
+## Application Close Decisions
+
+A tab close requests that item; a contained-window close or `Close Group`
+requests the complete root. A close request never docks the root back or deletes
+content before application approval. The independent public consumer in
+`integration/dockspace-host-harness/tests/close_commands.rs` shows the complete
+Allow, Veto and deferred-continuation loop without a renderer or pointer host.
+
+Inspect `HostFrameReport::inputs()` for `HostInputOutcome::CloseRequested`.
+Each plan contains stable item identities and their exact decision tokens.
+Submit initial decisions with `resolve_close`; a deferred item exposes a distinct
+continuation for `continue_deferred_close`. Core keeps the entire group unchanged
+until every required item allows the request. A veto retains the group; repeated
+initial or continuation tokens return typed inert results. Keep application pane
+data separately when closed items may be restored or reopened later.
+
+Dock Back is an independent prepared root command,
+`DockspaceSession::prepare_dock_root_back`. It preserves application content and
+does not open a close plan.
+
+## Manipulation feedback and focus
+
+`HostFrameReport::manipulation_feedback()` exposes committed pending and terminal
+results without exposing graph, receiver-proof or reducer internals. A consumed
+release may publish `Pending(AwaitingPresentation)` before the exact preview is
+presented. Its later delivered or cancelled result carries the same opaque
+`manipulation_id()` and a distinct `id()`. Use the latter to deduplicate repeated
+reads or announcements. Motion alone produces no feedback; reading a result
+never moves focus or replaces pane content. `disable_host_pointer` returns any
+committed cancellation on its retirement outcome, including a release already
+waiting for presentation.
+
+Core focus requests identify `DockspaceFocusTarget::Pane(item)` or `Workspace`.
+A focused tab close chooses the next visual tab, or the previous tab at the end;
+a focused group close uses a surviving observed destination when available,
+otherwise the remaining surface workspace. Closing an unfocused target does not
+override a newer focus intent. Pending, vetoed and rejected close decisions do
+not change focus. Hosts execute a request and submit its exact observation only
+at their valid output boundary; feedback itself is never focus authority.
+
 ## Features
 
 - `serde`: session-owned versioned JSON persistence with append-only external

@@ -14,6 +14,85 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U6 commands, application close, feedback and focus
+
+Contained-window close now requests a complete root close plan. Pointer, Enter,
+Space and AccessKit use the same close path; the menu's separate `Close Group`
+uses the same application approval workflow. `Dock Back` remains a distinct
+content-preserving command. Protected groups disable close while leaving an
+otherwise valid Dock Back available. The obsolete contained-close-as-Dock-Back
+frozen action, input variant and terminal helper are deleted.
+
+The public engine consumer and egui facade cover Allow, Veto, deferred Allow,
+replayed initial/continuation tokens and group atomicity. Both packaged eframe
+examples actually consume permitted close decisions. Their tests invoke the
+real `App::ui` callback and accessible close control; the persistence example
+retains application-owned pane data and restores it from its prior document.
+These tests are included as example test targets rather than merely compiling
+example files.
+
+Committed interaction events now project typed pending and terminal feedback
+with one opaque manipulation identity and a distinct stable publication ID.
+Motion produces no status announcements. Pending drag and contained releases
+retain their original identity on presentation loss, policy change, document
+restore, replacement or provider retirement. Retirement returns the actual
+committed cancellation rather than manufacturing a later event. Splitter
+release covers both successful delivery and consumed input-authority rejection,
+followed by another successful gesture and quiet settlement.
+
+An egui shown response forwards its committed reports and retirements in order.
+Direct commands, close decisions, policy changes and restore expose their own
+feedback in `DockspaceMutation::manipulation_feedback()`. The application consumes
+that result at the call boundary; a later shown response does not replay it.
+This fixes the independently reviewed Pending -> programmatic Dock Back/close
+feedback loss without introducing a deferred forwarding queue or new identities.
+
+Focus requests now distinguish a pane from its remaining surface workspace.
+Focused item close selects the next visual tab, or the previous tab at the end,
+and updates durable MRU. This intentionally differs from historical GPUI
+follow-up-close selection and is recorded in the OGC-02 catalog. Closing an
+unfocused target preserves a newer intent. A group close can restore a surviving
+observed destination; otherwise it requests the remaining workspace. Closing a
+whole standalone surface does not request focus on its retired workspace.
+Pending, vetoed and rejected close decisions do not change focus.
+
+Explicit selection publishes a pane intent even for an already selected item.
+Dock/Float resolve the destination after mutation; root-level commands consider
+only a currently selected pane, so a hidden historical target cannot receive an
+unfulfillable request. Exact NotFocused/Focused observations exercise the public
+focus lifecycle. egui registers a persistent workspace focus target and settles
+it through the existing output boundary. Escape still follows egui's native
+focus-clearing behavior; cancellation feedback does not request a substitute.
+
+Independent review identified hidden-history focus, direct-command feedback loss,
+a vacuous old close-as-Dock-Back assertion, missing cross-surface focus assertions
+and a large close-test block. Fixes and focused regressions address these; the six
+new product close tests live in a child module with their original assertions.
+The review also identified pre-existing programmatic Select focus behavior, which
+is completed here as part of the common command loop rather than classified as a
+new regression. This is model, public-consumer and headless egui evidence. It does
+not certify physical native input, GPU presentation or overall plan completion.
+
+Fresh verification on the final U6 source state:
+
+| Gate | Result |
+| --- | --- |
+| Root workspace, all features and all targets (including both example tests) | 1,612 passed |
+| Public host U6 contract targets, default / serde | 37 / 38 passed |
+| egui product, default / all features | 104 / 108 passed |
+| Official egui, all features and all targets | 15 passed |
+| Fork-backed native workspace, all targets | 198 passed |
+| Strict rustdoc / doctests | Passed / 10 passed |
+| Correctness and suspicious Clippy groups | Passed with both groups denied |
+| Workspace/harness formatting and diff whitespace | Passed |
+
+The public U6 counts name the four contract binaries (`public_contract`,
+`contained_projection`, `close_commands`, `manipulation_feedback`); U12 output-cost
+qualification is separate. Existing style/pedantic Clippy warnings are not a
+clean-lint claim. The original review receipt preserves the pre-fix snapshot;
+follow-up evidence records the implemented fixes and fresh gates instead of
+rewriting that review history.
+
 ## 2026-10-28 U5 hover-port and composed-content qualification
 
 The common host port uses the existing output-bound candidate, clearance,

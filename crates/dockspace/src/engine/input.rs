@@ -520,14 +520,11 @@ pub enum EngineInput {
         /// Stable close-control identity exposed by that candidate.
         target: CloseSceneTarget,
     },
-    /// Dock one exact current-frame contained presentation back into its surface.
-    DockBackLocalContained {
-        /// Workspace version from which the local response was captured.
+    /// Request application approval to close a root from its exact menu anchor.
+    RequestLocalRootClose {
         expected: WorkspaceVersion,
-        /// Exact Ready candidate painted by the framework callback.
         scene: SurfaceSceneStamp,
-        /// Stable contained presentation exposed by that candidate.
-        floating: crate::ids::FloatingPresentationId,
+        root: RootId,
     },
     /// Select one exact tab activated by a current-frame framework response.
     SelectLocalSceneTab {
@@ -755,7 +752,7 @@ impl EngineInput {
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }
-            | Self::DockBackLocalContained { .. }
+            | Self::RequestLocalRootClose { .. }
             | Self::SelectLocalSceneTab { .. }
             | Self::ApplyLocalTabChromeAction { .. }
             | Self::ApplyLocalPresentationCommand { .. }

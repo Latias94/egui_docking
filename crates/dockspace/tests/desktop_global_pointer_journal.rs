@@ -2800,7 +2800,9 @@ fn native_release_pending_cancels_nonfatally_when_lifecycle_capability_is_lost()
             InteractionOutcome::ReleasePending { .. }
         ] if matches!(preview.visual(), PreviewVisual::Native { .. })
     ));
-    assert!(engine.pending_release_preview().is_some());
+    let pending = engine
+        .pending_release_preview()
+        .expect("the resolved release retains its exact pending session");
 
     let mut reduced = capabilities();
     reduced.set_native_window_lifecycle(PlatformCapability::unsupported(
@@ -2822,9 +2824,9 @@ fn native_release_pending_cancels_nonfatally_when_lifecycle_capability_is_lost()
     assert!(transition.interaction_events().iter().any(|event| matches!(
         event.kind(),
         dockspace::interaction::InteractionEventKind::Cancelled {
-            status: InteractionStatus::Idle,
+            status: InteractionStatus::Dragging { session },
             reason: InteractionCancelReason::NativeCapabilityUnavailable,
-        }
+        } if *session == pending.0
     )));
 }
 

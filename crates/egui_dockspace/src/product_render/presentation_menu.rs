@@ -92,6 +92,7 @@ pub(super) fn paint(
         .flatten()
         .collect::<Vec<_>>();
     let mut activated = None;
+    let mut close_group = false;
     Popup::menu(&response).id(popup_id).show(|ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(Role::Menu);
@@ -125,11 +126,34 @@ pub(super) fn paint(
                 ui.close();
             }
         }
+        ui.separator();
+        let response = ui.add_enabled(
+            ui_enabled && context.plan.prepare_root_close(anchor.root()).is_some(),
+            Button::new("Close Group"),
+        );
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_role(Role::MenuItem);
+            node.set_label("Close Group");
+            if response.enabled() {
+                node.add_action(Action::Click);
+                node.add_action(Action::Focus);
+            } else {
+                node.set_disabled();
+                node.clear_actions();
+            }
+        });
+        if response.clicked() {
+            close_group = true;
+            ui.close();
+        }
     });
 
     if let Some(command) = activated
         && let Some(action) = context.plan.prepare_presentation_command(command)
     {
+        context.push_local_action(action);
+    }
+    if close_group && let Some(action) = context.plan.prepare_root_close(anchor.root()) {
         context.push_local_action(action);
     }
     Ok(())

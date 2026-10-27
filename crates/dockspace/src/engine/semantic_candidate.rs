@@ -390,95 +390,53 @@ impl DockEngine {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn reduce_local_contained_dock_back_input(
+    pub(super) fn reduce_local_root_close_input(
         &mut self,
         input: InputSequence,
-        cause: ReductionCause,
-        focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
-        application_base: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        floating: FloatingPresentationId,
+        root: RootId,
         policy: &DockPolicySnapshot,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: application_base,
+        let candidate = match self.semantic_candidate(scene) {
+            Ok(candidate) => candidate,
+            Err(reason) => return Ok(self.candidate_action_rejection(reason)),
+        };
+        let operable = candidate
+            .plan()
+            .presentation_menu_anchor_records()
+            .iter()
+            .any(|anchor| {
+                anchor.root() == root
+                    && anchor.ready_bounds().is_some_and(|bounds| {
+                        candidate.plan().region_is_operable(bounds, anchor.layer())
+                    })
+            });
+        if !operable {
+            return Ok(InputOutcome::ContentCloseRejected {
+                target: ContentCloseTarget::Root(root),
+                reason: ContentCloseRequestRejection::RootUnavailable { root },
+                version: self.version,
             });
         }
-        let (root, focus_item) = {
-            let candidate = match self.semantic_candidate(scene) {
-                Ok(candidate) => candidate,
-                Err(error) => return Ok(self.candidate_action_rejection(error)),
-            };
-            let target = CloseSceneTarget::Contained(floating);
-            let Some(record) = candidate.plan().contained_record(floating) else {
-                return Ok(self.candidate_action_rejection(
-                    InteractionRejection::CloseSceneTargetUnavailable { target },
-                ));
-            };
-            let Some(close_bounds) = record.close_bounds() else {
-                return Ok(self.candidate_action_rejection(
-                    InteractionRejection::CloseControlUnavailable { target },
-                ));
-            };
-            if !candidate
-                .plan()
-                .region_is_operable(close_bounds, record.layer())
-            {
-                return Ok(self.candidate_action_rejection(
-                    InteractionRejection::CloseActivationOccluded { target },
-                ));
-            }
-            let root = record.root();
-            let pending = self
-                .viewport_focus
-                .pending_pane_intent()
-                .filter(|intent| intent.surface() == scene.surface())
-                .and_then(crate::viewport_focus::PaneFocusIntent::item)
-                .filter(|item| {
-                    self.workspace
-                        .locate_item_by_id(*item)
-                        .is_some_and(|(item_root, _, _)| item_root == root)
-                });
-            let historical = match self.viewport_focus.panel_focus(scene.surface()) {
-                crate::viewport_focus::PanelFocusRecord::Item(item) => self
-                    .workspace
-                    .locate_item_by_id(item)
-                    .filter(|(item_root, _, _)| *item_root == root)
-                    .map(|_| item),
-                crate::viewport_focus::PanelFocusRecord::NoHistory
-                | crate::viewport_focus::PanelFocusRecord::None => None,
-            };
-            (root, pending.or(historical))
-        };
-        let outcome = self.reduce_product_action(
+        let outcome = self.reduce_content_close_request(
             input,
-            cause,
-            focus_causal,
             expected,
-            ProductAction::DockBackRoot { root },
+            ContentCloseTarget::Root(root),
             policy,
-            events,
-            interaction_events,
         )?;
-        if matches!(&outcome, InputOutcome::ProductActionProcessed { .. })
-            && let Some(item) = focus_item
-        {
-            let native_guard = self.viewport_focus_binding(scene.surface());
-            let _ = self
-                .viewport_focus
-                .request_local_pane_focus(scene.surface(), item, native_guard, focus_causal)
-                .map_err(|source| EngineError::CausedViewportFocus {
-                    cause: focus_causal.cause(),
-                    source,
-                })?;
-        }
-        Ok(outcome)
+        Ok(match outcome {
+            InputOutcome::ContentCloseRequested {
+                plan,
+                reused,
+                version,
+                ..
+            } => InputOutcome::InteractionProcessed {
+                outcome: InteractionOutcome::CloseRequested { plan, reused },
+                version,
+            },
+            other => other,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

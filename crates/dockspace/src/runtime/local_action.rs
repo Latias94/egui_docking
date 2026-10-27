@@ -129,20 +129,6 @@ impl PreparedSurfaceAction {
         }
     }
 
-    pub(super) const fn dock_back(
-        authority_domain: EngineAuthorityDomainId,
-        expected: WorkspaceVersion,
-        scene: SurfaceSceneStamp,
-        floating: crate::ids::FloatingPresentationId,
-    ) -> Self {
-        Self {
-            authority_domain,
-            expected,
-            surface: scene.surface(),
-            action: SurfaceAction::DockBack { scene, floating },
-        }
-    }
-
     pub(super) const fn presentation_command(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -154,6 +140,20 @@ impl PreparedSurfaceAction {
             expected,
             surface: scene.surface(),
             action: SurfaceAction::PresentationCommand { scene, action },
+        }
+    }
+
+    pub(super) const fn close_root(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        root: crate::ids::RootId,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::CloseRoot { scene, root },
         }
     }
 
@@ -263,7 +263,7 @@ impl PreparedSurfaceAction {
         match self.action {
             SurfaceAction::SelectTab { tab, .. } => Some(tab.item),
             SurfaceAction::Close { .. }
-            | SurfaceAction::DockBack { .. }
+            | SurfaceAction::CloseRoot { .. }
             | SurfaceAction::PresentationCommand { .. }
             | SurfaceAction::TabChrome { .. }
             | SurfaceAction::AdjustSplitter { .. }
@@ -291,10 +291,10 @@ impl PreparedSurfaceAction {
                 scene,
                 target,
             },
-            SurfaceAction::DockBack { scene, floating } => EngineInput::DockBackLocalContained {
+            SurfaceAction::CloseRoot { scene, root } => EngineInput::RequestLocalRootClose {
                 expected: self.expected,
                 scene,
-                floating,
+                root,
             },
             SurfaceAction::PresentationCommand { scene, action } => {
                 EngineInput::ApplyLocalPresentationCommand {
@@ -371,9 +371,9 @@ enum SurfaceAction {
         scene: SurfaceSceneStamp,
         target: CloseSceneTarget,
     },
-    DockBack {
+    CloseRoot {
         scene: SurfaceSceneStamp,
-        floating: crate::ids::FloatingPresentationId,
+        root: crate::ids::RootId,
     },
     PresentationCommand {
         scene: SurfaceSceneStamp,
@@ -408,7 +408,7 @@ impl SurfaceAction {
         match self {
             Self::SelectTab { .. } => "select-tab",
             Self::Close { .. } => "close",
-            Self::DockBack { .. } => "dock-back",
+            Self::CloseRoot { .. } => "close-root",
             Self::PresentationCommand { .. } => "presentation-command",
             Self::TabChrome { .. } => "tab-chrome",
             Self::AdjustSplitter { .. } => "adjust-splitter",

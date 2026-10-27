@@ -1523,21 +1523,16 @@ impl DockEngine {
                 *target,
                 tick_start.policy,
             ),
-            EngineInput::DockBackLocalContained {
+            EngineInput::RequestLocalRootClose {
                 expected,
                 scene,
-                floating,
-            } => self.reduce_local_contained_dock_back_input(
+                root,
+            } => self.reduce_local_root_close_input(
                 input.sequence,
-                cause,
-                focus_causal,
                 *expected,
-                *application_base,
                 *scene,
-                *floating,
+                *root,
                 tick_start.policy,
-                events,
-                interaction_events,
             ),
             EngineInput::SelectLocalSceneTab {
                 expected,
@@ -1733,6 +1728,7 @@ impl DockEngine {
                 decision,
             } => self.reduce_close_decision(
                 input.sequence,
+                focus_causal,
                 *request,
                 *token,
                 *decision,
@@ -1745,6 +1741,7 @@ impl DockEngine {
                 decision,
             } => self.reduce_deferred_close_decision(
                 input.sequence,
+                focus_causal,
                 *request,
                 *token,
                 *decision,

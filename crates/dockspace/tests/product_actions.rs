@@ -17,6 +17,9 @@ use crate::runtime::{
     UniformSurfaceMetrics,
 };
 
+#[path = "product_actions/focus.rs"]
+mod focus;
+
 const MAIN_SURFACE: SurfaceId = SurfaceId::new(10);
 const ROOTLESS_SURFACE: SurfaceId = SurfaceId::new(20);
 const MAIN_ROOT: RootId = RootId::new(100);
@@ -136,7 +139,7 @@ fn assert_pending_pane_focus(session: &mut DockspaceSession, surface: SurfaceId,
         .pane_focus_request()
         .expect("the exact pane-focus intent remains pending");
     assert_eq!(request.surface(), surface);
-    assert_eq!(request.item(), item);
+    assert_eq!(request.item(), Some(item));
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("pane-focus inspection retains the presentation");

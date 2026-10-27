@@ -376,6 +376,11 @@ impl Dockspace {
         self.session.prepare_dock_root(root, placement)
     }
 
+    /// Prepares a revision-bound complete-root Dock Back action.
+    pub const fn prepare_dock_root_back(&self, root: RootId) -> PreparedDockAction {
+        self.session.prepare_dock_root_back(root)
+    }
+
     /// Prepares a revision-bound action that moves one item into contained floating content.
     pub const fn prepare_float_item(&self, item: ItemId, surface: SurfaceId) -> PreparedDockAction {
         self.session.prepare_float_item(item, surface)
@@ -481,6 +486,18 @@ impl Dockspace {
         placement: DockPlacement,
     ) -> Result<DockspaceActionResult, DockspaceError> {
         self.submit_prepared_action(self.prepare_dock_root(root, placement))
+    }
+
+    /// Returns a complete floating root to its current docking destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision-bound action cannot be committed.
+    pub fn dock_root_back_current(
+        &mut self,
+        root: RootId,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        self.submit_prepared_action(self.prepare_dock_root_back(root))
     }
 
     /// Moves one open item into a contained presentation on an existing surface.
@@ -690,14 +707,17 @@ impl Dockspace {
             }
         };
         let ready_settlement = self.pass_settlement.take_ready(ui);
+        let mut preceding_feedback = Vec::new();
         if ready_settlement.lane_changed {
             if let Some(retired) = self
                 .session
                 .disable_host_pointer()
                 .map_err(DockspaceError::from_detail)?
-                && retired.repaint_required()
             {
-                ui.ctx().request_repaint();
+                preceding_feedback.extend_from_slice(retired.manipulation_feedback());
+                if retired.repaint_required() {
+                    ui.ctx().request_repaint();
+                }
             }
             self.pending_focus.clear();
             self.pointer.clear();
@@ -746,6 +766,7 @@ impl Dockspace {
             }
             self.pointer
                 .observe(observation_report.surface_presentation_commits());
+            preceding_feedback.extend_from_slice(observation_report.manipulation_feedback());
             preceding_reports.push(observation_report);
         }
         if !accepted_focus.is_empty() {
@@ -761,7 +782,9 @@ impl Dockspace {
             focus_frame
                 .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
                 .map_err(DockspaceError::from_detail)?;
-            preceding_reports.push(focus_frame.commit().map_err(DockspaceError::from_detail)?);
+            let report = focus_frame.commit().map_err(DockspaceError::from_detail)?;
+            preceding_feedback.extend_from_slice(report.manipulation_feedback());
+            preceding_reports.push(report);
         }
 
         if presentation_settlement_available {
@@ -773,6 +796,7 @@ impl Dockspace {
                 .submit(&mut self.session, surface, ui, cancel_active_gesture)
                 .map_err(DockspaceError::from_detail)?
             {
+                preceding_feedback.extend_from_slice(report.manipulation_feedback());
                 preceding_reports.push(report);
             }
         } else if let Some(retired) = self
@@ -780,6 +804,7 @@ impl Dockspace {
             .disable_host_pointer()
             .map_err(DockspaceError::from_detail)?
         {
+            preceding_feedback.extend_from_slice(retired.manipulation_feedback());
             if retired.repaint_required() {
                 ui.ctx().request_repaint();
             }
@@ -974,6 +999,8 @@ impl Dockspace {
         {
             ui.ctx().request_repaint();
         }
+        preceding_feedback.extend_from_slice(measurement_report.manipulation_feedback());
+        preceding_feedback.extend_from_slice(paint_report.manipulation_feedback());
         preceding_reports.push(measurement_report);
         preceding_reports.push(paint_report);
         let mut response = product_response(
@@ -986,6 +1013,7 @@ impl Dockspace {
             pane_focus_capability,
         )?;
         response.include_preceding_reports(&preceding_reports);
+        response.include_preceding_feedback(preceding_feedback);
         Ok(response)
     }
 

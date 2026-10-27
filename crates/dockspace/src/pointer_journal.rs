@@ -715,6 +715,8 @@ pub enum PointerAuthorityCheckpointError {
 /// Typed reason why a provider ended one pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerStreamCancelReason {
+    /// The user cancelled the current manipulation with Escape.
+    Escape,
     /// The provider observed a device-removal boundary and invalidated this stream.
     DeviceRemoved,
     /// The platform explicitly cancelled this stream.
@@ -1637,20 +1639,24 @@ impl SurfaceLocalPointerDrainReceipt {
 /// Surface-local retirement cannot delegate platform effects or focus work to
 /// the renderer. The core therefore exposes only its authority disposition and
 /// the exact local invalidation requirements after cancelling local state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[must_use = "surface-local retirement authority and repaint work must be handled"]
 pub struct SurfaceLocalPointerRetirementOutcome {
     disposition: SurfaceLocalPointerRetirementDisposition,
     interaction_changed: bool,
     repaint_required: bool,
+    interaction_events: Vec<crate::interaction::InteractionEvent>,
 }
 
 impl SurfaceLocalPointerRetirementOutcome {
-    pub(crate) const fn retired_active(interaction_changed: bool) -> Self {
+    pub(crate) fn retired_active(
+        interaction_events: Vec<crate::interaction::InteractionEvent>,
+    ) -> Self {
         Self {
             disposition: SurfaceLocalPointerRetirementDisposition::RetiredActive,
-            interaction_changed,
+            interaction_changed: !interaction_events.is_empty(),
             repaint_required: true,
+            interaction_events,
         }
     }
 
@@ -1659,26 +1665,32 @@ impl SurfaceLocalPointerRetirementOutcome {
             disposition: SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired,
             interaction_changed: false,
             repaint_required: false,
+            interaction_events: Vec::new(),
         }
     }
 
     /// Returns whether this call retired live authority or only compacted an
     /// already retired provider tombstone.
     #[must_use]
-    pub const fn disposition(self) -> SurfaceLocalPointerRetirementDisposition {
+    pub const fn disposition(&self) -> SurfaceLocalPointerRetirementDisposition {
         self.disposition
     }
 
     /// Returns whether retirement changed the active interaction state.
     #[must_use]
-    pub const fn interaction_changed(self) -> bool {
+    pub const fn interaction_changed(&self) -> bool {
         self.interaction_changed
     }
 
     /// Returns whether the owning surface must rebuild its presentation.
     #[must_use]
-    pub const fn repaint_required(self) -> bool {
+    pub const fn repaint_required(&self) -> bool {
         self.repaint_required
+    }
+
+    /// Returns the events published by this exact retirement boundary.
+    pub fn interaction_events(&self) -> &[crate::interaction::InteractionEvent] {
+        &self.interaction_events
     }
 }
 

@@ -1241,7 +1241,7 @@ impl DockspaceHostFrame<'_> {
         let pane_focus_request = view
             .published_pane_focus_intent()
             .filter(|intent| intent.surface() == surface)
-            .and_then(|intent| {
+            .map(|intent| {
                 DockspacePaneFocusRequest::from_intent(
                     self.session.engine.authority_domain(),
                     version.epoch(),
@@ -1797,6 +1797,29 @@ impl<'frame> SurfacePaintPlan<'frame> {
         ))
     }
 
+    /// Prepares a complete-root close request from an operable command-menu anchor.
+    ///
+    /// Returns `None` when the root is occluded, absent or disallows closing.
+    #[must_use]
+    pub fn prepare_root_close(self, root: RootId) -> Option<super::PreparedSurfaceAction> {
+        self.plan
+            .presentation_menu_anchor_records()
+            .iter()
+            .find(|anchor| {
+                anchor.root() == root
+                    && anchor
+                        .ready_bounds()
+                        .is_some_and(|bounds| self.plan.region_is_operable(bounds, anchor.layer()))
+            })?;
+        self.candidate.root_close_is_available(root).then_some(())?;
+        Some(super::PreparedSurfaceAction::close_root(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            root,
+        ))
+    }
+
     /// Prepares a current-candidate tab selection without exposing scene identity.
     #[must_use]
     pub fn prepare_tab_select(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
@@ -1841,11 +1864,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.plan
             .region_is_operable(close_bounds, record.layer())
             .then_some(())?;
-        Some(super::PreparedSurfaceAction::dock_back(
+        self.candidate
+            .root_close_is_available(record.root())
+            .then_some(())?;
+        Some(super::PreparedSurfaceAction::close(
             self.authority_domain,
             self.version,
             self.scene,
-            floating,
+            crate::intent::CloseSceneTarget::Contained(floating),
         ))
     }
 

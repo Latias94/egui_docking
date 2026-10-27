@@ -480,7 +480,7 @@ fn closing_last_central_item_preserves_the_empty_central_leaf() {
 }
 
 #[test]
-fn close_selection_follows_the_durable_mru_order() {
+fn close_selection_uses_the_visual_successor_and_updates_durable_mru() {
     let (mut workspace, tabs, _) = two_roots();
     let select_two = workspace
         .capture_item_source(ROOT_A, tabs, item(2))
@@ -500,8 +500,8 @@ fn close_selection_follows_the_durable_mru_order() {
         }
     );
     assert_eq!(tabs_items(&workspace, tabs), [item(1), item(3)]);
-    assert_eq!(selected_item(&workspace, tabs), Some(item(1)));
-    assert_eq!(workspace.tab_mru(tabs), Some([item(1), item(3)].as_slice()));
+    assert_eq!(selected_item(&workspace, tabs), Some(item(3)));
+    assert_eq!(workspace.tab_mru(tabs), Some([item(3), item(1)].as_slice()));
 
     let open_target = workspace
         .capture_tab_target(ROOT_A, tabs)

@@ -1310,7 +1310,7 @@ fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
         .pane_focus_request()
         .expect("selection publishes an exact pane-focus request");
     assert_eq!(request.surface(), SURFACE);
-    assert_eq!(request.item(), SECOND);
+    assert_eq!(request.item(), Some(SECOND));
     let not_focused = plan
         .prepare_pane_focus_observation(request, DockspacePaneFocusObservation::NotFocused)
         .expect("the exact request accepts a not-focused observation");
@@ -1529,7 +1529,7 @@ fn rear_contained_pane_press_raises_and_requests_the_exact_selected_pane_focus()
     assert!(!session.has_active_gesture());
     inspect_surface(&mut session, |plan| {
         assert_eq!(
-            plan.pane_focus_request().map(|request| request.item()),
+            plan.pane_focus_request().and_then(|request| request.item()),
             Some(SECOND)
         );
     });
@@ -1766,7 +1766,7 @@ fn rear_contained_tab_press_raises_before_drag_motion_and_requests_pane_focus() 
             .pane_focus_request()
             .expect("contained tab activation requests pane focus");
         assert_eq!(request.surface(), SURFACE);
-        assert_eq!(request.item(), SECOND);
+        assert_eq!(request.item(), Some(SECOND));
         assert!(
             program_drag_decoration(plan).is_some(),
             "the post-Raise motion crosses the real drag threshold"
@@ -1841,7 +1841,7 @@ fn rear_contained_tab_select_atomically_raises_and_requests_pane_focus() {
         .pane_focus_request()
         .expect("contained tab selection requests pane focus");
     assert_eq!(request.surface(), SURFACE);
-    assert_eq!(request.item(), SECOND);
+    assert_eq!(request.item(), Some(SECOND));
     inspection
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("focus inspection retains the current surface");
@@ -1876,7 +1876,103 @@ fn exact_surface_close_action_opens_the_shared_close_workflow() {
 }
 
 #[test]
-fn exact_contained_close_action_docks_the_root_back_without_closing_content() {
+fn completed_surface_tab_close_keeps_its_successor_pending_until_exact_focus_observation() {
+    let mut session = session();
+    install_ready_candidate(&mut session);
+    let select = prepare_tab_select(&mut session, SECOND);
+    let mut frame = session.begin_host_frame().expect("selection frame begins");
+    frame
+        .submit_surface_action(select)
+        .expect("exact tab selects");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("selection measures");
+    frame.commit().expect("selection commits");
+
+    let original = inspect_surface(&mut session, |plan| {
+        let request = plan
+            .pane_focus_request()
+            .expect("selected pane has a focus intent");
+        assert_eq!(request.item(), Some(SECOND));
+        request
+    });
+    let action = prepare_tab_close(&mut session, SECOND);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("close request frame begins");
+    frame
+        .submit_surface_action(action)
+        .expect("exact close requests a plan");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("close request measures");
+    let report = frame.commit().expect("close request commits");
+    let [HostInputOutcome::CloseRequested { plan, .. }] = report.inputs() else {
+        panic!("exact close must expose one application decision plan");
+    };
+    inspect_surface(&mut session, |paint| {
+        assert_eq!(paint.pane_focus_request(), Some(original));
+    });
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("close decision frame begins");
+    frame
+        .resolve_close(
+            plan.request(),
+            plan.items()[0].token(),
+            crate::close::CloseDecision::Allow,
+        )
+        .expect("close decision stages");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("closed surface measures");
+    let report = frame.commit().expect("close decision commits");
+    assert!(report.workspace_changed());
+    assert!(session.view().item(SECOND).is_none());
+
+    let successor = inspect_surface(&mut session, |plan| {
+        let request = plan
+            .pane_focus_request()
+            .expect("close publishes a visual successor");
+        assert_eq!(request.item(), Some(FIRST));
+        assert_ne!(request, original);
+        assert!(
+            plan.prepare_pane_focus_observation(original, DockspacePaneFocusObservation::Focused)
+                .is_none()
+        );
+        request
+    });
+    for observation in [
+        DockspacePaneFocusObservation::NotFocused,
+        DockspacePaneFocusObservation::Focused,
+    ] {
+        let mut frame = session
+            .begin_host_frame()
+            .expect("successor observation frame begins");
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("paint lookup succeeds")
+            .expect("successor surface is paintable");
+        assert_eq!(plan.pane_focus_request(), Some(successor));
+        let exact = plan
+            .prepare_pane_focus_observation(successor, observation)
+            .expect("exact successor observation prepares");
+        frame
+            .submit_pane_focus_observation(exact)
+            .expect("successor observation stages");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("observation retains the surface");
+        frame.commit().expect("successor observation commits");
+    }
+    inspect_surface(&mut session, |plan| {
+        assert!(plan.pane_focus_request().is_none());
+    });
+}
+
+#[test]
+fn exact_contained_close_action_requests_the_root_without_mutating_content() {
     let mut session = contained_session(DockPolicy::default());
     install_ready_candidate(&mut session);
 
@@ -1897,16 +1993,11 @@ fn exact_contained_close_action_docks_the_root_back_without_closing_content() {
 
     assert!(matches!(
         report.inputs(),
-        [HostInputOutcome::ProductActionApplied(
-            crate::model::DockspaceActionOutcome::RootDocked {
-                root: FLOATING_ROOT,
-                items,
-                changed: true,
-                ..
-            }
-        )] if items == &[SECOND]
+        [HostInputOutcome::CloseRequested { plan, reused: false, origin: HostCloseRequestOrigin::Interaction }]
+            if plan.target() == crate::close::ClosePlanTarget::Root { root: FLOATING_ROOT }
     ));
-    assert!(session.view().contained(FLOATING).is_none());
+    assert!(!report.workspace_changed());
+    assert!(session.view().contained(FLOATING).is_some());
     assert!(session.view().item(SECOND).is_some());
 }
 
@@ -2081,12 +2172,21 @@ fn local_dock_back_without_focus_history_does_not_guess_from_selection() {
     let mut prepare = session
         .begin_host_frame()
         .expect("contained dock-back preparation frame begins");
-    let action = prepare
+    let plan = prepare
         .paint_plan(SURFACE)
         .expect("paint plan lookup succeeds")
-        .expect("contained candidate is paintable")
-        .prepare_contained_close(FLOATING)
-        .expect("the exact contained close prepares dock-back");
+        .expect("contained candidate is paintable");
+    assert!(plan.pane_focus_request().is_none());
+    let command = plan
+        .presentation_command(FLOATING_ROOT, DockspacePresentationCommandKind::DockBack)
+        .expect("dock-back availability is queryable")
+        .expect("the exact contained root exposes a dock-back command");
+    assert!(command.is_ready());
+    assert_eq!(command.root(), FLOATING_ROOT);
+    assert_eq!(command.kind(), DockspacePresentationCommandKind::DockBack);
+    let action = plan
+        .prepare_presentation_command(command)
+        .expect("the exact presentation DockBack prepares an action");
     prepare
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the preparation frame retains the current candidate");
@@ -2103,7 +2203,36 @@ fn local_dock_back_without_focus_history_does_not_guess_from_selection() {
     execute
         .measure_surface(SURFACE, metrics())
         .expect("the recovered surface measures");
-    execute.commit().expect("the contained dock-back commits");
+    let report = execute.commit().expect("the contained dock-back commits");
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            crate::model::DockspaceActionOutcome::RootDocked {
+                root: FLOATING_ROOT,
+                target_root: ROOT,
+                items: vec![SECOND],
+                changed: true,
+            }
+        )]
+    );
+    assert!(report.workspace_changed());
+    assert!(
+        report
+            .inputs()
+            .iter()
+            .all(|input| !matches!(input, HostInputOutcome::CloseRequested { .. }))
+    );
+    assert!(session.view().contained(FLOATING).is_none());
+    assert!(session.view().root(FLOATING_ROOT).is_none());
+    let docked = session
+        .view()
+        .item(SECOND)
+        .expect("docked content survives");
+    assert_eq!(docked.surface(), SURFACE);
+    assert_eq!(docked.root(), ROOT);
+    assert_eq!(docked.contained(), None);
+    assert!(docked.is_selected());
+    assert_eq!(docked.tabs().items(), &[FIRST, THIRD, SECOND]);
 
     let mut inspect = session
         .begin_host_frame()
@@ -2112,9 +2241,14 @@ fn local_dock_back_without_focus_history_does_not_guess_from_selection() {
         .paint_plan(SURFACE)
         .expect("focus paint plan lookup succeeds")
         .expect("the recovered surface remains paintable");
-    assert!(
-        plan.pane_focus_request().is_none(),
-        "selection alone must not be promoted into a pane-focus request"
+    let request = plan
+        .pane_focus_request()
+        .expect("explicit DockBack requests the current selected pane without focus history");
+    assert_eq!(request.surface(), SURFACE);
+    assert_eq!(request.item(), Some(SECOND));
+    assert_eq!(
+        request.target(),
+        crate::runtime::DockspaceFocusTarget::Pane(SECOND)
     );
     inspect
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

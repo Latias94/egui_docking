@@ -358,6 +358,27 @@ pub(crate) fn paint_surface(
         ui.allocate_rect(bounds, Sense::hover());
         ui.painter()
             .rect_filled(bounds, 0.0, visuals.workspace_fill);
+        let target = ui.make_persistent_id((instance_id, "workspace-focus", plan.surface()));
+        let _ = ui.interact(bounds, target, Sense::focusable_noninteractive());
+        ui.ctx().accesskit_node_builder(target, |node| {
+            node.set_role(egui::accesskit::Role::Pane);
+            node.set_label("Dockspace workspace");
+            node.set_bounds(geometry::accesskit_bounds(bounds));
+            if ui.is_enabled() {
+                node.add_action(egui::accesskit::Action::Focus);
+            } else {
+                node.set_disabled();
+                node.clear_actions();
+            }
+        });
+        if pane_focus_request.is_some_and(|request| request.item().is_none())
+            && pointer_authority.supports_preview_gestures()
+            && ui.is_enabled()
+        {
+            ui.memory_mut(|memory| memory.request_focus(target));
+            pane_focus_target_requested = true;
+            pane_focus_target = Some(target);
+        }
     }
 
     {
@@ -545,7 +566,20 @@ pub(crate) fn paint_surface(
     let (pane_focus_observation, pane_focus_pending, pane_focus_capability) = pane_focus_request
         .map_or((None, None, DockspaceCapability::Supported), |request| {
             let (observation, capability) = if pane_focus_target_requested {
-                match panes.focus_state(request.item(), ui.ctx()) {
+                let state = request.item().map_or_else(
+                    || {
+                        if ui.ctx().input(|input| input.focused)
+                            && pane_focus_target
+                                .is_some_and(|target| ui.memory(|memory| memory.has_focus(target)))
+                        {
+                            PaneFocusState::Focused
+                        } else {
+                            PaneFocusState::Unfocused
+                        }
+                    },
+                    |item| panes.focus_state(item, ui.ctx()),
+                );
+                match state {
                     PaneFocusState::Focused => (
                         DockspacePaneFocusObservation::Focused,
                         DockspaceCapability::Supported,
@@ -556,11 +590,10 @@ pub(crate) fn paint_surface(
                     ),
                     PaneFocusState::Unknown => (
                         DockspacePaneFocusObservation::Unavailable,
-                        DockspaceCapability::Unavailable(
-                            DockspaceUnavailableReason::PaneFocusStateUnknown {
-                                item: request.item(),
-                            },
-                        ),
+                        DockspaceCapability::Unavailable(request.item().map_or(
+                            DockspaceUnavailableReason::PaneFocusBindingUnavailable,
+                            |item| DockspaceUnavailableReason::PaneFocusStateUnknown { item },
+                        )),
                     ),
                 }
             } else {

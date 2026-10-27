@@ -6,7 +6,7 @@ use dockspace::model::{
 pub use dockspace::runtime::{
     DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePlan,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
-    DockspaceCloseResolution,
+    DockspaceCloseResolution, DockspaceManipulationFeedback,
 };
 use dockspace::runtime::{
     DockspacePresentationTransitionResult, HostCloseRequestOrigin, HostFrameReport,
@@ -21,6 +21,7 @@ pub struct DockspaceMutation {
     workspace_changed: bool,
     published_state_changed: bool,
     affected_surfaces: Vec<SurfaceId>,
+    manipulation_feedback: Vec<DockspaceManipulationFeedback>,
 }
 
 impl DockspaceMutation {
@@ -31,6 +32,7 @@ impl DockspaceMutation {
             workspace_changed: false,
             published_state_changed: false,
             affected_surfaces: Vec::new(),
+            manipulation_feedback: Vec::new(),
         }
     }
 
@@ -41,6 +43,7 @@ impl DockspaceMutation {
             workspace_changed: report.workspace_changed(),
             published_state_changed: report.published_state_changed(),
             affected_surfaces: report.affected_surfaces().to_vec(),
+            manipulation_feedback: report.manipulation_feedback().to_vec(),
         }
     }
 
@@ -82,6 +85,16 @@ impl DockspaceMutation {
     #[must_use]
     pub fn affected_surfaces(&self) -> &[SurfaceId] {
         &self.affected_surfaces
+    }
+
+    /// Returns manipulation feedback committed by this exact publication.
+    ///
+    /// Direct commands, policy updates, close decisions and document restore may
+    /// cancel a pending release. Their original feedback is returned here once;
+    /// a later `show_single_surface` invocation does not replay it.
+    #[must_use]
+    pub fn manipulation_feedback(&self) -> &[DockspaceManipulationFeedback] {
+        &self.manipulation_feedback
     }
 }
 
@@ -446,6 +459,13 @@ pub struct DockspaceResponse {
 }
 
 impl DockspaceResponse {
+    pub(crate) fn include_preceding_feedback(
+        &mut self,
+        mut feedback: Vec<DockspaceManipulationFeedback>,
+    ) {
+        feedback.append(&mut self.mutation.manipulation_feedback);
+        self.mutation.manipulation_feedback = feedback;
+    }
     pub(crate) fn include_preceding_reports(&mut self, reports: &[HostFrameReport]) {
         if let Some(first) = reports.first() {
             self.mutation.before = first.before();
@@ -544,6 +564,15 @@ impl DockspaceResponse {
     #[must_use]
     pub fn close_request_events(&self) -> &[DockspaceCloseRequest] {
         &self.close_requests
+    }
+
+    /// Returns core manipulation feedback in committed report and event order.
+    ///
+    /// Feedback identities are preserved for application-owned deduplication;
+    /// observing these inert statuses never changes focus.
+    #[must_use]
+    pub fn manipulation_feedback(&self) -> &[DockspaceManipulationFeedback] {
+        self.mutation.manipulation_feedback()
     }
 
     /// Returns stable pane identities missing from the application registry.

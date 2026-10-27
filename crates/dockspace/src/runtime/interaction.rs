@@ -236,6 +236,8 @@ pub enum SurfacePointerPosition {
 /// Explicit lifecycle reason for terminating one pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfacePointerCancelReason {
+    /// The user explicitly cancelled this manipulation with Escape.
+    Escape,
     /// The physical or virtual device was removed.
     DeviceRemoved,
     /// The platform explicitly cancelled this stream.
@@ -803,53 +805,65 @@ impl RuntimePointerState {
 }
 
 /// Repaint work caused by retiring a host input domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "host pointer retirement repaint work must be handled"]
 pub struct HostPointerRetirement {
     interaction_changed: bool,
     repaint_required: bool,
+    manipulation_feedback: Vec<super::DockspaceManipulationFeedback>,
 }
 
 impl HostPointerRetirement {
     /// Returns whether interaction decoration changed on the host.
     #[must_use]
-    pub const fn interaction_changed(self) -> bool {
+    pub const fn interaction_changed(&self) -> bool {
         self.interaction_changed
     }
 
     /// Returns whether the host must rebuild affected surface presentations.
     #[must_use]
-    pub const fn repaint_required(self) -> bool {
+    pub const fn repaint_required(&self) -> bool {
         self.repaint_required
+    }
+
+    /// Returns committed terminal feedback from this retirement boundary.
+    pub fn manipulation_feedback(&self) -> &[super::DockspaceManipulationFeedback] {
+        &self.manipulation_feedback
     }
 }
 
 /// Exact adapter work caused by retiring one surface-local pointer producer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "surface pointer retirement repaint work must be handled"]
 pub struct SurfacePointerRetirement {
     surface: SurfaceId,
     interaction_changed: bool,
     repaint_required: bool,
+    manipulation_feedback: Vec<super::DockspaceManipulationFeedback>,
 }
 
 impl SurfacePointerRetirement {
     /// Returns the surface whose producer lifetime ended.
     #[must_use]
-    pub const fn surface(self) -> SurfaceId {
+    pub const fn surface(&self) -> SurfaceId {
         self.surface
     }
 
     /// Returns whether the host must invalidate interaction decoration.
     #[must_use]
-    pub const fn interaction_changed(self) -> bool {
+    pub const fn interaction_changed(&self) -> bool {
         self.interaction_changed
     }
 
     /// Returns whether the host must rebuild this surface presentation.
     #[must_use]
-    pub const fn repaint_required(self) -> bool {
+    pub const fn repaint_required(&self) -> bool {
         self.repaint_required
+    }
+
+    /// Returns committed terminal feedback from this retirement boundary.
+    pub fn manipulation_feedback(&self) -> &[super::DockspaceManipulationFeedback] {
+        &self.manipulation_feedback
     }
 }
 
@@ -996,6 +1010,7 @@ impl DockspaceSession {
                 surface: surface.expect("surface producer retains its endpoint"),
                 interaction_changed: work.interaction_changed,
                 repaint_required: work.repaint_required,
+                manipulation_feedback: work.manipulation_feedback,
             }))
     }
 
@@ -1033,6 +1048,19 @@ impl DockspaceSession {
                 HostPointerRetirement {
                     interaction_changed: outcome.interaction_changed(),
                     repaint_required: outcome.repaint_required(),
+                    manipulation_feedback: outcome
+                        .interaction_events()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, event)| {
+                            super::DockspaceManipulationFeedback::from_event(
+                                self.engine.authority_domain(),
+                                self.engine.last_reducer_tick(),
+                                index,
+                                event,
+                            )
+                        })
+                        .collect(),
                 },
             ))),
             Err(error) => {
@@ -1476,6 +1504,7 @@ const fn surface_capture(capture: SurfacePointerCapture) -> Authority<PointerCap
 
 const fn surface_cancel_reason(reason: SurfacePointerCancelReason) -> PointerStreamCancelReason {
     match reason {
+        SurfacePointerCancelReason::Escape => PointerStreamCancelReason::Escape,
         SurfacePointerCancelReason::DeviceRemoved => PointerStreamCancelReason::DeviceRemoved,
         SurfacePointerCancelReason::ExplicitPlatformCancellation => {
             PointerStreamCancelReason::ExplicitPlatformCancellation

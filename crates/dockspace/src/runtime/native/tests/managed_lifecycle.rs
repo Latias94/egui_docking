@@ -684,7 +684,7 @@ struct PendingNativeCreate {
 }
 
 #[test]
-fn tracked_application_action_ignores_an_earlier_pointer_product_outcome() {
+fn tracked_application_action_correlation_ignores_an_earlier_pointer_close_request() {
     const MAIN_ITEM: ItemId = ItemId::new(3);
     const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 
@@ -755,6 +755,11 @@ fn tracked_application_action_ignores_an_earlier_pointer_product_outcome() {
         matches!(
             report.inputs(),
             [
+                super::super::super::HostInputOutcome::CloseRequested {
+                    plan,
+                    reused: false,
+                    origin: super::super::super::HostCloseRequestOrigin::Interaction,
+                },
                 super::super::super::HostInputOutcome::ProductActionApplied(
                     crate::model::DockspaceActionOutcome::RootDocked {
                         root: ROOT,
@@ -763,8 +768,8 @@ fn tracked_application_action_ignores_an_earlier_pointer_product_outcome() {
                         ..
                     }
                 ),
-                super::super::super::HostInputOutcome::StaleRejected { .. },
-            ] if *target_root == RootId::new(2)
+            ] if plan.target() == (crate::close_plan::ClosePlanTarget::Root { root: ROOT })
+                && *target_root == RootId::new(2)
         ),
         "actual joined outcomes: {:?}",
         report.inputs()
@@ -774,7 +779,14 @@ fn tracked_application_action_ignores_an_earlier_pointer_product_outcome() {
         .expect("the opaque request resolves its exact terminal");
     assert!(matches!(
         application_outcome,
-        super::super::super::HostInputOutcome::StaleRejected { .. }
+        super::super::super::HostInputOutcome::ProductActionApplied(
+            crate::model::DockspaceActionOutcome::RootDocked {
+                root: ROOT,
+                target_root,
+                changed: true,
+                ..
+            }
+        ) if *target_root == RootId::new(2)
     ));
     assert!(std::ptr::eq(application_outcome, &report.inputs()[1]));
 }

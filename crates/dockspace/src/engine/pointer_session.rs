@@ -318,11 +318,22 @@ impl DockEngine {
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Vec<InteractionOutcome> {
-        let cancelled = usize::from(self.pending_drag_release.take().is_some())
-            + usize::from(self.pending_contained_transform_release.take().is_some());
-        (0..cancelled)
-            .map(|_| {
-                let status = InteractionStatus::Idle;
+        let statuses = [
+            self.pending_drag_release
+                .take()
+                .map(|pending| InteractionStatus::Dragging {
+                    session: pending.session,
+                }),
+            self.pending_contained_transform_release
+                .take()
+                .map(|pending| InteractionStatus::ContainedTransforming {
+                    session: pending.session,
+                }),
+        ];
+        statuses
+            .into_iter()
+            .flatten()
+            .map(|status| {
                 interaction_events.push(InteractionEvent::new_caused(
                     cause,
                     self.version,
@@ -339,16 +350,23 @@ impl DockEngine {
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
     ) {
-        let cancelled = usize::from(self.pending_drag_release.take().is_some())
-            + usize::from(self.pending_contained_transform_release.take().is_some());
-        interaction_events.extend((0..cancelled).map(|_| {
+        let statuses = [
+            self.pending_drag_release
+                .take()
+                .map(|pending| InteractionStatus::Dragging {
+                    session: pending.session,
+                }),
+            self.pending_contained_transform_release
+                .take()
+                .map(|pending| InteractionStatus::ContainedTransforming {
+                    session: pending.session,
+                }),
+        ];
+        interaction_events.extend(statuses.into_iter().flatten().map(|status| {
             InteractionEvent::new(
                 input,
                 self.version,
-                InteractionEventKind::Cancelled {
-                    status: InteractionStatus::Idle,
-                    reason,
-                },
+                InteractionEventKind::Cancelled { status, reason },
             )
         }));
     }
@@ -431,6 +449,25 @@ impl DockEngine {
                 },
             ));
         }
+        let pending_statuses = [
+            self.pending_drag_release
+                .take_if(|pending| pending.drag.owner.lease() == provider)
+                .map(|pending| InteractionStatus::Dragging {
+                    session: pending.session,
+                }),
+            self.pending_contained_transform_release
+                .take_if(|pending| pending.transform.owner.lease() == provider)
+                .map(|pending| InteractionStatus::ContainedTransforming {
+                    session: pending.session,
+                }),
+        ];
+        interaction_events.extend(pending_statuses.into_iter().flatten().map(|status| {
+            InteractionEvent::new_caused(
+                cause,
+                self.version,
+                InteractionEventKind::Cancelled { status, reason },
+            )
+        }));
         let Some(stream) = self
             .interaction
             .active_stream()

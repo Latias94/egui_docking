@@ -418,13 +418,6 @@ pub(crate) struct FrozenCloseClick {
     pub(crate) prepared: PreparedContentClose,
 }
 
-/// Exact contained presentation action frozen by an authoritative Click-lane press.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FrozenContainedDockBackClick {
-    pub(crate) floating: FloatingPresentationId,
-    pub(crate) root: RootId,
-}
-
 /// Exact tab-strip control action frozen by an authoritative Click-lane press.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FrozenTabStripControlClick {
@@ -460,7 +453,6 @@ pub(crate) struct FrozenTabListMenuBackdropClick {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum FrozenClickAction {
     Close(FrozenCloseClick),
-    DockBack(FrozenContainedDockBackClick),
     TabStripControl(FrozenTabStripControlClick),
     TabListMenuRow(FrozenTabListMenuRowClick),
     TabListMenuBlocker(FrozenTabListMenuBlockerClick),
@@ -1170,6 +1162,84 @@ impl InteractionRejection {
     }
 }
 
+/// Public semantic category of a terminal manipulation rejection.
+///
+/// Categories deliberately omit scene proofs, graph nodes, and error details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ManipulationRejection {
+    /// The required presentation is unavailable or no longer current.
+    PresentationUnavailable,
+    /// The source content or presentation is no longer available.
+    SourceUnavailable,
+    /// The release cannot deliver to the requested target.
+    TargetUnavailable,
+    /// Input delivery, capture, or coordinate authority is unavailable.
+    InputAuthorityUnavailable,
+    /// Another gesture or presentation transition owns the operation.
+    GestureConflict,
+    /// Current application policy denies the operation.
+    PolicyDenied,
+    /// A checked workspace command conflicts with current state.
+    Conflict,
+    /// The requested control or action is unavailable.
+    ActionUnavailable,
+    /// The engine could not complete the checked command.
+    Internal,
+}
+
+impl ManipulationRejection {
+    pub(crate) fn from_interaction(reason: &InteractionRejection) -> Self {
+        match reason {
+            InteractionRejection::CommandRejected(error)
+            | InteractionRejection::ResizeRejected(error)
+            | InteractionRejection::CloseSourceUnavailable(error) => match error {
+                crate::error::CommandError::Policy(_) => Self::PolicyDenied,
+                error if error.is_expected_rejection() => Self::Conflict,
+                _ => Self::Internal,
+            },
+            InteractionRejection::SemanticPresentationUnavailable { .. }
+            | InteractionRejection::SemanticOutputUnavailable { .. }
+            | InteractionRejection::SemanticEmissionUnavailable { .. }
+            | InteractionRejection::PreviewNotPainted
+            | InteractionRejection::StaleScene => Self::PresentationUnavailable,
+            InteractionRejection::TabGestureSourceUnavailable { .. }
+            | InteractionRejection::ContainedTransformPresentationUnavailable { .. }
+            | InteractionRejection::TabStripSourceUnavailable { .. } => Self::SourceUnavailable,
+            InteractionRejection::TargetChanged
+            | InteractionRejection::PreviewMissing
+            | InteractionRejection::ContainedTransformChanged
+            | InteractionRejection::ContainedPlacementUnavailable(_) => Self::TargetUnavailable,
+            InteractionRejection::TargetAuthorityInvalid
+            | InteractionRejection::CaptureOwnerMismatch { .. }
+            | InteractionRejection::DeliveryAuthorityUnavailable
+            | InteractionRejection::DeliveryOwnerMismatch { .. }
+            | InteractionRejection::SemanticDeliveryMismatch { .. }
+            | InteractionRejection::CloseCoordinateAuthorityUnavailable { .. }
+            | InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable { .. }
+            | InteractionRejection::TabGestureCoordinateAuthorityUnavailable { .. }
+            | InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable { .. } => {
+                Self::InputAuthorityUnavailable
+            }
+            InteractionRejection::GestureBusy { .. }
+            | InteractionRejection::PresentationTransitionPending => Self::GestureConflict,
+            _ => Self::ActionUnavailable,
+        }
+    }
+
+    pub(crate) const fn from_product(reason: DockspaceActionRejection) -> Self {
+        match reason {
+            DockspaceActionRejection::PolicyDenied => Self::PolicyDenied,
+            DockspaceActionRejection::Conflict => Self::Conflict,
+            DockspaceActionRejection::IdentityExhausted => Self::Internal,
+            DockspaceActionRejection::PresentationUnavailable { .. } => {
+                Self::PresentationUnavailable
+            }
+            _ => Self::ActionUnavailable,
+        }
+    }
+}
+
 /// Public result class of resolving one drag observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewResolutionStatus {
@@ -1594,6 +1664,19 @@ impl InteractionEvent {
 /// Published interaction event payload.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InteractionEventKind {
+    /// A consumed drag release awaits exact final presentation.
+    ReleasePending { session: DragSessionId },
+    /// A consumed contained release awaits exact final presentation.
+    ContainedTransformReleasePending {
+        session: ContainedTransformSessionId,
+    },
+    /// One consumed release or otherwise unowned press was rejected once.
+    Rejected {
+        /// Gesture identity retained from before the terminal edge, or `Idle` for a press.
+        status: InteractionStatus,
+        /// Public semantic category without private validation details.
+        reason: ManipulationRejection,
+    },
     /// A smooth-scroll session reached one authoritative lifecycle terminal.
     ScrollTerminated {
         /// Core-owned session identity.

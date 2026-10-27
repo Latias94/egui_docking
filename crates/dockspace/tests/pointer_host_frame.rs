@@ -23,7 +23,6 @@ use dockspace::interaction::{
     InteractionOutcome, InteractionRejection, InteractionStatus, PreviewResolutionStatus,
     PreviewVisual, ScrollReductionOutcome, ScrollTerminationReason,
 };
-use dockspace::model::DockspaceActionOutcome;
 use dockspace::platform::{
     ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
     PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowInputState,
@@ -4640,25 +4639,28 @@ fn journal_contained_close_requires_a_matching_release() {
     complete(&engine, &mut release_frame);
     let release = host.finish(release_frame, &mut engine);
     let [
-        InteractionOutcome::ProductActionApplied(DockspaceActionOutcome::RootDocked {
-            root,
-            items,
-            changed: true,
-            ..
-        }),
+        InteractionOutcome::CloseRequested {
+            plan,
+            reused: false,
+        },
     ] = release.reduced_pointer_edges()[0].interaction_outcomes()
     else {
-        panic!("matching contained release must dock the floating root back");
+        panic!("matching contained release must request application approval to close the root");
     };
-    assert_eq!(*root, CONTAINED_ROOT);
-    assert_eq!(items, &[ItemId::new(2)]);
+    assert_eq!(
+        plan.target(),
+        dockspace::close::ClosePlanTarget::Root {
+            root: CONTAINED_ROOT
+        }
+    );
+    assert!(!release.changed());
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert!(release.reduced_inputs().is_empty());
     assert!(
         engine
             .workspace()
             .contained_floating(CONTAINED_FLOATING)
-            .is_none()
+            .is_some()
     );
     assert!(
         engine
@@ -4666,7 +4668,7 @@ fn journal_contained_close_requires_a_matching_release() {
             .item_multiset()
             .contains_key(&ItemId::new(2))
     );
-    assert_eq!(engine.active_close_plans().count(), 0);
+    assert_eq!(engine.active_close_plans().count(), 1);
 }
 
 #[test]
@@ -7627,7 +7629,7 @@ fn terminal_not_presented_output_cancels_the_release_obligation() {
     assert!(transition.interaction_events().iter().any(|event| matches!(
         event.kind(),
         InteractionEventKind::Cancelled {
-            status: InteractionStatus::Idle,
+            status: InteractionStatus::Dragging { .. },
             reason: InteractionCancelReason::SceneUnavailable,
         }
     )));
@@ -7655,7 +7657,7 @@ fn presentation_host_retirement_terminally_cancels_pending_drag_release_once() {
             .filter(|event| matches!(
                 event.kind(),
                 InteractionEventKind::Cancelled {
-                    status: InteractionStatus::Idle,
+                    status: InteractionStatus::Dragging { .. },
                     reason: InteractionCancelReason::SceneUnavailable,
                 }
             ))
@@ -7720,7 +7722,7 @@ fn policy_change_cancels_an_unpresented_release_obligation() {
     assert!(transition.interaction_events().iter().any(|event| matches!(
         event.kind(),
         InteractionEventKind::Cancelled {
-            status: InteractionStatus::Idle,
+            status: InteractionStatus::Dragging { .. },
             reason: InteractionCancelReason::PolicyChanged,
         }
     )));
@@ -7780,7 +7782,7 @@ fn new_authoritative_press_replaces_an_unpresented_release_obligation() {
         transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [
             InteractionOutcome::Cancelled {
-                status: InteractionStatus::Idle,
+                status: InteractionStatus::Dragging { .. },
                 reason: InteractionCancelReason::ReplacedByNewGesture,
             },
             InteractionOutcome::DragArmed { .. }
@@ -7953,7 +7955,7 @@ fn presentation_host_retirement_terminally_cancels_pending_contained_release_onc
             .filter(|event| matches!(
                 event.kind(),
                 InteractionEventKind::Cancelled {
-                    status: InteractionStatus::Idle,
+                    status: InteractionStatus::ContainedTransforming { .. },
                     reason: InteractionCancelReason::SceneUnavailable,
                 }
             ))

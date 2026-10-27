@@ -215,6 +215,14 @@ fn merging_tabs_preserves_target_local_history_without_importing_source_history(
             source: target_item,
         },
     );
+    assert_eq!(
+        workspace.tab_mru(source),
+        Some([item(3), item(2), item(1)].as_slice())
+    );
+    assert_eq!(
+        workspace.tab_mru(target),
+        Some([item(11), item(10)].as_slice())
+    );
 
     let source_stack = workspace
         .capture_node_source(SOURCE_ROOT, source)
@@ -237,7 +245,11 @@ fn merging_tabs_preserves_target_local_history_without_importing_source_history(
     );
 
     close(&mut workspace, item(3));
-    assert_eq!(selected(&workspace, target), Some(item(11)));
+    assert_eq!(selected(&workspace, target), Some(item(2)));
+    assert_eq!(
+        workspace.tab_mru(target),
+        Some([item(2), item(11), item(10), item(1)].as_slice())
+    );
 }
 
 #[test]

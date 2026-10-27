@@ -552,6 +552,15 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.prepare_product_action_if_available(action)
     }
 
+    pub(crate) fn root_close_is_available(&self, root: RootId) -> bool {
+        self.engine
+            .capture_content_close(
+                crate::command::ContentCloseTarget::Root(root),
+                self.engine.policy_snapshot(),
+            )
+            .is_ok()
+    }
+
     pub(crate) fn default_native_window_placement(
         &self,
         root: RootId,

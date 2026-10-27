@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use eframe::egui;
 use egui_dockspace::{
-    Dockspace, DockspaceAxis, DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceLayout,
-    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView, RootId,
-    SurfaceId,
+    CloseDecision, CloseItemDecisionState, Dockspace, DockspaceAxis, DockspaceDocumentBootstrap,
+    DockspaceDocumentId, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, ItemId, PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -96,11 +96,38 @@ impl eframe::App for PersistenceApp {
             });
         });
         egui::CentralPanel::default().show(ui, |ui| {
-            if let Err(error) = self
+            match self
                 .dockspace
                 .show_single_surface(SURFACE, ui, &mut self.panes)
             {
-                self.status = error.to_string();
+                Ok(response) => {
+                    for request in response.close_request_events() {
+                        // Reused requests already went through the application decision path.
+                        if request.reused() {
+                            continue;
+                        }
+                        let plan = request.plan();
+                        for item in plan.items() {
+                            if item.state() != CloseItemDecisionState::Pending {
+                                continue;
+                            }
+                            // Keep application pane data so a snapshot can reopen the item.
+                            match self.dockspace.resolve_close(
+                                plan.request(),
+                                item.token(),
+                                CloseDecision::Allow,
+                            ) {
+                                Ok(result) => {
+                                    if result.mutation().workspace_changed() {
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
+                                Err(error) => self.status = error.to_string(),
+                            }
+                        }
+                    }
+                }
+                Err(error) => self.status = error.to_string(),
             }
         });
     }
@@ -149,5 +176,105 @@ impl PaneView for PersistencePanes {
         if let Some((_, text)) = self.items.get_mut(&item) {
             ui.add(egui::TextEdit::multiline(text).desired_width(f32::INFINITY));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+
+    fn run_frame(
+        context: &egui::Context,
+        app: &mut PersistenceApp,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 720.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| eframe::App::ui(app, ui, &mut frame),
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    #[test]
+    fn close_button_preserves_pane_data_for_snapshot_restore() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = PersistenceApp::new();
+        let document = app
+            .dockspace
+            .item_id_for_external_key("pane/document")
+            .expect("the document has a persistent identity");
+        let text = "Unsaved application text survives closing and layout restore";
+        text.clone_into(&mut app.panes.items.get_mut(&document).expect("pane data").1);
+        app.save();
+        assert_eq!(app.status, "Snapshot saved");
+        let _ = run_frame(&context, &mut app, Vec::new());
+        let ready = run_frame(&context, &mut app, Vec::new());
+        let close = ready
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("the example exposes its controls")
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                (node.role() == Role::Button
+                    && node.label() == Some("Close Document")
+                    && node.supports_action(Action::Click))
+                .then_some(*id)
+            })
+            .expect("the document has an enabled close button");
+        assert!(app.dockspace.view().item(document).is_some());
+
+        let _ = run_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::AccessKitActionRequest(ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: close,
+                data: None,
+            })],
+        );
+
+        assert!(app.dockspace.view().item(document).is_none());
+        assert_eq!(
+            app.panes.items.get(&document).expect("closed pane data").1,
+            text
+        );
+        app.restore();
+        assert_eq!(app.status, "Snapshot restored");
+        assert!(app.dockspace.view().item(document).is_some());
+        assert_eq!(
+            app.panes
+                .items
+                .get(&document)
+                .expect("restored pane data")
+                .1,
+            text
+        );
+        let restored = run_frame(&context, &mut app, Vec::new());
+        assert_eq!(app.status, "Snapshot restored");
+        assert!(
+            restored
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .expect("the restored example exposes its panes")
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::Tab && node.label() == Some("Document")),
+            "the restored layout renders the retained application pane"
+        );
     }
 }
