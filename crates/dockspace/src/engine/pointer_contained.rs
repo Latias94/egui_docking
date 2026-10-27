@@ -81,7 +81,7 @@ impl DockEngine {
         let durable = self.workspace.contained_floating(floating).ok_or(
             InteractionRejection::ContainedTransformPresentationUnavailable { surface, floating },
         )?;
-        if durable.root != root {
+        if durable.root != root || plan.unclipped_contained_bounds(floating) != Some(durable.rect) {
             return Err(
                 InteractionRejection::ContainedTransformPresentationUnavailable {
                     surface,
@@ -133,7 +133,6 @@ impl DockEngine {
         if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
             return Ok(InteractionOutcome::Rejected(rejection));
         }
-        let mut activation_changed = false;
         let needs_raise = prepared.expected_roster.contained().last() != Some(&prepared.floating);
         if needs_raise {
             let raise = WorkspaceCommand::RaiseContained {
@@ -142,7 +141,7 @@ impl DockEngine {
                 expected_roster: prepared.expected_roster.clone(),
             };
             match self.apply_journal_workspace_command(cause, &raise, policy, events)? {
-                Ok((_, changed)) => activation_changed = changed,
+                Ok(_) => {}
                 Err(source) => {
                     return Ok(InteractionOutcome::Rejected(
                         InteractionRejection::CommandRejected(source),
@@ -188,23 +187,18 @@ impl DockEngine {
                     initial_pointer: prepared.initial_pointer,
                     minimum_size: prepared.minimum_size,
                 });
-                let continuation = if activation_changed {
-                    self.scene_gesture_continuation_draft(
-                        cause,
-                        owner,
-                        prepared.presentation,
-                        SceneGestureContinuationSource::Drag {
-                            payload: payload.clone(),
-                            source_surface: drag_source.source_surface,
-                            complete_root: drag_source.complete_root.clone(),
-                            origin: origin.clone(),
-                            coordinates: self
-                                .capture_surface_coordinates(drag_source.source_surface),
-                        },
-                    )
-                } else {
-                    None
-                };
+                let continuation = self.scene_gesture_continuation_draft(
+                    cause,
+                    owner,
+                    prepared.presentation,
+                    SceneGestureContinuationSource::Drag {
+                        payload: payload.clone(),
+                        source_surface: drag_source.source_surface,
+                        complete_root: drag_source.complete_root.clone(),
+                        origin: origin.clone(),
+                        coordinates: self.capture_surface_coordinates(drag_source.source_surface),
+                    },
+                );
                 let (session, replaced) = self
                     .interaction
                     .arm_drag(DragArmStart {
@@ -237,7 +231,7 @@ impl DockEngine {
                 InteractionOutcome::DragArmed { session, replaced }
             }
             ContainedGestureKind::Resize(direction) => {
-                let continuation = if activation_changed {
+                let continuation = {
                     let source = self
                         .workspace
                         .capture_node_source(prepared.root, prepared.source.node())
@@ -268,8 +262,6 @@ impl DockEngine {
                             coordinates: self.capture_surface_coordinates(prepared.surface),
                         },
                     )
-                } else {
-                    None
                 };
                 let (session, replaced) = self
                     .interaction

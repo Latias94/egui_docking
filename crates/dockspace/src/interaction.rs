@@ -1806,6 +1806,7 @@ pub(crate) struct PublishedPreview {
     public: InteractionPreview,
     proof: PreviewProof,
     painted: bool,
+    target_layout_basis: Option<SurfaceSceneStamp>,
 }
 
 impl PublishedPreview {
@@ -1819,6 +1820,10 @@ impl PublishedPreview {
 
     pub(crate) const fn painted(&self) -> bool {
         self.painted
+    }
+
+    pub(crate) const fn target_layout_basis(&self) -> Option<SurfaceSceneStamp> {
+        self.target_layout_basis
     }
 }
 
@@ -2365,6 +2370,7 @@ impl InteractionState {
             },
             proof,
             painted: false,
+            target_layout_basis: None,
         })
     }
 
@@ -2937,10 +2943,23 @@ impl InteractionState {
                 public: preview.clone(),
                 proof,
                 painted: false,
+                target_layout_basis: None,
             },
             acquisition,
         );
         Ok((preview, true))
+    }
+
+    pub(crate) fn bind_preview_layout_basis(
+        &mut self,
+        session: DragSessionId,
+        basis: Option<SurfaceSceneStamp>,
+    ) -> Result<(), InteractionRejection> {
+        let drag = self.active_drag_mut(session)?;
+        if let DragPreviewState::Published { preview, .. } = &mut drag.target.preview {
+            preview.target_layout_basis = basis;
+        }
+        Ok(())
     }
 
     pub(crate) fn clear_preview(

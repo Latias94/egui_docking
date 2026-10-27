@@ -685,6 +685,9 @@ fn paint_preview(
     if !painter.is_visible() {
         return false;
     }
+    if preview.is_layout_projected() {
+        return true;
+    }
     painter.extend([
         Shape::rect_filled(rect, 2.0, visuals.drop_fill),
         Shape::rect_stroke(
@@ -766,6 +769,9 @@ fn paint_contained_transform_preview(
     let painter = ui.painter();
     if !painter.is_visible() {
         return false;
+    }
+    if preview.is_layout_projected() {
+        return true;
     }
     painter.extend([
         Shape::rect_filled(rect, 0.0, visuals.ghost_fill),

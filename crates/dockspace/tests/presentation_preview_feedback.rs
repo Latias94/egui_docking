@@ -32,9 +32,11 @@ fn metrics() -> UniformSurfaceMetrics {
     .expect("surface metrics validate")
 }
 
-fn feedback(plan: SurfacePaintPlan<'_>) -> (Option<DockspacePreviewVisual>, bool) {
+fn feedback(
+    plan: SurfacePaintPlan<'_>,
+) -> (Option<DockspacePreviewVisual>, SurfacePaintDisposition) {
     let mut preview = None;
-    let mut source_gap = false;
+    let mut source_paint = None;
     plan.visit_surface_program(|step| {
         match step {
             SurfacePaintProgramStep::DragPreview(current) => {
@@ -45,17 +47,22 @@ fn feedback(plan: SurfacePaintPlan<'_>) -> (Option<DockspacePreviewVisual>, bool
                 paint,
                 ..
             } if tab.item() == DRAGGED => {
-                source_gap = paint == SurfacePaintDisposition::SourceGap;
+                assert!(source_paint.replace(paint).is_none());
             }
             _ => {}
         }
         Ok::<(), ()>(())
     })
     .expect("the canonical surface program is valid");
-    (preview, source_gap)
+    (
+        preview,
+        source_paint.expect("the complete contained source retains its tab in the paint program"),
+    )
 }
 
-fn inspect_feedback(session: &mut DockspaceSession) -> (Option<DockspacePreviewVisual>, bool) {
+fn inspect_feedback(
+    session: &mut DockspaceSession,
+) -> (Option<DockspacePreviewVisual>, SurfacePaintDisposition) {
     let mut frame = session.begin_host_frame().expect("inspection begins");
     let plan = frame
         .paint_plan(SURFACE)
@@ -209,7 +216,7 @@ fn dragging_fixture() -> (DockspaceSession, LogicalPoint, DockspacePreviewVisual
         .expect("the presented source and active target remain unchanged");
     begin.commit().expect("drag begin commits");
     assert!(session.has_active_gesture());
-    let (preview, source_gap) = inspect_feedback(&mut session);
+    let (preview, source_paint) = inspect_feedback(&mut session);
     let preview = preview.expect("the drag acquired a magnetic preview");
     assert!(matches!(
         preview,
@@ -218,7 +225,11 @@ fn dragging_fixture() -> (DockspaceSession, LogicalPoint, DockspacePreviewVisual
             ..
         }
     ));
-    assert!(source_gap, "the source tab must already be a source gap");
+    assert_eq!(
+        source_paint,
+        SurfacePaintDisposition::Visible,
+        "the complete contained source tree must remain visible at its projected bounds"
+    );
     (session, target, preview)
 }
 
@@ -269,8 +280,8 @@ fn exact_presented_preview_survives_promotion_and_releases_without_another_paint
     assert!(session.has_active_gesture());
     assert_eq!(
         inspect_feedback(&mut session),
-        (Some(preview), true),
-        "positive promotion must preserve the preview and its source-gap projection"
+        (Some(preview), SurfacePaintDisposition::Visible),
+        "positive promotion must preserve the exact preview and its visible source projection"
     );
     assert!(session.host_pointer_hit(SURFACE, target).is_some());
 
@@ -357,7 +368,10 @@ fn a_later_dropped_output_revokes_an_already_painted_preview() {
         .report_surface_presentation(presented, SurfacePresentationResult::Presented)
         .expect("the first preview output reaches presentation");
     settle(&mut session);
-    assert_eq!(inspect_feedback(&mut session), (Some(preview), true));
+    assert_eq!(
+        inspect_feedback(&mut session),
+        (Some(preview), SurfacePaintDisposition::Visible)
+    );
 
     let dropped = paint(&mut session);
     let artifact = dropped.presentation_artifact();

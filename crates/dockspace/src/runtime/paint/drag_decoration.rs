@@ -7,9 +7,11 @@ use crate::command::{
     FingerprintNode, FingerprintPresentation, MovePayload, NodeFingerprint, NodeSource,
 };
 use crate::geometry::LogicalRect;
-use crate::ids::{ItemId, NodeId, SurfaceId};
-use crate::interaction::{ActiveDragView, DragPhase};
-use crate::scene::{PaneSceneId, PresentationPlan, SurfaceSceneSet, TabSceneId};
+use crate::ids::{ItemId, NodeId, RootId, SurfaceId};
+use crate::interaction::{ActiveDragView, DragPhase, DragSessionId};
+use crate::scene::{
+    ContainedLayoutOwner, PaneSceneId, PresentationPlan, SurfaceSceneSet, TabSceneId,
+};
 
 use super::{DockspaceVisualId, VisualIdentity};
 
@@ -37,6 +39,7 @@ pub struct DockspaceDragDecoration<'frame> {
     source_visual: DockspaceVisualId,
     source_bounds: LogicalRect,
     projected_root_bounds: Option<LogicalRect>,
+    source_is_projected: bool,
     item: Option<ItemId>,
     ghost_item: Option<ItemId>,
     source: DragDecorationSource<'frame>,
@@ -50,6 +53,7 @@ impl fmt::Debug for DockspaceDragDecoration<'_> {
             .field("kind", &self.kind)
             .field("source_visual", &self.source_visual)
             .field("source_bounds", &self.source_bounds)
+            .field("source_is_projected", &self.source_is_projected)
             .field("item", &self.item)
             .field("ghost_item", &self.ghost_item)
             .finish_non_exhaustive()
@@ -99,6 +103,14 @@ impl DockspaceDragDecoration<'_> {
         self.projected_root_bounds
     }
 
+    /// Returns whether the complete source tree is already painted at its projection.
+    ///
+    /// Adapters retain cursor feedback but must not paint a duplicate source ghost.
+    #[must_use]
+    pub const fn source_is_projected(self) -> bool {
+        self.source_is_projected
+    }
+
     /// Returns the dragged item when the source is one tab.
     #[must_use]
     pub const fn item(self) -> Option<ItemId> {
@@ -120,6 +132,9 @@ impl DockspaceDragDecoration<'_> {
     /// core-owned and no graph identity crosses this boundary.
     #[must_use]
     pub(super) fn omits_visual(self, visual: DockspaceVisualId) -> bool {
+        if self.source_is_projected {
+            return false;
+        }
         match self.source {
             DragDecorationSource::Item(tab) => {
                 matches!(visual.0, VisualIdentity::Tab(candidate) if candidate == tab)
@@ -154,12 +169,14 @@ pub(super) fn resolve<'frame>(
                 let id = record.id();
                 id.root == source.root() && id.tabs == source.tabs() && id.item == source.item()
             })?;
+            let projection = source_projection(plan, source_surface, source.root(), drag.session());
             Some(DockspaceDragDecoration {
                 source_surface,
                 kind: DockspaceDragSourceKind::Item,
                 source_visual: DockspaceVisualId(VisualIdentity::Tab(*tab.id())),
                 source_bounds: tab.full_bounds(),
-                projected_root_bounds: None,
+                projected_root_bounds: projection,
+                source_is_projected: projection.is_some(),
                 item: Some(source.item()),
                 ghost_item: Some(source.item()),
                 source: DragDecorationSource::Item(*tab.id()),
@@ -170,18 +187,28 @@ pub(super) fn resolve<'frame>(
                 let id = record.id();
                 id.root == source.root() && id.tabs == source.node()
             })?;
+            let projection = (source.node() == source.fingerprint().0.root_node)
+                .then(|| source_projection(plan, source_surface, source.root(), drag.session()))
+                .flatten();
             Some(DockspaceDragDecoration {
                 source_surface,
                 kind: DockspaceDragSourceKind::TabGroup,
                 source_visual: DockspaceVisualId(VisualIdentity::Pane(pane.id())),
                 source_bounds: pane.bounds(),
-                projected_root_bounds: None,
+                projected_root_bounds: projection,
+                source_is_projected: projection.is_some(),
                 item: None,
                 ghost_item: pane.selected(),
                 source: DragDecorationSource::TabGroup(pane.id()),
             })
         }
-        MovePayload::Subtree(source) => resolve_subtree(plan, source_surface, source, drag),
+        MovePayload::Subtree(source) => resolve_subtree(
+            plan,
+            source_surface,
+            source,
+            drag.session(),
+            drag.contained_projection_rect(),
+        ),
     }
 }
 
@@ -196,11 +223,29 @@ fn source_surface(payload: &MovePayload) -> SurfaceId {
     }
 }
 
+fn source_projection(
+    plan: &PresentationPlan,
+    surface: SurfaceId,
+    root: RootId,
+    session: DragSessionId,
+) -> Option<LogicalRect> {
+    let projection = plan.contained_projection()?;
+    (projection.owner == ContainedLayoutOwner::Drag(session)
+        && projection.surface == surface
+        && projection.root == root
+        && plan
+            .contained_records()
+            .iter()
+            .any(|record| record.root() == root && record.floating() == projection.floating))
+    .then_some(projection.rect)
+}
+
 fn resolve_subtree<'frame>(
     plan: &PresentationPlan,
     source_surface: SurfaceId,
     source: &'frame NodeSource,
-    drag: ActiveDragView<'frame>,
+    session: DragSessionId,
+    pointer_projection: Option<LogicalRect>,
 ) -> Option<DockspaceDragDecoration<'frame>> {
     let complete_root = source.node() == source.fingerprint().0.root_node;
     let source_identity = DragDecorationSource::Subtree {
@@ -216,12 +261,14 @@ fn resolve_subtree<'frame>(
             .iter()
             .find(|record| record.root() == source.root())
     {
+        let projection = source_projection(plan, source_surface, source.root(), session);
         return Some(DockspaceDragDecoration {
             source_surface,
             kind: DockspaceDragSourceKind::Root,
             source_visual: DockspaceVisualId(VisualIdentity::Contained(contained.floating())),
             source_bounds: contained.outer_bounds(),
-            projected_root_bounds: drag.contained_projection_rect(),
+            projected_root_bounds: projection.or(pointer_projection),
+            source_is_projected: projection.is_some(),
             item: None,
             ghost_item,
             source: source_identity,
@@ -241,6 +288,7 @@ fn resolve_subtree<'frame>(
         }),
         source_bounds: subtree_bounds(plan, source)?,
         projected_root_bounds: None,
+        source_is_projected: false,
         item: None,
         ghost_item,
         source: source_identity,

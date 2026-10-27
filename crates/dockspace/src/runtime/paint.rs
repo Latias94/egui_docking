@@ -21,7 +21,7 @@ use crate::presentation_observation::{
 };
 pub use crate::scene::TabGroupDragRegionKind;
 use crate::scene::{
-    ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
+    ContainedLayoutOwner, ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
     PresentationMenuAnchorRecord, PresentationPlan, ResolvedSurfaceProgramOperation,
     ResolvedSurfaceProgramRoot, ResolvedSurfaceProgramStep, SplitterJunctionDirection,
     SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId,
@@ -380,9 +380,19 @@ pub enum DockspacePreviewVisual {
 #[derive(Debug, Clone, Copy)]
 pub struct DockspaceDragPreview<'plan> {
     preview: &'plan InteractionPreview,
+    layout_projected: bool,
 }
 
 impl DockspaceDragPreview<'_> {
+    /// Returns whether this output already lays out the complete root at this placement.
+    ///
+    /// The preview remains part of the exact output obligation; adapters must
+    /// not paint a duplicate shell over the projected content.
+    #[must_use]
+    pub const fn is_layout_projected(self) -> bool {
+        self.layout_projected
+    }
+
     /// Returns the renderer-neutral geometry which must be painted.
     #[must_use]
     pub fn visual(self) -> DockspacePreviewVisual {
@@ -416,6 +426,7 @@ impl DockspaceDragPreview<'_> {
 #[derive(Clone, Copy)]
 pub struct DockspaceContainedTransformPreview<'plan> {
     preview: &'plan ContainedTransformPreview,
+    layout_projected: bool,
 }
 
 impl fmt::Debug for DockspaceContainedTransformPreview<'_> {
@@ -425,6 +436,7 @@ impl fmt::Debug for DockspaceContainedTransformPreview<'_> {
             .field("surface", &self.surface())
             .field("floating", &self.floating())
             .field("rect", &self.rect())
+            .field("layout_projected", &self.is_layout_projected())
             .finish()
     }
 }
@@ -446,6 +458,15 @@ impl DockspaceContainedTransformPreview<'_> {
     #[must_use]
     pub const fn rect(self) -> LogicalRect {
         self.preview.rect()
+    }
+
+    /// Returns whether this output already lays out the complete root at this rectangle.
+    ///
+    /// The preview remains part of the exact output obligation; adapters must
+    /// not paint a duplicate shell over the projected content.
+    #[must_use]
+    pub const fn is_layout_projected(self) -> bool {
+        self.layout_projected
     }
 }
 
@@ -1311,7 +1332,9 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// obligation settles, including after the physical pointer was released.
     #[must_use]
     pub const fn has_manipulation_preview(self) -> bool {
-        self.drag_preview.is_some() || self.contained_transform_preview.is_some()
+        self.drag_preview.is_some()
+            || self.contained_transform_preview.is_some()
+            || self.plan.contained_projection().is_some()
     }
 
     #[must_use]
@@ -2268,15 +2291,40 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     #[must_use]
     fn drag_preview(self) -> Option<DockspaceDragPreview<'frame>> {
-        self.drag_preview
-            .map(|preview| DockspaceDragPreview { preview })
+        let preview = self.drag_preview?;
+        let layout_projected = self.plan.contained_projection().is_some_and(|projection| {
+            projection.owner == ContainedLayoutOwner::Drag(preview.token().session())
+                && projection.surface == self.surface
+                && matches!(preview.visual(), PreviewVisual::Contained { surface, rect, .. }
+                    if *surface == projection.surface && *rect == projection.rect)
+                && self.plan.contained_records().iter().any(|record| {
+                    record.root() == projection.root && record.floating() == projection.floating
+                })
+        });
+        Some(DockspaceDragPreview {
+            preview,
+            layout_projected,
+        })
     }
 
     /// Returns the exact contained resize preview which this surface must paint.
     #[must_use]
     fn contained_transform_preview(self) -> Option<DockspaceContainedTransformPreview<'frame>> {
-        self.contained_transform_preview
-            .map(|preview| DockspaceContainedTransformPreview { preview })
+        let preview = self.contained_transform_preview?;
+        let layout_projected = self.plan.contained_projection().is_some_and(|projection| {
+            projection.owner == ContainedLayoutOwner::Transform(preview.token().session())
+                && projection.surface == self.surface
+                && projection.surface == preview.surface()
+                && projection.root == preview.root()
+                && projection.floating == preview.floating()
+                && projection.rect == preview.rect()
+        }) && self.plan.contained_records().iter().any(|record| {
+            record.root() == preview.root() && record.floating() == preview.floating()
+        });
+        Some(DockspaceContainedTransformPreview {
+            preview,
+            layout_projected,
+        })
     }
 
     fn tab_record(self, item: ItemId) -> Option<&'frame crate::scene::TabRecord> {

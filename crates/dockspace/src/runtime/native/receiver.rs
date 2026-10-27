@@ -126,6 +126,15 @@ fn resolve_hover_observation(
         {
             PointerReceiverHoverHitDisposition::NoReceiver
         }
+        NativeReceiverAnswer::ClearHoverLane(surface)
+            if interaction::surface_matches(&surface, &projection) =>
+        {
+            let hover = frame
+                .view()
+                .resolve_hover_drop_receiver(surface.surface(), point)
+                .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            return presented_observation(PointerReceiverProbeReceipt::HoverHit(hover));
+        }
         NativeReceiverAnswer::Blocked(surface)
             if interaction::surface_matches(&surface, &projection) =>
         {
@@ -133,6 +142,7 @@ fn resolve_hover_observation(
         }
         NativeReceiverAnswer::Dock(_)
         | NativeReceiverAnswer::NoReceiver(_)
+        | NativeReceiverAnswer::ClearHoverLane(_)
         | NativeReceiverAnswer::Blocked(_)
         | NativeReceiverAnswer::Unknown => {
             PointerReceiverHoverHitDisposition::Unknown(PointerReceiverUnknownReason::NotReported)
@@ -193,6 +203,7 @@ fn resolve_delivery_lane(
         }
         NativeReceiverAnswer::Dock(_)
         | NativeReceiverAnswer::NoReceiver(_)
+        | NativeReceiverAnswer::ClearHoverLane(_)
         | NativeReceiverAnswer::Blocked(_)
         | NativeReceiverAnswer::Unknown => {
             PointerReceiverDeliveryDisposition::Unknown(PointerReceiverUnknownReason::NotReported)

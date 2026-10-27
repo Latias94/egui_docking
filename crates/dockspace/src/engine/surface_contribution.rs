@@ -274,6 +274,29 @@ impl DockEngine {
         }
 
         let resize_overrides = self.surface_resize_overrides(surface);
+        let contained_projection =
+            self.contained_layout_projection(surface)
+                .map(|mut projection| {
+                    projection.target_basis = self
+                        .scene()
+                        .ready_candidate(surface)
+                        .filter(|candidate| candidate.coordinate_capture() == token.coordinates)
+                        .filter(|candidate| {
+                            candidate.plan().layout_facts().is_some_and(|layout| {
+                                layout.config() == &self.presentation_authority.presentation_config
+                                    && layout.measurements().as_ref() == &measurements
+                            })
+                        })
+                        .map(|candidate| {
+                            candidate
+                                .plan()
+                                .contained_projection()
+                                .filter(|previous| previous.owner == projection.owner)
+                                .and_then(|previous| previous.target_basis)
+                                .unwrap_or(candidate.stamp())
+                        });
+                    projection
+                });
         let state = match compile_surface_measurements(
             &self.workspace,
             self.version,
@@ -283,6 +306,7 @@ impl DockEngine {
             &measurements,
             &self.presentation_authority.tab_strip_states,
             &resize_overrides,
+            contained_projection,
         ) {
             Ok(plan) => {
                 let validator = PresentationPlanValidator::for_manifest_surface(
@@ -293,6 +317,9 @@ impl DockEngine {
                     surface,
                 )
                 .map_err(SurfaceContributionPrepareError::Validation)?;
+                let validator = validator
+                    .with_contained_projection(contained_projection)
+                    .map_err(SurfaceContributionPrepareError::Validation)?;
                 let plan = validator
                     .validate_and_canonicalize(plan)
                     .map_err(SurfaceContributionPrepareError::Validation)?;

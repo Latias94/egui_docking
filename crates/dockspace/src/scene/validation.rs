@@ -14,6 +14,7 @@ pub(crate) struct PresentationPlanValidator<'a> {
     workspace: &'a Workspace,
     workspace_index: SceneWorkspaceIndex<'a>,
     policy: &'a DockPolicySnapshot,
+    contained_projection: Option<ContainedLayoutProjection>,
 }
 
 impl<'a> PresentationPlanValidator<'a> {
@@ -25,6 +26,7 @@ impl<'a> PresentationPlanValidator<'a> {
             workspace,
             workspace_index: SceneWorkspaceIndex::new(workspace)?,
             policy,
+            contained_projection: None,
         })
     }
 
@@ -53,7 +55,41 @@ impl<'a> PresentationPlanValidator<'a> {
                 surface,
             )?,
             policy,
+            contained_projection: None,
         })
+    }
+
+    pub(crate) fn with_contained_projection(
+        mut self,
+        projection: Option<ContainedLayoutProjection>,
+    ) -> Result<Self, SceneBuildError> {
+        if let Some(projection) = projection {
+            let contained = match &mut self.workspace_index {
+                SceneWorkspaceIndex::Complete(index) => {
+                    index.contained.get_mut(&projection.floating)
+                }
+                SceneWorkspaceIndex::SharedSurface(index) => {
+                    index.contained.get_mut(&projection.floating)
+                }
+            }
+            .ok_or(SceneBuildError::InvalidContainedRecord {
+                surface: projection.surface,
+                floating: projection.floating,
+            })?;
+            if contained.surface != projection.surface
+                || contained.root != projection.root
+                || contained.rect != projection.source_rect
+                || !rect_has_area(projection.rect)
+            {
+                return Err(SceneBuildError::InvalidContainedRecord {
+                    surface: projection.surface,
+                    floating: projection.floating,
+                });
+            }
+            contained.rect = projection.rect;
+        }
+        self.contained_projection = projection;
+        Ok(self)
     }
 
     /// Validates and canonicalizes one plan without publishing partial state.
@@ -62,6 +98,14 @@ impl<'a> PresentationPlanValidator<'a> {
         mut ready: PresentationPlan,
     ) -> Result<PresentationPlan, SceneBuildError> {
         let surface = ready.surface;
+        if ready.contained_projection() != self.contained_projection
+            && let Some(projection) = ready.contained_projection().or(self.contained_projection)
+        {
+            return Err(SceneBuildError::InvalidContainedRecord {
+                surface,
+                floating: projection.floating,
+            });
+        }
         if let Some(expected) = self.workspace_index.bound_surface()
             && expected != surface
         {

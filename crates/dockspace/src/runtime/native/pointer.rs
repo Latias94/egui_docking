@@ -525,7 +525,7 @@ impl NativeReceiverQuery {
         self.presented_surface.surface()
     }
 
-    /// Returns the exact presented surface capability for known-empty or blocked answers.
+    /// Returns the exact presented surface capability for surface-qualified answers.
     #[must_use]
     pub const fn presented_surface(self) -> super::super::PresentedDockspaceSurface {
         self.presented_surface
@@ -543,6 +543,26 @@ impl NativeReceiverQuery {
             return None;
         }
         self.presented_surface.bind_receiver(descriptor)
+    }
+
+    /// Qualifies a registered framework receiver as clearing the hover lane.
+    ///
+    /// This checks the descriptor's exact output and bounds without requiring a
+    /// HoverDrop semantic lane. The adapter must independently prove that this
+    /// registered widget is the unique frontmost hit in the presented pass.
+    /// Core, not this descriptor, selects the source-suppressed semantic winner.
+    #[must_use]
+    pub fn clear_hover_lane(
+        self,
+        descriptor: &super::super::DockspaceReceiverDescriptor,
+    ) -> Option<super::super::PresentedDockspaceSurface> {
+        if !matches!(self.purpose, NativeReceiverPurpose::HoverHit)
+            || !descriptor.bounds().contains(self.point?)
+        {
+            return None;
+        }
+        self.presented_surface.bind_receiver(descriptor)?;
+        Some(self.presented_surface)
     }
 
     /// Returns whether this query belongs to the exact native window incarnation.
@@ -596,6 +616,12 @@ pub enum NativeReceiverAnswer {
     Dock(super::super::PresentedDockReceiver),
     /// The current surface proved that no docking receiver accepted the edge.
     NoReceiver(super::super::PresentedDockspaceSurface),
+    /// The exact output proves no framework receiver blocks HoverDrop.
+    ///
+    /// This is not a semantic winner or known-empty assertion. Core resolves
+    /// the winner at the edge's exact point after preceding edges have reduced.
+    /// It is valid only for hover queries; unknown widgets must not clear a lane.
+    ClearHoverLane(super::super::PresentedDockspaceSurface),
     /// A higher framework receiver blocked docking.
     Blocked(super::super::PresentedDockspaceSurface),
     /// Receiver authority was unavailable and the edge must fail closed.

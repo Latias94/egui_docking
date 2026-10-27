@@ -452,6 +452,7 @@ pub enum SurfacePointerEvent {
 enum ReceiverFact<'receiver> {
     Dock(&'receiver PresentedDockReceiver),
     NoReceiver(&'receiver PresentedDockspaceSurface),
+    ClearHoverLane(&'receiver PresentedDockspaceSurface),
     Blocked(&'receiver PresentedDockspaceSurface),
     Unknown,
 }
@@ -679,6 +680,22 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
         self
     }
 
+    /// Proves that no framework receiver blocks HoverDrop in this exact output.
+    ///
+    /// Unlike [`Self::with_hover`] and [`Self::with_no_hover`], this does not
+    /// assert a semantic winner. Core resolves it at the edge's exact point
+    /// after preceding edges have reduced, including complete-source suppression.
+    /// Unknown widgets, overlays and unavailable framework hit facts must not
+    /// be reported as a clear lane.
+    #[must_use]
+    pub const fn with_clear_hover_lane(
+        mut self,
+        surface: &'receiver PresentedDockspaceSurface,
+    ) -> Self {
+        self.hover = ReceiverFact::ClearHoverLane(surface);
+        self
+    }
+
     /// Adds an authoritative higher-layer hover blocker.
     #[must_use]
     pub const fn with_blocked_hover(
@@ -850,9 +867,14 @@ impl DockspaceSession {
         use crate::presentation_hit::PresentationPointerLane;
         let projection = self.engine.interaction_projection(surface)?;
         let resolve = |lane| {
+            let suppression = if lane == PresentationPointerLane::HoverDrop {
+                self.engine.hover_drop_suppression()
+            } else {
+                Default::default()
+            };
             projection
                 .hit_manifest()
-                .resolve_exclusive(lane, point)
+                .resolve_exclusive_with_suppression(lane, point, suppression)
                 .ok()
                 .map(|region| {
                     region.and_then(|region| {
@@ -1326,6 +1348,12 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn complete_pointer_input(&mut self) -> Result<(), DockspaceRuntimeError> {
+        self.complete_pointer_journal()?;
+        self.frame.refresh_contained_layout()?;
+        Ok(())
+    }
+
+    pub(super) fn complete_pointer_journal(&mut self) -> Result<(), DockspaceRuntimeError> {
         if self.pointer_input_submitted || self.session.pointer.is_none() {
             return Ok(());
         }
@@ -1377,8 +1405,6 @@ impl DockspaceHostFrame<'_> {
         }
         let delivery_projection = manipulation_surface
             .and_then(|surface| self.frame.view().interaction_projection(surface));
-        let hover_projection =
-            hover_surface.and_then(|surface| self.frame.view().interaction_projection(surface));
         let mut probes = Vec::with_capacity(candidate.probes().probes().len());
         if candidate
             .probes()
@@ -1406,7 +1432,8 @@ impl DockspaceHostFrame<'_> {
             .requires(crate::pointer_receiver::PointerReceiverProbe::HoverHit)
         {
             probes.push(PointerReceiverProbeReceipt::HoverHit(hover_fact(
-                hover_projection.as_ref(),
+                self.frame.view(),
+                hover_surface,
                 candidate.hover_point(),
                 facts.hover,
             )?));
@@ -1519,6 +1546,7 @@ fn delivery_fact(
         }
         ReceiverFact::Dock(_)
         | ReceiverFact::NoReceiver(_)
+        | ReceiverFact::ClearHoverLane(_)
         | ReceiverFact::Blocked(_)
         | ReceiverFact::Unknown => {
             return Ok(PointerReceiverDelivery::unknown(
@@ -1531,11 +1559,12 @@ fn delivery_fact(
 }
 
 fn hover_fact(
-    projection: Option<&crate::scene::SurfaceInteractionProjection<'_>>,
+    view: crate::engine::HostFrameView<'_>,
+    surface: Option<SurfaceId>,
     point: Option<LogicalPoint>,
     fact: ReceiverFact<'_>,
 ) -> Result<PointerReceiverHoverHit, DockspaceRuntimeError> {
-    let Some(projection) = projection else {
+    let Some(projection) = surface.and_then(|surface| view.interaction_projection(surface)) else {
         return Ok(PointerReceiverHoverHit::unknown(
             PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
         ));
@@ -1546,17 +1575,23 @@ fn hover_fact(
         ));
     };
     let disposition = match fact {
-        ReceiverFact::Dock(receiver) if receiver_matches(receiver, projection) => {
+        ReceiverFact::Dock(receiver) if receiver_matches(receiver, &projection) => {
             PointerReceiverHoverHitDisposition::Dock(receiver.descriptor.region)
         }
-        ReceiverFact::NoReceiver(surface) if surface_matches(surface, projection) => {
+        ReceiverFact::NoReceiver(surface) if surface_matches(surface, &projection) => {
             PointerReceiverHoverHitDisposition::NoReceiver
         }
-        ReceiverFact::Blocked(surface) if surface_matches(surface, projection) => {
+        ReceiverFact::ClearHoverLane(surface) if surface_matches(surface, &projection) => {
+            return view
+                .resolve_hover_drop_receiver(surface.surface, point)
+                .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant.into());
+        }
+        ReceiverFact::Blocked(surface) if surface_matches(surface, &projection) => {
             PointerReceiverHoverHitDisposition::Blocked
         }
         ReceiverFact::Dock(_)
         | ReceiverFact::NoReceiver(_)
+        | ReceiverFact::ClearHoverLane(_)
         | ReceiverFact::Blocked(_)
         | ReceiverFact::Unknown => {
             return Ok(PointerReceiverHoverHit::unknown(
@@ -1564,7 +1599,7 @@ fn hover_fact(
             ));
         }
     };
-    PointerReceiverHoverHit::new(*projection, point, disposition)
+    PointerReceiverHoverHit::new(projection, point, disposition)
         .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant.into())
 }
 
@@ -1587,4 +1622,112 @@ pub(super) fn surface_matches(
     surface.surface == projection.output_ticket().surface()
         && surface.output == projection.output_ticket()
         && surface.authority == projection.authority()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::behavior_tests::support::{TestPresentationHost, publish_surface};
+    use crate::drop_target::DropTargetId;
+    use crate::engine::DockEngine;
+    use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use crate::ids::{ItemId, RootId};
+    use crate::policy::DockPolicy;
+    use crate::presentation_hit::PresentationHitRegionKind;
+
+    #[test]
+    fn clear_hover_lane_resolves_only_an_exact_current_presentation() {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
+        builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let mut engine = DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
+        let mut host = TestPresentationHost::new(&mut engine);
+        let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap();
+        publish_surface(&mut engine, &mut host, surface, bounds);
+        let previous = PresentedDockspaceSurface::from_projection(
+            engine.interaction_projection(surface).unwrap(),
+        );
+        publish_surface(&mut engine, &mut host, surface, bounds);
+        let frame = host.begin(&engine);
+        let projection = frame.view().interaction_projection(surface).unwrap();
+        let current = PresentedDockspaceSurface::from_projection(projection);
+        assert_eq!(previous.output, current.output);
+        assert_ne!(previous.authority, current.authority);
+        let target = projection
+            .hit_manifest()
+            .regions()
+            .iter()
+            .find(|region| {
+                matches!(region.id().kind(), PresentationHitRegionKind::DropTarget(
+                    DropTargetId::Center { root: target_root, .. }
+                ) if target_root == root)
+            })
+            .unwrap();
+        let rect = target.hit().rect();
+        let point = LogicalPoint::new(
+            rect.x() + rect.width() * 0.5,
+            rect.y() + rect.height() * 0.5,
+        )
+        .unwrap();
+        let receiver =
+            PresentedDockReceiver::from_projection_region(projection, target.id()).unwrap();
+        for (facts, expected) in [
+            (
+                SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&current),
+                PointerReceiverHoverHitDisposition::Dock(target.id()),
+            ),
+            (
+                SurfacePointerReceiverFacts::unknown().with_hover(&receiver),
+                PointerReceiverHoverHitDisposition::Dock(target.id()),
+            ),
+            (
+                SurfacePointerReceiverFacts::unknown().with_no_hover(&current),
+                PointerReceiverHoverHitDisposition::NoReceiver,
+            ),
+            (
+                SurfacePointerReceiverFacts::blocked_hover(&current),
+                PointerReceiverHoverHitDisposition::Blocked,
+            ),
+            (
+                SurfacePointerReceiverFacts::unknown(),
+                PointerReceiverHoverHitDisposition::Unknown(
+                    PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+                ),
+            ),
+            (
+                SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&previous),
+                PointerReceiverHoverHitDisposition::Unknown(
+                    PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+                ),
+            ),
+        ] {
+            let observation =
+                hover_fact(frame.view(), Some(surface), Some(point), facts.hover).unwrap();
+            assert_eq!(observation.disposition(), expected);
+            if !matches!(expected, PointerReceiverHoverHitDisposition::Unknown(_)) {
+                assert_eq!(observation.output(), Some(current.output));
+                assert_eq!(observation.authority(), Some(current.authority));
+                assert_eq!(observation.point(), Some(point));
+            }
+        }
+        let clear = SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&current);
+        let empty_point = LogicalPoint::new(900.0, 700.0).unwrap();
+        assert_eq!(
+            hover_fact(frame.view(), Some(surface), Some(empty_point), clear.hover)
+                .unwrap()
+                .disposition(),
+            PointerReceiverHoverHitDisposition::NoReceiver,
+        );
+        for (surface, point) in [(None, Some(point)), (Some(surface), None)] {
+            assert!(matches!(
+                hover_fact(frame.view(), surface, point, clear.hover)
+                    .unwrap()
+                    .disposition(),
+                PointerReceiverHoverHitDisposition::Unknown(_),
+            ));
+        }
+    }
 }

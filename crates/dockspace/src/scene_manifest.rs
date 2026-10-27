@@ -1064,6 +1064,20 @@ pub struct SurfaceMeasurements {
 }
 
 impl SurfaceMeasurements {
+    pub(crate) fn measured_tab_intrinsic(&self, key: TabIntrinsicKey) -> Option<TabIntrinsic> {
+        self.tab_intrinsics
+            .get(&key)
+            .and_then(Measurement::measured)
+            .copied()
+    }
+
+    pub(crate) fn measured_tab_strip(&self, key: TabStripKey) -> Option<TabStripMetrics> {
+        self.tab_strips
+            .get(&key)
+            .and_then(Measurement::measured)
+            .copied()
+    }
+
     /// Starts an empty contribution for an exact core-issued ticket.
     #[must_use]
     pub fn new(ticket: SurfaceMeasurementTicket) -> Self {
@@ -1278,6 +1292,9 @@ pub struct AuthoritativeSurfaceMeasurements<'a> {
 }
 
 impl AuthoritativeSurfaceMeasurements<'_> {
+    pub(crate) fn snapshot(self) -> SurfaceMeasurements {
+        self.measurements.clone()
+    }
     /// Returns the exact core-issued ticket proven by exact-set validation.
     #[must_use]
     pub fn ticket(self) -> SurfaceMeasurementTicket {
@@ -1321,22 +1338,6 @@ impl AuthoritativeSurfaceMeasurements<'_> {
             Some(Measurement::Measured(value)) => Some(*value),
             Some(Measurement::Unavailable(_)) | None => None,
         }
-    }
-
-    pub(crate) fn tab_intrinsics(
-        &self,
-    ) -> impl Iterator<Item = (TabIntrinsicKey, TabIntrinsic)> + '_ {
-        self.measurements
-            .tab_intrinsics
-            .iter()
-            .filter_map(|(key, value)| value.measured().copied().map(|value| (*key, value)))
-    }
-
-    pub(crate) fn tab_strips(&self) -> impl Iterator<Item = (TabStripKey, TabStripMetrics)> + '_ {
-        self.measurements
-            .tab_strips
-            .iter()
-            .filter_map(|(key, value)| value.measured().copied().map(|value| (*key, value)))
     }
 }
 

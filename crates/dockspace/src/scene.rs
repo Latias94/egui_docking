@@ -62,6 +62,9 @@ use crate::transition::WorkspaceVersion;
 use crate::viewport::{CoordinateGeneration, ViewportBinding};
 use crate::viewport_registry::ViewportLifecycle;
 
+pub(crate) use self::records::{
+    ContainedLayoutOwner, ContainedLayoutProjection, PresentationLayoutFacts, RootLayoutFacts,
+};
 pub use self::records::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,
     PaneRecord, PaneSceneId, PresentationMenuAnchorHost, PresentationMenuAnchorRecord,
@@ -72,7 +75,6 @@ pub use self::records::{
     TabListMenuRecord, TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord,
     TabStripMemberRecord, TabStripMemberVisibility,
 };
-pub(crate) use self::records::{PresentationLayoutFacts, RootLayoutFacts};
 pub use crate::drop_target::SceneLayerKey;
 
 #[cfg(test)]
@@ -573,6 +575,7 @@ pub struct PresentationPlan {
     bounds: LogicalRect,
     popup_plane_bounds: Option<LogicalRect>,
     layout_facts: Option<PresentationLayoutFacts>,
+    contained_projection: Option<ContainedLayoutProjection>,
     pane_records: Vec<PaneRecord>,
     tab_records: Vec<TabRecord>,
     tab_bar_records: Vec<TabBarRecord>,
@@ -663,6 +666,7 @@ impl PresentationPlan {
             bounds,
             popup_plane_bounds,
             layout_facts: None,
+            contained_projection: None,
             pane_records: Vec::new(),
             tab_records: Vec::new(),
             tab_bar_records: Vec::new(),
@@ -717,6 +721,17 @@ impl PresentationPlan {
     ) {
         debug_assert!(self.layout_facts.is_none());
         self.layout_facts = Some(PresentationLayoutFacts::new(config, measurements));
+    }
+
+    pub(crate) const fn contained_projection(&self) -> Option<ContainedLayoutProjection> {
+        self.contained_projection
+    }
+
+    pub(crate) fn set_contained_projection(
+        &mut self,
+        projection: Option<ContainedLayoutProjection>,
+    ) {
+        self.contained_projection = projection;
     }
 
     pub(crate) fn push_root_layout_facts(&mut self, facts: RootLayoutFacts) {
@@ -1510,6 +1525,16 @@ impl PresentationPlan {
         self.contained_records
             .iter()
             .find(|record| record.floating() == floating)
+    }
+
+    pub(crate) fn unclipped_contained_bounds(
+        &self,
+        floating: FloatingPresentationId,
+    ) -> Option<LogicalRect> {
+        self.drop_occlusions
+            .iter()
+            .find(|record| record.floating() == floating)
+            .map(|record| record.region().rect())
     }
 
     /// Returns exact contained measurements in stable identity order after sealing.

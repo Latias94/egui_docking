@@ -11,8 +11,8 @@ use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
     DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedPaneFocusObservation,
-    PreparedSurfaceAction, PresentedDockReceiver, SurfaceProgramExecutionReceipt,
-    SurfaceUnavailableReason,
+    PreparedSurfaceAction, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfaceProgramExecutionReceipt, SurfaceUnavailableReason,
 };
 use egui::{Id, Ui};
 
@@ -47,6 +47,7 @@ pub struct NativePaintReceiver {
     cumulative_pass_nr: u64,
     widget_id: egui::Id,
     layer_id: egui::LayerId,
+    interact_rect: egui::Rect,
     receiver: DockspaceReceiverDescriptor,
 }
 
@@ -101,6 +102,28 @@ impl NativePaintReceiver {
     #[must_use]
     pub fn bind_for_query(self, query: NativeReceiverQuery) -> Option<PresentedDockReceiver> {
         query.bind_receiver(&self.receiver)
+    }
+
+    /// Qualifies this known widget's exact output and interaction bounds for hover clearance.
+    ///
+    /// The native adapter must first match the unique completed-pass widget and layer.
+    #[must_use]
+    pub fn clear_hover_lane_for_query(
+        self,
+        query: NativeReceiverQuery,
+    ) -> Option<PresentedDockspaceSurface> {
+        let point = query.point()?;
+        let rect = self.interact_rect;
+        if !rect.is_finite()
+            || !rect.is_positive()
+            || point.x() < f64::from(rect.min.x)
+            || point.y() < f64::from(rect.min.y)
+            || point.x() >= f64::from(rect.max.x)
+            || point.y() >= f64::from(rect.max.y)
+        {
+            return None;
+        }
+        query.clear_hover_lane(&self.receiver)
     }
 }
 
@@ -312,6 +335,7 @@ pub fn paint_surface(
                 cumulative_pass_nr,
                 widget_id: binding.widget_id,
                 layer_id: binding.layer_id,
+                interact_rect: binding.interact_rect,
                 receiver: binding.receiver,
             })
             .collect(),

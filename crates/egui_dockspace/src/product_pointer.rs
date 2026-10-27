@@ -36,7 +36,6 @@ struct Edge {
     point: Option<LogicalPoint>,
     surface: Option<PresentedDockspaceSurface>,
     delivery: Option<PresentedDockReceiver>,
-    hover: Option<PresentedDockReceiver>,
     drag_delivery: Option<PresentedDockReceiver>,
     blocked: bool,
 }
@@ -222,7 +221,6 @@ impl ProductPointer {
                     delivery: qualified
                         .then(|| hit.and_then(|hit| hit.delivery()))
                         .flatten(),
-                    hover: qualified.then(|| hit.and_then(|hit| hit.hover())).flatten(),
                     drag_delivery: qualified
                         .then(|| hit.and_then(|hit| hit.drag_delivery()))
                         .flatten(),
@@ -252,10 +250,7 @@ impl ProductPointer {
                         || facts.with_no_drag_delivery(surface),
                         |receiver| facts.with_drag_delivery(receiver),
                     );
-                    facts = edge.hover.as_ref().map_or_else(
-                        || facts.with_no_hover(surface),
-                        |receiver| facts.with_hover(receiver),
-                    );
+                    facts = facts.with_clear_hover_lane(surface);
                 }
             }
             HostPointerInput::new(

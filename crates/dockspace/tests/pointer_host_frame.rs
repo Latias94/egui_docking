@@ -512,7 +512,12 @@ fn submit_pointer_edge_with_observation(
             PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
                 .expect("single pointer receipt batch is exact"),
         )
-        .expect("single pointer edge receipt reduces");
+        .unwrap_or_else(|error| {
+            panic!(
+                "single pointer edge receipt reduces: {error:?}; input_prefix_error: {:?}",
+                frame.input_prefix_error()
+            )
+        });
 }
 
 fn create_local_provider(
@@ -4461,24 +4466,6 @@ fn journal_contained_title_drag_is_owned_by_the_pointer_stream() {
     let press_delivery =
         PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::Dock(title))
             .expect("contained title delivery is output-bound");
-    let frame_blocker = projection
-        .hit_manifest()
-        .regions()
-        .iter()
-        .find(|region| {
-            matches!(
-                region.id().kind(),
-                PresentationHitRegionKind::ContainedFrameBlocker(actual)
-                    if actual == CONTAINED_FLOATING
-            ) && region.hit().contains(moved)
-        })
-        .expect("the moved point remains over the contained frame blocker");
-    let move_hover = PointerReceiverHoverHit::new(
-        projection,
-        moved,
-        PointerReceiverHoverHitDisposition::Dock(frame_blocker.id()),
-    )
-    .expect("contained title move is output-bound");
     submit_pointer_edge_with_observation(
         &mut frame,
         provider,
@@ -4497,6 +4484,10 @@ fn journal_contained_title_drag_is_owned_by_the_pointer_stream() {
             .expect("press answers delivery"),
         ),
     );
+    let move_hover = frame
+        .view()
+        .resolve_hover_drop_receiver(SURFACE, moved)
+        .expect("contained title hover resolves after the armed source is suppressed");
     submit_pointer_edge_with_observation(
         &mut frame,
         provider,
@@ -4712,12 +4703,10 @@ fn surface_local_tab_press_subthreshold_move_release_is_ticket_causal() {
             .expect("press answers delivery"),
         ),
     );
-    let moved_hover = PointerReceiverHoverHit::new(
-        projection,
-        moved,
-        PointerReceiverHoverHitDisposition::NoReceiver,
-    )
-    .expect("move has an exact known-none hover result");
+    let moved_hover = frame
+        .view()
+        .resolve_hover_drop_receiver(SURFACE, moved)
+        .expect("subthreshold move has the exact current hover winner");
     submit_pointer_edge_with_observation(
         &mut frame,
         provider,
@@ -7822,13 +7811,13 @@ fn pending_contained_transform_release_fixture() -> (
         release_journal(2, Authority::Known(moved)),
         PointerReceiverObservation::NotApplicable,
     );
-    let contribution = release_frame
-        .view()
-        .begin_surface_contribution(SURFACE)
-        .expect("contained release surface remains in the roster");
     let mut release_frame = release_frame
         .into_presentation()
         .expect("contained release frame enters its presentation phase");
+    let contribution = release_frame
+        .view()
+        .begin_surface_contribution(SURFACE)
+        .expect("contained release surface retains its post-input projection");
     let obligation = release_frame
         .take_presentation_obligations()
         .expect("contained release frame issues its exact physical roster")

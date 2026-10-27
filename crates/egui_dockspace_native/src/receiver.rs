@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use dockspace::geometry::LogicalPoint;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceReceiverRole, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
+    NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
     NativeScrollReceiverChallenge, NativeSurfaceBinding, PaintedSurfaceOutput,
     SurfacePresentationArtifact, SurfacePresentationCommit,
 };
@@ -292,14 +292,15 @@ fn resolve_matching_receiver(
     query: NativeReceiverQuery,
     receiver: NativePaintReceiver,
 ) -> NativeReceiverAnswer {
-    match receiver.bind_for_query(query) {
-        Some(receiver) => NativeReceiverAnswer::Dock(receiver),
-        None if matches!(query.purpose(), NativeReceiverPurpose::HoverHit)
-            && receiver.role() == DockspaceReceiverRole::PaneBody =>
-        {
-            NativeReceiverAnswer::NoReceiver(query.presented_surface())
-        }
-        None => NativeReceiverAnswer::Unknown,
+    if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
+        receiver.clear_hover_lane_for_query(query).map_or(
+            NativeReceiverAnswer::Unknown,
+            NativeReceiverAnswer::ClearHoverLane,
+        )
+    } else {
+        receiver
+            .bind_for_query(query)
+            .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
     }
 }
 
@@ -404,8 +405,8 @@ mod tests {
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
-        DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseState,
-        NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
+        DockspaceReceiverRole, DockspaceSession, HostInputOutcome, HostWindowToken,
+        NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
         NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
         NativePointerOwner, NativePointerRoster, NativeScrollDelta, NativeScrollDeviceId,
         NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
@@ -1106,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_hit_without_hover_lane_is_unclaimed_while_uncertain_hits_fail_closed() {
+    fn exact_registered_hit_clears_hover_lane_while_uncertain_hits_fail_closed() {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             SURFACE,
             DockspaceRootLayout::new(
@@ -1392,7 +1393,10 @@ mod tests {
             ))
             .expect("native press edge records");
         let mut press = session
-            .begin_native_host_frame(|query| exact_store.resolve(query))
+            .begin_native_host_frame(|query| {
+                assert!(tab_receiver.clear_hover_lane_for_query(query).is_none());
+                exact_store.resolve(query)
+            })
             .expect("native press frame begins");
         press
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -1426,11 +1430,11 @@ mod tests {
                     assert!(query.matches_semantic_output(presented_semantic_output));
                     assert!(query.matches_presentation_artifact(presented_artifact));
                     assert!(!query.matches_presentation_artifact(previous_artifact));
-                    assert_eq!(answer, NativeReceiverAnswer::NoReceiver(presented));
+                    assert_eq!(answer, NativeReceiverAnswer::ClearHoverLane(presented));
                     assert_eq!(
                         resolve_matching_receiver(query, tab_receiver),
                         NativeReceiverAnswer::Unknown,
-                        "an unsupported tab-body hover lane cannot deny an overlapping core drop target"
+                        "an out-of-bounds tab-body descriptor cannot clear the pane hover lane"
                     );
                     assert_eq!(
                         blocked_store.resolve(query),

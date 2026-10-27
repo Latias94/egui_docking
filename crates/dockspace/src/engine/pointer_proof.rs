@@ -3,6 +3,7 @@
 use super::*;
 use crate::pointer_journal::{DesktopDockRoute, HostLocalPointerRoute};
 use crate::pointer_receiver::PointerReceiverDeliveryRequest;
+use crate::presentation_hit::PresentationHitSuppression;
 
 fn owned_host_local_route(
     engine: &DockEngine,
@@ -355,6 +356,31 @@ pub enum PointerReceiverGeometryError {
 }
 
 impl DockEngine {
+    pub(crate) fn hover_drop_suppression(&self) -> PresentationHitSuppression {
+        let source = match self.interaction.status() {
+            InteractionStatus::Armed { session } => self
+                .interaction
+                .armed_drag(session)
+                .ok()
+                .and_then(|drag| drag.complete_root.as_ref()),
+            InteractionStatus::Dragging { session } => self
+                .interaction
+                .active_drag(session)
+                .ok()
+                .and_then(|drag| drag.complete_root.as_ref()),
+            _ => None,
+        };
+        let Some(source) = source else {
+            return PresentationHitSuppression::default();
+        };
+        let contained = match self.workspace.presentation_for_root(source.root()) {
+            Some(crate::RootPresentationOwner::Contained { floating, .. }) => Some(floating),
+            Some(crate::RootPresentationOwner::Main { .. }) => None,
+            None => return PresentationHitSuppression::default(),
+        };
+        PresentationHitSuppression::complete_root(source.root(), contained)
+    }
+
     pub(super) fn validate_pointer_receiver_geometry(
         &self,
         provider: PointerInputLease,
@@ -460,6 +486,17 @@ impl DockEngine {
                                 });
                             }
                         }
+                        if hover.disposition() == PointerReceiverHoverHitDisposition::NoReceiver {
+                            self.validate_pointer_receiver_absence(
+                                provider,
+                                edge,
+                                desktop_hover_route,
+                                PresentationPointerLane::HoverDrop,
+                                hover.output(),
+                                hover.authority(),
+                                snapshot,
+                            )?;
+                        }
                         let PointerReceiverHoverHitDisposition::Dock(region) = hover.disposition()
                         else {
                             continue;
@@ -544,7 +581,7 @@ impl DockEngine {
         };
         let (Some(output), Some(authority)) = (output, authority) else {
             return Err(EngineError::ReductionCauseInvariant {
-                detail: "known scroll-receiver absence has no atomic presentation binding",
+                detail: "known receiver absence has no atomic presentation binding",
             });
         };
         if let Some(route) = desktop_route {
@@ -571,9 +608,14 @@ impl DockEngine {
                 },
             });
         }
+        let suppression = if lane == PresentationPointerLane::HoverDrop {
+            self.hover_drop_suppression()
+        } else {
+            PresentationHitSuppression::default()
+        };
         let winner = presentation
             .hit_manifest()
-            .resolve_exclusive(lane, point)
+            .resolve_exclusive_with_suppression(lane, point, suppression)
             .map_err(|_| EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::ReceiverWinnerAmbiguous {
                     sequence: edge.sequence(),
@@ -716,7 +758,12 @@ impl DockEngine {
         let Some(lane) = delivery_lane else {
             return Ok(());
         };
-        let winner = match manifest.resolve_exclusive(lane, point) {
+        let suppression = if lane == PresentationPointerLane::HoverDrop {
+            self.hover_drop_suppression()
+        } else {
+            PresentationHitSuppression::default()
+        };
+        let winner = match manifest.resolve_exclusive_with_suppression(lane, point, suppression) {
             Ok(winner) => winner.map(|winner| winner.id()),
             Err(_) => {
                 return Err(EngineError::PointerReceiverGeometry {
@@ -1079,88 +1126,121 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let edge = PointerEdge::new(
-            sequence,
-            PointerId::new(1),
-            PointerEdgeKind::Moved,
-            PointerEdgeLocation::HostLocal {
-                manipulation: Authority::Known(HostLocalPointerRoute::new(
-                    current.authority(),
-                    LogicalPoint::new(100.0, 20.0).unwrap(),
-                )),
-                hover: Authority::Known(HostLocalPointerRoute::new(
-                    current.authority(),
-                    hover_point,
-                )),
-            },
-            Authority::Known(PointerCaptureOwner::ProviderEndpoint),
-        );
-        let journal =
-            PointerEdgeJournal::new(PointerEdgeSequence::new(0), sequence, vec![edge]).unwrap();
-        let current_outputs = BTreeMap::from([(
-            surface,
-            PointerReceiverPresentedOutput::from_interaction(current.projection()),
-        )]);
-        for disposition in [
-            PointerReceiverHoverHitDisposition::NoReceiver,
-            PointerReceiverHoverHitDisposition::Blocked,
-        ] {
-            for receipt_presentation in [&previous, &current] {
-                let roster = PointerReceiverCandidateRoster::freeze(
-                    PointerReceiverAttemptIssuer::new(engine.authority_domain)
-                        .issue(provider)
-                        .unwrap(),
-                    vec![PointerReceiverCandidateSpec::hover_hit(
-                        sequence,
-                        Some(surface),
-                        Some(hover_point),
-                    )],
-                    vec![PointerReceiverPresentedOutput::from_interaction(
-                        receipt_presentation.projection(),
-                    )],
-                )
-                .unwrap();
-                let observation = PresentedPointerReceiverObservation::new([
-                    PointerReceiverProbeReceipt::HoverHit(
-                        PointerReceiverHoverHit::new(
+        let target = current
+            .hit_manifest()
+            .regions()
+            .iter()
+            .find(|region| {
+                matches!(region.id().kind(), PresentationHitRegionKind::DropTarget(
+                    crate::drop_target::DropTargetId::Center { root: target_root, .. }
+                ) if target_root == root)
+            })
+            .unwrap();
+        let rect = target.hit().rect();
+        let occupied_point = LogicalPoint::new(
+            rect.x() + rect.width() * 0.5,
+            rect.y() + rect.height() * 0.5,
+        )
+        .unwrap();
+        for (hover_point, expected_winner) in
+            [(hover_point, None), (occupied_point, Some(target.id()))]
+        {
+            let edge = PointerEdge::new(
+                sequence,
+                PointerId::new(1),
+                PointerEdgeKind::Moved,
+                PointerEdgeLocation::HostLocal {
+                    manipulation: Authority::Known(HostLocalPointerRoute::new(
+                        current.authority(),
+                        LogicalPoint::new(100.0, 20.0).unwrap(),
+                    )),
+                    hover: Authority::Known(HostLocalPointerRoute::new(
+                        current.authority(),
+                        hover_point,
+                    )),
+                },
+                Authority::Known(PointerCaptureOwner::ProviderEndpoint),
+            );
+            let journal =
+                PointerEdgeJournal::new(PointerEdgeSequence::new(0), sequence, vec![edge]).unwrap();
+            let current_outputs = BTreeMap::from([(
+                surface,
+                PointerReceiverPresentedOutput::from_interaction(current.projection()),
+            )]);
+            for disposition in [
+                PointerReceiverHoverHitDisposition::NoReceiver,
+                PointerReceiverHoverHitDisposition::Blocked,
+            ] {
+                for receipt_presentation in [&previous, &current] {
+                    let roster = PointerReceiverCandidateRoster::freeze(
+                        PointerReceiverAttemptIssuer::new(engine.authority_domain)
+                            .issue(provider)
+                            .unwrap(),
+                        vec![PointerReceiverCandidateSpec::hover_hit(
+                            sequence,
+                            Some(surface),
+                            Some(hover_point),
+                        )],
+                        vec![PointerReceiverPresentedOutput::from_interaction(
                             receipt_presentation.projection(),
-                            hover_point,
-                            disposition,
-                        )
-                        .unwrap(),
-                    ),
-                ])
-                .unwrap();
-                let receipts = roster
-                    .validate_against_presented_outputs(
-                        PointerReceiverReceiptBatch::new([roster.candidates()[0]
-                            .receipt(PointerReceiverObservation::Presented(observation))])
-                        .unwrap(),
-                        &current_outputs,
+                        )],
                     )
-                    .expect("generic receipt validation allows unchanged interaction semantics");
-                let snapshot = JournalPresentationSnapshot::from_validated_receipts(
-                    provider,
-                    &BTreeMap::from([(surface, receipt_presentation.clone())]),
-                    &receipts,
-                )
-                .unwrap();
-                let result = engine.validate_pointer_receiver_geometry(
-                    provider,
-                    &journal,
-                    &receipts,
-                    &snapshot,
-                    &BTreeMap::new(),
-                    &BTreeMap::new(),
-                );
-                if receipt_presentation.authority() == current.authority() {
-                    result.expect("the exact route emission remains valid");
-                } else {
-                    assert!(matches!(result, Err(EngineError::PointerReceiverGeometry {
+                    .unwrap();
+                    let observation = PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::HoverHit(
+                            PointerReceiverHoverHit::new(
+                                receipt_presentation.projection(),
+                                hover_point,
+                                disposition,
+                            )
+                            .unwrap(),
+                        ),
+                    ])
+                    .unwrap();
+                    let receipts = roster
+                        .validate_against_presented_outputs(
+                            PointerReceiverReceiptBatch::new([roster.candidates()[0]
+                                .receipt(PointerReceiverObservation::Presented(observation))])
+                            .unwrap(),
+                            &current_outputs,
+                        )
+                        .expect(
+                            "generic receipt validation allows unchanged interaction semantics",
+                        );
+                    let snapshot = JournalPresentationSnapshot::from_validated_receipts(
+                        provider,
+                        &BTreeMap::from([(surface, receipt_presentation.clone())]),
+                        &receipts,
+                    )
+                    .unwrap();
+                    let result = engine.validate_pointer_receiver_geometry(
+                        provider,
+                        &journal,
+                        &receipts,
+                        &snapshot,
+                        &BTreeMap::new(),
+                        &BTreeMap::new(),
+                    );
+                    if receipt_presentation.authority() != current.authority() {
+                        assert!(matches!(result, Err(EngineError::PointerReceiverGeometry {
                         source: PointerReceiverGeometryError::HostLocalHoverPresentationMismatch {
                             expected, actual, ..
                         },
                     }) if expected == current.authority() && actual == previous.authority()));
+                    } else if disposition == PointerReceiverHoverHitDisposition::NoReceiver
+                        && expected_winner.is_some()
+                    {
+                        assert!(matches!(result, Err(EngineError::PointerReceiverGeometry {
+                        source: PointerReceiverGeometryError::ReceiverWinnerMismatch {
+                            lane: PresentationPointerLane::HoverDrop,
+                            claimed: None,
+                            winner,
+                            ..
+                        },
+                    }) if winner == expected_winner));
+                    } else {
+                        result.expect("an exact empty or blocked observation remains valid");
+                    }
                 }
             }
         }

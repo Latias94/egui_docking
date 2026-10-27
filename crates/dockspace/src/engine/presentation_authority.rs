@@ -912,19 +912,45 @@ impl DockEngine {
 
         match contribution.state {
             PreparedSurfaceContributionState::Ready { plan } => {
+                let geometry = |projection: Option<crate::scene::ContainedLayoutProjection>| {
+                    projection.map(|mut projection| {
+                        projection.target_basis = None;
+                        projection
+                    })
+                };
+                if geometry(plan.contained_projection())
+                    != geometry(self.contained_layout_projection(surface))
+                {
+                    return Ok(SurfaceContributionOutcome::Rejected {
+                        surface,
+                        reason: SurfaceContributionRejection::ContainedProjectionChanged {
+                            surface,
+                        },
+                    });
+                }
+                let selected_by_pane = plan
+                    .pane_records()
+                    .iter()
+                    .map(|pane| {
+                        #[cfg(test)]
+                        crate::drop_resolver::structural_work::record_selection_pane_visit();
+                        (pane.id(), pane.selected())
+                    })
+                    .collect::<BTreeMap<crate::scene::PaneSceneId, Option<ItemId>>>();
                 let resolved_tab_offsets = plan
                     .tab_bar_records()
                     .iter()
                     .map(|record| {
+                        #[cfg(test)]
+                        crate::drop_resolver::structural_work::record_selection_lookup();
                         let id = *record.id();
-                        let selected = plan
-                            .pane_records()
-                            .iter()
-                            .find(|pane| {
-                                let pane = pane.id();
-                                pane.root == id.root && pane.tabs == id.tabs
+                        let selected = selected_by_pane
+                            .get(&crate::scene::PaneSceneId {
+                                root: id.root,
+                                tabs: id.tabs,
                             })
-                            .and_then(|pane| pane.selected());
+                            .copied()
+                            .flatten();
                         (id, record.scroll_offset(), selected)
                     })
                     .collect::<Vec<_>>();
@@ -1742,6 +1768,26 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<(), EngineError> {
         self.reconcile_scroll_lifecycle(cause, interaction_events);
+        // A continuation preserves source coordinates, never a revoked output.
+        // In particular a dropped/captured-unknown result must not be hidden by
+        // a live layout compiled for the same gesture.
+        if matches!(
+            cause,
+            ReductionCause::SurfacePresentationObservationBatch { .. }
+                | ReductionCause::PresentationObservation { .. }
+        ) && let Some(authority) = self.interaction.active_presentation_authority()
+            && changed_surfaces.contains(&authority.surface())
+            && self.interaction_projection(authority.surface()).is_none()
+            && let Some(owner) = self.interaction.active_owner()
+        {
+            self.cancel_gesture_owner(
+                cause,
+                owner,
+                InteractionCancelReason::SceneUnavailable,
+                interaction_events,
+            )?;
+            return Ok(());
+        }
         if self
             .cancel_revoked_presentation_caused(cause, interaction_events)?
             .is_some()
@@ -1750,6 +1796,23 @@ impl DockEngine {
         }
         if changed_surfaces.is_empty() {
             return Ok(());
+        }
+        let pending_projection_lost = self.pending_drag_release.as_ref().is_some_and(|pending| {
+            changed_surfaces.contains(&pending.preview.scene().surface())
+                && !self.drag_preview_authority_is_current(&pending.drag)
+        }) || self
+            .pending_contained_transform_release
+            .as_ref()
+            .is_some_and(|pending| {
+                changed_surfaces.contains(&pending.transform.surface)
+                    && !self.current_contained_projection_is_owned(pending.transform.surface)
+            });
+        if pending_projection_lost {
+            self.cancel_pending_release_obligations_caused(
+                cause,
+                InteractionCancelReason::SceneUnavailable,
+                interaction_events,
+            );
         }
         match self.interaction.status() {
             InteractionStatus::Pressed { session } => {
@@ -1802,7 +1865,7 @@ impl DockEngine {
                             .presentation_authority
                             .scene
                             .ready_surface(preview.public().token().scene().surface())
-                            .is_some_and(|scene| scene.stamp() == preview.public().token().scene())
+                            .is_some_and(|_| self.drag_preview_authority_is_current(&drag))
                 }) {
                     return Ok(());
                 }
@@ -1813,7 +1876,10 @@ impl DockEngine {
                     .last_advanced_position()
                     .and_then(ManipulationPositionKey::surface)
                     .is_some_and(|surface| changed_surfaces.contains(&surface));
-                if affected || position_affected {
+                let source_projection_only = self
+                    .current_contained_projection_is_owned(drag.source_surface)
+                    && (drag.preview().is_none() || self.drag_preview_authority_is_current(&drag));
+                if (affected || position_affected) && !source_projection_only {
                     let changed =
                         self.interaction
                             .clear_drag_feedback(session)
@@ -1834,9 +1900,13 @@ impl DockEngine {
                     .interaction
                     .active_contained_transform(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?;
-                let affected =
-                    changed_surfaces.contains(&transform.surface) && transform.preview.is_some();
-                if affected {
+                let affected = changed_surfaces.contains(&transform.surface)
+                    && (transform.preview.is_some()
+                        || self.scene().ready_candidate(transform.surface).is_some());
+                let compatible = self.contained_transform_layout_is_compatible(transform)
+                    && (transform.preview.is_none()
+                        || self.current_contained_projection_is_owned(transform.surface));
+                if affected && !compatible {
                     let status = self
                         .interaction
                         .cancel_contained_transform(session)

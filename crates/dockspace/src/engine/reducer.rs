@@ -639,6 +639,7 @@ impl DockEngine {
         let mut contribution_outcomes = Vec::with_capacity(surface_contributions.len());
         for contribution in surface_contributions.into_values() {
             let surface = contribution.surface();
+            let before_stamp = candidate.scene().surface(surface).map(SurfaceScene::stamp);
             let outcome = if changed_resize_surfaces.contains(&surface)
                 && !candidate.prepared_surface_matches_resize_projection(
                     &before_interaction,
@@ -652,7 +653,9 @@ impl DockEngine {
             } else {
                 candidate.reduce_surface_contribution(tick, contribution, tick_start.policy)?
             };
-            if outcome.changes_surface_authority() {
+            if outcome.changes_surface_authority()
+                && before_stamp != candidate.scene().surface(surface).map(SurfaceScene::stamp)
+            {
                 changed_contribution_surfaces.insert(outcome.surface());
             }
             contribution_outcomes.push(outcome);

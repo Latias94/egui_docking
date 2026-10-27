@@ -2029,18 +2029,19 @@ fn private_multi_surface_fixture_unknown_owner_cannot_start_a_drag() {
                     SurfacePointerEvent::Moved,
                     SurfacePointerPosition::Known(source.center()),
                     SurfacePointerCapture::Unknown,
-                    SurfacePointerReceiverFacts::no_hover(&surface),
+                    SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&surface),
                 ),
                 SurfacePointerInput::new(
                     SurfacePointerId::new(42),
                     SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
                     SurfacePointerPosition::Known(source.center()),
                     SurfacePointerCapture::Unknown,
-                    SurfacePointerReceiverFacts::no_hover(&surface),
+                    SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&surface),
                 ),
             ])
             .expect("unknown capture is recorded as fail-closed owner evidence");
     });
+    assert!(!fixture.host.session.has_active_gesture());
     fixture.host.run(|frame| {
         let plan = frame
             .paint_plan(SURFACE)

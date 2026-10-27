@@ -76,6 +76,14 @@ manipulation route, hover route, and independent receiver facts. Bind a
 `HostPointerRoute` to an exact `PresentedDockspaceSurface` and event-time point;
 do not reuse a final-frame position for earlier edges.
 
+When the host proves that no framework widget blocks docking at an edge, use
+`SurfacePointerReceiverFacts::with_clear_hover_lane` with that exact presented
+surface. Core resolves the semantic hover winner after earlier edges have
+reduced, so a single batch can suppress its complete moving source without
+guessing a target in advance. `with_hover` and `with_no_hover` assert an exact
+semantic winner or absence instead; they are not framework-clearance fallbacks.
+Unknown widgets and overlays must remain blocked or unknown.
+
 During capture, manipulation coordinates remain in the source surface while
 hover coordinates may name another surface, including one with identical local
 bounds. Capture belongs to the host producer. Unknown logical routing never
@@ -86,7 +94,11 @@ committed input watermark unchanged.
 A complete press/move/release batch can finish input processing before its
 preview is presented. The core freezes the release, then waits for the exact
 preview output's presentation result. Hosts continue rendering pending feedback
-without inventing more pointer events. The independent public consumer verifies
+without inventing more pointer events. Complete contained sources and resize
+previews include real content, chrome, hit and semantic geometry in the surface
+program. Renderers should not add a second ghost shell when a preview reports
+`is_layout_projected()`. Only terminal delivery writes the durable rectangle.
+The independent public consumer verifies
 this contract without egui or native hosting. The complete adapter gesture
 matrix remains in progress; see `docs/VALIDATION.md` for evidence and limits.
 

@@ -1,22 +1,42 @@
 //! Retained renderer measurements needed for source-aware drop projection.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::geometry::{LogicalRect, LogicalSize};
-use crate::ids::RootId;
+use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
+use crate::interaction::{ContainedTransformSessionId, DragSessionId};
 use crate::presentation_config::DockPresentationConfig;
 use crate::scene_manifest::{
-    AuthoritativeSurfaceMeasurements, PaneMinimumKey, TabIntrinsic, TabIntrinsicKey, TabStripKey,
-    TabStripMetrics,
+    AuthoritativeSurfaceMeasurements, PaneMinimumKey, SurfaceMeasurements, TabIntrinsic,
+    TabIntrinsicKey, TabStripKey, TabStripMetrics,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContainedLayoutOwner {
+    Drag(DragSessionId),
+    Transform(ContainedTransformSessionId),
+}
+
+/// A transient root layout input, never a mutation of durable placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ContainedLayoutProjection {
+    pub(crate) owner: ContainedLayoutOwner,
+    pub(crate) surface: SurfaceId,
+    pub(crate) root: RootId,
+    pub(crate) floating: FloatingPresentationId,
+    pub(crate) source_rect: LogicalRect,
+    pub(crate) rect: LogicalRect,
+    /// Target geometry lineage preserved only by recompilation of identical measurements.
+    pub(crate) target_basis: Option<super::super::SurfaceSceneStamp>,
+}
 
 /// Exact layout inputs retained with one compiled presentation plan.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationLayoutFacts {
     config: DockPresentationConfig,
     roots: BTreeMap<RootId, RootLayoutFacts>,
-    tab_intrinsics: BTreeMap<TabIntrinsicKey, TabIntrinsic>,
-    tab_strips: BTreeMap<TabStripKey, TabStripMetrics>,
+    measurements: Arc<SurfaceMeasurements>,
 }
 
 impl PresentationLayoutFacts {
@@ -27,8 +47,7 @@ impl PresentationLayoutFacts {
         Self {
             config,
             roots: BTreeMap::new(),
-            tab_intrinsics: measurements.tab_intrinsics().collect(),
-            tab_strips: measurements.tab_strips().collect(),
+            measurements: Arc::new(measurements.snapshot()),
         }
     }
 
@@ -49,11 +68,15 @@ impl PresentationLayoutFacts {
     }
 
     pub(crate) fn tab_intrinsic(&self, key: TabIntrinsicKey) -> Option<TabIntrinsic> {
-        self.tab_intrinsics.get(&key).copied()
+        self.measurements.measured_tab_intrinsic(key)
     }
 
     pub(crate) fn tab_strip(&self, key: TabStripKey) -> Option<TabStripMetrics> {
-        self.tab_strips.get(&key).copied()
+        self.measurements.measured_tab_strip(key)
+    }
+
+    pub(crate) fn measurements(&self) -> &Arc<SurfaceMeasurements> {
+        &self.measurements
     }
 }
 

@@ -29,14 +29,15 @@ use crate::policy::{
 };
 use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
 use crate::scene::{
-    ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,
-    PaneRecord, PaneSceneId, PresentationMenuAnchorHost, PresentationMenuAnchorRecord,
-    PresentationPlan, RootLayoutFacts, SceneBuildError, SplitterGapPresentation, SplitterGapRecord,
-    SplitterJunctionRecord, SplitterRecord, SplitterSceneId, SurfaceProgramBuildError,
-    SurfaceProgramRootOperation, SurfaceProgramRootPresentation, TabBarRecord, TabBarSceneId,
-    TabGroupDragRecord, TabListMenuBackdropRecord, TabListMenuGeometryAvailability,
-    TabListMenuRecord, TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord,
-    TabStripMemberRecord, TabStripMemberVisibility,
+    ContainedLayoutProjection, ContainedMinimumMeasurement, ContainedRecord,
+    ContainedResizeDirection, ContainedResizeRecord, PaneRecord, PaneSceneId,
+    PresentationMenuAnchorHost, PresentationMenuAnchorRecord, PresentationPlan, RootLayoutFacts,
+    SceneBuildError, SplitterGapPresentation, SplitterGapRecord, SplitterJunctionRecord,
+    SplitterRecord, SplitterSceneId, SurfaceProgramBuildError, SurfaceProgramRootOperation,
+    SurfaceProgramRootPresentation, TabBarRecord, TabBarSceneId, TabGroupDragRecord,
+    TabListMenuBackdropRecord, TabListMenuGeometryAvailability, TabListMenuRecord,
+    TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord, TabStripMemberRecord,
+    TabStripMemberVisibility,
 };
 use crate::scene_manifest::{
     AuthoritativeSurfaceMeasurements, ManifestBuildError, ManifestMeasurementError,

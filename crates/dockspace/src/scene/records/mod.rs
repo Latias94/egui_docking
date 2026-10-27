@@ -6,7 +6,9 @@ mod presentation;
 mod splitter;
 mod tab;
 
-pub(crate) use layout::{PresentationLayoutFacts, RootLayoutFacts};
+pub(crate) use layout::{
+    ContainedLayoutOwner, ContainedLayoutProjection, PresentationLayoutFacts, RootLayoutFacts,
+};
 
 pub use contained::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,

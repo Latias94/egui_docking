@@ -14,6 +14,104 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U4 complete contained content projection
+
+Contained title/group moves and eight-direction resizing now compile their
+transient outer rectangle through the existing surface compiler. Contained
+chrome, pane subtrees, splitters, hit manifests and semantic bounds therefore
+share one layout input. Only terminal delivery mutates durable placement.
+The pending-release path retains the complete projected tree until its exact
+output is presented or dropped; cancellation restores the durable layout from
+the retained complete measurements without requiring another host callback.
+Cached measurements are reused only under their original requirement ticket.
+
+Source-only successors retain target-layout provenance from the exact presented
+scene used for solving, not from an unpresented candidate. This preserves exact
+preview tokens, guide visibility and target hysteresis across a source layout
+update without granting stale hover authority. Changed external measurements do
+not inherit that lineage. Prepared contributions revalidate the current
+projection owner and rectangle at installation, and a cancelled projected source
+cannot supply new title, resize, tab or splitter source geometry before durable
+geometry is presented again.
+
+The public `with_clear_hover_lane` fact and native `ClearHoverLane` answer make
+framework clearance explicit and output-bound. Core chooses the semantic winner
+after each preceding input edge, including the Armed-to-Dragging transition.
+Complete sources no longer occlude targets behind themselves; partial sources,
+other contained roots, popups, unknown widgets and blocked releases retain their
+blocking semantics. Existing `with_hover` and `with_no_hover` remain exact
+assertions rather than fallbacks. The adapter paints the real projected source
+once, keeps its grabbing cursor, and omits duplicate ghost/preview shells.
+
+New and strengthened proof boundaries:
+
+- `integration/dockspace-host-harness/tests/contained_projection.rs` covers a
+  two-pane split root, continuous move, every resize direction, stable visual
+  identities and projected receivers, pending Presented/Dropped settlement,
+  active-output revocation, changed external bounds/minima, ordered delayed
+  output settlement, and a pre-frozen same-batch behind-source docking journey
+  with a blocked-release control. A complete tabs source is also presented after
+  each magnetic-boundary jitter sample: its preview, active guide and final
+  topology stay latched inside the release margin and change outside it.
+- `integration/egui-product-harness/tests/product.rs` checks real pane callback
+  rectangles, content markers, application widgets, opacity, stable widget IDs,
+  one selected-item callback per pass, and matching AccessKit/chrome geometry.
+  Existing complete-source gap/ghost assertions now require visible full
+  content; partial-source gap coverage remains intact.
+- `engine/contained_projection/authority_tests.rs` rejects the A-presented /
+  B-unpresented / C-source-only target-proof splice, a prepared contribution
+  installed after its owner was cancelled, and re-acquisition from a cancelled
+  but still-displayed transient source. A partly offscreen source remains
+  operable through its visible title, resize, tab and splitter receivers: source
+  checks use the existing unclipped occlusion geometry, not the clipped frame.
+- `engine/contained_projection/tests.rs` counts compilation at 16, 128 and 1,024
+  panes. A batch of 64 move events compiles zero times during input and once at
+  input close; repeated paint-plan queries and unchanged frames reuse that
+  output. Cancellation compiles once to restore the durable layout.
+- `engine/contained_projection/measurement_tests.rs` verifies that same-frame
+  fresh measurement compiles only once, while measuring surface B still updates
+  the active source on A. Blocked/unknown hover preserves valid source motion
+  without authorizing a target or a release.
+- `engine/contained_projection/selection_cost_tests.rs` counts actual pane
+  visits and bar lookups during installation. The old nested lookup reproduced
+  136 / 8,256 / 524,800 pane visits at 16 / 128 / 1,024 panes. The replacement
+  builds one `PaneSceneId` index and stays within the linear visit budget, with
+  one lookup per bar and unchanged missing-selection semantics.
+
+Independent review and follow-up closed the clipped-source geometry defect,
+fresh-measurement duplicate compilation, quadratic selection lookup, and the
+cross-projection hysteresis coverage gap. The duplicate compilation and
+quadratic lookup have observed failing-before/passing-after count regressions.
+A narrow follow-up also reproduced and fixed source feedback loss after a
+blocked/unknown-hover measurement. Its four source-acquisition paths include the
+internal splitter, and the full durable workspace remains unchanged on rejection.
+The native clearance concern was rejected with semantic-lane and blocker
+evidence: framework clearance is not a semantic passthrough or target authority.
+The original local review receipt remains a historical pre-follow-up report;
+these fixes and the final test matrix are caller-owned closure evidence, not a
+claim that reviewers executed Cargo or that the complete plan is finished.
+
+Fresh functional verification on the U4 source state:
+
+| Gate | Result |
+| --- | --- |
+| Root workspace, all features and all targets | 1,596 passed |
+| Public host, default / serde | 27 / 27 passed |
+| egui product, default / all features | 93 / 97 passed |
+| Official egui harness, all features and all targets | 12 passed |
+| Fork-backed native workspace, all targets | 198 passed |
+| Strict rustdoc / doctests | Passed / 10 passed |
+| Correctness and suspicious Clippy groups | Passed with both groups denied |
+| Workspace/harness formatting and diff whitespace | Passed |
+
+Cargo commands use one build job, the shared target directory and one nextest
+test thread. Other pre-existing pedantic/style Clippy warnings are not promoted
+to errors by this gate. These are deterministic library, recording-renderer and headless
+adapter checks, not physical platform certification. The broader ordinary-widget
+hover qualification remains U5, full commands/focus remain U6, and independent
+host retained-state/latency qualification remains U12. U7/U8/U11 physical native
+qualification and the remaining plan units are not completed by this gate.
+
 ## 2026-10-28 U3 journal-only gesture replacement
 
 U3a, U3b and U3c now pass the replacement gate. `SurfaceGesturePhase`, all local

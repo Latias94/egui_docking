@@ -144,6 +144,7 @@ fn compile_ready_plan_with_config(
             &measurements,
             &TabStripStateStore::default(),
             &[],
+            None,
         )
     } else {
         compile_surface_measurements_without_guides(
@@ -155,6 +156,7 @@ fn compile_ready_plan_with_config(
             &measurements,
             &TabStripStateStore::default(),
             &[],
+            None,
         )
     }?;
     Ok(plan)
@@ -835,6 +837,7 @@ fn popup_hit_and_semantic_authority_cannot_resurrect_from_flat_records() {
         &measurements,
         &states,
         &[],
+        None,
     )
     .expect("complete measurements should compile");
     let mut plan = PresentationPlanValidator::new(&workspace, &policy_snapshot())
@@ -1336,6 +1339,7 @@ fn scene_target_fingerprints_are_built_once_per_root_at_scale() {
             &measurements,
             &TabStripStateStore::default(),
             &[],
+            None,
         )
         .expect("complete measurements should compile");
 
@@ -1364,6 +1368,7 @@ fn exact_presentation_hit_lookup_scales_with_manifest_height() {
             &measurements,
             &TabStripStateStore::default(),
             &[],
+            None,
         )
         .expect("complete measurements should compile");
         let hit_manifest = hit_manifest(&plan, &measurements);
@@ -1408,6 +1413,7 @@ fn measured_future_drop_preview_does_not_reindex_the_candidate_workspace() {
             &measurements,
             &TabStripStateStore::default(),
             &[],
+            None,
         )
         .expect("complete measurements should compile");
         assert!(plan.layout_facts().is_some());
@@ -1494,6 +1500,7 @@ fn stale_manifest_index_cannot_compile_a_changed_topology_revision() {
             &measurements,
             &TabStripStateStore::default(),
             &[],
+            None,
         ),
         Err(PresentationCompilationError::WorkspaceVersionMismatch {
             manifest: stale,
@@ -1684,6 +1691,7 @@ fn overflow_compiles_stable_controls_membership_and_menu_roster() {
         &measurements,
         &states,
         &[],
+        None,
     )
     .expect("complete measurements should compile");
     let plan = PresentationPlanValidator::new(&workspace, &policy_snapshot())
@@ -1887,6 +1895,7 @@ fn bottom_dock_menu_opens_upward_within_the_authoritative_popup_plane() {
         &measurements,
         &states,
         &[],
+        None,
     )
     .expect("popup-plane measurements should compile");
     let plan = PresentationPlanValidator::new(&workspace, &policy_snapshot())
@@ -1952,6 +1961,7 @@ fn active_popup_rejects_an_empty_measured_plane_before_projection() {
             &measurements,
             &states,
             &[],
+            None,
         ),
         Err(PresentationCompilationError::Scene(
             SceneCompilationError::EmptyPopupPlaneBounds { surface },
@@ -2003,6 +2013,7 @@ fn menu_only_control_compiles_as_an_exact_scene_subset() {
         &measurements,
         &states,
         &[],
+        None,
     )
     .expect("menu-only measurements compile");
     let plan = PresentationPlanValidator::new(&workspace, &policy)
@@ -2098,6 +2109,7 @@ fn disabled_tab_bar_cannot_publish_an_open_menu_or_row_hits() {
         &measurements,
         &states,
         &[],
+        None,
     )
     .expect("disabled strip measurements should compile");
     let plan = PresentationPlanValidator::new(&workspace, &policy)
@@ -2148,6 +2160,7 @@ fn idle_overflow_without_menu_metrics_is_ready_with_a_disabled_menu_receiver() {
         &measurements,
         &states,
         &[],
+        None,
     )
     .expect("optional menu metrics cannot make an idle overflow scene unavailable");
     let plan = PresentationPlanValidator::new(&workspace, &policy)
@@ -2206,6 +2219,7 @@ fn active_menu_without_allocatable_geometry_cannot_publish_a_ready_scene() {
             &measurements,
             &states,
             &[],
+            None,
         ),
         Err(PresentationCompilationError::Scene(
             SceneCompilationError::ActiveTabListMenuProjectionUnavailable { .. }
@@ -2231,6 +2245,7 @@ fn overflowing_menu_aggregate_is_rejected_before_scene_publication() {
             &measurements,
             &states,
             &[],
+            None,
         ),
         Err(PresentationCompilationError::Scene(
             SceneCompilationError::NonFiniteAggregate {
@@ -2531,6 +2546,7 @@ fn compilation_rejects_a_policy_snapshot_newer_than_the_exact_ticket() {
             &measurements,
             &TabStripStateStore::default(),
             &[],
+            None,
         ),
         Err(PresentationCompilationError::Scene(
             SceneCompilationError::PolicyRevisionMismatch { ticket, snapshot },

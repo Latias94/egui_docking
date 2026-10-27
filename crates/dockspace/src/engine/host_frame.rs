@@ -705,8 +705,11 @@ impl<'frame> HostFrameView<'frame> {
         )?;
         let disposition = match projection
             .hit_manifest()
-            .resolve_exclusive(PresentationPointerLane::HoverDrop, point)
-        {
+            .resolve_exclusive_with_suppression(
+                PresentationPointerLane::HoverDrop,
+                point,
+                self.engine.hover_drop_suppression(),
+            ) {
             Ok(Some(region)) => PointerReceiverHoverHitDisposition::Dock(region.id()),
             Ok(None) => PointerReceiverHoverHitDisposition::NoReceiver,
             Err(PresentationHitResolutionError::Ambiguous { first, second, .. }) => {
@@ -1135,6 +1138,39 @@ impl CoreHostFrame {
         self.frozen_presentation_roster = roster;
         self.retain_presented_interaction_authority_in_roster();
         Ok(())
+    }
+
+    pub(crate) fn refresh_contained_layout(&mut self) -> Result<(), CoreHostFrameError> {
+        self.refresh_contained_layout_except(None)
+    }
+
+    pub(crate) fn refresh_contained_layout_except(
+        &mut self,
+        freshly_measured: Option<SurfaceId>,
+    ) -> Result<(), CoreHostFrameError> {
+        if let Some(error) = self.poison {
+            return Err(error);
+        }
+        if self.presentation_phase_started {
+            return Ok(());
+        }
+        let refreshed = self
+            .candidate
+            .refresh_contained_layouts(self.tick, freshly_measured);
+        match refreshed {
+            Ok(false) => Ok(()),
+            Ok(true) => match self.refresh_presentation_snapshot() {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.input_prefix_error = Some(error);
+                    self.reject(CoreHostFrameError::InputPrefixReductionFailed)
+                }
+            },
+            Err(error) => {
+                self.input_prefix_error = Some(error);
+                self.reject(CoreHostFrameError::InputPrefixReductionFailed)
+            }
+        }
     }
 
     fn try_refresh_presentation_surfaces(
@@ -2447,6 +2483,7 @@ impl CoreHostFrame {
     /// Closes this capability's semantic input prefix in place.
     fn begin_presentation_phase(&mut self) -> Result<(), CoreHostFrameError> {
         self.ensure_input_prefix_complete()?;
+        self.refresh_contained_layout()?;
         // Semantic input in this same frame may have retired the frozen
         // provider after its final segment was reduced. The reducer owns that
         // transition; presentation only requires the frozen segment and its

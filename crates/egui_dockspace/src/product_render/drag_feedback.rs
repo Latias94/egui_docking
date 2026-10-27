@@ -11,6 +11,9 @@ pub(super) fn paint(
     decoration: dockspace::runtime::DockspaceDragDecoration<'_>,
 ) {
     context.ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    if decoration.source_is_projected() {
+        return;
+    }
     let Some(source) = egui_rect(decoration.source_bounds()) else {
         return;
     };

@@ -24,6 +24,13 @@ prefix must roll back the published version, selection, interaction and surface
 proofs; retrying the same ordered edges must deliver exactly once. The retry
 contract also detects producer watermarks advancing during rollback.
 
+The U4 consumer checks full contained content during move and every resize
+direction, exact pending-output settlement, cancellation, changed measurements,
+and a target behind the complete source in a pre-frozen input batch. A complete
+tabs-root journey presents each source-only projection while jittering across a
+magnetic boundary: the target stays latched inside its release margin and changes
+outside it. Framework-clearance facts never replace the core target solver.
+
 This is public-contract and renderer-neutral input evidence. It does not prove
 physical OS event delivery, actual GPU presentation, or completion of the full
 60-case product matrix. The egui ordered-input migration remains part of U3.

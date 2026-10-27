@@ -95,6 +95,21 @@ impl DockEngine {
         };
         ids.into_iter()
             .map(|id| {
+                if let Some(contained) = plan
+                    .contained_records()
+                    .iter()
+                    .find(|record| record.root() == id.root)
+                    && self
+                        .workspace
+                        .contained_floating(contained.floating())
+                        .is_none_or(|durable| {
+                            durable.root != id.root
+                                || plan.unclipped_contained_bounds(contained.floating())
+                                    != Some(durable.rect)
+                        })
+                {
+                    return Err(InteractionRejection::StaleScene);
+                }
                 let record = plan
                     .splitter_record(id)
                     .filter(|record| {

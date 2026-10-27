@@ -57,6 +57,125 @@ fn instrumented_style() -> DockStyle {
 
 struct Panes;
 
+#[derive(Clone, Copy, Debug)]
+struct PaneProjectionCallback {
+    item: ItemId,
+    pass: u64,
+    bounds: Rect,
+    ids: [egui::Id; 4],
+    label_rect: Rect,
+    button_rect: Rect,
+    button_hit_rect: Rect,
+    opacity: f32,
+}
+
+#[derive(Default)]
+struct ProjectionPanes {
+    callbacks: Vec<PaneProjectionCallback>,
+}
+
+impl ProjectionPanes {
+    fn latest(&self, item: ItemId) -> PaneProjectionCallback {
+        self.callbacks
+            .iter()
+            .rev()
+            .find(|callback| callback.item == item)
+            .copied()
+            .expect("the selected pane published its callback geometry")
+    }
+
+    fn assert_frame(
+        &self,
+        context: &Context,
+        frame: &FrameOutput,
+        baseline: [PaneProjectionCallback; 2],
+        contained_bounds: Rect,
+    ) {
+        let end_pass = context.cumulative_pass_nr();
+        let first_pass = end_pass - frame.output.platform_output.num_completed_passes as u64;
+        for (before, expected) in [
+            (baseline[0], baseline[0].bounds),
+            (baseline[1], contained_bounds),
+        ] {
+            let current = self.latest(before.item);
+            assert_eq!(
+                current.bounds, expected,
+                "pane {:?} callback available rect must follow the complete live projection, not the durable source or ghost shell",
+                before.item,
+            );
+            for pass in first_pass..end_pass {
+                assert_eq!(
+                    self.callbacks
+                        .iter()
+                        .filter(|callback| callback.item == before.item && callback.pass == pass)
+                        .count(),
+                    1,
+                    "selected pane {:?} must render exactly once in pass {pass}",
+                    before.item,
+                );
+            }
+            assert_eq!(current.ids, before.ids, "projection must preserve UI IDs");
+            assert!(
+                current.opacity > 0.0,
+                "live pane content must remain visible"
+            );
+            let delta = expected.min - before.bounds.min;
+            assert_eq!(current.label_rect, before.label_rect.translate(delta));
+            assert_eq!(current.button_rect, before.button_rect.translate(delta));
+            assert_eq!(
+                current.button_hit_rect,
+                before.button_hit_rect.translate(delta),
+                "ordinary child-widget hit geometry follows the same pane projection",
+            );
+            assert!(expected.contains_rect(current.button_hit_rect));
+            for (role, label, id, bounds) in [
+                (
+                    Role::Pane,
+                    format!("Projection pane {}", before.item.get()),
+                    current.ids[1],
+                    expected,
+                ),
+                (
+                    Role::Label,
+                    format!("Projection label {}", before.item.get()),
+                    current.ids[2],
+                    current.label_rect,
+                ),
+                (
+                    Role::Button,
+                    format!("Projection button {}", before.item.get()),
+                    current.ids[3],
+                    current.button_rect,
+                ),
+            ] {
+                let tree = frame
+                    .output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .expect("AccessKit is enabled");
+                let (_, node) = tree
+                    .nodes
+                    .iter()
+                    .find(|(node_id, _)| *node_id == id.accesskit_id())
+                    .unwrap_or_else(|| panic!("missing stable semantic node for {label}"));
+                assert_eq!(node.role(), role);
+                let text = if role == Role::Label {
+                    node.value()
+                } else {
+                    node.label()
+                };
+                assert_eq!(text, Some(label.as_str()));
+                assert_eq!(
+                    accesskit_node_rect(node),
+                    bounds,
+                    "{label} semantic bounds must agree with the actual callback UI",
+                );
+            }
+        }
+    }
+}
+
 struct TextPanes {
     texts: std::collections::BTreeMap<ItemId, String>,
     pane_rects: std::collections::BTreeMap<ItemId, Cell<Rect>>,
@@ -246,6 +365,52 @@ impl PaneView for Panes {
 
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
         ui.label(format!("Pane {}", item.get()));
+    }
+}
+
+impl PaneView for ProjectionPanes {
+    fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+        Panes.title(item)
+    }
+
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        let bounds = ui.available_rect_before_wrap();
+        // The semantic marker measures the real callback UI, never the expected test rect.
+        let marker = ui.interact(
+            bounds,
+            ui.make_persistent_id("projection-pane-bounds"),
+            egui::Sense::hover(),
+        );
+        ui.ctx().accesskit_node_builder(marker.id, |node| {
+            node.set_role(Role::Pane);
+            node.set_label(format!("Projection pane {}", item.get()));
+            node.set_bounds(egui::accesskit::Rect {
+                x0: f64::from(bounds.min.x),
+                y0: f64::from(bounds.min.y),
+                x1: f64::from(bounds.max.x),
+                y1: f64::from(bounds.max.y),
+            });
+        });
+        let label = ui.label(format!("Projection label {}", item.get()));
+        let button = ui.button(format!("Projection button {}", item.get()));
+        self.callbacks.push(PaneProjectionCallback {
+            item,
+            pass: ui.ctx().cumulative_pass_nr(),
+            bounds,
+            ids: [ui.scope_id(), marker.id, label.id, button.id],
+            label_rect: label.rect,
+            button_rect: button.rect,
+            button_hit_rect: button.interact_rect,
+            opacity: ui.opacity(),
+        });
+    }
+
+    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
+        self.callbacks
+            .iter()
+            .rev()
+            .find(|callback| callback.item == item)
+            .map_or(&[], |callback| &callback.ids[2..])
     }
 }
 
@@ -1260,18 +1425,6 @@ fn magnetic_outcome_missing(
         missing.push("stable quiescence");
     }
     missing
-}
-
-fn last_rect_fill_index(output: &egui::FullOutput, fills: &[egui::Color32]) -> Option<usize> {
-    output
-        .shapes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, shape)| match &shape.shape {
-            egui::Shape::Rect(rect) if fills.contains(&rect.fill) => Some(index),
-            _ => None,
-        })
-        .next_back()
 }
 
 fn rect_fill_count_in(output: &egui::FullOutput, fill: egui::Color32, bounds: Rect) -> usize {
@@ -3625,26 +3778,28 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
         dragging.output.platform_output.cursor_icon,
         egui::CursorIcon::Grabbing
     );
-    assert_eq!(
-        rect_fill_count_in(&dragging.output, group_fill, second),
-        0,
-        "the terminal threshold-crossing output already contains the group source gap"
+    assert!(
+        rect_fill_count_in(
+            &dragging.output,
+            group_fill,
+            second.translate(vec2(12.0, 0.0))
+        ) > 0
     );
-    assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 1);
+    assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 0);
     assert_eq!(
         node_rect(&dragging.output, Role::Tab, "Second"),
-        second,
-        "group drag threshold crossing must not move the tab receiver"
+        second.translate(vec2(12.0, 0.0)),
+        "the complete group moves its real tab receiver"
     );
     assert_eq!(
         node_rect(&dragging.output, Role::Button, "Close Second"),
-        close,
-        "group drag threshold crossing must not move the close receiver"
+        close.translate(vec2(12.0, 0.0)),
+        "the complete group moves its real close receiver"
     );
     assert_eq!(
         node_rect(&dragging.output, Role::TitleBar, "Second"),
-        title,
-        "group drag threshold crossing must not move contained-title accessibility bounds"
+        title.translate(vec2(12.0, 0.0)),
+        "the complete group moves contained-title accessibility bounds"
     );
 
     let passive = dockspace
@@ -3667,29 +3822,22 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
         guide_button_count(&preview.output, passive, active) >= 4,
         "the trailing region must enter the same core-owned group drag as the leading grip"
     );
+    let moved_title = node_rect(&preview.output, Role::TitleBar, "Second");
+    let delta = moved_title.min - title.min;
     assert_eq!(
-        rect_fill_count_in(&preview.output, group_fill, second),
-        0,
-        "an active group drag must omit the source tab-stack paint"
+        node_rect(&preview.output, Role::Tab, "Second"),
+        second.translate(delta),
+        "the full source remains aligned with its title"
+    );
+    assert!(rect_fill_count_in(&preview.output, group_fill, second.translate(delta)) > 0);
+    assert_eq!(
+        node_rect(&preview.output, Role::Button, "Close Second"),
+        close.translate(delta)
     );
     assert_eq!(
         rect_fill_count(&preview.output, ghost_fill),
-        1,
-        "one non-interactive pointer ghost represents the dragged group"
-    );
-    let ghost = rect_with_fill(&preview.output, ghost_fill).expect("the group ghost is painted");
-    assert!(ghost.width() <= 280.0);
-    assert!(
-        ghost.height() <= 64.0,
-        "a group ghost stays header-sized rather than copying the whole pane"
-    );
-    let guide_index = last_rect_fill_index(&preview.output, &[passive, active])
-        .expect("the active group drag paints guide shapes");
-    let ghost_index = last_rect_fill_index(&preview.output, &[ghost_fill])
-        .expect("the active group drag paints a ghost shape");
-    assert!(
-        ghost_index > guide_index,
-        "the pointer ghost remains above every target preview and guide"
+        0,
+        "the real complete source replaces the duplicate header ghost"
     );
     let _ = accesskit_node(&preview.output, Role::Tab, "Second");
     let _ = accesskit_node(&preview.output, Role::Button, "Close Second");
@@ -3705,10 +3853,10 @@ fn unused_tab_bar_space_starts_the_exact_group_drag() {
         .find_map(|(_, node)| {
             (node.role() == Role::Label && node.value() == Some("Pane 2")).then_some(node)
         })
-        .expect("the transparent pane keeps its application accessibility node");
+        .expect("the projected pane keeps its application accessibility node");
     assert!(
         !pane_label.is_disabled(),
-        "paint omission must not disable application controls or surrender pane focus"
+        "the projected source must not disable application controls or surrender pane focus"
     );
 }
 
@@ -3761,17 +3909,12 @@ fn contained_title_drag_paints_a_full_window_preview_in_the_same_run() {
         &mut panes,
         vec![Event::PointerMoved(source + vec2(24.0, 8.0))],
     );
-    assert_eq!(
-        rect_fill_count_in(&dragging.output, source_fill, source_rect),
-        0,
-        "the terminal threshold-crossing output contains a real contained-root gap"
-    );
-    assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 1);
-    let ghost = rect_with_fill(&dragging.output, ghost_fill).expect("the root ghost is painted");
-    assert!(ghost.width() >= source_rect.width() * 0.9);
-    assert!(ghost.height() >= source_rect.height() * 0.9);
+    let projected =
+        rect_with_fill(&dragging.output, source_fill).expect("the real root is painted");
+    assert_eq!(rect_fill_count(&dragging.output, ghost_fill), 0);
+    assert_eq!(projected.size(), source_rect.size());
     assert!(
-        ghost
+        projected
             .min
             .distance(source_rect.translate(vec2(24.0, 8.0)).min)
             <= 0.01,
@@ -6067,7 +6210,15 @@ fn discarded_contained_move_preview_cannot_commit_release() {
         &mut panes,
         vec![Event::PointerMoved(destination)],
     );
-    assert!(rect_fill_count(&fresh_drag.output, ghost_fill) > 0);
+    assert_eq!(rect_fill_count(&fresh_drag.output, ghost_fill), 0);
+    assert_eq!(
+        fresh_drag.output.platform_output.cursor_icon,
+        egui::CursorIcon::Grabbing
+    );
+    assert_eq!(
+        node_rect(&fresh_drag.output, Role::TitleBar, "Second"),
+        node_rect(&cancelled.output, Role::TitleBar, "Second").translate(vec2(-120.0, 80.0))
+    );
     assert_eq!(contained_rect(&dockspace), initial);
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = run_frame(
@@ -6690,75 +6841,147 @@ fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
 
 #[test]
 fn default_features_contained_resize_commits_a_painted_preview() {
-    let context = Context::default();
-    context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("product-contained-resize", contained_layout())
-        .style(instrumented_style())
-        .build()
-        .expect("the product contained facade initializes");
-    let mut panes = Panes;
+    for (direction, delta) in [
+        ("East", vec2(30.0, 0.0)),
+        ("North", vec2(0.0, -24.0)),
+        ("South", vec2(0.0, 24.0)),
+        ("West", vec2(-30.0, 0.0)),
+        ("NorthEast", vec2(30.0, -24.0)),
+        ("SouthEast", vec2(30.0, 24.0)),
+        ("SouthWest", vec2(-30.0, 24.0)),
+        ("NorthWest", vec2(-30.0, -24.0)),
+    ] {
+        let context = Context::default();
+        context.enable_accesskit();
+        let mut dockspace =
+            Dockspace::builder(("product-contained-resize", direction), contained_layout())
+                .style(instrumented_style())
+                .build()
+                .expect("the product contained facade initializes");
+        let mut panes = ProjectionPanes::default();
 
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let initial = dockspace
-        .view()
-        .contained(FLOATING)
-        .expect("the contained fixture is present")
-        .rect();
-    let source = Pos2::new(
-        initial.max().x() as f32 - 1.0,
-        initial.min().y() as f32 + 100.0,
-    );
-    let moved = source + vec2(30.0, 0.0);
+        let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let stable = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let baseline = [panes.latest(FIRST), panes.latest(SECOND)];
+        panes.assert_frame(&context, &stable, baseline, baseline[1].bounds);
+        let initial = contained_rect(&dockspace);
+        let north = node_rect(&stable.output, Role::Splitter, "Resize floating top edge");
+        let east = node_rect(&stable.output, Role::Splitter, "Resize floating right edge");
+        let south = node_rect(
+            &stable.output,
+            Role::Splitter,
+            "Resize floating bottom edge",
+        );
+        let west = node_rect(&stable.output, Role::Splitter, "Resize floating left edge");
+        // Cardinal semantic bounds also locate the actual corner bands without guessed insets.
+        let source = Pos2::new(
+            if delta.x < 0.0 {
+                west.center().x
+            } else if delta.x > 0.0 {
+                east.center().x
+            } else {
+                north.center().x
+            },
+            if delta.y < 0.0 {
+                north.center().y
+            } else if delta.y > 0.0 {
+                south.center().y
+            } else {
+                east.center().y
+            },
+        );
+        let destination = source + delta;
+        let min_delta = delta.min(egui::Vec2::ZERO);
+        let max_delta = delta.max(egui::Vec2::ZERO);
+        let projected_content = Rect::from_min_max(
+            baseline[1].bounds.min + min_delta,
+            baseline[1].bounds.max + max_delta,
+        );
 
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(source), pointer_button(source, true)],
-    );
-    let preview = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(moved)],
-    );
-    assert!(
-        rect_fill_count(
-            &preview.output,
-            dockspace
-                .style()
-                .visuals
-                .ghost_fill
-                .expect("the fixture fixes its ghost fill"),
-        ) > 0,
-        "the exact contained transform preview is painted while placement is transient",
-    );
-    assert_eq!(
-        dockspace
-            .view()
-            .contained(FLOATING)
-            .expect("the contained fixture remains present")
-            .rect(),
-        initial,
-        "resize motion remains transient until release",
-    );
+        let armed = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source), pointer_button(source, true)],
+        );
+        assert_eq!(contained_rect(&dockspace), initial, "{direction}: press");
+        panes.assert_frame(&context, &armed, baseline, baseline[1].bounds);
 
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(moved), pointer_button(moved, false)],
-    );
-    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let _ = accesskit_node(&settled.output, Role::TitleBar, "Second");
-    let committed = dockspace
-        .view()
-        .contained(FLOATING)
-        .expect("the contained fixture remains present")
-        .rect();
-    assert_eq!(committed.min(), initial.min());
-    assert!(committed.max().x() > initial.max().x());
+        for events in [vec![Event::PointerMoved(destination)], Vec::new()] {
+            let preview = run_pane_frame(&context, &mut dockspace, &mut panes, events);
+            assert_eq!(
+                contained_rect(&dockspace),
+                initial,
+                "{direction}: even a presented resize remains transient before release",
+            );
+            panes.assert_frame(&context, &preview, baseline, projected_content);
+            let top_right_delta = vec2(max_delta.x, min_delta.y);
+            let bottom_left_delta = vec2(min_delta.x, max_delta.y);
+            for (role, label, min_shift, max_shift) in [
+                (Role::TitleBar, "Second", min_delta, top_right_delta),
+                (Role::Tab, "Second", min_delta, min_delta),
+                (
+                    Role::Splitter,
+                    "Resize floating top edge",
+                    min_delta,
+                    top_right_delta,
+                ),
+                (
+                    Role::Splitter,
+                    "Resize floating right edge",
+                    top_right_delta,
+                    max_delta,
+                ),
+                (
+                    Role::Splitter,
+                    "Resize floating bottom edge",
+                    bottom_left_delta,
+                    max_delta,
+                ),
+                (
+                    Role::Splitter,
+                    "Resize floating left edge",
+                    min_delta,
+                    bottom_left_delta,
+                ),
+            ] {
+                let (before_id, before) = accesskit_node(&stable.output, role, label);
+                let (during_id, during) = accesskit_node(&preview.output, role, label);
+                let before = accesskit_node_rect(before);
+                assert_eq!(during_id, before_id, "{direction}: {label} identity");
+                assert_eq!(
+                    accesskit_node_rect(during),
+                    Rect::from_min_max(before.min + min_shift, before.max + max_shift),
+                    "{direction}: {label} follows the live content projection",
+                );
+            }
+        }
+
+        let released = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![pointer_button(destination, false)],
+        );
+        panes.assert_frame(&context, &released, baseline, projected_content);
+        let settled = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        panes.assert_frame(&context, &settled, baseline, projected_content);
+        let committed = contained_rect(&dockspace);
+        assert_eq!(
+            committed,
+            LogicalRect::new(
+                initial.min().x() + f64::from(min_delta.x),
+                initial.min().y() + f64::from(min_delta.y),
+                initial.width() + f64::from(max_delta.x - min_delta.x),
+                initial.height() + f64::from(max_delta.y - min_delta.y),
+            )
+            .expect("the outward resize keeps a valid contained rectangle"),
+            "{direction}: release commits exactly the projected edges",
+        );
+        let idle = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        panes.assert_frame(&context, &idle, baseline, projected_content);
+        assert_eq!(contained_rect(&dockspace), committed, "{direction}: idle");
+    }
 }
 
 #[test]
@@ -6814,71 +7037,68 @@ fn default_features_contained_title_moves_without_a_dock_target() {
         .style(instrumented_style())
         .build()
         .expect("the product contained facade initializes");
-    let mut panes = Panes;
+    let mut panes = ProjectionPanes::default();
 
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let initial = dockspace
-        .view()
-        .contained(FLOATING)
-        .expect("the contained fixture is present")
-        .rect();
-    let source = contained_title_point(&dockspace);
-    let destination = source + vec2(-120.0, 80.0);
+    let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let baseline = [panes.latest(FIRST), panes.latest(SECOND)];
+    panes.assert_frame(&context, &stable, baseline, baseline[1].bounds);
+    let initial = contained_rect(&dockspace);
+    let source = node_center(&stable.output, Role::TitleBar, "Second");
+    let delta = vec2(-120.0, 80.0);
+    let destination = source + delta;
+    let projected_content = baseline[1].bounds.translate(delta);
 
-    let _ = run_frame(
+    let armed = run_pane_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerMoved(source), pointer_button(source, true)],
     );
-    let moving = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(destination)],
-    );
-    assert_eq!(
-        dockspace
-            .view()
-            .contained(FLOATING)
-            .expect("the contained fixture remains present")
-            .rect(),
-        initial,
-        "contained motion remains transient until release",
-    );
+    assert_eq!(contained_rect(&dockspace), initial);
+    panes.assert_frame(&context, &armed, baseline, baseline[1].bounds);
 
-    let _released = run_frame(
+    for events in [vec![Event::PointerMoved(destination)], Vec::new()] {
+        let moving = run_pane_frame(&context, &mut dockspace, &mut panes, events);
+        assert_eq!(
+            contained_rect(&dockspace),
+            initial,
+            "even a presented contained move remains transient before release",
+        );
+        panes.assert_frame(&context, &moving, baseline, projected_content);
+        for (role, label) in [
+            (Role::TitleBar, "Second"),
+            (Role::Tab, "Second"),
+            (Role::Button, "Close floating Second"),
+        ] {
+            let (before_id, before) = accesskit_node(&stable.output, role, label);
+            let (during_id, during) = accesskit_node(&moving.output, role, label);
+            assert_eq!(during_id, before_id, "{label} keeps its semantic identity");
+            assert_eq!(
+                accesskit_node_rect(during),
+                accesskit_node_rect(before).translate(delta),
+                "{label} follows the same complete pane projection",
+            );
+        }
+    }
+
+    let released = run_pane_frame(
         &context,
         &mut dockspace,
         &mut panes,
-        vec![
-            Event::PointerMoved(destination),
-            pointer_button(destination, false),
-        ],
+        vec![pointer_button(destination, false)],
     );
-    assert!(
-        rect_fill_count(
-            &moving.output,
-            dockspace
-                .style()
-                .visuals
-                .drop_fill
-                .expect("the fixture fixes its drop fill"),
-        ) > 0,
-        "the contained move projection is emitted before its exact presented release can settle",
-    );
-    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let _ = accesskit_node(&settled.output, Role::TitleBar, "Second");
-    let committed = dockspace
-        .view()
-        .contained(FLOATING)
-        .expect("the contained fixture remains present")
-        .rect();
+    panes.assert_frame(&context, &released, baseline, projected_content);
+    let settled = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    panes.assert_frame(&context, &settled, baseline, projected_content);
+    let committed = contained_rect(&dockspace);
     assert_eq!(committed.width(), initial.width());
     assert_eq!(committed.height(), initial.height());
-    assert_eq!(committed.min().x(), initial.min().x() - 120.0);
-    assert_eq!(committed.min().y(), initial.min().y() + 80.0);
+    assert_eq!(committed.min().x(), initial.min().x() + f64::from(delta.x));
+    assert_eq!(committed.min().y(), initial.min().y() + f64::from(delta.y));
+    let idle = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    panes.assert_frame(&context, &idle, baseline, projected_content);
+    assert_eq!(contained_rect(&dockspace), committed);
 }
 
 #[test]

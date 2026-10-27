@@ -3,6 +3,7 @@
 mod close_workflow;
 mod contained_adjustment;
 mod contained_geometry;
+mod contained_projection;
 mod host_frame;
 mod input;
 mod native_admission;
@@ -680,16 +681,27 @@ impl<'frame> HostFrameView<'frame> {
             .ready()?
             .candidate()
             .stamp();
-        self.engine
-            .interaction()
-            .drop_affordance()
-            .or_else(|| {
-                self.engine
-                    .pending_drag_release
-                    .as_ref()
-                    .and_then(|pending| pending.drag.drop_affordance())
-            })
-            .filter(|affordance| affordance.surface() == surface && affordance.scene() == scene)
+        let drag = match self.engine.interaction.status() {
+            InteractionStatus::Dragging { session } => {
+                self.engine.interaction.active_drag(session).ok()
+            }
+            _ => None,
+        }
+        .or_else(|| {
+            self.engine
+                .pending_drag_release
+                .as_ref()
+                .map(|pending| &pending.drag)
+        })?;
+        drag.drop_affordance().filter(|affordance| {
+            affordance.surface() == surface
+                && (affordance.scene() == scene
+                    || (self
+                        .engine
+                        .current_contained_projection_is_owned(drag.source_surface)
+                        && self.engine.drag_target_layout_basis(surface, drag.session)
+                            == Some(affordance.target_layout_basis())))
+        })
     }
 }
 
@@ -1792,6 +1804,7 @@ struct PreviewEvaluation {
     decision: PreviewDecision,
     affordance: Option<DropAffordance>,
     observation: crate::runtime::direct_manipulation::TargetObservation,
+    target_layout_basis: Option<SurfaceSceneStamp>,
 }
 
 struct StagedJournalWorkspaceCommand {
@@ -1805,11 +1818,13 @@ impl PreviewEvaluation {
         decision: PreviewDecision,
         affordance: Option<DropAffordance>,
         observation: crate::runtime::direct_manipulation::TargetObservation,
+        target_layout_basis: Option<SurfaceSceneStamp>,
     ) -> Self {
         Self {
             decision,
             affordance,
             observation,
+            target_layout_basis,
         }
     }
 
@@ -1818,6 +1833,7 @@ impl PreviewEvaluation {
             decision,
             None,
             crate::runtime::direct_manipulation::TargetObservation::Unavailable,
+            None,
         )
     }
 
@@ -1826,6 +1842,7 @@ impl PreviewEvaluation {
             decision,
             None,
             crate::runtime::direct_manipulation::TargetObservation::OutsideAll,
+            None,
         )
     }
 }

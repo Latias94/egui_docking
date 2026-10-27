@@ -1663,7 +1663,19 @@ impl DockEngine {
         self.presentation_authority
             .scene
             .ready_candidate(scene.surface())
-            .is_some_and(|candidate| candidate.stamp() == scene)
+            .is_some_and(|candidate| {
+                candidate.stamp() == scene
+                    || (candidate
+                        .plan()
+                        .contained_projection()
+                        .is_some_and(|projection| {
+                            projection.owner
+                                == crate::scene::ContainedLayoutOwner::Drag(drag.session)
+                                && projection.target_basis.is_some()
+                        })
+                        && preview.target_layout_basis()
+                            == self.drag_target_layout_basis(scene.surface(), drag.session))
+            })
     }
 
     pub(super) fn settle_presented_pending_drag_release(
@@ -2090,7 +2102,11 @@ impl DockEngine {
         Self::validate_journal_desktop_presentation(edge, desktop_route, authority)?;
         let winner = presentation
             .hit_manifest()
-            .resolve_exclusive(PresentationPointerLane::HoverDrop, point)
+            .resolve_exclusive_with_suppression(
+                PresentationPointerLane::HoverDrop,
+                point,
+                self.hover_drop_suppression(),
+            )
             .map_err(|_| EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::ReceiverWinnerAmbiguous {
                     sequence: edge.sequence(),
@@ -2116,9 +2132,9 @@ impl DockEngine {
                 },
             });
         }
-        // The raw framework winner is now proven. Source and payload
-        // suppression are core semantics, so only the drop resolver applies
-        // them; the adapter never needs to know the active drag payload.
+        // Framework clearance and the source-suppressed semantic winner are
+        // proven independently. The existing solver remains the only target
+        // policy; adapters never reconstruct payload membership.
         let query = self
             .resolve_presented_drop_with_current_index(
                 &presentation,
@@ -2173,7 +2189,24 @@ impl DockEngine {
                 });
             }
         };
-        Ok(PreviewEvaluation::new(decision, affordance, observation))
+        let target_layout_basis = presentation
+            .plan()
+            .contained_projection()
+            .filter(|projection| {
+                projection.owner == crate::scene::ContainedLayoutOwner::Drag(drag.session)
+            })
+            .and_then(|projection| projection.target_basis)
+            .unwrap_or(presentation.scene());
+        let affordance = affordance.map(|mut affordance| {
+            affordance.bind_target_layout_basis(target_layout_basis);
+            affordance
+        });
+        Ok(PreviewEvaluation::new(
+            decision,
+            affordance,
+            observation,
+            Some(target_layout_basis),
+        ))
     }
 
     pub(super) fn resolve_presented_drop_with_current_index(
@@ -2476,8 +2509,46 @@ impl DockEngine {
             decision,
             affordance,
             observation,
+            target_layout_basis,
         } = evaluation;
-        let acquisition = observation.acquisition();
+        let mut acquisition = observation.acquisition();
+        let mut decision = decision;
+        if let PreviewDecision::Publish { visual, proof, .. } = &decision
+            && let Ok(drag) = self.interaction.active_drag(session)
+            && self.current_contained_projection_is_owned(drag.source_surface)
+            && self.drag_preview_authority_is_current(drag)
+            && let Some(previous) = drag.preview()
+            && previous.public().visual() == visual
+            && previous.target_layout_basis() == target_layout_basis
+        {
+            let same_command = match (previous.proof(), proof.as_ref()) {
+                (
+                    PreviewProof::Dock {
+                        target: old_target,
+                        command: old,
+                    },
+                    PreviewProof::Dock { target, command },
+                ) => old_target == target && old == command,
+                (
+                    PreviewProof::Contained {
+                        command: old,
+                        fallback: old_fallback,
+                        ..
+                    },
+                    PreviewProof::Contained {
+                        command, fallback, ..
+                    },
+                ) => old == command && old_fallback == fallback,
+                _ => false,
+            };
+            if same_command {
+                // Revalidate against the current hover winner, but retain the exact
+                // already-presented token when only its source layout advanced.
+                acquisition = drag.target.acquisition();
+                decision = Self::frozen_drag_release_decision(drag)
+                    .expect("the matching previous preview is present");
+            }
+        }
         self.interaction
             .set_drop_affordance(session, affordance)
             .map_err(|source| EngineError::PointerInteractionInvariant {
@@ -2493,6 +2564,12 @@ impl DockEngine {
                 let (preview, changed) = self
                     .interaction
                     .publish_preview(session, scene, visual, *proof, acquisition)
+                    .map_err(|source| EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: format!("{source:?}"),
+                    })?;
+                self.interaction
+                    .bind_preview_layout_basis(session, target_layout_basis)
                     .map_err(|source| EngineError::PointerInteractionInvariant {
                         cause,
                         detail: format!("{source:?}"),
@@ -2552,12 +2629,40 @@ impl DockEngine {
             decision,
             mut affordance,
             observation,
+            target_layout_basis,
         } = evaluation;
+        let latch_observation = match observation {
+            crate::runtime::direct_manipulation::TargetObservation::Surface {
+                candidate, ..
+            } if self.interaction.active_drag(session).is_ok_and(|drag| {
+                self.current_contained_projection_is_owned(drag.source_surface)
+                    && self.drag_preview_authority_is_current(drag)
+                    && drag
+                        .preview()
+                        .is_some_and(|preview| preview.target_layout_basis() == target_layout_basis)
+            }) =>
+            {
+                let drag = self
+                    .interaction
+                    .active_drag(session)
+                    .expect("the exact source projection owner was checked");
+                crate::runtime::direct_manipulation::TargetObservation::Surface {
+                    scene: drag
+                        .preview()
+                        .expect("the target preview was checked")
+                        .public()
+                        .token()
+                        .scene(),
+                    candidate,
+                }
+            }
+            _ => observation,
+        };
         let latch = self
             .interaction
             .reconcile_drag_target(
                 session,
-                observation,
+                latch_observation,
                 position.logical_point(),
                 self.presentation_config().target_release_hysteresis(),
             )
@@ -2571,7 +2676,7 @@ impl DockEngine {
                     cause,
                     owner,
                     session,
-                    PreviewEvaluation::new(decision, affordance, observation),
+                    PreviewEvaluation::new(decision, affordance, observation, target_layout_basis),
                     interaction_events,
                 )?,
             crate::runtime::direct_manipulation::TargetLatchDecision::RetainCurrent => {
@@ -2741,6 +2846,9 @@ impl DockEngine {
                 let (Some(presented), Some(durable)) = (presented, durable) else {
                     return Err(InteractionRejection::TabGestureSourceUnavailable { source });
                 };
+                if plan.unclipped_contained_bounds(floating) != Some(durable.rect) {
+                    return Err(InteractionRejection::TabGestureSourceUnavailable { source });
+                }
                 let root_node = self
                     .workspace
                     .root(root)

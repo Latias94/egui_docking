@@ -1252,6 +1252,8 @@ pub(crate) mod structural_work {
         pub(crate) presentation_hit_lookup_comparisons: usize,
         pub(crate) presentation_roster_full_captures: usize,
         pub(crate) presentation_roster_surface_freezes: usize,
+        pub(crate) selection_pane_visits: usize,
+        pub(crate) selection_lookups: usize,
         pub(crate) item_multiset_scans: usize,
         pub(crate) item_multiset_item_visits: usize,
         pub(crate) transaction_prepares: usize,
@@ -1314,6 +1316,14 @@ pub(crate) mod structural_work {
 
     pub(crate) fn record_presentation_roster_surface_freeze() {
         update(|work| work.presentation_roster_surface_freezes += 1);
+    }
+
+    pub(crate) fn record_selection_pane_visit() {
+        update(|work| work.selection_pane_visits += 1);
+    }
+
+    pub(crate) fn record_selection_lookup() {
+        update(|work| work.selection_lookups += 1);
     }
 
     pub(crate) fn record_item_multiset_scan(item_visits: usize) {
@@ -1587,6 +1597,7 @@ impl DropQuery {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropAffordance {
     scene: SurfaceSceneStamp,
+    target_layout_basis: SurfaceSceneStamp,
     surface: SurfaceId,
     point: LogicalPoint,
     clusters: Vec<DropAffordanceCluster>,
@@ -1603,6 +1614,7 @@ impl DropAffordance {
     ) -> Self {
         Self {
             scene,
+            target_layout_basis: scene,
             surface,
             point,
             clusters,
@@ -1614,6 +1626,14 @@ impl DropAffordance {
     #[must_use]
     pub const fn scene(&self) -> SurfaceSceneStamp {
         self.scene
+    }
+
+    pub(crate) const fn target_layout_basis(&self) -> SurfaceSceneStamp {
+        self.target_layout_basis
+    }
+
+    pub(crate) fn bind_target_layout_basis(&mut self, basis: SurfaceSceneStamp) {
+        self.target_layout_basis = basis;
     }
 
     /// Returns the authoritative logical surface.
@@ -2286,6 +2306,7 @@ mod tests {
             &fixture_measurements(engine, surface, bounds),
             &crate::tab_strip::TabStripStateStore::default(),
             &[],
+            None,
         )
         .expect("guide-disabled fixture measurements must compile");
         PresentationPlanValidator::new(engine.workspace(), engine.policy_snapshot())

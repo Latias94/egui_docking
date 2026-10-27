@@ -203,10 +203,11 @@ impl DockspaceHostFrame<'_> {
         surface: SurfaceId,
         mut resolve: impl FnMut(SurfaceMeasurementRequest) -> SurfaceMeasurementAnswer,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.complete_pointer_input()?;
+        self.complete_pointer_journal()?;
         if self.surface_answered(surface) {
             return Err(DockspaceInteractionError::SurfaceAlreadyAnswered { surface }.into());
         }
+        self.frame.refresh_contained_layout_except(Some(surface))?;
         let requirements = self
             .frame
             .view()

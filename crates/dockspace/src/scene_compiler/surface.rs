@@ -30,6 +30,7 @@ pub(crate) fn compile_surface_scene(
     popup: PopupPlaneRequirement,
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
+    contained_projection: Option<ContainedLayoutProjection>,
     emit_guides: bool,
 ) -> Result<PresentationPlan, SceneCompilationError> {
     let expected = requirements.ticket();
@@ -66,6 +67,7 @@ pub(crate) fn compile_surface_scene(
     let fraction = dock_fraction(config)?;
     let mut ready = PresentationPlan::from_measurements(actual, popup, bounds, popup_plane_bounds);
     ready.install_layout_facts(config.clone(), measurements);
+    ready.set_contained_projection(contained_projection);
     if tab_strip_states.popup_requirement() != popup {
         return Err(SceneCompilationError::PopupPlaneStateMismatch);
     }
@@ -117,18 +119,21 @@ pub(crate) fn compile_surface_scene(
         let record = workspace
             .contained_floating(floating)
             .ok_or(SceneCompilationError::MissingContainedPresentation { surface, floating })?;
+        let outer = contained_projection
+            .filter(|projection| projection.surface == surface && projection.floating == floating)
+            .map_or(record.rect, |projection| projection.rect);
         let layer = SceneLayerKey::contained(index)
             .ok_or(SceneCompilationError::ContainedLayerExhausted { surface, floating })?;
         ready.push_drop_occlusion(DropOcclusionRecord::new(
             floating,
-            HitRegion::new(record.rect),
+            HitRegion::new(outer),
             layer,
         ));
         let minimum =
             contained_minimum_size(workspace, config, requirements, measurements, record.root)?;
         ready.push_contained_minimum(ContainedMinimumMeasurement::new(floating, minimum));
 
-        if intersect_rect(bounds, record.rect)?.is_none() {
+        if intersect_rect(bounds, outer)?.is_none() {
             continue;
         }
         let (contained, presentation_menu_anchor) = compile_contained_record(
@@ -140,7 +145,7 @@ pub(crate) fn compile_surface_scene(
             record.root,
             index,
             Some(floating) == frontmost_contained,
-            record.rect,
+            outer,
             bounds,
             minimum,
             layer,
@@ -251,6 +256,7 @@ pub(crate) fn compile_surface_measurements(
     measurements: &SurfaceMeasurements,
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
+    contained_projection: Option<ContainedLayoutProjection>,
 ) -> Result<PresentationPlan, PresentationCompilationError> {
     compile_surface_measurements_with_guide_emission(
         workspace,
@@ -261,6 +267,7 @@ pub(crate) fn compile_surface_measurements(
         measurements,
         tab_strip_states,
         resize_overrides,
+        contained_projection,
         true,
     )
 }
@@ -275,6 +282,7 @@ pub(crate) fn compile_surface_measurements_without_guides(
     measurements: &SurfaceMeasurements,
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
+    contained_projection: Option<ContainedLayoutProjection>,
 ) -> Result<PresentationPlan, PresentationCompilationError> {
     compile_surface_measurements_with_guide_emission(
         workspace,
@@ -285,6 +293,7 @@ pub(crate) fn compile_surface_measurements_without_guides(
         measurements,
         tab_strip_states,
         resize_overrides,
+        contained_projection,
         false,
     )
 }
@@ -299,6 +308,7 @@ fn compile_surface_measurements_with_guide_emission(
     measurements: &SurfaceMeasurements,
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
+    contained_projection: Option<ContainedLayoutProjection>,
     emit_guides: bool,
 ) -> Result<PresentationPlan, PresentationCompilationError> {
     #[cfg(test)]
@@ -327,6 +337,7 @@ fn compile_surface_measurements_with_guide_emission(
         manifest.popup(),
         tab_strip_states,
         resize_overrides,
+        contained_projection,
         emit_guides,
     )
     .map_err(PresentationCompilationError::Scene)

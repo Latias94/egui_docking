@@ -439,6 +439,11 @@ pub enum SurfaceContributionRejection {
         /// Surface whose transient splitter geometry advanced.
         surface: SurfaceId,
     },
+    /// The prepared contained layout no longer belongs to the current gesture.
+    ContainedProjectionChanged {
+        /// Surface whose transient contained geometry advanced or was cancelled.
+        surface: SurfaceId,
+    },
 }
 
 /// Result of one independently compiled surface contribution in a reducer tick.

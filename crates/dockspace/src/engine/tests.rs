@@ -2032,6 +2032,7 @@ fn compile_tab_strip_reducer_plan_for(
         measurements,
         &engine.presentation_authority.tab_strip_states,
         &[],
+        None,
     )
     .unwrap_or_else(|source| panic!("tab-strip measurements for {surface} must compile: {source}"))
 }
