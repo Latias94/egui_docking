@@ -176,10 +176,30 @@ impl ProjectionPanes {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PaneContentWidget {
+    Button,
+    TextEdit,
+    ScrollArea,
+    Canvas,
+}
+
+impl PaneContentWidget {
+    const ALL: [Self; 4] = [Self::Button, Self::TextEdit, Self::ScrollArea, Self::Canvas];
+}
+
 struct TextPanes {
     texts: std::collections::BTreeMap<ItemId, String>,
     pane_rects: std::collections::BTreeMap<ItemId, Cell<Rect>>,
-    content_widgets: std::collections::BTreeMap<ItemId, [egui::Id; 1]>,
+    content_widgets: std::collections::BTreeMap<ItemId, Vec<egui::Id>>,
+    widget: PaneContentWidget,
+    fill_widget: bool,
+    register_content: bool,
+    overlapping_blocker: bool,
+    responses: std::collections::BTreeMap<ItemId, egui::Response>,
+    clicks: std::collections::BTreeMap<ItemId, usize>,
+    dragged: std::collections::BTreeSet<ItemId>,
+    scroll_offsets: std::collections::BTreeMap<ItemId, f32>,
 }
 
 impl TextPanes {
@@ -191,6 +211,29 @@ impl TextPanes {
                 .collect(),
             pane_rects: std::collections::BTreeMap::new(),
             content_widgets: std::collections::BTreeMap::new(),
+            widget: PaneContentWidget::TextEdit,
+            fill_widget: false,
+            register_content: true,
+            overlapping_blocker: false,
+            responses: std::collections::BTreeMap::new(),
+            clicks: std::collections::BTreeMap::new(),
+            dragged: std::collections::BTreeSet::new(),
+            scroll_offsets: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn magnetic(widget: PaneContentWidget) -> Self {
+        Self {
+            widget,
+            fill_widget: true,
+            ..Self::new([
+                (FIRST, "Target content"),
+                (SECOND, "Source content"),
+                (THIRD, "Outline"),
+                (FOURTH, "North"),
+                (FIFTH, "East"),
+                (SIXTH, "South"),
+            ])
         }
     }
 
@@ -199,6 +242,12 @@ impl TextPanes {
             .get(&item)
             .map(Cell::get)
             .expect("the text pane published its content rectangle")
+    }
+
+    fn widget_response(&self, item: ItemId) -> &egui::Response {
+        self.responses
+            .get(&item)
+            .expect("the pane published its actual child-widget response")
     }
 }
 
@@ -433,24 +482,80 @@ impl PaneView for TextPanes {
             FIRST => Some("Editor".into()),
             SECOND => Some("Preview".into()),
             THIRD => Some("Outline".into()),
-            _ => None,
+            _ => Panes.title(item),
         }
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        let bounds = ui.available_rect_before_wrap();
         self.pane_rects
             .entry(item)
             .or_insert_with(|| Cell::new(Rect::NOTHING))
-            .set(ui.available_rect_before_wrap());
+            .set(bounds);
+        self.content_widgets.entry(item).or_default().clear();
+        self.responses.remove(&item);
         let Some(text) = self.texts.get_mut(&item) else {
             return;
         };
-        let response = ui.add(
-            egui::TextEdit::multiline(text)
-                .desired_width(f32::INFINITY)
-                .desired_rows(12),
-        );
-        self.content_widgets.insert(item, [response.id]);
+        let response = match self.widget {
+            PaneContentWidget::Button => ui.add_sized(bounds.size(), egui::Button::new(&*text)),
+            PaneContentWidget::TextEdit => {
+                let edit = egui::TextEdit::multiline(text)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(if self.fill_widget { 1 } else { 12 });
+                if self.fill_widget {
+                    ui.add_sized(bounds.size(), edit)
+                } else {
+                    ui.add(edit)
+                }
+            }
+            PaneContentWidget::ScrollArea => {
+                let scroll = egui::ScrollArea::vertical()
+                    .id_salt("pane-content-scroll")
+                    .max_height(bounds.height())
+                    .auto_shrink([false, false])
+                    .scroll_source(egui::scroll_area::ScrollSource::ALL)
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(&*text).selectable(false));
+                        ui.allocate_space(vec2(ui.available_width(), bounds.height() * 3.0));
+                    });
+                self.scroll_offsets
+                    .insert(item, scroll.state.clamped_offset().y);
+                // egui registers its background drag response after the first layout pass.
+                let Some(response) = ui.ctx().read_response(scroll.id.with("area")) else {
+                    return;
+                };
+                response
+            }
+            PaneContentWidget::Canvas => {
+                let response = ui.allocate_response(bounds.size(), egui::Sense::click_and_drag());
+                ui.painter()
+                    .rect_filled(response.rect, 0.0, egui::Color32::DARK_GRAY);
+                response
+            }
+        };
+        if response.clicked() {
+            *self.clicks.entry(item).or_default() += 1;
+        }
+        if response.dragged() {
+            self.dragged.insert(item);
+        }
+        if self.register_content {
+            let widgets = self.content_widgets.entry(item).or_default();
+            widgets.push(response.id);
+            if self.overlapping_blocker {
+                // A repeated declaration cannot consume another widget's equal rectangle.
+                widgets.push(response.id);
+            }
+        }
+        if self.overlapping_blocker {
+            let _ = ui.interact(
+                response.interact_rect,
+                response.id.with("unknown-blocker"),
+                egui::Sense::click_and_drag(),
+            );
+        }
+        self.responses.insert(item, response);
     }
 
     fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
@@ -4629,32 +4734,39 @@ fn stale_prepared_dock_action_is_inert_in_the_product_executor() {
 }
 
 fn settle_product_magnetic_preview(
-    context: &Context,
-    dockspace: &mut Dockspace,
-    panes: &mut MagneticPanes,
+    mut advance: impl FnMut() -> FrameOutput,
     mut initial: Option<FrameOutput>,
     motion_point: Pos2,
     target_rect: Rect,
     case: MagneticDockCase,
+    style: &DockStyle,
 ) -> MagneticDockBasin {
-    let drop_fill = dockspace
-        .style()
+    let drop_fill = style
         .visuals
         .drop_fill
         .expect("the fixture fixes its preview fill");
     let frame = settle_until(8, || {
-        let frame = initial.take().unwrap_or_else(|| {
-            run_pane_frame(
-                context,
-                dockspace,
-                panes,
-                vec![Event::PointerMoved(motion_point)],
-            )
-        });
+        let frame = initial.take().unwrap_or_else(&mut advance);
         let missing = preview_readiness(&frame, target_rect, motion_point, case.basin(), drop_fill);
         (frame, missing)
     })
     .unwrap_or_else(|timeout| panic!("shared L03 preview failed for {case:?}: {timeout}"));
+    let guide_fills = [
+        style
+            .visuals
+            .drop_guide_fill
+            .expect("the fixture fixes its passive guide fill"),
+        style
+            .visuals
+            .drop_guide_active_fill
+            .expect("the fixture fixes its active guide fill"),
+    ];
+    assert!(
+        rects_with_fill(&frame.output, &guide_fills)
+            .iter()
+            .all(|guide| !guide.contains(motion_point)),
+        "the measured content point must not aim at an explicit guide: {case:?} {motion_point:?}",
+    );
     let preview = magnetic_preview_rect(&frame.output, drop_fill, target_rect)
         .expect("causal preview readiness requires one Dock preview");
     magnetic_basin_from_preview(preview, target_rect)
@@ -4663,12 +4775,14 @@ fn settle_product_magnetic_preview(
 fn settle_product_magnetic_outcome(
     context: &Context,
     dockspace: &mut Dockspace,
-    panes: &mut MagneticPanes,
+    panes: &mut dyn PaneView,
     case: MagneticDockCase,
-) {
+) -> usize {
     let mut previous_ready = None;
+    let mut mutations = 0;
     settle_until(8, || {
-        let _ = run_pane_frame(context, dockspace, panes, Vec::new());
+        let (_, changed, _) = run_pane_frame_with_mutation(context, dockspace, panes, Vec::new());
+        mutations += usize::from(changed);
         let snapshot = product_magnetic_snapshot(dockspace);
         let missing = magnetic_outcome_missing(
             snapshot.as_ref(),
@@ -4685,6 +4799,7 @@ fn settle_product_magnetic_outcome(
     })
     .unwrap_or_else(|timeout| panic!("shared L03 outcome failed for {case:?}: {timeout}"))
     .expect("causal L03 settlement retains the moved source item");
+    mutations
 }
 
 fn run_product_magnetic_case(case: MagneticDockCase) -> [SemanticObservation; 2] {
@@ -4724,156 +4839,137 @@ fn run_product_magnetic_case(case: MagneticDockCase) -> [SemanticObservation; 2]
     let target_rect = target_rect.expect("causal fixture readiness publishes target pane bounds");
     let target = normalized_pane_point(target_rect, case);
     assert!(target_rect.contains(target));
+    run_product_magnetic_drag(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        case,
+        source,
+        target_rect,
+        target,
+    )
+}
+
+fn run_product_magnetic_drag(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut dyn PaneView,
+    case: MagneticDockCase,
+    source: Pos2,
+    target_rect: Rect,
+    target: Pos2,
+) -> [SemanticObservation; 2] {
+    let style = dockspace.style().clone();
+    let before = product_magnetic_snapshot(dockspace);
+    let mut mutations = 0;
+    let mut released = false;
+    let mut advance = |events: Vec<Event>| {
+        released |= events
+            .iter()
+            .any(|event| matches!(event, Event::PointerButton { pressed: false, .. }));
+        let (frame, changed, _) = run_pane_frame_with_mutation(context, dockspace, panes, events);
+        mutations += usize::from(changed);
+        if !released {
+            assert!(
+                !changed,
+                "hover must not commit the docking workspace: {case:?}"
+            );
+            assert_eq!(product_magnetic_snapshot(dockspace), before);
+        }
+        frame
+    };
     let threshold = source + vec2(12.0, 8.0);
     let observed_basin = match case.cadence() {
         CadenceProfile::Burst => {
-            let initial = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![
-                    Event::PointerMoved(source),
-                    pointer_button(source, true),
-                    Event::PointerMoved(threshold),
-                    Event::PointerMoved(target),
-                    pointer_button(target, false),
-                ],
-            );
+            let initial = advance(vec![
+                Event::PointerMoved(source),
+                pointer_button(source, true),
+                Event::PointerMoved(threshold),
+                Event::PointerMoved(target),
+                pointer_button(target, false),
+            ]);
             settle_product_magnetic_preview(
-                &context,
-                &mut dockspace,
-                &mut panes,
+                || advance(vec![Event::PointerMoved(target)]),
                 Some(initial),
                 target,
                 target_rect,
                 case,
+                &style,
             )
         }
         CadenceProfile::Stepwise => {
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(source), pointer_button(source, true)],
-            );
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(threshold)],
-            );
-            let initial = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(target)],
-            );
+            let _ = advance(vec![
+                Event::PointerMoved(source),
+                pointer_button(source, true),
+            ]);
+            let _ = advance(vec![Event::PointerMoved(threshold)]);
+            let initial = advance(vec![Event::PointerMoved(target)]);
             let observed = settle_product_magnetic_preview(
-                &context,
-                &mut dockspace,
-                &mut panes,
+                || advance(vec![Event::PointerMoved(target)]),
                 Some(initial),
                 target,
                 target_rect,
                 case,
+                &style,
             );
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![pointer_button(target, false)],
-            );
+            let _ = advance(vec![pointer_button(target, false)]);
             observed
         }
         CadenceProfile::Hesitant => {
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(source), pointer_button(source, true)],
-            );
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(threshold)],
-            );
+            let _ = advance(vec![
+                Event::PointerMoved(source),
+                pointer_button(source, true),
+            ]);
+            let _ = advance(vec![Event::PointerMoved(threshold)]);
             for point in [
                 target,
                 tangent_pane_point(target, case.basin(), 3.0),
                 tangent_pane_point(target, case.basin(), -3.0),
             ] {
-                let _ = run_pane_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    vec![Event::PointerMoved(point)],
-                );
+                let _ = advance(vec![Event::PointerMoved(point)]);
             }
-            let initial = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(target)],
-            );
+            let initial = advance(vec![Event::PointerMoved(target)]);
             let observed = settle_product_magnetic_preview(
-                &context,
-                &mut dockspace,
-                &mut panes,
+                || advance(vec![Event::PointerMoved(target)]),
                 Some(initial),
                 target,
                 target_rect,
                 case,
+                &style,
             );
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![pointer_button(target, false)],
-            );
+            let _ = advance(vec![pointer_button(target, false)]);
             observed
         }
         CadenceProfile::ReleaseWithFinalMove => {
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(source), pointer_button(source, true)],
-            );
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(threshold)],
-            );
+            let _ = advance(vec![
+                Event::PointerMoved(source),
+                pointer_button(source, true),
+            ]);
+            let _ = advance(vec![Event::PointerMoved(threshold)]);
             let acquired = tangent_pane_point(target, case.basin(), -4.0);
-            let initial = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(acquired)],
-            );
+            let initial = advance(vec![Event::PointerMoved(acquired)]);
             let observed = settle_product_magnetic_preview(
-                &context,
-                &mut dockspace,
-                &mut panes,
+                || advance(vec![Event::PointerMoved(acquired)]),
                 Some(initial),
                 acquired,
                 target_rect,
                 case,
+                &style,
             );
-            let _ = run_pane_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                vec![Event::PointerMoved(target), pointer_button(target, false)],
-            );
+            let _ = advance(vec![
+                Event::PointerMoved(target),
+                pointer_button(target, false),
+            ]);
             observed
         }
         cadence => panic!("unsupported shared L03 cadence: {cadence:?}"),
     };
     assert_eq!(observed_basin, case.basin());
-    settle_product_magnetic_outcome(&context, &mut dockspace, &mut panes, case);
+    mutations += settle_product_magnetic_outcome(context, dockspace, panes, case);
+    assert_eq!(
+        mutations, 1,
+        "one release must change exactly one frame: {case:?}"
+    );
 
     [
         SemanticObservation::ItemDocked {
@@ -4951,6 +5047,284 @@ fn shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics() 
         MAGNETIC_DOCKING_BASINS.expected_observations(),
         "the complete egui product L03 matrix must eventually match core-host normalized observations",
     );
+}
+
+#[test]
+fn ordinary_content_widgets_accept_the_complete_magnetic_docking_matrix() {
+    for widget in PaneContentWidget::ALL {
+        for case in MAGNETIC_DOCKING_BASINS.cases() {
+            let context = Context::default();
+            context.enable_accesskit();
+            context.options_mut(|options| {
+                options.max_passes = 4.try_into().expect("four is non-zero");
+            });
+            let mut dockspace = Dockspace::builder(
+                (
+                    "product-widget-magnetic",
+                    widget,
+                    case.basin(),
+                    case.cadence(),
+                ),
+                magnetic_semantic_layout(),
+            )
+            .style(instrumented_style())
+            .build()
+            .expect("the content-widget facade initializes");
+            let mut panes = TextPanes::magnetic(widget);
+            let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+            let stable = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+            let source = tab_center(&stable.output, "Preview");
+            let pane_rect = panes.pane_rect(FIRST);
+            let response = panes.widget_response(FIRST);
+            let widget_rect = response.interact_rect;
+            assert!(
+                response.enabled() && response.sense.interactive(),
+                "{widget:?}"
+            );
+            assert!(
+                widget_rect.is_finite() && widget_rect.is_positive(),
+                "{widget:?}"
+            );
+            assert!(
+                pane_rect.contains_rect(widget_rect),
+                "{widget:?}: pane={pane_rect:?}, widget={widget_rect:?}"
+            );
+            assert!(panes.docking_content_widgets(FIRST).contains(&response.id));
+            let target = normalized_pane_point(widget_rect, case);
+            for delta in [-4.0, -3.0, 0.0, 3.0] {
+                assert!(
+                    widget_rect.contains(tangent_pane_point(target, case.basin(), delta)),
+                    "every input sample must hit the actual {widget:?} response: {case:?}",
+                );
+            }
+
+            assert_eq!(
+                run_product_magnetic_drag(
+                    &context,
+                    &mut dockspace,
+                    &mut panes,
+                    case,
+                    source,
+                    pane_rect,
+                    target,
+                ),
+                case.expected_observations(),
+                "ordinary {widget:?} must pass docking hover without guide aiming: {case:?}",
+            );
+            assert_eq!(
+                panes.clicks.get(&FIRST),
+                None,
+                "a docking release must not click {widget:?}"
+            );
+            assert!(
+                !panes.dragged.contains(&FIRST),
+                "a tab drag must not drag {widget:?}"
+            );
+            assert_eq!(panes.texts[&FIRST], "Target content");
+        }
+    }
+}
+
+#[test]
+fn declared_content_widgets_keep_their_click_edit_scroll_and_drag_input() {
+    for widget in PaneContentWidget::ALL {
+        let context = Context::default();
+        context.enable_accesskit();
+        context.options_mut(|options| {
+            options.max_passes = 4.try_into().expect("four is non-zero");
+        });
+        let mut dockspace = Dockspace::builder(
+            ("product-widget-ordinary-input", widget),
+            magnetic_semantic_layout(),
+        )
+        .style(instrumented_style())
+        .build()
+        .expect("the ordinary widget-input facade initializes");
+        let mut panes = TextPanes::magnetic(widget);
+        let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let response = panes.widget_response(FIRST);
+        let id = response.id;
+        let rect = response.interact_rect;
+        let point = Pos2::new(
+            egui::lerp(rect.x_range(), 0.65),
+            egui::lerp(rect.y_range(), 0.65),
+        );
+        let before = product_magnetic_snapshot(&dockspace);
+        let drop_fill = dockspace
+            .style()
+            .visuals
+            .drop_fill
+            .expect("the fixture fixes its preview fill");
+        let mut advance = |events| {
+            let (frame, changed, _) =
+                run_pane_frame_with_mutation(&context, &mut dockspace, &mut panes, events);
+            assert!(
+                !changed,
+                "ordinary {widget:?} input must not mutate docking state"
+            );
+            assert_eq!(product_magnetic_snapshot(&dockspace), before);
+            assert_eq!(
+                rect_fill_count(&frame.output, drop_fill),
+                0,
+                "ordinary {widget:?} input must not arm a docking preview"
+            );
+        };
+
+        match widget {
+            PaneContentWidget::Button | PaneContentWidget::TextEdit => {
+                advance(vec![
+                    Event::PointerMoved(point),
+                    pointer_button(point, true),
+                ]);
+                advance(vec![pointer_button(point, false)]);
+                if widget == PaneContentWidget::TextEdit {
+                    assert!(context.memory(|memory| memory.has_focus(id)));
+                    advance(vec![Event::Text("!".to_owned())]);
+                }
+            }
+            PaneContentWidget::ScrollArea => {
+                advance(vec![
+                    Event::PointerMoved(point),
+                    mouse_wheel(vec2(0.0, -96.0)),
+                ]);
+            }
+            PaneContentWidget::Canvas => {
+                let moved = point + vec2(20.0, 15.0);
+                assert!(rect.contains(moved));
+                advance(vec![
+                    Event::PointerMoved(point),
+                    pointer_button(point, true),
+                ]);
+                advance(vec![Event::PointerMoved(moved)]);
+                assert_eq!(
+                    context.dragged_id(),
+                    Some(id),
+                    "the canvas, not docking chrome, owns this drag"
+                );
+                advance(vec![pointer_button(moved, false)]);
+            }
+        }
+        for _ in 0..3 {
+            advance(Vec::new());
+        }
+        match widget {
+            PaneContentWidget::Button => assert_eq!(panes.clicks.get(&FIRST), Some(&1)),
+            PaneContentWidget::TextEdit => {
+                assert!(
+                    panes.texts[&FIRST].contains('!'),
+                    "the focused TextEdit must receive text input"
+                );
+                assert_eq!(panes.texts[&SECOND], "Source content");
+            }
+            PaneContentWidget::ScrollArea => assert!(
+                panes.scroll_offsets[&FIRST] > 0.0,
+                "the real ScrollArea must consume wheel input"
+            ),
+            PaneContentWidget::Canvas => assert!(panes.dragged.contains(&FIRST)),
+        }
+        assert_eq!(context.dragged_id(), None);
+    }
+}
+
+#[test]
+fn unknown_content_and_overlapping_undeclared_widgets_block_docking_hover() {
+    for widget in PaneContentWidget::ALL {
+        for (registered, overlapping) in [(false, false), (true, true)] {
+            for case in MAGNETIC_DOCKING_BASINS.cases().filter(|case| {
+                case.basin() == MagneticDockBasin::Center
+                    && case.cadence() == CadenceProfile::Stepwise
+            }) {
+                let context = Context::default();
+                context.enable_accesskit();
+                context.options_mut(|options| {
+                    options.max_passes = 4.try_into().expect("four is non-zero");
+                });
+                let mut dockspace = Dockspace::builder(
+                    ("product-widget-unknown", widget, registered, overlapping),
+                    magnetic_semantic_layout(),
+                )
+                .style(instrumented_style())
+                .build()
+                .expect("the unknown-widget facade initializes");
+                let mut panes = TextPanes::magnetic(widget);
+                panes.register_content = registered;
+                panes.overlapping_blocker = overlapping;
+                let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+                let stable = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+                let source = tab_center(&stable.output, "Preview");
+                let response = panes.widget_response(FIRST);
+                let target = normalized_pane_point(response.interact_rect, case);
+                assert!(response.enabled() && response.interact_rect.contains(target));
+                assert_eq!(
+                    panes.docking_content_widgets(FIRST).len(),
+                    if registered { 2 } else { 0 }
+                );
+                if overlapping {
+                    let blocker = context
+                        .read_response(response.id.with("unknown-blocker"))
+                        .expect("the overlapping blocker registered a real response");
+                    assert!(blocker.enabled() && blocker.sense.interactive());
+                    assert_eq!(blocker.interact_rect, response.interact_rect);
+                    assert!(!panes.docking_content_widgets(FIRST).contains(&blocker.id));
+                }
+                let before = product_magnetic_snapshot(&dockspace);
+                let drop_fill = dockspace
+                    .style()
+                    .visuals
+                    .drop_fill
+                    .expect("the fixture fixes its preview fill");
+                let guide_fills = [
+                    dockspace
+                        .style()
+                        .visuals
+                        .drop_guide_fill
+                        .expect("the fixture fixes its passive guide fill"),
+                    dockspace
+                        .style()
+                        .visuals
+                        .drop_guide_active_fill
+                        .expect("the fixture fixes its active guide fill"),
+                ];
+                for events in [
+                    vec![Event::PointerMoved(source), pointer_button(source, true)],
+                    vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+                ] {
+                    let (_, changed, _) =
+                        run_pane_frame_with_mutation(&context, &mut dockspace, &mut panes, events);
+                    assert!(!changed);
+                    assert_eq!(product_magnetic_snapshot(&dockspace), before);
+                }
+                let mut advance = |events| {
+                    let (frame, changed, _) =
+                        run_pane_frame_with_mutation(&context, &mut dockspace, &mut panes, events);
+                    assert!(
+                        !changed,
+                        "unknown {widget:?} must not authorize a commit; overlapping={overlapping} {case:?}"
+                    );
+                    assert_eq!(product_magnetic_snapshot(&dockspace), before);
+                    assert_eq!(
+                        rect_fill_count(&frame.output, drop_fill),
+                        0,
+                        "unknown {widget:?} must stop hover, not fall through or float; overlapping={overlapping} {case:?}"
+                    );
+                    assert!(
+                        rects_with_fill(&frame.output, &guide_fills)
+                            .iter()
+                            .all(|guide| !guide.contains(target))
+                    );
+                };
+                for _ in 0..8 {
+                    advance(vec![Event::PointerMoved(target)]);
+                }
+                advance(vec![pointer_button(target, false)]);
+                for _ in 0..8 {
+                    advance(Vec::new());
+                }
+                assert_eq!(context.dragged_id(), None);
+            }
+        }
+    }
 }
 
 #[test]
@@ -5265,16 +5639,18 @@ fn interactive_text_pane_still_accepts_magnetic_tab_dock() {
         (SECOND, "Preview output"),
         (THIRD, "Outline"),
     ]);
+    panes.fill_widget = true;
 
     let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let source = node_center(&stable.output, Role::Tab, "Preview");
     let target_pane = panes.pane_rect(THIRD);
+    let widget_rect = panes.widget_response(THIRD).interact_rect;
     let target = Pos2::new(
-        egui::lerp(target_pane.x_range(), 0.50),
-        target_pane.min.y + target_pane.height() * 0.75,
+        egui::lerp(widget_rect.x_range(), 0.72),
+        egui::lerp(widget_rect.y_range(), 0.72),
     );
-    assert!(target_pane.contains(target));
+    assert!(widget_rect.contains(target) && target_pane.contains(target));
 
     let _ = run_pane_frame(
         &context,
@@ -5313,6 +5689,27 @@ fn interactive_text_pane_still_accepts_magnetic_tab_dock() {
     assert!(
         preview.is_some(),
         "dragging a tab over an interactive pane must publish a magnetic preview"
+    );
+    let preview = preview.unwrap();
+    let guide_fills = [
+        dockspace.style().visuals.drop_guide_fill.unwrap(),
+        dockspace.style().visuals.drop_guide_active_fill.unwrap(),
+    ];
+    assert!(
+        rects_with_fill(&preview.output, &guide_fills)
+            .iter()
+            .all(|guide| !guide.contains(target)),
+        "the actual text input point must not hit a guide"
+    );
+    let preview_rect = rect_with_fill(
+        &preview.output,
+        dockspace.style().visuals.drop_fill.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        magnetic_basin_from_preview(preview_rect, target_pane),
+        MagneticDockBasin::Center,
+        "widget={widget_rect:?}, pane={target_pane:?}, point={target:?}, preview={preview_rect:?}"
     );
 
     let (_released, workspace_changed, published_state_changed) = run_pane_frame_with_mutation(
@@ -6616,7 +7013,6 @@ fn unowned_run_ui_does_not_start_a_preview_qualified_tab_drag() {
         Event::PointerMoved(target),
         pointer_button(target, false),
     ]);
-    drop(run_unowned);
 
     assert!(
         pressed_dragged_id.is_none() && moved_dragged_id.is_none(),

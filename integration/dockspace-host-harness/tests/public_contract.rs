@@ -1096,6 +1096,125 @@ fn host_pointer_unknown_hover_cannot_create_an_outside_all_drop() {
 }
 
 #[test]
+fn host_pointer_unknown_release_on_current_target_clears_preview_without_poisoning_later_actions() {
+    let (mut session, mut scene) = host_pointer_fixture();
+    let before = session.version();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_host_pointer_batch([scene.press(), scene.target_edge(SurfacePointerEvent::Moved)])
+        .unwrap();
+    let recordings = record_host_pointer_surfaces(&mut frame);
+    assert_target_preview(&recordings[1]);
+    let mut report = frame.commit().unwrap();
+    assert!(!report.workspace_changed());
+    assert!(session.has_active_gesture());
+    assert!(
+        !settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented)
+            .workspace_changed()
+    );
+    assert!(session.has_active_gesture());
+
+    scene.a = session.presented_surface(A).unwrap();
+    scene.b = session.presented_surface(B).unwrap();
+    assert!(
+        session
+            .host_pointer_hit(B, scene.target.center())
+            .unwrap()
+            .hover()
+            .is_some(),
+        "only the release facts are unknown; the presented target route remains valid"
+    );
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_host_pointer_batch([HostPointerInput::new(
+            SurfacePointerId::new(1),
+            SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+            HostPointerRoute::new(scene.a, scene.moved),
+            HostPointerRoute::new(scene.b, scene.target.center()),
+            SurfacePointerCapture::ProviderEndpoint,
+            SurfacePointerReceiverFacts::unknown(),
+        )])
+        .unwrap();
+    let recordings = record_host_pointer_surfaces(&mut frame);
+    assert_no_pointer_preview(&recordings);
+    let mut report = frame.commit().unwrap();
+    assert!(!report.workspace_changed());
+    assert!(!session.has_active_gesture());
+    assert!(
+        !settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented)
+            .workspace_changed()
+    );
+    assert_eq!(session.version(), before);
+    assert_eq!(
+        session
+            .view()
+            .surfaces()
+            .map(|surface| surface.id())
+            .collect::<Vec<_>>(),
+        [A, B]
+    );
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+    assert_eq!(session.view().item(FIRST).unwrap().root(), RootId::new(1));
+    assert!(session.view().item(FIRST).unwrap().contained().is_none());
+    assert_eq!(
+        session.view().item(FIRST).unwrap().tabs().items(),
+        &[FIRST, SECOND]
+    );
+
+    let mut inspect = session.begin_host_frame().unwrap();
+    let descriptor = inspect
+        .paint_plan(A)
+        .unwrap()
+        .unwrap()
+        .tab_receiver(SECOND)
+        .unwrap();
+    drop(inspect);
+    let receiver = session.bind_presented_receiver(&descriptor).unwrap();
+    let route = HostPointerRoute::new(session.presented_surface(A).unwrap(), receiver.center());
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_host_pointer_batch(
+            [
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+            ]
+            .map(|event| {
+                HostPointerInput::new(
+                    SurfacePointerId::new(1),
+                    event,
+                    route,
+                    route,
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::delivery(&receiver),
+                )
+            }),
+        )
+        .unwrap();
+    measure(&mut frame, 800.0);
+    assert!(frame.commit().unwrap().workspace_changed());
+    assert!(session.view().item(SECOND).unwrap().is_selected());
+    assert!(!session.has_active_gesture());
+
+    let command = session.prepare_dock_item(SECOND, DockPlacement::After(FOURTH));
+    let mut frame = session.begin_host_frame().unwrap();
+    let submitted = frame.submit_prepared_action(command).unwrap();
+    measure(&mut frame, 800.0);
+    let report = frame.commit().unwrap();
+    assert!(matches!(
+        report.submitted_action_outcome(submitted),
+        Some(HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Docked {
+                item: SECOND,
+                changed: true,
+                ..
+            }
+        ))
+    ));
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+}
+
+#[test]
 fn host_pointer_dropped_frame_retries_the_batch_and_duplicate_release_cannot_deliver_twice() {
     let (mut session, scene) = host_pointer_fixture();
     let mut abandoned = session.begin_host_frame().unwrap();
@@ -1378,6 +1497,119 @@ fn host_pointer_stale_and_foreign_hover_cannot_authorize_a_captured_drop() {
         assert!(!settled.workspace_changed());
         assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
         assert!(session.disable_host_pointer().unwrap().is_some());
+    }
+}
+
+#[test]
+fn host_pointer_current_route_cannot_refresh_stale_hover_facts() {
+    for changed_scene in [false, true] {
+        for fact_kind in ["clear", "candidate", "no_receiver", "blocked"] {
+            let (mut session, mut scene) = host_pointer_fixture();
+            let stale_surface = scene.b;
+            let stale_receiver = scene.target;
+            if changed_scene {
+                let mut frame = session.begin_host_frame().unwrap();
+                frame
+                    .measure_surface(
+                        B,
+                        UniformSurfaceMetrics::new(
+                            bounds(1000.0),
+                            LogicalSize::new(64.0, 48.0).unwrap(),
+                            96.0,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                frame
+                    .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                frame.commit().unwrap();
+            }
+            let mut inspect = session.begin_host_frame().unwrap();
+            let descriptor = inspect
+                .paint_plan(B)
+                .unwrap()
+                .unwrap()
+                .center_drop_receiver_for_item(THIRD)
+                .unwrap();
+            drop(inspect);
+            let (_, output) = paint(&mut session, B);
+            let artifact = output.presentation_artifact();
+            session
+                .report_surface_presentation(output, ResultKind::Presented)
+                .unwrap();
+            let settled = settle(&mut session);
+            let [ack] = settled.surface_presentation_commits() else {
+                panic!("the replacement B output must settle exactly once")
+            };
+            assert!(ack.presents(artifact));
+            scene.b = session.presented_surface(B).unwrap();
+            scene.target = session.bind_presented_receiver(&descriptor).unwrap();
+            assert_eq!(session.presented_surface(A), Some(scene.a));
+            assert_ne!(scene.b, stale_surface);
+            assert_ne!(scene.target, stale_receiver);
+            assert_eq!(
+                scene.target.descriptor() == stale_receiver.descriptor(),
+                !changed_scene,
+                "even a new emission of the same semantic scene must revoke old facts"
+            );
+            let facts = match fact_kind {
+                "clear" => {
+                    SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&stale_surface)
+                }
+                "candidate" => SurfacePointerReceiverFacts::hover(&stale_receiver),
+                "no_receiver" => SurfacePointerReceiverFacts::no_hover(&stale_surface),
+                "blocked" => SurfacePointerReceiverFacts::blocked_hover(&stale_surface),
+                _ => unreachable!(),
+            };
+            let edge = |event| {
+                HostPointerInput::new(
+                    SurfacePointerId::new(1),
+                    event,
+                    HostPointerRoute::new(scene.a, scene.moved),
+                    HostPointerRoute::new(scene.b, scene.target.center()),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    facts,
+                )
+            };
+            let before = session.version();
+            let mut frame = session.begin_host_frame().unwrap();
+            frame
+                .submit_host_pointer_batch([
+                    scene.press(),
+                    edge(SurfacePointerEvent::Moved),
+                    edge(SurfacePointerEvent::ButtonReleased(
+                        SurfacePointerButton::Primary,
+                    )),
+                ])
+                .unwrap();
+            let recordings = record_host_pointer_surfaces(&mut frame);
+            assert_no_pointer_preview(&recordings);
+            let mut report = frame.commit().unwrap();
+            assert!(
+                !report.workspace_changed(),
+                "changed scene: {changed_scene}, stale fact: {fact_kind}"
+            );
+            assert!(!session.has_active_gesture());
+            assert!(
+                !settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented)
+                    .workspace_changed()
+            );
+            assert_eq!(session.version(), before);
+            assert_eq!(session.view().surfaces().count(), 2);
+            for (item, surface, root) in [
+                (FIRST, A, RootId::new(1)),
+                (SECOND, A, RootId::new(1)),
+                (THIRD, B, RootId::new(2)),
+                (FOURTH, B, RootId::new(2)),
+            ] {
+                let view = session.view().item(item).unwrap();
+                assert_eq!(view.surface(), surface);
+                assert_eq!(view.root(), root);
+                assert!(view.contained().is_none());
+            }
+            assert!(!session.has_active_gesture());
+        }
     }
 }
 

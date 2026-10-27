@@ -7523,6 +7523,7 @@ fn pending_release_rejects_a_painted_claim_without_its_preview_token() {
 #[test]
 fn move_then_release_with_new_preview_waits_for_exact_presentation() {
     let (mut engine, mut host, provider, before, _, pending) = pending_drag_release_fixture();
+    let before_version = engine.version();
 
     let mut unknown_prelude = engine
         .begin_host_frame(host.lease())
@@ -7556,10 +7557,45 @@ fn move_then_release_with_new_preview_waits_for_exact_presentation() {
         )
         .expect("empty settlement receipt set stages");
     complete(&engine, &mut settle_frame);
-    host.finish(settle_frame, &mut engine);
+    let delivered = host.finish(settle_frame, &mut engine);
 
     assert_eq!(engine.pending_release_preview(), None);
     assert_ne!(engine.workspace(), &before);
+    assert_eq!(engine.version().epoch(), before_version.epoch());
+    assert_eq!(
+        engine.version().revision().get(),
+        before_version.revision().get() + 1
+    );
+    assert_eq!(
+        delivered
+            .interaction_events()
+            .iter()
+            .filter(|event| matches!(event.kind(), InteractionEventKind::Delivered { .. }))
+            .count(),
+        1
+    );
+
+    let committed = engine.version();
+    for _ in 0..2 {
+        let mut frame = host.begin(&engine);
+        frame
+            .submit_surface_pointer_journal(&provider, empty_journal(4))
+            .unwrap();
+        frame
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new()).unwrap(),
+            )
+            .unwrap();
+        complete(&engine, &mut frame);
+        let repeated = host.finish(frame, &mut engine);
+        assert_eq!(engine.version(), committed);
+        assert!(
+            repeated
+                .interaction_events()
+                .iter()
+                .all(|event| !matches!(event.kind(), InteractionEventKind::Delivered { .. }))
+        );
+    }
 }
 
 #[test]

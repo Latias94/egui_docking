@@ -140,6 +140,16 @@ general inference of platform hit eligibility. Existing presentation acceptance,
 focus confirmation, output-preservation checks, and source-gap handling remain
 separate requirements.
 
+Composite content needs declarations for its actual interactive registrations,
+not just a visual container ID. In particular, an ordinary scroll region can
+contain an independent scrolling/drag response and interactive child widgets;
+each unknown registration still blocks. The official adapter separately checks
+the top composed layer (including modal exclusion) before subtracting known
+widgets, so declaring content does not authorize a popup or foreground layer.
+`integration/egui-official-harness/tests/hover_blockers.rs` exercises these real
+composed blockers and stale-pass rejection through the public adapter, including
+the case where an earlier clear preview must not survive a blocked release.
+
 ## Preserved semantic input
 
 The removed frontend concerns docking pointer gestures and contained pointer

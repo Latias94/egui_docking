@@ -50,6 +50,28 @@ GPU submission. Drag tab bodies to magnetic center/edge targets and drag the
 dotted contained title strip to move the complete floating window. It is a
 portable receipt-path demonstration, not native multiview evidence.
 
+## Docking Hover And Composed UI
+
+The caller-owned tier qualifies docking input against the exact accepted output
+and its completed egui pass. Applications explicitly declare ordinary pane
+widgets through `PaneView::docking_content_widgets`; this does not make those
+widgets docking drag handles or replace their normal input handling. Undeclared
+interactive widgets remain blockers. Composite widgets may require more than
+one registration; a visual rectangle or a container ID alone is not proof that
+all of its interactive children are ordinary pane content.
+
+`tests/hover_blockers.rs` constructs real official-egui popups, modals, foreground
+areas and same-layer explicit blockers. It checks their actual bounds, rejects
+hover and release through them, and rejects an old preview if a blocker appears
+before release. A completed pass that did not render Dockspace cannot lend new
+widget facts to its older accepted output. These are headless composed-UI and
+output-contract tests, not physical input or GPU presentation certification.
+
+The portable adapter does not infer arbitrary widget ancestry, popup ownership,
+or transformed-layer coordinates. Missing exact facts remain unavailable or
+blocked; it never falls back to pane geometry to authorize a different target.
+The fork-backed final-stack query has a separate native qualification gate.
+
 Run the gate from the repository root:
 
 ```text

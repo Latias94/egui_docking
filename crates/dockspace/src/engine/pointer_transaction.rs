@@ -2633,7 +2633,9 @@ impl DockEngine {
         } = evaluation;
         let latch_observation = match observation {
             crate::runtime::direct_manipulation::TargetObservation::Surface {
-                candidate, ..
+                layer,
+                candidate,
+                ..
             } if self.interaction.active_drag(session).is_ok_and(|drag| {
                 self.current_contained_projection_is_owned(drag.source_surface)
                     && self.drag_preview_authority_is_current(drag)
@@ -2653,6 +2655,7 @@ impl DockEngine {
                         .public()
                         .token()
                         .scene(),
+                    layer,
                     candidate,
                 }
             }

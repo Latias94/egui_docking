@@ -14,6 +14,87 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U5 hover-port and composed-content qualification
+
+The common host port uses the existing output-bound candidate, clearance,
+blocked, no-receiver and unknown answers. U5 does not add a second target solver
+or make egui widget ancestry a core responsibility. Official egui applications
+declare ordinary content identities; popup, modal, foreign-layer, unknown-widget,
+unsupported-coordinate and stale-pass cases remain conservative boundaries.
+
+New qualification evidence:
+
+- The product harness runs real `Button`, `TextEdit`, `ScrollArea` and canvas
+  responses through all five magnetic basins, three non-guide samples and four
+  existing cadences: 240 combinations. Every input sample lies inside the actual
+  child response, not pane whitespace. The complete Burst gesture stays in one
+  input batch. Before release there is no durable mutation; the exact final
+  topology occupies one changed frame and reaches stable quiescence. This
+  frame-level counter does not claim to count transactions within an egui run.
+- Separate ordinary-input journeys verify button click, text editing, wheel
+  scrolling and canvas drag ownership. Docking hover neither clicks the child
+  widget nor converts it into a docking handle. Unknown content and overlapping
+  undeclared widgets remain blockers across 24 widget/sample combinations;
+  duplicating a declared ID cannot erase another widget with identical bounds.
+- The official harness creates real `Popup`, `Modal`, foreground `Area` and
+  same-layer explicit blockers and checks their actual bounds. It rejects both
+  initial hover and terminal release through them, including a preview acquired
+  before the blocker appeared. A completed unrelated egui pass cannot supply
+  widget proof to an older accepted Dockspace output.
+- The public-only host consumer submits current routes with old candidate,
+  clearance, no-receiver and blocked facts after a new emission or scene. None
+  can borrow the current output. A valid route with unknown release facts clears
+  a previously presented preview without docking or floating fallback; later
+  pointer selection and semantic commands still work in the same session.
+
+Independent review found no actionable defect, but identified that the product
+matrix's changed-frame counter cannot alone prove transaction-level exactly-once
+delivery. The existing core
+`move_then_release_with_new_preview_waits_for_exact_presentation` regression now
+also checks exactly one durable revision and one `Delivered` event on settlement,
+then two later settlement frames with no new revision or delivery event. This
+complements the public host's duplicate-release and dropped-frame retry journey;
+the product matrix retains its narrower observable frame-level claim.
+
+The front-contained public journey exposed a real kernel defect: a background
+magnetic acquisition could remain latched when the pointer entered a different
+front occlusion layer near the new basin's hysteresis margin. The old target's
+larger geometric envelope was incorrectly sufficient to retain it. Acquisition
+and observation now carry the core `SceneLayerKey`; a different front layer or
+an outside-surface observation always accepts the newly resolved result instead
+of retaining the old target. Source-only scene-lineage rewriting preserves that
+layer. Same-layer hysteresis is unchanged. The regression first reproduced the
+background root as active, then passed with the front candidate explicitly
+`Rejected`, no preview, no commit and no contained fallback after the fix.
+
+Fixture qualification did not relax the production boundary: a full-size text
+editor uses a fitting minimum row count rather than overflowing a small pane,
+and non-guide samples are checked against actual guide rectangles. A target
+preview after source removal is not compared to an obsolete pre-removal layout.
+
+These are deterministic kernel, public-consumer and headless composed-UI tests,
+not physical input, GPU presentation or native multiview certification. U5's
+common port and official boundary do not certify the fork-backed final-stack
+extension; that remains U7/U8. User-visible typed manipulation feedback, Close
+Group versus Dock Back, close consumption in examples and focus successors
+remain U6 work. U12 readiness and the overall plan are not declared complete.
+
+Fresh verification on the U5 source state:
+
+| Gate | Result |
+| --- | --- |
+| Root workspace, all features and all targets | 1,597 passed |
+| Public host, default / serde | 30 / 30 passed |
+| egui product, default / all features | 96 / 100 passed |
+| Official egui harness, all features and all targets | 15 passed |
+| Fork-backed native workspace, all targets | 198 passed |
+| Strict rustdoc / doctests | Passed / 10 passed |
+| Correctness and suspicious Clippy groups | Passed with both groups denied |
+| Workspace/harness formatting and diff whitespace | Passed |
+
+Clippy still reports existing style/pedantic warnings. The native count remains
+deterministic regression evidence rather than a new physical-platform claim.
+
 ## 2026-10-28 U4 complete contained content projection
 
 Contained title/group moves and eight-direction resizing now compile their

@@ -1,16 +1,17 @@
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::model::{
-    DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
+    DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceAxis, DockspaceContainedLayout,
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    FloatingPresentationId, ItemId, RootId, SurfaceId,
 };
-use dockspace::policy::DockPolicy;
+use dockspace::policy::{DockPolicy, DockTargetRule, DockTargetRuleKey};
 use dockspace::runtime::{
     ContainedResizeDirection as Direction, DockspaceDragSourceKind as DragSourceKind,
-    DockspaceDropDirection as DropDirection, DockspaceGuideScope as GuideScope,
-    DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceReceiverRole as Role,
-    DockspaceRuntimeError, DockspaceRuntimeErrorKind, DockspaceSession, DockspaceVisualId,
-    DockspaceVisualKind as Kind, HostFrameReport, HostPointerInput, HostPointerRoute,
-    PaintedSurfaceOutput, SurfacePaintDisposition as Paint,
+    DockspaceDropDirection as DropDirection, DockspaceDropEligibility as Eligibility,
+    DockspaceGuideScope as GuideScope, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole as Role, DockspaceRuntimeError, DockspaceRuntimeErrorKind,
+    DockspaceSession, DockspaceVisualId, DockspaceVisualKind as Kind, HostFrameReport,
+    HostPointerInput, HostPointerRoute, PaintedSurfaceOutput, SurfacePaintDisposition as Paint,
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
     SurfacePointerButton as Button, SurfacePointerCapture, SurfacePointerEvent as Event,
     SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult as Disposition,
@@ -1129,6 +1130,225 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presen
         assert!(!settle(&mut session).workspace_changed());
         assert_eq!(session.version(), terminal_version);
     }
+}
+
+#[test]
+fn rejected_non_source_contained_target_blocks_a_legal_background_target_and_fallback() {
+    const SOURCE: ItemId = ItemId::new(4);
+    let (mut session, _) = fixture();
+    let mut target_rule = DockTargetRule::new();
+    target_rule.set_allowed_payloads([]);
+    let mut policy = DockPolicy::default();
+    policy.set_target_rule(DockTargetRuleKey::Item(RIGHT), target_rule);
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .open_item_current(
+            SOURCE,
+            DockPlacement::InnerEdge {
+                anchor: DockAnchor::Item(BACKGROUND),
+                edge: DockEdge::Left,
+                fraction: DockFraction::new(0.2).unwrap(),
+            },
+        )
+        .unwrap();
+    frame.replace_policy(policy).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert!(frame.commit().unwrap().workspace_changed());
+    measure(&mut session);
+    let (before, output) = paint(&mut session);
+    assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
+    let version = session.version();
+
+    let mut inspect = session.begin_host_frame().unwrap();
+    let press = inspect
+        .paint_plan(SURFACE)
+        .unwrap()
+        .unwrap()
+        .tab_receiver(SOURCE)
+        .unwrap()
+        .center();
+    drop(inspect);
+    assert_eq!(session.view().item(SOURCE).unwrap().root(), MAIN_ROOT);
+    assert_ne!(session.view().item(SOURCE).unwrap().root(), ROOT);
+    assert!(!initial_rect().contains(press));
+    let front = before
+        .guides
+        .iter()
+        .filter(|guide| {
+            guide.root == ROOT
+                && guide.scope == GuideScope::Inner
+                && guide.direction == DropDirection::Center
+        })
+        .max_by(|left, right| left.hit.x().total_cmp(&right.hit.x()))
+        .unwrap();
+    let front_content = before
+        .renderer
+        .records
+        .iter()
+        .find_map(|record| match record {
+            OwnedRecord::PaneContent {
+                item: Some(RIGHT),
+                bounds,
+                ..
+            } => Some(*bounds),
+            _ => None,
+        })
+        .unwrap();
+    let point = LogicalPoint::new(
+        front_content.x() + front_content.width() * 0.72,
+        front_content.y() + front_content.height() * 0.72,
+    )
+    .unwrap();
+    assert!(
+        before
+            .guides
+            .iter()
+            .filter(|guide| guide.root == ROOT)
+            .all(|guide| !guide.hit.contains(point)),
+        "the front rejection must come from its pane basin, not an overlapping outer guide"
+    );
+    assert!(initial_rect().contains(point));
+    let background = before
+        .renderer
+        .records
+        .iter()
+        .find_map(|record| match record {
+            OwnedRecord::PaneContent {
+                item: Some(BACKGROUND),
+                bounds,
+                ..
+            } => Some(*bounds),
+            _ => None,
+        })
+        .unwrap();
+    let fraction = session.presentation_config().magnetic_center_fraction();
+    let inset = (1.0 - fraction) * 0.5;
+    assert!(
+        rect(
+            background.x() + background.width() * inset,
+            background.y() + background.height() * inset,
+            background.width() * fraction,
+            background.height() * fraction,
+        )
+        .contains(point),
+        "the rejected front center must cover the background's magnetic center field"
+    );
+    let clear_point = LogicalPoint::new(
+        background.x() + background.width() * 0.65,
+        background.y() + background.height() * 0.5,
+    )
+    .unwrap();
+    assert!(!initial_rect().contains(clear_point));
+    let back = before
+        .guides
+        .iter()
+        .find(|guide| {
+            guide.root == MAIN_ROOT
+                && guide.scope == GuideScope::Inner
+                && guide.direction == DropDirection::Center
+                && guide.preview.contains(clear_point)
+        })
+        .unwrap();
+
+    assert!(
+        !edge(&mut session, Event::ButtonPressed(Button::Primary), press)
+            .unwrap()
+            .workspace_changed()
+    );
+    for (event, position, occluded) in [
+        (Event::Moved, clear_point, false),
+        (Event::Moved, point, true),
+        (Event::ButtonReleased(Button::Primary), point, true),
+    ] {
+        let releasing = matches!(event, Event::ButtonReleased(_));
+        let surface = session.presented_surface(SURFACE).unwrap();
+        let route = HostPointerRoute::new(surface, position);
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .submit_host_pointer_batch([HostPointerInput::new(
+                SurfacePointerId::new(1),
+                event,
+                route,
+                route,
+                SurfacePointerCapture::ProviderEndpoint,
+                SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&surface),
+            )])
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        assert!(!frame.commit().unwrap().workspace_changed());
+        assert_eq!(session.has_active_gesture(), !releasing);
+
+        if occluded && !releasing {
+            let mut inspect = session.begin_host_frame().unwrap();
+            let plan = inspect.paint_plan(SURFACE).unwrap().unwrap();
+            let mut rejected = false;
+            plan.visit_surface_program(|step| {
+                if let Step::DropGuide {
+                    affordance: Some(cluster),
+                    ..
+                } = step
+                {
+                    for target in cluster.targets().filter(|target| target.is_active()) {
+                        assert_eq!(cluster.root(), ROOT);
+                        assert_eq!(target.visual_id(), front.visual);
+                        assert_eq!(target.eligibility(), Eligibility::Rejected);
+                        rejected = true;
+                    }
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+            assert!(
+                rejected,
+                "the front candidate is rejected, not absent or source-suppressed"
+            );
+        }
+        let (recorded, output) = paint(&mut session);
+        if occluded {
+            assert!(recorded.renderer.records.iter().all(|record| !matches!(
+                record,
+                OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
+            )));
+        } else {
+            assert_eq!(
+                recorded
+                    .guides
+                    .iter()
+                    .filter(|guide| guide.active)
+                    .map(|guide| guide.visual)
+                    .collect::<Vec<_>>(),
+                [back.visual]
+            );
+            assert!(
+                recorded.renderer.records.iter().any(|record| matches!(
+                    record,
+                    OwnedRecord::Preview(DockspacePreviewVisual::Dock { surface: SURFACE, rect })
+                        if rect.contains(clear_point)
+                )),
+                "the exact background candidate previews at the unobscured control point"
+            );
+        }
+        assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
+        assert_eq!(session.version(), version);
+        assert_durable(&session, initial_rect());
+        let source_view = session.view().item(SOURCE).unwrap();
+        assert_eq!(source_view.surface(), SURFACE);
+        assert_eq!(source_view.root(), MAIN_ROOT);
+        assert!(source_view.contained().is_none());
+        assert_eq!(source_view.tabs().items(), &[SOURCE]);
+        assert_eq!(
+            session.view().item(BACKGROUND).unwrap().tabs().items(),
+            &[BACKGROUND]
+        );
+        assert_eq!(session.view().surfaces().count(), 1);
+    }
+    assert!(!settle(&mut session).workspace_changed());
+    assert_eq!(session.version(), version);
+    assert!(!session.has_active_gesture());
 }
 
 #[test]

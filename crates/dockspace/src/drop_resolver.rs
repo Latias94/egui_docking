@@ -187,7 +187,7 @@ pub(crate) fn resolve_presented_drop_with_magnetic(
         return Ok(DropQuery::new(
             DropResolution::KnownNone(KnownDropAbsence::new(stamp, surface, point)),
             None,
-            TargetObservation::surface(stamp, None),
+            TargetObservation::OutsideSurface,
         ));
     }
 
@@ -273,7 +273,11 @@ pub(crate) fn resolve_presented_drop_with_magnetic(
     Ok(DropQuery::new(
         resolution,
         affordance,
-        TargetObservation::surface(stamp, candidate),
+        TargetObservation::surface(
+            stamp,
+            occluding_layer.unwrap_or_else(SceneLayerKey::surface_base),
+            candidate,
+        ),
     ))
 }
 

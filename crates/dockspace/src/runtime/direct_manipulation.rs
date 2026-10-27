@@ -1,7 +1,7 @@
 //! Private state kernel for direct-manipulation target selection.
 
 use crate::drop_guide::{DropGuideClusterId, DropGuideSlot};
-use crate::drop_target::DropTargetId;
+use crate::drop_target::{DropTargetId, SceneLayerKey};
 use crate::geometry::LogicalPoint;
 use crate::hit_region::HitRegion;
 use crate::scene::SurfaceSceneStamp;
@@ -79,12 +79,21 @@ impl TargetCandidate {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TargetAcquisition {
     scene: SurfaceSceneStamp,
+    layer: SceneLayerKey,
     candidate: TargetCandidate,
 }
 
 impl TargetAcquisition {
-    pub(crate) const fn new(scene: SurfaceSceneStamp, candidate: TargetCandidate) -> Self {
-        Self { scene, candidate }
+    pub(crate) const fn new(
+        scene: SurfaceSceneStamp,
+        layer: SceneLayerKey,
+        candidate: TargetCandidate,
+    ) -> Self {
+        Self {
+            scene,
+            layer,
+            candidate,
+        }
     }
 
     pub(crate) const fn scene(self) -> SurfaceSceneStamp {
@@ -104,8 +113,10 @@ impl TargetAcquisition {
 pub(crate) enum TargetObservation {
     Surface {
         scene: SurfaceSceneStamp,
+        layer: SceneLayerKey,
         candidate: Option<TargetCandidate>,
     },
+    OutsideSurface,
     OutsideAll,
     Unavailable,
 }
@@ -113,20 +124,27 @@ pub(crate) enum TargetObservation {
 impl TargetObservation {
     pub(crate) const fn surface(
         scene: SurfaceSceneStamp,
+        layer: SceneLayerKey,
         candidate: Option<TargetCandidate>,
     ) -> Self {
-        Self::Surface { scene, candidate }
+        Self::Surface {
+            scene,
+            layer,
+            candidate,
+        }
     }
 
     pub(crate) const fn acquisition(self) -> Option<TargetAcquisition> {
         match self {
             Self::Surface {
                 scene,
+                layer,
                 candidate: Some(candidate),
-            } => Some(TargetAcquisition::new(scene, candidate)),
+            } => Some(TargetAcquisition::new(scene, layer, candidate)),
             Self::Surface {
                 candidate: None, ..
             }
+            | Self::OutsideSurface
             | Self::OutsideAll
             | Self::Unavailable => None,
         }
@@ -148,10 +166,16 @@ pub(crate) fn reconcile_target(
     let Some(current) = current else {
         return TargetLatchDecision::AcceptCandidate;
     };
-    let TargetObservation::Surface { scene, candidate } = observation else {
+    let TargetObservation::Surface {
+        scene,
+        layer,
+        candidate,
+    } = observation
+    else {
         return TargetLatchDecision::AcceptCandidate;
     };
-    if current.scene() != scene {
+    // A geometric release envelope cannot cross the frontmost occlusion layer.
+    if current.scene() != scene || current.layer != layer {
         return TargetLatchDecision::AcceptCandidate;
     }
     let Some(point) = point else {
@@ -223,6 +247,7 @@ mod tests {
     fn tab_gap(scene: SurfaceSceneStamp) -> TargetAcquisition {
         TargetAcquisition::new(
             scene,
+            SceneLayerKey::surface_base(),
             TargetCandidate::Direct(DirectTargetCandidate::new(
                 DropTargetId::TabGap {
                     surface: SURFACE,
@@ -246,7 +271,7 @@ mod tests {
         assert_eq!(
             reconcile_target(
                 current,
-                TargetObservation::surface(scene, None),
+                TargetObservation::surface(scene, SceneLayerKey::surface_base(), None),
                 Some(point(17.5, 5.0)),
                 8.0,
             ),
@@ -255,7 +280,7 @@ mod tests {
         assert_eq!(
             reconcile_target(
                 current,
-                TargetObservation::surface(scene, None),
+                TargetObservation::surface(scene, SceneLayerKey::surface_base(), None),
                 Some(point(18.5, 5.0)),
                 8.0,
             ),
@@ -271,7 +296,7 @@ mod tests {
         assert_eq!(
             reconcile_target(
                 current,
-                TargetObservation::surface(scene(2), None),
+                TargetObservation::surface(scene(2), SceneLayerKey::surface_base(), None),
                 Some(point(5.0, 5.0)),
                 8.0,
             ),
@@ -286,5 +311,20 @@ mod tests {
             ),
             TargetLatchDecision::AcceptCandidate
         );
+    }
+
+    #[test]
+    fn another_occlusion_layer_or_outside_surface_never_retains_a_target() {
+        let scene = scene(1);
+        let current = Some(tab_gap(scene));
+        for observation in [
+            TargetObservation::surface(scene, SceneLayerKey::contained(0).unwrap(), None),
+            TargetObservation::OutsideSurface,
+        ] {
+            assert_eq!(
+                reconcile_target(current, observation, Some(point(5.0, 5.0)), 8.0),
+                TargetLatchDecision::AcceptCandidate,
+            );
+        }
     }
 }
