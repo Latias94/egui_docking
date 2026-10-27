@@ -528,6 +528,32 @@ and engine-readiness certification. These remain separate gates.
 - **Test scenarios:** Covers AE2/AE3. Non-guide basin samples, jitter, hysteresis-edge release, contained move/eight-way resize, target panes behind the source, and cancellation compare program, hit, semantic and durable results.
 - **Verification:** Full pane content follows the projection; a window-sized empty ghost is insufficient. Structural cost meets R24.
 
+Implementation boundary established by the post-U3 source review:
+
+- Reuse `compile_contained_record`, `compile_root` and the existing surface
+  compiler. Feed a core-owned effective outer rect before clipping, occlusion,
+  chrome and subtree layout; do not scale cached pixels or add a second layout
+  engine. Compiler and validator must consume the same authorized projection.
+- Derive the projection from the active gesture or its frozen pending release.
+  Only the existing terminal delivery path writes durable placement. A pending
+  release keeps the complete content projection, not just a shell.
+- Treat legal same-gesture projection updates separately from real scene,
+  coordinate, policy or source loss. Changing the compiled scene must not cancel
+  its own gesture or broaden old hover authority. Exact output settlement remains
+  the release barrier.
+- Separate source pixels from docking-target suppression: show the moved subtree
+  once, but exclude the complete moving source from HoverDrop targeting and from
+  occluding eligible targets behind it. Partial payloads, other contained roots,
+  popups and unknown framework blockers do not gain blanket passthrough.
+- Verify cached measurement coverage before introducing a reuse path; existing
+  `PresentationLayoutFacts` alone have not yet been proven sufficient for every
+  popup/measurement contribution. Do not invent a generic async layout cache.
+
+The first implementation gates are multi-pane move with stable widget identity,
+parameterized eight-way resize with subtree/hit/semantic agreement, an eligible
+target behind the live source, pending Presented/Dropped settlement, and repeated
+updates/cancellation without self-invalidation or redundant compilation.
+
 ### U5. Implement the host docking-hover port and egui blocker validation
 
 - **Goal:** Authorize docking through ordinary content without crossing blockers.
