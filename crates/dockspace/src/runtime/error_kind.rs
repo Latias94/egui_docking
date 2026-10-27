@@ -146,6 +146,7 @@ const fn pointer_journal_error_kind(
             DockspaceRuntimeErrorKind::OperationConflict
         }
         PointerJournalLedgerError::ForeignSurfaceLocalHost { .. }
+        | PointerJournalLedgerError::ForeignHostLocalHost { .. }
         | PointerJournalLedgerError::ForeignSurfaceLocalBinding { .. }
         | PointerJournalLedgerError::ForeignLease { .. }
         | PointerJournalLedgerError::UnknownLease { .. }

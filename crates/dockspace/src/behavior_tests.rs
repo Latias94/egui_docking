@@ -1,7 +1,7 @@
 //! Crate-internal behavior and protocol regression suite.
 
 #[path = "../tests/support/mod.rs"]
-mod support;
+pub(crate) mod support;
 
 #[path = "../tests/canonical_graph.rs"]
 mod canonical_graph;

@@ -10,8 +10,8 @@ use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::ids::SurfaceId;
 use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use crate::pointer_journal::{
-    FiniteScrollVector, PhysicalScrollCoordinates, PointerCaptureOwner, PointerEdge,
-    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
+    FiniteScrollVector, HostLocalPointerRoute, PhysicalScrollCoordinates, PointerCaptureOwner,
+    PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
     PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint, ScrollDelta,
     ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
     SurfaceLocalPointerProvider,
@@ -134,7 +134,7 @@ impl PresentedDockReceiver {
     }
 }
 
-/// Stable pointer identity owned by one renderer-neutral surface provider.
+/// Stable pointer identity owned by one renderer-neutral input provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct SurfacePointerId(u64);
@@ -166,7 +166,7 @@ pub enum SurfacePointerButton {
     Other(u16),
 }
 
-/// Event-time capture authority for one surface-local edge.
+/// Event-time capture authority within one renderer-neutral input domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfacePointerCapture {
     /// The provider endpoint frozen into this session owns capture.
@@ -382,7 +382,7 @@ impl SurfaceScrollEvent {
     }
 }
 
-/// One surface-local pointer edge.
+/// One renderer-neutral pointer edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SurfacePointerEvent {
     /// Pointer motion while the provider owns the stream.
@@ -426,6 +426,82 @@ pub struct SurfacePointerInput<'receiver> {
     position: SurfacePointerPosition,
     capture: SurfacePointerCapture,
     receivers: SurfacePointerReceiverFacts<'receiver>,
+}
+
+/// Event-time route within one host's logical presentation domain.
+///
+/// An unknown route never asserts that the pointer is outside all desktop windows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HostPointerRoute {
+    /// A point in one exact presented surface output.
+    Surface {
+        /// Presentation capability for the routed surface.
+        surface: PresentedDockspaceSurface,
+        /// Surface-local logical position at this edge.
+        position: LogicalPoint,
+    },
+    /// The host cannot qualify a surface at this edge.
+    Unknown,
+}
+
+impl HostPointerRoute {
+    /// Binds a local point to an exact presented surface.
+    #[must_use]
+    pub const fn new(surface: PresentedDockspaceSurface, position: LogicalPoint) -> Self {
+        Self::Surface { surface, position }
+    }
+
+    const fn surface(self) -> Option<SurfaceId> {
+        match self {
+            Self::Surface { surface, .. } => Some(surface.surface),
+            Self::Unknown => None,
+        }
+    }
+
+    fn authority(self) -> Authority<HostLocalPointerRoute> {
+        match self {
+            Self::Surface { surface, position } => {
+                Authority::Known(HostLocalPointerRoute::new(surface.authority, position))
+            }
+            Self::Unknown => Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        }
+    }
+}
+
+/// One host-ordered edge with independent manipulation and hover routes.
+///
+/// Capture belongs to the host input domain. Changing the hover surface does
+/// not replace the producer or transfer the gesture owner.
+#[derive(Debug, Clone, Copy)]
+pub struct HostPointerInput<'receiver> {
+    pointer: SurfacePointerId,
+    event: SurfacePointerEvent,
+    manipulation: HostPointerRoute,
+    hover: HostPointerRoute,
+    capture: SurfacePointerCapture,
+    receivers: SurfacePointerReceiverFacts<'receiver>,
+}
+
+impl<'receiver> HostPointerInput<'receiver> {
+    /// Creates one event-time record in the host's total pointer order.
+    #[must_use]
+    pub const fn new(
+        pointer: SurfacePointerId,
+        event: SurfacePointerEvent,
+        manipulation: HostPointerRoute,
+        hover: HostPointerRoute,
+        capture: SurfacePointerCapture,
+        receivers: SurfacePointerReceiverFacts<'receiver>,
+    ) -> Self {
+        Self {
+            pointer,
+            event,
+            manipulation,
+            hover,
+            capture,
+            receivers,
+        }
+    }
 }
 
 impl<'receiver> SurfacePointerInput<'receiver> {
@@ -582,8 +658,8 @@ pub enum DockspaceInteractionError {
     /// A product measurement answer used a value variant for another request kind.
     #[error("surface measurement answer does not match its core-derived request")]
     MeasurementAnswerMismatch,
-    /// A pointer provider is already active for another surface.
-    #[error("a surface-local pointer provider is already active for another surface")]
+    /// A pointer provider is already active for another input domain.
+    #[error("a pointer provider is already active for another input domain")]
     PointerProviderAlreadyActive,
     /// The requested surface does not yet have final-presentation authority.
     #[error("surface {surface} has no final-presentation authority")]
@@ -592,22 +668,22 @@ pub enum DockspaceInteractionError {
         surface: SurfaceId,
     },
     /// No facade-owned pointer provider is active.
-    #[error("no facade-owned surface pointer provider is active")]
+    #[error("no facade-owned pointer provider is active")]
     PointerProviderUnavailable,
     /// The provider-owned pointer sequence cannot advance without wrapping.
-    #[error("surface pointer sequence is exhausted")]
+    #[error("pointer sequence is exhausted")]
     PointerSequenceExhausted,
     /// A core constructor rejected facade-owned canonical pointer data.
     #[error("facade-owned pointer protocol data violated an internal invariant")]
     PointerProtocolInvariant,
-    /// A surface-local pointer batch was already supplied for this host frame.
-    #[error("surface pointer input was already submitted for this host frame")]
+    /// A pointer batch was already supplied for this host frame.
+    #[error("pointer input was already submitted for this host frame")]
     PointerInputAlreadySubmitted,
     /// The producer cannot stop while an uncommitted host frame owns its lane.
-    #[error("surface pointer producer still belongs to an uncommitted host frame")]
+    #[error("pointer producer still belongs to an uncommitted host frame")]
     PointerFrameInFlight,
     /// An explicit pointer batch contained no edges.
-    #[error("an explicit surface pointer batch must contain at least one edge")]
+    #[error("an explicit pointer batch must contain at least one edge")]
     PointerBatchEmpty,
     /// One scroll sample contained a non-finite or structurally invalid value.
     #[error("surface scroll sample is structurally invalid")]
@@ -617,11 +693,14 @@ pub enum DockspaceInteractionError {
 #[derive(Debug)]
 pub(super) struct RuntimePointerState {
     provider: SurfaceLocalPointerProvider,
-    surface: SurfaceId,
+    surface: Option<SurfaceId>,
 }
 
 impl RuntimePointerState {
-    pub(super) const fn new(provider: SurfaceLocalPointerProvider, surface: SurfaceId) -> Self {
+    pub(super) const fn new(
+        provider: SurfaceLocalPointerProvider,
+        surface: Option<SurfaceId>,
+    ) -> Self {
         Self { provider, surface }
     }
 
@@ -629,12 +708,34 @@ impl RuntimePointerState {
         self.provider.committed_through().get()
     }
 
-    const fn surface(&self) -> SurfaceId {
+    const fn surface(&self) -> Option<SurfaceId> {
         self.surface
     }
 
     const fn provider(&self) -> &SurfaceLocalPointerProvider {
         &self.provider
+    }
+}
+
+/// Repaint work caused by retiring a host input domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "host pointer retirement repaint work must be handled"]
+pub struct HostPointerRetirement {
+    interaction_changed: bool,
+    repaint_required: bool,
+}
+
+impl HostPointerRetirement {
+    /// Returns whether interaction decoration changed on the host.
+    #[must_use]
+    pub const fn interaction_changed(self) -> bool {
+        self.interaction_changed
+    }
+
+    /// Returns whether the host must rebuild affected surface presentations.
+    #[must_use]
+    pub const fn repaint_required(self) -> bool {
+        self.repaint_required
     }
 }
 
@@ -668,6 +769,48 @@ impl SurfacePointerRetirement {
 }
 
 impl DockspaceSession {
+    /// Enables one affine input producer spanning this host's logical surfaces.
+    ///
+    /// No native window or already-presented surface is required. Each edge
+    /// independently supplies exact manipulation and hover presentation routes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another input domain is active or the host retired.
+    pub fn enable_host_pointer(&mut self) -> Result<(), DockspaceRuntimeError> {
+        self.reconcile_pointer_provider()?;
+        if let Some(pointer) = self.pointer.as_ref() {
+            return if pointer.surface().is_none() {
+                Ok(())
+            } else {
+                Err(DockspaceInteractionError::PointerProviderAlreadyActive.into())
+            };
+        }
+        let provider = self.engine.create_host_local_pointer_provider(
+            self.presentation_host,
+            PointerEdgeSequence::new(0),
+        )?;
+        self.pointer = Some(RuntimePointerState::new(provider, None));
+        Ok(())
+    }
+
+    /// Drains and retires the host input domain atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while a frame owns the producer or another domain is active.
+    pub fn disable_host_pointer(
+        &mut self,
+    ) -> Result<Option<HostPointerRetirement>, DockspaceRuntimeError> {
+        if self
+            .pointer
+            .as_ref()
+            .is_some_and(|pointer| pointer.surface().is_some())
+        {
+            return Err(DockspaceInteractionError::PointerProviderAlreadyActive.into());
+        }
+        Ok(self.retire_pointer_provider()?.map(|(_, work)| work))
+    }
     /// Enables one presented surface as the sole surface-local pointer endpoint.
     ///
     /// # Errors
@@ -678,9 +821,9 @@ impl DockspaceSession {
         &mut self,
         surface: SurfaceId,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.reconcile_surface_pointer_provider()?;
+        self.reconcile_pointer_provider()?;
         if let Some(pointer) = self.pointer.as_ref() {
-            return if pointer.surface() == surface {
+            return if pointer.surface() == Some(surface) {
                 Ok(())
             } else {
                 Err(DockspaceInteractionError::PointerProviderAlreadyActive.into())
@@ -702,7 +845,7 @@ impl DockspaceSession {
             }
             Err(source) => return Err(source.into()),
         };
-        self.pointer = Some(RuntimePointerState::new(provider, surface));
+        self.pointer = Some(RuntimePointerState::new(provider, Some(surface)));
         Ok(())
     }
 
@@ -719,25 +862,36 @@ impl DockspaceSession {
     pub fn disable_surface_pointer(
         &mut self,
     ) -> Result<Option<SurfacePointerRetirement>, DockspaceRuntimeError> {
-        self.retire_surface_pointer_provider()
+        if self
+            .pointer
+            .as_ref()
+            .is_some_and(|pointer| pointer.surface().is_none())
+        {
+            return Err(DockspaceInteractionError::PointerProviderAlreadyActive.into());
+        }
+        Ok(self
+            .retire_pointer_provider()?
+            .map(|(surface, work)| SurfacePointerRetirement {
+                surface: surface.expect("surface producer retains its endpoint"),
+                interaction_changed: work.interaction_changed,
+                repaint_required: work.repaint_required,
+            }))
     }
 
-    pub(super) fn reconcile_surface_pointer_provider(
-        &mut self,
-    ) -> Result<(), DockspaceRuntimeError> {
+    pub(super) fn reconcile_pointer_provider(&mut self) -> Result<(), DockspaceRuntimeError> {
         let stale = self.pointer.as_ref().is_some_and(|pointer| {
             self.engine.pointer_provider() != Some(pointer.provider().lease())
         });
         if stale {
-            let retired = self.retire_surface_pointer_provider()?;
+            let retired = self.retire_pointer_provider()?;
             debug_assert!(retired.is_some());
         }
         Ok(())
     }
 
-    fn retire_surface_pointer_provider(
+    fn retire_pointer_provider(
         &mut self,
-    ) -> Result<Option<SurfacePointerRetirement>, DockspaceRuntimeError> {
+    ) -> Result<Option<(Option<SurfaceId>, HostPointerRetirement)>, DockspaceRuntimeError> {
         let Some(pointer) = self.pointer.take() else {
             return Ok(None);
         };
@@ -753,11 +907,13 @@ impl DockspaceSession {
             .engine
             .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         {
-            Ok(outcome) => Ok(Some(SurfacePointerRetirement {
+            Ok(outcome) => Ok(Some((
                 surface,
-                interaction_changed: outcome.interaction_changed(),
-                repaint_required: outcome.repaint_required(),
-            })),
+                HostPointerRetirement {
+                    interaction_changed: outcome.interaction_changed(),
+                    repaint_required: outcome.repaint_required(),
+                },
+            ))),
             Err(error) => {
                 let provider = receipt
                     .into_provider()
@@ -788,6 +944,16 @@ impl DockspaceSession {
         projection.hit_manifest().region(descriptor.region)?;
         surface.bind_receiver(descriptor)
     }
+}
+
+struct RuntimePointerInput<'receiver> {
+    pointer: SurfacePointerId,
+    event: SurfacePointerEvent,
+    location: PointerEdgeLocation,
+    manipulation_surface: Option<SurfaceId>,
+    hover_surface: Option<SurfaceId>,
+    capture: SurfacePointerCapture,
+    receivers: SurfacePointerReceiverFacts<'receiver>,
 }
 
 impl DockspaceHostFrame<'_> {
@@ -823,24 +989,100 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         inputs: impl IntoIterator<Item = SurfacePointerInput<'receiver>>,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.ensure_semantic_input_allowed()?;
-        if self.pointer_input_submitted {
-            return Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into());
-        }
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
-        if inputs.is_empty() {
-            return Err(DockspaceInteractionError::PointerBatchEmpty.into());
-        }
         let surface = self
             .session
             .pointer
             .as_ref()
-            .map(RuntimePointerState::surface)
+            .and_then(RuntimePointerState::surface)
             .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
-        let previous = self
+        let inputs = inputs
+            .into_iter()
+            .map(|input| RuntimePointerInput {
+                pointer: input.pointer,
+                event: input.event,
+                location: PointerEdgeLocation::SurfaceLocal {
+                    position: match input.position {
+                        SurfacePointerPosition::Known(position) => Authority::Known(position),
+                        SurfacePointerPosition::Unknown => {
+                            Authority::Unknown(AuthorityUnavailableReason::NotReported)
+                        }
+                    },
+                },
+                manipulation_surface: Some(surface),
+                hover_surface: Some(surface),
+                capture: input.capture,
+                receivers: input.receivers,
+            })
+            .collect::<Vec<_>>();
+        self.submit_pointer_batch(inputs)
+    }
+
+    /// Submits one edge in the host input domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same protocol errors as [`Self::submit_host_pointer_batch`].
+    pub fn submit_host_pointer(
+        &mut self,
+        input: HostPointerInput<'_>,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.submit_host_pointer_batch([input])
+    }
+
+    /// Submits a lossless host-ordered batch across logical surfaces.
+    ///
+    /// Each edge retains independent source manipulation and target hover routes.
+    /// All surfaces share one sequence and one capture owner; no desktop routing
+    /// or outside-all authority is inferred from an unknown logical route.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no host input domain is active, the batch is empty,
+    /// another batch was submitted, or a protocol fact is inconsistent.
+    pub fn submit_host_pointer_batch<'receiver>(
+        &mut self,
+        inputs: impl IntoIterator<Item = HostPointerInput<'receiver>>,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let pointer = self
+            .session
+            .pointer
+            .as_ref()
+            .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
+        if pointer.surface().is_some() {
+            return Err(DockspaceInteractionError::PointerProviderUnavailable.into());
+        }
+        let inputs = inputs
+            .into_iter()
+            .map(|input| RuntimePointerInput {
+                pointer: input.pointer,
+                event: input.event,
+                location: PointerEdgeLocation::HostLocal {
+                    manipulation: input.manipulation.authority(),
+                    hover: input.hover.authority(),
+                },
+                manipulation_surface: input.manipulation.surface(),
+                hover_surface: input.hover.surface(),
+                capture: input.capture,
+                receivers: input.receivers,
+            })
+            .collect::<Vec<_>>();
+        self.submit_pointer_batch(inputs)
+    }
+
+    fn submit_pointer_batch(
+        &mut self,
+        inputs: Vec<RuntimePointerInput<'_>>,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        if self.pointer_input_submitted {
+            return Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into());
+        }
+        if inputs.is_empty() {
+            return Err(DockspaceInteractionError::PointerBatchEmpty.into());
+        }
+        let mut sequence = self
             .next_pointer_sequence
             .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
-        let mut sequence = previous;
         let mut prepared = Vec::with_capacity(inputs.len());
         for input in inputs {
             let segment_start = sequence;
@@ -848,20 +1090,12 @@ impl DockspaceHostFrame<'_> {
                 .checked_add(1)
                 .ok_or(DockspaceInteractionError::PointerSequenceExhausted)?;
             let edge_sequence = PointerEdgeSequence::new(sequence);
-            let kind = self.surface_pointer_kind(surface, input.event)?;
-            let location = PointerEdgeLocation::SurfaceLocal {
-                position: match input.position {
-                    SurfacePointerPosition::Known(position) => Authority::Known(position),
-                    SurfacePointerPosition::Unknown => {
-                        Authority::Unknown(AuthorityUnavailableReason::NotReported)
-                    }
-                },
-            };
+            let kind = self.surface_pointer_kind(input.manipulation_surface, input.event)?;
             let edge = PointerEdge::new(
                 edge_sequence,
                 PointerId::new(input.pointer.get()),
                 kind,
-                location,
+                input.location,
                 surface_capture(input.capture),
             );
             let journal = PointerEdgeJournal::new(
@@ -884,7 +1118,12 @@ impl DockspaceHostFrame<'_> {
             if candidate.id().sequence() != edge_sequence {
                 return Err(DockspaceInteractionError::PointerProtocolInvariant.into());
             }
-            let observation = self.pointer_observation(surface, candidate, input.receivers)?;
+            let observation = self.pointer_observation(
+                input.manipulation_surface,
+                input.hover_surface,
+                candidate,
+                input.receivers,
+            )?;
             let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
                 .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
             self.frame.submit_pointer_receiver_receipts(receipts)?;
@@ -896,7 +1135,7 @@ impl DockspaceHostFrame<'_> {
 
     fn surface_pointer_kind(
         &self,
-        surface: SurfaceId,
+        surface: Option<SurfaceId>,
         event: SurfacePointerEvent,
     ) -> Result<PointerEdgeKind, DockspaceRuntimeError> {
         Ok(match event {
@@ -923,19 +1162,17 @@ impl DockspaceHostFrame<'_> {
 
     fn surface_scroll_edge(
         &self,
-        surface: SurfaceId,
+        surface: Option<SurfaceId>,
         event: SurfaceScrollEvent,
     ) -> Result<ScrollEdge, DockspaceRuntimeError> {
-        let authority = self
-            .frame
-            .view()
-            .interaction_projection(surface)
+        let authority = surface
+            .and_then(|surface| self.frame.view().interaction_projection(surface))
             .map(|projection| projection.authority());
         let delivery = match authority {
             Some(authority) => Authority::Known(
                 ScrollDeliveryEndpoint::new(
                     self.session.presentation_host,
-                    surface,
+                    authority.surface(),
                     authority.binding(),
                     authority.coordinate_generation(),
                 )
@@ -1031,21 +1268,25 @@ impl DockspaceHostFrame<'_> {
 
     fn pointer_observation(
         &self,
-        surface: SurfaceId,
+        manipulation_surface: Option<SurfaceId>,
+        hover_surface: Option<SurfaceId>,
         candidate: &PointerReceiverCandidate,
         facts: SurfacePointerReceiverFacts<'_>,
     ) -> Result<PointerReceiverObservation, DockspaceRuntimeError> {
         if !candidate.receiver_is_applicable() {
             return Ok(PointerReceiverObservation::NotApplicable);
         }
-        let projection = self.frame.view().interaction_projection(surface);
+        let delivery_projection = manipulation_surface
+            .and_then(|surface| self.frame.view().interaction_projection(surface));
+        let hover_projection =
+            hover_surface.and_then(|surface| self.frame.view().interaction_projection(surface));
         let mut probes = Vec::with_capacity(candidate.probes().probes().len());
         if candidate
             .probes()
             .requires(crate::pointer_receiver::PointerReceiverProbe::Delivery)
         {
             probes.push(PointerReceiverProbeReceipt::Delivery(delivery_fact(
-                projection.as_ref(),
+                delivery_projection.as_ref(),
                 facts.delivery,
             )?));
         }
@@ -1054,7 +1295,7 @@ impl DockspaceHostFrame<'_> {
             .requires(crate::pointer_receiver::PointerReceiverProbe::HoverHit)
         {
             probes.push(PointerReceiverProbeReceipt::HoverHit(hover_fact(
-                projection.as_ref(),
+                hover_projection.as_ref(),
                 candidate.hover_point(),
                 facts.hover,
             )?));

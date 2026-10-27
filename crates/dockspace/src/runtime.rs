@@ -3,7 +3,7 @@
 //! This module is the migration boundary for adapters which must not own or
 //! access the backend reducer directly. It supports revision-bound product actions,
 //! close decisions, complete measurement answers, exact paint settlement, and
-//! lossless surface-local pointer batches backed by concrete final-presentation
+//! lossless host-local and surface-local pointer batches backed by concrete final-presentation
 //! authority.
 
 mod close;
@@ -47,9 +47,10 @@ pub use focus::{
     DockspacePaneFocusObservation, DockspacePaneFocusRequest, PreparedPaneFocusObservation,
 };
 pub use interaction::{
-    DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
-    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    DockspaceInteractionError, HostPointerInput, HostPointerRetirement, HostPointerRoute,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
     SurfacePointerRetirement, SurfaceScrollCancelReason, SurfaceScrollDelta, SurfaceScrollDeviceId,
     SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase,
     SurfaceScrollSequenceId,

@@ -130,7 +130,7 @@ impl DockEngine {
                     input: self.last_input,
                     source,
                 })?;
-            if let Some(outcome) = self.cancel_journal_owner(
+            if let Some(outcome) = self.cancel_gesture_owner(
                 cause,
                 GestureOwner::Stream(stream),
                 interaction_reason,
@@ -162,14 +162,16 @@ impl DockEngine {
                 },
             )));
         }
-        let Some(point) = Self::journal_logical_point(edge, desktop_delivery_route) else {
+        let Some(point) = self.journal_logical_point(edge, desktop_delivery_route) else {
             return Ok(None);
         };
         let stream = owner.stream().ok_or(EngineError::ReductionCauseInvariant {
             detail: "journal primary press was reduced for a legacy owner",
         })?;
         let expected_delivery = match stream.lease().scope() {
-            PointerProviderScope::SurfaceLocal(_) => PointerEventDeliveryOwner::ProviderEndpoint,
+            PointerProviderScope::SurfaceLocal(_) | PointerProviderScope::HostLocal(_) => {
+                PointerEventDeliveryOwner::ProviderEndpoint
+            }
             PointerProviderScope::DesktopGlobal => {
                 let binding = desktop_delivery_route
                     .and_then(DesktopRouteValidation::dock_route)
@@ -345,6 +347,17 @@ impl DockEngine {
             PointerEdgeLocation::SurfaceLocal {
                 position: Authority::Known(position),
             } => Ok(JournalDragThresholdOrigin::SurfaceLocal(position)),
+            PointerEdgeLocation::HostLocal { .. } => {
+                let route = self.journal_host_local_manipulation(edge).ok_or(
+                    EngineError::ReductionCauseInvariant {
+                        detail: "host-local press has no authoritative manipulation route",
+                    },
+                )?;
+                Ok(JournalDragThresholdOrigin::HostLocal {
+                    surface: route.surface(),
+                    position: route.position(),
+                })
+            }
             PointerEdgeLocation::Desktop { .. } => {
                 let route = desktop_route
                     .and_then(DesktopRouteValidation::dock_route)
@@ -377,6 +390,7 @@ impl DockEngine {
     }
 
     fn journal_drag_threshold_crossed(
+        &self,
         origin: JournalDragThresholdOrigin,
         edge: &PointerEdge,
         source_logical_threshold: f64,
@@ -392,6 +406,25 @@ impl DockEngine {
                 current.y() - initial.y(),
                 source_logical_threshold,
             ),
+            (
+                JournalDragThresholdOrigin::HostLocal {
+                    surface,
+                    position: initial,
+                },
+                PointerEdgeLocation::HostLocal { .. },
+            ) => {
+                let Some(current) = self
+                    .journal_host_local_manipulation(edge)
+                    .filter(|route| route.surface() == surface)
+                else {
+                    return false;
+                };
+                (
+                    current.position().x() - initial.x(),
+                    current.position().y() - initial.y(),
+                    source_logical_threshold,
+                )
+            }
             (
                 JournalDragThresholdOrigin::DesktopPhysical {
                     position: initial,
@@ -483,7 +516,7 @@ impl DockEngine {
                 .presentation_authority
                 .presentation_config
                 .pointer_drag_start_distance();
-            if !Self::journal_drag_threshold_crossed(threshold_origin, edge, threshold) {
+            if !self.journal_drag_threshold_crossed(threshold_origin, edge, threshold) {
                 return Ok(outcomes);
             }
             if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
@@ -714,7 +747,7 @@ impl DockEngine {
         }
         if !capture_authorized {
             if capture_unavailable {
-                if let Some(outcome) = self.cancel_journal_owner(
+                if let Some(outcome) = self.cancel_gesture_owner(
                     cause,
                     owner,
                     InteractionCancelReason::CaptureAuthorityUnavailable,
@@ -745,20 +778,18 @@ impl DockEngine {
                     interaction_events,
                 )?);
             }
-            InteractionStatus::Armed { session } => match self.interaction.cancel_drag(session) {
-                Ok(status) => {
-                    let reason = InteractionCancelReason::ReleasedBeforeDrag;
-                    interaction_events.push(InteractionEvent::new_caused(
-                        cause,
-                        self.version,
-                        InteractionEventKind::Cancelled { status, reason },
-                    ));
-                    outcomes.push(InteractionOutcome::Cancelled { status, reason });
+            InteractionStatus::Armed { .. } => {
+                if let Some(outcome) = self.cancel_gesture_owner(
+                    cause,
+                    owner,
+                    InteractionCancelReason::ReleasedBeforeDrag,
+                    interaction_events,
+                )? {
+                    outcomes.push(outcome);
                 }
-                Err(error) => outcomes.push(InteractionOutcome::Rejected(error)),
-            },
+            }
             InteractionStatus::Dragging { session } => {
-                let mut drag = self
+                let drag = self
                     .interaction
                     .active_drag(session)
                     .map_err(|source| EngineError::PointerInteractionInvariant {
@@ -808,133 +839,21 @@ impl DockEngine {
                         return Ok(outcomes);
                     }
                 }
-                drag = self
-                    .interaction
-                    .active_drag(session)
-                    .map_err(|source| EngineError::PointerInteractionInvariant {
-                        cause,
-                        detail: format!(
-                            "journal release lost its drag after final position advance: {source:?}"
-                        ),
-                    })?
-                    .clone();
-                if !self.drag_source_presentation_allows_targeting(&drag) {
-                    if let Some(outcome) = self.cancel_journal_owner(
-                        cause,
-                        owner,
-                        InteractionCancelReason::SceneUnavailable,
-                        interaction_events,
-                    )? {
-                        outcomes.push(outcome);
+                let outcome = self.finish_drag_release_after_evaluation(
+                    cause,
+                    focus_causal,
+                    owner,
+                    session,
+                    policy,
+                    events,
+                    interaction_events,
+                )?;
+                if matches!(outcome, InteractionOutcome::ReleasePending { .. }) {
+                    if let Some(preview) = revalidated_preview {
+                        outcomes.push(preview);
                     }
-                    return Ok(outcomes);
                 }
-                if drag.preview().is_some() && !self.drag_preview_authority_is_current(&drag) {
-                    if let Some(outcome) = self.cancel_journal_owner(
-                        cause,
-                        owner,
-                        InteractionCancelReason::UnknownTargetAuthority,
-                        interaction_events,
-                    )? {
-                        outcomes.push(outcome);
-                    }
-                    return Ok(outcomes);
-                }
-                let release_decision = Self::frozen_drag_release_decision(&drag);
-                if let Some(release_decision) = release_decision {
-                    let drag = match self.interaction.take_drag_for_release(
-                        session,
-                        owner,
-                        PointerButton::Primary,
-                    ) {
-                        Ok(drag) => drag,
-                        Err(error) => {
-                            outcomes.push(InteractionOutcome::Rejected(error));
-                            return Ok(outcomes);
-                        }
-                    };
-                    let physical_route = drag
-                        .owner
-                        .pointer_if_physical()
-                        .and_then(|pointer| self.viewport.drag_source(pointer))
-                        .filter(|binding| binding.surface() == drag.source_surface);
-                    let _ = self
-                        .viewport
-                        .end_drag_routing(owner.pointer())
-                        .map_err(|source| EngineError::Viewport {
-                            input: self.last_input,
-                            source,
-                        })?;
-                    let deferred = drag.preview().is_some_and(|published| {
-                        !published.painted()
-                            && Self::release_decision_matches_preview(published, &release_decision)
-                    });
-                    if deferred {
-                        if let Some(preview) = revalidated_preview.take() {
-                            outcomes.push(preview);
-                        }
-                        outcomes.push(self.defer_drag_release(
-                            cause,
-                            focus_causal,
-                            session,
-                            drag,
-                            physical_route,
-                            release_decision,
-                            policy,
-                        )?);
-                    } else {
-                        outcomes.push(self.finish_drag_release(
-                            cause,
-                            focus_causal,
-                            session,
-                            drag,
-                            release_decision,
-                            policy,
-                            events,
-                            interaction_events,
-                        )?);
-                    }
-                } else {
-                    let terminal_reason = match drag.preview_status() {
-                        PreviewResolutionStatus::UnknownAuthority => {
-                            Some(InteractionCancelReason::UnknownTargetAuthority)
-                        }
-                        PreviewResolutionStatus::OpaqueBlocker => {
-                            Some(InteractionCancelReason::OpaquePointerBlocker)
-                        }
-                        _ => None,
-                    };
-                    if let Some(reason) = terminal_reason {
-                        if let Some(outcome) =
-                            self.cancel_journal_owner(cause, owner, reason, interaction_events)?
-                        {
-                            outcomes.push(outcome);
-                        }
-                        return Ok(outcomes);
-                    }
-                    let drag = match self.interaction.take_drag_for_release(
-                        session,
-                        owner,
-                        PointerButton::Primary,
-                    ) {
-                        Ok(drag) => drag,
-                        Err(error) => {
-                            outcomes.push(InteractionOutcome::Rejected(error));
-                            return Ok(outcomes);
-                        }
-                    };
-                    let _ = self
-                        .viewport
-                        .end_drag_routing(owner.pointer())
-                        .map_err(|source| EngineError::Viewport {
-                            input: self.last_input,
-                            source,
-                        })?;
-                    debug_assert!(drag.preview().is_none());
-                    outcomes.push(InteractionOutcome::Rejected(
-                        InteractionRejection::PreviewMissing,
-                    ));
-                }
+                outcomes.push(outcome);
             }
             InteractionStatus::Resizing { session } => {
                 outcomes.push(self.finish_journal_resize_release(
@@ -1708,31 +1627,97 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn finish_drag_release(
+    pub(super) fn finish_drag_release_after_evaluation(
         &mut self,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
+        owner: GestureOwner,
         session: crate::interaction::DragSessionId,
-        drag: crate::interaction::ActiveDrag,
-        release_decision: PreviewDecision,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        let Some(preview) = drag.preview() else {
+        let drag = self
+            .interaction
+            .active_drag(session)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: format!("release lost its active drag: {source:?}"),
+            })?
+            .clone();
+        if drag.owner != owner {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SessionMismatch,
+            ));
+        }
+        let cancellation = if !self.drag_source_presentation_allows_targeting(&drag) {
+            Some(InteractionCancelReason::SceneUnavailable)
+        } else if drag.preview().is_some() && !self.drag_preview_authority_is_current(&drag) {
+            Some(InteractionCancelReason::UnknownTargetAuthority)
+        } else if drag.preview().is_none() {
+            match drag.preview_status() {
+                PreviewResolutionStatus::UnknownAuthority => {
+                    Some(InteractionCancelReason::UnknownTargetAuthority)
+                }
+                PreviewResolutionStatus::OpaqueBlocker => {
+                    Some(InteractionCancelReason::OpaquePointerBlocker)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(reason) = cancellation {
+            return self
+                .cancel_gesture_owner(cause, owner, reason, interaction_events)?
+                .ok_or(EngineError::ReductionCauseInvariant {
+                    detail: "validated release failed to cancel its owner",
+                });
+        }
+        let release_decision = Self::frozen_drag_release_decision(&drag);
+        let drag =
+            match self
+                .interaction
+                .take_drag_for_release(session, owner, PointerButton::Primary)
+            {
+                Ok(drag) => drag,
+                Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+            };
+        let physical_route = owner
+            .pointer_if_physical()
+            .and_then(|pointer| self.viewport.drag_source(pointer))
+            .filter(|binding| binding.surface() == drag.source_surface);
+        if let Some(pointer) = owner.pointer_if_physical() {
+            self.viewport
+                .end_drag_routing(pointer)
+                .map_err(|source| EngineError::Viewport {
+                    input: self.last_input,
+                    source,
+                })?;
+        }
+        let Some(release_decision) = release_decision else {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::PreviewMissing,
             ));
         };
-        if !preview.painted() {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::PreviewNotPainted,
-            ));
-        }
+        let preview = drag
+            .preview()
+            .expect("frozen release decision owns its preview");
         if !Self::release_decision_matches_preview(preview, &release_decision) {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::TargetChanged,
             ));
+        }
+        if !preview.painted() {
+            return self.defer_drag_release(
+                cause,
+                focus_causal,
+                session,
+                drag,
+                physical_route,
+                release_decision,
+                policy,
+            );
         }
         self.deliver_drag_release(
             cause,
@@ -1930,7 +1915,7 @@ impl DockEngine {
                 self.resolve_journal_native_preview(cause, drag, edge, desktop_route, policy)?;
             return Ok(PreviewEvaluation::outside_all(decision));
         }
-        let Some(edge_point) = Self::journal_logical_point(edge, desktop_route) else {
+        let Some(edge_point) = position.logical_point() else {
             return Ok(PreviewEvaluation::without_affordance(
                 PreviewDecision::Clear(Self::journal_route_preview_status(edge, desktop_route)),
             ));
@@ -1999,7 +1984,12 @@ impl DockEngine {
                 PreviewDecision::Clear(PreviewResolutionStatus::UnknownAuthority),
             ));
         }
-        if presentation.surface() != drag.source_surface {
+        if presentation.surface() != drag.source_surface
+            && drag
+                .owner
+                .stream()
+                .is_some_and(|stream| stream.lease().scope() == PointerProviderScope::DesktopGlobal)
+        {
             let capability = self.viewport.physical_cross_surface_drag_capability();
             if !capability.is_supported() || !self.physical_drag_has_route(drag) {
                 return Ok(PreviewEvaluation::without_affordance(
@@ -2457,7 +2447,7 @@ impl DockEngine {
                 }))
             }
             PreviewDecision::Cancel(reason) => {
-                self.cancel_journal_owner(cause, owner, reason, interaction_events)
+                self.cancel_gesture_owner(cause, owner, reason, interaction_events)
             }
         }
     }

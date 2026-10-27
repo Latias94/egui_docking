@@ -14,7 +14,7 @@ use crate::geometry::{LogicalPoint, PhysicalPoint};
 use crate::ids::{EngineAuthorityDomainId, SurfaceId};
 use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use crate::platform_provider::PlatformObservationLease;
-use crate::presentation_observation::PresentationHostLease;
+use crate::presentation_observation::{PresentationHostLease, PresentedSurfaceAuthority};
 use crate::viewport::{CoordinateGeneration, ViewportBinding, WorkAreaGeneration, WorkAreaToken};
 
 mod desktop_route;
@@ -121,16 +121,41 @@ impl SurfaceLocalPointerScope {
 pub enum PointerProviderScope {
     /// One platform aggregator with a total order across desktop viewports.
     DesktopGlobal,
+    /// One presentation host with routes across its headless surfaces.
+    HostLocal(PresentationHostLease),
     /// One presentation host endpoint with no global hover or outside facts.
     SurfaceLocal(SurfaceLocalPointerScope),
 }
 
 impl PointerProviderScope {
+    pub(crate) const fn local_host(self) -> Option<PresentationHostLease> {
+        match self {
+            Self::HostLocal(host) => Some(host),
+            Self::SurfaceLocal(scope) => Some(scope.host()),
+            Self::DesktopGlobal => None,
+        }
+    }
+
+    /// Returns whether this provider requires an affine local producer.
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::HostLocal(_) | Self::SurfaceLocal(_))
+    }
+
+    /// Returns the frozen host-local lease, when present.
+    #[must_use]
+    pub const fn host_local(self) -> Option<PresentationHostLease> {
+        match self {
+            Self::HostLocal(host) => Some(host),
+            Self::DesktopGlobal | Self::SurfaceLocal(_) => None,
+        }
+    }
+
     /// Returns the frozen surface-local scope, when present.
     #[must_use]
     pub const fn surface_local(self) -> Option<SurfaceLocalPointerScope> {
         match self {
-            Self::DesktopGlobal => None,
+            Self::DesktopGlobal | Self::HostLocal(_) => None,
             Self::SurfaceLocal(scope) => Some(scope),
         }
     }
@@ -354,6 +379,46 @@ pub enum DesktopRoutePresentationError {
     },
 }
 
+/// Event-time route into one presented surface of a local presentation host.
+///
+/// The engine validates that the authority belongs to the provider's host and
+/// names a current headless presentation. A local route never proves that the
+/// desktop pointer is outside all windows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostLocalPointerRoute {
+    authority: PresentedSurfaceAuthority,
+    position: LogicalPoint,
+}
+
+impl HostLocalPointerRoute {
+    /// Creates a route whose host eligibility must still be validated by core.
+    #[must_use]
+    pub(crate) const fn new(authority: PresentedSurfaceAuthority, position: LogicalPoint) -> Self {
+        Self {
+            authority,
+            position,
+        }
+    }
+
+    /// Returns the logical surface named by the presented authority.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.authority.surface()
+    }
+
+    /// Returns the exact presented output authorizing this route.
+    #[must_use]
+    pub const fn authority(self) -> PresentedSurfaceAuthority {
+        self.authority
+    }
+
+    /// Returns the event-time position in the presented surface's coordinates.
+    #[must_use]
+    pub const fn position(self) -> LogicalPoint {
+        self.position
+    }
+}
+
 /// Event-time position and hover facts in one provider's frozen coordinate lane.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PointerEdgeLocation {
@@ -362,6 +427,15 @@ pub enum PointerEdgeLocation {
     /// A known docking hover includes a binding-incarnation and local point;
     /// the core validates both before it can request or accept a receiver hit.
     Desktop { route: DesktopRouteFact },
+    /// Independent manipulation and hover routes within one presentation host.
+    ///
+    /// Unknown routes do not imply desktop outside-all authority.
+    HostLocal {
+        /// Presented route used to continue the current manipulation.
+        manipulation: Authority<HostLocalPointerRoute>,
+        /// Presented route under the pointer, independent of capture.
+        hover: Authority<HostLocalPointerRoute>,
+    },
     /// Position in the sole surface-local endpoint's logical coordinates.
     ///
     /// This lane deliberately cannot represent global hover or outside-all
@@ -375,10 +449,11 @@ pub enum PointerEdgeLocation {
 /// Coordinate lane carried by one pointer edge.
 ///
 /// This is exposed in ledger diagnostics so a provider can distinguish a
-/// desktop/global journal from a surface-local journal scope mismatch.
+/// desktop/global journal from a host-local or surface-local scope mismatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerEdgeLocationLane {
     Desktop,
+    HostLocal,
     SurfaceLocal,
 }
 
@@ -386,6 +461,7 @@ impl PointerEdgeLocation {
     const fn lane(self) -> PointerEdgeLocationLane {
         match self {
             Self::Desktop { .. } => PointerEdgeLocationLane::Desktop,
+            Self::HostLocal { .. } => PointerEdgeLocationLane::HostLocal,
             Self::SurfaceLocal { .. } => PointerEdgeLocationLane::SurfaceLocal,
         }
     }
@@ -395,7 +471,7 @@ impl PointerEdgeLocation {
     pub const fn desktop_route(self) -> Option<DesktopRouteFact> {
         match self {
             Self::Desktop { route } => Some(route),
-            Self::SurfaceLocal { .. } => None,
+            Self::HostLocal { .. } | Self::SurfaceLocal { .. } => None,
         }
     }
 
@@ -403,7 +479,7 @@ impl PointerEdgeLocation {
     #[must_use]
     pub const fn surface_local_position(self) -> Option<Authority<LogicalPoint>> {
         match self {
-            Self::Desktop { .. } => None,
+            Self::Desktop { .. } | Self::HostLocal { .. } => None,
             Self::SurfaceLocal { position } => Some(position),
         }
     }
@@ -412,8 +488,8 @@ impl PointerEdgeLocation {
 /// Provider-owned, strictly monotonic sequence of pointer edges in one scope.
 ///
 /// This is not a per-device counter. A desktop-global provider assigns a total
-/// order across every pointer and viewport it reports; a surface-local provider
-/// orders every pointer delivered through its one frozen endpoint.
+/// order across every pointer and viewport it reports; a local provider orders
+/// every pointer delivered through its frozen host or surface endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct PointerEdgeSequence(u64);
@@ -450,13 +526,14 @@ impl fmt::Display for PointerEdgeSequence {
 /// Authoritative owner of pointer capture at one input edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerCaptureOwner {
-    /// The endpoint frozen into this surface-local provider lease owns capture.
+    /// The endpoint frozen into this local provider lease owns capture.
     ///
     /// Desktop-global providers cannot report this value because they do not
-    /// have one implicit endpoint. A surface-local provider reports this value
-    /// even when its endpoint is backed by a native viewport binding; the exact
-    /// binding remains part of the provider lease instead of being repeated in
-    /// every edge.
+    /// have one implicit endpoint. Host-local capture belongs to the host lane;
+    /// manipulation routes identify the presented surface independently. A
+    /// surface-local provider reports this value even when its endpoint is
+    /// backed by a native viewport binding; the exact binding remains part of
+    /// the provider lease instead of being repeated in every edge.
     ProviderEndpoint,
     /// One exact native viewport binding owns capture.
     ///
@@ -480,7 +557,7 @@ pub enum PointerCaptureOwner {
 /// hover routes through another window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerEventDeliveryOwner {
-    /// The immutable endpoint of a surface-local provider delivered the edge.
+    /// The immutable host or surface endpoint of a local provider delivered the edge.
     ProviderEndpoint,
     /// One exact native viewport incarnation delivered the edge.
     Native(ViewportBinding),
@@ -851,7 +928,7 @@ impl PointerEdge {
         capture_owner: Authority<PointerCaptureOwner>,
     ) -> Self {
         let delivery_owner = match location {
-            PointerEdgeLocation::SurfaceLocal { .. } => {
+            PointerEdgeLocation::HostLocal { .. } | PointerEdgeLocation::SurfaceLocal { .. } => {
                 Authority::Known(PointerEventDeliveryOwner::ProviderEndpoint)
             }
             PointerEdgeLocation::Desktop { .. } => {
@@ -871,8 +948,8 @@ impl PointerEdge {
     /// Creates one pointer edge with an explicit edge-local delivery fact.
     ///
     /// Desktop-global providers must use this constructor. [`Self::new`] keeps
-    /// the exact endpoint implicit only for a surface-local provider, whose
-    /// immutable lease makes that endpoint unambiguous.
+    /// the local provider endpoint implicit for host-local and surface-local
+    /// providers, whose immutable leases identify their delivery lane.
     #[must_use]
     pub const fn new_with_delivery(
         sequence: PointerEdgeSequence,
@@ -1206,7 +1283,7 @@ pub struct PointerInputLease {
     scope: PointerProviderScope,
 }
 
-/// Affine producer ownership for one surface-local pointer provider.
+/// Affine producer ownership for one host-local or surface-local pointer provider.
 ///
 /// The provider lease remains copyable transport identity, while this value is
 /// the sole producer-lifetime capability. A specialized host frame retains an
@@ -1214,7 +1291,7 @@ pub struct PointerInputLease {
 /// the matching core candidate publishes. The producer cannot be drained while
 /// that frame remains uncommitted.
 #[derive(Debug)]
-#[must_use = "a surface-local pointer producer must be retained or drained"]
+#[must_use = "a local pointer producer must be retained or drained"]
 pub struct SurfaceLocalPointerProvider {
     lease: PointerInputLease,
     state: Arc<Mutex<SurfaceLocalPointerProducerState>>,
@@ -1227,7 +1304,7 @@ struct SurfaceLocalPointerProducerState {
     in_flight: Option<SurfaceLocalPointerFrameAttempt>,
 }
 
-/// Weak core-side witness for one surface-local producer lifetime.
+/// Weak core-side witness for one local producer lifetime.
 ///
 /// A live producer, an in-flight frame guard, or a drain receipt retains the
 /// strong state. Once all three disappear, the core can prove that no adapter
@@ -1842,6 +1919,14 @@ pub enum PointerJournalLedgerError {
         "surface-local host {host:?} belongs to authority domain {submitted:?}, expected {expected:?}"
     )]
     ForeignSurfaceLocalHost {
+        host: PresentationHostLease,
+        expected: EngineAuthorityDomainId,
+        submitted: EngineAuthorityDomainId,
+    },
+    #[error(
+        "host-local host {host:?} belongs to authority domain {submitted:?}, expected {expected:?}"
+    )]
+    ForeignHostLocalHost {
         host: PresentationHostLease,
         expected: EngineAuthorityDomainId,
         submitted: EngineAuthorityDomainId,

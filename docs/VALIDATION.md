@@ -14,6 +14,74 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-27 U3a host input domain and terminal convergence
+
+The public host now owns one affine pointer producer across logical surfaces.
+`enable_host_pointer` requires no native enrollment or presented surface;
+`submit_host_pointer_batch` assigns one global sequence to all ordered edges.
+Every edge independently qualifies manipulation/source and hover coordinates
+with exact presented capabilities. Capture belongs to the host domain. Unknown
+logical routes do not grant desktop outside-all authority. Existing ledger,
+receiver, rollback, producer-drain and retirement mechanisms remain the owners
+of transport integrity.
+
+The downstream public consumer submits a complete press/move/release batch from
+A to B, where both surfaces have identical bounds. Manipulation stays in A while
+hover selects a different point in B. Actual owned recording outputs carry the
+pending preview, and Presented or Dropped settlement respectively commits or
+cancels the frozen release. No follow-up pointer events are synthesized. A
+selection-changing press uses a separate measurement/paint cycle after the
+complete input batch; pending release survives this real rendering lifecycle.
+
+The seven new public journeys cover actual target-output settlement,
+selection-changing activation, source/hover coordinate isolation, unknown
+hover, dropped-frame retry and repeated release, stale route/current receiver
+mixing, and foreign-session capabilities. Additional core tests cover local
+owner cancellation without panic, rear-contained Raise/resize/release,
+HostLocal producer lifecycle and ledger boundaries, and locked scroll tails
+whose event-time route or receiver becomes unknown.
+
+Tab and contained release now share their actual terminal implementations
+between journal and local-response frontends. Exact-owner cancellation also
+uses one implementation; local session/source/target checks remain at the
+frontends. A terminal splitter release with unavailable coordinates cancels
+its owner instead of leaving a gesture waiting for an already-consumed release.
+Legacy internal preview ACK reducers and the response-based input frontends
+remain explicitly scheduled for U3b retirement.
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Root workspace, all features and targets | 1,584 passed | Core, conformance and official adapter; includes source-continuation and locked-scroll regressions |
+| Public engine host, default and serde | 17 passed each | Seven new public pointer journeys; normal dependencies contain no egui, Winit or WGPU |
+| Product harness, all features | 90 passed, 1 ignored | Original single-call Burst exclusion remains open |
+| Official harness, all features | 12 passed | Includes caller-owned WGPU demo compilation |
+| Native workspace, all targets | 198 passed | Existing egui 0.37 fork pin; physical scenarios not executed |
+| Strict rustdoc and documentation tests | Passed; 10 doc tests | Workspace API documentation and compile-fail boundaries |
+| Correctness/suspicious Clippy and formatting | Passed | Shared test support is compiled once; builds use one Cargo worker and Nextest thread |
+
+Independent review and the public tests closed four input boundaries: target
+hover must use its own coordinate route; logical cross-surface movement does
+not require native-window drag capability; Select/Raise may retain only the
+exact active source's existing continuation; and that continuation expires
+when another host takes the surface's presentation stream. Hover and new
+delivery remain strict current-output claims. Another pointer cannot borrow
+the source continuation. Stream checks use current active ownership rather
+than historical host lookup.
+
+Two mutation checks were executed. Restoring source coordinates in the hover
+comparison fails the complete cross-surface release test. Removing source
+continuation fails the unselected-tab release test. Production code was restored
+before the final gates. These recording and unit tests do not establish OS
+input delivery or physical GPU presentation.
+
+U3 remains open. The egui adapter still reconstructs pointer phases from its
+frame-level `Response`, and its original single-call Burst matrix is still
+ignored. U3b must consume ordered raw edges through the same host owner with
+event-bound receiver facts, remove duplicate pointer actions/local owners and
+internal ACK paths, then qualify the unchanged Burst matrix in U3c. The plan
+records this split; neither the full U3 nor the full U13/AE12-AE14 matrix is
+declared complete by this slice.
+
 ## 2026-10-27 U2 owned-output settlement
 
 The official adapter now completes the same exact output contract used by engine

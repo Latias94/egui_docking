@@ -397,8 +397,8 @@ impl PointerJournalLedger {
         monitor: SurfaceLocalPointerProducerMonitor,
     ) {
         assert!(
-            lease.scope().surface_local().is_some(),
-            "only a surface-local lease can bind an affine producer monitor",
+            lease.scope().is_local(),
+            "only a local lease can bind an affine producer monitor",
         );
         assert_eq!(
             self.active_lease(),
@@ -537,7 +537,7 @@ impl PointerJournalLedger {
         if receipt.is_consumed() {
             return Err(PointerJournalLedgerError::SurfaceLocalQuiescenceReceiptConsumed { lease });
         }
-        if lease.scope().surface_local().is_none() {
+        if !lease.scope().is_local() {
             return Err(PointerJournalLedgerError::SurfaceLocalQuiescenceScopeMismatch { lease });
         }
         if lease.authority_domain() != self.authority_domain {
@@ -599,7 +599,7 @@ impl PointerJournalLedger {
         &mut self,
         lease: PointerInputLease,
     ) -> Result<(), PointerJournalLedgerError> {
-        if lease.scope().surface_local().is_none() {
+        if !lease.scope().is_local() {
             return Err(PointerJournalLedgerError::SurfaceLocalQuiescenceScopeMismatch { lease });
         }
         if self.abandoned_surface_local_provider() != Some(lease) {
@@ -701,6 +701,9 @@ impl PointerJournalLedger {
                 (
                     PointerProviderScope::DesktopGlobal,
                     PointerEdgeLocationLane::Desktop
+                ) | (
+                    PointerProviderScope::HostLocal(_),
+                    PointerEdgeLocationLane::HostLocal
                 ) | (
                     PointerProviderScope::SurfaceLocal(_),
                     PointerEdgeLocationLane::SurfaceLocal
@@ -823,6 +826,7 @@ impl PointerJournalLedger {
 
         match (lease.scope(), delivery_owner) {
             (PointerProviderScope::DesktopGlobal, PointerEventDeliveryOwner::ProviderEndpoint)
+            | (PointerProviderScope::HostLocal(_), PointerEventDeliveryOwner::Native(_))
             | (PointerProviderScope::SurfaceLocal(_), PointerEventDeliveryOwner::Native(_)) => {
                 Err(PointerJournalLedgerError::DeliveryScopeMismatch {
                     lease,
@@ -857,6 +861,7 @@ impl PointerJournalLedger {
 
         match (lease.scope(), capture_owner) {
             (PointerProviderScope::DesktopGlobal, PointerCaptureOwner::ProviderEndpoint)
+            | (PointerProviderScope::HostLocal(_), PointerCaptureOwner::Native(_))
             | (PointerProviderScope::SurfaceLocal(_), PointerCaptureOwner::Native(_)) => {
                 Err(PointerJournalLedgerError::CaptureScopeMismatch {
                     lease,
@@ -925,6 +930,15 @@ impl PointerJournalLedger {
             });
         }
         match lease.scope() {
+            PointerProviderScope::HostLocal(host)
+                if endpoint.host() != host || endpoint.binding().is_some() =>
+            {
+                Err(PointerJournalLedgerError::ScrollDeliveryScopeMismatch {
+                    lease,
+                    sequence: edge.sequence(),
+                    endpoint,
+                })
+            }
             PointerProviderScope::SurfaceLocal(scope)
                 if endpoint.host() != scope.host()
                     || endpoint.surface() != scope.surface()
@@ -944,6 +958,7 @@ impl PointerJournalLedger {
                 },
             ),
             PointerProviderScope::DesktopGlobal
+            | PointerProviderScope::HostLocal(_)
             | PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope { .. }) => {
                 if let (Authority::Known(owner), Some(binding)) =
                     (edge.delivery_owner(), endpoint.binding())
@@ -1068,6 +1083,18 @@ impl PointerJournalLedger {
     }
 
     fn validate_scope(&self, scope: PointerProviderScope) -> Result<(), PointerJournalLedgerError> {
+        if let PointerProviderScope::HostLocal(host) = scope {
+            let submitted = host.authority_domain();
+            return if submitted == self.authority_domain {
+                Ok(())
+            } else {
+                Err(PointerJournalLedgerError::ForeignHostLocalHost {
+                    host,
+                    expected: self.authority_domain,
+                    submitted,
+                })
+            };
+        }
         let PointerProviderScope::SurfaceLocal(local) = scope else {
             return Ok(());
         };
@@ -1122,5 +1149,232 @@ impl PointerJournalLedger {
         self.version
             .checked_next()
             .ok_or(PointerJournalLedgerError::LedgerVersionExhausted)
+    }
+}
+
+#[cfg(test)]
+mod host_local_tests {
+    use super::*;
+    use crate::ids::WorkspaceEpoch;
+    use crate::presentation_observation::PresentationLedger;
+    use crate::viewport::{WindowIncarnation, WindowToken};
+
+    fn setup() -> (PointerJournalLedger, PresentationLedger, PointerInputLease) {
+        let domain = EngineAuthorityDomainId::new_for_test(1);
+        let mut presentation = PresentationLedger::new(domain);
+        let host = presentation.create_host().expect("host lease");
+        let mut ledger = PointerJournalLedger::new(domain);
+        let lease = ledger
+            .create_provider(
+                PointerProviderScope::HostLocal(host),
+                PointerEdgeSequence::new(0),
+            )
+            .expect("host-local provider");
+        (ledger, presentation, lease)
+    }
+
+    fn local_edge(kind: PointerEdgeKind) -> PointerEdge {
+        PointerEdge::new(
+            PointerEdgeSequence::new(1),
+            PointerId::new(1),
+            kind,
+            PointerEdgeLocation::HostLocal {
+                manipulation: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                hover: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            },
+            Authority::Known(PointerCaptureOwner::ProviderEndpoint),
+        )
+    }
+
+    fn journal(edge: PointerEdge) -> PointerEdgeJournal {
+        PointerEdgeJournal::new(
+            PointerEdgeSequence::new(0),
+            PointerEdgeSequence::new(1),
+            vec![edge],
+        )
+        .expect("complete journal")
+    }
+
+    fn native_binding(lease: PointerInputLease) -> ViewportBinding {
+        ViewportBinding::new(
+            lease.authority_domain(),
+            WorkspaceEpoch::new(1),
+            SurfaceId::new(1),
+            WindowToken::new(1),
+            WindowIncarnation::new(1),
+        )
+    }
+
+    #[test]
+    fn foreign_host_enrollment_preserves_the_ledger() {
+        let (mut ledger, _, _) = setup();
+        let mut foreign = PresentationLedger::new(EngineAuthorityDomainId::new_for_test(2));
+        let host = foreign.create_host().expect("foreign host");
+        let mut empty = PointerJournalLedger::new(ledger.authority_domain);
+        let before = empty.clone();
+        assert!(matches!(
+            empty.create_provider(
+                PointerProviderScope::HostLocal(host),
+                PointerEdgeSequence::new(0)
+            ),
+            Err(PointerJournalLedgerError::ForeignHostLocalHost { .. })
+        ));
+        assert_eq!(empty, before);
+        // An active provider remains the first enrollment barrier.
+        assert!(matches!(
+            ledger.create_provider(
+                PointerProviderScope::HostLocal(host),
+                PointerEdgeSequence::new(0)
+            ),
+            Err(PointerJournalLedgerError::ProviderAlreadyActive { .. })
+        ));
+    }
+
+    #[test]
+    fn host_local_journals_commit_without_desktop_or_surface_local_facts() {
+        let (mut ledger, _, lease) = setup();
+        let edge = local_edge(PointerEdgeKind::Moved);
+        assert_eq!(edge.desktop_route(), None);
+        assert_eq!(edge.location().surface_local_position(), None);
+        assert_eq!(
+            edge.delivery_owner(),
+            Authority::Known(PointerEventDeliveryOwner::ProviderEndpoint)
+        );
+        let journal = journal(edge);
+        let prepared = ledger
+            .prepare_candidate(lease, journal.clone())
+            .expect("local journal");
+        ledger.commit_prepared(prepared).expect("local commit");
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal),
+            Err(PointerJournalLedgerError::JournalReplay { .. })
+        ));
+    }
+
+    #[test]
+    fn host_local_rejects_surface_lane_and_native_capture_or_delivery() {
+        let (ledger, _, lease) = setup();
+        let before = ledger.clone();
+        let mut edge = local_edge(PointerEdgeKind::Moved);
+        edge.location = PointerEdgeLocation::SurfaceLocal {
+            position: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        };
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(edge)),
+            Err(PointerJournalLedgerError::LocationScopeMismatch { .. })
+        ));
+        let mut edge = local_edge(PointerEdgeKind::Moved);
+        edge.capture_owner = Authority::Known(PointerCaptureOwner::Native(native_binding(lease)));
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(edge)),
+            Err(PointerJournalLedgerError::CaptureScopeMismatch { .. })
+        ));
+        let mut edge = local_edge(PointerEdgeKind::Moved);
+        edge.delivery_owner =
+            Authority::Known(PointerEventDeliveryOwner::Native(native_binding(lease)));
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(edge)),
+            Err(PointerJournalLedgerError::DeliveryScopeMismatch { .. })
+        ));
+        assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn host_local_checkpoint_rejects_native_capture() {
+        let (ledger, _, lease) = setup();
+        let checkpoint = PointerAuthorityCheckpoint::known(
+            PointerEdgeSequence::new(0),
+            vec![
+                PointerStateObservation::new(
+                    PointerId::new(1),
+                    Vec::new(),
+                    Authority::Known(PointerCaptureOwner::Native(native_binding(lease))),
+                )
+                .expect("pointer state"),
+            ],
+        )
+        .expect("checkpoint");
+        let journal = journal(local_edge(PointerEdgeKind::Moved))
+            .with_authority_checkpoint(checkpoint)
+            .expect("checkpoint boundary");
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal),
+            Err(PointerJournalLedgerError::CaptureScopeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn host_local_scroll_accepts_only_same_host_headless_endpoints() {
+        let (ledger, mut presentation, lease) = setup();
+        let host = lease.scope().host_local().expect("host-local lease");
+        let other_host = presentation.create_host().expect("other host");
+        for (delivery_host, surface, binding, accepted) in [
+            (host, SurfaceId::new(1), None, true),
+            (host, SurfaceId::new(2), None, true),
+            (other_host, SurfaceId::new(1), None, false),
+            (host, SurfaceId::new(1), Some(native_binding(lease)), false),
+        ] {
+            let delivery = ScrollDeliveryEndpoint::new(
+                delivery_host,
+                surface,
+                binding,
+                CoordinateGeneration::new(1),
+            )
+            .expect("delivery endpoint");
+            let scroll = ScrollEdge::new(
+                ScrollDeviceId::new(1),
+                None,
+                ScrollPhase::Discrete,
+                Some(ScrollDelta::LogicalPoints(
+                    FiniteScrollVector::new(0.0, 1.0).expect("finite delta"),
+                )),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                Authority::Known(ScrollModifiers::default()),
+                Authority::Known(delivery),
+            )
+            .expect("scroll sample");
+            let result = ledger.prepare_candidate(
+                lease,
+                journal(local_edge(PointerEdgeKind::Scrolled(scroll))),
+            );
+            if accepted {
+                assert!(result.is_ok());
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(PointerJournalLedgerError::ScrollDeliveryScopeMismatch { .. })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn host_local_producer_drain_compacts_and_abandonment_retires() {
+        let (mut ledger, _, lease) = setup();
+        let provider = SurfaceLocalPointerProvider::new(lease, PointerEdgeSequence::new(0));
+        ledger.bind_surface_local_producer(lease, provider.monitor());
+        let receipt = provider.drain().expect("producer drains");
+        assert_eq!(ledger.abandoned_surface_local_provider(), None);
+        assert_eq!(
+            ledger
+                .retire_quiesced_surface_local(&receipt)
+                .expect("host-local retirement"),
+            SurfaceLocalPointerQuiescenceDisposition::RetiredActive,
+        );
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(local_edge(PointerEdgeKind::Moved))),
+            Err(PointerJournalLedgerError::CompactedLease { .. })
+        ));
+        let lease = ledger
+            .create_provider(lease.scope(), PointerEdgeSequence::new(0))
+            .expect("successor");
+        let provider = SurfaceLocalPointerProvider::new(lease, PointerEdgeSequence::new(0));
+        ledger.bind_surface_local_producer(lease, provider.monitor());
+        drop(provider);
+        assert_eq!(ledger.abandoned_surface_local_provider(), Some(lease));
+        ledger
+            .retire_abandoned_active_surface_local(lease)
+            .expect("abandoned host-local retirement");
+        assert_eq!(ledger.active_lease(), None);
     }
 }

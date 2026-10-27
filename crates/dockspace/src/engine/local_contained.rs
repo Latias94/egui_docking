@@ -121,7 +121,7 @@ impl DockEngine {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_local_contained_gesture(
         &mut self,
-        input: InputSequence,
+        _input: InputSequence,
         cause: ReductionCause,
         expected: WorkspaceVersion,
         application_base: WorkspaceVersion,
@@ -199,12 +199,12 @@ impl DockEngine {
                             Err(rejection) => InteractionOutcome::Rejected(rejection),
                         };
                         if let InteractionOutcome::Rejected(rejection) = update {
-                            let _ = self.cancel_contained_transform(
-                                input,
-                                session,
+                            let _ = self.cancel_gesture_owner(
+                                cause,
+                                owner,
                                 InteractionCancelReason::LocalResponseCancelled,
                                 interaction_events,
-                            );
+                            )?;
                             return Ok(self.local_response_rejection(rejection));
                         }
                     }
@@ -234,7 +234,7 @@ impl DockEngine {
                         Ok(session) => session,
                         Err(error) => return Ok(self.local_response_rejection(error)),
                     };
-                self.finish_local_contained_transform_at_point(
+                self.finish_contained_transform_at_point(
                     cause,
                     owner,
                     session,
@@ -243,20 +243,26 @@ impl DockEngine {
                     events,
                     interaction_events,
                 )?
+                .pop()
+                .ok_or(EngineError::ReductionCauseInvariant {
+                    detail: "local contained release produced no terminal outcome",
+                })?
             }
             LocalContainedGesturePhase::Cancel => {
-                let session = match self
-                    .local_contained_transform_session_without_scene(surface, floating, kind)
+                if let Err(error) =
+                    self.local_contained_transform_session_without_scene(surface, floating, kind)
                 {
-                    Ok(session) => session,
-                    Err(error) => return Ok(self.local_response_rejection(error)),
-                };
-                self.cancel_contained_transform(
-                    input,
-                    session,
+                    return Ok(self.local_response_rejection(error));
+                }
+                self.cancel_gesture_owner(
+                    cause,
+                    owner,
                     InteractionCancelReason::LocalResponseCancelled,
                     interaction_events,
-                )
+                )?
+                .ok_or(EngineError::ReductionCauseInvariant {
+                    detail: "validated local contained cancellation could not cancel its owner",
+                })?
             }
         };
         Ok(InputOutcome::InteractionProcessed {
@@ -298,66 +304,6 @@ impl DockEngine {
             }
             Err(rejection) => Ok(InteractionOutcome::Rejected(rejection)),
         }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn finish_local_contained_transform_at_point(
-        &mut self,
-        cause: ReductionCause,
-        owner: GestureOwner,
-        session: ContainedTransformSessionId,
-        current: LogicalPoint,
-        policy: &DockPolicySnapshot,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let (placement, preview) = match self.publish_contained_transform_preview_at_point(
-            cause,
-            owner,
-            session,
-            current,
-            interaction_events,
-        )? {
-            Ok(publication) => publication,
-            Err(rejection) => {
-                let _ = self.interaction.take_contained_transform_for_release(
-                    session,
-                    owner,
-                    PointerButton::Primary,
-                );
-                return Ok(InteractionOutcome::Rejected(rejection));
-            }
-        };
-        let transform = self
-            .interaction
-            .take_contained_transform_for_release(session, owner, PointerButton::Primary)
-            .map_err(|source| EngineError::PointerInteractionInvariant {
-                cause,
-                detail: format!("local contained release could not consume transform: {source:?}"),
-            })?;
-        let Some(painted) = transform.preview.as_ref() else {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::PreviewMissing,
-            ));
-        };
-        if painted.placement() != placement || painted.public() != &preview {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::ContainedTransformChanged,
-            ));
-        }
-        if !painted.painted() {
-            return self
-                .defer_contained_transform_release(cause, session, transform, placement, policy);
-        }
-        self.deliver_contained_transform_release(
-            cause,
-            session,
-            transform,
-            placement,
-            policy,
-            events,
-            interaction_events,
-        )
     }
 
     fn local_contained_transform_session(

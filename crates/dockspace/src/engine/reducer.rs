@@ -335,7 +335,7 @@ impl DockEngine {
                             });
                         }
                     }
-                    PointerProviderScope::SurfaceLocal(_) => {
+                    PointerProviderScope::SurfaceLocal(_) | PointerProviderScope::HostLocal(_) => {
                         let Some(commit) = surface_pointer_commit.as_ref() else {
                             return Err(EngineError::ReductionCauseInvariant {
                                 detail: "surface-local host frame has no affine producer guard",

@@ -27,8 +27,8 @@ use crate::intent::{
 use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use crate::operation::PreparedContentClose;
 use crate::pointer_journal::{
-    DesktopRouteValidation, PointerCaptureOwner, PointerEventDeliveryOwner, PointerProviderScope,
-    PointerStreamId, ScrollCancelReason, ScrollPhase, ScrollSequenceToken,
+    DesktopRouteValidation, HostLocalPointerRoute, PointerCaptureOwner, PointerEventDeliveryOwner,
+    PointerProviderScope, PointerStreamId, ScrollCancelReason, ScrollPhase, ScrollSequenceToken,
 };
 use crate::policy::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
@@ -1793,6 +1793,10 @@ pub(crate) enum ManipulationPositionKey {
         scope: PointerProviderScope,
         position: Authority<LogicalPoint>,
     },
+    JournalHost {
+        manipulation: Option<HostLocalPointerRoute>,
+        hover: Option<HostLocalPointerRoute>,
+    },
     JournalDesktop(DesktopRouteValidation),
 }
 
@@ -1800,6 +1804,10 @@ impl ManipulationPositionKey {
     pub(crate) const fn surface(self) -> Option<SurfaceId> {
         match self {
             Self::Local { pointer, .. } => Some(pointer.surface()),
+            Self::JournalHost { hover, .. } => match hover {
+                Some(route) => Some(route.surface()),
+                None => None,
+            },
             Self::JournalSurface {
                 scope: PointerProviderScope::SurfaceLocal(scope),
                 ..
@@ -1814,6 +1822,10 @@ impl ManipulationPositionKey {
     pub(crate) const fn hover_probe(self) -> Option<SurfacePointer> {
         match self {
             Self::Local { pointer, .. } => Some(pointer),
+            Self::JournalHost { hover, .. } => match hover {
+                Some(route) => Some(SurfacePointer::new(route.surface(), route.position())),
+                None => None,
+            },
             Self::JournalSurface {
                 scope: PointerProviderScope::SurfaceLocal(scope),
                 position: Authority::Known(point),
@@ -1849,6 +1861,10 @@ impl ManipulationPositionKey {
     pub(crate) const fn hover_surface(self) -> Option<SurfaceId> {
         match self {
             Self::Local { pointer, .. } => Some(pointer.surface()),
+            Self::JournalHost { hover, .. } => match hover {
+                Some(route) => Some(route.surface()),
+                None => None,
+            },
             Self::JournalSurface {
                 scope: PointerProviderScope::SurfaceLocal(scope),
                 ..
@@ -1877,6 +1893,9 @@ impl ManipulationPositionKey {
             Self::Local { pointer, .. } => {
                 pointer.surface() != surface || !source_rect.contains(pointer.position())
             }
+            Self::JournalHost { hover, .. } => hover.is_some_and(|route| {
+                route.surface() != surface || !source_rect.contains(route.position())
+            }),
             Self::JournalSurface {
                 scope: PointerProviderScope::SurfaceLocal(scope),
                 position: Authority::Known(point),
@@ -2274,6 +2293,10 @@ pub(crate) struct ArmedDrag {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum JournalDragThresholdOrigin {
     SurfaceLocal(LogicalPoint),
+    HostLocal {
+        surface: SurfaceId,
+        position: LogicalPoint,
+    },
     DesktopPhysical {
         position: PhysicalPoint,
         source_scale: ScaleFactor,

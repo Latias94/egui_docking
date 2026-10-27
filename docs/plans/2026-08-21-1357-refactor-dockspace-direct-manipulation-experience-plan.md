@@ -456,6 +456,42 @@ completion work.
 - **Test scenarios:** Covers AE2/AE4. Same-tick press/move/release, duplicate release, cancellation, capture/source/target loss, discarded preview, and policy changes produce one terminal outcome through both input adapters.
 - **Verification:** Complete Burst cases enter ordinary passing gates; one core release barrier and cancellation owner remain.
 
+Implementation is split at the host contract boundary:
+
+1. **U3a — host input domain and shared terminal ownership.** Add one affine
+   host-local producer, independently qualified manipulation/hover routes per
+   edge, and public multi-surface batch submission without native enrollment.
+   Reuse journal sequencing, receiver validation, frame rollback and drain.
+   Merge tab/contained release consumption and owner cancellation across the
+   existing entry points. Verify a complete public-host Burst, exact preview
+   settlement, route isolation and retry before migrating the egui transport.
+2. **U3b — ordered egui transport and legacy entry retirement.** Capture raw
+   edges once per host/run boundary and qualify each chrome receiver at that
+   edge's position. Submit to U3a's owner; UI reruns must not replay consumed
+   edges. Remove pointer actions reconstructed from `Response`, the remaining
+   local-response owner/frontends and internal preview ACK reducers. Migrate
+   internal ACK fixtures to actual complete output observations. Keyboard,
+   AccessKit and application commands retain their semantic entry points.
+3. **U3c — full product matrix.** Run the original single-batch Burst without
+   splitting it into input frames, and prove release/cancel/output/policy loss
+   through both adapters. Retire the ignored gate only when this passes.
+
+The updated ImGui reference preserves event order by trickling queued input
+across frames; this is evidence for retaining edges, not a same-frame Burst
+implementation to copy. Official egui 0.37 exposes ordered raw events, but its
+`Response` is a frame summary and cannot prove per-event widget ownership.
+U3b must establish controlled chrome receiver facts; arbitrary application
+widgets and blocker interoperability remain U5's explicit qualification work.
+U3a alone does not complete U3 or the full U13/AE12-AE14 matrix.
+
+Implementation evidence (2026-10-27): U3a now exposes the host-local public input
+domain and shares tab/contained terminal consumption and exact-owner cancellation.
+The public consumer executes complete ordered cross-surface releases, including
+an unselected source, through actual owned recording-output settlement. Review
+regressions cover source-only continuation after Raise, foreign pointer rejection
+and presentation-stream takeover. See `docs/VALIDATION.md` for serialized final
+gates and mutation-red evidence. U3b and U3c remain open.
+
 ### U4. Complete magnetic behavior and live contained content
 
 - **Goal:** Deliver consistent direct manipulation through the host-neutral projection.

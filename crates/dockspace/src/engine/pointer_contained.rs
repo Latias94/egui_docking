@@ -383,6 +383,15 @@ impl DockEngine {
             .stream()
             .ok_or(InteractionRejection::SessionMismatch)?;
         match (stream.lease().scope(), edge.location()) {
+            (PointerProviderScope::HostLocal(_), PointerEdgeLocation::HostLocal { .. }) => self
+                .journal_host_local_manipulation(edge)
+                .filter(|route| route.surface() == transform.surface)
+                .map(|route| route.position())
+                .ok_or(
+                    InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable {
+                        surface: transform.surface,
+                    },
+                ),
             (
                 PointerProviderScope::SurfaceLocal(scope),
                 PointerEdgeLocation::SurfaceLocal {
@@ -489,11 +498,33 @@ impl DockEngine {
             Err(_) => {
                 let reason = InteractionCancelReason::UnknownTargetAuthority;
                 return Ok(self
-                    .cancel_journal_owner(cause, owner, reason, interaction_events)?
+                    .cancel_gesture_owner(cause, owner, reason, interaction_events)?
                     .into_iter()
                     .collect());
             }
         };
+        self.finish_contained_transform_at_point(
+            cause,
+            owner,
+            session,
+            point,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn finish_contained_transform_at_point(
+        &mut self,
+        cause: ReductionCause,
+        owner: GestureOwner,
+        session: ContainedTransformSessionId,
+        point: crate::geometry::LogicalPoint,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let (placement, preview) = match self.publish_contained_transform_preview_at_point(
             cause,
             owner,
@@ -799,5 +830,286 @@ impl DockEngine {
             });
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{
+        TestPresentationHost, complete_host_frame_with_retained_or_unavailable, publish_surface,
+    };
+    use super::*;
+    use crate::graph::{ContainedFloating, RootRecord, SurfacePresentation};
+    use crate::pointer_journal::HostLocalPointerRoute;
+    use crate::pointer_receiver::{
+        PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
+        PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
+        PresentedPointerReceiverObservation,
+    };
+    use crate::scene::ContainedResizeDirection;
+    #[test]
+    fn host_local_rear_contained_resize_keeps_exact_source_continuation_without_hover_authority() {
+        let surface = SurfaceId::new(1);
+        let rear = FloatingPresentationId::new(1);
+        let front = FloatingPresentationId::new(2);
+        let rect = |x, y, width, height| {
+            crate::geometry::LogicalRect::new(x, y, width, height).expect("finite test bounds")
+        };
+        let initial_rect = rect(40.0, 40.0, 220.0, 180.0);
+        let mut builder = Workspace::builder();
+        for (root, item) in [
+            (RootId::new(1), ItemId::new(1)),
+            (RootId::new(2), ItemId::new(2)),
+            (RootId::new(3), ItemId::new(3)),
+        ] {
+            let tabs = builder.insert_node(Node::tabs([item]));
+            builder.set_root(root, RootRecord::new(tabs));
+        }
+        builder.set_surface(surface, SurfacePresentation::with_main(RootId::new(1)));
+        for (floating, root, bounds) in [
+            (rear, RootId::new(2), initial_rect),
+            (front, RootId::new(3), rect(400.0, 300.0, 220.0, 180.0)),
+        ] {
+            builder.set_contained_floating(floating, ContainedFloating::new(root, bounds));
+            builder
+                .attach_contained(surface, floating)
+                .expect("contained root attaches");
+        }
+        let mut engine = DockEngine::new(
+            builder.build().expect("valid test workspace"),
+            DockPolicy::default(),
+        )
+        .expect("valid test engine");
+        let mut host = TestPresentationHost::new(&mut engine);
+        publish_surface(
+            &mut engine,
+            &mut host,
+            surface,
+            rect(0.0, 0.0, 800.0, 600.0),
+        );
+        let projection = engine
+            .interaction_projection(surface)
+            .expect("presented source");
+        let authority = projection.authority();
+        let region = projection
+            .hit_manifest()
+            .regions()
+            .iter()
+            .find(|region| {
+                matches!(region.id().kind(), PresentationHitRegionKind::ContainedResize {
+                floating, direction: ContainedResizeDirection::East,
+            } if floating == rear)
+            })
+            .expect("rear floating has an unobscured east resize receiver");
+        let bounds = region.hit().rect();
+        let press = crate::geometry::LogicalPoint::new(
+            bounds.x() + bounds.width() * 0.5,
+            bounds.y() + bounds.height() * 0.5,
+        )
+        .expect("finite resize press");
+        let moved = crate::geometry::LogicalPoint::new(press.x() + 30.0, press.y())
+            .expect("finite resize movement");
+        let delivery = PointerReceiverDelivery::new(
+            projection,
+            PointerReceiverDeliveryDisposition::Dock(region.id()),
+        )
+        .expect("exact presented resize receiver");
+        let provider = engine
+            .create_host_local_pointer_provider(host.lease(), PointerEdgeSequence::new(0))
+            .expect("host-local producer");
+        let before_version = engine.version();
+        let mut frame = host.begin(&engine);
+        for (index, kind, point) in [
+            (
+                0,
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                press,
+            ),
+            (1, PointerEdgeKind::Moved, moved),
+            (
+                2,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                moved,
+            ),
+        ] {
+            let route = HostLocalPointerRoute::new(authority, point);
+            let edge = PointerEdge::new(
+                PointerEdgeSequence::new(index + 1),
+                crate::intent::PointerId::new(7),
+                kind,
+                PointerEdgeLocation::HostLocal {
+                    manipulation: Authority::Known(route),
+                    hover: Authority::Known(route),
+                },
+                Authority::Known(PointerCaptureOwner::ProviderEndpoint),
+            );
+            if index != 0 {
+                assert!(
+                    frame.candidate.interaction_projection(surface).is_none(),
+                    "Raise invalidates the source's old general interaction authority"
+                );
+                assert_eq!(
+                    frame.candidate.journal_host_local_manipulation(&edge),
+                    Some(route),
+                    "the exact active source retains its press-bound coordinate proof"
+                );
+                let stream = frame
+                    .candidate
+                    .interaction
+                    .active_stream()
+                    .expect("same stream");
+                let position = journal_position_key(&frame.candidate, stream, &edge);
+                assert_eq!(
+                    position.hover_probe(),
+                    None,
+                    "source continuation must not refresh the stale hover authority"
+                );
+                let foreign_pointer = PointerEdge::new(
+                    edge.sequence(),
+                    crate::intent::PointerId::new(8),
+                    kind,
+                    edge.location(),
+                    Authority::Known(PointerCaptureOwner::ProviderEndpoint),
+                );
+                assert_eq!(
+                    frame
+                        .candidate
+                        .journal_host_local_manipulation(&foreign_pointer),
+                    None,
+                    "another pointer cannot borrow the active source continuation"
+                );
+                let mut transferred = frame.candidate.candidate();
+                let new_host = transferred
+                    .presentation_authority
+                    .presentation
+                    .create_host()
+                    .expect("replacement presentation host");
+                let replacement = transferred
+                    .presentation_authority
+                    .presentation
+                    .emit(
+                        new_host,
+                        surface,
+                        HostPresentationEndpoint::Headless,
+                        HostPresentationOutputPayload::Bootstrap,
+                    )
+                    .expect("replacement host takes the surface stream");
+                assert_eq!(
+                    transferred
+                        .presentation_authority
+                        .presentation
+                        .host_for_stream(authority.stream()),
+                    Some(host.lease()),
+                    "historical stream ownership still names the original host"
+                );
+                assert_eq!(
+                    transferred
+                        .presentation_authority
+                        .presentation
+                        .active_surface_scope(surface),
+                    Some((
+                        replacement.stream(),
+                        new_host,
+                        HostPresentationEndpoint::Headless,
+                    )),
+                    "the surface now belongs to the replacement host's active stream"
+                );
+                assert_eq!(
+                    transferred.journal_host_local_manipulation(&edge),
+                    None,
+                    "historical ownership cannot preserve source continuation after host takeover"
+                );
+            }
+            frame
+                .submit_surface_pointer_journal(
+                    &provider,
+                    PointerEdgeJournal::new(
+                        PointerEdgeSequence::new(index),
+                        PointerEdgeSequence::new(index + 1),
+                        vec![edge],
+                    )
+                    .expect("contiguous journal edge"),
+                )
+                .expect("host-local edge stages");
+            let candidate = frame
+                .pointer_receiver_candidates()
+                .expect("receiver roster")
+                .candidates()[0]
+                .clone();
+            let observation = if index == 0 {
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(delivery),
+                    ])
+                    .expect("exact press receiver"),
+                )
+            } else {
+                assert!(
+                    candidate.probes().is_not_applicable(),
+                    "contained resize continuation needs no fresh receiver probe"
+                );
+                PointerReceiverObservation::NotApplicable
+            };
+            frame
+                .submit_pointer_receiver_receipts(
+                    PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                        .expect("exact receipt roster"),
+                )
+                .expect("resize edge reduces");
+            if index == 0 {
+                assert_eq!(
+                    frame
+                        .candidate
+                        .workspace
+                        .surface(surface)
+                        .expect("surface")
+                        .contained,
+                    [front, rear],
+                    "press must actually raise the rear floating"
+                );
+                assert_ne!(frame.candidate.version(), before_version);
+            } else if index == 1 {
+                let preview = frame
+                    .candidate
+                    .interaction
+                    .contained_transform_preview()
+                    .expect("movement publishes a real resize preview");
+                assert_eq!(preview.rect(), rect(40.0, 40.0, 250.0, 180.0));
+            }
+        }
+        assert_eq!(
+            engine.version(),
+            before_version,
+            "the batch remains private until commit"
+        );
+        assert_eq!(
+            frame.candidate.interaction.status(),
+            InteractionStatus::Idle
+        );
+        assert!(
+            frame
+                .candidate
+                .pending_contained_transform_release
+                .is_some(),
+            "release retains its resized rectangle for actual presentation"
+        );
+        complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+        let transition = host.finish(frame, &mut engine);
+        assert!(matches!(
+            transition.reduced_pointer_edges()[2]
+                .interaction_outcomes()
+                .last(),
+            Some(InteractionOutcome::ContainedTransformReleasePending { .. })
+        ));
+        assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
+        assert_eq!(
+            engine
+                .workspace
+                .contained_floating(rear)
+                .expect("durable contained root")
+                .rect,
+            initial_rect,
+            "unpresented release must not commit the resized rectangle"
+        );
     }
 }

@@ -66,7 +66,7 @@ impl DockEngine {
         let pointer_host = self
             .pointer_journal
             .active_lease()
-            .and_then(|lease| lease.scope().surface_local().map(|local| local.host()));
+            .and_then(|lease| lease.scope().local_host());
         let candidates = self
             .presentation_authority
             .presentation

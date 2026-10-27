@@ -218,7 +218,15 @@ impl DockEngine {
         }
         let point = match self.journal_resize_point(&resize, edge) {
             Ok(point) => point,
-            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+            Err(rejection) => {
+                self.interaction
+                    .take_resize_for_release(session, owner, PointerButton::Primary)
+                    .map_err(|source| EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: format!("{source:?}"),
+                    })?;
+                return Ok(InteractionOutcome::Rejected(rejection));
+            }
         };
         self.finish_resize_at_point(
             cause,
@@ -334,6 +342,20 @@ impl DockEngine {
             .stream()
             .ok_or(InteractionRejection::SessionMismatch)?;
         match (stream.lease().scope(), edge.location()) {
+            (PointerProviderScope::HostLocal(_), PointerEdgeLocation::HostLocal { .. }) => {
+                let route = self.journal_host_local_manipulation(edge).ok_or(
+                    InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable {
+                        surface: resize.surface,
+                    },
+                )?;
+                if route.surface() != resize.surface {
+                    return Err(InteractionRejection::SplitterGestureSurfaceMismatch {
+                        expected: resize.surface,
+                        actual: route.surface(),
+                    });
+                }
+                Ok(route.position())
+            }
             (
                 PointerProviderScope::SurfaceLocal(scope),
                 PointerEdgeLocation::SurfaceLocal {

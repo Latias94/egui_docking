@@ -1,8 +1,35 @@
 //! Pointer receiver and presentation authority validation.
 
 use super::*;
-use crate::pointer_journal::DesktopDockRoute;
+use crate::pointer_journal::{DesktopDockRoute, HostLocalPointerRoute};
 use crate::pointer_receiver::PointerReceiverDeliveryRequest;
+
+fn owned_host_local_route(
+    engine: &DockEngine,
+    route: Authority<HostLocalPointerRoute>,
+) -> Option<HostLocalPointerRoute> {
+    let route = route.known().copied()?;
+    let host = engine.pointer_provider()?.scope().host_local()?;
+    let authority = route.authority();
+    (authority.endpoint() == HostPresentationEndpoint::Headless
+        && engine
+            .presentation_authority
+            .presentation
+            .active_surface_scope(route.surface())
+            == Some((authority.stream(), host, HostPresentationEndpoint::Headless)))
+    .then_some(route)
+}
+
+fn validated_host_local_route(
+    engine: &DockEngine,
+    route: Authority<HostLocalPointerRoute>,
+) -> Option<HostLocalPointerRoute> {
+    let route = owned_host_local_route(engine, route)?;
+    engine
+        .interaction_projection(route.surface())
+        .is_some_and(|projection| projection.authority() == route.authority())
+        .then_some(route)
+}
 
 pub(super) fn pointer_receiver_candidate_spec(
     engine: &DockEngine,
@@ -41,6 +68,13 @@ pub(super) fn pointer_receiver_candidate_spec(
                         .map(|scope| scope.surface()),
                     None,
                 ),
+                PointerEdgeLocation::HostLocal { manipulation, .. } => {
+                    let route = validated_host_local_route(engine, manipulation);
+                    (
+                        route.map(HostLocalPointerRoute::surface),
+                        route.map(HostLocalPointerRoute::position),
+                    )
+                }
                 PointerEdgeLocation::Desktop { .. } => {
                     let route = validated_desktop_delivery_route(engine, edge)
                         .and_then(DesktopRouteValidation::dock_route);
@@ -109,6 +143,13 @@ pub(super) fn pointer_receiver_candidate_spec(
                     .map(|scope| scope.surface()),
                 position.known().copied(),
             ),
+            PointerEdgeLocation::HostLocal { manipulation, .. } => {
+                let route = validated_host_local_route(engine, manipulation);
+                (
+                    route.map(HostLocalPointerRoute::surface),
+                    route.map(HostLocalPointerRoute::position),
+                )
+            }
             PointerEdgeLocation::Desktop { .. } => {
                 let route = validated_desktop_delivery_route(engine, edge)
                     .and_then(DesktopRouteValidation::dock_route);
@@ -137,6 +178,10 @@ pub(super) fn journal_position_key(
         PointerEdgeLocation::SurfaceLocal { position } => ManipulationPositionKey::JournalSurface {
             scope: stream.lease().scope(),
             position,
+        },
+        PointerEdgeLocation::HostLocal { hover, .. } => ManipulationPositionKey::JournalHost {
+            manipulation: engine.journal_host_local_manipulation(edge),
+            hover: validated_host_local_route(engine, hover),
         },
         PointerEdgeLocation::Desktop { route } => ManipulationPositionKey::JournalDesktop(
             route.validate_against_registry(engine.authority_domain, engine.viewport.registry()),
@@ -366,7 +411,7 @@ impl DockEngine {
                             if lane == PresentationPointerLane::Scroll
                                 && matches!(edge.kind(), PointerEdgeKind::Scrolled(scroll)
                                     if !matches!(scroll.phase(), crate::pointer_journal::ScrollPhase::Discrete | crate::pointer_journal::ScrollPhase::Begin))
-                                && Self::journal_logical_point(edge, desktop_route).is_none()
+                                && self.journal_logical_point(edge, desktop_route).is_none()
                             {
                                 continue;
                             }
@@ -422,6 +467,27 @@ impl DockEngine {
                     position: Authority::Known(point),
                 },
             ) => (scope.surface(), point, None),
+            (
+                PointerProviderScope::HostLocal(_),
+                PointerEdgeLocation::HostLocal {
+                    manipulation,
+                    hover,
+                },
+            ) => {
+                let route = if lane == PresentationPointerLane::HoverDrop {
+                    hover
+                } else {
+                    manipulation
+                };
+                let route = validated_host_local_route(self, route)
+                    .filter(|route| Some(route.authority()) == authority)
+                    .ok_or(EngineError::PointerReceiverGeometry {
+                        source: PointerReceiverGeometryError::LogicalPointUnavailable {
+                            sequence: edge.sequence(),
+                        },
+                    })?;
+                (route.surface(), route.position(), None)
+            }
             (PointerProviderScope::DesktopGlobal, PointerEdgeLocation::Desktop { .. }) => {
                 let Some(route) = desktop_route.and_then(DesktopRouteValidation::dock_route) else {
                     return Err(EngineError::PointerReceiverGeometry {
@@ -514,6 +580,27 @@ impl DockEngine {
                     position: Authority::Known(point),
                 },
             ) => (scope.surface(), point, None),
+            (
+                PointerProviderScope::HostLocal(_),
+                PointerEdgeLocation::HostLocal {
+                    manipulation,
+                    hover,
+                },
+            ) => {
+                let route = if delivery_lane == Some(PresentationPointerLane::HoverDrop) {
+                    hover
+                } else {
+                    manipulation
+                };
+                let route = validated_host_local_route(self, route)
+                    .filter(|route| Some(route.authority()) == authority)
+                    .ok_or(EngineError::PointerReceiverGeometry {
+                        source: PointerReceiverGeometryError::LogicalPointUnavailable {
+                            sequence: edge.sequence(),
+                        },
+                    })?;
+                (route.surface(), route.position(), None)
+            }
             (PointerProviderScope::DesktopGlobal, PointerEdgeLocation::Desktop { .. }) => {
                 let Some(route) = desktop_route.and_then(DesktopRouteValidation::dock_route) else {
                     return Err(EngineError::PointerReceiverGeometry {
@@ -621,7 +708,41 @@ impl DockEngine {
         Ok(())
     }
 
+    pub(super) fn journal_host_local_manipulation(
+        &self,
+        edge: &PointerEdge,
+    ) -> Option<HostLocalPointerRoute> {
+        let PointerEdgeLocation::HostLocal { manipulation, .. } = edge.location() else {
+            return None;
+        };
+        if let Some(route) = validated_host_local_route(self, manipulation) {
+            return Some(route);
+        }
+        let route = owned_host_local_route(self, manipulation)?;
+        let stream = self.interaction.active_stream()?;
+        if Some(stream.lease()) != self.pointer_provider() || stream.pointer() != edge.pointer() {
+            return None;
+        }
+        // Selection, raising and live resizing may invalidate their own source
+        // scene. Only the exact active owner can retain that source coordinate
+        // proof; hover and new delivery claims always require current output.
+        let frozen = self.interaction.active_presentation_authority()?;
+        if frozen.presented != route.authority() {
+            return None;
+        }
+        (self.resize_continuation_is_current(frozen)
+            || self
+                .interaction
+                .active_scene_gesture_continuation()
+                .is_some_and(|continuation| {
+                    continuation.draft.origin == frozen
+                        && self.scene_gesture_continuation_is_current(continuation)
+                }))
+        .then_some(route)
+    }
+
     pub(super) fn journal_logical_point(
+        &self,
         edge: &PointerEdge,
         desktop_route: Option<DesktopRouteValidation>,
     ) -> Option<crate::geometry::LogicalPoint> {
@@ -632,6 +753,9 @@ impl DockEngine {
             PointerEdgeLocation::SurfaceLocal {
                 position: Authority::Unknown(_),
             } => None,
+            PointerEdgeLocation::HostLocal { .. } => self
+                .journal_host_local_manipulation(edge)
+                .map(HostLocalPointerRoute::position),
             PointerEdgeLocation::Desktop { .. } => desktop_route
                 .and_then(DesktopRouteValidation::dock_route)
                 .map(|route| route.surface_position()),
@@ -797,7 +921,8 @@ impl DockEngine {
                         )
                         | None => Ok(JournalClickDelivery::Unknown),
                     },
-                    PointerEdgeLocation::SurfaceLocal { .. } => {
+                    PointerEdgeLocation::SurfaceLocal { .. }
+                    | PointerEdgeLocation::HostLocal { .. } => {
                         Err(EngineError::PointerInteractionInvariant {
                             cause,
                             detail: "surface-local primary release receipt has no delivery role"
@@ -850,7 +975,8 @@ impl DockEngine {
                         ValidatedDesktopRoute::Dock(_) | ValidatedDesktopRoute::NoWindow { .. },
                     )) => Ok(JournalClickDelivery::KnownMismatch),
                 },
-                PointerEdgeLocation::SurfaceLocal { .. } => Ok(JournalClickDelivery::KnownMismatch),
+                PointerEdgeLocation::SurfaceLocal { .. }
+                | PointerEdgeLocation::HostLocal { .. } => Ok(JournalClickDelivery::KnownMismatch),
             },
             PointerReceiverDeliveryDisposition::Blocked => Ok(JournalClickDelivery::Blocked),
             PointerReceiverDeliveryDisposition::Unknown(_) => Ok(JournalClickDelivery::Unknown),

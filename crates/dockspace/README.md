@@ -68,10 +68,27 @@ assert!(session.view().item(item).is_some());
    stream or resurrect an obsolete artifact.
 
 Application commands and prepared surface actions can operate without native
-registration. The independent consumer verifies two logical surfaces with the
-same coordinate bounds using surface-bound tab actions. Ordered multi-surface
-pointer routing and the complete gesture matrix remain separate integration
-work; see `docs/VALIDATION.md` for the current evidence and limits.
+registration. For pointer input, call `enable_host_pointer` once on the session
+and submit `HostPointerInput` records through
+`DockspaceHostFrame::submit_host_pointer_batch`. The host assigns one total order
+across its logical surfaces. Each record carries its own event, capture,
+manipulation route, hover route, and independent receiver facts. Bind a
+`HostPointerRoute` to an exact `PresentedDockspaceSurface` and event-time point;
+do not reuse a final-frame position for earlier edges.
+
+During capture, manipulation coordinates remain in the source surface while
+hover coordinates may name another surface, including one with identical local
+bounds. Capture belongs to the host producer. Unknown logical routing never
+proves that the desktop pointer is outside all windows. `disable_host_pointer`
+drains and retires the producer; dropping or rejecting a host frame leaves its
+committed input watermark unchanged.
+
+A complete press/move/release batch can finish input processing before its
+preview is presented. The core freezes the release, then waits for the exact
+preview output's presentation result. Hosts continue rendering pending feedback
+without inventing more pointer events. The independent public consumer verifies
+this contract without egui or native hosting. The complete adapter gesture
+matrix remains in progress; see `docs/VALIDATION.md` for evidence and limits.
 
 ## Features
 

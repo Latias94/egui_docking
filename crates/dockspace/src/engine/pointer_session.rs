@@ -28,7 +28,9 @@ impl DockEngine {
             });
         }
         match stream.lease().scope() {
-            PointerProviderScope::SurfaceLocal(_) => Ok(PointerCaptureOwner::ProviderEndpoint),
+            PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_) => {
+                Ok(PointerCaptureOwner::ProviderEndpoint)
+            }
             PointerProviderScope::DesktopGlobal => self
                 .interaction
                 .active_presentation_authority()
@@ -53,7 +55,7 @@ impl DockEngine {
             });
         }
         match stream.lease().scope() {
-            PointerProviderScope::SurfaceLocal(_) => {
+            PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_) => {
                 Ok(PointerEventDeliveryOwner::ProviderEndpoint)
             }
             PointerProviderScope::DesktopGlobal => self
@@ -98,7 +100,7 @@ impl DockEngine {
             JournalCaptureActionGate::Authorized => Ok((true, None)),
             JournalCaptureActionGate::Unavailable => Ok((
                 false,
-                self.cancel_journal_owner(
+                self.cancel_gesture_owner(
                     cause,
                     owner,
                     InteractionCancelReason::DeliveryAuthorityUnavailable,
@@ -107,7 +109,7 @@ impl DockEngine {
             )),
             JournalCaptureActionGate::Lost => Ok((
                 false,
-                self.cancel_journal_owner(
+                self.cancel_gesture_owner(
                     cause,
                     owner,
                     InteractionCancelReason::DeliveryOwnerLost,
@@ -128,7 +130,7 @@ impl DockEngine {
         })?;
         if matches!(
             stream.lease().scope(),
-            PointerProviderScope::SurfaceLocal(_)
+            PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_)
         ) {
             // The immutable local lease already confines delivery to one
             // endpoint. `None` means that endpoint delivered without platform
@@ -210,7 +212,7 @@ impl DockEngine {
             JournalCaptureActionGate::Unavailable => Ok((false, None)),
             JournalCaptureActionGate::Lost => Ok((
                 false,
-                self.cancel_journal_owner(
+                self.cancel_gesture_owner(
                     cause,
                     owner,
                     InteractionCancelReason::CaptureLost,
@@ -246,7 +248,7 @@ impl DockEngine {
         };
         if capture_lost {
             return Ok(self
-                .cancel_journal_owner(
+                .cancel_gesture_owner(
                     cause,
                     owner,
                     InteractionCancelReason::CaptureLost,
@@ -300,7 +302,7 @@ impl DockEngine {
         };
 
         let (expected, compatible) = match stream.lease().scope() {
-            PointerProviderScope::SurfaceLocal(_) => (
+            PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_) => (
                 PointerCaptureOwner::ProviderEndpoint,
                 matches!(
                     actual,
@@ -394,27 +396,30 @@ impl DockEngine {
         }
     }
 
-    pub(super) fn cancel_journal_owner(
+    /// Cancels an exact journal or local-response owner through one terminal path.
+    pub(super) fn cancel_gesture_owner(
         &mut self,
         cause: ReductionCause,
         owner: GestureOwner,
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
-        if self.interaction.active_stream() != owner.stream() {
+        if self.interaction.active_owner() != Some(owner) {
             return Ok(None);
         }
-        self.viewport
-            .end_drag_routing(owner.pointer())
-            .map_err(|source| EngineError::Viewport {
-                input: self.last_input,
-                source,
-            })?;
+        if let Some(pointer) = owner.pointer_if_physical() {
+            self.viewport
+                .end_drag_routing(pointer)
+                .map_err(|source| EngineError::Viewport {
+                    input: self.last_input,
+                    source,
+                })?;
+        }
         let status =
             self.interaction
                 .cancel_owner(owner)
                 .ok_or(EngineError::ReductionCauseInvariant {
-                    detail: "active journal stream could not cancel its exact gesture owner",
+                    detail: "active gesture could not cancel its exact owner",
                 })?;
         interaction_events.push(InteractionEvent::new_caused(
             cause,
@@ -463,5 +468,120 @@ impl DockEngine {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Node, RootRecord, SurfacePresentation};
+    use crate::ids::{ItemId, ReducerTickId};
+    use crate::interaction::DragSessionId;
+
+    fn local_drag() -> (DockEngine, GestureOwner, DragSessionId) {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(1);
+        let item = ItemId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([item]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder.build().expect("test workspace is valid");
+        let source = workspace
+            .capture_item_source(root, tabs, item)
+            .expect("test drag source exists");
+        let mut engine =
+            DockEngine::new(workspace, DockPolicy::default()).expect("test engine is valid");
+        let owner = GestureOwner::LocalResponse { surface };
+        let start = DragArmStart {
+            epoch: engine.version.epoch(),
+            owner,
+            journal_capture_authority: None,
+            button: PointerButton::Primary,
+            payload: MovePayload::Item(source),
+            source_surface: surface,
+            initial_pointer: None,
+            journal_threshold_origin: None,
+            complete_root: None,
+            partial_detachable: false,
+            origin: FrozenDragOrigin::Workspace,
+            source_validated_at: engine.version,
+            presentation: DragGestureAuthority::LocalReady {
+                surface,
+                coordinates: engine.capture_surface_coordinates(surface),
+            },
+            source_layout_facts: None,
+            journal_source_geometry: None,
+            continuation: None,
+        };
+        let (session, _) = engine.interaction.arm_drag(start).expect("test drag arms");
+        engine
+            .interaction
+            .begin_drag(session, owner, PointerButton::Primary)
+            .expect("test drag begins");
+        (engine, owner, session)
+    }
+
+    #[test]
+    fn local_preview_cancellation_preserves_cause_and_terminates_once() {
+        let (mut engine, owner, session) = local_drag();
+        let cause = ReductionCause::SurfacePresentationObservationBatch {
+            tick: ReducerTickId::new(1),
+        };
+        let reason = InteractionCancelReason::SceneUnavailable;
+        let mut events = Vec::new();
+        let outcome = engine
+            .apply_preview_evaluation(
+                cause,
+                owner,
+                session,
+                PreviewEvaluation::without_affordance(PreviewDecision::Cancel(reason)),
+                &mut events,
+            )
+            .expect("local preview cancellation must not require a physical pointer");
+        assert_eq!(
+            outcome,
+            Some(InteractionOutcome::Cancelled {
+                status: InteractionStatus::Dragging { session },
+                reason,
+            })
+        );
+        assert_eq!(engine.interaction.status(), InteractionStatus::Idle);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].cause(), cause);
+        assert_eq!(
+            engine
+                .cancel_gesture_owner(cause, owner, reason, &mut events)
+                .expect("repeated cancellation is harmless"),
+            None
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn cancelling_another_local_surface_preserves_the_active_drag() {
+        let (mut engine, _, session) = local_drag();
+        let cause = ReductionCause::SurfacePresentationObservationBatch {
+            tick: ReducerTickId::new(1),
+        };
+        let mut events = Vec::new();
+        assert_eq!(
+            engine
+                .cancel_gesture_owner(
+                    cause,
+                    GestureOwner::LocalResponse {
+                        surface: SurfaceId::new(2),
+                    },
+                    InteractionCancelReason::LocalResponseCancelled,
+                    &mut events,
+                )
+                .expect("another local owner cannot cancel this gesture"),
+            None
+        );
+        assert_eq!(
+            engine.interaction.status(),
+            InteractionStatus::Dragging { session }
+        );
+        assert!(events.is_empty());
     }
 }

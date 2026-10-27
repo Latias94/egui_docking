@@ -380,7 +380,7 @@ impl DockspaceSession {
         #[cfg(feature = "serde")] mut document_restore: Option<PreparedRuntimeDocumentRestore>,
         #[cfg(not(feature = "serde"))] _document_restore: Option<()>,
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
-        self.reconcile_surface_pointer_provider()?;
+        self.reconcile_pointer_provider()?;
         self.presentation
             .reclaim_quiescent_streams(&mut self.engine, self.presentation_host)?;
         if let Some(native) = self.native.as_mut() {

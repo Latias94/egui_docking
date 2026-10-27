@@ -30,6 +30,9 @@ mod surface_runtime;
 mod surface_vacancy;
 mod tab_strip_input;
 
+#[cfg(test)]
+use crate::behavior_tests::support as test_support;
+
 pub use self::pointer_proof::PointerReceiverGeometryError;
 use self::pointer_proof::{
     is_tab_list_menu_click, journal_position_key, pointer_receiver_candidate_spec,
@@ -2712,13 +2715,10 @@ impl DockEngine {
             .retire_host(host, tick, reason)
             .map_err(presentation_ledger_error)?;
         candidate.observe_pending_release_host_retirement(retirement.retired_outputs());
-        let retired_pointer_provider =
-            candidate.pointer_journal.active_lease().filter(|provider| {
-                provider
-                    .scope()
-                    .surface_local()
-                    .is_some_and(|scope| scope.host() == host)
-            });
+        let retired_pointer_provider = candidate
+            .pointer_journal
+            .active_lease()
+            .filter(|provider| provider.scope().local_host() == Some(host));
         if let Some(provider) = retired_pointer_provider {
             candidate
                 .pointer_journal

@@ -418,6 +418,7 @@ impl DockEngine {
                 .active_lease()
                 .filter(|lease| match lease.scope() {
                     PointerProviderScope::DesktopGlobal => true,
+                    PointerProviderScope::HostLocal(_) => false,
                     PointerProviderScope::SurfaceLocal(local) => {
                         matches!(local.endpoint(), SurfaceLocalPointerEndpoint::Native(_))
                     }
@@ -588,17 +589,16 @@ impl DockEngine {
     /// engine authority domain.
     ///
     /// The provider owns a complete, strictly ordered edge journal across
-    /// future host frames. Surface-local producers must use
-    /// [`Self::create_surface_local_pointer_provider`] so producer shutdown can
-    /// be proved before retirement. Creating a second live provider is
-    /// rejected.
+    /// future host frames. Local producers require an affine producer so
+    /// shutdown can be proved before retirement. Creating a second live
+    /// provider is rejected.
     ///
     /// This API allocates transport authority only; a journal still becomes
     /// effective exclusively through a completed [`CoreHostFrame`].
     ///
     /// # Errors
     ///
-    /// Returns a typed error when `scope` is surface-local or another provider
+    /// Returns a typed error when `scope` is local or another provider
     /// is already active.
     #[doc(hidden)]
     pub fn create_pointer_provider(
@@ -606,7 +606,7 @@ impl DockEngine {
         scope: PointerProviderScope,
         committed_through: crate::pointer_journal::PointerEdgeSequence,
     ) -> Result<PointerInputLease, EngineError> {
-        if scope.surface_local().is_some() {
+        if scope.is_local() {
             return Err(EngineError::SurfaceLocalPointerProducerRequired);
         }
         self.create_pointer_provider_inner(scope, committed_through)
@@ -644,6 +644,26 @@ impl DockEngine {
         let scope = self.freeze_native_scope(scope)?;
         let lease = self.create_pointer_provider_inner(
             PointerProviderScope::SurfaceLocal(scope),
+            committed_through,
+        )?;
+        let provider = SurfaceLocalPointerProvider::new(lease, committed_through);
+        self.pointer_journal
+            .bind_surface_local_producer(lease, provider.monitor());
+        Ok(provider)
+    }
+
+    /// Creates one affine pointer producer for a presentation host.
+    ///
+    /// Enrollment validates only the host lease. Each edge's presented routes
+    /// are validated independently, so removing one surface does not retire
+    /// the host's producer.
+    pub(crate) fn create_host_local_pointer_provider(
+        &mut self,
+        host: PresentationHostLease,
+        committed_through: PointerEdgeSequence,
+    ) -> Result<SurfaceLocalPointerProvider, EngineError> {
+        let lease = self.create_pointer_provider_inner(
+            PointerProviderScope::HostLocal(host),
             committed_through,
         )?;
         let provider = SurfaceLocalPointerProvider::new(lease, committed_through);
@@ -738,14 +758,14 @@ impl DockEngine {
     /// Retirement, exact-owner gesture cancellation, drag-route cleanup, and
     /// the durable lease tombstone publish in one reducer boundary. A retired
     /// lease cannot submit another journal or reuse a receiver candidate.
-    /// Surface-local producers must drain and use
+    /// Local producers must drain and use
     /// [`Self::retire_quiesced_surface_local_pointer_provider`].
     #[doc(hidden)]
     pub fn retire_pointer_provider(
         &mut self,
         provider: PointerInputLease,
     ) -> Result<EngineTransition, EngineError> {
-        if provider.scope().surface_local().is_some() {
+        if provider.scope().is_local() {
             return Err(EngineError::SurfaceLocalPointerProducerRequired);
         }
         let before = self.version;
@@ -955,6 +975,13 @@ impl DockEngine {
         &self,
         scope: PointerProviderScope,
     ) -> Result<(), EngineError> {
+        if let PointerProviderScope::HostLocal(host) = scope {
+            return self
+                .presentation_authority
+                .presentation
+                .validate_lease(host)
+                .map_err(presentation_ledger_error);
+        }
         let Some(local) = scope.surface_local() else {
             return Ok(());
         };
@@ -1141,5 +1168,119 @@ fn platform_enrollment_error(
             EngineError::PlatformProvider { source }
         }
         source => EngineError::Viewport { input, source },
+    }
+}
+
+#[cfg(test)]
+mod host_local_tests {
+    use super::*;
+    use crate::graph::{RootRecord, SurfacePresentation};
+
+    fn engine() -> DockEngine {
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        builder.set_root(RootId::new(1), RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(
+            SurfaceId::new(1),
+            SurfacePresentation::with_main(RootId::new(1)),
+        );
+        DockEngine::new(builder.build().expect("workspace"), DockPolicy::default()).expect("engine")
+    }
+
+    #[test]
+    fn host_local_enrollment_needs_no_surface_stream_and_retirement_is_affine() {
+        let mut engine = engine();
+        let host = engine.create_presentation_host().expect("host");
+        let scope = PointerProviderScope::HostLocal(host);
+        assert!(matches!(
+            engine.create_pointer_provider(scope, PointerEdgeSequence::new(0)),
+            Err(EngineError::SurfaceLocalPointerProducerRequired)
+        ));
+        let producer = engine
+            .create_host_local_pointer_provider(host, PointerEdgeSequence::new(0))
+            .expect("host-local producer");
+        let lease = producer.lease();
+        assert!(engine.validate_pointer_provider_scope(scope).is_ok());
+        assert!(matches!(
+            engine.retire_pointer_provider(lease),
+            Err(EngineError::SurfaceLocalPointerProducerRequired)
+        ));
+        let mut receipt = producer.drain().expect("drain");
+        let _ = engine
+            .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+            .expect("retire");
+        assert!(receipt.is_consumed());
+        assert_eq!(engine.pointer_provider(), None);
+    }
+
+    #[test]
+    fn host_local_foreign_host_rejection_preserves_enrollment() {
+        let mut engine = engine();
+        let mut other = self::engine();
+        let foreign_host = other.create_presentation_host().expect("foreign host");
+        assert!(
+            engine
+                .create_host_local_pointer_provider(foreign_host, PointerEdgeSequence::new(0))
+                .is_err()
+        );
+        assert_eq!(engine.pointer_provider(), None);
+        let host = engine.create_presentation_host().expect("local host");
+        let producer = engine
+            .create_host_local_pointer_provider(host, PointerEdgeSequence::new(0))
+            .expect("local producer");
+        drop(producer);
+        assert!(
+            engine
+                .reap_abandoned_surface_local_pointer_provider()
+                .expect("reap")
+                .is_some()
+        );
+        assert_eq!(engine.pointer_provider(), None);
+    }
+
+    #[test]
+    fn host_local_host_retirement_revokes_and_compacts_the_provider() {
+        let mut engine = engine();
+        let host = engine.create_presentation_host().expect("host");
+        let producer = engine
+            .create_host_local_pointer_provider(host, PointerEdgeSequence::new(0))
+            .expect("host-local producer");
+        let provider = producer.lease();
+        let tick = ReducerTickId::new(1);
+        engine
+            .presentation_authority
+            .presentation
+            .retire_host(
+                host,
+                tick,
+                PresentationHostRetirementReason::ExplicitShutdown,
+            )
+            .expect("host retirement");
+        assert!(
+            engine
+                .validate_pointer_provider_scope(provider.scope())
+                .is_err()
+        );
+        let retired = engine
+            .reconcile_pointer_provider_scope(
+                ReductionCause::PointerProviderRetirement { tick, provider },
+                &mut Vec::new(),
+            )
+            .expect("scope reconciliation");
+        assert_eq!(retired, Some(provider));
+        let mut receipt = producer.drain().expect("drain revoked producer");
+        let outcome = engine
+            .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+            .expect("compact revoked provider");
+        assert_eq!(
+            outcome.disposition(),
+            crate::pointer_journal::SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired,
+        );
+        assert!(receipt.is_consumed());
+        assert!(
+            engine
+                .create_host_local_pointer_provider(host, PointerEdgeSequence::new(0))
+                .is_err()
+        );
     }
 }

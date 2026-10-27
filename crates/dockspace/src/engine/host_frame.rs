@@ -1032,12 +1032,12 @@ impl CoreHostFrame {
         if let Some(provider) = pointer_provider {
             candidate.validate_pointer_provider_scope(provider.scope())?;
         }
-        if let Some(local) = pointer_provider.and_then(|lease| lease.scope().surface_local())
-            && local.host() != presentation_host
+        if let Some(host) = pointer_provider.and_then(|lease| lease.scope().local_host())
+            && host != presentation_host
         {
             return Err(EngineError::PointerProviderHostOutsideFrameScope {
                 provider: pointer_provider.expect("surface-local provider was present"),
-                host: local.host(),
+                host,
             });
         }
         let backend_ingress = candidate.backend_ingress.active();
@@ -1696,7 +1696,7 @@ impl CoreHostFrame {
         {
             return self.reject(CoreHostFrameError::BackendIngressRequired);
         }
-        if provider.scope().surface_local().is_some()
+        if provider.scope().is_local()
             && authority != PointerJournalSubmissionAuthority::SurfaceLocalProducer
         {
             return self

@@ -320,7 +320,7 @@ impl DockEngine {
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
-        let observed = match (scroll.delta(), scroll.modifiers()) {
+        let mut observed = match (scroll.delta(), scroll.modifiers()) {
             (
                 Some(ScrollDelta::PhysicalPixels {
                     coordinates: Authority::Unknown(_),
@@ -347,10 +347,7 @@ impl DockEngine {
                 .validate_scroll_delivery_endpoint(cause, stream, edge, presentation)?
                 .is_none()
         {
-            return Err(scroll_invariant(
-                cause,
-                "known scroll receiver receipt has no exact delivery endpoint",
-            ));
+            observed = ObservedScrollReceiver::Unknown;
         }
         match scroll.phase() {
             ScrollPhase::Discrete => {
@@ -938,8 +935,8 @@ impl DockEngine {
         edge: &PointerEdge,
         presentation: &JournalSurfacePresentation,
     ) -> Result<Option<ScrollDeliveryEndpoint>, EngineError> {
-        let submitted = match edge.kind() {
-            PointerEdgeKind::Scrolled(scroll) => scroll.delivery(),
+        let scroll = match edge.kind() {
+            PointerEdgeKind::Scrolled(scroll) => scroll,
             _ => {
                 return Err(scroll_invariant(
                     cause,
@@ -947,6 +944,7 @@ impl DockEngine {
                 ));
             }
         };
+        let submitted = scroll.delivery();
         let authority = presentation.authority();
         let host = self
             .presentation_authority
@@ -977,6 +975,35 @@ impl DockEngine {
         }
         let expected_owner = match stream.lease().scope() {
             PointerProviderScope::SurfaceLocal(_) => PointerEventDeliveryOwner::ProviderEndpoint,
+            PointerProviderScope::HostLocal(host) => {
+                if endpoint.host() != host || endpoint.binding().is_some() {
+                    return Err(scroll_invariant(
+                        cause,
+                        "host-local scroll presentation differs from its headless host endpoint",
+                    ));
+                }
+                // Locked tails use the retained receiver probe, not a new pointer location.
+                let locked = matches!(scroll.phase(), ScrollPhase::Update | ScrollPhase::End)
+                    && scroll.sequence().is_some_and(|token| {
+                        let key =
+                            ScrollSequenceKey::new(stream.lease(), stream, scroll.device(), token);
+                        self.scroll_interaction.active.get(&key).is_some_and(|session| {
+                            matches!(
+                                session.disposition,
+                                ActiveScrollDisposition::Owned(owner) if owner.endpoint == endpoint
+                            )
+                        })
+                    });
+                if !locked {
+                    let Some(route) = self.journal_host_local_manipulation(edge) else {
+                        return Ok(None);
+                    };
+                    if route.surface() != endpoint.surface() || route.authority() != authority {
+                        return Ok(None);
+                    }
+                }
+                PointerEventDeliveryOwner::ProviderEndpoint
+            }
             PointerProviderScope::DesktopGlobal => {
                 let Some(binding) = endpoint.binding() else {
                     return Err(scroll_invariant(
@@ -1468,6 +1495,261 @@ fn scroll_invariant(cause: ReductionCause, detail: impl Into<String>) -> EngineE
 mod tests {
     use super::*;
     use crate::intent::PointerId;
+
+    #[test]
+    fn host_local_locked_scroll_accepts_unknown_routes_through_its_terminal_edge() {
+        use super::super::test_support::{
+            MeasurementProfile, TestPresentationHost, complete_host_frame_with_current_outputs,
+            complete_host_frame_with_retained_or_unavailable, measurements, publish_surface_with,
+        };
+        use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+        use crate::intent::AuthorityUnavailableReason;
+        use crate::pointer_journal::{
+            FiniteScrollVector, HostLocalPointerRoute, PointerEdgeJournal, ScrollMomentum,
+        };
+        use crate::pointer_receiver::{
+            PointerReceiverDelivery, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
+            PresentedPointerReceiverObservation,
+        };
+
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(10);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([
+            ItemId::new(1),
+            ItemId::new(2),
+            ItemId::new(3),
+            ItemId::new(4),
+        ]));
+        builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let mut engine = DockEngine::new(
+            builder.build().expect("scroll workspace is valid"),
+            DockPolicy::default(),
+        )
+        .expect("scroll engine is valid");
+        let mut host = TestPresentationHost::new(&mut engine);
+        let bounds = LogicalRect::new(0.0, 0.0, 160.0, 180.0).expect("scroll bounds are valid");
+        let profile = MeasurementProfile {
+            tab_content_width: 88.0,
+            ..MeasurementProfile::default()
+        };
+        publish_surface_with(&mut engine, &mut host, surface, bounds, profile);
+        let provider = engine
+            .create_host_local_pointer_provider(host.lease(), PointerEdgeSequence::new(0))
+            .expect("host-local scroll provider is admitted");
+        let projection = engine
+            .interaction_projection(surface)
+            .expect("overflowing strip is interactive");
+        let region = projection
+            .hit_manifest()
+            .regions()
+            .iter()
+            .find(|region| {
+                matches!(
+                    region.id().kind(),
+                    PresentationHitRegionKind::TabStripScroll(_)
+                )
+            })
+            .expect("overflowing strip publishes a scroll receiver");
+        let receiver = region.id();
+        let rect = region.hit().rect();
+        let point = LogicalPoint::new(
+            rect.x() + rect.width() * 0.5,
+            rect.y() + rect.height() * 0.5,
+        )
+        .expect("receiver midpoint is finite");
+        let initial_route = HostLocalPointerRoute::new(projection.authority(), point);
+        let endpoint = ScrollDeliveryEndpoint::new(
+            host.lease(),
+            surface,
+            None,
+            projection.authority().coordinate_generation(),
+        )
+        .expect("headless endpoint belongs to the presentation host");
+        let token = ScrollSequenceToken::new(41);
+        let delta =
+            ScrollDelta::Lines(FiniteScrollVector::new(-1.0, 0.0).expect("scroll delta is finite"));
+
+        for (index, phase, known_receiver, delta) in [
+            (1, ScrollPhase::Begin, true, None),
+            (2, ScrollPhase::Update, true, Some(delta)),
+            (3, ScrollPhase::Update, false, Some(delta)),
+            (4, ScrollPhase::End, true, None),
+        ] {
+            let scroll = ScrollEdge::new(
+                ScrollDeviceId::new(1),
+                Some(token),
+                phase,
+                delta,
+                Authority::Known(ScrollMomentum::Direct),
+                Authority::Known(ScrollModifiers::default()),
+                Authority::Known(endpoint),
+            )
+            .expect("phaseful scroll edge is valid");
+            let manipulation = if index == 1 {
+                Authority::Known(initial_route)
+            } else {
+                Authority::Unknown(AuthorityUnavailableReason::NotReported)
+            };
+            let edge = PointerEdge::new(
+                PointerEdgeSequence::new(index),
+                PointerId::new(7),
+                PointerEdgeKind::Scrolled(scroll),
+                PointerEdgeLocation::HostLocal {
+                    manipulation,
+                    hover: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                },
+                Authority::Known(PointerCaptureOwner::None),
+            );
+            let mut frame = host.begin(&engine);
+            frame
+                .submit_surface_pointer_journal(
+                    &provider,
+                    PointerEdgeJournal::new(
+                        PointerEdgeSequence::new(index - 1),
+                        PointerEdgeSequence::new(index),
+                        vec![edge],
+                    )
+                    .expect("scroll journal is contiguous"),
+                )
+                .expect("scroll edge stages without a fresh route after begin");
+            let candidate = frame
+                .pointer_receiver_candidates()
+                .expect("scroll edge requests receiver evidence")
+                .candidates()[0]
+                .clone();
+            if index > 1 {
+                assert!(matches!(
+                    candidate.scroll_challenge(),
+                    Some(ScrollReceiverChallenge::Locked { receiver: actual, .. })
+                        if actual == receiver
+                ));
+            }
+            let observation = if known_receiver {
+                let projection = frame
+                    .view()
+                    .interaction_projection(surface)
+                    .expect("locked scroll output remains interactive");
+                let delivery = PointerReceiverDelivery::new(
+                    projection,
+                    PointerReceiverDeliveryDisposition::Dock(receiver),
+                )
+                .expect("delivery binds the locked receiver to its exact output");
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(delivery),
+                    ])
+                    .expect("scroll delivery answers the requested probe"),
+                )
+            } else {
+                PointerReceiverObservation::Unknown(PointerReceiverUnknownReason::NotReported)
+            };
+            frame
+                .submit_pointer_receiver_receipts(
+                    PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                        .expect("scroll receipt roster is exact"),
+                )
+                .expect("unknown routes do not turn a locked tail into an invariant failure");
+            complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+            let transition = host.finish(frame, &mut engine);
+            let outcomes = transition.reduced_pointer_edges()[0].interaction_outcomes();
+            match index {
+                1 => assert!(matches!(
+                    outcomes,
+                    [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { receiver: actual, .. })]
+                        if *actual == receiver
+                )),
+                2 => assert!(matches!(
+                    outcomes,
+                    [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
+                        if application.receiver() == receiver && application.offset() == 40.0
+                )),
+                3 => assert!(matches!(
+                    outcomes,
+                    [InteractionOutcome::Scroll(
+                        ScrollReductionOutcome::Suppressed {
+                            reason: ScrollSuppressionReason::ReceiverUnknown,
+                            ..
+                        }
+                    )]
+                )),
+                4 => assert!(matches!(
+                    outcomes,
+                    [InteractionOutcome::Scroll(ScrollReductionOutcome::Terminated {
+                        receiver: Some(actual), reason: ScrollTerminationReason::Completed, ..
+                    })] if *actual == receiver
+                )),
+                _ => unreachable!(),
+            }
+            if index == 2 {
+                assert!(engine.interaction_projection(surface).is_none());
+                // Recompile, paint and observe the changed offset without adding input edges.
+                for publication_step in 0..3 {
+                    let mut frame = host.begin(&engine);
+                    let watermark = provider.committed_through();
+                    frame
+                        .submit_surface_pointer_journal(
+                            &provider,
+                            PointerEdgeJournal::new(watermark, watermark, Vec::new())
+                                .expect("paint-only journal preserves the pointer watermark"),
+                        )
+                        .expect("paint-only frame stages an empty pointer journal");
+                    frame
+                        .submit_pointer_receiver_receipts(
+                            PointerReceiverReceiptBatch::new([])
+                                .expect("paint-only journal has no receiver receipts"),
+                        )
+                        .expect("empty receiver roster reduces");
+                    let publication = match publication_step {
+                        0 => {
+                            let token = frame
+                                .view()
+                                .begin_surface_contribution(surface)
+                                .expect("scroll surface remains in the frozen roster");
+                            let contribution = frame
+                                .view()
+                                .prepare_surface_contribution(
+                                    token,
+                                    measurements(&engine, surface, bounds, profile),
+                                )
+                                .expect("updated scroll measurements are complete");
+                            frame
+                                .push_surface_contribution(contribution)
+                                .expect("updated surface contribution is unique");
+                            host.finish(frame, &mut engine)
+                        }
+                        1 => {
+                            let frame = complete_host_frame_with_current_outputs(&engine, frame);
+                            host.finish_presentation(frame, &mut engine)
+                        }
+                        _ => {
+                            complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+                            host.finish(frame, &mut engine)
+                        }
+                    };
+                    assert!(publication.reduced_pointer_edges().is_empty());
+                    assert!(
+                        !publication
+                            .interaction_events()
+                            .iter()
+                            .any(|event| matches!(
+                                event.kind(),
+                                InteractionEventKind::ScrollTerminated { .. }
+                            ))
+                    );
+                }
+                assert_eq!(provider.committed_through(), PointerEdgeSequence::new(2));
+                let refreshed = engine
+                    .interaction_projection(surface)
+                    .expect("painted updated output is authoritative before the next input");
+                assert_ne!(refreshed.authority(), initial_route.authority());
+                assert_eq!(refreshed.plan().tab_bar_records()[0].scroll_offset(), 40.0);
+            }
+        }
+        assert!(engine.scroll_interaction.active.is_empty());
+        assert_eq!(provider.committed_through(), PointerEdgeSequence::new(4));
+    }
 
     #[test]
     fn shift_projection_keeps_raw_f64_precision_in_core() {

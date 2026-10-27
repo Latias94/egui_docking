@@ -14,8 +14,15 @@ after whole-surface redocking or pane-selection invalidation, abandoned outputs 
 newer presentation prefixes, and semantic layout commands without registering a pointer
 producer or enabling native hosting.
 
-This is the U13 public-contract proof, not an actual UI event pipeline or completion
-of the full 60-case matrix. The generic UI event pipeline belongs to U3.
+The U3 host input tests submit complete ordered batches across two logical
+surfaces with identical bounds. Source manipulation and target hover carry
+independent exact presentation routes. Release waits for actual recording-output
+settlement, with no synthetic pointer events. Negative journeys exercise unknown
+routes, stale authority, failed frames, and producer retirement.
+
+This is public-contract and renderer-neutral input evidence. It does not prove
+physical OS event delivery, actual GPU presentation, or completion of the full
+60-case product matrix. The egui ordered-input migration remains part of U3.
 
 Run the independent gates from the repository root:
 

@@ -720,7 +720,7 @@ impl DockEngine {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_local_tab_gesture(
         &mut self,
-        input: InputSequence,
+        _input: InputSequence,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
@@ -777,7 +777,7 @@ impl DockEngine {
                 interaction_events,
             )?,
             LocalTabGesturePhase::Cancel => {
-                self.cancel_local_tab_gesture(input, owner, source, interaction_events)
+                self.cancel_local_tab_gesture(cause, owner, source, interaction_events)?
             }
         };
         Ok(InputOutcome::InteractionProcessed {
@@ -982,7 +982,7 @@ impl DockEngine {
             Ok(session) => session,
             Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
         };
-        let mut drag = self
+        let drag = self
             .interaction
             .active_drag(session)
             .map_err(|source| EngineError::PointerInteractionInvariant {
@@ -1010,99 +1010,39 @@ impl DockEngine {
                     detail: "local release position advance ended the drag without an outcome",
                 });
             }
-            drag = self
-                .interaction
-                .active_drag(session)
-                .map_err(|source| EngineError::PointerInteractionInvariant {
-                    cause,
-                    detail: format!(
-                        "local tab release lost its drag after final position advance: {source:?}"
-                    ),
-                })?
-                .clone();
         }
-        if drag.preview().is_some() && !self.drag_preview_authority_is_current(&drag) {
-            return self.cancel_local_tab_release(cause, session, interaction_events);
-        }
-        let Some(release_decision) = Self::frozen_drag_release_decision(&drag) else {
-            return self.cancel_local_tab_release(cause, session, interaction_events);
-        };
-        let drag = self
-            .interaction
-            .take_drag_for_release(session, owner, PointerButton::Primary)
-            .map_err(|source| EngineError::PointerInteractionInvariant {
-                cause,
-                detail: format!("local tab release could not consume drag: {source:?}"),
-            })?;
-        if drag.preview().is_some_and(|published| {
-            !published.painted()
-                && Self::release_decision_matches_preview(published, &release_decision)
-        }) {
-            return self.defer_drag_release(
-                cause,
-                focus_causal,
-                session,
-                drag,
-                None,
-                release_decision,
-                policy,
-            );
-        }
-        self.finish_drag_release(
+        self.finish_drag_release_after_evaluation(
             cause,
             focus_causal,
+            owner,
             session,
-            drag,
-            release_decision,
             policy,
             events,
             interaction_events,
         )
     }
 
-    fn cancel_local_tab_release(
-        &mut self,
-        cause: ReductionCause,
-        session: crate::interaction::DragSessionId,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let status = self.interaction.cancel_drag(session).map_err(|source| {
-            EngineError::PointerInteractionInvariant {
-                cause,
-                detail: format!("local tab release cancellation failed: {source:?}"),
-            }
-        })?;
-        let reason = InteractionCancelReason::LocalResponseCancelled;
-        interaction_events.push(InteractionEvent::new_caused(
-            cause,
-            self.version,
-            InteractionEventKind::Cancelled { status, reason },
-        ));
-        Ok(InteractionOutcome::Cancelled { status, reason })
-    }
-
     fn cancel_local_tab_gesture(
         &mut self,
-        input: InputSequence,
+        cause: ReductionCause,
         owner: GestureOwner,
         source: TabGestureSource,
         interaction_events: &mut Vec<InteractionEvent>,
-    ) -> InteractionOutcome {
-        let Ok(session) = self.local_tab_session(owner, source) else {
-            return InteractionOutcome::Rejected(InteractionRejection::NoActiveGesture);
+    ) -> Result<InteractionOutcome, EngineError> {
+        let Ok(_) = self.local_tab_session(owner, source) else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::NoActiveGesture,
+            ));
         };
-        match self.interaction.cancel_drag(session) {
-            Ok(status) => {
-                let reason = InteractionCancelReason::LocalResponseCancelled;
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::Cancelled { status, reason },
-                ));
-                InteractionOutcome::Cancelled { status, reason }
-            }
-            Err(error) => InteractionOutcome::Rejected(error),
-        }
+        self.cancel_gesture_owner(
+            cause,
+            owner,
+            InteractionCancelReason::LocalResponseCancelled,
+            interaction_events,
+        )?
+        .ok_or(EngineError::ReductionCauseInvariant {
+            detail: "validated local tab cancellation could not cancel its owner",
+        })
     }
 
     fn local_tab_session(
@@ -1302,7 +1242,7 @@ impl DockEngine {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_local_splitter_gesture(
         &mut self,
-        input: InputSequence,
+        _input: InputSequence,
         cause: ReductionCause,
         expected: WorkspaceVersion,
         application_base: WorkspaceVersion,
@@ -1386,7 +1326,12 @@ impl DockEngine {
                             cause, owner, session, target, current, policy,
                         )?;
                         if let InteractionOutcome::Rejected(rejection) = update {
-                            let _ = self.interaction.cancel_resize(session);
+                            let _ = self.cancel_gesture_owner(
+                                cause,
+                                owner,
+                                InteractionCancelReason::LocalResponseCancelled,
+                                interaction_events,
+                            )?;
                             return Ok(self.local_response_rejection(rejection));
                         }
                     }
@@ -1417,16 +1362,18 @@ impl DockEngine {
                 )?
             }
             LocalSplitterGesturePhase::Cancel => {
-                let session = match self.local_resize_session(surface, target) {
-                    Ok(session) => session,
-                    Err(error) => return Ok(self.local_response_rejection(error)),
-                };
-                self.cancel_resize(
-                    input,
-                    session,
+                if let Err(error) = self.local_resize_session(surface, target) {
+                    return Ok(self.local_response_rejection(error));
+                }
+                self.cancel_gesture_owner(
+                    cause,
+                    owner,
                     InteractionCancelReason::LocalResponseCancelled,
                     interaction_events,
-                )
+                )?
+                .ok_or(EngineError::ReductionCauseInvariant {
+                    detail: "validated local splitter cancellation could not cancel its owner",
+                })?
             }
         };
         Ok(InputOutcome::InteractionProcessed {
