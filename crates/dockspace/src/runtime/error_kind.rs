@@ -465,6 +465,7 @@ const fn pointer_receiver_geometry_error_kind(
         PointerReceiverGeometryError::LogicalPointUnavailable { .. }
         | PointerReceiverGeometryError::AbsenceSurfaceMismatch { .. }
         | PointerReceiverGeometryError::DesktopRoutePresentationMismatch { .. }
+        | PointerReceiverGeometryError::HostLocalHoverPresentationMismatch { .. }
         | PointerReceiverGeometryError::SurfaceMismatch { .. }
         | PointerReceiverGeometryError::RegionDoesNotCoverPoint { .. }
         | PointerReceiverGeometryError::ReceiverWinnerMismatch { .. } => {

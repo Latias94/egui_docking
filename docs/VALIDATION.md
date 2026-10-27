@@ -51,7 +51,7 @@ remain explicitly scheduled for U3b retirement.
 
 | Gate | Result | Scope |
 | --- | --- | --- |
-| Root workspace, all features and targets | 1,584 passed | Core, conformance and official adapter; includes source-continuation and locked-scroll regressions |
+| Root workspace, all features and targets | 1,585 passed | Core, conformance and official adapter; includes source-continuation, locked-scroll and exact hover-emission regressions |
 | Public engine host, default and serde | 17 passed each | Seven new public pointer journeys; normal dependencies contain no egui, Winit or WGPU |
 | Product harness, all features | 90 passed, 1 ignored | Original single-call Burst exclusion remains open |
 | Official harness, all features | 12 passed | Includes caller-owned WGPU demo compilation |
@@ -73,6 +73,18 @@ comparison fails the complete cross-surface release test. Removing source
 continuation fails the unselected-tab release test. Production code was restored
 before the final gates. These recording and unit tests do not establish OS
 input delivery or physical GPU presentation.
+
+A follow-up proof review added exact route-authority validation before dispatching
+any known HostLocal hover disposition. `NoReceiver` and `Blocked` now receive the
+same exact emission binding as a `Dock` result, even though neither goes through
+Dock-region geometry validation. The regression produces two actual presentations
+with identical semantic output and different emissions: generic semantic receipt
+validation accepts their unchanged interaction geometry, while the HostLocal
+route check rejects the mixed emission. Matching route/receipt pairs remain valid.
+Removing this check makes the regression fail. The workspace, both public-host
+feature gates, correctness/suspicious Clippy, strict rustdoc and formatting were
+rerun after restoration. Preview position remains derived from the validated hover
+position; delivery and threshold continue using the independent manipulation route.
 
 U3 remains open. The egui adapter still reconstructs pointer phases from its
 frame-level `Response`, and its original single-call Burst matrix is still

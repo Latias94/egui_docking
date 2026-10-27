@@ -294,6 +294,18 @@ pub enum PointerReceiverGeometryError {
         #[source]
         source: DesktopRoutePresentationError,
     },
+    /// A known host-local hover answer does not name the edge's exact route output.
+    #[error(
+        "pointer hover receipt for edge {sequence} names authority {actual:?}, expected its host-local route {expected:?}"
+    )]
+    HostLocalHoverPresentationMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: PointerEdgeSequence,
+        /// Exact authority supplied by the validated hover route.
+        expected: PresentedSurfaceAuthority,
+        /// Exact authority supplied by the receiver answer.
+        actual: PresentedSurfaceAuthority,
+    },
     /// A local edge was answered using a receiver from another surface.
     #[error(
         "pointer receipt for edge {sequence} names receiver {region:?} on surface {actual}, expected {expected}"
@@ -428,6 +440,26 @@ impl DockEngine {
                         }
                     }
                     PointerReceiverProbeReceipt::HoverHit(hover) => {
+                        if let PointerEdgeLocation::HostLocal { hover: route, .. } = edge.location()
+                            && let Some(actual) = hover.authority()
+                        {
+                            let route = validated_host_local_route(self, route).ok_or(
+                                EngineError::PointerReceiverGeometry {
+                                    source: PointerReceiverGeometryError::LogicalPointUnavailable {
+                                        sequence: edge.sequence(),
+                                    },
+                                },
+                            )?;
+                            if actual != route.authority() {
+                                return Err(EngineError::PointerReceiverGeometry {
+                                    source: PointerReceiverGeometryError::HostLocalHoverPresentationMismatch {
+                                        sequence: edge.sequence(),
+                                        expected: route.authority(),
+                                        actual,
+                                    },
+                                });
+                            }
+                        }
                         let PointerReceiverHoverHitDisposition::Dock(region) = hover.disposition()
                         else {
                             continue;
@@ -980,6 +1012,143 @@ impl DockEngine {
             },
             PointerReceiverDeliveryDisposition::Blocked => Ok(JournalClickDelivery::Blocked),
             PointerReceiverDeliveryDisposition::Unknown(_) => Ok(JournalClickDelivery::Unknown),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{TestPresentationHost, publish_surface};
+    use super::*;
+    use crate::graph::{RootRecord, SurfacePresentation};
+    use crate::intent::PointerId;
+    use crate::pointer_journal::HostLocalPointerRoute;
+    use crate::pointer_receiver::PresentedPointerReceiverObservation;
+
+    #[test]
+    fn host_local_known_empty_and_blocked_hover_require_the_exact_route_emission() {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
+        builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let mut engine = DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
+        let mut host = TestPresentationHost::new(&mut engine);
+        let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap();
+        publish_surface(&mut engine, &mut host, surface, bounds);
+        let previous = JournalSurfacePresentation::from_interaction(
+            engine.interaction_projection(surface).unwrap(),
+        );
+        publish_surface(&mut engine, &mut host, surface, bounds);
+        let current = JournalSurfacePresentation::from_interaction(
+            engine.interaction_projection(surface).unwrap(),
+        );
+        assert_eq!(previous.output_ticket(), current.output_ticket());
+        assert_ne!(previous.authority(), current.authority());
+        assert!(
+            previous
+                .authority()
+                .same_interaction_semantics(current.authority())
+        );
+
+        let producer = engine
+            .create_host_local_pointer_provider(host.lease(), PointerEdgeSequence::new(0))
+            .unwrap();
+        let provider = producer.lease();
+        let sequence = PointerEdgeSequence::new(1);
+        let hover_point = LogicalPoint::new(900.0, 700.0).unwrap();
+        assert!(
+            current
+                .hit_manifest()
+                .resolve_exclusive(PresentationPointerLane::HoverDrop, hover_point)
+                .unwrap()
+                .is_none()
+        );
+        let edge = PointerEdge::new(
+            sequence,
+            PointerId::new(1),
+            PointerEdgeKind::Moved,
+            PointerEdgeLocation::HostLocal {
+                manipulation: Authority::Known(HostLocalPointerRoute::new(
+                    current.authority(),
+                    LogicalPoint::new(100.0, 20.0).unwrap(),
+                )),
+                hover: Authority::Known(HostLocalPointerRoute::new(
+                    current.authority(),
+                    hover_point,
+                )),
+            },
+            Authority::Known(PointerCaptureOwner::ProviderEndpoint),
+        );
+        let journal =
+            PointerEdgeJournal::new(PointerEdgeSequence::new(0), sequence, vec![edge]).unwrap();
+        let current_outputs = BTreeMap::from([(
+            surface,
+            PointerReceiverPresentedOutput::from_interaction(current.projection()),
+        )]);
+        for disposition in [
+            PointerReceiverHoverHitDisposition::NoReceiver,
+            PointerReceiverHoverHitDisposition::Blocked,
+        ] {
+            for receipt_presentation in [&previous, &current] {
+                let roster = PointerReceiverCandidateRoster::freeze(
+                    PointerReceiverAttemptIssuer::new(engine.authority_domain)
+                        .issue(provider)
+                        .unwrap(),
+                    vec![PointerReceiverCandidateSpec::hover_hit(
+                        sequence,
+                        Some(surface),
+                        Some(hover_point),
+                    )],
+                    vec![PointerReceiverPresentedOutput::from_interaction(
+                        receipt_presentation.projection(),
+                    )],
+                )
+                .unwrap();
+                let observation = PresentedPointerReceiverObservation::new([
+                    PointerReceiverProbeReceipt::HoverHit(
+                        PointerReceiverHoverHit::new(
+                            receipt_presentation.projection(),
+                            hover_point,
+                            disposition,
+                        )
+                        .unwrap(),
+                    ),
+                ])
+                .unwrap();
+                let receipts = roster
+                    .validate_against_presented_outputs(
+                        PointerReceiverReceiptBatch::new([roster.candidates()[0]
+                            .receipt(PointerReceiverObservation::Presented(observation))])
+                        .unwrap(),
+                        &current_outputs,
+                    )
+                    .expect("generic receipt validation allows unchanged interaction semantics");
+                let snapshot = JournalPresentationSnapshot::from_validated_receipts(
+                    provider,
+                    &BTreeMap::from([(surface, receipt_presentation.clone())]),
+                    &receipts,
+                )
+                .unwrap();
+                let result = engine.validate_pointer_receiver_geometry(
+                    provider,
+                    &journal,
+                    &receipts,
+                    &snapshot,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                );
+                if receipt_presentation.authority() == current.authority() {
+                    result.expect("the exact route emission remains valid");
+                } else {
+                    assert!(matches!(result, Err(EngineError::PointerReceiverGeometry {
+                        source: PointerReceiverGeometryError::HostLocalHoverPresentationMismatch {
+                            expected, actual, ..
+                        },
+                    }) if expected == current.authority() && actual == previous.authority()));
+                }
+            }
         }
     }
 }
