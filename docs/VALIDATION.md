@@ -6,13 +6,106 @@ external public host consumer now lives in `integration/dockspace-host-harness/`
 Its recording-renderer results prove API and output-contract portability,
 not real GPU or OS presentation. Open-GPUI integration remains deferred.
 
-This document is the U1 validation contract. It records semantic journeys and
-current evidence without turning the shared conformance crate into a GUI DSL.
+This document records current qualification and the historical U1 validation
+baseline. Dated qualifications supersede the historical baseline below. It keeps
+semantic journeys without turning the shared conformance crate into a GUI DSL.
 Executors resolve their own current semantic bounds and platform facts. The
 shared Rust catalog carries the finite L03 source, basin, normalized inset
 samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
+
+## 2026-10-28 U12 core host readiness qualification
+
+The renderer-neutral local/contained host contract is qualified independently of
+egui and native platform hosting. This completes U12's core host readiness
+checkpoint. U7/U8/U10/U11/U9 and the overall docking/multiview plan remain
+separate unfinished work. The application still owns UI/rendering, focus
+execution, input facts and output disposition.
+
+`integration/dockspace-host-harness/examples/engine_host.rs` is a runnable complete
+walkthrough. It consumes the borrowed surface program into an owned recording,
+ends the frame borrow, processes the retained records, and settles two logical
+surfaces as Presented and Dropped. It does not grant receiver authority before
+successful settlement. It executes an exact application focus request after
+presentation, submits its observation, completes a root close through per-item
+approval, and deduplicates a real cancellation by publication identity.
+
+`host_coordinate_domains.rs` completes AE14 through eight combinations of
+Immediate/Deferred consumption, window DPI 1.25/2 and framebuffer densities
+2/0.75 or 0.75/2. A captured source route may lie outside A while the independently
+mapped hover route lies inside B. The hover point comes from actual pane content
+and misses all guide receivers; the host proves clearance and core chooses the
+magnetic target. Each complete input batch waits for its exact preview output,
+then publishes one changed result and one Delivered(Dock), with the same topology
+and quiet subsequent settlement. Public versions remain opaque; exact internal
+revision counts are covered by the core regression. A second independent static
+review found no additional issue in this fixture. This is synthetic host-mapping
+evidence, with explicit scale domains, rather than real platform DPI certification.
+
+The independent Cargo workspace uses only public `dockspace` and application
+record types. Its 39 default / 40 serde tests cover owned/deferred output, two
+logical surfaces with equal local coordinates, complete input batches, stale and
+foreign authority, rollback/retry, full contained content, commands, close,
+feedback and structural output cost. The separate `dockspace_host_conformance`
+crate is also a public API client: it supplies the complete 60-case L03 matrix
+through immediate program acceptance. Its different crate boundary grants no
+access to core-private APIs. The egui executor separately covers all four cadences,
+including Burst, and 240 actual-content widget cases. These evidence sets are
+complementary; the recording harness does not claim physical rendering.
+
+Packaging was tested against the emitted artifact rather than another workspace
+path. `cargo package -p dockspace --all-features --locked --allow-dirty` packaged
+and verified the core. The archive was extracted to a temporary directory, and a
+copied independent consumer depended exclusively on that extracted crate. Its
+39 default / 40 serde tests and runnable host example passed with `--locked`.
+The archive SHA-256 is
+`bf821da1642e07f9a2ead8e23a526f890fd7abb17e90da110bf4a4f7a344af66`.
+All 164 packaged Rust source files and the README were byte-compared with the
+current crate and matched. It contains the U6 core source plus the U12 README
+update; the packaging dirty flag records that documentation change, and no
+registry publication occurred.
+
+`check_core_dependencies.py` inspects Cargo's normal and build dependency graph
+with all features and targets. It rejects the named UI/platform framework
+families without parsing Rust sources. An independent review caught the initial
+normal-only check; the corrected guard was verified on an isolated copied core
+with an actual egui build-dependency and build script. It returned exit code 1
+and identified egui/emath/epaint/accesskit. The real consumer graph passed.
+CI now runs this guard, the host example, and every default/serde product target,
+including the new feedback binary.
+
+The public structural fixture uses balanced pane trees. It counts public work
+and retained recording storage, including spare Vec capacity:
+
+| Panes | Measurement requests | Program steps | Owned records | Record capacity | Retained recording bytes |
+| --- | --- | --- | --- | --- | --- |
+| 16 | 49 | 126 | 242 | 256 | 63,512 |
+| 128 | 385 | 1,006 | 1,906 | 2,048 | 507,928 |
+| 1,024 | 3,073 | 8,134 | 15,306 | 16,384 | 4,063,256 |
+
+A `needs_drop` assertion prevents ordinary nested owned allocations from silently
+escaping this recording-buffer count. The fixture complements the fresh U4 core
+compilation counters at the same pane counts and the resolver/selection work
+regressions. It does not measure total core allocations, GPU resources, wall-clock
+latency or native ingress budgets.
+
+| Gate | Result |
+| --- | --- |
+| Verified core archive and extracted downstream default / serde | Passed / 39 / 40 tests |
+| Extracted downstream runnable engine host | Passed |
+| Real dependency graph / isolated egui build-dependency negative case | Passed / rejected with exit 1 |
+| Public output structural fixture, 16 / 128 / 1,024 panes | Passed |
+| AE14 immediate/deferred, independent DPI/density, eight combinations | Passed |
+| Adapter package contents | Listed successfully; not a registry dependency verification claim |
+| Host formatting and diff whitespace | Passed |
+| Strict docs / doctests after the U12 README update | Passed / 10 passed |
+| Core/public/product/official/native regression | The U6 matrix in the next section uses identical core Rust source |
+
+Historical U1 known-invalid Burst and incomplete contained rows below are retained
+as audit provenance. U3/U4/U5 qualifications supersede those local blockers.
+Native physical qualification is still open and is never inferred from these
+recording, package, model or headless egui gates.
 
 ## 2026-10-28 U6 commands, application close, feedback and focus
 
@@ -692,7 +785,7 @@ No physical OS-input, multi-monitor, GPU submission, or current-release package
 validation was rerun in this audit. The selected egui 0.37.0 migration and the
 new public engine-host harness remain implementation work under U15 and U13.
 
-## Journey directory
+## Historical U1 journey directory (superseded by dated qualifications above)
 
 | Journey | Semantic source / basin | Preview | Outcome / ownership | Focus / quiescence | Cadences | Executors and current status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -725,7 +818,7 @@ with a diagnostic upper bound.
 N01 uses the existing lifecycle scenario and remains a separate capability
 boundary. P01 is never inferred from a local or official-egui run.
 
-## U2a ordered SurfaceProgram evidence
+## Historical U2a ordered SurfaceProgram evidence
 
 The ordered traversal slice is verified independently from the later atomic
 presented-artifact and host-terminal-settlement work. Core, product-headless,
@@ -755,7 +848,7 @@ The remaining atomic artifact, durable discarded-pass action queue, official
 host finalizer, and native unwind/retirement paths stay deferred to the next
 settlement slice.
 
-## Oracle matrix
+## Historical U1 oracle matrix
 
 Each row is classified as `normative`, `characterization-only`, or
 `known-invalid`. Only normative rows may gate U1 completion. A source is listed
@@ -792,7 +885,7 @@ first-live” as known-invalid. The existing fixture demonstrates a sequence,
 but this U1 baseline does not promote that observation to an ownership verdict.
 That comparison belongs to the later lifecycle replacement unit.
 
-## Capability boundaries
+## Historical U1 capability boundaries
 
 | Executor | L01–L08 | N01 | P01 |
 | --- | --- | --- | --- |
@@ -806,7 +899,7 @@ unchanged source ownership are reported. No executor may substitute a rectangle
 scan, final hover, fixed guide center, fixed ordinary frame count, receipt, or
 internal scene/graph identity for a missing fact.
 
-## Verification notes
+## Historical U1 verification notes
 
 - Shared scenarios contain finite semantic sources, basins, normalized inset
   samples, cadences, selectors, and expected observations only. Coordinates,

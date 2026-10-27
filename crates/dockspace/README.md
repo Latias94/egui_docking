@@ -84,6 +84,13 @@ guessing a target in advance. `with_hover` and `with_no_hover` assert an exact
 semantic winner or absence instead; they are not framework-clearance fallbacks.
 Unknown widgets and overlays must remain blocked or unknown.
 
+Input and drawing share logical surface geometry. The host interprets its
+platform's input units and maps each event into logical coordinates relative to
+the delivery and hover surface origins. Keep that mapping independent from
+render-target resolution. The public `host_coordinate_domains` fixture varies
+window DPI and framebuffer density separately, through immediate and deferred
+record consumption, while capture keeps the source route outside its bounds.
+
 During capture, manipulation coordinates remain in the source surface while
 hover coordinates may name another surface, including one with identical local
 bounds. Capture belongs to the host producer. Unknown logical routing never
@@ -99,8 +106,9 @@ previews include real content, chrome, hit and semantic geometry in the surface
 program. Renderers should not add a second ghost shell when a preview reports
 `is_layout_projected()`. Only terminal delivery writes the durable rectangle.
 The independent public consumer verifies
-this contract without egui or native hosting. The complete adapter gesture
-matrix remains in progress; see `docs/VALIDATION.md` for evidence and limits.
+this contract without egui or native hosting. The common public-host and egui gesture matrices now pass, including complete
+single-batch input. Optional native consolidation and platform qualification
+remain separate; see `docs/VALIDATION.md` for evidence and limits.
 
 ## Application Close Decisions
 
@@ -141,6 +149,22 @@ otherwise the remaining surface workspace. Closing an unfocused target does not
 override a newer focus intent. Pending, vetoed and rejected close decisions do
 not change focus. Hosts execute a request and submit its exact observation only
 at their valid output boundary; feedback itself is never focus authority.
+
+## Runnable independent host
+
+The repository's `integration/dockspace-host-harness/examples/engine_host.rs`
+uses only public core and application types. Run it with:
+
+```text
+cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml --example engine_host --locked
+```
+
+It demonstrates two logical surfaces without native windows, owned output after
+the frame borrow ends, exact Presented/Dropped settlement, application focus,
+complete root-close approval and feedback deduplication. The recording renderer
+is one possible host-owned format, not a core renderer or a GPU-present claim.
+The companion public-contract tests use the same API from an independent Cargo
+workspace, with default features and optional persistence.
 
 ## Features
 

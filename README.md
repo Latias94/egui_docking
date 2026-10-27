@@ -15,7 +15,9 @@ The current engine-host and direct-manipulation plan lives in
 It prioritizes a documented public host API and an independent consumer with
 no egui dependency before broader native certification. The recording consumer
 now verifies owned output records, ordered presentation settlement, and commands
-on two logical surfaces. The full gesture and platform gates remain open.
+on two logical surfaces, complete ordered gestures, contained content, close
+approval and exact feedback/focus. Native throughput, lifecycle consolidation
+and platform certification remain separate unfinished gates.
 The earlier product-boundary plan supplies the persistence and ownership context.
 
 ## Capability matrix
@@ -24,13 +26,13 @@ The earlier product-boundary plan supplies the persistence and ownership context
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Caller-owned official-egui runs support tab select/close/reorder, magnetic center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | An unmodified `eframe::App::ui` callback cannot prove terminal presentation; preview-qualified drag and pane-focus settlement are typed unavailable there |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Physical cross-window drag is certified only for capability-complete backends; the automated reference lane is X11 on the first X screen with one exact active-CRTC work-area authority |
+| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Native consolidation and fresh physical qualification remain open. The existing reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify it |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
-The current implementation has substantial model and protocol coverage, a
-partially usable official-egui single-surface path, and an experimental native
-multiview adapter. The 2026-10-27 audit reproduced a fast-gesture failure; the
-configuration-dependent native failures found in that audit are now repaired. See
+The current implementation has a qualified renderer-neutral local/contained
+contract, an official-egui caller-owned validation path, and an experimental
+native multiview adapter. The fast-gesture and configuration-dependent failures
+from the 2026-10-27 audit are repaired and covered by fresh regressions. See
 [`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
 docking and multiview crate.
 
@@ -58,6 +60,17 @@ nodes after the frame borrow ends; a logical surface does not require an OS
 window. The independent
 [`dockspace-host-harness`](integration/dockspace-host-harness/README.md) demonstrates
 the public path without any egui or platform dependency.
+
+Run its complete engine-owned output example:
+
+```text
+cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml --example engine_host --locked
+```
+
+The example retains its recording after the frame borrow ends, settles two
+logical surfaces independently, executes application focus, approves a complete
+root close, and deduplicates typed feedback. `Presented`/`Dropped` are recording
+host observations; this example does not submit work to a GPU or create windows.
 
 Facade errors follow the same rule. Both the renderer-neutral and egui product
 interfaces expose six action-oriented categories: invalid configuration,
@@ -144,6 +157,7 @@ and run Cargo serially when the machine is busy.
 
 ```text
 cargo fmt --all -- --check
+python3 scripts/check_core_dependencies.py
 cargo check --workspace --all-features --all-targets --locked -j1
 cargo nextest run --workspace --all-features --all-targets --test-threads=1
 cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --locked --test-threads=1

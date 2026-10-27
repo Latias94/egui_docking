@@ -75,9 +75,7 @@ jobs:
           cargo fmt --manifest-path integration/dockspace-host-harness/Cargo.toml
           --all --check
       - name: Inspect renderer-neutral dependency tree
-        run: >-
-          cargo tree --manifest-path integration/dockspace-host-harness/Cargo.toml
-          --all-features --edges normal --locked
+        run: python3 scripts/check_core_dependencies.py
       - name: Run public host contract without optional features
         run: >-
           cargo nextest run
@@ -88,6 +86,11 @@ jobs:
           cargo nextest run
           --manifest-path integration/dockspace-host-harness/Cargo.toml
           --features serde --locked --test-threads=1
+
+      - name: Run engine-owned output example
+        run: >-
+          cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml
+          --example engine_host --locked
 
   official-egui:
     name: Official egui consumer
@@ -115,13 +118,13 @@ jobs:
         run: >-
           cargo nextest run
           --manifest-path integration/egui-product-harness/Cargo.toml
-          --test product --locked -j1
+          --all-targets --locked -j1
 
-      - name: Run product persistence harness
+      - name: Run product harness with persistence support
         run: >-
           cargo nextest run
           --manifest-path integration/egui-product-harness/Cargo.toml
-          --features serde --test persistence --locked -j1
+          --features serde --all-targets --locked -j1
 
   native-platform-check:
     name: Native compile (${{ matrix.os }})

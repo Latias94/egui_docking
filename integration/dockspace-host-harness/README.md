@@ -32,8 +32,8 @@ magnetic boundary: the target stays latched inside its release margin and change
 outside it. Framework-clearance facts never replace the core target solver.
 
 This is public-contract and renderer-neutral input evidence. It does not prove
-physical OS event delivery, actual GPU presentation, or completion of the full
-60-case product matrix. The egui ordered-input migration remains part of U3.
+physical OS event delivery or actual GPU presentation. The egui complete Burst
+and ordinary-content matrices are qualified separately in `docs/VALIDATION.md`.
 
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
@@ -42,10 +42,28 @@ check publication deduplication, and preserve pending cancellation on producer
 retirement. These recording tests distinguish command/feedback semantics from
 adapter focus execution and physical presentation.
 
+`examples/engine_host.rs` is a runnable integration walkthrough using this same
+recording sink: two logical surfaces, deferred owned output, Presented/Dropped
+settlement, application focus, stable-item commands, per-item root-close approval
+and feedback deduplication. The host keeps its rendering and focus state.
+
+`tests/owned_output_cost.rs` counts measurement requests, public program steps,
+owned records and retained recording-buffer bytes at 16, 128 and 1,024 panes.
+Its structural bounds complement the core compiler/resolver counters; they do
+not assert a wall-clock budget, zero allocations or bounded GPU resources.
+
+`tests/host_coordinate_domains.rs` runs the same complete cross-surface batch
+with immediate and deferred host consumption, two logical origins, two window
+DPI values and two independent pairs of framebuffer densities. Only the host
+interprets the synthetic pixel input and emits framebuffer commands; core sees
+independent logical manipulation and hover routes. This is mapping-contract
+evidence without real OS input or GPU presentation.
+
 Run the independent gates from the repository root:
 
 ```text
 cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --locked --test-threads=1
 cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --features serde --locked --test-threads=1
-cargo tree --manifest-path integration/dockspace-host-harness/Cargo.toml --all-features --edges normal --locked
+cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml --example engine_host --locked
+python3 scripts/check_core_dependencies.py
 ```
