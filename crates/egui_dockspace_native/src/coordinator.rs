@@ -1249,43 +1249,46 @@ impl NativeCoordinator {
         }
     }
 
-    /// Reduces the next callback record into one pending host-frame boundary.
+    /// Retains one bounded callback prefix for an exact host-frame boundary.
     ///
     /// The mailbox remains the only callback-order authority. Pointer facts,
     /// close requests, exact destruction events, viewport rosters, and create
     /// failures are acknowledged only after their corresponding core input is
-    /// retained. A later callback cannot join that boundary: the driver must
-    /// commit or retry the exact core frame before reducing another record.
-    pub(crate) fn reduce_callback_head(&mut self) -> Result<bool, NativeRuntimeError> {
+    /// retained. Same-route cursor motions share one prefix of at most 256
+    /// semantic edges; other callbacks remain causal barriers. The driver must
+    /// commit or retry that retained prefix before claiming its successor.
+    pub(crate) fn reduce_callback_prefix(
+        &mut self,
+    ) -> Result<Option<std::num::NonZeroUsize>, NativeRuntimeError> {
         if self.bridge.callback_boundary_pending() {
-            return Ok(false);
+            return Ok(None);
         }
         if self.reduce_next_viewport_close_cancelled()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_roster()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_create_failure()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_visibility()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_created()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_staging_painted()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_pointer_passthrough()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_global_focus()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_focus()? {
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if let Some(removal) = self.next_device_removal()? {
             let mut candidate = self.pointer_translator.clone();
@@ -1298,15 +1301,38 @@ impl NativeCoordinator {
             }
             self.acknowledge_device_removal(removal)?;
             self.pointer_translator = candidate;
-            return Ok(true);
+            return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if !self.session.has_active_gesture()
             && self.pointer_translator.can_coalesce_idle_cursor_moves()
         {
             self.bridge.coalesce_idle_cursor_prefix();
         }
+        let bridge = Arc::clone(&self.bridge);
+        if let Some(prefix) = bridge.claim_cursor_prefix(256) {
+            let mut candidate = self.pointer_translator.clone();
+            let mut inputs = Vec::new();
+            for record in prefix.events() {
+                match candidate.translate(record, |point| self.work_areas.binding_at(point)) {
+                    NativePointerTranslation::Input(input) => inputs.push(input),
+                    NativePointerTranslation::Ignored => {}
+                    NativePointerTranslation::NotPointer => {
+                        return Err(
+                            NativeHostProtocolError::WindowEventAcknowledgementMismatch.into()
+                        );
+                    }
+                }
+            }
+            if !inputs.is_empty() {
+                self.record_pointer_batch(inputs)?;
+            }
+            let count = prefix.record_count();
+            prefix.retain();
+            self.pointer_translator = candidate;
+            return Ok(Some(count));
+        }
         let Some(record) = self.next_window_event()? else {
-            return Ok(false);
+            return Ok(None);
         };
         let mut candidate = self.pointer_translator.clone();
         if matches!(record.event(), winit::event::WindowEvent::Destroyed)
@@ -1322,7 +1348,7 @@ impl NativeCoordinator {
                 if !self.bridge.hold_event_for_next_boundary(record.ordinal()) {
                     return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
                 }
-                return Ok(true);
+                return Ok(Some(std::num::NonZeroUsize::MIN));
             }
             let resets = candidate.reset_destroyed_binding(binding);
             if !resets.is_empty() {
@@ -1341,7 +1367,7 @@ impl NativeCoordinator {
         }
         self.acknowledge_window_event(record.ordinal())?;
         self.pointer_translator = candidate;
-        Ok(true)
+        Ok(Some(std::num::NonZeroUsize::MIN))
     }
 
     pub(crate) fn has_pending_output_prefix(&self) -> bool {

@@ -6,6 +6,7 @@
 //! opaque ordinals as facts are captured. Immutable batches can then be retried
 //! until a host-frame commit advances the engine-owned watermark.
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -1278,6 +1279,25 @@ impl BackendIngressRecorder {
         &self,
         committed_through: BackendIngressOrdinal,
     ) -> Result<BackendIngressBatch, BackendIngressError> {
+        self.batch_prefix_after(committed_through, NonZeroUsize::MAX)
+    }
+
+    /// Returns at most `max_records` complete records after a committed watermark.
+    ///
+    /// Only the selected records are cloned; the recorder remains unchanged.
+    /// The batch ends at its actual last record, or at `committed_through` when
+    /// the suffix is empty. Repeating the selection before more facts are recorded
+    /// returns an exactly equal batch suitable for atomic retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the watermark predates the retired prefix, advances
+    /// beyond captured input, or no longer identifies a retained record.
+    pub fn batch_prefix_after(
+        &self,
+        committed_through: BackendIngressOrdinal,
+        max_records: NonZeroUsize,
+    ) -> Result<BackendIngressBatch, BackendIngressError> {
         if committed_through < self.retired_through {
             return Err(BackendIngressError::CommittedWatermarkRetired {
                 committed: committed_through,
@@ -1290,29 +1310,33 @@ impl BackendIngressRecorder {
                 recorded: self.last_ordinal,
             });
         }
+        let start = self
+            .records
+            .partition_point(|record| record.ordinal <= committed_through);
         let previous_record_identity = if committed_through == self.retired_through {
             self.retired_record_identity
         } else {
-            self.records
-                .iter()
-                .find(|record| record.ordinal == committed_through)
+            self.record_count_boundary(start)
+                .filter(|record| record.ordinal == committed_through)
                 .map(|record| record.identity)
                 .ok_or(BackendIngressError::CommitWatermarkContentMismatch {
                     ordinal: committed_through,
                 })?
         };
-        let records = self
-            .records
+        let records: Vec<_> = self.records[start..]
             .iter()
-            .filter(|record| record.ordinal > committed_through)
+            .take(max_records.get())
             .cloned()
             .collect();
+        let through = records
+            .last()
+            .map_or(committed_through, |record| record.ordinal);
         BackendIngressBatch::from_records(
             self.coordination.clone(),
             self.lease,
             committed_through,
             previous_record_identity,
-            self.last_ordinal,
+            through,
             records,
         )
     }
@@ -2063,6 +2087,9 @@ pub enum BackendIngressError {
 }
 
 #[cfg(test)]
+mod bounded_prefix_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2128,7 +2155,9 @@ mod tests {
         )
     }
 
-    fn authority_and_recorder(domain: u64) -> (BackendIngressAuthority, BackendIngressRecorder) {
+    pub(super) fn authority_and_recorder(
+        domain: u64,
+    ) -> (BackendIngressAuthority, BackendIngressRecorder) {
         let domain = EngineAuthorityDomainId::new_for_test(domain);
         let mut authority = BackendIngressAuthority::new(domain);
         let recorder = authority

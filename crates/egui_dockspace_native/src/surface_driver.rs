@@ -416,7 +416,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
                 let quiescence_recorded = surface == self.root_surface
                     && coordinator.try_report_retirement_quiescence()?;
-                let reduced_callback = coordinator.reduce_callback_head()?;
+                let reduced_callback = coordinator.reduce_callback_prefix()?.is_some();
                 let callback_error = coordinator.take_callback_error();
                 Ok::<_, NativeRuntimeError>((
                     output_prefix_pending,

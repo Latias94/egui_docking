@@ -15,6 +15,74 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U7 first bounded-cursor prefix checkpoint (in progress)
+
+The native coordinator now claims up to 256 consecutive cursor records on one
+exact device/window/viewport/binding/route lane. Active gestures keep every
+motion edge. Idle coalescing remains before semantic sequencing and is disabled
+when either core gesture or adapter button/contact state is active. Focus,
+output, capture/route changes, contact, scroll phase and lifecycle records stop
+the cursor prefix; they retain their existing causal barrier semantics.
+
+`CursorPrefixClaim` borrows the existing mailbox mutex. Membership cannot change
+while a candidate translator builds a batch and the core recorder accepts it.
+A translation or recording failure drops the claim without changing the raw
+queue or published translator. Once accepted, the raw payload is removed and
+only the existing recorder owns replay. A dropped host frame retains that exact
+semantic prefix; the mailbox commit barrier prevents later callbacks joining it.
+There is no new throughput queue or gesture terminal owner.
+
+The old `reduce_callback_head` entry is deleted, with driver, shutdown and test
+callers migrated to `reduce_callback_prefix`. Its optional nonzero progress value
+reports the actual raw prefix count; barrier callbacks report one. The former
+universal one-callback/one-frame assertion now specifically verifies distinct
+focus barriers. The existing active-core-gesture test checks count=2, preserving
+its no-coalescing contract while both records share one commit boundary.
+
+The recorder's new `batch_prefix_after` clones only the selected complete records.
+It uses the actual last selected ordinal, exact predecessor append identity,
+retired watermark and existing liveness/commit guard. `batch_after` delegates to
+the same implementation for the existing complete-suffix contract. Four core
+regressions cover 257 records as 256+1, non-consuming identical retry, empty and
+retired boundaries, failed publication and rollback/reused-ordinal rejection.
+
+Evidence was collected before behavior changes. Both native prefix tests failed
+against the old implementation with the queue at ordinal 3 instead of 258 or 6.
+All four core prefix tests failed on the old complete suffix (257 instead of 256,
+or two instead of one). The final native tests also cover unretained-claim drop,
+foreign-authority failure without queue/translator publication and exact replay
+after a dropped frame. A real active-drag regression compares all 256 event-time
+receiver-query points and their order on both abandoned and committed attempts;
+queue counts alone are not treated as proof of semantic content.
+
+An independent static review found no concrete defect. It identified that the
+initial count/queue tests alone did not prove semantic-edge content; the active
+drag point-by-point replay regression closes that evidence gap. Static review
+is not counted as a test run or physical input qualification.
+
+This is an incremental U7 checkpoint. Runtime replay still consumes its complete
+recorder suffix, and the non-cursor callback families still use their existing
+single-record barriers. The 4,096-record/4-MiB/250-ms admission limits, reserved
+overload terminal, cooperative 2-ms reduction budget, bounded output prefixes,
+1,000-Hz release-latency profile, local-touch coordinates and validated scope
+continuity remain required U7 work. No whole-U7 or physical-platform completion
+claim follows from this checkpoint.
+
+Fresh checkpoint gates:
+
+| Gate | Result |
+| --- | --- |
+| Root workspace, all features and all targets | 1,616 passed |
+| Core backend-ingress regressions | 26 passed, including the four new prefix cases |
+| Fork-backed native workspace, all targets | 203 passed |
+| Native library with debug assertions disabled | 178 passed |
+| Active drag: 256 receiver points, abandoned attempt and identical retry | Passed |
+| Root/native correctness and suspicious Clippy groups | Passed with both groups denied |
+| Strict core/adapter rustdoc, workspace formatting and diff whitespace | Passed |
+
+Existing dead-code/style warnings remain outside these denied lint groups. The
+native results are deterministic adapter evidence, not new OS input certification.
+
 ## 2026-10-28 U12 core host readiness qualification
 
 The renderer-neutral local/contained host contract is qualified independently of

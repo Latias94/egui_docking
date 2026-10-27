@@ -560,8 +560,9 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
         )));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the scroll begin records")
+            .is_some()
     );
     commit_unpainted_frame(&mut native);
 
@@ -577,14 +578,15 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
         )));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the binding-retired boundary records first")
+            .is_some()
     );
     assert!(native.pointer_translator.has_pending_provider_tail());
     commit_unpainted_frame(&mut native);
 
     native
-        .reduce_callback_head()
+        .reduce_callback_prefix()
         .expect_err("the unrelated window cannot settle the accepted close");
     assert!(
         !native.pointer_translator.has_pending_provider_tail(),
@@ -606,8 +608,9 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
     );
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the same raw destroyed callback retries without another cancel")
+            .is_some()
     );
     commit_unpainted_frame(&mut native);
 }

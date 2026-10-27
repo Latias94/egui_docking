@@ -182,7 +182,7 @@ impl NativeWindowEventRecord {
                 .is_some_and(|routes| routes.references_binding(binding))
     }
 
-    pub(crate) fn shares_idle_cursor_lane(&self, newer: &Self) -> bool {
+    pub(crate) fn shares_cursor_lane(&self, newer: &Self) -> bool {
         let (
             WindowEvent::CursorMoved {
                 device_id: first_device,

@@ -88,8 +88,9 @@ fn request_replacement_on_existing_viewport() -> (
     native.bridge.push_viewport_roster(live_roster([root]));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the destroyed callback reduces")
+            .is_some()
     );
     let mut destroyed_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -103,8 +104,9 @@ fn request_replacement_on_existing_viewport() -> (
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the complete roster publishes the destroyed tombstone")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)

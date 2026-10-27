@@ -135,8 +135,9 @@ fn publish_desktop_authority_with_input(
     native.bridge.push_viewport_roster(roster);
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("complete native roster reduces")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -232,8 +233,9 @@ fn push_window_event(native: &mut NativeCoordinator, ordinal: u64, event: Window
     native.bridge.push_record(HostRecord::WindowEvent(record));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("native event reduces into one callback boundary")
+            .is_some()
     );
 }
 
@@ -341,8 +343,9 @@ fn observe_enabled_pointer_passthrough(
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact enable callback records")
+            .is_some()
     );
     let mut callback = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -392,8 +395,9 @@ fn observe_restored_pointer_input(native: &mut NativeCoordinator, source: Native
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact restore callback records")
+            .is_some()
     );
     let mut callback = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -561,8 +565,9 @@ fn destroyed_scroll_resets_without_a_future_pointer_event() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the provider reset and destroyed facts record")
+            .is_some()
     );
     assert!(!native.pointer_translator.has_pending_provider_tail());
     assert!(!native.pointer_translator.references_binding(binding));
@@ -618,8 +623,9 @@ fn failed_native_create_retires_the_unmaterialized_binding_after_callback() {
     );
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact failed create callback records its terminal result")
+            .is_some()
     );
 
     let mut failure = native
@@ -683,8 +689,9 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("an unrelated same-value host command is consumed")
+            .is_some()
     );
     assert_eq!(
         native.input_control.snapshot_fact(source),
@@ -715,8 +722,9 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the enable callback records")
+            .is_some()
     );
     assert!(
         native
@@ -750,8 +758,9 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("a late unrelated same-value command is consumed")
+            .is_some()
     );
     assert!(
         native
@@ -822,8 +831,9 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     );
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the enabling snapshot records")
+            .is_some()
     );
     let mut enabled_snapshot = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -861,8 +871,9 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the restore callback records")
+            .is_some()
     );
     let mut restored = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -899,8 +910,9 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     );
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the restoring snapshot records")
+            .is_some()
     );
     let mut restored_snapshot = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -945,8 +957,9 @@ fn failed_owned_pointer_callback_releases_input_correlation() {
         .push_record(HostRecord::ViewportPointerPassthrough(record));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the failed owned callback records its terminal result")
+            .is_some()
     );
     assert_eq!(
         native.input_control.classify(record),
@@ -987,8 +1000,9 @@ fn stale_pointer_callback_retires_only_the_predecessor_without_a_session_fatal()
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the stale callback remains a binding-local terminal")
+            .is_some()
     );
     assert!(
         native.pending_effect_results.is_empty(),

@@ -76,7 +76,12 @@ fn ingress_ignores_target_cursor_notification_before_captured_source_delivery() 
         ),
     ] {
         native.bridge.push_record(HostRecord::WindowEvent(record));
-        assert!(native.reduce_callback_head().expect(expectation));
+        assert!(
+            native
+                .reduce_callback_prefix()
+                .expect(expectation)
+                .is_some()
+        );
         commit_pending_pointer_frame(&mut native);
     }
 }
@@ -197,8 +202,9 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(first_press));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the first press enters the native pointer journal")
+            .is_some()
     );
     commit_pending_pointer_frame(&mut native);
 
@@ -220,15 +226,17 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(destroyed));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the binding-retired pointer terminal records first")
+            .is_some()
     );
     assert!(native.pointer_translator.has_pending_provider_tail());
     commit_pending_pointer_frame(&mut native);
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the retained destroyed callback completes on the next boundary")
+            .is_some()
     );
     assert!(!native.pointer_translator.has_pending_provider_tail());
     commit_pending_pointer_frame(&mut native);
@@ -250,8 +258,9 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(late_release));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the late physical release consumes the cancelled-button tombstone")
+            .is_some()
     );
     commit_pending_pointer_frame(&mut native);
 
@@ -272,8 +281,9 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(successor_press));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the successor press opens a fresh pointer incarnation")
+            .is_some()
     );
     commit_pending_pointer_frame(&mut native);
 
@@ -578,8 +588,9 @@ fn destroyed_callback_records_all_device_terminals_in_one_boundary() {
         )));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the ordered device terminal batch records")
+            .is_some()
     );
     assert!(native.pointer_translator.has_pending_provider_tail());
     commit_pending_pointer_frame(&mut native);
@@ -828,8 +839,9 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact destruction callback is retained")
+            .is_some()
     );
     assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
     let mut event_frame = native
@@ -844,8 +856,9 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the duplicate destruction callback is retained idempotently")
+            .is_some()
     );
     assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
     let mut duplicate_event_frame = native
@@ -881,8 +894,9 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the complete roster publishes the tombstone")
+            .is_some()
     );
     let mut roster_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -905,8 +919,9 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the post-tombstone pointer edge remains reducible")
+            .is_some()
     );
     let mut pointer_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)

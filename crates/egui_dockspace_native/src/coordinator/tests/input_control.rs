@@ -32,8 +32,9 @@ fn applied_pointer_passthrough_callback_becomes_an_exact_snapshot_fact() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact input callback records")
+            .is_some()
     );
     let mut callback_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -54,8 +55,9 @@ fn applied_pointer_passthrough_callback_becomes_an_exact_snapshot_fact() {
         .push_viewport_roster(live_roster([first, second]));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the complete roster records the input fact")
+            .is_some()
     );
     let mut roster_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -101,8 +103,9 @@ fn failed_pointer_passthrough_callback_does_not_invent_input_authority() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the failed callback is consumed")
+            .is_some()
     );
     assert_eq!(native.input_control.snapshot_fact(first), None);
 }

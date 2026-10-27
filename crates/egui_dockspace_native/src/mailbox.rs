@@ -1150,6 +1150,42 @@ struct HostRecords {
     terminal_roster: TerminalRosterState,
 }
 
+/// Exclusive claim over an immutable same-route cursor prefix.
+///
+/// The mailbox lock keeps callbacks and retirement from rewriting membership
+/// while translation is admitted by the semantic recorder. Dropping a failed
+/// claim leaves its raw records untouched. After retention only the recorder
+/// owns the payload; the mailbox keeps the existing commit boundary.
+pub(crate) struct CursorPrefixClaim<'records> {
+    records: MutexGuard<'records, HostRecords>,
+    len: std::num::NonZeroUsize,
+}
+
+impl CursorPrefixClaim<'_> {
+    pub(crate) const fn record_count(&self) -> std::num::NonZeroUsize {
+        self.len
+    }
+
+    pub(crate) fn events(&self) -> impl Iterator<Item = &NativeWindowEventRecord> {
+        self.records
+            .journal
+            .iter()
+            .take(self.len.get())
+            .filter_map(|record| {
+                if let HostRecord::WindowEvent(event) = record {
+                    Some(event)
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub(crate) fn retain(mut self) {
+        self.records.journal.drain(..self.len.get());
+        self.records.event_boundary_pending = true;
+    }
+}
+
 impl HostRecords {
     fn active() -> Self {
         Self {
@@ -1531,7 +1567,7 @@ impl HostRecords {
         };
         let Some(latest_cursor_index) =
             idle_cursor_prefix_latest_index(self.journal.iter().map(|record| match record {
-                HostRecord::WindowEvent(event) if first.shares_idle_cursor_lane(event) => {
+                HostRecord::WindowEvent(event) if first.shares_cursor_lane(event) => {
                     IdleCursorPrefixEntry::Cursor
                 }
                 HostRecord::Output { .. } => IdleCursorPrefixEntry::Output,
@@ -2751,6 +2787,20 @@ impl NativeHostBridge {
 
     pub(crate) fn coalesce_idle_cursor_prefix(&self) -> bool {
         self.lock().coalesce_idle_cursor_prefix()
+    }
+
+    pub(crate) fn claim_cursor_prefix(&self, limit: usize) -> Option<CursorPrefixClaim<'_>> {
+        let records = self.lock();
+        if records.event_boundary_pending {
+            return None;
+        }
+        let HostRecord::WindowEvent(first) = records.journal.front()? else {
+            return None;
+        };
+        let len = records.journal.iter().take(limit).take_while(|record| {
+            matches!(record, HostRecord::WindowEvent(event) if first.shares_cursor_lane(event))
+        }).count();
+        std::num::NonZeroUsize::new(len).map(|len| CursorPrefixClaim { records, len })
     }
 }
 

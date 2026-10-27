@@ -16,6 +16,7 @@ use winit::event::WindowEvent;
 use super::*;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
+mod callback_prefix;
 mod close;
 mod focus;
 mod ingress_create;
@@ -608,18 +609,22 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
             )));
     }
 
-    assert!(
+    assert_eq!(
         native
-            .reduce_callback_head()
-            .expect("the first cursor edge reduces")
+            .reduce_callback_prefix()
+            .expect("the active cursor prefix reduces")
+            .expect("both retained records report progress")
+            .get(),
+        2,
+        "an active core gesture must retain every cursor edge instead of coalescing"
     );
     assert_eq!(
         native
             .next_window_event()
-            .expect("the second cursor edge remains queryable")
+            .expect("the raw cursor prefix was transferred")
             .map(|record| record.ordinal()),
-        Some(42),
-        "an active core gesture must keep both cursor edges in FIFO order"
+        None,
+        "the semantic recorder owns both cursor records in the retained prefix"
     );
 
     let mut first_boundary = native
@@ -633,16 +638,17 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
         .expect("the first cursor boundary commits");
 
     assert!(
-        native
-            .reduce_callback_head()
-            .expect("the second cursor edge reduces after the first boundary")
+        !native
+            .reduce_callback_prefix()
+            .expect("the retained cursor prefix is complete")
+            .is_some()
     );
     assert!(
         native
             .next_window_event()
             .expect("the cursor prefix remains readable")
             .is_none(),
-        "the second cursor edge is consumed only in its own causal boundary"
+        "the committed prefix has no raw replay payload"
     );
 }
 
@@ -965,8 +971,9 @@ fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
     for _ in 0..3 {
         assert!(
             native
-                .reduce_callback_head()
+                .reduce_callback_prefix()
                 .expect("unowned visibility dispatch remains an inert exact callback")
+                .is_some()
         );
         let mut boundary = native
             .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -1028,8 +1035,9 @@ fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
     ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the visibility callback is reduced before the fatal boundary")
+            .is_some()
     );
     assert!(native.bridge.viewport_roster_dirty());
 
@@ -1334,7 +1342,7 @@ fn window_event_remains_pending_until_exact_acknowledgement() {
 }
 
 #[test]
-fn callback_head_requires_one_committed_frame_before_the_next_event() {
+fn focus_callbacks_require_distinct_committed_barriers() {
     let mut native = coordinator();
     let (first, _) = register_roots(&mut native);
     let window = WindowId::from(11);
@@ -1362,14 +1370,16 @@ fn callback_head_requires_one_committed_frame_before_the_next_event() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the first inert event is acknowledged")
+            .is_some()
     );
     assert!(native.bridge.callback_boundary_pending());
     assert!(
         !native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("a second callback cannot join the pending boundary")
+            .is_some()
     );
     assert_eq!(
         native
@@ -1389,8 +1399,9 @@ fn callback_head_requires_one_committed_frame_before_the_next_event() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the later event becomes the next boundary")
+            .is_some()
     );
     assert!(
         native
@@ -1426,8 +1437,9 @@ fn destroyed_event_is_published_only_with_the_next_complete_roster() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact destruction callback is retained")
+            .is_some()
     );
     assert!(native.session.is_current_native_binding(first));
     let mut event_frame = native
@@ -1443,8 +1455,9 @@ fn destroyed_event_is_published_only_with_the_next_complete_roster() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the next complete roster publishes the tombstone")
+            .is_some()
     );
     let mut roster_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -1483,8 +1496,9 @@ fn close_requested_event_publishes_one_exact_close_edge() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact close request is retained")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -1761,8 +1775,9 @@ fn pointer_reduction_acknowledges_only_after_core_acceptance() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("core accepts the current pointer binding")
+            .is_some()
     );
     assert!(
         native

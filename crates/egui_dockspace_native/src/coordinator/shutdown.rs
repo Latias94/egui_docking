@@ -102,8 +102,8 @@ impl NativeCoordinator {
             || input_enable_cancelled
             || output_prefix_pending
             || quiescence_recorded;
-        let reduced_callback = match self.reduce_callback_head() {
-            Ok(reduced) => reduced,
+        let reduced_callback = match self.reduce_callback_prefix() {
+            Ok(reduced) => reduced.is_some(),
             Err(error) => {
                 errors.extend(self.take_callback_errors());
                 errors.push(error);

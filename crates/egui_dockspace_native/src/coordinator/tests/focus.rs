@@ -20,8 +20,9 @@ fn global_focus_before_the_first_roster_uses_the_initial_capability_snapshot() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact focus callback records")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -86,8 +87,9 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the complete visible roster records")
+            .is_some()
     );
     let mut visible_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -120,8 +122,9 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
         .push_viewport_roster(NativeViewportRosterRecord::for_test([visible(first)], true));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the incomplete roster records an unknown inventory")
+            .is_some()
     );
     let mut unknown = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -163,8 +166,9 @@ fn unrelated_viewport_focus_result_is_acknowledged_without_inventing_focus() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the unrelated command result is consumed")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)

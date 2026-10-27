@@ -47,8 +47,9 @@ fn callbacks_after_the_exact_close_boundary_cannot_starve_the_policy() {
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the later callback record remains independently reducible")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -95,8 +96,9 @@ pub(super) fn observe_close(
         )));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact native close callback records")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -147,8 +149,9 @@ fn cancel_policy_waits_for_the_exact_child_viewport_callback_before_live_clear()
         ));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact cancellation callback records LiveClear")
+            .is_some()
     );
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -207,8 +210,9 @@ fn destroyed_before_cancel_callback_retires_close_sidecar_and_allows_quiescence(
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact destroyed callback records")
+            .is_some()
     );
     let mut destroyed = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -226,8 +230,9 @@ fn destroyed_before_cancel_callback_retires_close_sidecar_and_allows_quiescence(
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact tombstone roster records")
+            .is_some()
     );
     let mut roster = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -308,8 +313,9 @@ fn retain_layout_accepts_close_and_retires_only_after_destroyed_acknowledgement(
     native.bridge.push_viewport_roster(live_roster([survivor]));
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact destroyed callback records")
+            .is_some()
     );
     assert!(!native.close_control.references_binding(binding));
     let mut destroyed = native
@@ -324,8 +330,9 @@ fn retain_layout_accepts_close_and_retires_only_after_destroyed_acknowledgement(
 
     assert!(
         native
-            .reduce_callback_head()
+            .reduce_callback_prefix()
             .expect("the exact tombstone roster records")
+            .is_some()
     );
     let mut roster = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -405,7 +412,7 @@ fn accepted_close_rejects_destroyed_from_a_different_native_window() {
         )));
 
     let error = native
-        .reduce_callback_head()
+        .reduce_callback_prefix()
         .expect_err("a different native window cannot settle the accepted close");
     assert_eq!(error.kind(), crate::NativeRuntimeErrorKind::HostProtocol);
     assert!(native.close_control.references_binding(binding));
