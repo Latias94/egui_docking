@@ -1,5 +1,11 @@
 # Dockspace behavior-spine validation
 
+The canonical plan was revised on 2026-10-27 to prioritize `dockspace` as a
+custom-engine library and egui as its interactive validation adapter. The
+planned external public host consumer does not exist yet. Its eventual
+recording-renderer results will prove API and output-contract portability,
+not real GPU or OS presentation. Open-GPUI integration remains deferred.
+
 This document is the U1 validation contract. It records semantic journeys and
 current evidence without turning the shared conformance crate into a GUI DSL.
 Executors resolve their own current semantic bounds and platform facts. The
@@ -7,6 +13,45 @@ shared Rust catalog carries the finite L03 source, basin, normalized inset
 samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
+
+## 2026-10-27 audit baseline
+
+The audit checked `3216855` plus the existing 26 uncommitted U2b files. These
+results describe that worktree, not a clean release or the planned egui upgrade.
+All Cargo builds used `CARGO_BUILD_JOBS=1`; Nextest used `--test-threads=1`.
+
+| Gate | Fresh result | Limit |
+| --- | --- | --- |
+| Workspace, all features and targets | 1,563 passed | Does not include the excluded native workspace |
+| Product harness, all features | 90 passed, 1 ignored | Full Burst matrix remains excluded |
+| Ignored L03 complete matrix, explicitly selected | Failed | First Center/Burst sample `(280, 280)` has no magnetic preview after eight causal observations |
+| Official consumer harness | 9 passed | No real-window run was performed in this audit |
+| Native workspace, default test profile | 179 passed | Debug assertions enabled |
+| Native library, debug assertions disabled | 164 passed, 8 failed | 172 library tests; does not include the other native test binaries |
+| Workspace and native formatting checks | Failed | Existing U2b formatting differences remain |
+| `git diff --check` | Passed | Patch whitespace only |
+
+The native assertion-disabled run used:
+
+```text
+CARGO_BUILD_JOBS=1 cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --lib --locked --test-threads=1 --no-fail-fast --config 'profile.test.package.egui_dockspace_native.debug-assertions=false'
+```
+
+Required mutations in `NativeCoordinator::prepare_output_prefix`,
+`HostRecords::reserve_output`, and `HostRecords::settle_viewport_roster` occur
+inside `debug_assert!` arguments and disappear when assertions are disabled.
+The failures cover six ingress/create/input lifecycle cases and two terminal
+roster settlement/rearm cases. U14 owns this correction and its configuration gate.
+
+The current U2b receiver path already waits for a successful core presentation
+commit before promoting an artifact. That is stronger than the older immediate
+physical-callback promotion. Remaining work includes idle ACK draining,
+consistent commit exits, and removal of local preview-only ACK authority;
+passing default tests do not establish those deletion gates.
+
+No physical OS-input, multi-monitor, GPU submission, or current-release package
+validation was rerun in this audit. The selected egui 0.37.0 migration and the
+new public engine-host harness remain implementation work under U15 and U13.
 
 ## Journey directory
 

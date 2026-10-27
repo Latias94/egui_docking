@@ -1,27 +1,28 @@
 ---
-title: Dockspace direct-manipulation experience and interaction foundation parity
+title: Dockspace engine host architecture and direct manipulation - Plan
 type: refactor
 date: 2026-08-21
+revised: 2026-10-27
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
 execution: code
-review_status: independent-doc-review-deepened
+review_status: independent-coherence-and-feasibility-reviewed
 ---
 
-# Dockspace direct-manipulation experience and interaction foundation parity
+# Dockspace engine host architecture and direct manipulation - Plan
 
 ## Goal Capsule
 
 | Field | Contract |
 | --- | --- |
-| Objective | Make Dockspace feel like an editor-grade docking workspace: tabs and groups move predictably, contained windows follow the pointer as full windows, ordinary pane content remains dockable, magnetic targets make common releases forgiving, and native multiview extends the same behavior only where platform facts are complete. |
-| Means | Replace the fragmented interaction and presentation seams with a core-owned direct-manipulation kernel, a core-compiled ordered surface program, proof-strength presentation adapters, and a bounded native ingress/runtime split (KTD1-KTD13). |
-| Authority | `dockspace` remains the sole authority for topology, selection, durable placement, target choice, revisions, policy, preview/commit, and native ownership. Renderers execute core programs; platform adapters report facts and effects; neither may infer a durable result from geometry or callback order. |
-| Execution profile | Breaking, replace-not-layer refactor. Restore same-surface and contained direct manipulation first, then reconnect native lifecycle and certify physical cross-window behavior per platform. |
-| User baseline | The old `egui_tiles`-based workspace and Dear ImGui docking are experience references, not architecture templates. The target keeps the current core's stronger atomicity, accessibility, stale rejection, and first-live lifecycle. |
-| Stop conditions | Stop a slice rather than ship it if it creates a second topology owner, requires users to aim at a guide icon, commits an unseen preview, guesses an unknown platform fact, leaves old and new gesture paths active, or enables a platform capability before its real-window gate passes. |
-| Tail ownership | Each implementation unit owns its production change, replacement tests, old-path deletion, documentation update, and a runnable dogfood checkpoint. |
+| Objective | Deliver `dockspace` as a renderer-neutral docking library for a custom game engine's self-drawn editor UI, with mature local and contained interaction and an optional native multiview host contract. |
+| Primary consumer | An engine owns its UI tree or display list, renderer, frame scheduling, input delivery, and platform windows. It integrates through documented public `dockspace` APIs without egui. |
+| Validation | A small external Rust consumer proves host independence; egui is the maintained interactive reference adapter. ImGui docking supplies architectural and behavioral comparisons. |
+| Authority | Core owns topology, policy, selection, target resolution, transient layout, terminal mutation, persistence identity, and native transfer semantics. Hosts own framework input facts, actual output disposition, and OS or renderer resources. |
+| Execution profile | Breaking replacement. Close the current correctness defects, establish the engine host contract, modernize egui, then converge interaction and optional native lifecycle owners. |
+| Stop conditions | Reject duplicate topology owners, renderer-selected targets, traversal receipts presented as GPU proof, lost input boundaries, stale output authority, and capabilities inferred from missing facts. |
+| Completion owner | Each implementation unit owns its replacement behavior, meaningful verification, obsolete-path deletion, and documentation. No compatibility layer is required. |
 
 ---
 
@@ -29,184 +30,147 @@ review_status: independent-doc-review-deepened
 
 ### Summary
 
-Dockspace already has stronger correctness foundations than the former tiles implementation: a renderer-neutral topology owner, atomic revision-bound actions, exact scene and receiver authority, presentation-qualified release, native first-live admission, typed platform capabilities, accessibility records, and deterministic stale rejection. The product nevertheless feels worse because common manipulation paths expose that infrastructure instead of hiding it. Users must discover narrow chrome, aim at exact guide buttons, tolerate compact ghosts instead of a moving window, and interact with examples that do not exercise a realistic layout workflow.
+`dockspace` is the product; `egui_dockspace` and its native integration are reference consumers.
+The core must support both immediate consumption of an ordered surface program and an engine compiling that program into its own display list or retained UI nodes.
+The engine need not adopt egui's widget identities, multipass layout, callback lifecycle, graphics backend, or window manager.
 
-This plan restores mature docking behavior without restoring the tiles tree as an authority. It treats guide icons as explanations for a larger core-owned magnetic target field, freezes the visible candidate through release, paints a full-window live contained projection, makes ordinary pane widgets transparent only to the docking-hover lane, and gives application authors a one-call default facade. The same private gesture transaction later consumes native facts without changing product semantics.
+The existing stable Item/Root/Surface model, validated layout mutations, measurement separation, and versioned persistence remain useful foundations.
+The refactor removes duplicate gesture terminal paths and framework assumptions while retaining exact output identity, stale rejection, cancellation, and recoverable native transfer.
+
+This revision changes the product priority of the earlier experience plan in place.
+It preserves R1-R18 and U1-U12 identifiers while revising their host and delivery contracts, adds host requirements R19-R24, separates layout-shell requirement R25, and adds units U13-U15, and leaves implementation progress in Git and `docs/VALIDATION.md`.
+The earlier product-boundary plan remains context for persistence and semantic ownership; this plan governs the current host, interaction, and delivery priorities.
 
 ### Problem Frame
 
-The current implementation optimized for proving authority and lifecycle contracts. That work was necessary, but its tests often navigate to an exact AccessKit guide center, advance a fixed number of passes, or drive programmatic product actions. Those tests prove that a protocol path can succeed; they do not prove that a person can casually drag a tab over a text editor, release near a side, and get the previewed result.
+A renderer-neutral dependency graph alone does not establish a usable engine integration.
+Current rendering entry points borrow an active frame, some necessary host APIs are hidden, SourceGap text prescribes widget registration, and the default API requirements conflate application code with renderer-host code.
+Input and release decisions also remain distributed across local, journal, and contained reducers.
 
-The implementation also distributes one user gesture across `interaction`, `engine/local_response.rs`, `engine/pointer_transaction.rs`, `drop_resolver`, `presentation_authority`, renderer-side scheduling, pass settlement, and native sidecars. Local responses, contained transforms, and native pointer journals reuse some state but retain separate resolution and terminal paths. The result is high correctness inside individual seams but low locality across the whole manipulation.
-
-The former tiles version had the opposite trade-off. It concentrated tab, group, hover, full-window movement, and nearest-target behavior, which produced better feel, but it let renderer traversal and mutable tree state own too much product truth. The target architecture must combine the current system's authority with the old system's locality and mature docking defaults.
+The native adapter currently embeds framework-specific output, hidden-stage, receiver, and retirement maps around the core lifecycle.
+The engine needs the semantic lifecycle guarantees, but should not implement eframe's precise sequence of callbacks and staging passes.
+The previous emphasis on an egui product release does not adequately test this distinction.
 
 ### Key Decisions
 
-- KD1. **Create a new parity/refactor plan instead of extending the multiview conformance plan.** The earlier plan remains evidence for authority and lifecycle work; this plan owns direct-manipulation feel and the infrastructure replacements required to support it. Governs R1-R18. (session-settled: user-directed — chosen over patching the existing plan: the requested scope includes product experience and foundational seams, not another incremental conformance pass)
-- KD2. **Preserve the current core authority and use tiles/ImGui only as experience references.** Renderer-owned trees, nearest-center mutation, global raw-pointer state, and multiple floating owners do not return. Governs R4, R9-R15. (session-settled: user-directed — chosen over reverting to the former `egui_tiles` architecture: the current core's deterministic authority is a product asset)
-- KD3. **Allow breaking replacement and remove obsolete seams rather than maintaining compatibility layers.** Every replacement unit has a deletion gate for the prior path, API, and implementation-level tests. Governs R9-R15, R18. (session-settled: user-directed — chosen over compatibility shims: the user explicitly authorized fearless refactoring where the foundation is wrong)
-- KD4. **Phase platform work within one plan.** Same-surface and contained interaction become the first usable vertical slice; X11 then requalifies the native path; Windows and macOS remain typed capability-negative until their facts and physical gates pass. Governs R6, R13-R15, R18. (session-settled: user-approved — chosen over making every platform block the first experience release: local and contained quality can improve without weakening platform truthfulness)
-- KD5. **Magnetic docking is the only default targeting model; explicit guides are a high-priority explanation and hit field, not a second guide-only product mode.** Arrangement lock remains an independent policy. This keeps precision interaction inside the same target solver and avoids a second targeting state machine. Governs R3, R4, R7.
-- KD6. **Separate the public compatibility promise from proof-strength adapters.** The crates.io `egui_dockspace` facade must support local and contained interaction without leaking proof bookkeeping. Exact completed-pass HoverDrop, native child windows, and cross-window physical promotion are fork-backed capabilities until an upstream host can mint the required receipts. No public API or documentation may imply that an unmodified crates.io `eframe` provides those facts. Governs R11, R12, R16, R18. (review-settled: derived from the existing fork-only proof seams and the user's requirement to preserve truthful platform behavior)
+- KD1. Keep this as the canonical interaction and host architecture plan, with the earlier authority and conformance plans retained as historical context. Governs R1-R25.
+- KD2. Preserve the stable core topology and transaction authority. Borrow ImGui behavior and platform/renderer separation without importing its binary tree, global context, or per-frame window lifetime model. Governs R2, R9-R15, R19-R22.
+- KD3. Permit breaking replacement and delete superseded APIs, reducers, and sidecars with each completed replacement. Governs R9-R16, R19-R24. (session-settled: user-directed - chosen over compatibility layers: correctness and clean ownership take priority)
+- KD4. Deliver local and contained engine use before requiring native platform certification. Native multiview remains a core capability with a later readiness checkpoint; individual platform claims require their own evidence. Governs R6, R13-R15, R18-R20.
+- KD5. Use one magnetic target solver. Guide icons explain its highest-priority explicit fields; arrangement lock is a separate policy. Governs R3, R4, R7.
+- KD6. Make host evidence explicit and framework-neutral. An adapter may advertise only the output and hit authority it can actually supply; an egui limitation does not become a universal core limitation. Governs R11, R12, R16, R19-R22.
+- KD7. Make the custom engine host the primary integration audience and egui the interactive validation adapter. Governs R16, R18-R24. (session-settled: user-directed - chosen over egui-first product sequencing: the intended deployment is self-drawn game-engine editor UI)
+- KD8. Defer Open-GPUI adapter development and cutover. Its historical algorithms remain optional reference material and do not gate this plan. Governs R18, R19, R23. (session-settled: user-directed - chosen over parallel adapter work: prioritize dockspace and egui validation)
 
 ### Requirements
 
-#### Direct manipulation and docking feel
+#### Direct manipulation
 
-- R1. A visible tab body is the ordinary drag entry. Moving below the configured logical threshold selects without dragging; crossing it begins exactly one drag; the close control and group-drag region remain disjoint and never steal each other's action.
-- R2. Tab reorder, cross-group merge, group drag, center merge, edge split, cancellation, stale rejection, and focus recovery use one semantic gesture model. Center merge flattens the moved items into the target tab stack and preserves relative order.
-- R3. A pane or root exposes a core-owned magnetic target field. Direct guide and tab-gap hits outrank an active outer-root band, which outranks the deepest eligible pane basin; within a basin, center merge outranks normalized nearest-edge split. An acquired target enters a latch before presentation proof and remains latched through small pointer jitter. It changes only after deterministic hysteresis, explicit target invalidation, or an authority change.
-- R4. Release is decided by logical latch state, not by re-testing the raw release point. Any release while a latch remains active—including within the release-hysteresis margin outside its acquire basin—uses that latch. `LatchedUnpresented` enters `ReleasePending` and commits only after its exact plan is presented; `LatchedPresented` commits immediately. A no-latch release inside an application surface commits contained placement. A no-latch release outside all application surfaces enters `NativePending` only with complete desktop authority; otherwise it cancels and restores. A discarded, stale, blocked, or superseded preview cancels without mutation and restores the source.
-- R5. A contained root moves and resizes as a full live projection of its chrome, tab strip, pane content, receivers, and accessibility bounds. Durable placement changes only once at terminal commit; the active source projection is suppressed from target selection so panes behind it remain dockable.
-- R6. A release inside an application surface but outside every valid dock basin creates or keeps a contained presentation. A release outside all application surfaces may create a native child only when the selected input lane, inventory, work area, lifecycle, placement, release, and presentation capabilities are complete. Missing native facts never silently change the result to a different presentation mode.
-- R7. The default product surface includes discoverable tab and group context menus, directional docking commands, `Float`, `Move to New Window`, `Dock Back`, close/reopen, layout lock, reset/default layout, and application-defined named presets. Tab bodies drag one item, a persistent group handle drags a group, contained title background moves the contained root, and each close control has one owner. Overflow has one scroll-owner state machine: selected-tab reveal, manual scrollbar input, active-drag edge scrolling, and menu selection cannot fight or expose executable clipped controls.
-- R8. Pending, cancelled, stale, unsupported, rejected, and recovered outcomes are visible through one typed product feedback model. Pending status is anchored to the source/target and announced once; delayed success, cancellation, stale, rejection, and unsupported results deduplicate by manipulation identity and remain in a non-modal inert status surface until the next related action or explicit dismissal. Focus recovery, disabled reasons, popup focus containment, and suppression of per-pixel projection announcements are part of the same accessibility contract.
+- R1. A visible tab body is an ordinary drag entry. Below-threshold release selects; crossing the threshold begins one gesture. Ordered press, move, and release boundaries survive delivery within one host tick. Close and group-drag regions remain disjoint.
+- R2. Reorder, merge, group drag, center docking, edge split, cancellation, stale rejection, and focus recovery use one semantic manipulation model. Center merge preserves relative item order.
+- R3. Core owns magnetic acquisition, priority, latch, hysteresis, and deterministic ties. Explicit guide and tab-gap hits outrank an outer-root band, then the deepest eligible pane basin. A rejected front candidate never silently falls through to another target.
+- R4. Release uses the logical latch. A matching current presented preview may commit once; an unpresented preview freezes a pending release until its exact output is accepted as current presentation under R11. Discard, invalidation, or cancellation cannot commit it. No-latch release inside an application surface uses contained placement; outside-all release requires R6.
+- R5. Contained move and eight-direction resize project chrome, tab strip, pane content, hit geometry, and semantics together. Durable placement changes only at terminal commit. The active source projection does not hide eligible targets behind it.
+- R6. Native promotion requires complete facts for the chosen input lane, target inventory, placement/work area, lifecycle, and release. Missing native facts produce a typed pending, unsupported, or cancelled outcome and preserve a recoverable source; they never silently choose another presentation mode.
+- R7. Core exposes common-path semantic commands for select, close, directional dock, float, and dock back. Adapters provide discoverable chrome; the later layout-management shell is R25. Tab, group, contained title, and close controls have one semantic owner; Close Group and Dock Back are distinct operations.
+- R8. Manipulations expose typed pending and terminal outcomes, stable deduplication identity, disabled reasons, and semantic focus intent. Hosts choose the visual status surface and accessibility bridge. Feedback never steals focus or replaces pane content; live motion does not announce each pixel.
 
-#### Deep interaction and presentation foundations
+#### Interaction, output, and optional native lifecycle
 
-- R9. One private direct-manipulation kernel owns gesture state, source ownership, normalized input sequencing, candidate selection, latch/hysteresis, dwell timing, live projection, preview token, release barrier, cancellation, terminal commit, and typed outcome. Local egui and native input remain distinct evidence adapters, not distinct reducers.
-- R10. Core compiles one ordered hierarchical surface program that carries paint, hit, accessibility, action, source-gap, ghost, full-window projection, guide, popup, and feedback identities in one traversal order. The egui renderer does not regroup flat records or reconstruct z-order.
-- R11. Renderer pass settlement is one conceptual seam with truthful adapters. The public crates.io facade may use only a host-owned receipt that the host can actually mint; the pinned egui/eframe fork additionally proves completed-pass hit stacks and exact output-token finalization after all plugins, with an exact abandonment tombstone on unwind. Durable local actions survive discarded or retained passes, while presentation evidence only advances on terminal output.
-- R12. The egui fork provides a completed-pass docking-hover query that can pass through ordinary widgets inside the same pane while stopping at popup, modal, overlay, explicit blocker, foreign layer, or ambiguous identity. The native adapter consumes that typed result and never scans rectangles or falls through to a lower core target on its own.
-- R13. Native input is submitted through bounded, causal, retryable batches. Idle-only motion may coalesce before core sequencing; active gestures are lossless. Output, lifecycle, button/contact, capture, scroll phase, device removal, focus, close, inventory, work-area, capability, and receiver boundaries remain barriers.
-- R14. Input capability is selected and frozen per gesture or stream as `LocalResponse`, `SurfacePointer`, or `DesktopPointer`. Surface-local facts support same-window and contained interaction without desktop-global authority. A cross-window transition requires sealed `GestureHandoffEvidence` from the same native ingress authority, binding the old provider lease/final committed watermark, new provider enrollment checkpoint, canonical device/tool/contact correlation, complete held-button roster, capture/delivery route, and one causal ordinal. Core validates that evidence before minting `GestureHandoffReceipt`, atomically retiring the old lane and opening a new evidence epoch with the same manipulation/source ownership. Unknown or conflicting evidence cancels and restores the source; no adapter may silently upgrade the lane.
-- R15. Native viewport lifecycle is owned by one session-owned `NativeViewportRuntime` containing per-binding/incarnation records. It atomically reconciles cross-binding roster, ownership transfer, output artifact, receiver index, create/hidden staging, visible staging, first-live, pass-through, no-frame state, close, retirement, and quiescence under one causal operation id. Source ownership remains until first-live; predecessor observations cannot affect a successor incarnation.
+- R9. One private manipulation kernel owns arming, sequence, source, lane, target latch, dwell, transient projection, release barrier, cancellation, and terminal result. Framework response adapters and platform journals normalize facts without owning separate terminal reducers.
+- R10. Core emits one ordered hierarchical surface program for geometry, clipping, content slots, semantic controls, source gaps, previews, guides, menus, and feedback. It is a semantic composition contract rather than an egui widget or graphics API. Paint, hit, and semantic identities derive from the same snapshot.
+- R11. Program acceptance and current presentation are distinct. Successful complete traversal proves emission to an accepting host, not GPU submission. A host reports one exact output's terminal presented or dropped result at the boundary it owns; core validates and commits that observation before promoting interaction authority. Submission alone does not imply presentation, and physical scanout is not claimed. Discard and unwind abandon the exact output. There is no public preview-only acknowledgement bypass.
+- R12. Hosts supply typed docking-hover answers for a specific accepted output: candidate, blocked, no receiver, or unknown. Ordinary pane content may pass this lane while popup, modal, foreign overlay, explicit blocker, and ambiguous identity stop it. Framework hit-stack inspection is adapter work; core does not implement an external widget-tree resolver.
+- R13. Buffered host input uses bounded, causal, retryable batches under the resource budgets. Idle motion may coalesce before sequencing; active gesture edges and their ordering are preserved. Output, lifecycle, capture, contact, scroll phase, focus, close, inventory, and capability boundaries are barriers.
+- R14. Surface-local and desktop-global input have explicit scopes. A gesture freezes its admitted lane; changing providers or scope requires validated continuity of sequence, device/contact, held buttons, capture, and delivery. Local operations never require unavailable desktop-global facts. egui local responses remain adapter evidence, not a distinct core transaction kind.
+- R15. One core native runtime owns desired viewport bindings, pending transfer, admission, close, recovery, and retirement by incarnation. The host owns OS and renderer resources. The source retains durable ownership until the child is ready with its exact first valid interactive output; core then publishes transfer once. Hosts may use hidden staging internally, but fixed PreShow/PostShow rendering passes are not universal core requirements. Late predecessor facts cannot affect successors.
+- R16. Public integration has two audiences. Application facades hide host plumbing; engine hosts receive documented surface registration, measurement, input, program execution, output disposition, focus/repaint, and optional native-effect APIs. Layout and semantic-command use remains valid without enrolling pointer or native services. Internal graph nodes, reducer internals, provider bookkeeping, and arbitrary target/preview constructors remain private. Required host methods are not hidden documentation seams.
+- R17. Pointer, keyboard, menu, and accessibility actions converge on the same prepared commands. Disabled or occluded controls cannot execute. Dwell never guesses pane focus. A SourceGap preserves source identity and explicitly retained semantic behavior; widgets and AccessKit registrations are adapter implementations.
+- R18. Acceptance includes semantic journeys through an independent public consumer and egui. Model, recorded-output, real-window, and physical-input evidence are labelled separately. Queues and lifecycle state reach bounded quiescence. Platform capability-negative results do not certify physical interaction.
 
-#### Public surface, accessibility, boundedness, and evidence
+#### Engine host and dependency independence
 
-- R16. The default public API is a one-call direct-manipulation loop: application code supplies a stable pane catalog, titles/content, close policy, default layout, and named-preset store; it does not supply surface bootstrap, pass acknowledgement, receiver geometry, scene stamps, output tokens, native receipts, or frame counts. Synchronous close and deferred close both resolve exactly once by stable item key. The default native facade hides host-handler/finalizer plumbing, while fork-backed native capabilities are explicit in the capability report.
-- R17. Pointer, keyboard, context-menu, and AccessKit actions converge on the same prepared product commands. Disabled or occluded controls remain discoverable when appropriate but cannot execute; dwell selection does not guess pane focus; layout lock disables arrangement mutations without disabling ordinary pane interaction.
-- R18. Acceptance is organized around semantic user journeys, not exact guide centers or fixed frame counts. The same normalized journey runs through core-host and egui-product executors; real official eframe, programmatic native windows, and platform physical input add progressively stronger evidence. Active queues, retained artifacts, lifecycle sidecars, timers, tombstones, and detailed histories are bounded and reach quiescence.
+- R19. An ordinary external Rust consumer can integrate using only public `dockspace` and application types. Default and persistence-enabled core dependencies and public types exclude egui, eframe, AccessKit, Winit, WGPU, and GPUI.
+- R20. A logical Surface is a core layout/presentation boundary, not an OS-window identity. Hosts may use multiple surfaces within one window or render targets, and may bind surfaces to native windows when supported. Local routing, logical coordinates, desktop placement, framebuffer density, and DPI mappings remain explicit rather than inferred from each other.
+- R21. Hosts can compile a borrowed surface program into their own owned display list or retained-node update, release the frame borrow, and execute that output later. The opaque output identity survives without cloning internal authority. Superseded, dropped, or retired output cannot promote its receivers.
+- R22. The core requires no widget tree, font shaper, graphics device, event-loop implementation, or wall-clock polling. Hosts supply measurements, monotonic event times, typed blocker facts, output disposition, and wake/focus execution. Cached valid measurements are allowed; a new asynchronous layout framework is not required.
+- R23. Maintain egui validation on a pinned current stable release and a matching minimal fork where necessary. Core architecture and readiness do not depend on retaining a particular egui fork. egui_tiles remains reference-only; Open-GPUI development is deferred by KD8.
+- R24. Host portability and structural cost are verified before declaring core readiness. Immediate and deferred consumption, two logical surfaces without native windows, bounded work at 16/128/1,024 panes, and exact stale-output rejection use the same public host contract.
 
-### Actors
+#### Layout-management completion
 
-- End users manipulate tabs, groups, contained windows, splitters, menus, presets, and native child windows without understanding rendering or lifecycle protocols.
-- Application authors provide stable item identities, pane rendering, titles, close policy, default layouts, named presets, and optional diagnostics.
-- `dockspace` owns semantic and durable authority, direct-manipulation state, target selection, transactions, and native presentation intent.
-- The official-egui adapter owns `Response`, AccessKit, visual execution, repaint scheduling, and only the completed-run facts its host can actually mint.
-- The native adapter owns ordered OS facts, exact completed-pass receiver authority, platform effects, window observations, and terminal output settlement.
-- Conformance and physical executors drive semantic journeys without becoming geometry, topology, or lifecycle authorities.
-- The compatibility/release owner records whether a gate is crates.io-compatible, fork-backed, or capability-negative; a fork-only proof seam never silently becomes a public requirement.
+- R25. The later editor shell provides closed-item inventory/reopen, arrangement lock, reset/default layout, application-owned named presets, complete overflow ownership, and restore-time focus/missing-pane recovery. These commands use the same core authority and are completed by U10; they do not block U12 common-path readiness.
 
-### Key Flows
+### Actors and Key Flows
 
-- F1. **Ordinary local dock.** Press a tab, cross the threshold, enter a pane's magnetic field, see a latched center or edge preview, release immediately, and either commit the already presented plan or wait for its exact presentation before committing.
-- F2. **Contained direct manipulation.** Float inside the current surface, move or resize the full contained window, raise it on the first effective press, then re-dock through the same target field while its durable rect changes only at terminal commit.
-- F3. **Qualified native promotion.** Freeze a desktop-capable gesture lane, prove outside-all space, retain the source while create/staging/show/first-live completes, then transfer ownership exactly once or recover the source on failure.
-- F4. **Layout operation.** Invoke a tab/group/menu/keyboard/AccessKit command, resolve close or preset policy, atomically apply the layout mutation, and surface a typed result without exposing geometry authority.
-- F5. **Causal input and presentation.** Claim an ordered host prefix, reduce a bounded batch, resolve typed completed-pass receivers, compile/execute a surface program, settle the terminal output, and only then promote preview, focus, receiver, or lifecycle evidence.
+- A1. Engine/application authors own pane data, drawing, UI objects, event loop, platform resources, and policy decisions.
+- A2. `dockspace` owns semantic and durable docking state and produces typed host work.
+- A3. egui and native adapters translate framework facts and execute host work.
+- A4. Independent-consumer, product, and physical executors supply evidence at their stated strength.
+
+- F1. Host supplies ordered input and current measurements; core reduces one gesture and compiles a surface snapshot; host accepts its program and retains the output identity. Covers R1-R5, R9-R12, R19-R22.
+- F2. Host finalizes or drops that output; a core commit accepts the exact observation; receivers and a pending release advance together. Covers R4, R11, R18, R21.
+- F3. Engine compiles records to owned UI/render work, ends the frame borrow, and later submits or drops its output without retaining internal graph access. Covers R10, R16, R19-R22.
+- F4. Optional native create/ready/first-live either transfers the source once or recovers it, followed by close and retirement. Covers R6, R14, R15, R20.
+- F5. Application close decisions produce ordinary semantic commands; the later default/preset shell extends them under R25. Adapters render status and focus intent. Covers R7, R8, R16, R17, R25.
 
 ### Acceptance Examples
 
-- AE1. **Fork-backed center dock through real pane content**
-  - **Given:** The fork-backed editor tier is active, and a source tab and target pane containing a multiline editor are both visible.
-  - **When:** The user drags into three different points inside the target center basin, none intersecting the guide icon, and releases immediately.
-  - **Then:** Each journey previews and commits the same center merge once; the editor remains an ordinary pane control rather than an opaque docking blocker.
-  - **Covers:** R1-R4, R12, R18.
-- AE1b. **Portable capability boundary**
-  - **Given:** The portable crates.io tier has a valid caller-owned run receipt but no completed-pass HoverDrop stack seam.
-  - **When:** The user performs supported tab/group/contained gestures and then drags across an ordinary child widget that requires final-stack passthrough.
-  - **Then:** Supported gestures complete normally; the child-widget target reports typed `HoverDropUnavailable`, does not consume a fabricated final-hover/rectangle result, and leaves the source recoverable.
-  - **Covers:** R1-R6, R11-R12, R16-R18.
-- AE2. **Stable edge selection under hesitation**
-  - **Given:** A pointer has acquired the left docking basin.
-  - **When:** It jitters, briefly overshoots the acquire boundary by less than the release-hysteresis threshold, and releases before returning, with the final move in the same batch.
-  - **Then:** The visible left candidate remains latched and the committed result matches it; no adjacent direction flickers or wins at release.
-  - **Covers:** R3, R4, R9, R13.
-- AE3. **Full-window contained move**
-  - **Given:** A contained inspector overlaps docked content.
-  - **When:** The user drags its title across the surface and releases where no dock candidate is active.
-  - **Then:** The whole inspector follows the pointer, panes underneath remain eligible targets, AccessKit bounds follow the projection, and one durable placement update commits on release.
-  - **Covers:** R5, R9, R10, R17.
-- AE4. **Release before preview presentation**
-  - **Given:** A target candidate has been compiled but the output carrying it is not terminally presented.
-  - **When:** The user releases immediately.
-  - **Then:** Topology remains unchanged while the gesture is `ReleasePending`; the matching presentation commits once, while discarded or foreign evidence cancels and restores the source.
-  - **Covers:** R4, R8, R9, R11.
-- AE5. **Capability-qualified native behavior**
-  - **Given:** Same-surface pointer facts are exact but desktop hover or authoritative release is unavailable.
-  - **When:** The user performs local reorder, contained move, and then drags outside the window.
-  - **Then:** Local and contained operations work; native promotion is unavailable with a typed reason; no guessed child window or alternate contained result is created. A failed handoff cancels and restores the original source rather than falling back to another presentation mode.
-  - **Covers:** R6, R8, R14-R16.
-- AE6. **Burst input remains causal**
-  - **Given:** An active drag receives high-rate moves interleaved with output, capture, and lifecycle records.
-  - **When:** The host reduces the records in bounded batches.
-  - **Then:** No causal barrier is crossed, the final move/release pair uses the last valid preview, backlog returns below its high-water mark, and cancellation leaves no route or gesture state.
-  - **Covers:** R11, R13-R15, R18.
-- AE7. **Layout reset, reopen, and lock**
-  - **Given:** The user has closed panes and modified a named preset.
-  - **When:** They reopen a pane, lock arrangement, attempt a drag, then reset to the default layout.
-  - **Then:** Reopen uses stable item identity, lock blocks only arrangement actions with an accessible reason, and reset atomically restores the application-defined layout.
-  - **Covers:** R7, R8, R16, R17.
-- AE8. **Group and chrome ownership**
-  - **Given:** A narrow tab group, a single-tab contained root, and a partially clipped close control are visible.
-  - **When:** The user drags the group handle, drags the contained title background, invokes the group menu, and attempts the clipped close control.
-  - **Then:** Group and contained movement have distinct persistent entry regions; only the labeled tab close closes one pane; clipped/occluded controls cannot execute; final-pane closure follows the configured close/focus/retirement policy.
-  - **Covers:** R1, R2, R7, R8, R17.
-- AE9. **Splitter and surface-local touch**
-  - **Given:** A split layout is unlocked and contains scrollable pane content.
-  - **When:** Pointer drag, keyboard/AccessKit adjustment, double-click equalization, and a 350 ms touch long-press manipulation are exercised, followed by Escape/contact loss and layout lock.
-  - **Then:** Splitter changes clamp deterministically, cancellation rolls back, touch does not steal pre-arm scrolling, hit regions meet the 44-point minimum, and lock exposes a typed disabled reason without disabling pane content.
-  - **Covers:** R7-R9, R13, R17-R18.
-- AE10. **Focus and feedback lifecycle**
-  - **Given:** A user closes, reorders, docks, reopens, and restores a preset while one manipulation becomes pending and another is rejected.
-  - **When:** The actions complete through pointer, keyboard, menu, and AccessKit paths.
-  - **Then:** Each path invokes the same prepared command, focus lands on the documented successor, pending/rejected status announces once and deduplicates by manipulation id, popup focus is contained, and live movement does not emit per-pixel accessibility noise.
-  - **Covers:** R4, R7-R8, R16-R18.
-- AE11. **Platform claim certification**
-  - **Given:** X11 has a green physical journey while Windows or macOS is missing one required event-time or release fact.
-  - **When:** Packages, examples, and platform documentation are built.
-  - **Then:** X11 may advertise the qualified native capability; the incomplete platform remains typed capability-negative until its own U11 release-environment matrix passes; local/contained behavior remains usable on both.
-  - **Covers:** R6, R11-R16, R18.
+| ID | Given / When | Required outcome | Covers |
+| --- | --- | --- | --- |
+| AE1 | Drag over a real text editor, scroll region, button, or canvas to three non-guide points in each basin | Correct target preview and one commit; actual child-widget bounds establish the input point | R1-R4, R12, R18 |
+| AE1b | A host cannot provide exact target-side blocker facts or terminal output disposition | Typed missing capability and unchanged source; unrelated local operations still work | R6, R11, R12, R14 |
+| AE2 | Acquired edge target jitters and releases within its hysteresis margin | The matching latched candidate wins without adjacent flicker | R3, R4 |
+| AE3 | Move or resize an overlapping contained inspector | Full pane subtree, hit data, and semantic bounds follow; one durable terminal result | R5, R10 |
+| AE4 | Release before the output owner finalizes its preview, including an entire gesture in one tick | Pending release commits only after exact presentation acceptance, or cancels on drop | R1, R4, R11 |
+| AE5 | The final output is discarded, superseded, fails, or unwinds | No preview-only ACK can authorize a mutation; prior valid presentation remains consistent | R4, R11, R21 |
+| AE6 | Create or replace a child viewport while old callbacks arrive late | Single owner, first-live transfer, recoverable failure, and no successor corruption | R6, R15 |
+| AE7 | Sustained high-rate input or uncompressible overload | Ordered accepted edges, bounded queues, explicit terminal overload, and recoverable source | R13, R18 |
+| AE8 | Close tab/group/contained root or choose Dock Back | Exactly the named operation and close policy execute, with no overlapping control owner | R7, R17 |
+| AE9 | Splitter, keyboard, accessibility, and local touch manipulate a layout | Shared command semantics, rollback on loss/cancel, and ordinary pane scrolling before touch arming; locked-layout cases are certified with U10 | R7, R9, R17, R25 |
+| AE10 | Close, dock, reopen, restore, or reject a manipulation | Stable focus successor and one typed feedback outcome without focus theft; reopen/restore is certified with U10 | R8, R17, R25 |
+| AE11 | A platform lacks required cross-window facts | Its native claim stays unavailable while proven local/contained operations remain usable | R6, R14, R18 |
+| AE12 | An external crate uses only public `dockspace`, fixed metrics, and a recording renderer | Local journeys run with no UI-framework dependency or private test imports | R16, R19, R22, R24 |
+| AE13 | Compile to owned records, drop frame borrows, then accept outputs out of order | Deferred output works; obsolete output cannot replace the current receiver artifact | R11, R21, R24 |
+| AE14 | Route two logical surfaces in one host window and vary framebuffer density separately from DPI | Correct local coordinates and targets without enrolling native lifecycle | R14, R20, R24 |
 
-### Success Criteria
+### Success Criteria and Resource Budgets
 
 | Signal | Exit criterion |
 | --- | --- |
-| Ordinary docking | Center plus all four edge directions succeed from at least three non-guide points per region across `Burst`, `Stepwise`, `Hesitant`, and final-move-with-release cadence profiles. |
-| Direct contained manipulation | Move and eight-direction resize render the full projected subtree, keep target panes discoverable, and commit one durable placement update or one docking transaction. |
-| Realistic pane content | Text edit, scroll area, button, canvas-like region, popup, modal, and front contained blockers produce the expected typed HoverDrop result. |
-| Native input boundedness | A 1,000 Hz active drag soak does not grow the ingress queue over time; 10,000 interleaved records preserve order; overload fails explicitly rather than dropping events. |
-| Lifecycle boundedness | 10,000 create-to-first-live-to-retire cycles leave no active output, receiver, reservation, route, effect, timer, tombstone detail, or retirement obligation beyond documented bounded watermarks. |
-| Product evidence | The game-engine showcase completes the manual journey list without internal coordinates, programmatic tear-off shortcuts, or instructions to aim at a guide icon. |
-| Platform truthfulness | A platform capability is documented as available only after compile, deterministic protocol, real-window, and required physical-input gates for that capability all pass; unsupported fork-only facts remain explicitly qualified. |
+| Host independence | The public consumer satisfies AE12-AE14 with default and serde core configurations and no UI/platform framework dependency. |
+| Ordinary docking | Five basins x three non-guide samples x four cadences pass in public-host and egui executors; the Burst row is not ignored. |
+| Contained manipulation | Full content/hit/semantic projection during move and eight-direction resize; one terminal mutation. |
+| Blocker correctness | Actual child-widget bounds and popup/modal/overlay/front-contained cases verify R12. |
+| Structural cost | At 16, 128, and 1,024 panes, counted compiler/resolver work and recorded retained-state size do not regress into repeated full-workspace scans per operation. Native queue budgets are measured separately. |
+| Optional native readiness | Programmatic lifecycle, failure/replacement/close cases, and at least the qualified X11 physical reference journey prove the native claims made. |
+| Platform claims | Each OS/backend claim has its own deterministic, real-window, and physical evidence; unsupported facts remain explicit. |
 
-### Resource budgets and measurement boundaries
+The following are initial buffered-input/native-host release budgets, not a requirement for the engine to adopt a particular event loop or allocate a journal when it has no buffered ingress.
+Use one injected monotonic time source for age and latency; deterministic tests use controlled time.
 
-These are initial release budgets, measured on the serial Linux CI profile (`-j1`) and repeated on each platform's release environment. They are hard gates; changing them requires a new baseline and plan amendment.
-
-| Resource | Budget | Measurement and overload rule |
+| Resource | Budget | Measurement boundary |
 | --- | --- | --- |
-| Active ingress journal | 4,096 records, 4 MiB canonical resident cost, and 250 ms oldest-record age | Each envelope implements `resident_cost_bytes = fixed_envelope_size + owned_payload_capacity`; shared immutable snapshot handles are charged as fixed handles and their owned sidecar is charged exactly once by its owner. Enqueue/claim age uses one injected monotonic clock. Idle motion may coalesce; active records may not drop. |
-| One reduction batch | At most 256 records or 2 ms monotonic wall time, whichever comes first | Time is measured from causal-prefix claim to reducer yield on the serial reducer thread; deterministic tests use a fake clock and release CI records the reference-runner value. A barrier terminates the batch. The next boundary resumes at the exact claimed ordinal; no one-record-per-root-cycle fallback is allowed. |
-| Release latency | 100 ms from the final release edge to typed terminal outcome under the 1,000 Hz profile | Measured with a monotonic host clock after the final release record is accepted. A platform that cannot meet it reports a typed overload/unknown outcome instead of silently extending the queue. |
-| Retained lifecycle detail | At most 64 recent terminal summaries per binding and 1,024 monotonic IDs per session watermark | Detailed output/receiver/effect/tombstone state must be retired at quiescence; summaries contain no authority-bearing geometry or receipt. |
-| Long-run quiescence | After 10,000 lifecycle cycles, zero active obligations and only the bounded watermarks above | The soak fails if any output, receiver, route, timer, effect, pending action, or retirement obligation remains. |
+| Active ingress journal | 4,096 records, 4 MiB resident owned data, 250 ms oldest-record age | Fixed envelope plus owned payload capacity; shared sidecars charged once by their owner. |
+| One reduction batch | 256 records or 2 ms, whichever comes first | From immutable prefix claim to reducer yield; barriers terminate a batch and the next claim resumes at its exact ordinal. |
+| Release latency | 100 ms under a 1,000 Hz active-input profile | Accepted release edge to typed terminal outcome, excluding an explicitly pending OS create or unavailable renderer. Those outcomes remain visible and cancellable. |
+| Retained lifecycle detail | 64 recent terminal summaries per binding and 1,024 monotonic IDs per session watermark | No authority-bearing geometry or receipts in terminal summaries. |
+| Lifecycle soak | 10,000 cycles, zero active obligations after quiescence | Bound output, receiver, route, reservation, effect, timer, and retirement state. |
 
-Every active stream has one preallocated overload terminal latch outside ordinary journal capacity. Crossing a record/byte/age cap atomically freezes further ordinary ingress for that stream and records the offending causal ordinal plus `InputOverload` in the latch. The next causal claim consumes all accepted predecessors, then the latch, cancels the manipulation, restores the last valid source, and unfreezes only after terminal cleanup. The overload path may not allocate another journal record or discard an accepted release/capture/lifecycle barrier.
+Each active buffered stream reserves an overload terminal latch outside ordinary capacity.
+After a cap is crossed, ordinary ingress freezes, accepted predecessors are consumed in order, then overload cancels and restores the last valid source.
+The overload path must not allocate another ordinary record or discard an accepted release/capture/lifecycle barrier.
 
 ### Scope Boundaries
 
-#### In scope
+In scope: core public host contract, ordered semantic programs, local and contained interaction, optional native lifecycle semantics, egui validation and dependency modernization, persistence/layout commands, meaningful conformance, and removal of obsolete paths.
 
-- Same-surface tab/group docking, contained float/move/resize/re-dock, magnetic targeting, hover dwell, overflow, splitters, commands, layout management, pending/error feedback, accessibility, and realistic dogfood.
-- Core, official egui, egui fork, eframe/winit fork seams, native adapter, conformance harnesses, physical smokes, documentation, and CI changes needed to support the experience contract.
-- Breaking removal of obsolete public and private APIs, duplicate state machines, schedule reconstruction, and shallow test seams.
-- A three-tier compatibility contract: portable crates.io caller-owned runs, capability-negative unmodified crates.io `eframe::App::update`, and explicitly fork-backed exact HoverDrop/native multiview behavior.
+Deferred: Open-GPUI adapter work; cloud/collaborative layouts; physical cross-window touch/pen until their facts are proven; automated Windows/macOS physical infrastructure when no stable environment is available.
+Windows/macOS certification remains U11 and gates their capability claims, not generic core readiness.
 
-#### Deferred to follow-up work
-
-- Physical cross-window touch and pen promotion until a backend proves canonical tool identity, desktop route, capture, and release facts. Surface-local touch remains in scope.
-- Automated Windows and macOS physical lanes until their required facts are implemented and a stable CI/self-hosted environment exists. Their compile, deterministic lifecycle, official-window, typed capability-negative, and release-environment physical gates remain in this plan and must be completed before either platform's native-promotion capability is enabled.
-- Cloud synchronization or collaborative merging of user layout presets. Local versioned persistence and application-defined presets remain in scope.
-
-#### Outside this product's identity
-
-- Restoring `egui_tiles::Tree`, renderer-owned topology, arbitrary nested container graphs, or a second mutable floating/native graph.
-- A general GUI automation DSL, a cross-platform window manager, or a general replacement for egui hit testing.
-- Animation or screenshots as topology, target, receiver, release, or lifecycle authority.
-- Shipping or upstreaming fork changes outside the repository's existing authorization process.
+Outside the product: an actual game engine, ECS integration, a font or widget system, a graphics API, an autonomous window manager, a universal GUI automation DSL, compile-time source scanners, and a security boundary against a dishonest host.
+The host is trusted to report real facts; exact identity and ordering reject accidental stale, foreign, or contradictory reports.
+No zero-allocation, `no_std`, C ABI, plugin ABI, or arbitrary render-thread scheduling framework is introduced without a concrete consumer requirement.
 
 ---
 
@@ -214,584 +178,418 @@ Every active stream has one preallocated overload terminal latch outside ordinar
 
 ### Key Technical Decisions
 
-- KTD1. **Use a hybrid deep-module shape: one-call product facade, one private core kernel, and explicit evidence adapters.** The default caller sees a `show`-style product API; `runtime::direct_manipulation` owns the transaction; official and native adapters preserve their different proof models. A giant public controller would leak protocol, while forcing native facts into local `Response` semantics would weaken authority. Covers R9, R11, R14, R16.
-- KTD2. **Compile a hierarchical `SurfaceProgram` in core.** The program is the ordered source for paint, hit, accessibility, action, popup, guide, full-window projection, and feedback identities. It replaces flat record regrouping and renderer-side layer reconstruction while keeping `scene_compiler` as an internal pure compiler. Covers R5, R10, R12, R17.
-- KTD3. **Represent each gesture with an opaque, presentation-affine manipulation plan.** The plan binds gesture sequence, source, lane, workspace/policy revision, presented scene, target latch, live projection, preview, and prepared terminal command. The same plan produces the visible preview and release authority; public acknowledgement and target-geometry APIs disappear. Covers R3-R6, R9, R11.
-- KTD4. **Make target acquisition semantic and magnetic, not nearest-center renderer geometry.** Core owns center/edge basins, acquire/release distances, switch advantage, stable tie-breaking, dwell deadlines, source suppression, and rejected candidates. Initial defaults are product configuration, not call-site geometry. Covers R2-R5.
-- KTD5. **Keep one magnetic target solver and make explicit guides its highest-priority field.** There is no independent guide-only profile. The solver orders direct guide/tab-gap hits, outer-root bands, and deepest eligible pane basins, then applies latch/hysteresis and deterministic tie-breaking. Covers R3, R4, R7.
-- KTD6. **Model pass settlement as one port with proof-strength adapters.** U2 first defines `RendererPassBridge` plus a deterministic fake receipt used by `SurfaceProgram` tests. U3 proves the official host-owned receipt contract; U7 later installs the exact native eframe finalizer and unwind tombstone. A crates.io host that cannot mint the receipt is capability-negative, not silently accepted via frame counters. Covers R4, R11, R16.
-- KTD7. **Split native responsibility into a causal ingress journal and one session-owned `NativeViewportRuntime`.** The journal owns ordered callback envelopes, bounded claims, retry, safe coalescing, and overload. The runtime owns per-binding records and is the sole transaction owner for cross-binding roster, output, receiver, staging, first-live, pass-through, no-frame, close, retirement, and quiescence. Every cross-binding operation carries one causal operation id; the journal never mutates lifecycle state. Covers R13-R15, R18.
-- KTD8. **Freeze the input lane and make handoff explicit.** Local `Response`, surface-local pointer, and desktop-global pointer facts normalize into one gesture owner without pretending to be the same evidence. The native ingress authority alone may seal `GestureHandoffEvidence`; core validates its old lease/watermark, new enrollment, canonical tool correlation, held roster, capture/delivery route, and causal ordinal before minting `GestureHandoffReceipt`. The receipt closes the old sequence namespace, opens the new evidence epoch, and routes the only valid terminal release. Failure cancels and restores; no adapter performs an opportunistic upgrade. Covers R6, R12-R15.
-- KTD9. **Build a behavioral acceptance spine and oracle matrix before deleting old paths.** Each invariant is classified as `normative`, `characterization-only`, or `known-invalid`, with a source and journey id. Shared scenarios describe semantic journeys and product checkpoints; executors privately resolve current bounds and wait on causal predicates. Core geometry tests keep exact coordinates, while product/native tests remove fixed guide centers and ordinary fixed-frame waits. Only normative rows may gate U1/U8 completion. Covers R18.
-- KTD10. **Use replace-not-layer migration gates.** A new module is complete only when its old caller path, duplicate owner, compatibility wrapper, and superseded implementation-level tests are deleted. This instantiates KD3 and prevents the refactor from increasing the number of authorities. Covers R9-R16, R18.
-- KTD11. **Make the public facade own catalog and policy boundaries.** The facade owns stable pane descriptors, closed-item inventory, default layout, close decisions, preset serialization hooks, and exactly-once deferred outcomes; application pane content remains borrowed/rendered through `PaneView`. Missing-pane recovery is keyed by stable item identity and never by graph or geometry ids. Covers R7, R8, R16, R17.
-- KTD12. **Treat boundedness as a measured product contract.** Queue caps, batch budgets, release latency, retained watermarks, and overload/quarantine behavior are fixed in the Resource Budgets table and reported by every executor. A performance result without its measurement boundary is not a passing gate. Covers R13, R18.
-- KTD13. **Put exact HoverDrop stack inspection only in the fork-backed adapter.** The egui fork scans the final hit stack using registered candidate, pane-passthrough, popup/modal/layer, and explicit blocker semantics and returns `Candidate`, `Blocked`, `NoReceiver`, or typed ambiguity. Portable crates.io hosts never emulate this by rectangle scanning or final hover; they expose the exact missing capability. Covers R10, R12, R16-R18.
+- KTD1. Separate the application facade from the documented engine-host facade under R16. Keep `DockspaceSession` as the integration boundary and deepen its existing modules before adding another public controller. Implements KD7. (session-settled: user-directed - chosen over an egui-shaped universal facade: engine hosts are the primary consumer)
+- KTD2. Keep `SurfaceProgram` as the semantic composition protocol under R10/R21. Input, cancellation, focus and wake processing occur through host input/effect ports rather than as side effects of painting feedback records. A host can consume it immediately or compile records into owned work; batching may preserve compositing semantics but cannot reorder overlapping operations or detach hit semantics from their snapshot.
+- KTD3. Put gesture lifetime and terminality in one private module under R9. Move old local/journal/contained decisions into it and delete their independent release and preview-ACK paths.
+- KTD4. Keep semantic target acquisition in core under R3. Host hit queries authorize an exact semantic candidate or block it; renderers never choose another target after a rejection.
+- KTD5. Preserve the single magnetic profile under KD5. Configure logical distances and dwell in core; adapt cursors, visuals, touch affordances, and accessibility in hosts.
+- KTD6. Make the existing presentation pipeline the only current-output promotion path under R11. Execution receipts bind exact attempt/output/contribution/interaction but attest only complete emission. Adapter pass bridges normalize framework finalization and feed the same terminal reporting path; no generic GPU fence or pixel-visibility proof is added.
+- KTD7. Separate causal ingress from per-incarnation host resources under R13/R15. Core owns semantic native transfer; the host's runtime joins output, receiver, resource, staging, no-frame, and retirement records without owning a second dock graph.
+- KTD8. Support logical-surface input before desktop promotion under R14/R20. Validate handoff only when scope/provider changes, preserving one gesture and one terminal release rather than creating parallel sessions.
+- KTD9. Extend the finite shared journey catalog under R18/R24. Add one normal public consumer with a recording renderer, not a new generic GUI DSL or independent target resolver.
+- KTD10. Use replacement deletion gates under KD3. No unit completes with old and new terminal owners both callable.
+- KTD11. Keep content data, font shaping, draw resources, and named-preset storage application-owned under R7/R22. Core owns stable item identity, close decisions, command results, and versioned docking documents.
+- KTD12. Measure boundedness at the owner of each queue or retained resource under R13/R24. Deterministic structural counters cover algorithmic work; host measurements cover wall-clock cost and latency.
+- KTD13. Implement R12 as a host port. An engine can answer from its own composed UI; the egui fork may expose a narrow final-pass stack query. Portable egui must expose its exact unavailable boundary rather than approximate popup/modal authority.
+- KTD14. Use `integration/dockspace-host-harness/` as an excluded, ordinary downstream workspace depending only on public `dockspace` and small test dependencies. Its recording renderer owns records after the frame borrow and uses the same output reporting contract as real hosts. Implements KD7 and R19/R21/R24.
+- KTD15. Upgrade the official egui adapter to 0.37.0 as a separate change under R23. Rebuild only admitted fork seams on the same upstream release before advancing native certification; do not merge stale experimental fork branches wholesale.
+- KTD16. Keep first-live as an engine-implementable readiness condition under R15. Distinguish desired binding, renderer/window readiness, durable item ownership, and recovery resources; fixed hidden-stage passes are host strategy rather than universal core phases.
 
 ### High-Level Technical Design
 
-The diagrams define responsibility and sequencing, not exact Rust signatures. Implementers may adjust file-local types while preserving the ownership and proof boundaries below.
-
-#### Component and data-flow topology
-
 ```mermaid
 flowchart TB
-  App[Application pane catalog and policy] --> Facade[One-call Dockspace product facade]
-  Local[Official egui responses and semantic actions] --> LocalAdapter[Local evidence adapter]
-  Native[Winit and eframe callback facts] --> Journal[Native ingress journal]
-  Journal --> NativeAdapter[Surface or desktop evidence adapter]
-  LocalAdapter --> Kernel[Core direct-manipulation kernel]
-  NativeAdapter --> Kernel
-  Kernel --> Solver[Target field and commit planner]
-  Solver --> Workspace[Workspace transaction and policy]
-  Kernel --> Pipeline[Presentation pipeline]
-  Workspace --> Compiler[Scene compiler]
-  Pipeline --> Compiler
-  Compiler --> Program[Ordered SurfaceProgram]
-  Program --> Renderer[Shared egui product renderer]
-  Renderer --> OfficialProof[Official run receipt]
-  Renderer --> NativeProof[Native output-token receipt]
-  OfficialProof --> Pipeline
-  NativeProof --> ViewportRuntime[Native viewport runtime]
-  ViewportRuntime --> Pipeline
-  Pipeline -->|exact plan presented or invalidated| Kernel
+  App[Application pane data and policy] --> Core[Dockspace session and commands]
+  Input[Host ordered input and hit facts] --> Kernel[One manipulation kernel]
+  Metrics[Host measurements and coordinate facts] --> Core
+  Kernel --> Core
+  Core --> Compiler[Core semantic surface compiler]
+  Compiler --> Program[Ordered program and exact output identity]
+  Program --> Engine[Engine display list or retained nodes]
+  Program --> Egui[egui validation renderer]
+  Engine --> Owner[Host output owner]
+  Egui --> Owner
+  Owner -->|exact terminal result| Pipeline[Core presentation pipeline]
+  Pipeline -->|committed current snapshot| Kernel
+  Core -->|optional effects| Native[Host platform and renderer services]
+  Native -->|typed readiness and lifecycle facts| Core
 ```
 
-#### Direct-manipulation state machine
+```mermaid
+sequenceDiagram
+  participant H as Engine host
+  participant C as Dockspace
+  participant R as Host renderer
+  H->>C: Ordered facts and valid measurements
+  C-->>H: Borrowed semantic program and output identity
+  H->>H: Compile into owned records
+  H->>C: Complete emission and commit host frame
+  Note over H,R: Frame borrow is released; host controls scheduling
+  H->>R: Submit owned output
+  alt owner finalizes exact output as current
+    R-->>H: Host terminal disposition
+    H->>C: Report exact presented output
+    H->>C: Commit observation
+    C-->>H: Current receiver artifact and pending gesture result
+  else output dropped or superseded
+    H->>C: Report exact dropped output
+    C-->>H: No new receiver authority or release commit
+  end
+```
 
 ```mermaid
 stateDiagram-v2
   [*] --> Idle
-  Idle --> Armed: exact non-touch press
-  Idle --> TouchPending: touch start
-  Armed --> Selected: release below threshold
+  Idle --> Armed: ordered press
   Armed --> Dragging: threshold crossed
-  Armed --> Cancelled: escape or authority loss
-  TouchPending --> Selected: release before 350 ms ordinary activation
-  TouchPending --> PaneContentOwned: move beyond 8 point slop before deadline
-  TouchPending --> TouchArmed: 350 ms expires within slop
-  TouchPending --> Cancelled: contact loss or cancel
-  TouchArmed --> Dragging: movement after arming
-  TouchArmed --> ContextMenu: stationary release
-  TouchArmed --> Cancelled: contact loss or cancel
-  Dragging --> NoCandidate: no valid basin
-  Dragging --> CandidateLatchedUnpresented: candidate acquired
-  NoCandidate --> CandidateLatchedUnpresented: candidate acquired
-  CandidateLatchedUnpresented --> CandidateLatchedPresented: matching preview presented
-  CandidateLatchedUnpresented --> CandidateLatchedUnpresented: new candidate after hysteresis
-  CandidateLatchedPresented --> CandidateLatchedUnpresented: new candidate after hysteresis
-  CandidateLatchedUnpresented --> NoCandidate: target lost or authority invalidated
-  CandidateLatchedPresented --> NoCandidate: target lost or authority invalidated
-  CandidateLatchedUnpresented --> ReleasePending: release before presentation
-  CandidateLatchedPresented --> Committing: release
-  ReleasePending --> Committing: exact preview presented
-  ReleasePending --> Cancelled: discarded stale blocked or superseded
-  NoCandidate --> Committing: release inside application surface to contained
-  NoCandidate --> NativePending: outside-all release with complete desktop authority
-  NoCandidate --> Cancelled: outside-all release without complete authority
-  Committing --> Applied: atomic transaction
-  NativePending --> Applied: first-live transfer
-  NativePending --> Recovered: create show present or close failure
-  Dragging --> Cancelled: escape capture loss source retirement target destruction
-  NoCandidate --> Cancelled: escape capture loss source retirement
-  CandidateLatchedUnpresented --> Cancelled: escape capture loss source retirement
-  CandidateLatchedPresented --> Cancelled: escape capture loss source retirement
-  ReleasePending --> Cancelled: escape capture loss source retirement
-  Selected --> Idle
-  PaneContentOwned --> Idle: pane stream terminates
-  ContextMenu --> Idle
-  Applied --> Idle
-  Recovered --> Idle
+  Armed --> Idle: selection release
+  Dragging --> Latched: eligible candidate
+  Latched --> ReleasePending: release before matching presentation
+  Latched --> Committed: release with matching presentation
+  ReleasePending --> Committed: matching output accepted by core
+  ReleasePending --> Cancelled: dropped stale blocked or lost
+  Dragging --> NativePending: qualified outside-all release
+  NativePending --> Committed: first valid child output and transfer
+  NativePending --> Recovered: failed create close or interruption
+  Dragging --> Cancelled: cancel or authority loss
+  Committed --> Idle
   Cancelled --> Idle
+  Recovered --> Idle
 ```
 
-#### Preview and release proof sequence
+### Host Boundary
 
-```mermaid
-sequenceDiagram
-  participant I as Input adapter
-  participant K as Direct-manipulation kernel
-  participant P as Presentation pipeline
-  participant R as Renderer/pass owner
-  participant W as Workspace transaction
-
-  I->>K: Ordered move facts
-  K->>K: Acquire or retain magnetic candidate
-  K->>P: Publish opaque manipulation plan
-  P->>R: Compile and execute SurfaceProgram
-  I->>K: Release edge
-  alt matching plan was already presented
-    K->>W: Commit prepared terminal action
-  else plan not terminally presented
-    K->>K: Freeze ReleasePending plan
-    R->>P: Terminal presented receipt
-    P->>K: Exact plan presentation
-    K->>W: Commit the frozen action once
-  else output discarded or authority changed
-    R->>P: NotPresented or abandoned receipt
-    P->>K: Plan invalidated
-    K->>K: Cancel and restore source
-  end
-```
-
-#### Capability and lane decision flow
-
-```mermaid
-flowchart TB
-  Press[Gesture press] --> LocalFacts{Exact local response?}
-  LocalFacts -->|yes and no physical provider required| LocalLane[Freeze LocalResponse lane]
-  LocalFacts -->|no or native physical requested| SurfaceFacts{Exact surface-local point and stream?}
-  LocalLane --> LocalBoundary{Leaves source surface?}
-  LocalBoundary -->|no| LocalResult[Same-surface or contained result]
-  LocalBoundary -->|yes| LocalCancel[Cancel and restore; SurfacePointer evidence was not enrolled]
-  SurfaceFacts -->|yes| SurfaceLane[Freeze SurfacePointer lane]
-  SurfaceFacts -->|no| Reject[Reject input as unavailable]
-  SurfaceLane --> CrossNeed{Pointer leaves source surface?}
-  CrossNeed -->|no| LocalResult
-  CrossNeed -->|yes| Handoff{Exact desktop handoff proven?}
-  Handoff -->|no| Cancel[Cancel and restore original source with typed reason]
-  Handoff -->|yes| DesktopLane[Activate DesktopPointer using GestureHandoffReceipt]
-  DesktopLane --> Target{Inside another application surface?}
-  Target -->|yes| CrossDock[Cross-surface dock]
-  Target -->|no| Placement{Inventory work area lifecycle and release complete?}
-  Placement -->|yes| NativePending[Native presentation pending]
-  Placement -->|no| Cancel
-```
-
-### Internal Module Boundaries
-
-| Module | Owns | Hides | Must not own |
-| --- | --- | --- | --- |
-| `runtime::direct_manipulation` | Gesture owner, lane, input sequence, target latch, dwell, projection, plan token, release barrier, terminal outcome | Local/native normalization, transient state, prepared command, self-rebase proof | Durable topology outside transactions, OS effects, renderer widgets |
-| `PresentationPipeline` | Requirements, measurement acceptance, candidate compilation, emission, terminal observation, presented promotion, retirement | Scene/output ledger and plan presentation state | Gesture policy, native callback queue |
-| `SurfaceProgram` | Ordered hierarchical render/hit/a11y/action traversal | Parallel record vectors, root grouping, z-order reconstruction | egui widget implementation, durable state |
-| `RendererPassBridge` | Stage and terminally settle one pass/run receipt | Official run identity or native output token, discard/unwind handling | Product target choice, topology |
-| `NativeIngressJournal` | Ordered callback envelope, claim/commit/retry, barriers, safe coalescing, overload metrics | `HostRecord` variants and front/ack method families | Viewport output state, core workspace |
-| `NativeViewportRuntime` | Desired bindings, output artifact, receiver index, staging, first-live, pass-through, close, retirement, quiescence | Mailbox/coordinator/pass-action/receiver maps | Product topology or target choice |
-| `GestureHandoffEvidence` | Sealed native-ingress proof of old provider lease/watermark, new provider enrollment, canonical tool/contact correlation, held roster, capture/delivery route, and causal ordinal | Backend-specific raw ids after canonicalization | Topology, target choice, guessed physical identity |
-| `GestureHandoffReceipt` | Core-minted atomic lane transfer, new evidence epoch, source ownership, and sole terminal release route | Adapter-specific device ids and desktop geometry | New topology, second manipulation, guessed release authority |
-
-### Surface Program Shape
-
-```mermaid
-flowchart TB
-  Surface[Surface begin] --> Main[Main root program]
-  Main --> MainChrome[Tab strips splitters and panes]
-  MainChrome --> Contained[Contained roots in stack order]
-  Contained --> ContainedChrome[Title tabs content and resize]
-  ContainedChrome --> Overlays[Source gap ghost projection and guides]
-  Overlays --> Popup[Menus popups and modal blockers]
-  Popup --> Feedback[Pending rejection and fatal status]
-  Feedback --> SurfaceEnd[Surface end with semantic and receiver artifact]
-```
-
-Every operation carries one stable visual/semantic identity and references the same core-owned geometry. The renderer may choose egui styling and animation but cannot reorder operations, reinterpret the target, or mint authority.
+| Host supplies or executes | Core supplies or owns | Kept out of core |
+| --- | --- | --- |
+| Surface bounds, scale mappings, text/chrome metrics, pane minima | Layout requirements, deterministic geometry, measurement validity | Font shaping, DPI guesses, renderer resources |
+| Ordered pointer/contact/keyboard and target-side blocker facts | Gesture sequencing, target policy, cancellation, prepared commands | egui Response lifecycle, raw OS callbacks |
+| Accept or compile semantic program, preserve content slots | Ordered composition, identities, clip/hit/semantic records | Galley, AccessKit nodes, vertices, render graph |
+| Terminal output disposition and wake/focus execution | Current presentation and exact receiver identity | Output-shape parsing, GPU fences, host scheduling policy |
+| Optional create/destroy/place/show and renderer readiness | Desired native lifecycle, pending transfer, close and recovery semantics | OS handles, swapchains, mandatory eframe staging choreography |
 
 ### Default Interaction Profile
 
-- Drag threshold: 6 logical points.
-- Center basin: the central 52% by 52% of the target content rectangle.
-- Edge direction: normalized nearest edge outside the center basin.
-- Outer root edge band: 15% of the short side, clamped to 32-72 logical points.
-- Target release hysteresis: 8 logical points beyond the acquire boundary, with a deterministic switch-advantage rule.
-- Direct guide and tab-gap hit outrank magnetic basins; rejected candidates do not silently fall back to a lower-priority candidate.
-- Hover-tab activation: optional 150 ms event-time dwell, reset by target, scene, gesture, output, or policy change; it never implies pane focus.
-- Holding Shift temporarily disables magnetic docking in the default editor profile. Arrangement lock remains a separate policy; there is no independent guide-only targeting profile.
-- Visual easing may use 80-150 ms transitions, but hit geometry, latch, and commit semantics change immediately.
+These defaults implement R1/R3/R5/R7/R8/R17; they remain core logical units rather than egui pixels.
+Hosts may style the controls and supply measured dimensions without changing target priority or terminal rules.
 
-#### Chrome ownership and terminal states
-
-| Region | Primary gesture | Menu/keyboard alternative | Terminal rule |
-| --- | --- | --- | --- |
-| Tab body | Drag one item; click selects | Reorder, Float, Dock, Close | Close removes one item; final item follows close policy and focus recovery |
-| Group handle / empty tab strip | Drag the whole group | Group menu: Close Group, Close Others, Close All, Float | Empty groups retire or remain as an explicit empty state, never as an accidental hit target |
-| Contained title background | Move the full contained root | Move, Resize, Dock Back, Close Group | Failed native promotion cancels/restores; `Close Group` runs group close policy and never means close one pane |
-| Contained resize edges/corners | Eight-direction live resize; corners outrank edges; cursors are horizontal, vertical, NW-SE, or NE-SW by region | Resize commands and size reset | Mouse edge band is 8 logical points with 12-point corner squares; touch target is at least 44 points; regions are clipped to the root and disjoint from title/tab controls; Escape/contact/capture loss rolls back; layout lock disables mutation |
-| Tab close button | Close that tab only | Same command in tab menu | No second unlabeled close control; occluded/disabled close is non-executable |
-| Splitter/junction | Pointer drag with expanded hit region | Keyboard/AccessKit increment/decrement, double-click equalize | Escape or capture loss rolls back; min-size clamp reports feedback; layout lock disables mutation only |
-
-#### Feedback, overflow, splitter, touch, and focus contracts
-
-- Feedback is a small state machine: `Pending` stays anchored to the source/target; `Succeeded`, `Cancelled`, `Stale`, `Rejected`, `Unsupported`, and `Recovered` announce once, deduplicate by manipulation id, and remain in an inert non-modal strip until the next related action or explicit dismissal. Fatal status never replaces retained pane content with an opaque interactive page.
-- Overflow has one owner at a time: keyboard/AccessKit reveal owns the offset until complete; manual scrollbar owns it while pressed; active tab drag owns edge auto-scroll; overflow-menu selection reveals and focuses the chosen tab before returning control. Partially clipped tabs expose no executable close or drag subcontrol.
-- Splitters expose hover/press/drag/release, minimum-size clamp, Escape/capture-loss rollback, layout-lock reasons, and a 44-point touch hit expansion without changing visual thickness. Keyboard and AccessKit increment/decrement move the activated boundary by 16 logical points before normalization. Double-click equalizes only the two siblings adjacent to the activated segment, preserving their combined normalized weight and all other siblings; a junction acts on its focused segment/axis.
-- Surface-local touch uses a 350 ms long press and 8 logical-point slop. Moving beyond slop before the deadline permanently cancels docking arming for that contact and leaves pane scrolling in control; release before the deadline performs the control's ordinary activation/selection without drag. After arming, movement begins drag without hover dwell; armed release without movement opens the semantic context menu. Contact loss/cancel rolls back. Tab/group menu buttons, close, resize, and splitter targets are at least 44 points so every drag-only command has a visible semantic alternative.
-- Accessibility journeys use the normative focus-successor table below. Popup focus is contained, disabled reasons are exposed, pending/status feedback never steals focus, and live projection suppresses per-pixel announcements while keeping final bounds exact.
-
-#### Normative focus successors
-
-| Action | Focus after terminal outcome |
+| Behavior | Default |
 | --- | --- |
-| Select | The selected tab node; pane focus changes only after an exact pane-focus request/observation |
-| Reorder or dock | Retain the moved item's semantic focus; if its node is temporarily absent, hold a focus intent until the matching presented node exists |
-| Close tab | Next tab in visual order, otherwise previous tab, otherwise group handle, otherwise root workspace |
-| Close group | Previously active pane in the destination/root if one exists, otherwise root workspace |
-| Reopen | The reopened tab node; pane focus still requires its exact request/observation |
-| Reset or preset restore | Prior focused stable item when present, otherwise the primary selected tab, otherwise root workspace |
-| Popup dismissal | Return to the invoking tab/group/menu button unless that node was removed, then apply the relevant close/reset successor rule |
-| Pending, rejected, unsupported, recovered, or fatal feedback | Never steals focus; status is announced once through its inert semantic node |
+| Drag arming | 6 logical-point threshold; below-threshold release selects |
+| Magnetic center | Central 52% by 52% of the target content rectangle |
+| Other directions | Normalized nearest edge outside the center; outer-root band is 15% of the short side, clamped to 32-72 logical points |
+| Target stability | 8 logical-point release hysteresis with deterministic switch advantage |
+| Hover selection | Optional 150 ms event-time dwell, reset by target/scene/gesture/output/policy change; never implies pane focus |
+| Temporary suppression | Shift disables magnetic acquisition in the default editor profile; R25 arrangement lock remains independent |
+| Local touch | 350 ms long press and 8-point slop; pre-arm movement yields to pane scrolling, early release activates/selects, armed stationary release opens a semantic context menu |
+| Resize and controls | Eight contained directions; corners outrank edges; 8-point mouse edge band, 12-point corners, and at least 44-point touch targets clipped away from title/tab controls |
+| Splitter commands | 16-point keyboard/accessibility adjustment; double-click equalizes only the adjacent pair while preserving their combined share |
+| Overflow completion | Under R25, one owner at a time: selected-tab reveal, manual scrollbar, active-drag edge scroll, or menu selection; clipped subcontrols cannot execute |
 
-### Sequencing
+Focus intent under R8/R17 uses the following successors.
+Native window focus and pane-content focus still require actual host facts and are not inferred from semantic selection.
 
-```mermaid
-flowchart LR
-  U1[U1 behavior spine] --> U2[U2 SurfaceProgram]
-  U2 --> U3[U3 manipulation kernel and pass bridge]
-  U3 --> U4[U4 magnetic and contained UX]
-  U3 --> U5[U5 HoverDrop authority]
-  U4 --> U6[U6 common product facade and chrome]
-  U5 --> U6
-  U6 --> U12[U12 Release A certification]
-  U3 --> U7[U7 native ingress and native proof adapter]
-  U5 --> U7
-  U7 --> U8[U8 viewport runtime and platform certification]
-  U8 --> U11[U11 Windows and macOS certification]
-  U12 --> U10[U10 layout shell and showcase]
-  U4 --> U9[U9 migration and final evidence]
-  U6 --> U9
-  U12 --> U9
-  U10 --> U9
-  U8 --> U9
-  U11 --> U9
-```
+| Action | Semantic successor |
+| --- | --- |
+| Select | Selected tab; pane-content focus changes only through explicit request/observation |
+| Reorder or dock | Moved item; retain intent until its matching presented semantic node exists |
+| Close tab | Next visual tab, otherwise previous tab, group handle, then root workspace |
+| Close group | Previously active destination/root item when available, otherwise root workspace |
+| Popup dismissal | Invoking tab/group/control, or the relevant close/reset successor if it disappeared |
+| Reopen, reset, preset restore | Under R25, reopened item or prior stable focused item when present, otherwise primary selection/root workspace |
+| Pending, rejected, recovered, or fatal status | No focus change; announce the inert status once |
 
-Release A is U12 after the U1-U6 common-path cuts: the common local/contained facade and coherent chrome on every host whose receipt capability is proven, plus an honest capability-negative result elsewhere. The fork-backed editor tier also gains exact real-pane HoverDrop through U5. U7-U8 reconnect the same kernel to native input and lifecycle; U10 adds layout-management long tail; U11 certifies Windows/macOS before either platform's native-promotion claim; U9 is Release B/final replacement and closes all remaining deletion and evidence gates.
+### Dependency and Fork Adaptation
 
-### System-Wide Impact
+As checked on 2026-10-27, the implementation pins egui/eframe 0.36.1 and Winit 0.30.13.
+The selected stable egui target is 0.37.0, released 2026-10-15, with Rust 1.95 still matching this workspace.
+Winit stable is still 0.30.13; prerelease 0.31 work is not a prerequisite.
+The updated local egui_tiles checkout is reference material; it is not a runtime dependency.
 
-| Surface | Impact | Preserved invariant |
+| Change or boundary | Adaptation work | Owner |
 | --- | --- | --- |
-| Core runtime and engine | New direct-manipulation and presentation pipeline ownership; old local/native/contained reducers collapse | One workspace/revision/policy authority and affine host-frame rollback |
-| Scene compiler and paint facade | Flat parallel records become an ordered program and atomic presented artifact | Core-derived geometry, stable identities, exact candidate/presented separation |
-| Official egui facade | Simpler default `show` loop, typed outcomes, catalog/close policy, and an explicit local/contained capability boundary | Crates.io `egui_dockspace` compatibility and no fork/native token exposure |
-| egui/eframe fork | Narrow completed-pass HoverDrop, host-owned finalization, exact output token, and unwind seams for native multiview | No topology or target logic enters egui; fork-backed capabilities are labeled |
-| Native adapter | Bounded journal, per-stream lanes, one session-owned viewport runtime with per-binding records, atomic output/receiver promotion | One causal order, exact tokens, first-live ownership transfer, typed fail-closed facts |
-| Accessibility | Program identities and prepared commands become the common semantic source | Occluded/disabled controls cannot execute; focus is never inferred from selection |
-| Persistence and layout shell | Defaults, reset, reopen, lock, and named presets become product-level commands | Stable item identities and versioned core document remain authoritative |
-| Tests and CI | Shared semantic journeys replace fixed coordinates/frames; physical lanes become capability certification | Tests do not mint geometry, scene, receipt, or native lifecycle authority |
+| egui/eframe, paint crates, kittest, standalone harnesses | Move the matched 0.37 family together, including explicit feature choices and all lockfiles | U15 official slice |
+| `WidgetType` replacement and accessibility changes | Audit Role mappings, invisible/clipped controls, popup/modal trees and assertions | egui adapter |
+| ID API changes | Audit deprecated `Id::new` and ID-salt APIs while retaining stable docking item identities | egui adapter |
+| Font/provider and glyph-cache changes | Keep shaping in adapter; use explicit fonts for deterministic metric tests | egui measurement and harnesses |
+| `Context::root_ui`, `run_pass`, repaint observer | Review run/pass entry points and wake handling; public additions do not by themselves prove native finalization | egui pass bridge |
+| Screenshot callback, new event/shape variants, scroll source | Update actual matching call sites and inspection/harness code; preserve output order and blocker semantics | egui and smoke code |
+| eframe raw motion routing and window restoration fixes | Re-evaluate custom patches against upstream behavior before carrying them forward | native adapter/fork |
+| Final-pass hits and host finalization | Compare exact 0.37 source against each admitted seam; retain only missing required facts | U15 native slice |
+| Winit desktop pointer and work-area facts | Keep the reviewed 0.30.13 fork until an independently justified migration | native host |
 
-#### Compatibility and release tiers
+Apply the official dependency update before broad egui refactoring so migration errors remain separable from semantic changes.
+The native fork rebase must precede its U7/U8 qualification, but does not block the independent core host work.
+Replacement fork revisions are implementation outputs, not invented plan pins.
+When changed, manifests, lockfiles, CI pins, seam admission documentation, and runnable examples move together.
 
-| Tier | Host/dependency boundary | Guaranteed behavior | Explicitly unavailable until proven |
-| --- | --- | --- | --- |
-| Portable crates.io | `egui_dockspace` with crates.io egui and a caller-owned run boundary that can return the matching output | One-call facade, pane catalog, select/close/reorder, local/contained projection, commands, feedback, and layout shell to the strength of the host receipt | Exact final-stack HoverDrop, native child windows, and cross-window physical promotion |
-| Unmodified crates.io eframe `App::update` | eframe owns the run boundary and exposes no terminal receipt | Rendering plus actions that do not require unavailable presentation proof; typed capability reporting | Preview-qualified release, focus/receiver promotion, and any claim that depends on a terminal receipt. The plan must not market this as the full editor tier. |
-| Fork-backed editor/native | Pinned egui/eframe/winit forks plus `egui_dockspace_native` | Exact completed-pass HoverDrop, post-plugin finalization, unwind abandonment, native windows, first-live, physical handoff, retained-frame and retirement contracts | Only platform facts whose own U8/U11 gates have not passed |
+### Alternatives Considered
 
-U3 must prove the portable receipt path before U6 labels it complete. If the unmodified eframe host still cannot mint that receipt, the result is the middle capability-negative tier; implementation must not add a forgeable counter token or silently import fork-only APIs into the portable package.
+| Approach | Benefit | Cost / decision |
+| --- | --- | --- |
+| Deepen the current semantic core and expose a complete host contract | Reuses validated topology, persistence and stale rejection; supports engine-controlled rendering | Chosen; requires deleting duplicated terminal owners and framework assumptions |
+| Make the egui product facade the universal integration interface | Lowest immediate adapter churn | Rejected; imposes widget/pass assumptions on the engine and cannot prove host independence |
+| Replace core wholesale with ImGui/Open-GPUI structures | Concentrated reference behavior | Rejected; imports framework lifetimes and discards useful tested invariants; algorithms may still be reused selectively |
+
+### Reference Architecture Decisions
+
+The updated ImGui reference is `repo-ref/imgui` docking commit `d88f238d1d363ef387382b2e29ad12cf96f826ac` from 2026-10-15 (`1.93.1 WIP`).
+Use `ImGuiPlatformIO` and per-viewport draw-data separation to check the host/renderer split, and its centralized docking request/preview code to compare gesture locality.
+Its queued frame timing, binary dock tree, global context, previous-frame target acceptance, and `p_open` lifetime are not normative core contracts.
+Keep window DPI distinct from framebuffer density; core logical coordinates also support non-window engine surfaces.
 
 ### Risks and Mitigations
 
 | Risk | Consequence | Mitigation |
 | --- | --- | --- |
-| A new kernel merely wraps old reducers | Three behavior paths remain and drift continues | Each unit has an explicit deletion gate; interface trace tests must run without invoking the old entry points. |
-| `SurfaceProgram` becomes a renderer-specific AST | Core absorbs egui styling and loses renderer neutrality | Limit operations to semantic geometry, ordering, identity, and prepared action handles; keep egui visuals in `product_render`. |
-| Magnetic targeting causes surprising docks | Forgiving behavior becomes unpredictable | Stable priority, normalized distance, hysteresis, rejected-candidate visibility, Shift suppression, and explicit guides as the highest-priority field; verify multiple non-guide points and hesitant trajectories. |
-| Pane passthrough leaks through popups or modals | Users dock through an occluding UI | Put final-stack scanning in egui, require explicit passthrough scope and blocker precedence, and fail closed on ambiguity. |
-| Batching changes event semantics | Release, capture, scroll, or lifecycle ordering breaks | Claim immutable causal prefixes, define barrier classes, keep active movement lossless, and make batch failure atomically retryable. |
-| Full-window projection is expensive | Pointer movement triggers full workspace rebuilds | Reuse measured subtrees, dirty only affected surfaces, index candidates, and enforce structural performance gates before polish. |
-| Native refactor regresses mature lifecycle behavior | First-live, retained frame, close, or retirement breaks | Preserve existing protocol scenarios before ownership moves; migrate one lifecycle phase at a time behind the same public observations. |
-| Breaking API cutover strands examples/users | The new default remains hard to discover | Land facade, migration guide, minimal example, game-engine showcase, and API seal tests in the same cutover unit; do not keep a second long-lived compatibility API. |
+| A nominal host API still needs egui behavior | Engine integration fails after the adapter appears complete | U13 consumer uses public core only and exercises deferred records and two logical surfaces |
+| Stronger names than the evidence actually supplied | Preview or receiver authority advances too early | R11 assigns emission and terminal reporting distinct guarantees without a GPU-proof subsystem |
+| A generic program becomes a widget toolkit | Excessive public API and renderer coupling | R10/R22 restrict the program to docking composition and semantic content slots |
+| Native lifecycle remains tied to eframe stages | Every new engine backend duplicates a long choreography | R15/KTD16 separate core admission from host staging strategy |
+| Dependency migration hides behavior regressions | Failures become difficult to attribute | Separate U14, U15 official, and U15 native slices with existing gates |
+| Portability work becomes another test framework | Maintenance grows without product evidence | One ordinary consumer, finite journeys, no generic selector or GUI automation DSL |
 
-### Assumptions
+### Sequencing and Readiness Checkpoints
 
-- The pinned egui/eframe/winit forks may receive narrow host-proof and completed-hit seams when official APIs cannot express the required fact; these seams remain an explicit fork-backed compatibility tier.
-- Current action, transaction, presentation, first-live, retained-frame, and retirement behavior is not automatically normative. U1's oracle matrix decides which invariants are preserved, characterized only, or intentionally replaced.
-- Rust 1.95, edition 2024, serial `-j1` verification, and the existing workspace/fork layout remain the implementation environment.
-- X11 remains the first physical cross-window certification platform; unsupported platforms remain useful through local and contained lanes.
+```mermaid
+flowchart TB
+  U14[U14 current correctness repairs] --> U13[U13 public engine host contract]
+  U14 --> U15A[U15 official egui 0.37]
+  U13 --> U2[U2 emission and presentation closure]
+  U15A -->|egui slice| U2
+  U2 --> U3[U3 one manipulation kernel]
+  U3 --> U4[U4 magnetic and full content projection]
+  U3 --> U5[U5 public host blocker port]
+  U4 --> U6[U6 commands facade feedback]
+  U5 --> U6
+  U6 --> U12[U12 core readiness]
+  U15A --> U12
+  U12 --> U10[U10 layout shell and showcase]
+  U3 --> U7[U7 bounded ingress and handoff]
+  U5 --> U7
+  U15A --> U15B[U15 minimal native fork rebase]
+  U15B --> U7
+  U7 --> U8[U8 native runtime readiness]
+  U8 --> U11[U11 per-platform certification]
+  U12 --> U9[U9 evidence and deletion closure]
+  U10 --> U9
+  U8 --> U9
+```
+
+U1's finite journey/oracle work continues as evidence for the behavior each replacement touches; existing valid cases are reused rather than restarted.
+Core readiness (U12) means public engine integration plus egui local validation, without waiting for Open-GPUI or every native backend.
+U5's common host port and truthful official-egui boundary satisfy U6/U12; exact fork-backed native hit parity is completed with U7/U8 after the native U15 slice.
+Native readiness (U8, then U9) adds the optional core host lifecycle and qualified X11 reference.
+U11 gates Windows/macOS capability claims separately; unsupported backends remain explicit rather than blocking the generic crate.
+These are packaging/readiness gates, not instructions to publish crates or upstream patches automatically.
 
 ---
 
 ## Implementation Units
 
-### U1. Establish the human-gesture behavior spine and dogfood baseline
+### U14. Repair current configuration-dependent correctness defects
 
-- **Goal:** Turn the desired experience into reusable semantic journeys and a realistic workspace before changing the core seams.
-- **Requirements:** R1-R8, R17, R18; KD1-KD6; KTD9.
+- **Goal:** Establish a sound baseline before changing dependencies or owners.
+- **Requirements:** R11, R13, R15, R18; KTD6, KTD7.
 - **Dependencies:** None.
-- **Files:** `crates/dockspace_host_conformance/src/scenario.rs`, `crates/dockspace_host_conformance/src/tests.rs`, `integration/egui-product-harness/tests/`, `integration/egui-official-harness/`, `crates/egui_dockspace_native/examples/`, `docs/VALIDATION.md`, `docs/knowledge/open-gpui-docking-conformance-catalog.md`.
-- **Approach:** Define L01-L08 local journeys and N01/P01 native journeys using semantic source, basin, preview, outcome, ownership, focus, and quiescence observations. Add cadence profiles for burst, stepwise, hesitant, final-move-with-release, discarded-before-release, target-disappears, and touch-long-press. Create an oracle matrix that marks every preserved action/presentation/first-live/retained-frame/retirement observation as `normative`, `characterization-only`, or `known-invalid`, with the source plan and journey id. Start a lightweight realistic workspace baseline; the full game-engine showcase and layout shell land in U10.
-- **Execution note:** Characterize current strengths and record intentionally failing experience scenarios before production refactors. Do not make the shared scenario format a general GUI DSL.
-- **Test scenarios:**
-  - A tab drag to center and four edges selects semantic basins without referencing guide centers or fixed screen coordinates.
-  - A contained move journey observes a full-window projection contract even though the current renderer initially fails it.
-  - The same local journey runs through core-host and egui-product executors and reports normalized product observations.
-  - The baseline example supports select, reorder, local/contained move, close, and capability status without internal receipts or graph IDs.
-- **Verification:** The new journey catalog and oracle matrix compile, every retained characterization is explicitly classified, the baseline runs to a stable initial layout, and no ordinary interaction helper contains a fixed frame count or guide-center selector.
+- **Files:** `crates/egui_dockspace_native/src/coordinator.rs`, `crates/egui_dockspace_native/src/mailbox.rs`, `crates/egui_dockspace_native/src/host_frame.rs`, `crates/egui_dockspace_native/src/surface_driver.rs`, existing coordinator/mailbox tests, `.github/workflows/ci.yml`.
+- **Approach:** Move required state updates out of debug assertions and ensure presentation commits drain in the same serial settlement boundary. Unify ordinary/staging/close submission exits where the existing presentation contract requires it.
+- **Test scenarios:** With debug assertions disabled, create failure, pointer pass-through acknowledgement, terminal-roster rearm, and close settle correctly. An unchanged redraw followed by no input leaves the exact core/receiver artifact aligned and no pending ACK.
+- **Verification:** Existing native tests pass in both assertion configurations; failed or abandoned host-frame retries do not duplicate output retirement.
 
-### U2. Replace flat paint records with an ordered SurfaceProgram
+### U15. Modernize the egui validation baseline and admitted fork seams
 
-- **Goal:** Make core the sole owner of render/hit/accessibility ordering and create one atomic artifact for a presented surface.
-- **Requirements:** R5, R10-R12, R17; KTD2, KTD6, KTD10, KTD13.
-- **Dependencies:** U1.
-- **Files:** `crates/dockspace/src/scene.rs`, `crates/dockspace/src/scene_compiler/`, `crates/dockspace/src/runtime/paint.rs`, `crates/dockspace/src/semantic_manifest.rs`, `crates/dockspace/src/presentation_hit.rs`, `crates/egui_dockspace/src/renderer_pass_bridge.rs` (new), `crates/egui_dockspace/src/product_render/mod.rs`, `crates/egui_dockspace/src/product_render/schedule.rs`, `crates/dockspace_host_conformance/`.
-- **Approach:** Define `RendererPassBridge` and its deterministic fake receipt at the same time as the ordered program. Have `scene_compiler` emit one hierarchical ordered program and one pending presented artifact containing semantic output, receiver descriptors, hit identity, and manipulation visuals. Let painters execute operations in order rather than rebuilding root groups and contained ordinals. Commit, discard, or retire the artifact only through the bridge's matching presentation result.
-- **Execution note:** First land a reviewable common-path traversal (`root -> tab/group chrome -> pane -> contained root -> projection/guides`) through `RendererPassBridge`; then add popup/feedback operations and delete flat public iterators plus renderer scheduling in the same unit. U12 cannot package while any scoped operation still uses the old schedule.
-- **Test scenarios:**
-  - Main root, stacked contained roots, guides, popups, and feedback execute once in the core-defined order.
-  - Paint, hit, and AccessKit operations for a control share one stable identity and bounds source.
-  - An aborted host frame cannot promote a new receiver while leaving the old core presentation committed, or vice versa; the fake receipt exercises terminal, discard, and abandonment paths.
-  - A late predecessor output cannot replace or retire a successor artifact.
-- **Verification:** Ordered program contract tests pass; existing visual and AccessKit black-box behavior remains stable; `product_render/schedule.rs` and superseded flat-plan adapter APIs are removed rather than wrapped.
+- **Goal:** Validate against the selected stable release without coupling core design to it.
+- **Requirements:** R11, R12, R18, R23; KTD13, KTD15.
+- **Dependencies:** U14 for the native regression baseline; official and native migration are separate reviewable slices.
+- **Files:** `Cargo.toml`, all existing workspace/harness lockfiles and manifests, `crates/egui_dockspace/src/`, `integration/egui-official-harness/`, `integration/egui-product-harness/`, `integration/egui-fork-workspace/`, `integration/egui-native-smoke/`, `repo-ref/egui-release/`, `.github/workflows/ci.yml`, `docs/knowledge/egui-native-fork-seam-admission.md`.
+- **Approach:** Apply the Dependency and Fork Adaptation table. Update official consumer/tests/examples first. Rebuild the minimal required native patch series on the same stable upstream before U7 qualification. Preserve unrelated dirty reference work.
+- **Test scenarios:** Public consumer, font measurement, output-hook discard/unwind, IDs, accessibility clipping, popup/modal blockers, repaint, and native callback identity preserve their documented behavior across the update.
+- **Verification:** Official 0.37 validation passes independently; the rebased fork has documented seam reasons and matching exact pins before native tests claim the new baseline. No UI dependency enters core.
 
-### U3. Build the direct-manipulation kernel and official proof port
+### U13. Establish the public engine host contract
 
-- **Goal:** Give one deep core module complete ownership of a gesture from exact press through terminal result, and prove the host receipt contract before product cutover. Native exact-token finalization is deliberately deferred to U7.
-- **Requirements:** R1-R6, R8-R11, R14; KTD1, KTD3, KTD6, KTD8-KTD10.
-- **Dependencies:** U1, U2.
-- **Files:** `crates/dockspace/src/runtime/direct_manipulation/` (new), `crates/dockspace/src/interaction.rs`, `crates/dockspace/src/engine/local_response.rs`, `crates/dockspace/src/engine/pointer_transaction.rs`, `crates/dockspace/src/drop_resolver.rs`, `crates/dockspace/src/engine/presentation_authority.rs`, `crates/dockspace/src/runtime/paint/actions.rs`, `crates/egui_dockspace/src/pass_settlement.rs`, `crates/egui_dockspace/src/product_dockspace.rs`, `crates/egui_dockspace/src/renderer_pass_bridge.rs`, `integration/egui-official-harness/`.
-- **Approach:** Normalize local semantic actions, surface pointer facts, presentation results, deadlines, and cancellations into one kernel. Bind each manipulation to an opaque plan carrying the live projection, target latch, preview, and prepared terminal command. Reuse U2's `RendererPassBridge` and deterministic fake receipt, then add and prove only the real host-owned receipt adapter in the official harness. The bridge must distinguish terminal presentation, discard, and unwind without using cumulative frame counts. Native eframe adapters are not claimed complete here and are installed in U7.
-- **Execution note:** First land tab, group, and contained manipulation as a reviewable common-path commit; next move remaining state ownership; finally delete direct calls into old local/contained reducers and public preview-ack constructors. Before U4/U6 is called crates.io-compatible, the official real-window gate must either mint the receipt or explicitly mark the full settlement capability fork-backed.
-- **Test scenarios:**
-  - Press, threshold, move, presented preview, release, and duplicate release produce one terminal mutation.
-  - Release before presentation remains pending; foreign, discarded, interrupted, or stale output cannot unlock it.
-  - Escape, capture loss, source retirement, target destruction, and policy change each clear projection, latch, dwell, and release state exactly once.
-  - The fake receipt adapter proves promotion/discard/abandonment; the official harness proves a real host receipt or records a typed capability-negative result. No test uses a forged pass count.
-- **Verification:** One interface-level trace suite covers local gesture semantics and receipt states; old reducer forwarding paths and public preview-ack constructors are gone; scroll remains an independent interaction subsystem; failure of the unmodified crates.io eframe host cannot be hidden by a fork-only test.
+- **Goal:** Make self-drawn engine integration a first-class supported path.
+- **Requirements:** R10-R12, R14, R16-R24; KTD1, KTD2, KTD6, KTD14.
+- **Dependencies:** U14. Does not depend on the native fork rebase.
+- **Files:** `crates/dockspace/src/runtime.rs`, `crates/dockspace/src/runtime/{session,host_frame,measurement,paint,presentation,interaction}.rs`, `crates/dockspace/README.md`, `integration/dockspace-host-harness/` (new), `Cargo.toml`, `.github/workflows/ci.yml`.
+- **Approach:** Document and expose the necessary host facade. Make output records usable for immediate consumption and compilation to owned host work, remove widget-specific SourceGap obligations, and decouple logical-surface routing from native registration. Add a tiny downstream consumer and recording renderer through the same supported API.
+- **Test scenarios:** Covers AE12-AE14. Compile owned records, release frame borrows, delay/drop/supersede outputs, reject stale receivers, and route two logical surfaces without OS-window enrollment. Verify default/serde dependency independence and layout/command use without pointer/native registration.
+- **Verification:** The downstream crate uses no private modules, test-only authority constructors, or egui types; the documented host lifecycle is sufficient for its complete local journey.
 
-### U4. Implement magnetic targets, dwell, and full-window contained projection
+### U1. Maintain the finite behavior spine and oracle classifications
 
-- **Goal:** Deliver the common magnetic/full-window interaction slice on the new kernel, with exact ordinary-child passthrough explicitly reserved for the fork-backed U5 tier.
-- **Requirements:** R1-R8, R17, R18; KD5; KTD3-KTD5.
+- **Goal:** Preserve useful evidence while making engine-host and egui results comparable.
+- **Requirements:** R1-R8, R17-R19, R24; KTD9.
+- **Dependencies:** Reuse existing catalog immediately; add public-host execution after U13.
+- **Files:** `crates/dockspace_host_conformance/src/`, `integration/dockspace-host-harness/`, `integration/egui-product-harness/tests/`, `docs/VALIDATION.md`.
+- **Approach:** Keep L01-L08 and N01/P01 finite, add host scenarios AE12-AE14, and distinguish normative, characterization, and known-invalid observations. Replace failing behavior rather than relabeling it successful.
+- **Test scenarios:** Center/four-edge semantic regions, complete same-tick gestures, hesitant releases, target loss, output drop, and local quiescence produce normalized observations without guide selectors or frame-count authority.
+- **Verification:** Each claimed journey executes real public actions in its executor; catalog metadata alone is not a passing behavior test.
+
+### U2. Close ordered emission and atomic current-output promotion
+
+- **Goal:** Finish the existing program/presentation replacement for both engine and egui hosts.
+- **Requirements:** R4, R5, R10-R12, R16, R21; KTD2, KTD6, KTD10.
+- **Dependencies:** U13 and the relevant U1 journeys. Changes to the egui bridge additionally require U15's official slice; independent core work can proceed before it.
+- **Files:** `crates/dockspace/src/scene.rs`, `crates/dockspace/src/scene_compiler/`, `crates/dockspace/src/runtime/{paint,presentation,host_frame}.rs`, `crates/dockspace/src/{semantic_manifest,presentation_hit}.rs`, `crates/egui_dockspace/src/{renderer_pass_bridge,pass_settlement}.rs`, public host harness and existing presentation tests.
+- **Approach:** Retain U2a's canonical traversal and finish U2b's exact output commit path. Give execution receipts R11's limited meaning, remove public preview-only acknowledgement authority, and make receiver/semantic/program promotion one committed artifact. Treat mutable egui shape markers as adapter-local diagnostics unless their limited acceptance contract is explicitly proven.
+- **Test scenarios:** Covers AE5/AE13. Complete/failed emission, dropped output, output-hook modification, unwind, late predecessor, failed core commit, and idle post-commit settlement never create mixed artifacts or release authority.
+- **Verification:** One exact output path is used by public engine, egui, and native integrations; flat schedule reconstruction and preview-only acknowledgement bypasses are deleted.
+
+### U3. Converge ordered manipulation and terminal state
+
+- **Goal:** Make a gesture's complete lifecycle local to one deep core module.
+- **Requirements:** R1-R4, R8, R9, R11, R14, R17; KTD3, KTD8, KTD10.
+- **Dependencies:** U2.
+- **Files:** `crates/dockspace/src/runtime/direct_manipulation.rs` or a focused module directory, `crates/dockspace/src/interaction.rs`, `crates/dockspace/src/engine/{local_response,pointer_transaction,local_contained,pointer_contained}.rs`, `crates/egui_dockspace/src/product_render/actions.rs`, public-host and product gesture tests.
+- **Approach:** Normalize ordered input boundaries and semantic commands into one transaction owner. Keep semantic controls/scroll separate where their existing subsystem owns them. Remove old release/cancel/ACK terminal reducers rather than forwarding through them.
+- **Test scenarios:** Covers AE2/AE4. Same-tick press/move/release, duplicate release, cancellation, capture/source/target loss, discarded preview, and policy changes produce one terminal outcome through both input adapters.
+- **Verification:** Complete Burst cases enter ordinary passing gates; one core release barrier and cancellation owner remain.
+
+### U4. Complete magnetic behavior and live contained content
+
+- **Goal:** Deliver consistent direct manipulation through the host-neutral projection.
+- **Requirements:** R2-R5, R8, R10, R17, R24; KTD2-KTD5.
 - **Dependencies:** U3.
-- **Files:** `crates/dockspace/src/runtime/direct_manipulation/`, `crates/dockspace/src/drop_resolver.rs`, `crates/dockspace/src/scene_compiler/`, `crates/egui_dockspace/src/product_render/drag_feedback.rs`, `crates/egui_dockspace/src/product_render/guides.rs`, `crates/egui_dockspace/src/product_render/contained.rs`, `crates/egui_dockspace/src/product_render/tabs.rs`, `integration/egui-product-harness/tests/gesture_journeys.rs` (new), `integration/egui-product-harness/tests/visual_contract.rs` (new).
-- **Approach:** Add deterministic center/edge/root target fields, acquire/release hysteresis, stable candidate ordering, optional event-time hover dwell, source suppression, rejected-candidate feedback, and a whole-subtree contained projection. Use one projection for chrome, content, hit, AccessKit, ghost/outline, and eventual durable placement.
-- **Execution note:** Tune defaults only through semantic journeys and dogfood; do not change target authority to make a screenshot look better.
-- **Test scenarios:**
-  - Three non-guide points in each center/edge basin resolve identically across burst, stepwise, hesitant, and final-move-with-release cadences.
-  - Jitter and small overshoot retain the candidate; a larger deterministic move switches it once.
-  - Dwell before the deadline is inert; deadline arrival selects once, does not move pane focus, invalidates the old preview, and requires a newly presented plan.
-  - Full-window move and eight-direction resize update all projected regions, allow targets behind the source, enforce minimum size, and commit or cancel once.
-  - A pointer in an overlapping pane basin and outer-root band follows the documented priority; group-handle drag, contained-title drag, Escape, capture loss, and target destruction all have deterministic terminal outcomes.
-  - Touch movement beyond 8 points before 350 ms cancels arming and preserves scrolling; release before the deadline selects without dragging; armed contact loss cancels; hit regions meet the 44-point minimum; stationary armed release opens the semantic menu.
-- **Verification:** U1 journeys for reorder, center/edge dock over supported Dockspace-owned regions, contained float/move/resize/redock, cancel, and stale target pass through the portable host; the fork-backed ordinary-child journey is deferred to U5 and portable tests assert `HoverDropUnavailable`. The old compact-ghost-only contained contract and fixed three-frame release assumptions are removed.
+- **Files:** `crates/dockspace/src/drop_resolver.rs`, `crates/dockspace/src/scene_compiler/surface.rs`, `crates/dockspace/src/runtime/direct_manipulation.rs`, `crates/egui_dockspace/src/product_render/`, public-host and product projection tests.
+- **Approach:** Apply transient placement before compiling contained chrome and pane subtrees. Preserve one target solver, source suppression, event-time dwell and frozen pending-release plan. Use cached valid measurements where possible.
+- **Test scenarios:** Covers AE2/AE3. Non-guide basin samples, jitter, hysteresis-edge release, contained move/eight-way resize, target panes behind the source, and cancellation compare program, hit, semantic and durable results.
+- **Verification:** Full pane content follows the projection; a window-sized empty ghost is insufficient. Structural cost meets R24.
 
-### U5. Add truthful docking-hover passthrough and blocker semantics
+### U5. Implement the host docking-hover port and egui blocker validation
 
-- **Goal:** Make real pane content dockable without permitting click-through or docking through popups, modals, overlays, or front windows.
-- **Requirements:** R3, R10, R12, R17, R18; KTD2, KTD13.
-- **Dependencies:** U2, U3.
-- **Files:** `repo-ref/egui-release/crates/egui/src/hit_test.rs`, `repo-ref/egui-release/crates/egui/src/ui.rs`, `repo-ref/egui-release/crates/egui/src/context.rs`, `crates/egui_dockspace/src/product_render/tabs.rs`, `crates/egui_dockspace/src/product_render/guides.rs`, `crates/egui_dockspace_native/src/receiver.rs`, `integration/egui-product-harness/tests/gesture_journeys.rs`, `integration/egui-fork-workspace/`.
-- **Approach:** Add a narrow completed-pass query over registered Dockspace candidates, pane-local passthrough scopes, explicit blockers, modal/layer state, and ambiguity. Carry the typed answer through the presented artifact and native receiver port. Keep ClickDelivery, DragDelivery, ScrollDelivery, and HoverDrop as separate lanes. The fork-backed query is required for exact native receiver authority; the crates.io local/contained path may use only its public local-response evidence and must report `HoverDropUnavailable` rather than pretending to have a completed-pass stack.
-- **Execution note:** First land the Release A matrix—TextEdit, ScrollArea, Button/canvas passthrough plus popup/modal/front-contained blocking—as a reviewable cut. Then complete ambiguity/stale/foreign-binding coverage. The fork seam proves framework hit-stack facts only; it must not know Dockspace targets, policies, geometry, or transactions.
-- **Test scenarios:**
-  - TextEdit, ScrollArea, Button, and canvas-like pane content pass HoverDrop to the registered pane candidate while keeping their ordinary click/scroll behavior.
-  - A popup, modal, independent overlay, explicit blocker, or front contained root returns `Blocked` and cannot fall through.
-  - Unknown widget identity, duplicate registration, semantic mismatch, stale pass, or foreign binding fails closed with a typed answer.
-  - The same completed-pass artifact drives local and native receiver queries without live-context generation drift.
-- **Verification:** Fork unit tests and product/native integration tests cover realistic children and blockers; the native `PaneBody` special case and rectangle-based recovery logic are deleted. Official crates.io tests assert the honest local/contained capability boundary instead of importing fork-only types.
+- **Goal:** Authorize docking through ordinary content without crossing blockers.
+- **Requirements:** R3, R12, R17-R19; KTD4, KTD13.
+- **Dependencies:** U3 and U13; common egui coverage uses U15's official slice. The fork-backed native extension is qualified with U7/U8 after U15's native slice and does not block U6/U12.
+- **Files:** `crates/dockspace/src/runtime/interaction.rs`, `crates/dockspace/src/runtime/native/pointer.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace_native/src/receiver.rs`, the rebased egui hit-test seam, public-host and product blocker tests.
+- **Approach:** Consume typed output-bound host answers through one port. Let the engine use its own composed UI facts; keep egui stack inspection in the adapter/fork and expose unsupported portable cases truthfully.
+- **Test scenarios:** Covers AE1/AE1b. Actual TextEdit/ScrollArea/Button/canvas bounds, popup/modal/foreground overlay, explicit blocker, front contained root, unknown identity, and stale output prevent fallback through the front result.
+- **Verification:** The public host consumes exact typed answers and official egui reports unsupported cases truthfully; no renderer reconstructs target policy from rectangles. U7/U8 additionally prove that the native path agrees on the same host-answer contract.
 
-### U6. Cut over the common product facade, chrome, and feedback
+### U6. Finish core commands and the application-facing adapter loop
 
-- **Goal:** Make the recovered same-surface and contained behavior discoverable and materially simpler for the first real user checkpoint, without blocking on layout-management long tail or native proof seams.
-- **Requirements:** R1, R2, R6-R8, R16-R18; KD3, KD6; KTD1, KTD6, KTD9-KTD11, KTD13.
-- **Dependencies:** U4, U5.
-- **Files:** `crates/egui_dockspace/src/product_dockspace.rs`, `crates/egui_dockspace/src/product_response.rs`, `crates/egui_dockspace/src/native_support.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace/examples/basic.rs`, `crates/egui_dockspace_native/examples/basic.rs`, `crates/egui_dockspace/README.md`, `docs/MIGRATION.md`, `docs/PLATFORM_SUPPORT.md`.
-- **Approach:** Introduce the one-call facade with a stable pane catalog, closed-item inventory, close policy hook, default layout, and exactly-once deferred outcomes. Replace duplicate contained/tab chrome with the ownership matrix above. Add typed feedback, context menus, directional commands, minimum overflow affordances, visible splitter cues, focus recovery, and truthful capability reasons. The crates.io promise covers local/contained interaction only until U3's official host receipt gate passes; fork-backed native capabilities remain explicitly typed.
-- **Execution note:** Land facade, minimal examples, migration documentation, and API seal together; do not keep two equally promoted usage styles. Do not include presets/reset/reopen persistence or game-engine long-tail work in this unit's blocking gate.
-- **Test scenarios:**
-  - A minimal supported host uses only the product facade and completes select, close, reorder, magnetic dock, contained move, and focus settlement; an unsupported host reports the exact missing receipt capability.
-  - Pending close returns a stable business key, resolves once, and is not reissued by multipass rendering.
-  - Chrome ownership remains disjoint in ordinary, single-tab, and narrow layouts; group drag and contained title movement are discoverable without a second unlabeled close button.
-  - Disabled/occluded controls remain semantically inert, and focus recovery after close, dock, and reorder names the expected node.
-- **Verification:** Public API compile tests contain no scene, rect, pass, receipt, token, or frame-count authority; the minimal example is concise; the first common-path checkpoint passes without importing fork-only native types.
+- **Goal:** Expose coherent product behavior without hiding required engine host APIs.
+- **Requirements:** R7, R8, R16, R17, R19; KTD1, KTD11.
+- **Dependencies:** U4 and U5.
+- **Files:** `crates/dockspace/src/model/`, `crates/dockspace/src/runtime/{close,report,session}.rs`, `crates/egui_dockspace/src/{builder,product_dockspace,product_response}.rs`, `crates/egui_dockspace/src/product_render/`, existing examples, public-host and close/feedback tests.
+- **Approach:** Keep R7 common-path stable-item commands and typed manipulation feedback in core; R25 layout-management commands stay in U10. Fix Close Group versus Dock Back, consume close decisions in examples, and map semantic focus intent to adapter behavior. One-call convenience remains an adapter concern.
+- **Test scenarios:** Covers AE8 and the common-path portions of AE9/AE10; their R25 locked/reopen/restore cases remain in U10. Immediate/deferred close resolve exactly once, examples actually complete permitted closes, rejected/pending results deduplicate, and focus returns to the documented successor.
+- **Verification:** Both public engine integration and the minimal egui example can discover and complete the common local workflow without raw graph or proof internals.
 
-### U12. Certify and publish Release A common-path experience
+### U12. Certify core host readiness
 
-- **Goal:** Ship and dogfood the user-visible fixes that motivated this plan without waiting for layout-shell long tail or Windows/macOS native certification.
-- **Requirements:** R1-R6, R8-R12, R16-R18; KD1-KD6; KTD1-KTD6, KTD9-KTD10, KTD13.
-- **Dependencies:** U6.
-- **Files:** `crates/dockspace/README.md`, `crates/egui_dockspace/README.md`, `crates/egui_dockspace/examples/basic.rs`, `integration/egui-product-harness/tests/gesture_journeys.rs`, `integration/egui-official-harness/`, `integration/egui-fork-workspace/`, `.github/workflows/ci.yml`, `docs/MIGRATION.md`, `docs/PLATFORM_SUPPORT.md`, `docs/VALIDATION.md`.
-- **Approach:** Freeze Release A to tab select/close/reorder, group drag, magnetic center/four-edge docking, full-window contained float/move/eight-way resize/redock, ordinary pane content in the fork-backed editor tier, coherent chrome, typed feedback, and exact focus recovery. Publish the three compatibility tiers and exclude presets/reset/reopen persistence, native child promotion, and Windows/macOS claims from this release. Delete the compact-ghost-only move contract, exact-guide-only target path, common-path fixed-center/fixed-frame tests, and old local/contained terminal reducers before packaging.
-- **Execution note:** U2/U3/U5 must each land a reviewable common-path commit before their long-tail tests; U12 packages only those proven paths. No compatibility shim may keep the old exact-guide/compact-ghost behavior selectable.
-- **Test scenarios:**
-  - A new user runs the minimal example, discovers tab/group/contained drag regions without documentation, and completes center/edge dock plus contained move/redock from non-guide points.
-  - Text editor, scroll area, button, popup, modal, and front-contained fixtures produce the documented portable or fork-backed capability result without click-through.
-  - Burst, stepwise, hesitant, final-move-with-release, stale, cancellation, keyboard, and AccessKit journeys converge on the same topology/focus outcome.
-  - Package metadata, README, migration guide, examples, and capability output agree on what crates.io, unmodified eframe, and fork-backed editor tiers support.
-- **Verification:** Run core, product-headless, official compatibility, fork HoverDrop/finalizer, package-list, docs, and minimal-example gates serially. Release A is publishable only when every scoped old path is deleted and the catalog labels all deferred U7-U11 capabilities as unavailable rather than planned-as-passing.
+- **Goal:** Make the reusable crate independently consumable before expanding native platforms.
+- **Requirements:** R1-R5, R7-R12, R16-R24; KD7; KTD14.
+- **Dependencies:** U6, U13, and U15's official slice.
+- **Files:** `crates/dockspace/README.md`, public host harness, official/product harnesses, package manifests, `README.md`, `docs/VALIDATION.md`, `.github/workflows/ci.yml`.
+- **Approach:** Package the core host contract, dependency independence, and complete local/contained journeys. Record adapter capability limits separately from core guarantees and give an engine author a complete integration example.
+- **Test scenarios:** A clean downstream dependency resolves the published-shaped core API; the same normal journeys run through immediate/deferred public hosts and egui; no ignored Burst or old ACK remains a claimed passing gate.
+- **Verification:** Core tarball, strict docs, dependency tree, public consumer, and common-path validation pass without Open-GPUI or platform-specific native certification.
 
-### U10. Add the layout-management shell and realistic showcase
+### U7. Replace native callback throughput and add scoped input continuity
 
-- **Goal:** Add the long-tail product shell after the common manipulation path is usable and observable: overflow, lock, reset, reopen, persistence, presets, recovery, and a dense editor workspace.
-- **Requirements:** R7, R8, R16-R18; KD3; KTD9-KTD11.
-- **Dependencies:** U12.
-- **Files:** `crates/egui_dockspace_native/examples/game_engine_workspace.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace/src/layout_shell.rs` (new), `crates/egui_dockspace/src/persistence.rs`, `integration/egui-product-harness/tests/layout_shell.rs` (new), `docs/MIGRATION.md`, `docs/VALIDATION.md`.
-- **Approach:** Implement the single overflow-owner state machine, arrangement lock, reset/default layout, named preset save/restore, reopen and missing-pane recovery keyed by stable item identity. Restore the dense game-engine showcase with realistic text editor, console, scene, hierarchy, inspector, and performance panes; no internal coordinates or programmatic tear-off shortcuts.
-- **Test scenarios:**
-  - Selected-tab reveal, manual scrollbar, drag-edge auto-scroll, and menu selection never fight or expose executable clipped controls.
-  - Close, reopen, reset, save/restore, and missing-pane recovery are atomic across multipass rendering and preserve selection/focus by stable key.
-  - Layout lock blocks arrangement mutations but leaves pane content, close policy, and allowed semantic commands usable with typed reasons.
-  - The showcase passes the manual editor checklist in light/dark and reduced-motion modes, including group drag, splitter, overflow, recovery, and capability feedback.
-- **Verification:** Layout shell tests are separate from the common-path gate; the showcase runs through the same public facade and no longer serves as a hidden geometry or native-lifecycle oracle.
+- **Goal:** Make optional native hosting bounded and preserve useful local behavior without desktop facts.
+- **Requirements:** R6, R9, R11-R14, R18, R20; KTD7, KTD8, KTD12.
+- **Dependencies:** U3, U5, U14, and U15's native slice.
+- **Files:** `crates/egui_dockspace_native/src/{mailbox,coordinator,pointer_event,input_control,surface_driver}.rs`, core ingress/pointer modules, native coordinator tests, public-host scoped-input tests.
+- **Approach:** Replace one-callback-per-cycle front/ACK families with bounded immutable prefix claims. Establish surface-local routing and validated desktop handoff through the same core kernel; preserve exact output and lifecycle barriers.
+- **Test scenarios:** Covers AE7/AE11/AE14. Retry after a rejected batch, 10,000 interleaved records, sustained 1,000 Hz drag, overload, local touch coordinates, and scope/provider changes preserve one terminal release.
+- **Verification:** Resource budgets hold and no unbounded journal or forced desktop-only local route remains.
 
-### U7. Replace native callback reduction with bounded ingress, native proof, and per-gesture lanes
+### U8. Consolidate optional viewport hosting and certify native readiness
 
-- **Goal:** Preserve exact native causality under realistic event rates while installing the exact native output/receiver proof adapter and allowing same-surface interaction on platforms without desktop-global facts.
-- **Requirements:** R6, R9, R11-R14, R18; KD4, KD6; KTD6-KTD10, KTD12-KTD13.
-- **Dependencies:** U3, U5.
-- **Files:** `crates/egui_dockspace_native/src/host_ingress.rs` (new), `crates/egui_dockspace_native/src/mailbox.rs`, `crates/egui_dockspace_native/src/coordinator.rs`, `crates/egui_dockspace_native/src/pointer_event.rs`, `crates/egui_dockspace_native/src/event.rs`, `crates/egui_dockspace_native/src/pass_actions.rs`, `crates/egui_dockspace_native/src/surface_driver.rs`, `crates/dockspace/src/runtime/interaction.rs`, `crates/dockspace/src/runtime/native/pointer.rs`, `crates/dockspace/src/runtime/native/session.rs`, `crates/dockspace/src/pointer_journal.rs`, `repo-ref/egui-release/crates/eframe/src/native/host_seam.rs`.
-- **Approach:** Replace variant-specific front/ack methods with immutable causal prefix claims and atomic commit/abort. Add the fixed record/byte/age caps and batch budgets from the Resource Budgets table, typed overload, idle-only coalescing, vectorized receiver queries, exact surface-local positions, and stream-scoped mouse/touch/pen kinds. Install the native exact-token finalizer only after all output hooks succeed; unwind creates an exact-token abandonment tombstone. Freeze local/surface/desktop lane at gesture start and implement `GestureHandoffReceipt` as one causal operation; no lane promotion is inferred from geometry.
-- **Execution note:** Start with deterministic trace and overload tests, then reconnect one callback family at a time. Keep output terminals in the same causal journal.
-- **Test scenarios:**
-  - Ten thousand interleaved pointer, output, focus, lifecycle, scroll, device-removal, and close records preserve total order across claim/abort/retry.
-  - Active moves are lossless; idle continuous moves coalesce only when every route/capability/presentation generation matches.
-  - Touch uses exact surface-local positions, contact IDs can be reused after terminal cleanup, and unknown raw-device correlation cancels conservatively without pretending to identify a physical device.
-  - A 1,000 Hz drag stays within 4,096 records/4 MiB/250 ms, completes release within 100 ms on the release profile, and explicitly quarantines an uncompressible overload.
-  - A source-to-desktop handoff either consumes one valid receipt with exactly one held-button/contact route or cancels/restores without a duplicate release.
-- **Verification:** Coordinator consumes batches rather than one variant per root cycle; front/ack method families and unbounded journal ownership are removed; local/contained gestures work on capability-negative platforms; native output finalization is proven after all plugins and on unwind.
-
-### U8. Consolidate the native viewport runtime and certify X11 behavior
-
-- **Goal:** Reconnect mature multiview lifecycle behavior through one session-owned runtime and requalify X11 physical cross-window interaction without weakening fail-closed facts.
-- **Requirements:** R6, R8, R11-R15, R18; KD4, KD6; KTD6-KTD10, KTD12-KTD13.
+- **Goal:** Preserve core native semantics while making resource ownership engine-implementable.
+- **Requirements:** R6, R11, R13-R15, R18-R22; KTD7, KTD16.
 - **Dependencies:** U7.
-- **Files:** `crates/egui_dockspace_native/src/viewport_runtime.rs` (new), `crates/egui_dockspace_native/src/coordinator.rs`, `crates/egui_dockspace_native/src/mailbox.rs`, `crates/egui_dockspace_native/src/pass_actions.rs`, `crates/egui_dockspace_native/src/receiver.rs`, `crates/egui_dockspace_native/src/surface_driver.rs`, `crates/egui_dockspace_native/src/retirement.rs`, `crates/egui_dockspace_native/src/input_control.rs`, `crates/egui_dockspace_native/src/capabilities.rs`, `crates/egui_dockspace_native/src/work_area.rs`, `repo-ref/egui-release/crates/eframe/src/native/host_seam.rs`, `repo-ref/winit-release/src/`, `integration/egui-native-smoke/src/bin/physical_x11/`.
-- **Approach:** Move output reservation, pending/presented artifact, receiver lifecycle, create/hidden/visible staging, first-live, pass-through, no-frame, close, retirement, and quiescence into one session-owned runtime containing per-binding/incarnation records. Every cross-binding transition is committed under one causal operation id; the ingress journal remains external and cannot mutate lifecycle state. Re-run programmatic lifecycle first, then upgrade X11 physical journeys to magnetic non-center releases, jitter, overshoot, and hesitant cadences.
-- **Execution note:** Preserve only the U1 oracle-matrix rows marked `normative` for first-live and retirement while changing ownership. `characterization-only` rows do not block migration, and each `known-invalid` row must be replaced by its target journey before any platform claim advances.
-- **Test scenarios:**
-  - Create, hidden staging, show acknowledgement, exact visible snapshot, post-show presentation, first-live, re-dock, destroyed tombstone, route retirement, and quiescence survive arbitrary valid ordering.
-  - A1 late outputs, effects, receiver observations, or destroy records cannot mutate A2 after replacement.
-  - Pass-through dispatch requires a later exact snapshot; missing or conflicting observation leaves the dependent gesture pending or cancelled.
-  - X11 performs drag-out preview, first-live, cross-window redock through a non-center magnetic point with jitter, child retirement, and final quiescence using real XTest input.
-- **Verification:** Native deterministic suite, programmatic real-window smokes, and X11 physical gate pass; old distributed output/create/staging/receiver maps are removed. Windows/macOS claims are not advanced by this unit.
+- **Files:** core native transfer/admission/runtime modules, `crates/egui_dockspace_native/src/`, public host harness, `integration/egui-native-smoke/`, native fork seams and conformance tests.
+- **Approach:** Join per-binding/incarnation host sidecars into one resource record, keeping semantic transfer in core. Remove universal assumptions about exact eframe hidden-stage passes. Make first-live the single durable transfer boundary and preserve failure recovery.
+- **Test scenarios:** Covers AE6. Hidden or directly prepared backends, delayed first valid output, A1/A2 replacement, no-frame, pass-through, close/veto/defer, failure recovery, redock, retirement and quiescence preserve one owner. Qualified X11 physical input docks at non-guide points and retires the child.
+- **Verification:** Public host lifecycle traces, programmatic real-window tests, and qualified X11 physical journeys pass; old distributed maps and obsolete staging contracts are removed.
 
-### U11. Certify Windows and macOS native promotion
+### U10. Complete layout management and a bounded editor showcase
 
-- **Goal:** Finish the platform phase promised by KD4 instead of leaving native multiview effectively X11-only.
-- **Requirements:** R6, R8, R11-R15, R18; KD4, KD6; KTD6-KTD8, KTD12.
+- **Goal:** Validate realistic editor use without building the user's engine.
+- **Requirements:** R7, R8, R17-R19, R24, R25; KTD11.
+- **Dependencies:** U12; optional native showcase paths also require U8.
+- **Files:** core layout/persistence commands and tests, `crates/egui_dockspace/examples/`, `crates/egui_dockspace_native/examples/`, product persistence and overflow harnesses.
+- **Approach:** Finish reopen/closed inventory, lock/reset/defaults, application-owned named presets, overflow ownership, focus recovery, and an editor-shaped egui showcase. Use representative text/scroll/canvas content; do not introduce engine/ECS or another docking implementation.
+- **Test scenarios:** Restore with missing panes or changed surface geometry, close/reopen, preset changes, layout lock, overflow owner transitions, and focus recovery preserve stable identities and expose typed outcomes.
+- **Verification:** Public commands and representative egui workflow agree; native features are labelled by actual backend capability.
+
+### U11. Certify Windows and macOS capability claims
+
+- **Goal:** Add verified native platforms without delaying generic core delivery.
+- **Requirements:** R6, R14, R15, R18, R20, R23; KD4.
 - **Dependencies:** U8.
-- **Files:** `repo-ref/winit-release/src/platform_impl/windows/`, `repo-ref/winit-release/src/platform_impl/macos/`, `repo-ref/egui-release/crates/eframe/src/native/`, `crates/egui_dockspace_native/src/capabilities.rs`, `integration/egui-native-smoke/`, `.github/workflows/ci.yml`, `docs/PLATFORM_SUPPORT.md`, `docs/knowledge/egui-native-fork-seam-admission.md`.
-- **Approach:** Implement and evidence the exact event-time hover/capture/release, work-area, lifecycle, placement, scale, and final-output facts separately for Windows and macOS. Use a self-hosted or recorded release environment for physical same-window and cross-window journeys until stable CI exists; never promote a capability because compile-only or capability-negative tests happen to pass.
-- **Test scenarios:**
-  - Windows same-window drag, outside-all handoff, child first-live, redock, close, and quiescence preserve one `GestureHandoffReceipt` and one terminal release.
-  - macOS same-window and qualified cross-window drag cover Retina/mixed-DPI coordinates, key loss, window drag interruption, close, redock, and retirement.
-  - Missing or conflicting platform facts remain typed `Unavailable`/`Unknown` and preserve local/contained behavior without guessed placement.
-- **Verification:** Each platform has compile, deterministic lifecycle, official-window, and physical release-environment evidence recorded with exact capability facts. Documentation enables native promotion only per platform after its own matrix passes; Wayland remains explicit capability-negative.
+- **Files:** Winit/eframe platform seams, native capabilities, physical smokes, `.github/workflows/ci.yml`, `docs/PLATFORM_SUPPORT.md` (new), seam admission documentation.
+- **Approach:** Prove each platform's event-time coordinates, hover/capture/release, lifecycle, work area, and mixed-DPI mappings independently in a stable CI or recorded release environment.
+- **Test scenarios:** Same-window and cross-window drag, first-live, redock, close, Retina/mixed-DPI, focus interruption, missing facts, and quiescence preserve the admitted lane and ownership.
+- **Verification:** Enable each platform claim only after its own deterministic and real-input matrix passes. Wayland/global-position limits remain explicit; proven local operations remain available.
 
-### U9. Complete cross-executor evidence, remove legacy paths, and publish the new contract
+### U9. Close evidence, deletion, documentation, and native packaging
 
-- **Goal:** Finish the replacement with one trustworthy acceptance matrix, bounded-performance evidence, clean APIs, and no superseded behavior path.
-- **Requirements:** R1-R18; KD1-KD6; KTD9-KTD13.
-- **Dependencies:** U4, U6, U8, U10, U11.
-- **Files:** `crates/dockspace/tests/`, `crates/dockspace_host_conformance/`, `integration/egui-product-harness/tests/`, `integration/egui-official-harness/`, `integration/egui-native-smoke/`, `.github/workflows/ci.yml`, `README.md`, `docs/VALIDATION.md`, `docs/MIGRATION.md`, `docs/PLATFORM_SUPPORT.md`, `docs/knowledge/dockspace-interaction-module-inventory.md`, `docs/knowledge/egui-native-fork-seam-admission.md`, `docs/knowledge/open-gpui-docking-conformance-catalog.md`.
-- **Approach:** Run the same journey catalog across core-host and product-headless; add the real official-window gate, native programmatic evidence, and platform physical evidence without conflating their strength or claiming fork-only facts for crates.io. Split the large product harness by concern. Delete fixed-coordinate/fixed-frame helpers, duplicate implementation tests, compatibility exports, old state owners, and dead fork seams only after replacement coverage exists. Record the oracle matrix, module ownership, resource budgets, compatibility tier, and platform capability evidence in durable docs.
-- **Execution note:** Treat deletion as part of completion, not cleanup deferred after feature work.
-- **Test scenarios:**
-  - L01-L08 produce equivalent normalized observations through core-host and product-headless executors.
-  - The unmodified official eframe real-window gate validates startup, resize, repaint, shutdown, and the exact supported/capability-negative action boundary without claiming fork receipt or physical pointer evidence.
-  - The game-engine dogfood checklist passes in light/dark and reduced-motion modes, including overflow, context commands, realistic pane controls, reset/reopen/lock, and capability errors.
-  - The U4/U5 local and contained journeys pass through the common facade before native proof is enabled; fork-backed HoverDrop and native multiview observations are labeled separately in the catalog.
-  - Long-run gesture and lifecycle soaks reach documented bounded watermarks and quiescence; structural performance fixtures at 16, 128, and 1,024 panes avoid quadratic workspace or receiver scans.
-- **Verification:** All contract, product, official, fork, native, physical, package, documentation, and platform gates pass; catalogs match real test names; the oracle matrix contains no known-invalid row as a release gate; old plans remain historical; no compatibility shim or abandoned experimental path remains in the diff.
+- **Goal:** Make repository claims match the final core and adapter contracts.
+- **Requirements:** R1-R25; KTD9, KTD10, KTD12.
+- **Dependencies:** U8, U10, U12. U11 evidence is included only for platform claims being enabled.
+- **Files:** core/public/product/native tests, `.github/workflows/ci.yml`, `README.md`, `docs/VALIDATION.md`, migration/platform documents, module inventory and fork admission records.
+- **Approach:** Reconcile public-host, egui, model, real-window, and physical evidence; remove superseded APIs/tests/helpers and update package boundaries. Preserve historical reference provenance without requiring Open-GPUI cutover.
+- **Test scenarios:** Full local journey parity, assertion-disabled native operation, stable retained output, long-run lifecycle quiescence, public packaging, and stale-output rejection pass with the documented host capabilities.
+- **Verification:** No obsolete terminal owner, hidden required host API, ignored release blocker, or fork-only requirement is marketed as generic core support.
 
 ---
 
 ## Verification Contract
 
-| Gate | Command or environment | Proves | Units |
-| --- | --- | --- | --- |
-| Formatting and diff integrity | `cargo fmt --all -- --check` and `git diff --check` | Rust/Markdown formatting and clean patches | U1-U12 |
-| Core model and interaction | `cargo nextest run -p dockspace --all-features --all-targets --no-fail-fast --locked -j1` | Transactions, target field, manipulation state, presentation, lifecycle, properties, boundedness | U2-U5, U7-U11 |
-| Shared host conformance | `cargo nextest run -p dockspace_host_conformance --all-targets --locked -j1` | Semantic scenario parity, oracle classifications, and complete-roster host boundaries | U1, U3, U9 |
-| Product headless | `cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --locked -j1` | Human gesture cadences, visuals, AccessKit, multipass, and layout shell | U1, U4-U6, U9-U10, U12 |
-| Official egui consumer | `cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --locked -j1` | Public API seal and the honest crates.io/local-contained compatibility boundary | U3, U6, U9, U12 |
-| Fork and native deterministic | `python3 scripts/run_egui_fork_harness.py` | egui hit/run seams, eframe finalization, native coordinator/runtime contracts | U2-U5, U7-U8, U11 |
-| Native smoke unit tests | `cargo test --manifest-path integration/egui-native-smoke/Cargo.toml --bins --locked -j1` | Programmatic and physical driver assertions | U7-U9, U11 |
-| Real X11 programmatic and physical | Existing Xvfb/Openbox/XTest jobs in `.github/workflows/ci.yml` | Real window creation/close/retirement and real pointer drag-out/redock/quiescence | U8-U9 |
-| Windows/macOS release gates | Recorded self-hosted/release-environment commands documented in `docs/PLATFORM_SUPPORT.md` | Platform-specific event facts, work area, physical same-window/cross-window journeys, and capability advancement | U11 |
-| Platform compile | `cargo check --manifest-path integration/egui-fork-workspace/Cargo.toml --workspace --all-targets --locked -j1` on Linux, Windows, and macOS | Fork pins, native API, and capability-negative platform builds | U5, U7-U11 |
-| Package and docs | `cargo package --package dockspace --all-features --locked -j1`, `cargo package --package egui_dockspace --all-features --locked --list`, and `RUSTDOCFLAGS='-D warnings' cargo doc --package dockspace --package egui_dockspace --all-features --no-deps --locked` | Publishable API surface, no leaked internal authority, strict docs, and compatibility tier claims | U6, U9-U12 |
-| Dogfood | `cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example game_engine_workspace --locked -j1` plus the documented checklist | Usable editor workflow and visual/discoverability quality | U1, U4, U6, U8-U10 |
+Use `CARGO_BUILD_JOBS=1` for local Cargo builds and `--test-threads=1` when serial test execution is required.
+Nextest's `-j` controls test concurrency; do not confuse it with Cargo compilation parallelism.
+Reuse existing target directories and serialize builds when the machine is busy.
 
-Verification rules:
+| Gate | Command or evidence | Proves |
+| --- | --- | --- |
+| Core | `cargo nextest run -p dockspace --all-features --all-targets --locked --test-threads=1` | Model, transactions, input, output identity and lifecycle semantics |
+| Public engine consumer | Planned: `cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --all-features --locked --test-threads=1` | Public-only immediate/deferred integration and logical-surface independence |
+| Core dependency boundary | `cargo tree -p dockspace --all-features` plus review of packaged/public API | R19 dependency independence; no compiler/source parser gate |
+| Shared journeys | `cargo nextest run -p dockspace_host_conformance --locked --test-threads=1` | Finite normalized behavior and honest oracle classifications |
+| egui product | `cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --all-features --locked --test-threads=1` | Interactive reference behavior and exact supported boundary |
+| Official egui | `cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --locked --test-threads=1` | Crates.io adapter compatibility independent of forks |
+| Native default | `python3 scripts/run_egui_fork_harness.py` | Fork-backed coordinator contracts |
+| Native without debug assertions | `cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --lib --locked --test-threads=1 --no-fail-fast --config 'profile.test.package.egui_dockspace_native.debug-assertions=false'` | Required state updates execute in release-style assertion configuration |
+| Native output/lifecycle | Existing programmatic smoke and qualified X11/XTest CI; later per-platform U11 environments | Actual backend lifecycle and physical input, separately labelled |
+| Performance | Public-host structural fixtures; host ingress/lifecycle soaks under the Resource Budgets table | R13/R24 cost, latency, retained-state and quiescence |
+| Docs and packaging | Strict core/adapter rustdoc, core tarball verification, adapter package contents and downstream builds | Documented host contract and usable package boundary |
+| Patch integrity | `git diff --check`; formatting for affected workspaces | Changes remain reviewable and formatting gates pass |
 
-- Run Cargo gates serially (`-j1`) unless an isolated CI environment explicitly budgets more parallelism.
-- Exact coordinates remain legal only in core geometry/property tests. Product and physical journeys resolve current semantic regions and use normalized inset points.
-- Fixed pass counts remain legal only when the number of discarded or terminal passes is itself the contract. Ordinary readiness uses `settle_until(predicate, max_steps)` with diagnostic state on timeout.
-- Screenshots and AccessKit trees are review artifacts and visual/semantic evidence; neither is topology, target, release, or lifecycle authority.
-- Capability-negative tests are successful only when they assert the exact typed missing facts and the unchanged source ownership.
-- No platform profile advances from unsupported/unavailable to available until its required real-window or physical gate runs in CI or an explicitly recorded release environment.
+A planned harness or platform document must be created by its owning unit before its command is claimed runnable.
+The current official eframe callback-only path and caller-owned run path have different capability claims; test both honestly.
+Manual output owners, egui discard/unwind, delayed engine records, stale identities, foreign overlays, and no-input settlement all exercise the same R11 boundary.
+No test uses a traversal receipt, cumulative frame number, guide center, screenshot, or synthetic capability token as a substitute for the fact being tested.
+Real-window and physical evidence is never inferred from a recording renderer.
 
 ---
 
 ## Definition of Done
 
-### Global completion
-
-- A user can perform tab reorder, center/edge docking, group drag, contained float/move/resize/re-dock, splitter adjustment, context commands, reset/reopen/lock, and qualified native promotion through ordinary discoverable interactions.
-- Guide icons are optional explanatory visuals; acceptance includes non-guide releases, jitter, overshoot, final-move-with-release, and realistic pane controls.
-- Core remains the sole topology, target, placement, preview/commit, and native ownership authority.
-- One private direct-manipulation kernel owns gesture terminality; one presentation pipeline owns candidate/presented state; one surface program owns render/hit/a11y order.
-- Official and native pass adapters preserve their own proof strength while producing the same product semantics.
-- Native ingress and viewport runtime are bounded, causal, retryable, incarnation-safe, and quiescent.
-- The default public examples do not expose geometry, scene, pass, output, receiver, receipt, or fixed-frame authority.
-- The compatibility tier is explicit: crates.io local/contained behavior is not conflated with fork-backed exact HoverDrop/native multiview behavior.
-- Platform documentation matches verified gates; unsupported facts fail closed without disabling unrelated local/contained behavior.
-- Superseded APIs, state owners, test helpers, compatibility wrappers, and abandoned experiments are deleted from the final diff.
-
-### Per-unit completion
-
-| Unit | Done when |
-| --- | --- |
-| U1 | Semantic journeys, the oracle matrix, and a realistic baseline establish reproducible behavior without becoming a geometry-owning test framework. |
-| U2 | Core emits and atomically promotes one ordered surface artifact through `RendererPassBridge`; renderer scheduling and flat-plan reconstruction are gone. |
-| U3 | One manipulation transaction and a proven official/fake pass-proof port replace local/contained terminal duplication; native exact-token installation is explicitly deferred to U7. |
-| U4 | Magnetic targets, latch/hysteresis, dwell, pending release, and full-window contained projection pass all local cadence journeys. |
-| U5 | Real pane children pass only the HoverDrop lane and popup/modal/front blockers remain exact; native no longer special-cases a bare pane body. |
-| U6 | The one-call common facade, coherent chrome, typed feedback, minimal examples, migration boundary, and API seal ship as the first experience checkpoint. |
-| U7 | Native callbacks reduce through the fixed bounded budgets, native finalization happens after all plugins/unwind, and handoff receipts preserve one gesture. |
-| U8 | One session-owned viewport runtime owns output through quiescence; programmatic native and X11 physical magnetic journeys pass. |
-| U9 | Cross-executor, official-window, accessibility, documentation, package, oracle, and deletion evidence matches real test names and compatibility tiers. |
-| U10 | Overflow, lock/reset/reopen, persistence, presets, missing-pane recovery, splitters, and the realistic game-engine showcase pass without hidden authority. |
-| U11 | Windows and macOS each have their own compile, lifecycle, official-window, and physical release gate before native promotion is documented as available. |
-| U12 | Release A packages the common local/contained experience, deletes its superseded paths, and publishes honest compatibility tiers without waiting for U7-U11. |
+- The public `dockspace` host contract supports an engine-owned UI/render loop without any UI/platform framework dependency.
+- Immediate and owned/deferred consumers use the same semantic program, stable identities, exact output lifecycle, and core manipulation semantics.
+- Complete same-tick gestures, non-guide center/edge docking, full contained content projection, cancellation, stale rejection, close, feedback, and focus intent pass ordinary gates.
+- One manipulation owner and one presentation pipeline replace old local/journal/contained terminal paths and public preview-only ACKs.
+- Local operations work without desktop facts; optional native input and lifecycle are bounded, causal, incarnation-safe, recoverable, and quiescent.
+- First-live publishes durable ownership once; fixed host staging passes are not mandatory for every engine backend.
+- egui 0.37 validates the adapter contract, with exact documented limits for ordinary eframe, caller-owned output, and fork-backed native hosts.
+- Native capabilities are advertised only for proven platforms; Open-GPUI integration and the user's actual game engine do not gate this work.
+- Required public host APIs are documented, packages are usable downstream, and obsolete APIs, duplicate state owners, stale fork seams, and misleading acceptance claims are removed.
 
 ---
 
 ## Appendix
 
-### Current strengths to preserve
+### Research Baselines
 
-- Renderer-neutral topology and policy in `crates/dockspace`.
-- Affine `DockspaceHostFrame` rollback and revision-bound atomic actions.
-- Distinct measurement question, scene ticket, output ticket, and presented authority.
-- Completed-pass receiver authority and fail-closed unknown platform facts.
-- Source ownership retained through native first-live; replacement, recovery, retirement, and quiescence protocols.
-- Stable item identities, versioned persistence, focus intent, AccessKit semantics, retained framebuffer/accessibility consistency, and typed capability gaps.
-
-### Experience and infrastructure gap matrix
-
-| Area | Former tiles / mature docking behavior | Current gap | Planned owner |
-| --- | --- | --- | --- |
-| Contained move | Full window follows the pointer | Compact ghost and terminal rect change make movement hard to discover | U3-U4 direct manipulation and projection |
-| Dock targeting | Broad nearest/content target with immediate release | Exact guide hit is effectively mandatory | U4 magnetic target field |
-| Real pane content | Tree traversal ignores child widget hits for docking | Child widgets can become opaque HoverDrop blockers | U5 completed-pass passthrough |
-| Gesture locality | Tab/group/drop behavior concentrated in one traversal | Local/native/contained paths split across large reducers and settlement seams | U3 kernel and pass bridge |
-| Render ordering | Tree or dock node traversal owns order | Core emits flat vectors and renderer rebuilds order | U2 SurfaceProgram |
-| Input throughput | Frame-local queue reduction | Native journal is unbounded and progress can be one callback per root cycle | U7 bounded causal batches |
-| Native viewport ownership | Dear ImGui groups viewport platform/renderer state | Output, receiver, staging, pass action, and retirement maps are distributed | U8 viewport runtime |
-| Product shell | Old game-editor example had reset/save/load and dense panes | Minimal examples do not prove realistic workflow or recovery | U1 baseline and U10 showcase/layout shell |
-| Validation | Old demos were manually intuitive; current tests are protocol-exact | Fixed centers/frames and programmatic actions overstate ordinary usability | U1 and U9 journey spine |
-
-### Module disposition
-
-| Existing area | Disposition |
-| --- | --- |
-| `interaction.rs` | Split gesture ownership from semantic controls and scroll; replace gesture entry points with the new kernel. |
-| `drop_resolver.rs` | Keep semantic command compilation and policy algorithms as an internal collaborator; remove it as a wide caller-facing seam. |
-| `presentation_authority.rs` | Deepen into the single presentation pipeline; preserve its sole-authority role. |
-| `scene_compiler` | Keep as an internal pure compiler; change its output to `SurfaceProgram`. |
-| `product_render` | Keep as the one egui renderer; delete schedule reconstruction and target inference. |
-| Native receiver resolver | Keep exact completed-pass matching; move pending/presented lifecycle into the viewport runtime. |
-| `mailbox.rs` | Replace mixed journal/output/create ownership with ingress and viewport-runtime modules; do not split causal time. |
-| Old tiles/tree code | Keep only as UX and migration evidence; never re-enter the runtime dependency graph. |
-
-### Research sources
-
-- Current authority and interaction plans: `docs/plans/2026-08-08-001-refactor-dockspace-product-boundary-plan.md` and `docs/plans/2026-08-18-001-interaction-floating-multiview-conformance-plan.md`.
-- Current module and platform contracts: `docs/knowledge/dockspace-interaction-module-inventory.md`, `docs/knowledge/egui-native-fork-seam-admission.md`, `docs/knowledge/pointer-edge-journal-contract.md`, and `docs/knowledge/pointer-scroll-journal-contract.md`.
-- Current interaction and presentation seams: `crates/dockspace/src/interaction.rs`, `crates/dockspace/src/engine/local_response.rs`, `crates/dockspace/src/engine/pointer_transaction.rs`, `crates/dockspace/src/drop_resolver.rs`, `crates/dockspace/src/engine/presentation_authority.rs`, and `crates/dockspace/src/runtime/paint.rs`.
-- Current renderer and native seams: `crates/egui_dockspace/src/product_dockspace.rs`, `crates/egui_dockspace/src/pass_settlement.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace_native/src/mailbox.rs`, `crates/egui_dockspace_native/src/coordinator.rs`, `crates/egui_dockspace_native/src/receiver.rs`, and `crates/egui_dockspace_native/src/surface_driver.rs`.
-- Historical experience baseline: `4d28e7a:src/multi_viewport/floating.rs`, `4d28e7a:src/multi_viewport/mod.rs`, and `4d28e7a:examples/game_engine_workspace.rs`.
-- Local prior-art checkouts: `repo-ref/egui_tiles/src/tree.rs`, `repo-ref/egui_tiles_docking/src/tree.rs`, `repo-ref/imgui/imgui.cpp`, `repo-ref/imgui/imgui_internal.h`, and `repo-ref/egui-release/crates/egui/src/hit_test.rs`.
+- Core baseline: `3216855` plus the existing uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
+- Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
+- Existing native dependencies: egui fork `660073444296f40903e92dbce0fb818a7f4771b0`, Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`. These remain current pins until U15 changes them together with validation.
+- The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
+- Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
+- Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.
+- Earlier design context: `docs/plans/2026-08-08-001-refactor-dockspace-product-boundary-plan.md`, `docs/plans/2026-08-18-001-interaction-floating-multiview-conformance-plan.md`, `docs/knowledge/egui-native-fork-seam-admission.md`.
+- Open-GPUI's current `spike/dockspace-core-adapter` already depends on this core and is not an independent behavioral oracle; historical algorithms may be consulted without resuming that adapter.

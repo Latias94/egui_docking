@@ -1,14 +1,21 @@
 # egui_dockspace
 
-`egui_dockspace` is undergoing a breaking refactor into a renderer-neutral
-docking core plus thin UI and platform adapters. There is no compatibility
+`dockspace` is the primary library: a renderer-neutral docking core intended
+for custom game-engine editor UIs. Engines own their drawing, pane content,
+input delivery, frame scheduling, and platform resources. `egui_dockspace`
+and its native integration are interactive reference adapters used to validate
+the core's behavior and host contracts. Open-GPUI adapter work is deferred.
+
+The repository is undergoing a breaking refactor. There is no compatibility
 layer for the former `egui_docking`, `egui_tiles`, or pre-refactor persistence
 interfaces.
 
-The current direct-manipulation parity sequence lives in
+The current engine-host and direct-manipulation plan lives in
 [`docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md`](docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
-The earlier product-boundary plan remains the authority for the underlying
-ownership and persistence model.
+It prioritizes a documented public host API and an independent consumer with
+no egui dependency before broader native certification. Those new integration
+gates are planned work, not a claim that the current refactor is complete.
+The earlier product-boundary plan supplies the persistence and ownership context.
 
 ## Capability matrix
 
@@ -19,10 +26,12 @@ ownership and persistence model.
 | `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Physical cross-window drag is certified only for capability-complete backends; the automated reference lane is X11 on the first X screen with one exact active-CRTC work-area authority |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
-The repository should therefore be described as a high-correctness docking core
-with a usable official-egui single-surface product path and an experimental
-native multiview adapter. It is not yet a mature ImGui-level native multiview
-crate.
+The current implementation has substantial model and protocol coverage, a
+partially usable official-egui single-surface path, and an experimental native
+multiview adapter. The 2026-10-27 audit reproduced a fast-gesture failure and
+native failures with debug assertions disabled; see
+[`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
+docking and multiview crate.
 
 ## Architecture
 
@@ -68,8 +77,13 @@ this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 
+The selected upgrade target is egui/eframe `0.37.0`; the current manifests and
+fork pins above have not yet migrated. The plan separates the official adapter
+upgrade from rebuilding the required native fork seams. Winit remains on stable
+`0.30.13`, and egui_tiles remains reference-only.
+
 Hosts that own official crates.io egui's complete run use the Dockspace wrapper
-to mint terminal-output proof without exposing a receipt or frame count:
+to bind local settlement to that run without application-managed frame counts:
 
 ```rust,ignore
 let output = egui_dockspace::run_ui(&context, raw_input, |ui| {
@@ -80,9 +94,11 @@ let output = egui_dockspace::run_ui(&context, raw_input, |ui| {
 ```
 
 `egui_dockspace::run_ui` opens a private run identity, clears discarded-pass
-evidence before every repeated callback, and admits only the terminal egui
-output after all output hooks return. Its private shape receipt proves exact
-final-output emission, not GPU submission or physical presentation. Panic,
+evidence before every repeated callback, and examines the terminal egui
+output after all output hooks return. Its private shape marker checks output
+membership, not GPU submission or physical presentation. The audit identified
+remaining copying and ordering limitations in that marker check; U2 owns their
+resolution and the precise supported settlement contract. Panic,
 manual `begin_pass` / `end_pass`, a different context or viewport, repeated
 entry, and an omitted terminal paint all fail closed. Callers cannot submit or
 impersonate a `FullOutput` receipt.
