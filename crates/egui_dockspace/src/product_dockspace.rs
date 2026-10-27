@@ -14,7 +14,8 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use dockspace::runtime::{
     DockspaceSession, HostFrameReport, HostSurfaceCommitStatus, PreparedCloseRequest,
-    SurfaceUnavailableReason, WorkspaceVersion,
+    PreparedPaneFocusObservation, SurfacePresentationArtifact, SurfaceUnavailableReason,
+    WorkspaceVersion,
 };
 use egui::emath::GuiRounding;
 use egui::{Id, Sense, Ui};
@@ -42,6 +43,8 @@ pub struct Dockspace {
     style: DockStyle,
     pass_settlement: ProductPassSettlement,
     presentation_settlement_was_available: bool,
+    measurement_deferred: bool,
+    pending_focus: Vec<(SurfacePresentationArtifact, PreparedPaneFocusObservation)>,
     #[cfg(test)]
     drop_target_observations: Vec<product_render::RegisteredDropTargetObservation>,
 }
@@ -70,6 +73,8 @@ impl Dockspace {
             style,
             pass_settlement: ProductPassSettlement::default(),
             presentation_settlement_was_available: false,
+            measurement_deferred: false,
+            pending_focus: Vec::new(),
             #[cfg(test)]
             drop_target_observations: Vec::new(),
         })
@@ -99,6 +104,8 @@ impl Dockspace {
             style,
             pass_settlement: ProductPassSettlement::default(),
             presentation_settlement_was_available: false,
+            measurement_deferred: false,
+            pending_focus: Vec::new(),
             #[cfg(test)]
             drop_target_observations: Vec::new(),
         })
@@ -139,6 +146,8 @@ impl Dockspace {
             style,
             pass_settlement: ProductPassSettlement::default(),
             presentation_settlement_was_available: false,
+            measurement_deferred: false,
+            pending_focus: Vec::new(),
             #[cfg(test)]
             drop_target_observations: Vec::new(),
         })
@@ -327,6 +336,7 @@ impl Dockspace {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .map_err(DockspaceError::from_detail)?;
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        self.pending_focus.clear();
         Ok(DockspaceMutation::from_runtime_report(&report))
     }
 
@@ -627,7 +637,7 @@ impl Dockspace {
             .map_err(Into::into)
     }
 
-    /// Measures, paints, and atomically advances the sole logical surface.
+    /// Measures, paints, and advances the sole logical surface.
     ///
     /// Current-pass egui responses are reduced through opaque surface actions.
     /// This path deliberately does not fabricate retained renderer or native
@@ -639,6 +649,10 @@ impl Dockspace {
     /// Direct calls from an unmodified `eframe::App` remain useful for rendering,
     /// selection, close, and other actions that do not require terminal proof,
     /// but report presentation settlement as unavailable.
+    ///
+    /// Output observations, measurement, complete emission, and current local
+    /// input commit at separate core boundaries. A later error does not roll
+    /// back an earlier successful boundary or application pane side effects.
     ///
     /// # Errors
     ///
@@ -654,6 +668,78 @@ impl Dockspace {
         self.drop_target_observations.clear();
         let dock_rect = ui.available_rect_before_wrap();
         let popup_rect = ui.ctx().input(egui::InputState::content_rect).round_ui();
+        let enrollment = self.pass_settlement.enroll(ui);
+        let settlement_claim = match enrollment {
+            ProductPassEnrollment::Acquired(claim) => Some(claim),
+            ProductPassEnrollment::Unowned => None,
+            ProductPassEnrollment::Conflict => {
+                return Err(DockspaceErrorSource::PassSettlementConflict.into());
+            }
+        };
+        let ready_settlement = self.pass_settlement.take_ready(ui);
+        if ready_settlement.lane_changed {
+            self.pending_focus.clear();
+        }
+        let presentation_failure = ready_settlement.presentation_failure;
+        let presentation_settlement_available =
+            settlement_claim.is_some() && presentation_failure.is_none();
+        let cancel_active_gesture = presentation_failure.is_some()
+            || (self.presentation_settlement_was_available && !presentation_settlement_available);
+
+        // Submit exact renderer facts first. Focus is eligible only after core
+        // accepts the matching artifact, including when reports arrive out of order.
+        let mut preceding_reports = Vec::new();
+        let has_reports =
+            !ready_settlement.presentations.is_empty() || !self.pending_focus.is_empty();
+        for presentation in ready_settlement.presentations {
+            let artifact = presentation.output.presentation_artifact();
+            if self
+                .session
+                .report_surface_presentation(presentation.output, presentation.result)
+                .is_ok()
+                && let Some(focus) = presentation.pane_focus_observation
+            {
+                self.pending_focus.push((artifact, focus));
+            }
+        }
+        let mut accepted_focus = Vec::new();
+        if has_reports {
+            let mut observation_frame = self
+                .session
+                .begin_host_frame()
+                .map_err(DockspaceError::from_detail)?;
+            observation_frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .map_err(DockspaceError::from_detail)?;
+            let observation_report = observation_frame
+                .commit()
+                .map_err(DockspaceError::from_detail)?;
+            for (artifact, focus) in std::mem::take(&mut self.pending_focus) {
+                let commits = observation_report.surface_presentation_commits();
+                if commits.iter().any(|commit| commit.presents(artifact)) {
+                    accepted_focus.push(focus);
+                } else if !commits.iter().any(|commit| commit.settles(artifact)) {
+                    self.pending_focus.push((artifact, focus));
+                }
+            }
+            preceding_reports.push(observation_report);
+        }
+        if !accepted_focus.is_empty() {
+            let mut focus_frame = self
+                .session
+                .begin_host_frame()
+                .map_err(DockspaceError::from_detail)?;
+            for focus in accepted_focus {
+                focus_frame
+                    .submit_pane_focus_observation(focus)
+                    .map_err(DockspaceError::from_detail)?;
+            }
+            focus_frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .map_err(DockspaceError::from_detail)?;
+            preceding_reports.push(focus_frame.commit().map_err(DockspaceError::from_detail)?);
+        }
+
         let mut frame = self
             .session
             .begin_host_frame()
@@ -668,42 +754,41 @@ impl Dockspace {
         if surfaces.first().copied() != Some(surface) {
             return Err(DockspaceErrorSource::SurfaceOutsideRoster { surface }.into());
         }
-
-        let enrollment = self.pass_settlement.enroll(ui);
-        let settlement_claim = match enrollment {
-            ProductPassEnrollment::Acquired(claim) => Some(claim),
-            ProductPassEnrollment::Unowned => None,
-            ProductPassEnrollment::Conflict => {
-                return Err(DockspaceErrorSource::PassSettlementConflict.into());
-            }
-        };
-        let presentation_proof_scope = settlement_claim
-            .as_ref()
-            .map(crate::pass_settlement::ProductPassClaim::proof_scope);
-        let ready_settlement = self.pass_settlement.take_ready(ui);
-        let presentation_failure = ready_settlement.presentation_failure;
-        let presentation_settlement_available =
-            settlement_claim.is_some() && presentation_failure.is_none();
-        let cancel_active_gesture = presentation_failure.is_some()
-            || (self.presentation_settlement_was_available && !presentation_settlement_available);
-        for action in ready_settlement.presentation_actions {
-            frame
-                .submit_surface_action(action)
-                .map_err(DockspaceError::from_detail)?;
-        }
-        if let Some(observation) = ready_settlement.pane_focus_observation {
-            frame
-                .submit_pane_focus_observation(observation)
-                .map_err(DockspaceError::from_detail)?;
-        }
-
+        let should_measure = !self.measurement_deferred
+            || frame
+                .paint_plan(surface)
+                .map_err(DockspaceError::from_detail)?
+                .is_none();
         let mut missing = BTreeSet::new();
+        if should_measure {
+            missing.extend(product_render::measure_surface(
+                &mut frame,
+                surface,
+                ui,
+                dock_rect,
+                popup_rect,
+                panes,
+                &self.style,
+            )?);
+        } else {
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .map_err(DockspaceError::from_detail)?;
+        }
+        let measurement_report = frame.commit().map_err(DockspaceError::from_detail)?;
+        let mut frame = self
+            .session
+            .begin_host_frame()
+            .map_err(DockspaceError::from_detail)?;
+        let capture = settlement_claim
+            .as_ref()
+            .map(|_| crate::output_proof::SurfaceOutputCapture::begin(ui.painter()));
         let mut defer_measurement = false;
-        let mut presentation_evidence = Vec::new();
         let mut pane_focus_observation = None;
         let mut pane_focus_pending = None;
         let mut pane_focus_capability =
             DockspaceCapability::Unavailable(DockspaceUnavailableReason::SurfaceBoundsUnavailable);
+        let mut local_actions = Vec::new();
         let had_plan = if let Some(plan) = frame
             .paint_plan(surface)
             .map_err(DockspaceError::from_detail)?
@@ -719,14 +804,12 @@ impl Dockspace {
                     presentation_settlement: presentation_settlement_available,
                     cancel_active_gesture,
                 },
-                presentation_proof_scope.as_ref(),
                 #[cfg(feature = "native-render-support")]
                 None,
             )
             .map_err(DockspaceError::from_detail)?;
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;
-            presentation_evidence = paint.presentation_evidence;
             pane_focus_observation = paint.pane_focus_observation;
             pane_focus_pending = paint.pane_focus_pending;
             pane_focus_capability = paint.pane_focus_capability;
@@ -734,9 +817,12 @@ impl Dockspace {
             {
                 self.drop_target_observations = paint.drop_target_observations;
             }
-            for action in paint.local_actions {
+            local_actions = paint.local_actions;
+            if settlement_claim.is_some()
+                && let Some(receipt) = paint.execution_receipt
+            {
                 frame
-                    .submit_surface_action(action)
+                    .confirm_surface_painted(receipt)
                     .map_err(DockspaceError::from_detail)?;
             }
             true
@@ -747,23 +833,39 @@ impl Dockspace {
                 .rect_filled(dock_rect, 0.0, visuals.workspace_fill);
             false
         };
+        let proof = capture.and_then(|capture| capture.finish(ui.painter()));
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .map_err(DockspaceError::from_detail)?;
+        let mut paint_report = frame.commit().map_err(DockspaceError::from_detail)?;
+        let output = paint_report.take_painted_outputs().into_iter().next();
 
-        if defer_measurement {
+        // Input cannot mutate the interaction captured by an already executed
+        // paint plan. It commits in a subsequent core frame, preserving exact
+        // execution-receipt validation at the paint boundary.
+        let mut frame = self
+            .session
+            .begin_host_frame()
+            .map_err(DockspaceError::from_detail)?;
+        let has_local_actions = !local_actions.is_empty();
+        for action in local_actions {
             frame
-                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .submit_surface_action(action)
                 .map_err(DockspaceError::from_detail)?;
-        } else {
-            missing.extend(product_render::measure_surface(
-                &mut frame,
-                surface,
-                ui,
-                dock_rect,
-                popup_rect,
-                panes,
-                &self.style,
-            )?);
         }
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .map_err(DockspaceError::from_detail)?;
+        self.measurement_deferred = defer_measurement;
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        if has_local_actions && defer_measurement && report.published_state_changed() {
+            let marker = ui.make_persistent_id((self.id, "surface-input-projection", surface));
+            product_render::request_discard_once(
+                ui,
+                marker,
+                "egui_dockspace: paint the current interaction projection",
+            );
+        }
         let recovered_ready = !had_plan
             && report.surface_commits().iter().any(|commit| {
                 commit.surface() == surface && commit.status() == HostSurfaceCommitStatus::Ready
@@ -776,14 +878,16 @@ impl Dockspace {
                 "egui_dockspace: paint newly ready surface in the terminal pass",
             );
         }
-        let needs_presentation_settlement = !presentation_evidence.is_empty()
-            || pane_focus_observation.is_some()
-            || pane_focus_pending.is_some();
+        let needs_presentation_settlement =
+            defer_measurement || pane_focus_observation.is_some() || pane_focus_pending.is_some();
         let settlement_staged = settlement_claim.is_some_and(|claim| {
             claim.stage(ProductPassSettlementBatch {
-                presentation_evidence,
+                emission_incomplete: had_plan && output.is_none(),
+                output,
+                proof,
                 pane_focus_observation,
                 pane_focus_pending,
+                needs_repaint: needs_presentation_settlement,
             })
         });
         let presentation_settlement_capability = match presentation_failure {
@@ -810,10 +914,15 @@ impl Dockspace {
         if needs_presentation_settlement && settlement_staged {
             ui.ctx().request_repaint();
         }
-        if !had_plan || report.repaint_surfaces().contains(&surface) {
+        if !had_plan
+            || report.repaint_surfaces().contains(&surface)
+            || measurement_report.repaint_surfaces().contains(&surface)
+        {
             ui.ctx().request_repaint();
         }
-        product_response(
+        preceding_reports.push(measurement_report);
+        preceding_reports.push(paint_report);
+        let mut response = product_response(
             &report,
             surface,
             missing,
@@ -821,7 +930,9 @@ impl Dockspace {
             had_plan,
             presentation_settlement_capability,
             pane_focus_capability,
-        )
+        )?;
+        response.include_preceding_reports(&preceding_reports);
+        Ok(response)
     }
 
     #[cfg(test)]

@@ -16,7 +16,7 @@ use egui_dockspace::{
     DockspaceCloseRequestRejection, DockspaceCloseRequestStatus, DockspaceContainedLayout,
     DockspaceLayout, DockspaceNode, DockspaceNodeView, DockspaceRootLayout, DockspaceSurfaceLayout,
     DockspaceUnavailableReason, FloatingPresentationId, ItemId, LogicalRect, PaneFocusState,
-    PaneView, RootId, SurfaceId, run_ui,
+    PaneView, RootId, SurfaceId, SurfacePresentationResult, run_ui,
 };
 use egui_kittest::{Harness, kittest::Queryable as _};
 use std::cell::Cell;
@@ -551,6 +551,17 @@ fn input(events: Vec<Event>) -> RawInput {
     }
 }
 
+fn run_headless(
+    context: &Context,
+    input: RawInput,
+    add_contents: impl FnMut(&mut Ui),
+) -> FullOutput {
+    let (output, receipt) = run_ui(context, input, add_contents).into_parts();
+    // This headless owner accepts the terminal frame; callers inspect its output and clear textures.
+    receipt.report(SurfacePresentationResult::Presented);
+    output
+}
+
 fn run_frame(
     context: &Context,
     dockspace: &mut Dockspace,
@@ -568,7 +579,7 @@ fn run_pane_frame(
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
     let input = input(events);
-    let mut output = run_ui(context, input, |ui| {
+    let mut output = run_headless(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
@@ -591,13 +602,13 @@ fn run_pane_frame_with_mutation(
     let mut workspace_changed = false;
     let mut published_state_changed = false;
     let input = input(events);
-    let mut output = run_ui(context, input, |ui| {
+    let mut output = run_headless(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
         close_requests.extend(response.close_request_events().iter().cloned());
-        workspace_changed = response.mutation().workspace_changed();
-        published_state_changed = response.mutation().published_state_changed();
+        workspace_changed |= response.mutation().workspace_changed();
+        published_state_changed |= response.mutation().published_state_changed();
     });
     output.textures_delta.clear();
     (
@@ -618,7 +629,7 @@ fn run_disabled_frame(
 ) -> FrameOutput {
     let mut close_requests = Vec::new();
     let input = input(events);
-    let mut output = run_ui(context, input, |ui| {
+    let mut output = run_headless(context, input, |ui| {
         ui.add_enabled_ui(false, |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, panes)
@@ -642,7 +653,7 @@ fn run_frame_with_discard_after_dockspace(
     let mut close_requests = Vec::new();
     let mut passes = 0;
     let input = input(events);
-    let mut output = run_ui(context, input, |ui| {
+    let mut output = run_headless(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product multipass frame advances");
@@ -671,7 +682,7 @@ fn run_two_discarded_dockspace_passes(
 ) -> usize {
     let mut passes = 0;
     let input = input(events);
-    let mut output = run_ui(context, input, |ui| {
+    let mut output = run_headless(context, input, |ui| {
         passes += 1;
         if ui.ctx().current_pass_index() < 2 {
             dockspace
@@ -694,7 +705,7 @@ fn run_focus_frame(
     let mut close_requests = Vec::new();
     let mut pane_focus_capability = None;
     let input = input(events);
-    let mut output = run_ui(context, input, |ui| {
+    let mut output = run_headless(context, input, |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the pane-focus product frame advances");
@@ -3804,7 +3815,6 @@ fn default_features_tab_drag_reorders_across_multipass_discard() {
     let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = accesskit_node(&settled.output, Role::Tab, "First");
     let _ = accesskit_node(&settled.output, Role::Tab, "Second");
-    assert!(settled.output.platform_output.num_completed_passes >= 2);
     assert_eq!(
         tab_items(&dockspace),
         vec![SECOND, FIRST],
@@ -5392,15 +5402,20 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
             vec![Event::PointerMoved(painted_top)],
         );
     }
-    let _ = run_frame(
+    let (release_output, release_receipt) = run_ui(
         &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
+        input(vec![
             Event::PointerMoved(release_bottom),
             pointer_button(release_bottom, false),
-        ],
-    );
+        ]),
+        |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the new release projection is emitted before presentation");
+        },
+    )
+    .into_parts();
+    release_output.drop_without_applying_deltas();
     assert_eq!(
         root_split(&dockspace).map(|(axis, _)| axis),
         Some(DockspaceAxis::Horizontal),
@@ -5421,12 +5436,7 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
         "adapter-only styling must not cancel the pending release",
     );
 
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(
-        root_split(&dockspace).map(|(axis, _)| axis),
-        Some(DockspaceAxis::Horizontal),
-        "the first follow-up only publishes the newly painted terminal pass",
-    );
+    release_receipt.report(SurfacePresentationResult::Presented);
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(
         root_split(&dockspace),
@@ -5727,11 +5737,13 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         .panic_once = true;
     let interrupted = catch_unwind(AssertUnwindSafe(|| {
         let input = input(vec![Event::PointerMoved(bottom)]);
-        let mut output = run_ui(&context, input, |ui| {
+        let output = run_ui(&context, input, |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the interrupted product pass advances");
         });
+        // Keep the direct owned run: the late hook must unwind before an output can be reported.
+        let (mut output, _receipt) = output.into_parts();
         output.textures_delta.clear();
     }));
     assert!(
@@ -6068,6 +6080,8 @@ fn owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame() {
 
 #[test]
 fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
+    // Removing callback shapes also invalidates the complete surface-span markers used by owned
+    // output proofs. Keep the topology, source-gap, and drag-residue checks across that migration.
     let context = Context::default();
     context.enable_accesskit();
     context.options_mut(|options| {
@@ -6134,7 +6148,7 @@ fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
     let mut capability = None;
-    let mut recovered = run_ui(&context, input(Vec::new()), |ui| {
+    let mut recovered = run_headless(&context, input(Vec::new()), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the output mismatch cancels the active gesture");
@@ -6235,7 +6249,6 @@ fn default_features_contained_resize_commits_a_painted_preview() {
     );
     let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = accesskit_node(&settled.output, Role::TitleBar, "Second");
-    assert!(settled.output.platform_output.num_completed_passes >= 2);
     let committed = dockspace
         .view()
         .contained(FLOATING)
@@ -6316,7 +6329,7 @@ fn default_features_contained_title_moves_without_a_dock_target() {
         &mut panes,
         vec![Event::PointerMoved(source), pointer_button(source, true)],
     );
-    let _ = run_frame(
+    let moving = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -6332,7 +6345,7 @@ fn default_features_contained_title_moves_without_a_dock_target() {
         "contained motion remains transient until release",
     );
 
-    let released = run_frame(
+    let _released = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -6343,18 +6356,17 @@ fn default_features_contained_title_moves_without_a_dock_target() {
     );
     assert!(
         rect_fill_count(
-            &released.output,
+            &moving.output,
             dockspace
                 .style()
                 .visuals
                 .drop_fill
                 .expect("the fixture fixes its drop fill"),
         ) > 0,
-        "the contained move preview must be painted before release settles",
+        "the contained move projection is emitted before its exact presented release can settle",
     );
     let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = accesskit_node(&settled.output, Role::TitleBar, "Second");
-    assert!(settled.output.platform_output.num_completed_passes >= 2);
     let committed = dockspace
         .view()
         .contained(FLOATING)

@@ -11,9 +11,7 @@ use crate::engine::{
 use crate::geometry::LogicalPoint;
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
 use crate::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
-use crate::interaction::{
-    ContainedTransformPaintAcknowledgement, EscapeDelivery, PaintAcknowledgement,
-};
+use crate::interaction::EscapeDelivery;
 use crate::model::WorkspaceVersion;
 use crate::scene::{
     ContainedResizeDirection, SplitterJunctionId, SplitterResizeTarget, SplitterSceneId,
@@ -335,34 +333,6 @@ impl PreparedSurfaceAction {
         }
     }
 
-    pub(super) const fn acknowledge_preview(
-        authority_domain: EngineAuthorityDomainId,
-        expected: WorkspaceVersion,
-        surface: SurfaceId,
-        acknowledgement: PaintAcknowledgement,
-    ) -> Self {
-        Self {
-            authority_domain,
-            expected,
-            surface,
-            action: SurfaceAction::AcknowledgePreview { acknowledgement },
-        }
-    }
-
-    pub(super) const fn acknowledge_contained_transform_preview(
-        authority_domain: EngineAuthorityDomainId,
-        expected: WorkspaceVersion,
-        surface: SurfaceId,
-        acknowledgement: ContainedTransformPaintAcknowledgement,
-    ) -> Self {
-        Self {
-            authority_domain,
-            expected,
-            surface,
-            action: SurfaceAction::AcknowledgeContainedTransformPreview { acknowledgement },
-        }
-    }
-
     pub(super) const fn tab_chrome(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -405,9 +375,7 @@ impl PreparedSurfaceAction {
             | SurfaceAction::CancelWithEscape
             | SurfaceAction::LocalTabGesture { .. }
             | SurfaceAction::LocalSplitterGesture { .. }
-            | SurfaceAction::LocalContainedGesture { .. }
-            | SurfaceAction::AcknowledgePreview { .. }
-            | SurfaceAction::AcknowledgeContainedTransformPreview { .. } => None,
+            | SurfaceAction::LocalContainedGesture { .. } => None,
         }
     }
 
@@ -519,18 +487,6 @@ impl PreparedSurfaceAction {
                 expected: self.expected,
                 delivery: EscapeDelivery::Surface(self.surface),
             },
-            SurfaceAction::AcknowledgePreview { acknowledgement } => {
-                EngineInput::AcknowledgePreview {
-                    expected: self.expected,
-                    acknowledgement,
-                }
-            }
-            SurfaceAction::AcknowledgeContainedTransformPreview { acknowledgement } => {
-                EngineInput::AcknowledgeContainedTransformPreview {
-                    expected: self.expected,
-                    acknowledgement,
-                }
-            }
         })
     }
 }
@@ -604,12 +560,6 @@ enum SurfaceAction {
         delta: f64,
     },
     CancelWithEscape,
-    AcknowledgePreview {
-        acknowledgement: PaintAcknowledgement,
-    },
-    AcknowledgeContainedTransformPreview {
-        acknowledgement: ContainedTransformPaintAcknowledgement,
-    },
 }
 
 impl SurfaceAction {
@@ -628,10 +578,6 @@ impl SurfaceAction {
             Self::AdjustSplitterJunction { .. } => "adjust-splitter-junction",
             Self::AdjustContainedResize { .. } => "adjust-contained-resize",
             Self::CancelWithEscape => "cancel-with-escape",
-            Self::AcknowledgePreview { .. } => "acknowledge-preview",
-            Self::AcknowledgeContainedTransformPreview { .. } => {
-                "acknowledge-contained-transform-preview"
-            }
         }
     }
 }

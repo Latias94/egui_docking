@@ -67,6 +67,8 @@ mod presentation_compiler;
 mod presentation_hit_manifest;
 #[path = "../tests/presentation_manifest.rs"]
 mod presentation_manifest;
+#[path = "../tests/presentation_preview_feedback.rs"]
+mod presentation_preview_feedback;
 #[path = "../tests/product_actions.rs"]
 mod product_actions;
 #[path = "../tests/product_model.rs"]

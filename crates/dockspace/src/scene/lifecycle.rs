@@ -1141,6 +1141,14 @@ impl SurfaceSceneSet {
         let ticket = plan
             .measurement_ticket()
             .ok_or(SceneBuildError::SyntheticPresentationRejected { surface })?;
+        // Re-observing identical immutable facts does not replace an in-flight
+        // candidate. Concrete paints still receive distinct emission keys.
+        if let Some(SurfaceScene::Ready(ready)) = self.surfaces.get(&surface)
+            && ready.candidate().plan() == &plan
+            && ready.candidate().coordinate_capture() == coordinate_capture
+        {
+            return Ok((ready.stamp(), ready.output_ticket()));
+        }
         let current = self
             .surfaces
             .remove(&surface)

@@ -208,7 +208,7 @@ impl NativeSurfacePaint {
     /// Confirms this exact completed paint against the host frame which issued
     /// its surface plan.
     ///
-    /// Returns `false` when the paint contained no ready plan or its affine
+    /// Returns `false` when no complete ready program was painted or its affine
     /// completion capability was already consumed. The receipt itself never
     /// crosses the adapter seam.
     pub fn confirm_into(
@@ -293,7 +293,6 @@ pub fn paint_surface(
         panes,
         style,
         product_render::PointerActionAuthority::ExternalJournal,
-        None,
         Some(scroll_registrar),
     )
     .map_err(DockspaceError::from_detail)?;
@@ -328,7 +327,7 @@ pub fn paint_surface(
             })
             .collect(),
         semantic_output: Some(semantic_output),
-        execution_receipt: Some(painted.execution_receipt),
+        execution_receipt: painted.execution_receipt,
         local_actions: painted.local_actions,
         presentation_actions: painted.presentation_actions,
         pane_focus_observation: painted.pane_focus_observation,

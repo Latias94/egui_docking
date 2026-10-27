@@ -13,7 +13,7 @@ use dockspace::runtime::{
     HostInputOutcome, HostSurfaceCommitStatus,
 };
 
-/// Product-level summary of one atomic docking publication.
+/// Product-level summary of committed docking publications.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockspaceMutation {
     before: WorkspaceVersion,
@@ -436,7 +436,7 @@ struct SurfacePaintResponse {
     pane_focus_capability: DockspaceCapability,
 }
 
-/// Convenience result from one strict single-surface product frame.
+/// Committed publication summary from one single-surface egui invocation.
 #[derive(Debug)]
 pub struct DockspaceResponse {
     mutation: DockspaceMutation,
@@ -446,6 +446,32 @@ pub struct DockspaceResponse {
 }
 
 impl DockspaceResponse {
+    pub(crate) fn include_preceding_reports(&mut self, reports: &[HostFrameReport]) {
+        if let Some(first) = reports.first() {
+            self.mutation.before = first.before();
+        }
+        let mut close_requests = Vec::new();
+        for report in reports {
+            self.mutation.workspace_changed |= report.workspace_changed();
+            self.mutation.published_state_changed |= report.published_state_changed();
+            self.mutation
+                .affected_surfaces
+                .extend_from_slice(report.affected_surfaces());
+            close_requests.extend(report.inputs().iter().filter_map(|input| match input {
+                HostInputOutcome::CloseRequested {
+                    plan,
+                    reused,
+                    origin: HostCloseRequestOrigin::Interaction,
+                } => Some(DockspaceCloseRequest::new(plan, *reused)),
+                _ => None,
+            }));
+        }
+        self.mutation.affected_surfaces.sort_unstable();
+        self.mutation.affected_surfaces.dedup();
+        close_requests.append(&mut self.close_requests);
+        self.close_requests = close_requests;
+    }
+
     pub(crate) fn from_product_report(
         report: &HostFrameReport,
         surface: SurfaceId,
@@ -503,7 +529,7 @@ impl DockspaceResponse {
         &self.mutation
     }
 
-    /// Returns the sole surface contribution status.
+    /// Returns the terminal surface contribution status for this invocation.
     #[must_use]
     pub const fn surface_commit_status(&self) -> DockspaceSurfaceCommitStatus {
         self.surface_commit_status

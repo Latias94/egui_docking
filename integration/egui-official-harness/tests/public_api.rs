@@ -1,13 +1,14 @@
 use std::cell::Cell;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use dockspace::policy::DockPolicy;
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
-use egui::{Context, RawInput, Rect, Ui, UiBuilder, ViewportId, vec2};
+use egui::{Context, FullOutput, RawInput, Rect, Ui, UiBuilder, ViewportId, vec2};
 use egui_dockspace::{
     Dockspace, DockspaceActionOutcome, DockspaceActionStatus, DockspaceAxis, DockspaceCapability,
     DockspaceErrorKind, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, DockspaceUnavailableReason, ItemId, PaneView, RootId, SurfaceId,
-    run_ui,
+    SurfacePresentationResult, run_ui,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -19,6 +20,14 @@ const SECOND_ITEM: ItemId = ItemId::new(2);
 struct SmokePanes {
     paint_count: usize,
     focus_target_requests: Cell<usize>,
+    focus_namespace: Option<egui::Id>,
+}
+
+impl SmokePanes {
+    fn focus_id(&self, item: ItemId) -> egui::Id {
+        self.focus_namespace
+            .map_or_else(|| pane_focus_target(item), |namespace| namespace.with(item))
+    }
 }
 
 impl PaneView for SmokePanes {
@@ -33,7 +42,7 @@ impl PaneView for SmokePanes {
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
         if matches!(item, ITEM | SECOND_ITEM) {
             self.paint_count += 1;
-            let target = pane_focus_target(item);
+            let target = self.focus_id(item);
             let rect = Rect::from_min_size(ui.available_rect_before_wrap().min, vec2(160.0, 24.0));
             let _ = ui.interact(rect, target, egui::Sense::click_and_drag());
             ui.label("Rendered through the public egui_dockspace facade");
@@ -44,7 +53,7 @@ impl PaneView for SmokePanes {
         matches!(item, ITEM | SECOND_ITEM).then(|| {
             self.focus_target_requests
                 .set(self.focus_target_requests.get() + 1);
-            pane_focus_target(item)
+            self.focus_id(item)
         })
     }
 }
@@ -75,6 +84,17 @@ fn raw_input_for(viewport: ViewportId) -> RawInput {
     input
 }
 
+fn run_headless(
+    context: &Context,
+    input: RawInput,
+    add_contents: impl FnMut(&mut Ui),
+) -> FullOutput {
+    let (output, receipt) = run_ui(context, input, add_contents).into_parts();
+    // This headless owner accepts the terminal frame; callers inspect its output and clear textures.
+    receipt.report(SurfacePresentationResult::Presented);
+    output
+}
+
 fn accesskit_activate(target_node: egui::accesskit::NodeId) -> egui::Event {
     egui::Event::AccessKitActionRequest(ActionRequest {
         action: Action::Click,
@@ -82,6 +102,54 @@ fn accesskit_activate(target_node: egui::accesskit::NodeId) -> egui::Event {
         target_node,
         data: None,
     })
+}
+
+fn selected_second_pane() -> (Context, Dockspace, SmokePanes) {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("official-egui-receipt-focus", product_layout())
+        .build()
+        .expect("the receipt fixture initializes");
+    let mut panes = SmokePanes::default();
+    let mut second_tab = None;
+    for _ in 0..3 {
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the receipt fixture bootstraps");
+        });
+        if let Some(update) = output.platform_output.accesskit_update.as_ref() {
+            second_tab = update
+                .nodes
+                .iter()
+                .find_map(|(id, node)| {
+                    (node.role() == Role::Tab && node.label() == Some("Second official pane"))
+                        .then_some(*id)
+                })
+                .or(second_tab);
+        }
+        output.textures_delta.clear();
+    }
+    let mut input = raw_input();
+    input.events.push(accesskit_activate(
+        second_tab.expect("the second tab is visible"),
+    ));
+    let mut output = run_headless(&context, input, |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("selection creates a pending pane-focus request");
+    });
+    output.textures_delta.clear();
+    assert!(
+        dockspace
+            .view()
+            .item(SECOND_ITEM)
+            .is_some_and(|item| item.is_selected())
+    );
+    (context, dockspace, panes)
 }
 
 #[test]
@@ -122,7 +190,7 @@ fn official_raw_egui_host_owns_terminal_settlement() {
     let mut second_tab = None;
     for _ in 0..4 {
         let input = raw_input();
-        let mut output = run_ui(&context, input, |ui| {
+        let mut output = run_headless(&context, input, |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the public facade advances an official-egui frame");
@@ -149,7 +217,7 @@ fn official_raw_egui_host_owns_terminal_settlement() {
     selection_input.events.push(accesskit_activate(
         second_tab.expect("the supported host exposes the second tab"),
     ));
-    let mut output = run_ui(&context, selection_input, |ui| {
+    let mut output = run_headless(&context, selection_input, |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the supported host selects the second tab");
@@ -157,7 +225,7 @@ fn official_raw_egui_host_owns_terminal_settlement() {
     output.textures_delta.clear();
     let mut settled_request_count = None;
     for step in 0..5 {
-        let mut output = run_ui(&context, raw_input(), |ui| {
+        let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the supported host settles pane focus");
@@ -189,6 +257,203 @@ fn official_raw_egui_host_owns_terminal_settlement() {
         settled_request_count,
         "terminal focus evidence is consumed once instead of replaying",
     );
+}
+
+#[test]
+fn missing_or_dropped_host_receipt_cannot_complete_pane_focus() {
+    #[derive(Clone, Copy, Debug)]
+    enum HostResult {
+        Unreported,
+        Dropped,
+        Drop,
+        Unwind,
+    }
+
+    for result in [
+        HostResult::Unreported,
+        HostResult::Dropped,
+        HostResult::Drop,
+        HostResult::Unwind,
+    ] {
+        let (context, mut dockspace, mut panes) = selected_second_pane();
+        let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the owned frame observes the pending pane focus");
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        let observed_requests = panes.focus_target_requests.get();
+        assert!(
+            observed_requests > 0,
+            "the output must carry a focus observation"
+        );
+        let pending = match result {
+            HostResult::Unreported => Some(receipt),
+            HostResult::Dropped => {
+                receipt.report(SurfacePresentationResult::Dropped);
+                None
+            }
+            HostResult::Drop => {
+                drop(receipt);
+                None
+            }
+            HostResult::Unwind => {
+                let interrupted = catch_unwind(AssertUnwindSafe(move || {
+                    let _receipt = receipt;
+                    panic!("the host renderer panics before reporting its output");
+                }));
+                assert!(interrupted.is_err());
+                None
+            }
+        };
+
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the unpresented observation leaves pane focus pending");
+        });
+        output.textures_delta.clear();
+        let retry_requests = panes.focus_target_requests.get();
+        assert!(
+            retry_requests > observed_requests,
+            "{result:?} must not complete the focus request",
+        );
+        drop(pending);
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the presented retry completes the exact focus request");
+        });
+        output.textures_delta.clear();
+        assert_eq!(panes.focus_target_requests.get(), retry_requests);
+    }
+}
+
+#[test]
+fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
+    let (context, mut dockspace, mut panes) = selected_second_pane();
+    let (mut output_a, receipt_a) = run_ui(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("output A observes the pending focus request");
+    })
+    .into_parts();
+    output_a.textures_delta.clear();
+    let (mut output_b, receipt_b) = run_ui(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("output B observes the same pending focus request");
+    })
+    .into_parts();
+    assert_eq!(
+        output_b
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("output B publishes the real focused pane")
+            .focus,
+        panes.focus_id(SECOND_ITEM).accesskit_id(),
+    );
+    output_b.textures_delta.clear();
+    let requests_after_b = panes.focus_target_requests.get();
+    receipt_b.report(SurfacePresentationResult::Presented);
+
+    let (mut output_c, receipt_c) = run_ui(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("B's report waits for the earlier unreported output A");
+    })
+    .into_parts();
+    output_c.textures_delta.clear();
+    let requests_after_c = panes.focus_target_requests.get();
+    assert!(
+        requests_after_c > requests_after_b,
+        "B's renderer report alone cannot complete focus before core accepts its prefix",
+    );
+
+    // Keep C unreported so its result cannot replace B in the next core acknowledgement.
+    receipt_a.report(SurfacePresentationResult::Dropped);
+    let (mut output_d, receipt_d) = run_ui(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("retiring A lets core accept B's already reported focus observation");
+    })
+    .into_parts();
+    output_d.textures_delta.clear();
+    assert_eq!(
+        panes.focus_target_requests.get(),
+        requests_after_c,
+        "B's retained exact observation must complete focus without another target request",
+    );
+    assert!(context.memory(|memory| memory.has_focus(panes.focus_id(SECOND_ITEM))));
+    drop((receipt_c, receipt_d));
+}
+
+#[test]
+fn delayed_host_receipt_cannot_replace_a_newer_output() {
+    for result in [
+        Some(SurfacePresentationResult::Presented),
+        Some(SurfacePresentationResult::Dropped),
+        None,
+    ] {
+        let (context, mut dockspace, mut panes) = selected_second_pane();
+        let (mut output, old_receipt) = run_ui(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the first output remains unreported");
+        })
+        .into_parts();
+        let first_tab = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .and_then(|update| {
+                update.nodes.iter().find_map(|(id, node)| {
+                    (node.role() == Role::Tab && node.label() == Some("Official egui pane"))
+                        .then_some(*id)
+                })
+            });
+        output.textures_delta.clear();
+
+        let mut input = raw_input();
+        input.events.push(accesskit_activate(
+            first_tab.expect("the first tab is visible"),
+        ));
+        let (mut output, selection_receipt) = run_ui(&context, input, |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("a different pane supersedes the old focus request");
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        selection_receipt.report(SurfacePresentationResult::Dropped);
+        let (mut output, current_receipt) = run_ui(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the current output observes focus for the newly selected pane");
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        let current_requests = panes.focus_target_requests.get();
+        assert!(context.memory(|memory| memory.has_focus(pane_focus_target(ITEM))));
+        current_receipt.report(SurfacePresentationResult::Presented);
+        match result {
+            Some(result) => old_receipt.report(result),
+            None => drop(old_receipt),
+        }
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the current output retains its own presentation result");
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            panes.focus_target_requests.get(),
+            current_requests,
+            "an old receipt cannot complete stale focus or prevent the current focus from completing",
+        );
+    }
 }
 
 #[test]
@@ -311,7 +576,7 @@ fn manual_pass_keeps_local_actions_but_cannot_mint_terminal_evidence() {
     let mut second_tab = None;
 
     for _ in 0..4 {
-        let mut output = run_ui(&context, raw_input(), |ui| {
+        let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the owned fixture bootstraps");
@@ -361,7 +626,7 @@ fn manual_pass_keeps_local_actions_but_cannot_mint_terminal_evidence() {
     );
 
     let mut capability = None;
-    let mut output = run_ui(&context, raw_input(), |ui| {
+    let mut output = run_headless(&context, raw_input(), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("a later owned pass advances normally");
@@ -382,12 +647,15 @@ fn caller_owned_run_fans_out_terminal_settlement_to_multiple_dockspaces() {
         .build()
         .expect("the right Dockspace initializes");
     let mut left_panes = SmokePanes::default();
-    let mut right_panes = SmokePanes::default();
+    let mut right_panes = SmokePanes {
+        focus_namespace: Some(egui::Id::unique("official-right-pane")),
+        ..SmokePanes::default()
+    };
     let mut capabilities = None;
     let mut second_tabs = Vec::new();
 
     for _ in 0..4 {
-        let mut output = run_ui(&context, raw_input(), |ui| {
+        let mut output = run_headless(&context, raw_input(), |ui| {
             ui.columns(2, |columns| {
                 let left_response = left
                     .show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
@@ -423,7 +691,7 @@ fn caller_owned_run_fans_out_terminal_settlement_to_multiple_dockspaces() {
     selection_input
         .events
         .extend(second_tabs.into_iter().map(accesskit_activate));
-    let mut output = run_ui(&context, selection_input, |ui| {
+    let mut output = run_headless(&context, selection_input, |ui| {
         ui.columns(2, |columns| {
             left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
                 .expect("the left Dockspace selects its second tab");
@@ -435,7 +703,7 @@ fn caller_owned_run_fans_out_terminal_settlement_to_multiple_dockspaces() {
     output.textures_delta.clear();
     let mut settled_requests = None;
     for step in 0..5 {
-        let mut output = run_ui(&context, raw_input(), |ui| {
+        let mut output = run_headless(&context, raw_input(), |ui| {
             ui.columns(2, |columns| {
                 left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
                     .expect("the left Dockspace settles terminal focus evidence");
@@ -489,7 +757,7 @@ fn repeated_show_in_one_pass_survives_context_rebinding_and_then_recovers() {
         .expect("the duplicate-show Dockspace initializes");
     let mut panes = SmokePanes::default();
 
-    let mut output = run_ui(&context, raw_input(), |ui| {
+    let mut output = run_headless(&context, raw_input(), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the first contribution is accepted");
@@ -502,7 +770,7 @@ fn repeated_show_in_one_pass_survives_context_rebinding_and_then_recovers() {
 
     let rebound_context = Context::default();
     let mut poisoned_capability = None;
-    let mut output = run_ui(&rebound_context, raw_input(), |ui| {
+    let mut output = run_headless(&rebound_context, raw_input(), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the rebound run consumes the abandonment tombstone");
@@ -517,7 +785,7 @@ fn repeated_show_in_one_pass_survives_context_rebinding_and_then_recovers() {
     );
 
     let mut recovered_capability = None;
-    let mut output = run_ui(&rebound_context, raw_input(), |ui| {
+    let mut output = run_headless(&rebound_context, raw_input(), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("a fresh exact run recovers");
@@ -551,7 +819,7 @@ fn recoverable_error_after_claim_abandons_the_exact_terminal_pass() {
         .expect("the recoverable-error Dockspace initializes");
     let mut panes = SmokePanes::default();
     for _ in 0..3 {
-        let mut output = run_ui(&context, raw_input(), |ui| {
+        let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the valid fixture bootstraps");
@@ -560,7 +828,7 @@ fn recoverable_error_after_claim_abandons_the_exact_terminal_pass() {
     }
 
     let mut invalid = InvalidMinimumPanes(SmokePanes::default());
-    let mut output = run_ui(&context, raw_input(), |ui| {
+    let mut output = run_headless(&context, raw_input(), |ui| {
         let error = dockspace
             .show_single_surface(SURFACE, ui, &mut invalid)
             .expect_err("invalid measurement fails after the settlement claim");
@@ -569,7 +837,7 @@ fn recoverable_error_after_claim_abandons_the_exact_terminal_pass() {
     output.textures_delta.clear();
 
     let mut capability = None;
-    let mut output = run_ui(&context, raw_input(), |ui| {
+    let mut output = run_headless(&context, raw_input(), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the next exact run remains usable");
@@ -592,7 +860,7 @@ fn foreign_root_ui_cannot_claim_an_active_wrapper_pass() {
         .expect("the foreign-ui Dockspace initializes");
     let mut panes = SmokePanes::default();
 
-    let mut output = run_ui(&context, raw_input(), |ui| {
+    let mut output = run_headless(&context, raw_input(), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the tagged wrapper UI contributes once");
@@ -624,7 +892,7 @@ fn denied_max_pass_discard_still_terminally_settles_output() {
     let mut second_tab = None;
 
     for _ in 0..4 {
-        let mut output = run_ui(&context, raw_input(), |ui| {
+        let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the max-pass fixture bootstraps");
@@ -647,14 +915,14 @@ fn denied_max_pass_discard_still_terminally_settles_output() {
     selection_input.events.push(accesskit_activate(
         second_tab.expect("the max-pass fixture exposes the second tab"),
     ));
-    let mut output = run_ui(&context, selection_input, |ui| {
+    let mut output = run_headless(&context, selection_input, |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the max-pass fixture selects the second tab");
     });
     output.textures_delta.clear();
 
-    let mut output = run_ui(&context, raw_input(), |ui| {
+    let mut output = run_headless(&context, raw_input(), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the max-pass frame advances");
@@ -668,7 +936,7 @@ fn denied_max_pass_discard_still_terminally_settles_output() {
 
     let mut settled_request_count = None;
     for step in 0..4 {
-        let mut output = run_ui(&context, raw_input(), |ui| {
+        let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the denied discard's terminal evidence remains consumable");
@@ -697,7 +965,7 @@ fn non_root_caller_owned_run_settles_focus_from_its_final_accesskit_output() {
 
     let mut second_tab = None;
     for _ in 0..4 {
-        let mut output = run_ui(&context, raw_input_for(child), |ui| {
+        let mut output = run_headless(&context, raw_input_for(child), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the child viewport bootstraps");
@@ -714,7 +982,7 @@ fn non_root_caller_owned_run_settles_focus_from_its_final_accesskit_output() {
     selection_input.events.push(accesskit_activate(
         second_tab.expect("the child output exposes its second tab"),
     ));
-    let mut output = run_ui(&context, selection_input, |ui| {
+    let mut output = run_headless(&context, selection_input, |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the child tab selection advances");
@@ -725,7 +993,7 @@ fn non_root_caller_owned_run_settles_focus_from_its_final_accesskit_output() {
     let mut requests_after_settlement = None;
     let mut observed_accesskit = Vec::new();
     for step in 0..5 {
-        let mut output = run_ui(&context, raw_input_for(child), |ui| {
+        let mut output = run_headless(&context, raw_input_for(child), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the child viewport frame advances");

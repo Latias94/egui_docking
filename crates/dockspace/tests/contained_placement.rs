@@ -531,7 +531,14 @@ fn scene_rollover_rejects_old_rect_proof_and_reauthorizes_the_same_request() {
         .engine
         .contained_placement(SURFACE_A, requested, minimum)
         .expect("placement must be authorized");
-    publish_ready_scene(&mut fixture.engine, &mut fixture.host);
+    publish_surfaces(
+        &mut fixture.engine,
+        &mut fixture.host,
+        [
+            (SURFACE_A, rect(100.0, 50.0, 320.0, 200.0)),
+            (SURFACE_B, rect(-200.0, -100.0, 200.0, 150.0)),
+        ],
+    );
     let before = fixture.engine.workspace().clone();
     let version = fixture.engine.version();
 

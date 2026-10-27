@@ -95,8 +95,11 @@ fn manifest_for_roster(
 fn candidate_with_popup(
     ticket: SurfaceMeasurementTicket,
     popup: PopupPlaneRequirement,
+    serial: u64,
 ) -> PresentationPlan {
-    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("positive bounds");
+    // Replacement tests need changed facts; equal measurement retains its candidate.
+    let width = 640.0 + f64::from(u32::try_from(serial).expect("fixture serial is small"));
+    let bounds = LogicalRect::new(0.0, 0.0, width, 480.0).expect("positive bounds");
     let mut plan = PresentationPlan::from_measurements(
         ticket,
         popup,
@@ -130,7 +133,7 @@ fn install_with_popup(
 ) -> (SurfaceSceneStamp, SurfacePresentationOutputTicket) {
     scenes
         .install_ready(
-            candidate_with_popup(ticket, popup),
+            candidate_with_popup(ticket, popup, serial),
             headless_capture(),
             ticket.authority_domain(),
             PresentationOutputSerial::new_for_test(serial),

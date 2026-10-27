@@ -14,7 +14,62 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
-## 2026-10-27 implementation validation
+## 2026-10-27 U2 owned-output settlement
+
+The official adapter now completes the same exact output contract used by engine
+and native hosts. `run_ui` returns owned output plus an affine host receipt;
+returning from egui does not acknowledge presentation. The actual WGPU demo owns
+acquisition, submission and `queue.present`, and reports the result after present.
+Receipt drop retires its exact outputs. Discarded predecessors remain owned until
+the terminal receipt is disposed, so an intermediate pass cannot revoke its own
+replacement while egui is still rendering it.
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Root workspace, all features and targets | 1,571 passed | Complete core, conformance and official-adapter regression suite |
+| Product harness, all features | 90 passed, 1 ignored | Existing single-call Burst exclusion remains a U3 blocker |
+| Official harness, all features | 12 passed | Includes WGPU demo compilation and delayed pane-focus observation |
+| Native workspace, all targets | 198 passed | Existing exact egui 0.37 fork pin; smoke binaries compile, physical scenarios are not run |
+| Public engine host, default and serde | 10 passed each | Downstream public API only; no egui dependency |
+| Strict workspace rustdoc and doc tests | Passed; 10 doc tests | Includes compile-fail protection for both removed public preview ACK methods |
+| Correctness/suspicious Clippy and formatting | Passed | Cargo builds and Nextest execution remain serialized |
+
+Complete surface spans include ordinary geometry, panes, previews, clip data,
+post-tessellation transforms and exact pixel scale. Pane callback checkpoints
+reject overwriting shapes already emitted by the current program. Other-layer
+snapshots retain layer identity, transform and content. Nonempty unenumerated
+layers are explicitly unavailable. The marker scrubber removes only private
+markers and preserves user compounds and callbacks. This is a conservative
+synchronous single-layer admission contract, not inspection of application paint
+callback internals or physical GPU presentation.
+
+Independent review found and closed four boundary gaps: pane callbacks deleting
+already emitted chrome, identical shapes migrating between layers, delayed focus
+observations being lost before core accepts their artifact, and child receipts
+waking the root viewport. Waiting focus observations remain paired with their
+artifact until a committed `presents` or `retires` result; context/viewport lane
+changes retire that adapter cache. A failed observation frame leaves the waiting
+observations intact. Affine focus observations are consumed only after the output
+has been accepted; failure of that separate submission requires a fresh pane
+observation rather than duplicating its capability.
+
+Two core corrections are also covered directly. Successful exact preview
+promotion preserves its still-current target and source gap, while Dropped
+successors still revoke it. Identical complete measurement and coordinate facts
+retain the immutable Ready candidate; changed facts still replace it, and every
+concrete paint keeps a distinct emission key. Replacement fixtures now change
+geometry explicitly instead of relying on identical remeasurement to force a
+new scene stamp.
+
+Three mutation checks were executed: removing the positive-promotion guard,
+removing the pane append check, and dropping waiting focus observations each
+made its corresponding behavioral regression fail. Restoring the production
+code passes the final gates above. The redundant renderer-pass bridge and both
+public preview-only ACK methods are deleted. U3's manipulation-owner and ordered
+logical-surface input work remains separate; no native multiview or real-window
+interaction completion is inferred from these headless gates.
+
+## 2026-10-27 U14 and dependency migration baseline
 
 The implementation preserves the audit below as historical failure evidence.
 The following results were freshly executed after the U14 fixes, public host
@@ -86,24 +141,28 @@ program acceptance is explicitly documented as separate from GPU submission
 and final presentation; core accepts the exact reported prefix in a later
 successful host-frame commit.
 
-### Remaining U2/U3 replacement boundary
+### Remaining U3 replacement boundary
 
-The public core/native path uses complete execution receipts and exact output
-reports. The official product path still prepares preview-only acknowledgement
-actions and discards the complete execution receipt outside
-`native-render-support`. Its private shape proof checks a preview compound in
-terminal `FullOutput`, not the complete surface artifact. It must not be used
-as evidence that U2's single output path or deletion gate is complete.
+The official adapter now preserves complete execution receipts and uses the same
+exact `PaintedSurfaceOutput` present/drop path as public engine and native hosts.
+Both public preview-only ACK methods and the redundant renderer-pass bridge are
+deleted. Caller-owned egui runs return `DockspaceOutput`; the actual renderer
+owner takes the complete output and reports its terminal result exactly once.
+No-report, receipt drop, output mismatch, discarded predecessor, foreign lane,
+unwind, delayed report and pane-focus eligibility are covered by real emissions.
 
-The current official failure fix is deliberately narrower: an output mismatch
-now drops both immediate and pending pane-focus observations; abandonment also
-clears any previously ready focus evidence. Three tests cover direct mismatch,
-a late output hook changing only `transform_after_tessellation`, and abandonment
-with an already-ready batch. Completing U2 requires connecting official output
-ownership to the same exact terminal reporting path and deleting the public
-preview-only ACK methods. U3 then replaces the independent local-response and
-journal terminal reducers, supports ordered logical-surface routing, and removes
-the known-invalid Burst exclusion. None of those later gates is claimed here.
+The official integrity check brackets the complete surface span and compares all
+ordered shapes, clip rectangles, post-tessellation transforms and pixel scale
+after output hooks. Its explicit admission limit is synchronous, append-only pane
+painting on the supplied layer. Cross-layer writes are unavailable rather than
+silently omitted. Application callbacks must honor source-gap opacity and clip;
+the adapter does not inspect their renderer internals. Once output ownership is
+split, the host must preserve the complete output it reports. Shape membership
+never proves GPU submission or physical presentation.
+
+U3 still replaces the independent local-response and journal terminal reducers,
+supports ordered logical-surface routing, and removes the known-invalid Burst
+exclusion. U2 output integration does not claim those later gates.
 
 ## 2026-10-27 audit baseline (before repairs)
 

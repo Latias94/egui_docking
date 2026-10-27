@@ -944,6 +944,20 @@ impl fmt::Debug for PresentationCommandPaintRecord {
 /// display list or retained-node update. Records borrow this frame: copy the
 /// required geometry, identities, and content-slot information before committing
 /// it. Content resources and renderer scheduling remain host-owned.
+///
+/// Preview-only acknowledgements cannot replace complete output settlement:
+///
+/// ```compile_fail
+/// fn preview_only(plan: dockspace::runtime::SurfacePaintPlan<'_>) {
+///     plan.prepare_drag_preview_painted();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn transform_only(plan: dockspace::runtime::SurfacePaintPlan<'_>) {
+///     plan.prepare_contained_transform_preview_painted();
+/// }
+/// ```
 #[derive(Clone, Copy)]
 pub struct SurfacePaintPlan<'frame> {
     pub(super) surface: SurfaceId,

@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::BTreeMap;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,8 +8,10 @@ use egui::{Context, FullOutput, ViewportId};
 use egui_dockspace::{
     Dockspace, DockspaceAxis, DockspaceCapability, DockspaceContainedLayout, DockspaceLayout,
     DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceUnavailableReason,
-    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId, run_ui,
+    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
+    SurfacePresentationResult, run_ui,
 };
+use egui_wgpu::wgpu;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -38,12 +39,206 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+struct OfficialRenderer {
+    instance: wgpu::Instance,
+    surface: Option<wgpu::Surface<'static>>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    renderer: egui_wgpu::Renderer,
+    config: wgpu::SurfaceConfiguration,
+    needs_reconfigure: bool,
+    pending_textures: egui::TexturesDelta,
+}
+
+impl OfficialRenderer {
+    async fn new(
+        event_loop: &ActiveEventLoop,
+        window: Arc<Window>,
+    ) -> Result<Self, egui_wgpu::WgpuError> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(event_loop.owned_display_handle()),
+        ));
+        let surface = instance.create_surface(Arc::clone(&window))?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            })
+            .await?;
+        let limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("official demo device"),
+                required_limits: limits.using_resolution(adapter.limits()),
+                ..Default::default()
+            })
+            .await?;
+        let size = window.inner_size();
+        let mut config = surface
+            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+            .ok_or(egui_wgpu::WgpuError::NoSurfaceFormatsAvailable)?;
+        config.format =
+            egui_wgpu::preferred_framebuffer_format(&surface.get_capabilities(&adapter).formats)?;
+        config.present_mode = wgpu::PresentMode::AutoVsync;
+        let renderer = egui_wgpu::Renderer::new(
+            &device,
+            config.format,
+            egui_wgpu::RendererOptions::default(),
+        );
+        Ok(Self {
+            instance,
+            surface: Some(surface),
+            device,
+            queue,
+            renderer,
+            config,
+            needs_reconfigure: true,
+            pending_textures: egui::TexturesDelta::default(),
+        })
+    }
+
+    fn paint(
+        &mut self,
+        window: &Arc<Window>,
+        pixels_per_point: f32,
+        clipped_primitives: &[egui::ClippedPrimitive],
+    ) -> SurfacePresentationResult {
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return SurfacePresentationResult::Dropped;
+        }
+        if self.surface.is_none() {
+            match self.instance.create_surface(Arc::clone(window)) {
+                Ok(surface) => self.surface = Some(surface),
+                Err(error) => {
+                    eprintln!("Failed to recreate the official demo surface: {error}");
+                    return SurfacePresentationResult::Dropped;
+                }
+            }
+            self.needs_reconfigure = true;
+        }
+        let surface = self
+            .surface
+            .as_ref()
+            .expect("the surface was created above");
+        if self.needs_reconfigure
+            || self.config.width != size.width
+            || self.config.height != size.height
+        {
+            self.config.width = size.width;
+            self.config.height = size.height;
+            surface.configure(&self.device, &self.config);
+            self.needs_reconfigure = false;
+        }
+        let frame = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                // Reconfigure only after this frame has been presented and released.
+                self.needs_reconfigure = true;
+                window.request_redraw();
+                frame
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.needs_reconfigure = true;
+                window.request_redraw();
+                return SurfacePresentationResult::Dropped;
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                // Release the lost surface before creating its replacement next frame.
+                self.surface = None;
+                window.request_redraw();
+                return SurfacePresentationResult::Dropped;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                window.request_redraw();
+                return SurfacePresentationResult::Dropped;
+            }
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Validation => {
+                return SurfacePresentationResult::Dropped;
+            }
+        };
+
+        // Acquire before consuming any deltas. Failed acquisitions retain the initial font atlas,
+        // subsequent patches, and deferred frees until a later frame can upload and submit them.
+        for (id, image_deltas) in self.pending_textures.set.drain() {
+            for image_delta in image_deltas {
+                self.renderer
+                    .update_texture(&self.device, &self.queue, id, &image_delta);
+            }
+        }
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [size.width, size.height],
+            pixels_per_point,
+        };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("official demo encoder"),
+            });
+        let user_commands = self.renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            clipped_primitives,
+            &screen_descriptor,
+        );
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        {
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("official demo egui pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.055,
+                            g: 0.06,
+                            b: 0.07,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            self.renderer.render(
+                &mut render_pass.forget_lifetime(),
+                clipped_primitives,
+                &screen_descriptor,
+            );
+        }
+        self.queue
+            .submit(user_commands.into_iter().chain([encoder.finish()]));
+        // Current-frame draws may still reference these textures until submission.
+        for id in self.pending_textures.free.drain() {
+            self.renderer.free_texture(&id);
+        }
+        window.pre_present_notify();
+        self.queue.present(frame);
+        SurfacePresentationResult::Presented
+    }
+}
+
+impl Drop for OfficialRenderer {
+    fn drop(&mut self) {
+        // The renderer and context are shutting down; no future frame will use these deltas.
+        self.pending_textures.clear();
+    }
+}
+
 struct OfficialDemoHost {
     proxy: EventLoopProxy<UserEvent>,
     window: Option<Arc<Window>>,
     context: Context,
     egui_winit: Option<egui_winit::State>,
-    painter: Option<egui_wgpu::winit::Painter>,
+    painter: Option<OfficialRenderer>,
     viewport_info: egui::ViewportInfo,
     dockspace: Dockspace,
     panes: DemoPanes,
@@ -117,16 +312,18 @@ impl OfficialDemoHost {
                 }
             });
         });
+        let (output, receipt) = output.into_parts();
         self.presentation_settlement = presentation_settlement;
         self.error = error;
 
         let FullOutput {
             platform_output,
-            mut textures_delta,
+            textures_delta,
             shapes,
             pixels_per_point,
             viewport_output,
         } = output;
+        painter.pending_textures.append(textures_delta);
         for (_, viewport) in viewport_output {
             let mut actions_requested = Vec::new();
             egui_winit::process_viewport_commands(
@@ -139,15 +336,9 @@ impl OfficialDemoHost {
         }
         egui_winit.handle_platform_output(window, platform_output);
         let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
-        painter.paint_and_update_textures(
-            ViewportId::ROOT,
-            pixels_per_point,
-            [0.055, 0.06, 0.07, 1.0],
-            &clipped_primitives,
-            &mut textures_delta,
-            Vec::new(),
-            window,
-        );
+        // A panic before paint returns leaves the receipt to report Dropped through RAII.
+        let presentation = painter.paint(window, pixels_per_point, &clipped_primitives);
+        receipt.report(presentation);
     }
 }
 
@@ -172,17 +363,9 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
             event_loop.system_theme(),
             None,
         );
-        let mut painter = pollster::block_on(egui_wgpu::winit::Painter::new(
-            self.context.clone(),
-            egui_wgpu::WgpuConfiguration::default(),
-            false,
-            egui_wgpu::RendererOptions::default(),
-        ));
-        pollster::block_on(painter.set_window(ViewportId::ROOT, Some(Arc::clone(&window))))
+        let painter = pollster::block_on(OfficialRenderer::new(event_loop, Arc::clone(&window)))
             .expect("the official demo initializes its wgpu surface");
-        if let Some(max_texture_side) = painter.max_texture_side() {
-            egui_winit.set_max_texture_side(max_texture_side);
-        }
+        egui_winit.set_max_texture_side(painter.device.limits().max_texture_dimension_2d as usize);
         let proxy = self.proxy.clone();
         self.context.set_request_repaint_callback(move |info| {
             let _ = proxy.send_event(UserEvent::RequestRepaint(info.delay));
@@ -213,12 +396,11 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
             self.render();
             return;
         }
-        if let WindowEvent::Resized(size) = event
-            && let (Some(width), Some(height)) =
-                (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-            && let Some(painter) = self.painter.as_mut()
-        {
-            painter.on_window_resized(ViewportId::ROOT, width, height);
+        if matches!(
+            event,
+            WindowEvent::Resized(_) | WindowEvent::Occluded(false)
+        ) {
+            window.request_redraw();
         }
         if let Some(egui_winit) = self.egui_winit.as_mut()
             && egui_winit.on_window_event(window, &event).repaint
@@ -255,9 +437,7 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(painter) = self.painter.as_mut() {
-            painter.destroy();
-        }
+        self.painter = None;
     }
 }
 

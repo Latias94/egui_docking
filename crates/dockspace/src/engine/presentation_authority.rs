@@ -1808,6 +1808,22 @@ impl DockEngine {
                     .active_drag(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?
                     .clone();
+                // Promoting the exact preview is an authority change, not a
+                // loss of its target. Retirements still remove ready_surface.
+                if matches!(
+                    cause,
+                    ReductionCause::SurfacePresentationObservationBatch { .. }
+                        | ReductionCause::PresentationObservation { .. }
+                ) && drag.preview().is_some_and(|preview| {
+                    preview.painted()
+                        && self
+                            .presentation_authority
+                            .scene
+                            .ready_surface(preview.public().token().scene().surface())
+                            .is_some_and(|scene| scene.stamp() == preview.public().token().scene())
+                }) {
+                    return Ok(());
+                }
                 let affected = drag.preview().is_some_and(|preview| {
                     changed_surfaces.contains(&preview.public().token().scene().surface())
                 });

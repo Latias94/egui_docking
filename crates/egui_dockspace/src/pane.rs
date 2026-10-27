@@ -37,6 +37,14 @@ pub trait PaneView {
     /// therefore never invoked through unrelated retained chrome. Once the pane
     /// projection is current, the child UI remains enabled even when docking
     /// presentation authority is unavailable.
+    ///
+    /// Caller-owned presentation settlement currently admits synchronous,
+    /// append-only painting on this Ui's layer. Drawing into another layer or
+    /// changing earlier shapes makes the complete surface output unavailable
+    /// for settlement. Respect the supplied opacity and clip, including when a
+    /// source gap omits the pane's pixels during manipulation. Do not defer
+    /// drawing beyond this callback. Application paint callbacks remain subject
+    /// to the host renderer contract; shape comparison cannot inspect them.
     fn ui(&mut self, item: ItemId, ui: &mut Ui);
 
     /// Returns the stable egui focus identity registered by `item`'s pane UI.

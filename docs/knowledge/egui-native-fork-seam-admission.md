@@ -13,20 +13,18 @@ The product contract remains simple:
   native product no longer depends on that fact.
 
 The publishable crates.io adapter does not depend on the native post-output
-fork seam. A caller-owned raw-egui integration may use
-`egui_dockspace::run_ui`, which wraps the complete `Context::run_ui` with a
-private run identity, clears discarded-pass evidence before each repeated
-callback, admits only the final output after all output hooks return, and
-abandons the exact run on unwind. Its current private shape receipt checks the
-preview compound's terminal-output membership, not complete surface acceptance,
-renderer submission, or physical presentation. The remaining preview-only ACK
-path is an explicit U2 deletion gate, not a substitute for native output tokens.
-Manual passes, repeated entry, unrelated contexts or viewports, interrupted
-runs, and omitted terminal paints fail closed without frame counters or a
-public bookkeeping token. An unmodified `eframe::App::ui` callback cannot mint
-this proof and remains typed capability-negative. The native host still needs
-its fork seam because eframe also binds renderer output tokens and physical
-viewport obligations at the same boundary.
+fork seam. A caller-owned raw-egui integration uses `egui_dockspace::run_ui`
+and splits the returned complete output with `into_parts()`. Its affine receipt
+reports the renderer's exact `Presented` or `Dropped` result through the same core
+emission path used by engine and native hosts. Complete surface shape spans are
+checked after output hooks, including ordinary geometry, clipping and transforms.
+This conservative mode requires append-only synchronous pane painting on the
+supplied Ui layer; cross-layer writes are unavailable. Private markers are only
+output-integrity checks, not GPU or presentation proof. Once split, the host must
+preserve the complete output it reports. Unwind and receipt drop retire outputs.
+An unmodified eframe callback remains capability-negative because it does not own
+the full renderer boundary. The native host still needs its fork seam to bind
+renderer output tokens and physical viewport obligations at that same boundary.
 
 Baselines:
 

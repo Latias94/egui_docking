@@ -113,15 +113,24 @@ fn run_frame(
     panes: &mut MagneticPanes,
     events: Vec<Event>,
 ) -> FrameOutput {
-    let mut output = crate::run_ui(context, input(events), |ui| {
+    let mut drop_targets = Vec::new();
+    let output = crate::run_ui(context, input(events), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
+        let registered = dockspace.registered_drop_target_observations();
+        if !registered.is_empty() {
+            // Preserve the actual receivers used by the release pass even if
+            // a later pass already paints the committed, guide-free workspace.
+            drop_targets = registered.to_vec();
+        }
     });
+    let (mut output, receipt) = output.into_parts();
+    receipt.report(crate::SurfacePresentationResult::Presented);
     output.textures_delta.clear();
     FrameOutput {
         output,
-        drop_targets: dockspace.registered_drop_target_observations().to_vec(),
+        drop_targets,
     }
 }
 
@@ -368,5 +377,82 @@ fn shared_l03_supported_points_use_renderer_registered_magnetic_receivers() {
         )
     }) {
         run_supported_case(case);
+    }
+}
+
+#[test]
+fn pane_callback_cannot_authorize_deleted_chrome_or_cross_layer_pixels() {
+    struct CorruptingPane {
+        cross_layer: bool,
+        writes: usize,
+    }
+
+    impl PaneView for CorruptingPane {
+        fn title(&self, _item: ItemId) -> Option<egui::WidgetText> {
+            Some("Corrupting pane".into())
+        }
+
+        fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+            if self.cross_layer {
+                ui.ctx()
+                    .layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::unique("unregistered-pane-layer"),
+                    ))
+                    .circle_filled(ui.min_rect().center(), 5.0, egui::Color32::RED);
+            } else {
+                let layer = ui.layer_id();
+                ui.ctx().graphics_mut(|graphics| {
+                    let list = graphics.get_mut(layer).expect("the surface layer exists");
+                    let index = list
+                        .all_entries()
+                        .enumerate()
+                        .filter_map(|(index, shape)| {
+                            matches!(shape.shape, egui::Shape::Rect(_)).then_some(index)
+                        })
+                        .last()
+                        .expect("ordinary surface chrome was painted before the pane");
+                    list.reset_shape(egui::layers::ShapeIdx(index));
+                });
+            }
+            self.writes += 1;
+            ui.label("The pane still emits its own ordinary content");
+        }
+    }
+
+    for cross_layer in [false, true] {
+        let context = Context::default();
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST])),
+        )])
+        .unwrap();
+        let mut dockspace = Dockspace::builder(("invalid-pane-output", cross_layer), layout)
+            .build()
+            .unwrap();
+        let mut panes = CorruptingPane {
+            cross_layer,
+            writes: 0,
+        };
+        let mut capability = None;
+        for _ in 0..3 {
+            let (output, receipt) = crate::run_ui(&context, input(Vec::new()), |ui| {
+                let response = dockspace
+                    .show_single_surface(SURFACE, ui, &mut panes)
+                    .unwrap();
+                capability = Some(response.presentation_settlement_capability());
+            })
+            .into_parts();
+            output.drop_without_applying_deltas();
+            receipt.report(crate::SurfacePresentationResult::Presented);
+            assert!(dockspace.session.presented_surface(SURFACE).is_none());
+        }
+        assert!(panes.writes > 0);
+        assert_eq!(
+            capability,
+            Some(crate::DockspaceCapability::Unavailable(
+                crate::DockspaceUnavailableReason::PresentationOutputMismatch,
+            )),
+        );
     }
 }

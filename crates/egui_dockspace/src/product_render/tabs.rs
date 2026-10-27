@@ -83,6 +83,11 @@ pub(crate) fn paint_pane(
         child.set_opacity(0.0);
     }
     child.set_clip_rect(pane_rect);
+    let append_check = matches!(
+        context.pointer_authority,
+        super::PointerActionAuthority::LocalResponses { .. }
+    )
+    .then(|| crate::output_proof::PaintAppendCheck::begin(child.painter()));
     if context
         .resources
         .item(item)
@@ -104,6 +109,10 @@ pub(crate) fn paint_pane(
             *context.pane_focus_target = Some(target);
         }
         context.panes.ui(item, &mut child);
+    }
+    drop(child);
+    if let Some(check) = append_check {
+        *context.pane_output_valid &= check.is_preserved(context.ui.painter());
     }
 }
 

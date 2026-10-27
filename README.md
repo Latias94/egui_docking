@@ -101,18 +101,27 @@ let output = egui_dockspace::run_ui(&context, raw_input, |ui| {
         .show_single_surface(surface, ui, panes)
         .expect("the Dockspace frame advances");
 });
+let (full_output, receipt) = output.into_parts();
+let result = renderer.present(full_output); // Presented or Dropped, from the output owner.
+receipt.report(result);
 ```
 
-`egui_dockspace::run_ui` opens a private run identity, clears discarded-pass
-evidence before every repeated callback, and examines the terminal egui
-output after all output hooks return. Its private shape marker checks preview
-compound membership, not complete surface acceptance, GPU submission, or physical
-presentation. The official path still has preview-only acknowledgement authority;
-U2 must replace it with the same exact output reporting path used by engine and
-native hosts. An output mismatch now invalidates focus evidence as well. Panic,
-manual `begin_pass` / `end_pass`, a different context or viewport, repeated
-entry, and an omitted terminal paint all fail closed. Callers cannot submit or
-impersonate a `FullOutput` receipt.
+`egui_dockspace::run_ui` returns `DockspaceOutput`. Split it with
+`into_parts()` to obtain `FullOutput` and a one-use `DockspaceOutputReceipt`.
+The renderer owner reports `Presented` only after that complete output reaches
+presentation, or `Dropped` when it is discarded; dropping the receipt also
+retires it. Core accepts exact emissions at the next successful frame boundary,
+including delayed or out-of-order reports. Returning from egui never grants
+presentation authority by itself.
+
+The adapter checks the complete ordered surface shape span after every output
+hook, including ordinary pane/tab drawing, previews, clip and transform data.
+It removes only its private markers. This conservative path requires synchronous,
+append-only pane drawing on the supplied layer; cross-layer writes and nonempty unenumerated layers are unavailable
+for settlement. After `into_parts()`, the host is responsible for preserving the
+complete output it reports. Shape checks do not inspect application paint callback
+internals or observe GPU submission. Discard, unwind, duplicate enrollment,
+foreign contexts/viewports and output mismatch cannot promote partial evidence.
 
 An unmodified `eframe::App::ui` callback may still call
 `show_single_surface` directly for rendering, selection, close, menus, and

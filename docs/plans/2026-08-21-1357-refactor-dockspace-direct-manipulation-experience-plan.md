@@ -433,10 +433,18 @@ These are packaging/readiness gates, not instructions to publish crates or upstr
 - **Goal:** Finish the existing program/presentation replacement for both engine and egui hosts.
 - **Requirements:** R4, R5, R10-R12, R16, R21; KTD2, KTD6, KTD10.
 - **Dependencies:** U13's entry slice and the relevant U1 journeys. Changes to the egui bridge additionally require U15's official slice; independent core work can proceed before it. U13's ordered-input completion is qualified with U3 and does not block this output-contract work.
-- **Files:** `crates/dockspace/src/scene.rs`, `crates/dockspace/src/scene_compiler/`, `crates/dockspace/src/runtime/{paint,presentation,host_frame}.rs`, `crates/dockspace/src/{semantic_manifest,presentation_hit}.rs`, `crates/egui_dockspace/src/{renderer_pass_bridge,pass_settlement}.rs`, public host harness and existing presentation tests.
+- **Files:** `crates/dockspace/src/scene.rs`, `crates/dockspace/src/scene_compiler/`, `crates/dockspace/src/runtime/{paint,presentation,host_frame}.rs`, `crates/dockspace/src/{semantic_manifest,presentation_hit}.rs`, `crates/egui_dockspace/src/{output_proof,pass_settlement,product_dockspace}.rs`, public host harness and existing presentation tests.
 - **Approach:** Retain U2a's canonical traversal and finish U2b's exact output commit path. Give execution receipts R11's limited meaning, remove public preview-only acknowledgement authority, and make receiver/semantic/program promotion one committed artifact. Treat mutable egui shape markers as adapter-local diagnostics unless their limited acceptance contract is explicitly proven.
 - **Test scenarios:** Covers AE5/AE13. Complete/failed emission, dropped output, output-hook modification, unwind, late predecessor, failed core commit, and idle post-commit settlement never create mixed artifacts or release authority.
 - **Verification:** One exact output path is used by public engine, egui, and native integrations; flat schedule reconstruction and preview-only acknowledgement bypasses are deleted.
+
+Implementation evidence (2026-10-27): official egui now returns complete owned
+output and an affine host disposition receipt, feeds exact core emissions, and
+removes preview-only ACK and the old renderer-pass bridge. Conservative complete
+span and pane callback checks qualify its single-layer contract. See
+`docs/VALIDATION.md` for final gates, independent-review fixes and mutation-red
+checks. This closes U2 output settlement; U3 retains the Burst and ordered-input
+completion work.
 
 ### U3. Converge ordered manipulation and terminal state
 

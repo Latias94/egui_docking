@@ -26,7 +26,7 @@ assert!(dockspace.view().item(item).is_some());
 
 Provide a `PaneView` implementation to measure and paint application panes.
 When the integration owns the complete official-egui run, use
-`egui_dockspace::run_ui` so Dockspace can terminally settle previews after every
+`egui_dockspace::run_ui` to retain complete output ownership after every
 output hook succeeds:
 
 ```rust,ignore
@@ -39,15 +39,27 @@ let output = run_ui(&context, raw_input, |ui| {
         egui_dockspace::DockspaceCapability::Supported,
     );
 });
+let (full_output, receipt) = output.into_parts();
+let result = renderer.present(full_output); // Host-owned Presented or Dropped result.
+receipt.report(result);
 ```
 
-The callback can run more than once when egui discards a pass. Dockspace keeps
-the run identity private, admits only the terminal output after `run_ui`
-returns, and abandons the active evidence on unwind. The current private receipt
-checks a preview compound in terminal output; it does not prove complete surface
-acceptance, GPU submission, or physical window presentation. Replacing the remaining
-preview-only acknowledgement path with the core's exact output contract is still
-U2 work. No caller-supplied frame count can strengthen this evidence.
+The callback can run more than once when egui discards a pass. Split the returned
+`DockspaceOutput` at the renderer boundary with `into_parts()`. This transfers
+`FullOutput` and an affine `DockspaceOutputReceipt` to the host. Report
+`SurfacePresentationResult::Presented` only after that complete output is
+presented, or `Dropped` if it is discarded. Receipt drop also retires its outputs.
+Core accepts only the exact emission after a successful later frame commit;
+output production alone grants no presentation or focus authority.
+
+The adapter validates the complete ordered surface span after all output hooks,
+including ordinary geometry, previews, clipping and transforms. Pane drawing must
+be synchronous and append-only on the supplied Ui layer; another-layer write or
+an earlier-shape mutation conservatively disables settlement. Honor the supplied
+opacity and source-gap suppression. Private markers are removed while user
+shapes and callbacks remain intact. Shape comparison cannot inspect callback
+internals. After `into_parts()`, preserving the exact complete output is the
+trusted renderer owner's responsibility. No frame count is presentation proof.
 
 The repository includes a real-window official-egui host that exercises this
 supported tier directly:
