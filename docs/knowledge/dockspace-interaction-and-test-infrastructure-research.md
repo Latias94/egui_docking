@@ -2,6 +2,32 @@
 
 Date: 2026-08-18
 
+## 2026-10-27 reference update
+
+The updated Dear ImGui docking reference is
+`d88f238d1d363ef387382b2e29ad12cf96f826ac` (`1.93.1 WIP`). Its
+`DockContextNewFrameUpdateUndocking` processes undock requests before moving
+windows; `DockContextNewFrameUpdateDocking` processes docking requests and then
+updates floating roots. This supports keeping explicit input, manipulation,
+projection, and terminal mutation phases in Dockspace rather than making
+painting own the docking graph.
+
+ImGui's `UpdateInputEvents` normally trickles conflicting mouse edges across
+frames through `ConfigInputTrickleEventQueue`. With trickling disabled, its
+comment explicitly identifies the loss caused by flattening repeated button
+changes. That mechanism is a useful reference for lossless input ordering, not
+proof that flattening an egui Response can satisfy Dockspace's complete
+same-tick Burst contract. The planned common manipulation owner still needs to
+consume ordered accepted edges and retain a pending release until its exact
+preview output is accepted.
+
+The active validation baseline is now official egui/kittest `0.37.0`, with
+native-only graph-neutral seams at egui fork
+`0716beee5b7284389f2e80ffb6b24b5af6ae2910`. The independent public host consumer
+records owned geometry and identities without a UI dependency. These changes
+preserve the original finite test-catalog decision; they do not introduce a
+general GUI automation language or certify physical cross-window behavior.
+
 ## Decision Summary
 
 Do not build a general-purpose GUI test engine and do not copy the Dear ImGui Test Engine. The repository should combine `egui_kittest` for egui-local interaction with a thin Dockspace-specific conformance catalog and the existing native coordinator/smoke layers. A reusable adapter driver should be extracted only after a second UI adapter exists.

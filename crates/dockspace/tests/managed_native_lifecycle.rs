@@ -350,15 +350,14 @@ fn paint_and_present_surface(session: &mut DockspaceSession, surface: SurfaceId)
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the paint frame begins");
-    assert!(
-        frame
-            .paint_plan(surface)
-            .expect("the paint plan resolves")
-            .is_some(),
-        "the requested surface must have a ready paint plan"
-    );
+    let receipt = frame
+        .paint_plan(surface)
+        .expect("the paint plan resolves")
+        .expect("the requested surface must have a ready paint plan")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the complete surface program executes");
     frame
-        .confirm_surface_painted(surface)
+        .confirm_surface_painted(receipt)
         .expect("the exact surface output is painted");
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -380,15 +379,14 @@ fn paint_and_present_all_surfaces(session: &mut DockspaceSession) -> HostFrameRe
         .expect("the complete paint frame begins");
     let surfaces = frame.surfaces();
     for surface in &surfaces {
-        assert!(
-            frame
-                .paint_plan(*surface)
-                .expect("the complete paint plan resolves")
-                .is_some(),
-            "surface {surface:?} must have a ready paint plan",
-        );
+        let receipt = frame
+            .paint_plan(*surface)
+            .expect("the complete paint plan resolves")
+            .unwrap_or_else(|| panic!("surface {surface:?} must have a ready paint plan"))
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the complete surface program executes");
         frame
-            .confirm_surface_painted(*surface)
+            .confirm_surface_painted(receipt)
             .expect("the complete surface output is painted");
     }
     let mut report = frame.commit().expect("the complete paint frame commits");

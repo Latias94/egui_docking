@@ -93,6 +93,7 @@ impl NativeCoordinator {
                 .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)?,
             self.bridge.clone(),
             self.viewports.clone(),
+            &mut self.receivers,
             None,
         ))
     }

@@ -16,6 +16,8 @@ mod tab_chrome;
 mod tabs;
 
 use dockspace::model::{FloatingPresentationId, ItemId};
+#[cfg(feature = "native-render-support")]
+use dockspace::runtime::SurfaceProgramExecutionReceipt;
 use dockspace::runtime::{
     ContainedPaintRecord, DockspaceContainedTransformPreview, DockspaceDragPreview,
     DockspacePaneFocusObservation, DockspacePaneFocusRequest, DockspacePreviewVisual,
@@ -41,7 +43,7 @@ pub(crate) use measurement::measure_surface;
 
 #[cfg(feature = "native-render-support")]
 fn native_drag_preview_diagnostic_id() -> Id {
-    Id::new("egui-dockspace-native-drag-preview-diagnostic")
+    Id::unique("egui-dockspace-native-drag-preview-diagnostic")
 }
 
 #[cfg(feature = "native-render-support")]
@@ -406,6 +408,8 @@ pub(crate) struct RegisteredDropTargetObservation {
 }
 
 pub(crate) struct ProductPaintOutput {
+    #[cfg(feature = "native-render-support")]
+    pub(crate) execution_receipt: SurfaceProgramExecutionReceipt,
     pub(crate) local_actions: Vec<PreparedSurfaceAction>,
     #[cfg(feature = "native-render-support")]
     pub(crate) presentation_actions: Vec<PreparedSurfaceAction>,
@@ -453,6 +457,8 @@ pub(crate) fn paint_surface(
     let mut defer_measurement = false;
     let mut transient_visuals_complete = true;
     let mut terminal_semantic_output = None;
+    #[cfg(feature = "native-render-support")]
+    let execution_receipt;
     let local_primary_presses = actions::local_primary_presses(ui, pointer_authority);
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
         ui.allocate_rect(bounds, Sense::hover());
@@ -490,9 +496,9 @@ pub(crate) fn paint_surface(
             local_primary_presses,
             claimed_contained_activations: Vec::new(),
         };
-        context
+        let completed_program = context
             .plan
-            .visit_surface_program(|step| -> Result<(), DockspaceRuntimeError> {
+            .execute_surface_program(|step| -> Result<(), DockspaceRuntimeError> {
                 match step {
                     SurfacePaintProgramStep::RootBegin { root, paint } => {
                         if let SurfacePaintProgramRootKind::Contained(record) = root.kind() {
@@ -655,6 +661,12 @@ pub(crate) fn paint_surface(
                 Ok(())
             })
             .map_err(SurfacePaintProgramVisitError::into_runtime_error)?;
+        #[cfg(feature = "native-render-support")]
+        {
+            execution_receipt = completed_program;
+        }
+        #[cfg(not(feature = "native-render-support"))]
+        let _ = completed_program;
     }
     debug_assert_eq!(
         terminal_semantic_output,
@@ -731,6 +743,8 @@ pub(crate) fn paint_surface(
     #[cfg(not(feature = "native-render-support"))]
     let _ = transient_visuals_complete;
     Ok(ProductPaintOutput {
+        #[cfg(feature = "native-render-support")]
+        execution_receipt,
         local_actions,
         #[cfg(feature = "native-render-support")]
         presentation_actions: Vec::new(),
@@ -935,13 +949,13 @@ mod discard_tests {
     #[test]
     fn manual_passes_each_receive_one_discard_request() {
         let context = Context::default();
-        let marker = Id::new("dockspace-manual-discard-once");
+        let marker = Id::unique("dockspace-manual-discard-once");
 
         for pass in 0..2 {
             context.begin_pass(RawInput::default());
             let ui = Ui::new(
                 context.clone(),
-                Id::new(("dockspace-manual-discard-ui", pass)),
+                Id::unique(("dockspace-manual-discard-ui", pass)),
                 UiBuilder::new().max_rect(context.viewport_rect()),
             );
             assert!(request_discard_once(&ui, marker, "manual pass discard"));
@@ -956,7 +970,7 @@ mod discard_tests {
         context.options_mut(|options| {
             options.max_passes = 2.try_into().expect("two is non-zero");
         });
-        let marker = Id::new("dockspace-run-discard-once");
+        let marker = Id::unique("dockspace-run-discard-once");
         let mut requested = Vec::new();
 
         let output = context.run_ui(RawInput::default(), |ui| {

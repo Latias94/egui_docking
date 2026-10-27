@@ -177,7 +177,7 @@ fn run_surface_frame(
         };
         let painted = native_support::paint_surface(
             &mut frame,
-            Id::new("native-interaction-authority"),
+            Id::unique("native-interaction-authority"),
             SURFACE,
             ui,
             panes,

@@ -4,7 +4,7 @@ use crate::geometry::PhysicalPoint;
 use crate::graph::ContainedFloating;
 use crate::model::{DockAnchor, DockPlacement, FloatingPresentationId};
 use crate::runtime::{
-    DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
+    DockspaceHostFrame, DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
     NativeEffectOperation, NativeStagingPresentationPhase, NativeWindowPlacement,
 };
@@ -18,6 +18,18 @@ use crate::{
 const SECOND_ITEM: ItemId = ItemId::new(2);
 const ROOT_ORIGIN_X: f64 = 100.0;
 const ROOT_ORIGIN_Y: f64 = 80.0;
+
+fn execute_surface_program(
+    frame: &mut DockspaceHostFrame<'_>,
+    surface: SurfaceId,
+) -> SurfaceProgramExecutionReceipt {
+    frame
+        .paint_plan(surface)
+        .expect("managed native paint plan lookup succeeds")
+        .expect("managed native surface candidate is paintable")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("managed native renderer executes the complete surface program")
+}
 
 #[cfg(feature = "serde")]
 #[test]
@@ -412,8 +424,9 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
             .is_some(),
         "ownership transfer must publish a semantic child plan"
     );
+    let receipt = execute_surface_program(&mut first_live, child_binding.surface());
     first_live
-        .confirm_surface_painted(child_binding.surface())
+        .confirm_surface_painted(receipt)
         .expect("the first-live child output is painted");
     first_live
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -820,8 +833,9 @@ fn request_native_create() -> PendingNativeCreate {
         ),
         "an unconfirmed pointer route must not expose a native preview"
     );
+    let receipt = execute_surface_program(&mut route, SURFACE);
     route
-        .confirm_surface_painted(SURFACE)
+        .confirm_surface_painted(receipt)
         .expect("the route-request frame is painted");
     let mut route_report = route.commit().expect("the route-request frame commits");
     let enable = take_only_native_effect(&mut route_report);
@@ -876,8 +890,9 @@ fn request_native_create() -> PendingNativeCreate {
         ),
         "the confirmed outside-all move must expose a core-owned native preview"
     );
+    let receipt = execute_surface_program(&mut preview, SURFACE);
     preview
-        .confirm_surface_painted(SURFACE)
+        .confirm_surface_painted(receipt)
         .expect("the exact native preview is painted");
     let mut preview_report = preview.commit().expect("the native preview frame commits");
     assert!(preview_report.take_native_effects().is_empty());

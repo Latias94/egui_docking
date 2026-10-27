@@ -50,7 +50,7 @@ impl PaneView for SmokePanes {
 }
 
 fn pane_focus_target(item: ItemId) -> egui::Id {
-    egui::Id::new(("official-egui-pane-focus", item.get()))
+    egui::Id::unique(("official-egui-pane-focus", item.get()))
 }
 
 fn product_layout() -> DockspaceLayout {
@@ -335,20 +335,14 @@ fn manual_pass_keeps_local_actions_but_cannot_mint_terminal_evidence() {
         second_tab.expect("the owned output exposes the second tab"),
     ));
     context.begin_pass(input);
-    let mut root_ui = Ui::new(
-        context.clone(),
-        egui::Id::new((context.viewport_id(), "__top_ui")),
-        UiBuilder::new()
-            .layer_id(egui::LayerId::background())
-            .max_rect(context.viewport_rect()),
-    );
-    let response = root_ui
-        .scope_builder(
+    let response = context.root_ui(|ui| {
+        ui.scope_builder(
             UiBuilder::new().id_salt("egui_dockspace::official_run_scope"),
             |ui| dockspace.show_single_surface(SURFACE, ui, &mut panes),
         )
         .inner
-        .expect("the manual pass keeps current-call local actions");
+        .expect("the manual pass keeps current-call local actions")
+    });
     assert!(response.interaction_capabilities().local_actions_current());
     assert_eq!(
         response.presentation_settlement_capability(),
@@ -604,7 +598,7 @@ fn foreign_root_ui_cannot_claim_an_active_wrapper_pass() {
             .expect("the tagged wrapper UI contributes once");
         let mut foreign = Ui::new(
             context.clone(),
-            egui::Id::new("official-egui-foreign-root"),
+            egui::Id::unique("official-egui-foreign-root"),
             UiBuilder::new().max_rect(context.viewport_rect()),
         );
         let error = dockspace

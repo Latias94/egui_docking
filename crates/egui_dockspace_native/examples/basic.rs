@@ -29,7 +29,7 @@ fn main() -> eframe::Result {
     let session = DockspaceSession::from_layout(example_layout(), policy)
         .expect("the static native example layout is valid");
     let dockspace = NativeDockspaceApp::new(
-        egui::Id::new("native-dockspace-example"),
+        egui::Id::unique("native-dockspace-example"),
         session,
         SURFACE,
         ExamplePanes::new(),

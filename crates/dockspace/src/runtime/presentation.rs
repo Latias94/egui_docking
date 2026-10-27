@@ -21,16 +21,95 @@ use crate::transition::EngineTransition;
 
 use super::native::NativeSurfaceBinding;
 
-/// Affine record for one output which the host actually painted.
+/// Affine record for one complete surface emission accepted by the host sink.
 ///
-/// This capability is not presentation authority. The renderer may consume it
-/// only after receiving an exact final-presentation result for that output.
+/// The sink may draw immediately or own a display list or retained-node update.
+/// Complete emission is distinct from renderer submission and final presentation.
+/// The host reports the exact final result through
+/// [`DockspaceSession::report_surface_presentation`](super::DockspaceSession::report_surface_presentation).
+/// Dropping this record retires its emission without granting input authority.
 #[derive(Debug)]
-#[must_use = "a painted output must be explicitly confirmed after final presentation"]
+#[must_use = "report this exact output's final disposition or drop it to retire the emission"]
 pub struct PaintedSurfaceOutput {
     output: HostPresentationOutput,
     abandoned: PresentationDropQueue,
     armed: bool,
+}
+
+/// Opaque identity for one exact committed surface emission.
+///
+/// The identity binds the core stream, emission key, endpoint, semantic
+/// output, coordinate capture, and transient interaction payload. It is not a
+/// presentation proof: consumers may only compare it with a later
+/// core-minted presented-surface query.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SurfacePresentationArtifact {
+    output: HostPresentationOutput,
+}
+
+impl std::fmt::Debug for SurfacePresentationArtifact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SurfacePresentationArtifact")
+            .field("surface", &self.output.surface())
+            .finish_non_exhaustive()
+    }
+}
+
+impl SurfacePresentationArtifact {
+    pub(super) const fn output(self) -> HostPresentationOutput {
+        self.output
+    }
+}
+
+/// Opaque result of one presentation-observation prefix accepted by core.
+///
+/// Hosts use this acknowledgement to promote or retire only artifacts from
+/// the exact committed stream prefix. Its fields remain private so callers
+/// cannot synthesize a core commit. Retaining an accepted artifact does not bypass
+/// interaction gates, such as a popup awaiting presentation on another surface;
+/// bind receiver descriptors through [`DockspaceSession::bind_presented_receiver`](super::DockspaceSession::bind_presented_receiver).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfacePresentationCommit {
+    stream: HostPresentationStreamId,
+    settled_through: HostFrameKey,
+    presented: Option<SurfacePresentationArtifact>,
+}
+
+impl SurfacePresentationCommit {
+    const fn new(
+        stream: HostPresentationStreamId,
+        settled_through: HostFrameKey,
+        presented: Option<SurfacePresentationArtifact>,
+    ) -> Self {
+        Self {
+            stream,
+            settled_through,
+            presented,
+        }
+    }
+
+    /// Returns whether core accepted and retained this exact artifact as the
+    /// presentation for the committed prefix. Receiver use still requires its
+    /// current session binding.
+    #[must_use]
+    pub fn presents(self, artifact: SurfacePresentationArtifact) -> bool {
+        self.presented == Some(artifact)
+    }
+
+    /// Returns whether this commit terminally settled the supplied artifact.
+    #[must_use]
+    pub fn settles(self, artifact: SurfacePresentationArtifact) -> bool {
+        let output = artifact.output();
+        output.stream() == self.stream && output.key() <= self.settled_through
+    }
+
+    /// Returns whether this commit retired the supplied artifact instead of
+    /// selecting it as the final presentation.
+    #[must_use]
+    pub fn retires(self, artifact: SurfacePresentationArtifact) -> bool {
+        self.settles(artifact) && !self.presents(artifact)
+    }
 }
 
 /// Public lifecycle phase for a non-interactive native staging paint.
@@ -174,6 +253,16 @@ impl PaintedSurfaceOutput {
         self.output.surface()
     }
 
+    /// Returns the opaque exact-emission identity carried by this committed
+    /// output. The identity can qualify adapter-owned artifacts only after the
+    /// core later presents the matching emission.
+    #[must_use]
+    pub const fn presentation_artifact(&self) -> SurfacePresentationArtifact {
+        SurfacePresentationArtifact {
+            output: self.output,
+        }
+    }
+
     /// Returns whether this output was emitted for the exact native binding.
     ///
     /// The comparison includes the engine authority domain, workspace epoch,
@@ -189,7 +278,7 @@ impl PaintedSurfaceOutput {
         }
     }
 
-    /// Returns whether this emission painted the exact semantic output.
+    /// Returns whether this emission accepted the exact semantic output.
     #[must_use]
     pub fn matches_semantic_output(&self, output: super::DockspaceSemanticOutput) -> bool {
         self.output.payload().scene() == Some(output.ticket)
@@ -217,10 +306,11 @@ impl Drop for PaintedSurfaceOutput {
 }
 
 impl super::DockspaceSession {
-    /// Reports one actual renderer result for a previously painted output.
+    /// Reports the final host result for one previously emitted output.
     ///
     /// The terminal fact is submitted at the next host-frame prelude. A
-    /// `Presented` result may grant interaction authority after publication;
+    /// `Presented` result may grant interaction authority after a successful
+    /// host-frame commit;
     /// a `Dropped` result retires the output without granting authority.
     /// Multiple reports for the same surface stream may arrive before that
     /// prelude; the facade coalesces them by exact output order.
@@ -636,15 +726,18 @@ impl RuntimePresentationState {
 
     pub(super) fn commit_observation(
         &mut self,
+        engine: &DockEngine,
         transition: &EngineTransition,
         submitted: &SubmittedPresentationObservation,
-    ) {
+    ) -> Vec<SurfacePresentationCommit> {
+        let mut commits = Vec::new();
         for outcome in transition.presentation_observations() {
             let HostPresentationObservationOutcome::Retired {
                 stream,
                 generation,
                 settled_through,
                 presented,
+                promotion_eligible,
                 ..
             } = outcome
             else {
@@ -659,6 +752,23 @@ impl RuntimePresentationState {
             {
                 continue;
             }
+            let presented_artifact = report.presented.and_then(|presented| {
+                self.pending.get(stream).and_then(|outputs| {
+                    outputs
+                        .iter()
+                        .find(|output| output.key() == presented)
+                        .copied()
+                        .filter(|output| {
+                            *promotion_eligible && engine.scene().retains_observed_emission(*output)
+                        })
+                        .map(|output| SurfacePresentationArtifact { output })
+                })
+            });
+            commits.push(SurfacePresentationCommit::new(
+                *stream,
+                *settled_through,
+                presented_artifact,
+            ));
             self.capture_generations.insert(*stream, *generation);
             let remove_stream = if let Some(outputs) = self.pending.get_mut(stream)
                 && let Some(index) = outputs
@@ -682,6 +792,7 @@ impl RuntimePresentationState {
             }
             self.backend_recorded.remove(stream);
         }
+        commits
     }
 
     pub(super) fn retain_emissions(
@@ -755,6 +866,102 @@ mod tests {
         UniformSurfaceMetrics,
     };
 
+    fn single_surface_session() -> DockspaceSession {
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        builder.set_root(RootId::new(1), RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(
+            SurfaceId::new(1),
+            SurfacePresentation::with_main(RootId::new(1)),
+        );
+        DockspaceSession::from_workspace_for_test(
+            builder
+                .build()
+                .expect("presentation test workspace validates"),
+            DockPolicy::default(),
+        )
+        .expect("presentation test session initializes")
+    }
+
+    fn measure_single_surface(session: &mut DockspaceSession) {
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("presentation test bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("presentation test minimum validates"),
+            80.0,
+        )
+        .expect("presentation test metrics validate");
+        let mut frame = session
+            .begin_host_frame()
+            .expect("presentation measurement frame begins");
+        frame
+            .measure_surface(SurfaceId::new(1), metrics)
+            .expect("presentation surface measures");
+        frame.commit().expect("presentation measurement commits");
+    }
+
+    fn paint_single_surface(session: &mut DockspaceSession) -> PaintedSurfaceOutput {
+        let mut frame = session
+            .begin_host_frame()
+            .expect("presentation paint frame begins");
+        let receipt = frame
+            .paint_plan(SurfaceId::new(1))
+            .expect("presentation paint plan resolves")
+            .expect("presentation surface is paintable")
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("presentation renderer executes the complete program");
+        frame
+            .confirm_surface_painted(receipt)
+            .expect("presentation paint confirms");
+        let mut report = frame.commit().expect("presentation paint commits");
+        report
+            .take_painted_outputs()
+            .pop()
+            .expect("presentation paint emits one output")
+    }
+
+    fn settle_presentations(session: &mut DockspaceSession) -> super::super::HostFrameReport {
+        let mut frame = session
+            .begin_host_frame()
+            .expect("presentation settlement frame begins");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("presentation settlement retains the surface");
+        frame.commit().expect("presentation settlement commits")
+    }
+
+    #[test]
+    fn core_commit_ack_selects_one_exact_artifact_and_retires_the_settled_prefix() {
+        let mut session = single_surface_session();
+        measure_single_surface(&mut session);
+
+        let first = paint_single_surface(&mut session);
+        let first_artifact = first.presentation_artifact();
+        session
+            .report_surface_presentation(first, SurfacePresentationResult::Presented)
+            .expect("the first renderer result records");
+        let first_commit = settle_presentations(&mut session);
+        let [first_ack] = first_commit.surface_presentation_commits() else {
+            panic!("the first renderer result must produce one core commit ack")
+        };
+        assert!(first_ack.presents(first_artifact));
+        assert!(!first_ack.retires(first_artifact));
+
+        let second = paint_single_surface(&mut session);
+        let second_artifact = second.presentation_artifact();
+        assert_ne!(first_artifact, second_artifact);
+        session
+            .report_surface_presentation(second, SurfacePresentationResult::Dropped)
+            .expect("the second renderer result records");
+        let second_commit = settle_presentations(&mut session);
+        let [second_ack] = second_commit.surface_presentation_commits() else {
+            panic!("the dropped successor must produce one core commit ack")
+        };
+        assert!(second_ack.retires(first_artifact));
+        assert!(second_ack.retires(second_artifact));
+        assert!(!second_ack.presents(first_artifact));
+        assert!(!second_ack.presents(second_artifact));
+    }
+
     #[test]
     fn headless_surface_retirement_reclaims_after_native_enrollment() {
         let first_surface = SurfaceId::new(1);
@@ -793,8 +1000,14 @@ mod tests {
         measured.commit().expect("the measurements commit");
 
         let mut painted = session.begin_host_frame().expect("the paint frame begins");
+        let receipt = painted
+            .paint_plan(first_surface)
+            .expect("the first paint plan resolves")
+            .expect("the first surface is paintable")
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the complete first-surface program executes");
         painted
-            .confirm_surface_painted(first_surface)
+            .confirm_surface_painted(receipt)
             .expect("the first surface paints");
         painted
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

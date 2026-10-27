@@ -7,6 +7,7 @@ members = [
 ]
 exclude = [
     "crates/egui_dockspace_native",
+    "integration/dockspace-host-harness",
     "integration/egui-fork-workspace",
     "integration/egui-native-smoke",
     "integration/egui-official-harness",
@@ -26,8 +27,8 @@ repository = "https://github.com/Latias94/egui_docking"
 [workspace.dependencies]
 blake3 = "1.8.3"
 dockspace = { version = "0.1.0", path = "crates/dockspace", default-features = false }
-egui = { version = "=0.36.1", default-features = false }
-eframe = { version = "=0.36.1", default-features = false }
+egui = { version = "=0.37.0", default-features = false }
+eframe = { version = "=0.37.0", default-features = false }
 proptest = "1.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

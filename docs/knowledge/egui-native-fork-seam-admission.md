@@ -1,4 +1,4 @@
-# egui 0.36 native fork seam admission
+# egui 0.37 native fork seam admission
 
 This document records why each remaining egui, eframe, or winit fork seam is
 needed by the native docking vertical slice. It is an engineering admission
@@ -17,8 +17,10 @@ fork seam. A caller-owned raw-egui integration may use
 `egui_dockspace::run_ui`, which wraps the complete `Context::run_ui` with a
 private run identity, clears discarded-pass evidence before each repeated
 callback, admits only the final output after all output hooks return, and
-abandons the exact run on unwind. Its private shape receipt proves exact
-final-output emission, not renderer submission or physical presentation.
+abandons the exact run on unwind. Its current private shape receipt checks the
+preview compound's terminal-output membership, not complete surface acceptance,
+renderer submission, or physical presentation. The remaining preview-only ACK
+path is an explicit U2 deletion gate, not a substitute for native output tokens.
 Manual passes, repeated entry, unrelated contexts or viewports, interrupted
 runs, and omitted terminal paints fail closed without frame counters or a
 public bookkeeping token. An unmodified `eframe::App::ui` callback cannot mint
@@ -28,10 +30,24 @@ viewport obligations at the same boundary.
 
 Baselines:
 
-- upstream egui/eframe `0.36.1`: `4c1f2fae95475a40e524884ebb298bcb1714b08e`
-- public egui/eframe fork: `660073444296f40903e92dbce0fb818a7f4771b0`
+- upstream egui/eframe `0.37.0`: `841a328ba2dd8f6996beb7189ebb7fc00e668a2a`
+- public egui/eframe fork: `0716beee5b7284389f2e80ffb6b24b5af6ae2910`
 - upstream winit `0.30.13`: `e9809ef5`
 - public winit fork: `f378b50f29cafafec31cd8675c17646b4ef57d70`
+
+The 0.37 branch merges upstream stable `0.37.0` into the minimal native-seam
+branch. It preserves the same Winit event-time revision. No old hosted-cycle
+or egui_tiles runtime is reintroduced. The migration adapts upstream root UI,
+pass modes, screenshot callbacks, repaint observers, and widget/paint types.
+Offscreen screenshots may finish without a surface texture, but only actual
+surface presentation yields a native `Presented` result.
+
+Egui 0.37 adds elastic trackpad/momentum consumption. Completed-pass scroll
+queries freeze the relevant elastic state; where input source is missing and
+Wheel and Trackpad could consume differently, the query returns `Unknown`.
+It must not publish known-empty or select a product receiver behind that area.
+Five real ScrollArea tests cover top/bottom edges, nested overscroll, momentum
+reservation, frozen state and candidate order, and non-consuming areas.
 
 ## Admitted seams
 
@@ -58,8 +74,9 @@ event-time same-window facts are covered by the pinned Winit tests, but the
 repository does not advertise `AuthoritativeButtonState` until a real OS-input
 lane proves the complete cross-window release contract. Windows keeps
 `HoveredWindow` and `DesktopPointerPosition` unavailable until equivalent
-platform-fact tests exist. X11 is the certified physical reference backend for
-this release.
+platform-fact tests exist. X11 is the physical reference backend. The 0.37
+revision must pass its real-window and physical CI lanes before the earlier
+0.36 reference evidence can become a current-baseline certification claim.
 
 ## Explicit non-seams
 

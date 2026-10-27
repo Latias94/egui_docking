@@ -93,22 +93,24 @@ impl ProductPassSettlementBatch {
                 .as_ref()
                 .is_none_or(|proof| !proof.is_present_once(output))
         });
+        if output_mismatch {
+            return ReadyProductPassSettlementBatch {
+                presentation_failure: Some(PresentationSettlementFailure::OutputMismatch),
+                ..ReadyProductPassSettlementBatch::default()
+            };
+        }
         ReadyProductPassSettlementBatch {
-            presentation_actions: if output_mismatch {
-                Vec::new()
-            } else {
-                self.presentation_evidence
-                    .into_iter()
-                    .map(|evidence| evidence.action)
-                    .collect()
-            },
+            presentation_actions: self
+                .presentation_evidence
+                .into_iter()
+                .map(|evidence| evidence.action)
+                .collect(),
             pane_focus_observation: self
                 .pane_focus_pending
                 .map_or(self.pane_focus_observation, |observation| {
                     Some(observation.resolve(context, viewport, output))
                 }),
-            presentation_failure: output_mismatch
-                .then_some(PresentationSettlementFailure::OutputMismatch),
+            presentation_failure: None,
         }
     }
 }
@@ -542,7 +544,7 @@ fn active_run_portal(context: &Context) -> Option<Arc<Mutex<ActiveRunPortal>>> {
 }
 
 fn active_run_portal_id() -> Id {
-    Id::new(("egui_dockspace", "active_official_run_portal"))
+    Id::unique(("egui_dockspace", "active_official_run_portal"))
 }
 
 fn ui_run_scope(ui: &Ui) -> Option<PresentationProofScope> {
@@ -691,11 +693,8 @@ impl PassSettlementState {
         if matches!(
             disposition,
             PassDisposition::Unwind | PassDisposition::Poisoned
-        ) && let Some(lane) = self.lane.as_mut()
-        {
-            lane.ready
-                .get_or_insert_with(ReadyProductPassSettlementBatch::default)
-                .presentation_failure = Some(PresentationSettlementFailure::Abandoned);
+        ) {
+            self.record_ready_failure(PresentationSettlementFailure::Abandoned);
         }
     }
 
@@ -839,6 +838,7 @@ fn shape_contains_marker(shape: &Shape, marker: &Arc<dyn Any + Send + Sync>) -> 
         | Shape::Ellipse(_)
         | Shape::LineSegment { .. }
         | Shape::Path(_)
+        | Shape::Band(_)
         | Shape::Rect(_)
         | Shape::Text(_)
         | Shape::Mesh(_)
@@ -879,6 +879,7 @@ fn scrub_shape(shape: &mut Shape, current: Option<(&Arc<RunIdentity>, u64)>) {
         | Shape::Ellipse(_)
         | Shape::LineSegment { .. }
         | Shape::Path(_)
+        | Shape::Band(_)
         | Shape::Rect(_)
         | Shape::Text(_)
         | Shape::Mesh(_)
@@ -912,6 +913,7 @@ fn contains_stale_marker(shape: &Shape, current: Option<(&Arc<RunIdentity>, u64)
         | Shape::Ellipse(_)
         | Shape::LineSegment { .. }
         | Shape::Path(_)
+        | Shape::Band(_)
         | Shape::Rect(_)
         | Shape::Text(_)
         | Shape::Mesh(_)
@@ -921,7 +923,7 @@ fn contains_stale_marker(shape: &Shape, current: Option<(&Arc<RunIdentity>, u64)
 }
 
 fn context_identity(context: &Context) -> Arc<ContextIdentity> {
-    let id = Id::new(("egui_dockspace", "pass_settlement_context_identity"));
+    let id = Id::unique(("egui_dockspace", "pass_settlement_context_identity"));
     context.data_mut(|data| {
         if let Some(identity) = data.get_temp::<Arc<ContextIdentity>>(id) {
             identity
@@ -937,6 +939,15 @@ fn context_identity(context: &Context) -> Arc<ContextIdentity> {
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    use dockspace::geometry::{LogicalRect, LogicalSize};
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+    use dockspace::policy::DockPolicy;
+    use dockspace::runtime::{
+        DockspacePaneFocusObservation, DockspaceSession, UniformSurfaceMetrics,
+    };
     use egui::{Id, Pos2, RawInput, RepaintCause, UiBuilder, Vec2};
 
     use super::*;
@@ -945,6 +956,7 @@ mod tests {
     struct LateOutputHook {
         discard_remaining: usize,
         panic_once: bool,
+        transform_markers_once: bool,
     }
 
     impl egui::plugin::Plugin for LateOutputHook {
@@ -956,6 +968,15 @@ mod tests {
             if self.panic_once {
                 self.panic_once = false;
                 panic!("late output hook interrupted the egui run");
+            }
+            if self.transform_markers_once {
+                self.transform_markers_once = false;
+                for clipped in &mut output.shapes {
+                    if contains_stale_marker(&clipped.shape, None) {
+                        clipped.transform_after_tessellation =
+                            egui::emath::TSTransform::from_translation(egui::vec2(8.0, 4.0));
+                    }
+                }
             }
             if self.discard_remaining == 0 {
                 return;
@@ -982,6 +1003,55 @@ mod tests {
 
     fn clear_textures(output: &mut egui::FullOutput) {
         output.textures_delta.clear();
+    }
+
+    fn focus_batch(target: Id) -> ProductPassSettlementBatch {
+        let surface = SurfaceId::new(1);
+        let first = ItemId::new(1);
+        let second = ItemId::new(2);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            surface,
+            DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([first, second])),
+        )])
+        .unwrap();
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+            LogicalSize::new(16.0, 16.0).unwrap(),
+            24.0,
+        )
+        .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.measure_surface(surface, metrics).unwrap();
+        frame.commit().unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        let selection = frame
+            .paint_plan(surface)
+            .unwrap()
+            .unwrap()
+            .prepare_tab_select(second)
+            .unwrap();
+        frame.submit_surface_action(selection).unwrap();
+        frame.measure_surface(surface, metrics).unwrap();
+        frame.commit().unwrap();
+        let mut inspect = session.begin_host_frame().unwrap();
+        let plan = inspect.paint_plan(surface).unwrap().unwrap();
+        let request = plan.pane_focus_request().unwrap();
+        let observation = |state| plan.prepare_pane_focus_observation(request, state).unwrap();
+        ProductPassSettlementBatch {
+            presentation_evidence: vec![PresentationEvidence {
+                action: plan.prepare_tab_select(first).unwrap(),
+                proof: None,
+            }],
+            pane_focus_observation: Some(observation(DockspacePaneFocusObservation::Focused)),
+            pane_focus_pending: Some(PendingPaneFocusObservation::new(
+                Some(target),
+                PaneFocusState::Focused,
+                observation(DockspacePaneFocusObservation::Focused),
+                observation(DockspacePaneFocusObservation::NotFocused),
+                observation(DockspacePaneFocusObservation::Unavailable),
+            )),
+        }
     }
 
     fn run_owned(
@@ -1037,6 +1107,112 @@ mod tests {
         });
         clear_textures(&mut output);
         assert_eq!(lane_counts(&settlement), (0, 0, 0));
+    }
+
+    #[test]
+    fn output_mismatch_drops_both_immediate_and_pending_focus_observations() {
+        let context = Context::default();
+        let target = Id::unique("mismatched-output-focus");
+        for pending in [false, true] {
+            let mut batch = focus_batch(target);
+            if !pending {
+                batch.pane_focus_pending = None;
+            }
+            let ready = batch.into_ready(&context, ViewportId::ROOT, &FullOutput::default());
+            assert_eq!(
+                ready.presentation_failure,
+                Some(PresentationSettlementFailure::OutputMismatch)
+            );
+            assert!(ready.presentation_actions.is_empty());
+            assert!(ready.pane_focus_observation.is_none());
+        }
+    }
+
+    #[test]
+    fn late_transform_mismatch_drops_focus_when_the_ready_lane_was_empty() {
+        let context = Context::default();
+        context
+            .plugin_or_default::<LateOutputHook>()
+            .lock()
+            .transform_markers_once = true;
+        let settlement = ProductPassSettlement::default();
+        let target = Id::unique("late-transform-output-focus");
+        let mut batch = Some(focus_batch(target));
+        let mut output = run_owned(&context, &settlement, input_for(ViewportId::ROOT), |ui| {
+            let ProductPassEnrollment::Acquired(claim) = settlement.enroll(ui) else {
+                panic!("the owned pass acquires its exact claim")
+            };
+            let mut batch = batch.take().unwrap();
+            let rect = egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(16.0));
+            ui.interact(rect, target, egui::Sense::click())
+                .request_focus();
+            batch.presentation_evidence[0].proof = FinalOutputShapeProof::paint(
+                &claim.proof_scope(),
+                ui.painter(),
+                rect,
+                vec![Shape::rect_filled(rect, 0.0, egui::Color32::RED)],
+            );
+            assert!(batch.presentation_evidence[0].proof.is_some());
+            assert!(claim.stage(batch));
+        });
+        assert!(context.memory(|memory| memory.has_focus(target)));
+        assert!(output.shapes.iter().any(|clipped| {
+            clipped.transform_after_tessellation != egui::emath::TSTransform::IDENTITY
+        }));
+        clear_textures(&mut output);
+        let ready = settlement
+            .state
+            .lock()
+            .unwrap()
+            .lane
+            .as_mut()
+            .unwrap()
+            .ready
+            .take()
+            .unwrap();
+        assert_eq!(
+            ready.presentation_failure,
+            Some(PresentationSettlementFailure::OutputMismatch)
+        );
+        assert!(ready.presentation_actions.is_empty());
+        assert!(ready.pane_focus_observation.is_none());
+    }
+
+    #[test]
+    fn abandonment_clears_previously_ready_focus_without_a_new_batch() {
+        let context = Context::default();
+        let target = Id::unique("abandoned-ready-focus");
+        let mut batch = focus_batch(target);
+        batch.presentation_evidence.clear();
+        batch.pane_focus_pending = None;
+        let mut state = PassSettlementState::default();
+        state.lane = Some(SettlementLane {
+            context: Arc::downgrade(&context_identity(&context)),
+            viewport: ViewportId::ROOT,
+            active: None,
+            ready: Some(batch.into_ready(&context, ViewportId::ROOT, &FullOutput::default())),
+        });
+        assert!(
+            state
+                .lane
+                .as_ref()
+                .unwrap()
+                .ready
+                .as_ref()
+                .unwrap()
+                .pane_focus_observation
+                .is_some()
+        );
+        let run = Arc::new(RunIdentity);
+        assert!(state.claim(&context_identity(&context), ViewportId::ROOT, &run, 1));
+        state.settle(&run, 1, PassDisposition::Poisoned, None);
+        let ready = state.lane.as_ref().unwrap().ready.as_ref().unwrap();
+        assert_eq!(
+            ready.presentation_failure,
+            Some(PresentationSettlementFailure::Abandoned)
+        );
+        assert!(ready.presentation_actions.is_empty());
+        assert!(ready.pane_focus_observation.is_none());
     }
 
     #[test]
@@ -1248,7 +1424,7 @@ mod tests {
         context.begin_pass(input_for(ViewportId::ROOT));
         let ui = Ui::new(
             context.clone(),
-            Id::new("dockspace-manual-pass"),
+            Id::unique("dockspace-manual-pass"),
             UiBuilder::new().max_rect(context.viewport_rect()),
         );
         assert!(!settlement.is_active(&ui));
@@ -1297,29 +1473,39 @@ mod tests {
         );
         let mut output = FullOutput {
             shapes: vec![
-                egui::epaint::ClippedShape {
-                    clip_rect: egui::Rect::EVERYTHING,
-                    shape: Shape::Vec(vec![
+                egui::epaint::ClippedShape::new(
+                    egui::Rect::EVERYTHING,
+                    Shape::Vec(vec![
                         visual.clone(),
                         Shape::Callback(PaintCallback {
                             rect: egui::Rect::EVERYTHING,
                             callback: marker,
                         }),
                     ]),
-                },
-                egui::epaint::ClippedShape {
-                    clip_rect: egui::Rect::EVERYTHING,
-                    shape: Shape::Callback(PaintCallback {
+                ),
+                egui::epaint::ClippedShape::new(
+                    egui::Rect::EVERYTHING,
+                    Shape::Callback(PaintCallback {
                         rect: egui::Rect::EVERYTHING,
                         callback: Arc::clone(&unrelated),
                     }),
-                },
+                ),
             ],
             ..FullOutput::default()
         };
 
+        let transform = egui::emath::TSTransform::from_translation(egui::vec2(8.0, 4.0));
+        let clip = egui::Rect::from_min_size(egui::pos2(2.0, 3.0), Vec2::splat(64.0));
+        for clipped in &mut output.shapes {
+            clipped.clip_rect = clip;
+            clipped.transform_after_tessellation = transform;
+        }
         scrub_private_markers(&mut output, Some((&run, 7)));
 
+        for clipped in &output.shapes {
+            assert_eq!(clipped.clip_rect, clip);
+            assert_eq!(clipped.transform_after_tessellation, transform);
+        }
         assert_eq!(output.shapes[0].shape, Shape::Vec(vec![visual]));
         assert!(matches!(
             &output.shapes[1].shape,
@@ -1338,9 +1524,9 @@ mod tests {
         let unrelated: Arc<dyn Any + Send + Sync> = Arc::new("application callback");
         let mut output = FullOutput {
             shapes: vec![
-                egui::epaint::ClippedShape {
-                    clip_rect: egui::Rect::EVERYTHING,
-                    shape: Shape::Vec(vec![
+                egui::epaint::ClippedShape::new(
+                    egui::Rect::EVERYTHING,
+                    Shape::Vec(vec![
                         Shape::rect_filled(
                             egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(16.0)),
                             0.0,
@@ -1351,14 +1537,14 @@ mod tests {
                             callback: stale_marker,
                         }),
                     ]),
-                },
-                egui::epaint::ClippedShape {
-                    clip_rect: egui::Rect::EVERYTHING,
-                    shape: Shape::Callback(PaintCallback {
+                ),
+                egui::epaint::ClippedShape::new(
+                    egui::Rect::EVERYTHING,
+                    Shape::Callback(PaintCallback {
                         rect: egui::Rect::EVERYTHING,
                         callback: Arc::clone(&unrelated),
                     }),
-                },
+                ),
             ],
             ..FullOutput::default()
         };

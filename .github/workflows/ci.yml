@@ -57,6 +57,38 @@ jobs:
           cargo package --package egui_dockspace --all-features --locked
           --list
 
+  engine-host:
+    name: Independent engine host consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine-host
+      - name: Format public host consumer
+        run: >-
+          cargo fmt --manifest-path integration/dockspace-host-harness/Cargo.toml
+          --all --check
+      - name: Inspect renderer-neutral dependency tree
+        run: >-
+          cargo tree --manifest-path integration/dockspace-host-harness/Cargo.toml
+          --all-features --edges normal --locked
+      - name: Run public host contract without optional features
+        run: >-
+          cargo nextest run
+          --manifest-path integration/dockspace-host-harness/Cargo.toml
+          --locked --test-threads=1
+      - name: Run public host contract with persistence support
+        run: >-
+          cargo nextest run
+          --manifest-path integration/dockspace-host-harness/Cargo.toml
+          --features serde --locked --test-threads=1
+
   official-egui:
     name: Official egui consumer
     runs-on: ubuntu-latest
@@ -157,7 +189,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: 660073444296f40903e92dbce0fb818a7f4771b0
+          ref: 0716beee5b7284389f2e80ffb6b24b5af6ae2910
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
@@ -211,6 +243,14 @@ jobs:
             cargo test --manifest-path .ci/egui-fork/Cargo.toml \
             -p egui --lib "$test_name" --locked -j1 -- --exact
           done
+
+      - name: Run pinned completed-pass and elastic scroll tests
+        env:
+          CARGO_BUILD_JOBS: 1
+        run: >-
+          cargo nextest run --manifest-path .ci/egui-fork/Cargo.toml
+          --package egui --lib --locked --test-threads=1
+          -E 'test(completed_pass_hit_authority) | test(elastic_scroll_authority) | test(nested_scroll_authority)'
 
       - name: Run pinned eframe host-seam tests
         run: >-
@@ -306,6 +346,16 @@ jobs:
 
       - name: Run pinned native workspace tests
         run: python3 scripts/run_egui_fork_harness.py
+
+      - name: Run native lifecycle without debug assertions
+        env:
+          CARGO_BUILD_JOBS: 1
+        run: >-
+          cargo nextest run
+          --manifest-path integration/egui-fork-workspace/Cargo.toml
+          --package egui_dockspace_native --lib --locked
+          --test-threads=1 --no-fail-fast
+          --config 'profile.test.package.egui_dockspace_native.debug-assertions=false'
 
       - name: Install native smoke runtime dependencies
         run: >-

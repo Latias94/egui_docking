@@ -15,6 +15,7 @@ use egui_dockspace::{DockStyle, PaneView};
 use crate::error::NativeHostProtocolError;
 use crate::error::NativeRuntimeError;
 use crate::mailbox::NativeHostBridge;
+use crate::receiver::NativeReceiverStore;
 use crate::viewport_map::NativeViewportMap;
 
 /// Final-pass paint metadata plus fork-owned scroll identities from that same pass.
@@ -49,6 +50,7 @@ pub(crate) struct NativeHostFrame<'session> {
     pub(crate) frame: DockspaceHostFrame<'session>,
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
+    receivers: &'session mut NativeReceiverStore,
     repaint_context: Option<egui::Context>,
 }
 
@@ -65,12 +67,14 @@ impl<'session> NativeHostFrame<'session> {
         frame: DockspaceHostFrame<'session>,
         bridge: Arc<NativeHostBridge>,
         viewports: Arc<Mutex<NativeViewportMap>>,
+        receivers: &'session mut NativeReceiverStore,
         repaint_context: Option<egui::Context>,
     ) -> Self {
         NativeHostFrame {
             frame,
             bridge,
             viewports,
+            receivers,
             repaint_context,
         }
     }
@@ -183,15 +187,6 @@ impl<'session> NativeHostFrame<'session> {
             .map_err(Into::into)
     }
 
-    pub(crate) fn confirm_surface_painted(
-        &mut self,
-        surface: SurfaceId,
-    ) -> Result<(), NativeRuntimeError> {
-        self.frame
-            .confirm_surface_painted(surface)
-            .map_err(Into::into)
-    }
-
     /// Commits the core frame and releases all presentation records included in
     /// that committed causal boundary.
     ///
@@ -205,9 +200,11 @@ impl<'session> NativeHostFrame<'session> {
             frame,
             bridge,
             viewports: _,
+            receivers,
             repaint_context,
         } = self;
         let report = frame.commit()?;
+        receivers.commit_presentations(report.surface_presentation_commits());
         let staging_viewports = bridge.publish_staging_requests(staging_requests);
         bridge.commit_frame_boundary();
         if let Some(context) = repaint_context {

@@ -14,28 +14,28 @@ use dockspace::runtime::{
     DockspaceCloseResolution, DockspaceDragDecoration, DockspaceDragPreview,
     DockspaceDropDirection, DockspaceDropEligibility, DockspaceHostFrame,
     DockspaceInteractionError, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, DropAffordanceTargetPaintRecord,
-    DropGuidePaintRecord, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
-    HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken, NativeCloseState,
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativeEffectAcknowledgement,
-    NativeEffectOperation, NativeEffectRequest, NativeHostCapabilities, NativeHostCapability,
-    NativeHostErrorKind, NativePointerButton, NativePointerEvent, NativePointerHover,
-    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
-    NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId,
-    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
-    NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeStagingPresentationPhase,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPlacement,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord,
-    PresentedDockReceiver, PresentedDockspaceSurface, SplitterJunctionPaintRecord,
-    SplitterPaintRecord, SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfacePaintPlan, SurfacePaintProgramOperation,
-    SurfacePaintProgramStep, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
-    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceSplitterAdjustment,
-    SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord, TabStripMetrics,
-    UniformSurfaceMetrics,
+    DockspaceReceiverRole, DockspaceRuntimeError, DockspaceSession, DockspaceVisualKind,
+    DropAffordanceTargetPaintRecord, DropGuidePaintRecord, HostCloseRequestOrigin, HostFrameReport,
+    HostInputOutcome, HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken,
+    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
+    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativePointerButton,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPlacement, NativeWindowPresentationState,
+    NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord, PresentedDockReceiver,
+    PresentedDockspaceSurface, SplitterJunctionPaintRecord, SplitterPaintRecord,
+    SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
+    SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
+    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
+    SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord,
+    TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -51,6 +51,22 @@ const Y: ItemId = ItemId::new(5);
 const Z: ItemId = ItemId::new(6);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
 const SECOND_WINDOW: HostWindowToken = HostWindowToken::new(42);
+
+trait ConfirmSurfaceProgram {
+    fn confirm_surface_program(&mut self, surface: SurfaceId) -> Result<(), DockspaceRuntimeError>;
+}
+
+impl ConfirmSurfaceProgram for DockspaceHostFrame<'_> {
+    fn confirm_surface_program(&mut self, surface: SurfaceId) -> Result<(), DockspaceRuntimeError> {
+        let receipt = self
+            .paint_plan(surface)
+            .expect("conformance paint plan lookup succeeds")
+            .expect("conformance surface candidate is paintable")
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("conformance renderer executes the complete surface program");
+        self.confirm_surface_painted(receipt)
+    }
+}
 
 fn program_drag_preview<'frame>(
     plan: SurfacePaintPlan<'frame>,
@@ -337,7 +353,7 @@ impl TransactionalMultiSurfaceFixture {
                     source_tab = plan.tab_receiver(A);
                 }
                 frame
-                    .confirm_surface_painted(surface)
+                    .confirm_surface_program(surface)
                     .expect("every logical surface records its exact output");
             }
         });
@@ -627,7 +643,7 @@ impl MagneticJourneyFixture {
             })
             .expect("the initial L03 surface program is valid");
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the initial L03 output was painted");
         });
         host.observe_painted_outputs(paint);
@@ -866,7 +882,7 @@ impl MagneticJourneyFixture {
             }
             observed = Some(basin);
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the preview-bearing L03 output was painted");
         });
         self.host.observe_painted_outputs(preview_report);
@@ -923,7 +939,7 @@ impl MagneticJourneyFixture {
             assert!(program_drag_decoration(plan).is_none());
             assert!(program_records(plan).affordance_targets.is_empty());
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the settled L03 output was painted");
         });
         self.host.observe_painted_outputs(paint);
@@ -1276,7 +1292,7 @@ fn private_multi_surface_fixture_keeps_the_newer_output_when_an_older_one_is_aba
     fixture.publish_complete_roster();
     let mut first = fixture.host.run(|frame| {
         frame
-            .confirm_surface_painted(SECOND_SURFACE)
+            .confirm_surface_program(SECOND_SURFACE)
             .expect("the first target output is painted");
     });
     let first = first
@@ -1285,7 +1301,7 @@ fn private_multi_surface_fixture_keeps_the_newer_output_when_an_older_one_is_aba
         .expect("the first target output capability exists");
     let mut second = fixture.host.run(|frame| {
         frame
-            .confirm_surface_painted(SECOND_SURFACE)
+            .confirm_surface_program(SECOND_SURFACE)
             .expect("the successor target output is painted");
     });
     let second = second
@@ -1824,7 +1840,7 @@ impl ManagedLifecycleScenarioFixture {
                 .is_some(),
         );
         frame
-            .confirm_surface_painted(child.surface())
+            .confirm_surface_program(child.surface())
             .expect("the exact child first-live output is painted");
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -1926,7 +1942,7 @@ impl ManagedLifecycleScenarioFixture {
                     .is_some(),
             );
             frame
-                .confirm_surface_painted(surface)
+                .confirm_surface_program(surface)
                 .expect("the lifecycle surface output is painted");
         }
         let mut report = frame.commit().expect("the lifecycle paint frame commits");
@@ -2130,7 +2146,7 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                     target_drop = plan.center_drop_receiver_for_item(C);
                 }
                 frame
-                    .confirm_surface_painted(surface)
+                    .confirm_surface_program(surface)
                     .expect("the complete native roster records its output");
             }
         },
@@ -2220,7 +2236,7 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                         routed_target_drop = plan.center_drop_receiver_for_item(C);
                     }
                     frame
-                        .confirm_surface_painted(surface)
+                        .confirm_surface_program(surface)
                         .expect("the route-request output is painted");
                 }
             }
@@ -2292,7 +2308,7 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                 {
                     previewed |= program_drag_preview(plan).is_some();
                     frame
-                        .confirm_surface_painted(surface)
+                        .confirm_surface_program(surface)
                         .expect("the confirmed preview output is painted");
                 }
             }
@@ -2391,7 +2407,7 @@ fn pointer_close_host() -> (DeterministicHost, DockspaceReceiverDescriptor) {
             receiver.role() == DockspaceReceiverRole::TabClose && receiver.bounds() == close_bounds
         });
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the exact close output was painted");
     });
     host.observe_painted_outputs(paint);
@@ -2794,7 +2810,7 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
         }));
 
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the host confirms the complete plan it painted");
     });
     host.observe_painted_outputs(first_output);
@@ -2828,7 +2844,7 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
         current.sort_unstable();
         assert_eq!(current, first_visuals, "visual identity is output-stable");
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the retained complete plan was painted");
     });
     host.observe_painted_outputs(second_output);
@@ -2854,7 +2870,7 @@ fn dropped_output_retires_without_granting_interaction_authority() {
                 .is_some()
         );
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the host records the exact output it painted");
     });
     let mut outputs = paint.take_painted_outputs();
@@ -2899,7 +2915,7 @@ fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
                 .is_some()
         );
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the logical output was painted");
     });
     let error = host
@@ -2940,7 +2956,7 @@ fn presentation_reports_queue_behind_a_dropped_joined_host_frame() {
                 .is_some()
         );
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the first output is painted");
     });
     let mut first_outputs = first_report.take_painted_outputs();
@@ -2956,7 +2972,7 @@ fn presentation_reports_queue_behind_a_dropped_joined_host_frame() {
                 .is_some()
         );
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the second output is painted");
     });
     let mut second_outputs = second_report.take_painted_outputs();
@@ -3002,7 +3018,7 @@ fn latest_terminal_result_is_independent_of_prelude_batching() {
 
     let mut first_report = host.run(|frame| {
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the first output is painted");
     });
     let first = first_report
@@ -3011,7 +3027,7 @@ fn latest_terminal_result_is_independent_of_prelude_batching() {
         .expect("the first paint emits one capability");
     let mut second_report = host.run(|frame| {
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the second output is painted");
     });
     let second = second_report
@@ -3048,7 +3064,7 @@ fn abandoned_output_does_not_block_newer_out_of_order_result() {
 
     let mut first_report = host.run(|frame| {
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the first output is painted");
     });
     let first = first_report
@@ -3057,7 +3073,7 @@ fn abandoned_output_does_not_block_newer_out_of_order_result() {
         .expect("the first paint emits one capability");
     let mut second_report = host.run(|frame| {
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the second output is painted");
     });
     let second = second_report
@@ -3283,7 +3299,7 @@ impl InteractionFixture {
             );
             assert!(program_drag_preview(plan).is_none());
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the host records the exact plan it painted");
         });
         host.observe_painted_outputs(paint);
@@ -3394,7 +3410,7 @@ impl InteractionFixture {
             assert_eq!(active.direction(), DockspaceDropDirection::Center);
             assert_eq!(active.eligibility(), DockspaceDropEligibility::Eligible);
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the preview-bearing output was painted");
         });
         self.host.observe_painted_outputs(paint);
@@ -3437,7 +3453,7 @@ impl InteractionFixture {
             source = plan.tab_receiver(A);
             target = plan.center_drop_receiver_for_item(C);
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the native surface plan was painted");
         });
         self.host.observe_painted_outputs(paint);
@@ -3589,7 +3605,7 @@ fn runtime_pointer_batch_routes_discrete_and_smooth_scroll_to_the_core_owner() {
             .receiver_for_tab_strip_scroll(bar)
             .filter(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
         frame
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_program(SURFACE)
             .expect("the initial overflow output was painted");
     });
     host.observe_painted_outputs(paint);
@@ -3896,7 +3912,7 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
                 .expect("the native surface is ready");
             tab = plan.tab_receiver(B);
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the native output was painted");
         },
     );
@@ -4029,7 +4045,7 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
                 .receiver_for_tab_strip_scroll(bar)
                 .filter(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
             frame
-                .confirm_surface_painted(SURFACE)
+                .confirm_surface_program(SURFACE)
                 .expect("the native overflow output was painted");
         },
     );

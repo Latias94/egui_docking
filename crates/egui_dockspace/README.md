@@ -43,9 +43,11 @@ let output = run_ui(&context, raw_input, |ui| {
 
 The callback can run more than once when egui discards a pass. Dockspace keeps
 the run identity private, admits only the terminal output after `run_ui`
-returns, and abandons the active evidence on unwind. The receipt proves exact
-final-output emission; it does not claim GPU submission or physical window
-presentation. It does not accept a caller-supplied output token or frame count.
+returns, and abandons the active evidence on unwind. The current private receipt
+checks a preview compound in terminal output; it does not prove complete surface
+acceptance, GPU submission, or physical window presentation. Replacing the remaining
+preview-only acknowledgement path with the core's exact output contract is still
+U2 work. No caller-supplied frame count can strengthen this evidence.
 
 The repository includes a real-window official-egui host that exercises this
 supported tier directly:

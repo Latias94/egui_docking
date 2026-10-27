@@ -102,7 +102,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     policy.set_allow_native_surfaces(true);
     let session = DockspaceSession::from_layout(smoke_layout(), policy)?;
     let dockspace = NativeDockspaceApp::new(
-        egui::Id::new("egui-native-physical-smoke"),
+        egui::Id::unique("egui-native-physical-smoke"),
         session,
         ROOT_SURFACE,
         SmokePanes::new(),
@@ -213,7 +213,7 @@ impl egui::Plugin for PhysicalSemanticProbe {
             // application API.
             ui.ctx().data_mut(|data| {
                 data.insert_temp(
-                    egui::Id::new("egui-dockspace-native-drag-preview-diagnostic"),
+                    egui::Id::unique("egui-dockspace-native-drag-preview-diagnostic"),
                     true,
                 );
             });

@@ -96,10 +96,10 @@ pub use paint::{
     PresentationCommandPaintRecord, PresentationMenuAnchorPaintRecord, SplitterJunctionPaintRecord,
     SplitterPaintRecord, SurfacePaintDisposition, SurfacePaintPlan, SurfacePaintProgramOperation,
     SurfacePaintProgramRoot, SurfacePaintProgramRootKind, SurfacePaintProgramStep,
-    SurfacePaintProgramVisitError, TabBarPaintRecord, TabGroupDragRegionKind,
-    TabGroupDragRegionPaintRecord, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
-    TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord,
-    TabStripMemberPaintRecord, TabStripMemberVisibility,
+    SurfacePaintProgramVisitError, SurfaceProgramExecutionReceipt, TabBarPaintRecord,
+    TabGroupDragRegionKind, TabGroupDragRegionPaintRecord, TabListMenuBackdropPaintRecord,
+    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind,
+    TabStripControlPaintRecord, TabStripMemberPaintRecord, TabStripMemberVisibility,
 };
 #[cfg(feature = "serde")]
 pub use persistence::{
@@ -110,7 +110,8 @@ use presentation::PresentationObservationError;
 pub use presentation::{
     NativeStagingPaintRequest, NativeStagingPresentationPhase,
     NativeStagingPresentationReportError, PaintedNativeStagingOutput, PaintedSurfaceOutput,
-    SurfacePresentationReportError, SurfacePresentationResult,
+    SurfacePresentationArtifact, SurfacePresentationCommit, SurfacePresentationReportError,
+    SurfacePresentationResult,
 };
 pub use presentation_commands::{DockspacePresentationCommand, DockspacePresentationCommands};
 
@@ -479,6 +480,7 @@ pub struct HostFrameReport {
     presentation_transitions: Vec<DockspacePresentationTransition>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
     painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
+    surface_presentation_commits: Vec<SurfacePresentationCommit>,
     native_admissions: Vec<NativeSurfaceBinding>,
     native_bindings: Vec<NativeSurfaceBinding>,
     native_effects: Vec<NativeEffectRequest>,
@@ -570,6 +572,13 @@ impl HostFrameReport {
     /// consume it through [`DockspaceSession::report_native_staging_presentation`].
     pub fn take_painted_native_staging_outputs(&mut self) -> Vec<PaintedNativeStagingOutput> {
         std::mem::take(&mut self.painted_native_staging_outputs)
+    }
+
+    /// Returns exact surface-presentation prefixes accepted by this core
+    /// commit. Host artifacts may advance only through these acknowledgements.
+    #[must_use]
+    pub fn surface_presentation_commits(&self) -> &[SurfacePresentationCommit] {
+        &self.surface_presentation_commits
     }
 
     /// Returns native bindings which crossed the exact first-live admission barrier.
@@ -947,6 +956,18 @@ mod tests {
         .expect("runtime test session initializes")
     }
 
+    fn execute_surface_program(
+        frame: &mut DockspaceHostFrame<'_>,
+        surface: SurfaceId,
+    ) -> SurfaceProgramExecutionReceipt {
+        frame
+            .paint_plan(surface)
+            .expect("runtime paint plan lookup succeeds")
+            .expect("runtime surface candidate is paintable")
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("runtime renderer executes the complete surface program")
+    }
+
     #[test]
     fn runtime_surface_pointer_disable_drains_and_compacts_the_exact_producer() {
         let mut session = single_surface_session();
@@ -970,8 +991,9 @@ mod tests {
         let mut painted = session
             .begin_host_frame()
             .expect("runtime paint frame begins");
+        let receipt = execute_surface_program(&mut painted, surface);
         painted
-            .confirm_surface_painted(surface)
+            .confirm_surface_painted(receipt)
             .expect("runtime surface paint stages");
         let mut report = painted.commit().expect("runtime surface paint emits");
         let output = report
@@ -1044,8 +1066,9 @@ mod tests {
             let mut painted = session
                 .begin_host_frame()
                 .expect("runtime paint frame begins");
+            let receipt = execute_surface_program(&mut painted, surface);
             painted
-                .confirm_surface_painted(surface)
+                .confirm_surface_painted(receipt)
                 .expect("runtime surface paint stages");
             let mut report = painted.commit().expect("runtime surface paint emits");
             let output = report

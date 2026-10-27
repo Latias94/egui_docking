@@ -11,7 +11,8 @@ use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
     DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedPaneFocusObservation,
-    PreparedSurfaceAction, PresentedDockReceiver, SurfaceUnavailableReason,
+    PreparedSurfaceAction, PresentedDockReceiver, SurfaceProgramExecutionReceipt,
+    SurfaceUnavailableReason,
 };
 use egui::{Id, Ui};
 
@@ -33,6 +34,7 @@ pub struct NativeSurfacePaint {
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<NativeScrollPaintReceiver>,
     semantic_output: Option<DockspaceSemanticOutput>,
+    execution_receipt: Option<SurfaceProgramExecutionReceipt>,
     local_actions: Vec<PreparedSurfaceAction>,
     presentation_actions: Vec<PreparedSurfaceAction>,
     pane_focus_observation: Option<PreparedPaneFocusObservation>,
@@ -203,6 +205,25 @@ impl NativeSurfacePaint {
         self.semantic_output
     }
 
+    /// Confirms this exact completed paint against the host frame which issued
+    /// its surface plan.
+    ///
+    /// Returns `false` when the paint contained no ready plan or its affine
+    /// completion capability was already consumed. The receipt itself never
+    /// crosses the adapter seam.
+    pub fn confirm_into(
+        &mut self,
+        frame: &mut DockspaceHostFrame<'_>,
+    ) -> Result<bool, DockspaceError> {
+        let Some(receipt) = self.execution_receipt.take() else {
+            return Ok(false);
+        };
+        frame
+            .confirm_surface_painted(receipt)
+            .map_err(DockspaceError::from_detail)?;
+        Ok(true)
+    }
+
     /// Takes user actions which survive an egui discarded pass.
     pub fn take_local_actions(&mut self) -> Vec<PreparedSurfaceAction> {
         std::mem::take(&mut self.local_actions)
@@ -257,6 +278,7 @@ pub fn paint_surface(
             receivers: Vec::new(),
             scroll_receivers: Vec::new(),
             semantic_output: None,
+            execution_receipt: None,
             local_actions: Vec::new(),
             presentation_actions: Vec::new(),
             pane_focus_observation: None,
@@ -306,6 +328,7 @@ pub fn paint_surface(
             })
             .collect(),
         semantic_output: Some(semantic_output),
+        execution_receipt: Some(painted.execution_receipt),
         local_actions: painted.local_actions,
         presentation_actions: painted.presentation_actions,
         pane_focus_observation: painted.pane_focus_observation,

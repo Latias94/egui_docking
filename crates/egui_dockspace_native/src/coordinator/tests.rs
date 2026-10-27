@@ -383,16 +383,16 @@ fn paint_and_present_all_surfaces(coordinator: &mut NativeCoordinator) -> HostFr
         .expect("native roster paint frame begins");
     let surfaces = paint.frame.surfaces();
     for surface in &surfaces {
-        assert!(
-            paint
-                .frame
-                .paint_plan(*surface)
-                .expect("native roster paint plan resolves")
-                .is_some(),
-            "surface {surface:?} must have a ready native paint plan",
-        );
+        let receipt = paint
+            .frame
+            .paint_plan(*surface)
+            .expect("native roster paint plan resolves")
+            .unwrap_or_else(|| panic!("surface {surface:?} must have a ready native paint plan"))
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the complete native roster program executes");
         paint
-            .confirm_surface_painted(*surface)
+            .frame
+            .confirm_surface_painted(receipt)
             .expect("native roster surface paint confirms");
     }
     let mut paint_report = paint.commit().expect("native roster paint frame commits");

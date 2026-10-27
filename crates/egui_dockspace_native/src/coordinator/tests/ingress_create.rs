@@ -4,8 +4,8 @@ use dockspace::model::{
 };
 use dockspace::runtime::{
     NativeEffectOperation, NativeInputEffectAcknowledgement, NativePointerRoster,
-    NativeWindowInputState, NativeWindowPresentationState, SurfacePresentationResult,
-    SurfacePaintPlan, SurfacePaintProgramStep, UniformSurfaceMetrics,
+    NativeWindowInputState, NativeWindowPresentationState, SurfacePaintPlan,
+    SurfacePaintProgramStep, SurfacePresentationResult, UniformSurfaceMetrics,
 };
 use eframe::NativeViewportPointerPassthroughStatus;
 use winit::dpi::PhysicalPosition;
@@ -26,7 +26,10 @@ fn program_has_drag_preview(plan: SurfacePaintPlan<'_>) -> bool {
     let mut previewed = false;
     plan.visit_surface_program(|step| {
         if matches!(step, SurfacePaintProgramStep::DragPreview(_)) {
-            assert!(!previewed, "one paint program cannot publish duplicate previews");
+            assert!(
+                !previewed,
+                "one paint program cannot publish duplicate previews"
+            );
             previewed = true;
         }
         Ok::<(), ()>(())
@@ -179,8 +182,12 @@ fn measure_and_present_source(
         .expect("source paint plan lookup succeeds")
         .expect("source surface is ready");
     let descriptor = plan.tab_receiver(SOURCE_ITEM);
+    let receipt = plan
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the complete source surface program executes");
     paint
-        .confirm_surface_painted(SOURCE_SURFACE)
+        .frame
+        .confirm_surface_painted(receipt)
         .expect("source surface paint confirms");
     paint
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -447,9 +454,20 @@ fn request_native_child(
         .paint_plan(SOURCE_SURFACE)
         .expect("preview paint plan lookup succeeds")
         .expect("source remains paintable while native creation is pending");
-    assert!(program_has_drag_preview(plan), "outside move publishes a preview");
+    assert!(
+        program_has_drag_preview(plan),
+        "outside move publishes a preview"
+    );
+    let receipt = preview
+        .frame
+        .paint_plan(SOURCE_SURFACE)
+        .expect("preview paint plan lookup succeeds")
+        .expect("source remains paintable while native creation is pending")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the complete preview surface program executes");
     preview
-        .confirm_surface_painted(SOURCE_SURFACE)
+        .frame
+        .confirm_surface_painted(receipt)
         .expect("complete preview paint confirms");
     preview
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

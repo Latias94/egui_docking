@@ -8,7 +8,8 @@ use super::{
     DockspacePresentationTransitionId, DockspacePresentationTransitionResult,
     DockspaceSubmittedAction, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
     HostSurfaceCommit, NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
-    NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput, native_effect,
+    NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    SurfacePresentationCommit, native_effect,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
@@ -23,6 +24,7 @@ impl HostFrameReport {
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
         painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
+        surface_presentation_commits: Vec<SurfacePresentationCommit>,
         native_commit: Option<super::native::NativeHostCommit>,
         abandoned_native_effects: native_effect::NativeEffectDropQueue,
     ) -> Self {
@@ -269,6 +271,7 @@ impl HostFrameReport {
             presentation_transitions,
             painted_outputs,
             painted_native_staging_outputs,
+            surface_presentation_commits,
             native_admissions,
             native_bindings,
             native_effects,

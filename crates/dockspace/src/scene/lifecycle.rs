@@ -839,6 +839,32 @@ impl SurfaceSceneSet {
         })
     }
 
+    /// Tests whether core retained this exact observed emission, including a proof
+    /// temporarily waiting for the other surfaces in the popup presentation barrier.
+    /// This does not grant interaction through that barrier.
+    pub(crate) fn retains_observed_emission(
+        &self,
+        output: crate::presentation_observation::HostPresentationOutput,
+    ) -> bool {
+        let Some(authority) = self.popup_interaction_gate.proofs.get(&output.surface()) else {
+            return false;
+        };
+        let Some(ready) = self.surface(output.surface()).and_then(SurfaceScene::ready) else {
+            return false;
+        };
+        authority.emission() == output.key()
+            && authority.stream() == output.stream()
+            && authority.endpoint() == output.endpoint()
+            && output
+                .payload()
+                .scene()
+                .is_some_and(|scene| authority.matches_output(scene))
+            && output.payload().coordinate_generation() == Some(authority.coordinate_generation())
+            && ready
+                .validate_presented_authority(*authority, self.popup_interaction_gate.requirement)
+                .is_ok()
+    }
+
     pub(crate) fn ready_candidate(&self, surface: SurfaceId) -> Option<&SurfacePlanScene> {
         match self.surface(surface)? {
             SurfaceScene::Ready(ready) => Some(ready.candidate()),

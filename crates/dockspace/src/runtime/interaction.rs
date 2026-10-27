@@ -76,6 +76,20 @@ impl PresentedDockspaceSurface {
     pub(super) fn matches_semantic_output(self, output: super::DockspaceSemanticOutput) -> bool {
         self.output == output.ticket
     }
+
+    pub(super) fn matches_presentation_artifact(
+        self,
+        artifact: super::SurfacePresentationArtifact,
+    ) -> bool {
+        let output = artifact.output();
+        let payload = output.payload();
+        output.surface() == self.surface
+            && payload.scene() == Some(self.output)
+            && payload.coordinate_generation() == Some(self.authority.coordinate_generation())
+            && output.stream() == self.authority.stream()
+            && output.key() == self.authority.emission()
+            && output.endpoint() == self.authority.endpoint()
+    }
 }
 
 /// Exact framework receiver bound to one concrete final-presentation output.
@@ -554,6 +568,12 @@ pub enum DockspaceInteractionError {
     #[error("surface {surface} has no current paintable candidate")]
     SurfaceNotPaintable {
         /// Requested surface.
+        surface: SurfaceId,
+    },
+    /// A completed surface program belongs to another host-frame attempt or candidate.
+    #[error("surface {surface} execution receipt does not match the current host frame")]
+    SurfaceProgramExecutionMismatch {
+        /// Surface named by the rejected receipt.
         surface: SurfaceId,
     },
     /// The uniform writer disagreed with the exact core manifest.
@@ -1045,7 +1065,7 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn surface_answered(&self, surface: SurfaceId) -> bool {
-        self.painted_surfaces.contains(&surface)
+        self.painted_surfaces.contains_key(&surface)
             || self
                 .frame
                 .surface_contributions()

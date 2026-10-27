@@ -1,6 +1,6 @@
 //! Session ownership and host-frame preparation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::command::ContentCloseTarget;
 #[cfg(feature = "serde")]
@@ -418,7 +418,7 @@ impl DockspaceSession {
             next_pointer_sequence,
             pointer_input_submitted: false,
             submitted_presentation,
-            painted_surfaces: BTreeSet::new(),
+            painted_surfaces: BTreeMap::new(),
             painted_native_staging: BTreeSet::new(),
             #[cfg(feature = "serde")]
             document_restore: None,

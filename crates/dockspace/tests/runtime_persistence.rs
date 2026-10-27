@@ -89,14 +89,14 @@ fn present_surface_for_pointer(session: &mut DockspaceSession) {
     measure.commit().expect("the measurement frame commits");
 
     let mut paint = session.begin_host_frame().expect("the paint frame begins");
-    assert!(
-        paint
-            .paint_plan(SURFACE)
-            .expect("the paint phase opens")
-            .is_some()
-    );
+    let receipt = paint
+        .paint_plan(SURFACE)
+        .expect("the paint phase opens")
+        .expect("the pointer fixture surface is paintable")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the pointer fixture executes the complete surface program");
     paint
-        .confirm_surface_painted(SURFACE)
+        .confirm_surface_painted(receipt)
         .expect("the exact surface output was painted");
     let mut report = paint.commit().expect("the paint frame commits");
     let mut outputs = report.take_painted_outputs();

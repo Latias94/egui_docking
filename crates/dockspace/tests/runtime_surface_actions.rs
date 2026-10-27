@@ -479,8 +479,14 @@ fn present_multiview_source_for_pointer(
         .find(|tab| tab.item() == THIRD)
         .expect("the target tab is visible")
         .visual_id();
+    let receipt = paint
+        .paint_plan(SURFACE)
+        .expect("source paint plan lookup succeeds")
+        .expect("source candidate remains paintable")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the complete source surface program executes");
     paint
-        .confirm_surface_painted(SURFACE)
+        .confirm_surface_painted(receipt)
         .expect("the exact surface output was painted");
     paint
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -1653,8 +1659,14 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
             ..
         }
     ));
+    let receipt = paint
+        .paint_plan(SURFACE)
+        .expect("contained magnetic-preview plan lookup succeeds")
+        .expect("contained magnetic-preview candidate remains paintable")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the complete magnetic-preview program executes");
     paint
-        .confirm_surface_painted(SURFACE)
+        .confirm_surface_painted(receipt)
         .expect("the magnetic preview is painted");
     let mut report = paint.commit().expect("the magnetic preview paint commits");
     let output = report
@@ -1711,8 +1723,14 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
                 ..
             }
         ));
+        let receipt = paint
+            .paint_plan(SURFACE)
+            .expect("release-pending plan lookup succeeds")
+            .expect("release-pending candidate remains paintable")
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the complete release-pending program executes");
         paint
-            .confirm_surface_painted(SURFACE)
+            .confirm_surface_painted(receipt)
             .expect("the release-pending preview is painted");
         let mut report = paint
             .commit()

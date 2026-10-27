@@ -446,6 +446,7 @@ impl NativeCoordinator {
                 .all(|output| !output.requires_lifecycle_settlement(&self.session))
             && self.pending_no_frame_invalidations.is_empty()
             && self.pending_presentation_acknowledgements.is_empty()
+            && !self.receivers.has_pending_commit()
             && self.queued_snapshot.is_none()
             && !self.deferred_viewports.has_transitional_viewport()
             && !self.effects.has_pending_work()
@@ -1724,6 +1725,8 @@ impl NativeCoordinator {
         }
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let mut report = frame.commit()?;
+        self.receivers
+            .commit_presentations(report.surface_presentation_commits());
         self.retain_internal_presentation_transitions(&report);
         let mut outputs = report.take_painted_native_staging_outputs();
         if outputs.len() != 1 {
@@ -1876,8 +1879,9 @@ impl NativeCoordinator {
                     presentation_acknowledgements.push(binding);
                 }
                 if observation.input_acknowledged() {
+                    let previous = input_acknowledgement.replace(binding);
                     debug_assert!(
-                        input_acknowledgement.replace(binding).is_none(),
+                        previous.is_none(),
                         "one globally ordered input lane acknowledges at most one binding"
                     );
                 }
@@ -2121,6 +2125,7 @@ impl NativeCoordinator {
             self.session.begin_native_host_frame(resolve)?,
             self.bridge.clone(),
             self.viewports.clone(),
+            &mut self.receivers,
             None,
         ))
     }
@@ -2143,6 +2148,7 @@ impl NativeCoordinator {
             frame,
             bridge,
             self.viewports.clone(),
+            &mut self.receivers,
             Some(context.clone()),
         ))
     }
@@ -2453,7 +2459,7 @@ impl NativeCoordinator {
                     }
                     match (result.status(), binding) {
                         (NativeOutputStatus::Presented, Some(binding)) => {
-                            self.receivers.presented(result.token(), binding);
+                            self.receivers.renderer_presented(result.token(), binding);
                         }
                         (NativeOutputStatus::Presented, None)
                         | (NativeOutputStatus::NotPresented, _) => {
@@ -2472,7 +2478,9 @@ impl NativeCoordinator {
                     }
                 }
             }
-            debug_assert!(self.bridge.mark_output_submitted(result.token()));
+            if !self.bridge.mark_output_submitted(result.token()) {
+                return Err(NativeHostProtocolError::OutputOrderViolation.into());
+            }
         }
         Ok(())
     }

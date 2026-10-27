@@ -30,7 +30,7 @@ impl DockspaceBuilder {
     /// Starts a builder with a stable egui identity and product layout.
     pub fn new(id_salt: impl Hash + Debug, layout: DockspaceLayout) -> Self {
         Self {
-            id: Id::new(("egui_dockspace", id_salt)),
+            id: Id::unique(("egui_dockspace", id_salt)),
             source: DockspaceBuilderSource::Layout(layout),
             policy: DockPolicy::default(),
             style: DockStyle::default(),

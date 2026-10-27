@@ -13,8 +13,9 @@ interfaces.
 The current engine-host and direct-manipulation plan lives in
 [`docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md`](docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
 It prioritizes a documented public host API and an independent consumer with
-no egui dependency before broader native certification. Those new integration
-gates are planned work, not a claim that the current refactor is complete.
+no egui dependency before broader native certification. The recording consumer
+now verifies owned output records, ordered presentation settlement, and commands
+on two logical surfaces. The full gesture and platform gates remain open.
 The earlier product-boundary plan supplies the persistence and ownership context.
 
 ## Capability matrix
@@ -28,8 +29,8 @@ The earlier product-boundary plan supplies the persistence and ownership context
 
 The current implementation has substantial model and protocol coverage, a
 partially usable official-egui single-surface path, and an experimental native
-multiview adapter. The 2026-10-27 audit reproduced a fast-gesture failure and
-native failures with debug assertions disabled; see
+multiview adapter. The 2026-10-27 audit reproduced a fast-gesture failure; the
+configuration-dependent native failures found in that audit are now repaired. See
 [`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
 docking and multiview crate.
 
@@ -44,10 +45,19 @@ docking and multiview crate.
   engine.
 
 Default product interfaces are item- and surface-centric. Raw graph nodes,
-scene stamps, reducer inputs, provider leases, receipts, persistence candidates,
+scene stamps, reducer inputs, provider leases, persistence candidates,
 and backend FSMs are private. Renderers and native hosts integrate through the
 narrow `DockspaceSession` runtime facade rather than an unstable raw backend
 namespace.
+
+The public host contract distinguishes complete surface-program acceptance,
+renderer submission, final host presentation, and successful core acceptance of
+the presentation report. Opaque execution receipts and output handles bind each
+step to its exact emission. Engines can record their own drawing or retained
+nodes after the frame borrow ends; a logical surface does not require an OS
+window. The independent
+[`dockspace-host-harness`](integration/dockspace-host-harness/README.md) demonstrates
+the public path without any egui or platform dependency.
 
 Facade errors follow the same rule. Both the renderer-neutral and egui product
 interfaces expose six action-oriented categories: invalid configuration,
@@ -68,19 +78,19 @@ restore candidates are not product interfaces.
 
 ## egui and native references
 
-The publishable crates use official egui and eframe `0.36.1`. The excluded
+The publishable crates use official egui and eframe `0.37.0`. The excluded
 native workspace uses the reviewed egui/eframe fork revision
-`660073444296f40903e92dbce0fb818a7f4771b0`, which contains every admitted native
+`0716beee5b7284389f2e80ffb6b24b5af6ae2910`, which contains every admitted native
 seam. The event-time Winit fork is pinned at
 `f378b50f29cafafec31cd8675c17646b4ef57d70`. The manifest, lockfile, CI, and
 this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 
-The selected upgrade target is egui/eframe `0.37.0`; the current manifests and
-fork pins above have not yet migrated. The plan separates the official adapter
-upgrade from rebuilding the required native fork seams. Winit remains on stable
-`0.30.13`, and egui_tiles remains reference-only.
+The official adapter and admitted native fork use egui/eframe `0.37.0`.
+The fork branch `dockspace-native-seam-0.37` retains graph-neutral seams for
+exact native facts and output finalization. Winit remains on stable `0.30.13`,
+and egui_tiles remains reference-only.
 
 Hosts that own official crates.io egui's complete run use the Dockspace wrapper
 to bind local settlement to that run without application-managed frame counts:
@@ -95,10 +105,11 @@ let output = egui_dockspace::run_ui(&context, raw_input, |ui| {
 
 `egui_dockspace::run_ui` opens a private run identity, clears discarded-pass
 evidence before every repeated callback, and examines the terminal egui
-output after all output hooks return. Its private shape marker checks output
-membership, not GPU submission or physical presentation. The audit identified
-remaining copying and ordering limitations in that marker check; U2 owns their
-resolution and the precise supported settlement contract. Panic,
+output after all output hooks return. Its private shape marker checks preview
+compound membership, not complete surface acceptance, GPU submission, or physical
+presentation. The official path still has preview-only acknowledgement authority;
+U2 must replace it with the same exact output reporting path used by engine and
+native hosts. An output mismatch now invalidates focus evidence as well. Panic,
 manual `begin_pass` / `end_pass`, a different context or viewport, repeated
 entry, and an omitted terminal paint all fail closed. Callers cannot submit or
 impersonate a `FullOutput` receipt.
@@ -126,6 +137,8 @@ and run Cargo serially when the machine is busy.
 cargo fmt --all -- --check
 cargo check --workspace --all-features --all-targets --locked -j1
 cargo nextest run --workspace --all-features --all-targets --test-threads=1
+cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --locked --test-threads=1
+cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --features serde --locked --test-threads=1
 cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --test-threads=1
 cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --features serde --test persistence --test-threads=1
 cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --all-features --test-threads=1

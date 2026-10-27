@@ -2,7 +2,7 @@
 
 This package verifies that `egui_dockspace` builds and its public single-surface
 facade can be consumed with the unmodified crates.io releases of `egui` and
-`eframe` 0.36.1.
+`eframe` 0.37.0.
 
 The manifest is an independent workspace root, and the repository root currently
 uses the same official registry coordinates without a local source patch. Do not
@@ -22,9 +22,10 @@ The tests keep two official-host tiers distinct:
 Passing the second test is a capability-negative result, not a claim that
 ordinary eframe provides full draggable docking.
 
-The caller-owned receipt proves that the exact Dockspace compound survived into
-the returned final `FullOutput`; it does not prove renderer submission or
-physical presentation. Those stronger facts remain native-host responsibilities.
+The current caller-owned receipt checks that the exact Dockspace preview compound
+survived into the returned final `FullOutput`; it does not prove complete surface
+acceptance, renderer submission, or physical presentation. The remaining
+preview-only acknowledgement path is still part of the U2 replacement work.
 
 Run the real-window supported tier with official crates.io egui, winit, and
 wgpu:
@@ -50,6 +51,6 @@ Inspect the resolved dependency sources when diagnosing a failure:
 cargo tree --manifest-path integration/egui-official-harness/Cargo.toml --locked
 ```
 
-Both `egui v0.36.1` and `eframe v0.36.1` in that tree must come from the
+Both `egui v0.37.0` and `eframe v0.37.0` in that tree must come from the
 registry. The only intentional path dependencies are `egui_dockspace` and its
 local `dockspace` dependency.

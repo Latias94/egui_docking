@@ -108,7 +108,7 @@ impl MagneticPanes {
 impl FocusPanes {
     fn new(id_salt: &'static str, expose_target: bool) -> Self {
         Self {
-            target: egui::Id::new((id_salt, "pane-focus-target")),
+            target: egui::Id::unique((id_salt, "pane-focus-target")),
             target_rect: Cell::new(None),
             pane_rect: Cell::new(None),
             expose_target,
@@ -213,6 +213,7 @@ fn shape_contains_callback(shape: &egui::Shape) -> bool {
         | egui::Shape::Ellipse(_)
         | egui::Shape::LineSegment { .. }
         | egui::Shape::Path(_)
+        | egui::Shape::Band(_)
         | egui::Shape::Rect(_)
         | egui::Shape::Text(_)
         | egui::Shape::Mesh(_)
@@ -912,6 +913,7 @@ fn mouse_wheel(delta: egui::Vec2) -> Event {
         unit: egui::MouseWheelUnit::Point,
         delta,
         phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
         modifiers: Modifiers::NONE,
     }
 }
@@ -1112,8 +1114,11 @@ fn node_contains_item(node: DockspaceNodeView<'_>, item: ItemId) -> bool {
     if let Some(tabs) = node.tabs() {
         return tabs.items().contains(&item);
     }
-    node.split()
-        .is_some_and(|split| split.children().any(|child| node_contains_item(child, item)))
+    node.split().is_some_and(|split| {
+        split
+            .children()
+            .any(|child| node_contains_item(child, item))
+    })
 }
 
 fn item_split_relation(
@@ -4075,13 +4080,7 @@ fn settle_product_magnetic_preview(
                 vec![Event::PointerMoved(motion_point)],
             )
         });
-        let missing = preview_readiness(
-            &frame,
-            target_rect,
-            motion_point,
-            case.basin(),
-            drop_fill,
-        );
+        let missing = preview_readiness(&frame, target_rect, motion_point, case.basin(), drop_fill);
         (frame, missing)
     })
     .unwrap_or_else(|timeout| panic!("shared L03 preview failed for {case:?}: {timeout}"));

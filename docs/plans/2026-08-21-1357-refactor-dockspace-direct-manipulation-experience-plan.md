@@ -352,9 +352,10 @@ Keep window DPI distinct from framebuffer density; core logical coordinates also
 
 ```mermaid
 flowchart TB
-  U14[U14 current correctness repairs] --> U13[U13 public engine host contract]
+  U14[U14 current correctness repairs] --> U13[U13 host contract entry slice]
   U14 --> U15A[U15 official egui 0.37]
   U13 --> U2[U2 emission and presentation closure]
+  U3 --> U13B[U13 ordered logical-surface completion]
   U15A -->|egui slice| U2
   U2 --> U3[U3 one manipulation kernel]
   U3 --> U4[U4 magnetic and full content projection]
@@ -362,6 +363,7 @@ flowchart TB
   U4 --> U6[U6 commands facade feedback]
   U5 --> U6
   U6 --> U12[U12 core readiness]
+  U13B --> U12
   U15A --> U12
   U12 --> U10[U10 layout shell and showcase]
   U3 --> U7[U7 bounded ingress and handoff]
@@ -412,7 +414,7 @@ These are packaging/readiness gates, not instructions to publish crates or upstr
 - **Requirements:** R10-R12, R14, R16-R24; KTD1, KTD2, KTD6, KTD14.
 - **Dependencies:** U14. Does not depend on the native fork rebase.
 - **Files:** `crates/dockspace/src/runtime.rs`, `crates/dockspace/src/runtime/{session,host_frame,measurement,paint,presentation,interaction}.rs`, `crates/dockspace/README.md`, `integration/dockspace-host-harness/` (new), `Cargo.toml`, `.github/workflows/ci.yml`.
-- **Approach:** Document and expose the necessary host facade. Make output records usable for immediate consumption and compilation to owned host work, remove widget-specific SourceGap obligations, and decouple logical-surface routing from native registration. Add a tiny downstream consumer and recording renderer through the same supported API.
+- **Approach:** Use two slices under this unit. The entry slice documents and exposes the necessary host facade, owned output records, renderer-neutral SourceGap obligations, and a tiny public consumer; it unblocks U2 without claiming complete pointer routing. The completion slice is implemented with U3's single manipulation owner and decouples ordered logical-surface input from native registration. One host-local producer retains one global event order; each edge carries independently qualified delivery/source and hover surface coordinates. Capture belongs to the host input domain, not the currently hovered logical surface. Surface removal or unavailable presentation invalidates the affected route rather than replacing the producer or resetting unrelated watermarks. Both slices are required for U13 completion.
 - **Test scenarios:** Covers AE12-AE14. Compile owned records, release frame borrows, delay/drop/supersede outputs, reject stale receivers, and route two logical surfaces without OS-window enrollment. Verify default/serde dependency independence and layout/command use without pointer/native registration.
 - **Verification:** The downstream crate uses no private modules, test-only authority constructors, or egui types; the documented host lifecycle is sufficient for its complete local journey.
 
@@ -430,7 +432,7 @@ These are packaging/readiness gates, not instructions to publish crates or upstr
 
 - **Goal:** Finish the existing program/presentation replacement for both engine and egui hosts.
 - **Requirements:** R4, R5, R10-R12, R16, R21; KTD2, KTD6, KTD10.
-- **Dependencies:** U13 and the relevant U1 journeys. Changes to the egui bridge additionally require U15's official slice; independent core work can proceed before it.
+- **Dependencies:** U13's entry slice and the relevant U1 journeys. Changes to the egui bridge additionally require U15's official slice; independent core work can proceed before it. U13's ordered-input completion is qualified with U3 and does not block this output-contract work.
 - **Files:** `crates/dockspace/src/scene.rs`, `crates/dockspace/src/scene_compiler/`, `crates/dockspace/src/runtime/{paint,presentation,host_frame}.rs`, `crates/dockspace/src/{semantic_manifest,presentation_hit}.rs`, `crates/egui_dockspace/src/{renderer_pass_bridge,pass_settlement}.rs`, public host harness and existing presentation tests.
 - **Approach:** Retain U2a's canonical traversal and finish U2b's exact output commit path. Give execution receipts R11's limited meaning, remove public preview-only acknowledgement authority, and make receiver/semantic/program promotion one committed artifact. Treat mutable egui shape markers as adapter-local diagnostics unless their limited acceptance contract is explicitly proven.
 - **Test scenarios:** Covers AE5/AE13. Complete/failed emission, dropped output, output-hook modification, unwind, late predecessor, failed core commit, and idle post-commit settlement never create mixed artifacts or release authority.
@@ -441,8 +443,8 @@ These are packaging/readiness gates, not instructions to publish crates or upstr
 - **Goal:** Make a gesture's complete lifecycle local to one deep core module.
 - **Requirements:** R1-R4, R8, R9, R11, R14, R17; KTD3, KTD8, KTD10.
 - **Dependencies:** U2.
-- **Files:** `crates/dockspace/src/runtime/direct_manipulation.rs` or a focused module directory, `crates/dockspace/src/interaction.rs`, `crates/dockspace/src/engine/{local_response,pointer_transaction,local_contained,pointer_contained}.rs`, `crates/egui_dockspace/src/product_render/actions.rs`, public-host and product gesture tests.
-- **Approach:** Normalize ordered input boundaries and semantic commands into one transaction owner. Keep semantic controls/scroll separate where their existing subsystem owns them. Remove old release/cancel/ACK terminal reducers rather than forwarding through them.
+- **Files:** `crates/dockspace/src/runtime/direct_manipulation.rs` or a focused module directory, `crates/dockspace/src/runtime/interaction.rs`, `crates/dockspace/src/{interaction,pointer_journal}.rs`, `crates/dockspace/src/engine/{host_frame,pointer_proof,provider_lifecycle,local_response,pointer_transaction,local_contained,pointer_contained,pointer_splitter}.rs`, `crates/egui_dockspace/src/product_render/actions.rs`, public-host and product gesture tests.
+- **Approach:** Normalize ordered input boundaries and semantic commands into one transaction owner. Replace the surface-fixed producer scope with a host-local input domain and event-bound qualified surface routes; retain the existing affine journal, exact receiver validation, drain and rollback. Source manipulation coordinates and target hover coordinates remain independent, including when two surfaces use identical local bounds. A departure from all logical surfaces grants no desktop outside-all fact. Keep semantic controls/scroll separate where their existing subsystem owns them. Remove old release/cancel/ACK terminal reducers and all inference of an event's surface from the producer lease rather than forwarding through them. A single-surface convenience API may wrap the same implementation without another terminal owner.
 - **Test scenarios:** Covers AE2/AE4. Same-tick press/move/release, duplicate release, cancellation, capture/source/target loss, discarded preview, and policy changes produce one terminal outcome through both input adapters.
 - **Verification:** Complete Burst cases enter ordinary passing gates; one core release barrier and cancellation owner remain.
 

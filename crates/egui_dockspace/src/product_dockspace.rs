@@ -134,7 +134,7 @@ impl Dockspace {
         )
         .map_err(DockspaceError::from_detail)?;
         Ok(Self {
-            id: Id::new(("egui_dockspace", id_salt)),
+            id: Id::unique(("egui_dockspace", id_salt)),
             session,
             style,
             pass_settlement: ProductPassSettlement::default(),

@@ -9,8 +9,8 @@ workspace = "../egui-fork-workspace"
 
 [dependencies]
 dockspace = { path = "../../crates/dockspace", default-features = false }
-eframe = { version = "=0.36.1", default-features = false, features = ["glow", "native-host-seam", "x11"] }
-egui_inspection = { git = "https://github.com/Latias94/egui", rev = "660073444296f40903e92dbce0fb818a7f4771b0", default-features = false, features = ["plugin"] }
+eframe = { version = "=0.37.0", default-features = false, features = ["glow", "native-host-seam", "x11"] }
+egui_inspection = { git = "https://github.com/Latias94/egui", rev = "0716beee5b7284389f2e80ffb6b24b5af6ae2910", default-features = false, features = ["plugin"] }
 egui_dockspace = { path = "../../crates/egui_dockspace", default-features = false, features = ["native-render-support"] }
 egui_dockspace_native = { path = "../../crates/egui_dockspace_native" }
 

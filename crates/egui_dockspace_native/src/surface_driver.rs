@@ -489,7 +489,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 let paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
                 let application_action_ready =
                     surface == root_surface && self.application_actions.has_queued();
-                let draft = pass_actions
+                let mut draft = pass_actions
                     .prepare_pass(token, paint, application_action_ready)
                     .map_err(map_pass_action_error)?;
                 let has_actions = pass_actions.pass_has_actions(&draft);
@@ -508,7 +508,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
 
                 match disposition {
                     SurfaceFrameDisposition::ConfirmPainted => {
-                        host_frame.confirm_surface_painted(surface)?;
+                        if !draft.paint_mut().confirm_into(&mut host_frame.frame)? {
+                            return Err(
+                                NativeHostProtocolError::IncompleteTransientPaint(surface).into()
+                            );
+                        }
                         host_frame
                             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
                         painted_output_expected = true;
@@ -1266,7 +1270,7 @@ mod tests {
 
     fn test_state() -> NativeRuntimeState<TestPanes> {
         NativeRuntimeState::new(
-            Id::new("native-runtime-stop-test"),
+            Id::unique("native-runtime-stop-test"),
             test_session(),
             SURFACE,
             TestPanes,
@@ -1593,9 +1597,9 @@ mod tests {
                 let identity = ui.register_scroll_hit_candidate(rect, id);
                 (identity.id(), identity.layer_id())
             };
-            let paint = egui_dockspace::native_support::paint_surface(
+            let mut paint = egui_dockspace::native_support::paint_surface(
                 &mut frame,
-                Id::new("first-live-semantic-paint"),
+                Id::unique("first-live-semantic-paint"),
                 SURFACE,
                 ui,
                 &mut panes,
@@ -1605,9 +1609,12 @@ mod tests {
             .expect("the first-live surface paints through the production renderer");
             paint_had_ready_plan = paint.had_ready_plan();
             mutation_probe_enabled = ui.button("first-live mutation probe").enabled();
-            frame
-                .confirm_surface_painted(SURFACE)
-                .expect("the complete first-live paint confirms");
+            assert!(
+                paint
+                    .confirm_into(&mut frame)
+                    .expect("the production paint confirms against its issuing frame"),
+                "the production renderer completes the first-live program"
+            );
             frame
                 .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
                 .expect("the semantic frame settles every surface");

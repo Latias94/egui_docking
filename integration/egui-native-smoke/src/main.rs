@@ -147,7 +147,7 @@ fn new_dockspace(
     scenario: SmokeScenario,
     session: DockspaceSession,
 ) -> Result<NativeDockspaceApp<SmokePanes>, egui_dockspace_native::NativeRuntimeError> {
-    let instance = egui::Id::new("egui-native-smoke");
+    let instance = egui::Id::unique("egui-native-smoke");
     let panes = SmokePanes::new();
     let style = DockStyle::default();
     match scenario.explicit_close_policy() {

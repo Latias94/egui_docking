@@ -84,8 +84,7 @@ impl OfficialDemoHost {
             return;
         };
 
-        let mut input = egui_winit.take_egui_input(window);
-        painter.handle_screenshots(&mut input.events);
+        let input = egui_winit.take_egui_input(window);
         let mut presentation_settlement = self.presentation_settlement;
         let mut error = self.error.take();
         let output = run_ui(&self.context, input, |ui| {
@@ -236,7 +235,9 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
             UserEvent::RequestRepaint(delay) if delay.is_zero() => window.request_redraw(),
             UserEvent::RequestRepaint(delay) => {
                 let requested = Instant::now() + delay;
-                let next = self.next_repaint.map_or(requested, |current| current.min(requested));
+                let next = self
+                    .next_repaint
+                    .map_or(requested, |current| current.min(requested));
                 self.next_repaint = Some(next);
                 event_loop.set_control_flow(ControlFlow::WaitUntil(next));
             }

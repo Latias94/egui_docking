@@ -11,8 +11,8 @@ use crate::runtime::native_effect::{NativeEffectDropQueue, NativeEffectRequest};
 use crate::runtime::{
     DockspaceSemanticOutput, HostFrameReport, NativeDispatchFailure, NativeReceiverPurpose,
     NativeReceiverQuery, PaintedSurfaceOutput, PresentedDockspaceSurface, SurfacePaintPlan,
-    SurfacePaintProgramStep, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    SurfacePaintProgramStep, SurfacePresentationResult, SurfaceProgramExecutionReceipt,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
@@ -202,13 +202,16 @@ fn paint_native_surface_output(
     let mut painted = session
         .begin_host_frame()
         .expect("native paint frame begins");
-    let semantic_output = painted
+    let plan = painted
         .paint_plan(surface)
         .expect("native paint plan lookup succeeds")
-        .expect("native paint plan is ready")
-        .semantic_output();
+        .expect("native paint plan is ready");
+    let semantic_output = plan.semantic_output();
+    let receipt = plan
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the complete native surface program executes");
     painted
-        .confirm_surface_painted(surface)
+        .confirm_surface_painted(receipt)
         .expect("native surface paint stages");
     painted
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -245,15 +248,14 @@ fn paint_and_present_all_native_surfaces(session: &mut DockspaceSession) -> Host
         .expect("native roster paint frame begins");
     let surfaces = painted.surfaces();
     for surface in &surfaces {
-        assert!(
-            painted
-                .paint_plan(*surface)
-                .expect("native roster paint plan resolves")
-                .is_some(),
-            "surface {surface:?} must have a ready native paint plan",
-        );
+        let receipt = painted
+            .paint_plan(*surface)
+            .expect("native roster paint plan resolves")
+            .unwrap_or_else(|| panic!("surface {surface:?} must have a ready native paint plan"))
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the complete native roster surface program executes");
         painted
-            .confirm_surface_painted(*surface)
+            .confirm_surface_painted(receipt)
             .expect("native roster surface paint stages");
     }
     let mut painted_report = painted.commit().expect("native roster paint emits");

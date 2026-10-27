@@ -249,6 +249,10 @@ impl NativePassDraft {
     pub(crate) fn deferred_measurement(&self) -> bool {
         self.paint.deferred_measurement()
     }
+
+    pub(crate) fn paint_mut(&mut self) -> &mut NativeSurfacePaint {
+        &mut self.paint
+    }
 }
 
 enum StagedPass {

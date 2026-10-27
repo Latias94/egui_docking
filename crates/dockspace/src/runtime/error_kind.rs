@@ -494,6 +494,7 @@ pub(super) const fn interaction_error_kind(
         DockspaceInteractionError::InvalidMeasurementProfile
         | DockspaceInteractionError::SurfaceOutsideRoster { .. }
         | DockspaceInteractionError::SurfaceAlreadyAnswered { .. }
+        | DockspaceInteractionError::SurfaceProgramExecutionMismatch { .. }
         | DockspaceInteractionError::MeasurementAnswerMismatch
         | DockspaceInteractionError::PointerBatchEmpty
         | DockspaceInteractionError::InvalidScrollSample => DockspaceRuntimeErrorKind::HostProtocol,

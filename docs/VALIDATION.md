@@ -2,8 +2,8 @@
 
 The canonical plan was revised on 2026-10-27 to prioritize `dockspace` as a
 custom-engine library and egui as its interactive validation adapter. The
-planned external public host consumer does not exist yet. Its eventual
-recording-renderer results will prove API and output-contract portability,
+external public host consumer now lives in `integration/dockspace-host-harness/`.
+Its recording-renderer results prove API and output-contract portability,
 not real GPU or OS presentation. Open-GPUI integration remains deferred.
 
 This document is the U1 validation contract. It records semantic journeys and
@@ -14,7 +14,98 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
-## 2026-10-27 audit baseline
+## 2026-10-27 implementation validation
+
+The implementation preserves the audit below as historical failure evidence.
+The following results were freshly executed after the U14 fixes, public host
+contract work, and official egui 0.37.0 migration. Cargo builds were serialized
+with `CARGO_BUILD_JOBS=1`, and Nextest used `--test-threads=1`.
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Workspace, all features and targets | 1,566 passed | Official egui 0.37.0; includes three new failed-output/focus regressions |
+| Independent public host, default features | 10 passed | Owned geometry/content/identity records, exact present/drop and commit authority, out-of-order results, two logical surfaces and layout commands |
+| Independent public host, `serde` | 10 passed | Includes dual-stream receiver isolation, retired and stale output rejection, automatic output drop, popup barrier retention, and failed core commit/retry |
+| Product harness, all features | 90 passed, 1 ignored | Official egui/kittest 0.37.0; existing Burst exclusion retained |
+| Official consumer, all features | 9 passed | Includes compilation of the caller-owned WGPU demo |
+| Native workspace, egui 0.37 fork | 180 passed | Remote exact pin `0716beee5b7284389f2e80ffb6b24b5af6ae2910`, three test binaries |
+| Complete native workspace, including smoke unit targets | 198 passed | Five test binaries; this compiles the smoke executables but does not run a real-window scenario |
+| Native library, debug assertions disabled | 173 passed | Same remote 0.37 pin |
+| Fork egui and egui-wgpu libraries | 112 passed | Includes five new real elastic-scroll consumption/snapshot regressions and retained-overlay test |
+| Fork eframe library, Glow + WGPU + native seam | 53 passed | Host finalizer, output identity, create, retention and renderer seams |
+
+The native fork branch `dockspace-native-seam-0.37` is committed and pushed.
+Manifests, lockfile, CI checkout, README, and seam admission agree on the exact
+revision. Winit remains at `f378b50f29cafafec31cd8675c17646b4ef57d70`.
+The 0.37 scroll query preserves source-dependent elastic consumption as
+`Unknown` rather than publishing known-empty. Offscreen screenshots preserve
+their callback path without falsely reporting surface presentation.
+
+The public core acknowledgement now cross-checks the actual committed scene's
+accepted exact emission instead of echoing a host `Presented` result. Retired
+surfaces and invalidated scenes settle without promotion. Valid proofs waiting
+behind a multi-surface popup barrier remain retainable until the sibling surface
+presents; their receiver bindings stay unavailable until the barrier completes.
+
+Workspace correctness/suspicious Clippy gates, strict core/adapter rustdoc,
+eight documentation compile-fail tests, and formatting across the root and
+independent workspaces pass. Real-window and physical X11 scenarios were not
+rerun on this macOS host; platform claims require their separate CI evidence.
+
+U14 removes required mutations from six `debug_assert!` expressions and promotes
+native receivers immediately after successful core commit. The old shared
+acknowledgement queue is deleted; idle hosts no longer depend on follow-up input
+to consume a committed presentation. A regression test failed before this fix
+and passes afterward:
+`receiver::tests::committed_host_frame_promotes_receivers_without_follow_up_input`.
+Before upgrading the native fork, the repaired 0.36 baseline passed all 180
+native workspace tests and all 173 native library tests with debug assertions
+disabled. CI now carries the assertion-disabled gate.
+
+The final review also required an exact-emission regression inside
+`receiver::tests::exact_hit_without_hover_lane_is_unclaimed_while_uncertain_hits_fail_closed`.
+The test now emits the same semantic scene twice in one session with identical
+binding and coordinates, presents the newer output, and verifies that its native
+query accepts only the newer artifact. Temporarily removing the emission-key
+comparison made that test fail at the old-artifact rejection; restoring the
+comparison passes. This distinguishes exact output identity from semantic scene
+equality.
+
+One non-blocking coverage recommendation remains: exercise managed-host renderer
+termination through `prepare_output_prefix`, abandon the subsequent host frame,
+then retry and verify exact promotion and one boundary release. Current core
+failed-commit/retry, idle ACK, and atomic receiver tests cover its component
+contracts, but are not that complete coordinator path. No production defect was
+confirmed in this path by the review.
+
+The public recording consumer does not register OS windows or a pointer
+provider. Its same-coordinate surface tests use prepared tab actions; they
+do not prove ordered multi-surface pointer routing or the complete 60-case
+gesture matrix. The actual public UI event pipeline remains U3 work. Complete
+program acceptance is explicitly documented as separate from GPU submission
+and final presentation; core accepts the exact reported prefix in a later
+successful host-frame commit.
+
+### Remaining U2/U3 replacement boundary
+
+The public core/native path uses complete execution receipts and exact output
+reports. The official product path still prepares preview-only acknowledgement
+actions and discards the complete execution receipt outside
+`native-render-support`. Its private shape proof checks a preview compound in
+terminal `FullOutput`, not the complete surface artifact. It must not be used
+as evidence that U2's single output path or deletion gate is complete.
+
+The current official failure fix is deliberately narrower: an output mismatch
+now drops both immediate and pending pane-focus observations; abandonment also
+clears any previously ready focus evidence. Three tests cover direct mismatch,
+a late output hook changing only `transform_after_tessellation`, and abandonment
+with an already-ready batch. Completing U2 requires connecting official output
+ownership to the same exact terminal reporting path and deleting the public
+preview-only ACK methods. U3 then replaces the independent local-response and
+journal terminal reducers, supports ordered logical-surface routing, and removes
+the known-invalid Burst exclusion. None of those later gates is claimed here.
+
+## 2026-10-27 audit baseline (before repairs)
 
 The audit checked `3216855` plus the existing 26 uncommitted U2b files. These
 results describe that worktree, not a clean release or the planned egui upgrade.

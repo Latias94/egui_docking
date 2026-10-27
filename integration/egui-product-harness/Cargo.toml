@@ -14,12 +14,12 @@ serde = ["dockspace/serde", "egui_dockspace/serde"]
 
 [dependencies]
 dockspace = { path = "../../crates/dockspace", default-features = false }
-egui = { version = "=0.36.1", default-features = false, features = ["default_fonts"] }
+egui = { version = "=0.37.0", default-features = false, features = ["default_fonts"] }
 egui_dockspace = { path = "../../crates/egui_dockspace", default-features = false }
 
 [dev-dependencies]
 dockspace_host_conformance = { path = "../../crates/dockspace_host_conformance" }
-egui_kittest = { version = "=0.36.1", default-features = false }
+egui_kittest = { version = "=0.37.0", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"

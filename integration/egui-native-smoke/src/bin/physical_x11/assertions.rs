@@ -509,7 +509,7 @@ pub(super) fn tab_drag_point(
 
 #[cfg(test)]
 mod tests {
-    use eframe::egui::accesskit::{Node, NodeId, Rect, Tree, TreeId};
+    use eframe::egui::accesskit::{Node, NodeId, Rect, TreeId, TreeInfo};
 
     use super::*;
 
@@ -517,7 +517,7 @@ mod tests {
         let root = NodeId::from(1_u64);
         TreeUpdate {
             nodes: nodes.into_iter().collect(),
-            tree: Some(Tree::new(root)),
+            tree: Some(TreeInfo::new(root)),
             tree_id: TreeId::ROOT,
             focus: root,
         }

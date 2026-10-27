@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "dockspace-host-harness"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[features]
+default = []
+serde = ["dockspace/serde"]
+
+[dependencies]
+dockspace = { path = "../../crates/dockspace", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"

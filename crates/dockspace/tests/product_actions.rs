@@ -94,15 +94,14 @@ fn present_surfaces_with_report(
         .begin_host_frame()
         .expect("presentation paint frame begins");
     for surface in surfaces {
-        assert!(
-            paint
-                .paint_plan(*surface)
-                .expect("presentation paint plan lookup succeeds")
-                .is_some(),
-            "surface {surface:?} must have a paintable plan"
-        );
+        let receipt = paint
+            .paint_plan(*surface)
+            .expect("presentation paint plan lookup succeeds")
+            .unwrap_or_else(|| panic!("surface {surface:?} must have a paintable plan"))
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the complete presentation program executes");
         paint
-            .confirm_surface_painted(*surface)
+            .confirm_surface_painted(receipt)
             .expect("presentation output confirmation succeeds");
     }
     let mut report = paint.commit().expect("presentation paint frame commits");

@@ -557,6 +557,17 @@ impl NativeReceiverQuery {
         self.presented_surface.matches_semantic_output(output)
     }
 
+    /// Returns whether this query was minted from the exact committed surface
+    /// emission which owns an adapter artifact.
+    #[must_use]
+    pub fn matches_presentation_artifact(
+        self,
+        artifact: super::super::SurfacePresentationArtifact,
+    ) -> bool {
+        self.presented_surface
+            .matches_presentation_artifact(artifact)
+    }
+
     /// Returns the exact point required for a known answer.
     ///
     /// Initial spatial queries use the event-time point. A smooth-scroll

@@ -6,16 +6,19 @@ use std::fmt;
 use crate::drop_guide::DropGuideClusterId;
 use crate::drop_resolver::DropAffordance;
 use crate::drop_target::{DropTargetId, SceneLayerKey};
+use crate::engine::SurfaceContributionToken;
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::Axis;
-use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use crate::ids::{FloatingPresentationId, HostPresentationAttemptId, ItemId, RootId, SurfaceId};
 use crate::interaction::{ContainedTransformPreview, InteractionPreview, PreviewVisual};
 use crate::model::{DockspaceActionRejection, DockspaceAxis, ProductAction};
 use crate::presentation_hit::{
     PresentationHitRegionId, PresentationHitRegionKind, PresentationPointerLane,
     PresentationPointerLanes,
 };
-use crate::presentation_observation::SurfacePresentationOutputTicket;
+use crate::presentation_observation::{
+    HostInteractionPresentation, SurfacePresentationOutputTicket,
+};
 pub use crate::scene::TabGroupDragRegionKind;
 use crate::scene::{
     ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
@@ -156,9 +159,10 @@ pub enum DockspaceVisualKind {
 
 /// Core-derived decision for painting one exact visual in the current program.
 ///
-/// A source gap suppresses only pixels. The adapter must retain the visual's
-/// widget identity, semantic receiver, and accessibility registration while a
-/// drag projection represents the omitted source elsewhere.
+/// A source gap suppresses the source visual while a drag projection represents
+/// it elsewhere. The host preserves its semantic identity and the receivers
+/// retained by this program. An immediate UI can preserve widget registration;
+/// a retained or self-drawn UI can retain its own nodes and hit records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SurfacePaintDisposition {
     /// Paint the visual normally.
@@ -934,14 +938,22 @@ impl fmt::Debug for PresentationCommandPaintRecord {
     }
 }
 
-/// Read-only plan supplied before one exact renderer paint.
+/// Borrowed semantic program for one exact logical-surface output.
+///
+/// A host may consume its operations immediately or compile them into an owned
+/// display list or retained-node update. Records borrow this frame: copy the
+/// required geometry, identities, and content-slot information before committing
+/// it. Content resources and renderer scheduling remain host-owned.
 #[derive(Clone, Copy)]
 pub struct SurfacePaintPlan<'frame> {
     pub(super) surface: SurfaceId,
+    pub(super) attempt: HostPresentationAttemptId,
     pub(super) authority_domain: crate::ids::EngineAuthorityDomainId,
     pub(super) version: crate::model::WorkspaceVersion,
     pub(super) scene: crate::scene::SurfaceSceneStamp,
     pub(super) output: SurfacePresentationOutputTicket,
+    pub(super) contribution: SurfaceContributionToken,
+    pub(super) interaction: HostInteractionPresentation,
     pub(super) plan: &'frame PresentationPlan,
     pub(super) hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
     pub(super) splitter_keyboard_step: f64,
@@ -955,8 +967,47 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) program_valid: bool,
 }
 
+/// Opaque receipt that a host accepted one exact program from beginning to end.
+///
+/// The receipt is bound to the host-frame attempt, semantic scene, coordinate
+/// capture, and transient interaction visuals from which the program was
+/// produced. It is not cloneable and must be consumed by
+/// [`DockspaceHostFrame::confirm_surface_painted`]. It proves complete emission
+/// to the sink, not GPU submission or physical presentation. The host reports
+/// the later output disposition through [`super::DockspaceSession::report_surface_presentation`].
+#[must_use = "a completed surface program must be confirmed or explicitly discarded"]
+pub struct SurfaceProgramExecutionReceipt {
+    surface: SurfaceId,
+    attempt: HostPresentationAttemptId,
+    output: SurfacePresentationOutputTicket,
+    contribution: SurfaceContributionToken,
+    interaction: HostInteractionPresentation,
+}
+
+impl SurfaceProgramExecutionReceipt {
+    /// Returns the sole logical surface executed by this receipt.
+    #[must_use]
+    pub const fn surface(&self) -> SurfaceId {
+        self.surface
+    }
+
+    pub(super) const fn into_presentation_parts(
+        self,
+    ) -> (SurfaceContributionToken, HostInteractionPresentation) {
+        (self.contribution, self.interaction)
+    }
+}
+
+impl fmt::Debug for SurfaceProgramExecutionReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SurfaceProgramExecutionReceipt")
+            .field("surface", &self.surface)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Root presentation kind in the core-owned surface paint program.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub enum SurfacePaintProgramRootKind<'frame> {
     /// The surface's ordinary main root.
@@ -966,7 +1017,6 @@ pub enum SurfacePaintProgramRootKind<'frame> {
 }
 
 /// One operation in the core-owned surface paint program.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub enum SurfacePaintProgramOperation<'frame> {
     /// Paint one pane background and content host.
@@ -1005,7 +1055,6 @@ impl SurfacePaintProgramOperation<'_> {
 }
 
 /// One root header in the core-owned paint program.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub struct SurfacePaintProgramRoot<'frame> {
     root: RootId,
@@ -1043,7 +1092,6 @@ impl SurfacePaintProgramRoot<'_> {
 }
 
 /// One linear step in the core-owned surface paint program.
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub enum SurfacePaintProgramStep<'frame> {
     /// Starts one main or contained root segment.
@@ -1098,7 +1146,6 @@ pub enum SurfacePaintProgramStep<'frame> {
 }
 
 /// Failure while resolving or executing one compiled paint program.
-#[doc(hidden)]
 #[derive(Debug)]
 pub enum SurfacePaintProgramVisitError<E> {
     /// The sealed program no longer matches its canonical record roster.
@@ -1170,10 +1217,15 @@ impl DockspaceHostFrame<'_> {
             });
         let plan = SurfacePaintPlan {
             surface,
+            attempt: self.frame.presentation_attempt(),
             authority_domain: self.session.engine.authority_domain(),
             version,
             scene: candidate.stamp(),
             output: candidate.output_ticket(),
+            contribution: view.begin_surface_contribution(surface)?,
+            interaction: view
+                .presentation_interaction(surface)
+                .ok_or_else(|| DockspaceRuntimeError::surface_program_invariant(surface))?,
             plan: candidate.plan(),
             hit_manifest: candidate.hit_manifest(),
             splitter_keyboard_step: view.presentation_config().splitter_keyboard_step(),
@@ -1193,8 +1245,13 @@ impl DockspaceHostFrame<'_> {
         }))
     }
 
-    /// Records that the renderer painted the complete current plan, including
-    /// every transient preview exposed by [`Self::paint_plan`].
+    /// Records complete emission of the current plan to the host's accepting sink,
+    /// including every transient preview exposed by [`Self::paint_plan`].
+    ///
+    /// The sink may have drawn immediately or recorded owned work for later
+    /// execution. This does not report GPU submission or presentation. A successful
+    /// frame commit emits a [`super::PaintedSurfaceOutput`] which the output owner
+    /// must later report as presented or dropped.
     ///
     /// # Errors
     ///
@@ -1202,15 +1259,35 @@ impl DockspaceHostFrame<'_> {
     /// current paintable plan.
     pub fn confirm_surface_painted(
         &mut self,
-        surface: SurfaceId,
+        receipt: SurfaceProgramExecutionReceipt,
     ) -> Result<(), DockspaceRuntimeError> {
+        let surface = receipt.surface;
         if self.surface_answered(surface) {
             return Err(DockspaceInteractionError::SurfaceAlreadyAnswered { surface }.into());
         }
-        if self.paint_plan(surface)?.is_none() {
+        let view = self.frame.view();
+        let Some(candidate) = view
+            .scene()
+            .surface(surface)
+            .and_then(SurfaceScene::ready)
+            .map(|scene| scene.candidate())
+        else {
             return Err(DockspaceInteractionError::SurfaceNotPaintable { surface }.into());
+        };
+        let expected_contribution = view.begin_surface_contribution(surface)?;
+        let expected_interaction = view
+            .presentation_interaction(surface)
+            .ok_or_else(|| DockspaceRuntimeError::surface_program_invariant(surface))?;
+        if receipt.attempt != self.frame.presentation_attempt()
+            || receipt.output != candidate.output_ticket()
+            || receipt.contribution != expected_contribution
+            || receipt.interaction != expected_interaction
+        {
+            return Err(
+                DockspaceInteractionError::SurfaceProgramExecutionMismatch { surface }.into(),
+            );
         }
-        self.painted_surfaces.insert(surface);
+        self.painted_surfaces.insert(surface, receipt);
         Ok(())
     }
 }
@@ -1221,13 +1298,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.surface
     }
 
-    /// Visits the single ordered program for this exact surface candidate.
+    /// Inspects the single ordered program for this exact surface candidate.
     ///
     /// The visitor receives the core-owned order directly. Official adapters
     /// execute that order without rebuilding a second surface-wide schedule;
-    /// test helpers may still collect a trace for assertions. Any stale record
-    /// identity fails the whole traversal before the visitor sees any step,
-    /// rather than silently omitting paint or leaving a partial renderer output.
+    /// test helpers and measurement code may collect a trace without gaining
+    /// authority to confirm that a renderer executed the program. Any stale
+    /// record identity fails the whole traversal before the visitor sees any
+    /// step.
     ///
     /// # Errors
     ///
@@ -1235,8 +1313,44 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// sealed tape no longer matches its canonical record roster, or
     /// [`SurfacePaintProgramVisitError::Sink`] when the renderer rejects a
     /// step.
-    #[doc(hidden)]
     pub fn visit_surface_program<E>(
+        self,
+        visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
+    ) -> Result<(), SurfacePaintProgramVisitError<E>> {
+        self.visit_surface_program_inner(visitor)
+    }
+
+    /// Executes the single ordered program for this exact surface candidate.
+    ///
+    /// Unlike [`Self::visit_surface_program`], successful execution returns an
+    /// affine receipt which is the only capability accepted by
+    /// [`DockspaceHostFrame::confirm_surface_painted`]. Renderer adapters must
+    /// use this path only when their sink has accepted every program step.
+    /// Accepting owned records for deferred rendering satisfies this contract;
+    /// later presentation is a separate host report. Hosts preserve composition
+    /// order and clipping when compiling or batching these records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfacePaintProgramVisitError::InvalidProgram`] when the
+    /// sealed tape no longer matches its canonical record roster, or
+    /// [`SurfacePaintProgramVisitError::Sink`] when the renderer rejects a
+    /// step. Neither failure mints a receipt.
+    pub fn execute_surface_program<E>(
+        self,
+        visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
+    ) -> Result<SurfaceProgramExecutionReceipt, SurfacePaintProgramVisitError<E>> {
+        self.visit_surface_program_inner(visitor)?;
+        Ok(SurfaceProgramExecutionReceipt {
+            surface: self.surface,
+            attempt: self.attempt,
+            output: self.output,
+            contribution: self.contribution,
+            interaction: self.interaction,
+        })
+    }
+
+    fn visit_surface_program_inner<E>(
         self,
         mut visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
     ) -> Result<(), SurfacePaintProgramVisitError<E>> {
@@ -2283,6 +2397,76 @@ mod tests {
     use crate::policy::DockPolicy;
     use crate::runtime::{DockspaceSession, UniformSurfaceMetrics};
     use crate::scene::PaneSceneId;
+
+    fn measured_surface_session() -> (DockspaceSession, SurfaceId) {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(2);
+        let item = ItemId::new(3);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([item]));
+        builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().expect("the test workspace validates"),
+            DockPolicy::default(),
+        )
+        .expect("the runtime initializes");
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+            80.0,
+        )
+        .expect("test metrics validate");
+        let mut measurement_frame = session
+            .begin_host_frame()
+            .expect("the measurement frame begins");
+        measurement_frame
+            .measure_surface(surface, metrics)
+            .expect("the surface measurement stages");
+        measurement_frame
+            .commit()
+            .expect("the surface measurement commits");
+        (session, surface)
+    }
+
+    #[test]
+    fn only_execution_mints_a_receipt_bound_to_its_exact_host_frame() {
+        let (mut session, surface) = measured_surface_session();
+
+        let mut inspection_frame = session
+            .begin_host_frame()
+            .expect("the inspection frame begins");
+        let plan = inspection_frame
+            .paint_plan(surface)
+            .expect("the inspection plan resolves")
+            .expect("the measured surface is paintable");
+        let inspected: () = plan
+            .visit_surface_program(|_| Ok::<(), ()>(()))
+            .expect("inspection traverses the complete program without minting authority");
+        assert_eq!(inspected, ());
+        let rejected = plan.execute_surface_program(|_| Err::<(), _>("sink rejected"));
+        assert!(matches!(
+            rejected,
+            Err(SurfacePaintProgramVisitError::Sink("sink rejected"))
+        ));
+        let receipt = plan
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the renderer accepts the complete program");
+        drop(inspection_frame);
+
+        let mut successor = session
+            .begin_host_frame()
+            .expect("the successor frame begins");
+        let error = successor
+            .confirm_surface_painted(receipt)
+            .expect_err("a receipt from an aborted host frame must fail closed");
+        assert!(matches!(
+            error.interaction_error(),
+            Some(DockspaceInteractionError::SurfaceProgramExecutionMismatch {
+                surface: rejected
+            }) if *rejected == surface
+        ));
+    }
 
     #[test]
     fn invalid_surface_program_emits_no_paint_steps() {

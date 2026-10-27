@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use dockspace::geometry::LogicalPoint;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceReceiverRole, DockspaceSemanticOutput, NativeReceiverAnswer, NativeReceiverPurpose,
-    NativeReceiverQuery, NativeScrollReceiverChallenge, NativeSurfaceBinding, PaintedSurfaceOutput,
+    DockspaceReceiverRole, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
+    NativeScrollReceiverChallenge, NativeSurfaceBinding, PaintedSurfaceOutput,
+    SurfacePresentationArtifact, SurfacePresentationCommit,
 };
 use eframe::{NativeOutputToken, egui};
 use egui_dockspace::native_support::{NativePaintReceiver, NativeScrollPaintReceiver};
@@ -28,7 +29,7 @@ struct PendingReceiverSet {
     binding: NativeSurfaceBinding,
     viewport: egui::ViewportId,
     hit_authority: egui::CompletedPassHitAuthority,
-    semantic_output: DockspaceSemanticOutput,
+    artifact: SurfacePresentationArtifact,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
 }
@@ -70,7 +71,7 @@ impl PendingReceiverSet {
             binding,
             viewport,
             hit_authority,
-            semantic_output,
+            artifact: output.presentation_artifact(),
             receivers,
             scroll_receivers,
         })
@@ -82,7 +83,7 @@ struct PresentedReceiverSet {
     binding: NativeSurfaceBinding,
     viewport: egui::ViewportId,
     hit_authority: egui::CompletedPassHitAuthority,
-    semantic_output: DockspaceSemanticOutput,
+    artifact: SurfacePresentationArtifact,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
 }
@@ -96,10 +97,15 @@ struct PresentedScrollReceiver {
 #[derive(Debug, Default)]
 pub(crate) struct NativeReceiverStore {
     pending: BTreeMap<NativeOutputToken, PendingReceiverSet>,
-    presented: BTreeMap<SurfaceId, PresentedReceiverSet>,
+    awaiting_core: Vec<PendingReceiverSet>,
+    presented: BTreeMap<SurfaceId, Vec<PresentedReceiverSet>>,
 }
 
 impl NativeReceiverStore {
+    pub(crate) fn has_pending_commit(&self) -> bool {
+        !self.awaiting_core.is_empty()
+    }
+
     pub(crate) fn stage(
         &mut self,
         context: &egui::Context,
@@ -113,7 +119,7 @@ impl NativeReceiverStore {
             && (current.surface != next.surface
                 || current.binding != next.binding
                 || current.viewport != next.viewport
-                || current.semantic_output != next.semantic_output
+                || current.artifact != next.artifact
                 || next.hit_authority.cumulative_pass_nr()
                     < current.hit_authority.cumulative_pass_nr())
         {
@@ -123,12 +129,16 @@ impl NativeReceiverStore {
         Ok(())
     }
 
-    pub(crate) fn presented(&mut self, token: NativeOutputToken, binding: NativeSurfaceBinding) {
+    pub(crate) fn renderer_presented(
+        &mut self,
+        token: NativeOutputToken,
+        binding: NativeSurfaceBinding,
+    ) {
         let pending = self.pending.remove(&token);
-        self.finish_presented(pending, token.viewport_id(), binding);
+        self.finish_renderer_presented(pending, token.viewport_id(), binding);
     }
 
-    fn finish_presented(
+    fn finish_renderer_presented(
         &mut self,
         pending: Option<PendingReceiverSet>,
         viewport: egui::ViewportId,
@@ -143,25 +153,14 @@ impl NativeReceiverStore {
         {
             return;
         }
-        if self.presented.get(&pending.surface).is_some_and(|current| {
-            current.binding == binding
-                && current.viewport == pending.viewport
-                && current.hit_authority.cumulative_pass_nr()
-                    > pending.hit_authority.cumulative_pass_nr()
-        }) {
+        if self
+            .awaiting_core
+            .iter()
+            .any(|candidate| candidate.artifact == pending.artifact)
+        {
             return;
         }
-        self.presented.insert(
-            pending.surface,
-            PresentedReceiverSet {
-                binding,
-                viewport: pending.viewport,
-                hit_authority: pending.hit_authority,
-                semantic_output: pending.semantic_output,
-                receivers: pending.receivers,
-                scroll_receivers: pending.scroll_receivers,
-            },
-        );
+        self.awaiting_core.push(pending);
     }
 
     pub(crate) fn dropped(&mut self, token: NativeOutputToken) {
@@ -173,15 +172,13 @@ impl NativeReceiverStore {
     }
 
     pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
-        let surface = binding.surface();
         self.pending.retain(|_, pending| pending.binding != binding);
-        if self
-            .presented
-            .get(&surface)
-            .is_some_and(|presented| presented.binding == binding)
-        {
-            self.presented.remove(&surface);
-        }
+        self.awaiting_core
+            .retain(|pending| pending.binding != binding);
+        self.presented.retain(|_, presented| {
+            presented.retain(|candidate| candidate.binding != binding);
+            !presented.is_empty()
+        });
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -189,19 +186,72 @@ impl NativeReceiverStore {
             .values()
             .any(|pending| pending.binding == binding)
             || self
+                .awaiting_core
+                .iter()
+                .any(|pending| pending.binding == binding)
+            || self
                 .presented
                 .get(&binding.surface())
-                .is_some_and(|presented| presented.binding == binding)
+                .is_some_and(|presented| {
+                    presented
+                        .iter()
+                        .any(|candidate| candidate.binding == binding)
+                })
+    }
+
+    pub(crate) fn commit_presentations(&mut self, commits: &[SurfacePresentationCommit]) {
+        for commit in commits {
+            self.presented.retain(|_, presented| {
+                presented.retain(|candidate| !commit.retires(candidate.artifact));
+                !presented.is_empty()
+            });
+
+            let mut promoted = Vec::new();
+            self.awaiting_core.retain(|candidate| {
+                if !commit.settles(candidate.artifact) {
+                    return true;
+                }
+                if commit.presents(candidate.artifact) {
+                    promoted.push(PresentedReceiverSet {
+                        binding: candidate.binding,
+                        viewport: candidate.viewport,
+                        hit_authority: candidate.hit_authority.clone(),
+                        artifact: candidate.artifact,
+                        receivers: candidate.receivers.clone(),
+                        scroll_receivers: candidate.scroll_receivers.clone(),
+                    });
+                }
+                false
+            });
+            for candidate in promoted {
+                let presented = self
+                    .presented
+                    .entry(candidate.binding.surface())
+                    .or_default();
+                if let Some(existing) = presented
+                    .iter_mut()
+                    .find(|existing| existing.artifact == candidate.artifact)
+                {
+                    *existing = candidate;
+                } else {
+                    presented.push(candidate);
+                }
+            }
+        }
     }
 
     pub(crate) fn resolve(&self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
-        let Some(presented) = self.presented.get(&query.surface()) else {
+        let Some(candidates) = self.presented.get(&query.surface()) else {
             return NativeReceiverAnswer::Unknown;
         };
-        if !query.matches_native_binding(presented.binding) {
+        let mut candidates = candidates.iter().filter(|presented| {
+            query.matches_native_binding(presented.binding)
+                && query.matches_presentation_artifact(presented.artifact)
+        });
+        let Some(presented) = candidates.next() else {
             return NativeReceiverAnswer::Unknown;
-        }
-        if !query.matches_semantic_output(presented.semantic_output) {
+        };
+        if candidates.next().is_some() {
             return NativeReceiverAnswer::Unknown;
         }
         let Some(point) = query.point().and_then(logical_pos) else {
@@ -409,7 +459,7 @@ mod tests {
             .expect("native registration emits one binding")
     }
 
-    fn semantic_output() -> DockspaceSemanticOutput {
+    fn presentation_artifact() -> SurfacePresentationArtifact {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             SURFACE,
             DockspaceRootLayout::new(
@@ -440,11 +490,22 @@ mod tests {
         let mut frame = session
             .begin_host_frame()
             .expect("semantic-output paint frame begins");
-        frame
+        let plan = frame
             .paint_plan(SURFACE)
             .expect("semantic-output plan lookup succeeds")
-            .expect("semantic-output plan is ready")
-            .semantic_output()
+            .expect("semantic-output plan is ready");
+        let receipt = plan
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("semantic-output program executes");
+        frame
+            .confirm_surface_painted(receipt)
+            .expect("semantic-output paint confirms");
+        let mut report = frame.commit().expect("semantic-output paint commits");
+        let output = report
+            .take_painted_outputs()
+            .pop()
+            .expect("semantic-output paint emits one output");
+        output.presentation_artifact()
     }
 
     fn empty_hit_authority() -> egui::CompletedPassHitAuthority {
@@ -460,15 +521,95 @@ mod tests {
         binding: NativeSurfaceBinding,
         viewport: egui::ViewportId,
     ) -> PendingReceiverSet {
+        pending_receiver(binding, viewport, presentation_artifact())
+    }
+
+    fn pending_receiver(
+        binding: NativeSurfaceBinding,
+        viewport: egui::ViewportId,
+        artifact: SurfacePresentationArtifact,
+    ) -> PendingReceiverSet {
         PendingReceiverSet {
             surface: SURFACE,
             binding,
             viewport,
             hit_authority: empty_hit_authority(),
-            semantic_output: semantic_output(),
+            artifact,
             receivers: Vec::new(),
             scroll_receivers: Vec::new(),
         }
+    }
+
+    fn artifact_commit_sequence() -> (
+        SurfacePresentationArtifact,
+        SurfacePresentationCommit,
+        SurfacePresentationArtifact,
+        SurfacePresentationCommit,
+    ) {
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .expect("artifact commit layout validates");
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+            .expect("artifact commit session initializes");
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("artifact commit bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("artifact commit minimum validates"),
+            80.0,
+        )
+        .expect("artifact commit metrics validate");
+        let mut measured = session
+            .begin_host_frame()
+            .expect("artifact commit measurement begins");
+        measured
+            .measure_surface(SURFACE, metrics)
+            .expect("artifact commit surface measures");
+        measured
+            .commit()
+            .expect("artifact commit measurement publishes");
+
+        let mut paint_and_report = |result| {
+            let mut painted = session
+                .begin_host_frame()
+                .expect("artifact paint frame begins");
+            let receipt = painted
+                .paint_plan(SURFACE)
+                .expect("artifact paint plan resolves")
+                .expect("artifact surface is paintable")
+                .execute_surface_program(|_| Ok::<(), ()>(()))
+                .expect("artifact surface program executes");
+            painted
+                .confirm_surface_painted(receipt)
+                .expect("artifact paint confirms");
+            let mut report = painted.commit().expect("artifact paint publishes");
+            let output = report
+                .take_painted_outputs()
+                .pop()
+                .expect("artifact paint emits one output");
+            let artifact = output.presentation_artifact();
+            session
+                .report_surface_presentation(output, result)
+                .expect("artifact renderer result records");
+            let mut settled = session
+                .begin_host_frame()
+                .expect("artifact settlement frame begins");
+            settled
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .expect("artifact settlement retains the surface");
+            let report = settled.commit().expect("artifact settlement commits");
+            let [commit] = report.surface_presentation_commits() else {
+                panic!("artifact settlement must emit one exact core commit")
+            };
+            (artifact, *commit)
+        };
+
+        let (first_artifact, first_commit) = paint_and_report(SurfacePresentationResult::Presented);
+        let (second_artifact, second_commit) = paint_and_report(SurfacePresentationResult::Dropped);
+        (first_artifact, first_commit, second_artifact, second_commit)
     }
 
     struct TestPanes;
@@ -567,7 +708,7 @@ mod tests {
                 };
                 let paint = native_support::paint_surface(
                     &mut frame,
-                    Id::new("native-presentation-menu"),
+                    Id::unique("native-presentation-menu"),
                     SURFACE,
                     ui,
                     &mut panes,
@@ -628,7 +769,7 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("overlapping receiver session initializes");
         let context = egui::Context::default();
-        let instance_id = Id::new("native-overlapping-tab-control");
+        let instance_id = Id::unique("native-overlapping-tab-control");
         let mut panes = TestPanes;
         let style = DockStyle::default();
         let mut measured_output = context.run_ui(
@@ -692,8 +833,7 @@ mod tests {
                     Ok::<(), ()>(())
                 })
                 .expect("overlapping receiver paint program resolves");
-                let control = control
-                    .expect("the overflowing main strip publishes one control");
+                let control = control.expect("the overflowing main strip publishes one control");
                 let hit_bounds = control.hit_bounds();
                 let point = LogicalPoint::new(
                     hit_bounds.x() + hit_bounds.width() * 0.5,
@@ -751,26 +891,158 @@ mod tests {
     }
 
     #[test]
+    fn committed_host_frame_promotes_receivers_without_follow_up_input() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::host_frame::NativeHostFrame;
+        use crate::mailbox::NativeHostBridge;
+        use crate::viewport_map::NativeViewportMap;
+
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .expect("idle settlement layout validates");
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+            .expect("idle settlement session initializes");
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("surface bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("surface minimum validates"),
+            80.0,
+        )
+        .expect("surface metrics validate");
+        let mut measurement = session.begin_host_frame().expect("measurement begins");
+        measurement
+            .measure_surface(SURFACE, metrics)
+            .expect("surface measures");
+        measurement.commit().expect("measurement commits");
+        let mut paint = session.begin_host_frame().expect("paint begins");
+        let execution = paint
+            .paint_plan(SURFACE)
+            .expect("paint plan resolves")
+            .expect("surface is ready")
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the complete program executes");
+        paint
+            .confirm_surface_painted(execution)
+            .expect("complete paint confirms");
+        let output = paint
+            .commit()
+            .expect("paint commits")
+            .take_painted_outputs()
+            .pop()
+            .expect("one output is emitted");
+        let artifact = output.presentation_artifact();
+        let binding = binding(31);
+        let mut receivers = NativeReceiverStore::default();
+        receivers.finish_renderer_presented(
+            Some(pending_receiver(binding, egui::ViewportId::ROOT, artifact)),
+            egui::ViewportId::ROOT,
+            binding,
+        );
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the output owner reports presentation");
+
+        let viewports = Arc::new(Mutex::new(NativeViewportMap::default()));
+        let bridge = Arc::new(NativeHostBridge::new(Arc::clone(&viewports)));
+        let mut frame = NativeHostFrame::new(
+            session.begin_host_frame().expect("settlement begins"),
+            bridge,
+            viewports,
+            &mut receivers,
+            None,
+        );
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("settlement does not repaint");
+        frame
+            .commit()
+            .expect("the presentation observation commits");
+
+        assert!(
+            !receivers.has_pending_commit(),
+            "a committed presentation must not require another input or repaint to promote receivers"
+        );
+        assert_eq!(receivers.presented[&SURFACE][0].artifact, artifact);
+    }
+
+    #[test]
+    fn renderer_terminal_waits_for_matching_core_commit_before_atomic_promotion() {
+        let binding = binding(31);
+        let (first_artifact, first_commit, second_artifact, second_commit) =
+            artifact_commit_sequence();
+        let mut store = NativeReceiverStore::default();
+
+        store.finish_renderer_presented(
+            Some(pending_receiver(
+                binding,
+                egui::ViewportId::ROOT,
+                first_artifact,
+            )),
+            egui::ViewportId::ROOT,
+            binding,
+        );
+        assert!(store.presented.is_empty());
+        assert_eq!(store.awaiting_core.len(), 1);
+
+        store.commit_presentations(&[first_commit]);
+        assert!(store.presented.get(&SURFACE).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.artifact == first_artifact && entry.binding == binding)
+        }));
+        assert!(store.awaiting_core.is_empty());
+
+        store.finish_renderer_presented(
+            Some(pending_receiver(
+                binding,
+                egui::ViewportId::ROOT,
+                second_artifact,
+            )),
+            egui::ViewportId::ROOT,
+            binding,
+        );
+        assert!(
+            store.presented.get(&SURFACE).is_some_and(|entries| entries
+                .iter()
+                .any(|entry| { entry.artifact == first_artifact && entry.binding == binding })),
+            "physical presentation alone must preserve the previous core-committed artifact"
+        );
+
+        store.commit_presentations(&[second_commit]);
+        assert!(!store.presented.contains_key(&SURFACE));
+        assert!(store.awaiting_core.is_empty());
+    }
+
+    #[test]
     fn retiring_an_old_binding_preserves_the_same_surface_successor() {
         let predecessor = binding(11);
         let successor = binding(12);
         let mut store = NativeReceiverStore::default();
         store.presented.insert(
             SURFACE,
-            PresentedReceiverSet {
+            vec![PresentedReceiverSet {
                 binding: successor,
                 viewport: egui::ViewportId::ROOT,
                 hit_authority: empty_hit_authority(),
-                semantic_output: semantic_output(),
+                artifact: presentation_artifact(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
-            },
+            }],
         );
 
         store.retire_binding(predecessor);
 
         assert_eq!(
-            store.presented.get(&SURFACE).map(|entry| entry.binding),
+            store
+                .presented
+                .get(&SURFACE)
+                .and_then(|entries| entries.first())
+                .map(|entry| entry.binding),
             Some(successor)
         );
     }
@@ -782,20 +1054,24 @@ mod tests {
         let mut store = NativeReceiverStore::default();
         store.presented.insert(
             SURFACE,
-            PresentedReceiverSet {
+            vec![PresentedReceiverSet {
                 binding: successor,
                 viewport: egui::ViewportId::ROOT,
                 hit_authority: empty_hit_authority(),
-                semantic_output: semantic_output(),
+                artifact: presentation_artifact(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
-            },
+            }],
         );
 
-        store.finish_presented(None, egui::ViewportId::ROOT, predecessor);
+        store.finish_renderer_presented(None, egui::ViewportId::ROOT, predecessor);
 
         assert_eq!(
-            store.presented.get(&SURFACE).map(|entry| entry.binding),
+            store
+                .presented
+                .get(&SURFACE)
+                .and_then(|entries| entries.first())
+                .map(|entry| entry.binding),
             Some(successor),
             "an A1 terminal without its retired pending token cannot clear A2 authority"
         );
@@ -807,17 +1083,17 @@ mod tests {
         let mut store = NativeReceiverStore::default();
         store.presented.insert(
             SURFACE,
-            PresentedReceiverSet {
+            vec![PresentedReceiverSet {
                 binding,
                 viewport: egui::ViewportId::ROOT,
                 hit_authority: empty_hit_authority(),
-                semantic_output: semantic_output(),
+                artifact: presentation_artifact(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
-            },
+            }],
         );
 
-        store.finish_presented(
+        store.finish_renderer_presented(
             Some(empty_pending_receiver(
                 binding,
                 egui::ViewportId::from_hash_of("mismatched-candidate"),
@@ -956,9 +1232,9 @@ mod tests {
                     let identity = ui.register_scroll_hit_candidate(rect, id);
                     (identity.id(), identity.layer_id())
                 };
-                let painted = native_support::paint_surface(
+                let mut painted = native_support::paint_surface(
                     &mut frame,
-                    Id::new("native-unclaimed-hover-receiver"),
+                    Id::unique("native-unclaimed-hover-receiver"),
                     SURFACE,
                     ui,
                     &mut panes,
@@ -968,9 +1244,12 @@ mod tests {
                 .expect("native surface paints");
                 painted_semantic_output = painted.semantic_output();
                 receivers = painted.receivers().collect();
-                frame
-                    .confirm_surface_painted(SURFACE)
-                    .expect("native surface paint confirms");
+                assert!(
+                    painted
+                        .confirm_into(&mut frame)
+                        .expect("native surface paint confirms"),
+                    "the production renderer completes the native surface program"
+                );
                 frame
                     .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
                     .expect("native paint frame settles");
@@ -982,6 +1261,8 @@ mod tests {
         let presented_semantic_output =
             painted_semantic_output.expect("ready paint has one semantic output");
         let output = painted_output.expect("confirmed native paint emits one output");
+        assert!(output.matches_semantic_output(presented_semantic_output));
+        let presented_artifact = output.presentation_artifact();
         session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("native presentation records");
@@ -992,6 +1273,43 @@ mod tests {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("native presentation frame settles");
         presented.commit().expect("native presentation commits");
+
+        let previous_artifact = presented_artifact;
+        let mut repeated = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the unchanged surface begins another emission");
+        let repeated_plan = repeated
+            .paint_plan(SURFACE)
+            .expect("the repeated plan resolves")
+            .expect("the unchanged surface remains ready");
+        assert_eq!(repeated_plan.semantic_output(), presented_semantic_output);
+        let receipt = repeated_plan
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .expect("the unchanged owned surface program is accepted again");
+        repeated
+            .confirm_surface_painted(receipt)
+            .expect("the repeated emission confirms");
+        let repeated_output = repeated
+            .commit()
+            .expect("the repeated emission commits")
+            .take_painted_outputs()
+            .pop()
+            .expect("the repeated emission produces one output");
+        assert!(repeated_output.matches_semantic_output(presented_semantic_output));
+        let presented_artifact = repeated_output.presentation_artifact();
+        assert_ne!(previous_artifact, presented_artifact);
+        session
+            .report_surface_presentation(repeated_output, SurfacePresentationResult::Presented)
+            .expect("the newer identical semantic output presents");
+        let mut repeated_observation = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the repeated presentation observation begins");
+        repeated_observation
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the repeated observation settles");
+        repeated_observation
+            .commit()
+            .expect("the newer presentation authority commits");
 
         let hit_authority = context
             .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
@@ -1021,22 +1339,22 @@ mod tests {
             .find(|receiver| receiver.role() == DockspaceReceiverRole::TabBody)
             .expect("the ready surface paints one tab-body receiver");
 
-        let presented_set = |receivers: Vec<NativePaintReceiver>, semantic_output| {
+        let presented_set = |receivers: Vec<NativePaintReceiver>, artifact| {
             let mut store = NativeReceiverStore::default();
             store.presented.insert(
                 SURFACE,
-                PresentedReceiverSet {
+                vec![PresentedReceiverSet {
                     binding,
                     viewport: egui::ViewportId::ROOT,
                     hit_authority: hit_authority.clone(),
-                    semantic_output,
+                    artifact,
                     receivers,
                     scroll_receivers: Vec::new(),
-                },
+                }],
             );
             store
         };
-        let exact_store = presented_set(receivers.clone(), presented_semantic_output);
+        let exact_store = presented_set(receivers.clone(), presented_artifact);
         let blocked_store = presented_set(
             receivers
                 .iter()
@@ -1046,14 +1364,15 @@ mod tests {
                         || receiver.layer_id() != pane_receiver.layer_id()
                 })
                 .collect(),
-            presented_semantic_output,
+            presented_artifact,
         );
         let mut duplicate_receivers = receivers;
         duplicate_receivers.push(*pane_receiver);
-        let duplicate_store = presented_set(duplicate_receivers, presented_semantic_output);
-        let mismatched_output = semantic_output();
-        assert_ne!(mismatched_output, presented_semantic_output);
-        let mismatched_store = presented_set(vec![*pane_receiver], mismatched_output);
+        let duplicate_store = presented_set(duplicate_receivers, presented_artifact);
+        let mismatched_artifact = presentation_artifact();
+        assert_ne!(mismatched_artifact, presented_artifact);
+        let mismatched_store = presented_set(vec![*pane_receiver], mismatched_artifact);
+        let obsolete_store = presented_set(vec![*pane_receiver], previous_artifact);
 
         let tab_point = tab_point.expect("the ready surface paints one tab receiver");
         session
@@ -1104,6 +1423,9 @@ mod tests {
                     && query.point() == Some(pane_point)
                 {
                     let presented = query.presented_surface();
+                    assert!(query.matches_semantic_output(presented_semantic_output));
+                    assert!(query.matches_presentation_artifact(presented_artifact));
+                    assert!(!query.matches_presentation_artifact(previous_artifact));
                     assert_eq!(answer, NativeReceiverAnswer::NoReceiver(presented));
                     assert_eq!(
                         resolve_matching_receiver(query, tab_receiver),
@@ -1121,6 +1443,11 @@ mod tests {
                     assert_eq!(
                         mismatched_store.resolve(query),
                         NativeReceiverAnswer::Unknown
+                    );
+                    assert_eq!(
+                        obsolete_store.resolve(query),
+                        NativeReceiverAnswer::Unknown,
+                        "an earlier emission cannot reuse authority merely because its scene is unchanged"
                     );
                     hover_resolved = true;
                 }
@@ -1257,9 +1584,9 @@ mod tests {
                     scroll_identities.push(identity);
                     (identity.id(), identity.layer_id())
                 };
-                let painted = native_support::paint_surface(
+                let mut painted = native_support::paint_surface(
                     &mut frame,
-                    Id::new("native-scroll-receiver"),
+                    Id::unique("native-scroll-receiver"),
                     SURFACE,
                     ui,
                     &mut panes,
@@ -1269,9 +1596,12 @@ mod tests {
                 .expect("native surface paints");
                 semantic_output = painted.semantic_output();
                 scroll_receivers = painted.scroll_receivers().collect();
-                frame
-                    .confirm_surface_painted(SURFACE)
-                    .expect("native surface paint confirms");
+                assert!(
+                    painted
+                        .confirm_into(&mut frame)
+                        .expect("native surface paint confirms"),
+                    "the production renderer completes the native scroll program"
+                );
                 frame
                     .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
                     .expect("native paint frame settles");
@@ -1282,6 +1612,8 @@ mod tests {
         full_output.textures_delta.clear();
         let semantic_output = semantic_output.expect("ready paint has one semantic output");
         let output = painted_output.expect("confirmed native paint emits one output");
+        assert!(output.matches_semantic_output(semantic_output));
+        let presentation_artifact = output.presentation_artifact();
         session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("native presentation records");
@@ -1319,14 +1651,14 @@ mod tests {
         let mut store = NativeReceiverStore::default();
         store.presented.insert(
             SURFACE,
-            PresentedReceiverSet {
+            vec![PresentedReceiverSet {
                 binding,
                 viewport: egui::ViewportId::ROOT,
                 hit_authority,
-                semantic_output,
+                artifact: presentation_artifact,
                 receivers: Vec::new(),
                 scroll_receivers,
-            },
+            }],
         );
 
         let point = receiver_point.expect("the overflowing tab strip has receiver geometry");
@@ -1341,7 +1673,7 @@ mod tests {
             |ui| {
                 ui.interact(
                     ui.max_rect(),
-                    Id::new("later-unpresented-native-blocker"),
+                    Id::unique("later-unpresented-native-blocker"),
                     Sense::click_and_drag(),
                 );
             },

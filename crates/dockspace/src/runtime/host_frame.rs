@@ -24,7 +24,8 @@ use super::presentation;
 use super::{
     DockPresentationConfig, DockspaceRuntimeError, DockspaceSession, DockspaceSubmittedAction,
     HostFrameReport, NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowPlacement,
-    PreparedDockAction, PreparedPaneFocusObservation, SurfaceUnavailableReason,
+    PreparedDockAction, PreparedPaneFocusObservation, SurfaceProgramExecutionReceipt,
+    SurfaceUnavailableReason,
 };
 
 pub(super) const APPLICATION_INPUT_SOURCE: StableInputSourceId =
@@ -42,7 +43,7 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) next_pointer_sequence: Option<u64>,
     pub(super) pointer_input_submitted: bool,
     pub(super) submitted_presentation: presentation::SubmittedPresentationObservation,
-    pub(super) painted_surfaces: BTreeSet<SurfaceId>,
+    pub(super) painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
     pub(super) painted_native_staging:
         BTreeSet<crate::presentation_observation::NativeStagingPresentation>,
     #[cfg(feature = "serde")]
@@ -543,15 +544,11 @@ impl DockspaceHostFrame<'_> {
                 return Err(NativePlatformError::ProtocolInvariant.into());
             }
         }
-        for surface in painted_surfaces {
+        for (surface, receipt) in painted_surfaces {
             let obligation = obligations
                 .remove(&HostPresentationSlot::Surface { surface })
                 .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
-            let token = frame.view().begin_surface_contribution(surface)?;
-            let interaction = frame
-                .view()
-                .presentation_interaction(surface)
-                .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
+            let (token, interaction) = receipt.into_presentation_parts();
             frame.record_painted_surface_contribution(obligation, token, interaction)?;
         }
         for presentation in painted_native_staging {
@@ -595,9 +592,11 @@ impl DockspaceHostFrame<'_> {
             .native
             .as_mut()
             .map(|native| native.commit(&session.engine));
-        session
-            .presentation
-            .commit_observation(&transition, &submitted_presentation);
+        let surface_presentation_commits = session.presentation.commit_observation(
+            &session.engine,
+            &transition,
+            &submitted_presentation,
+        );
         let (painted_outputs, painted_native_staging_outputs) = session
             .presentation
             .retain_emissions(transition.presentation_emissions());
@@ -606,6 +605,7 @@ impl DockspaceHostFrame<'_> {
             &transition,
             painted_outputs,
             painted_native_staging_outputs,
+            surface_presentation_commits,
             native_commit,
             session.abandoned_native_effects.clone(),
         ))

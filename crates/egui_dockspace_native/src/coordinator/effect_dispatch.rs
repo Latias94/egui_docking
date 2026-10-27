@@ -545,7 +545,8 @@ impl NativeCoordinator {
             return Err(request);
         }
         if let Err(request) = self.effects.insert(plan, request) {
-            debug_assert!(self.bridge.clear_create(viewport, plan.binding()));
+            let cleared = self.bridge.clear_create(viewport, plan.binding());
+            debug_assert!(cleared, "the rejected create retains its reservation");
             return Err(request);
         }
 
@@ -576,7 +577,8 @@ impl NativeCoordinator {
             }
         };
         if reserve_result.is_err() {
-            debug_assert!(self.bridge.clear_create(viewport, plan.binding()));
+            let cleared = self.bridge.clear_create(viewport, plan.binding());
+            debug_assert!(cleared, "the rejected create retains its reservation");
             return Err(self
                 .effects
                 .remove_unstarted(plan)

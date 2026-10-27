@@ -1224,7 +1224,8 @@ impl HostRecords {
             HostIngressMode::Frozen => unreachable!("frozen outputs return before reservation"),
         };
         if wake_after_current {
-            debug_assert!(reservation.require_wake_after_current());
+            let armed = reservation.require_wake_after_current();
+            debug_assert!(armed, "a new output can retain its wake obligation");
         }
         self.output_reservations.insert(token, reservation);
         if terminal_create {
@@ -1673,7 +1674,11 @@ impl HostRecords {
             }
         }
         if let Some(generation) = expected.terminal_generation {
-            debug_assert!(self.terminal_roster.settle(generation, applied));
+            let settled = self.terminal_roster.settle(generation, applied);
+            debug_assert!(
+                settled,
+                "the checked terminal roster generation remains current"
+            );
         }
         true
     }
