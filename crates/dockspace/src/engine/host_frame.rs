@@ -1623,7 +1623,7 @@ impl CoreHostFrame {
                 )?;
             }
             BackendIngressPayload::SemanticInput(input) => {
-                self.append_backend_semantic_input(ordinal, input)?;
+                self.append_backend_semantic_input(ordinal, *input)?;
             }
             BackendIngressPayload::PresentationObservation { host, entry } => {
                 self.reduce_backend_presentation_observation(ordinal, host, entry)?;

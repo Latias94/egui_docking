@@ -1,6 +1,52 @@
 use super::*;
-use crate::backend_ingress::{BackendIngressPayload, BackendIngressRecord};
+use crate::backend_ingress::{BackendIngressPayload, BackendIngressRecord, BackendIngressRecorder};
 use std::time::Duration;
+
+#[test]
+fn native_semantic_box_capacity_is_charged_once_across_batch_clones() {
+    let (session, _) = native_root_session();
+    let recorder = &session.native.as_ref().unwrap().recorder;
+    assert_eq!(recorder.retained_records().len(), 1);
+    let recorded = &recorder.retained_records()[0];
+    let BackendIngressPayload::SemanticInput(input) = recorded.payload() else {
+        panic!("the observed-root session retains its registration payload");
+    };
+    assert!(matches!(
+        input.as_ref(),
+        EngineInput::RegisterViewport { .. }
+    ));
+    let expected = size_of::<BackendIngressRecorder>()
+        + recorder.record_buffer_capacity_bytes()
+        + recorder.shared_fixed_data_bytes()
+        + size_of::<EngineInput>();
+    assert_eq!(
+        session.native_input_owned_capacity_bytes().unwrap(),
+        expected
+    );
+
+    let batch = recorder.pending_batch().unwrap();
+    let cloned = batch.clone();
+    for frozen in [&batch, &cloned] {
+        assert_ne!(
+            frozen.records().as_ptr(),
+            recorder.retained_records().as_ptr()
+        );
+        assert!(std::ptr::eq(
+            recorded.payload(),
+            frozen.records()[0].payload()
+        ));
+        let BackendIngressPayload::SemanticInput(frozen_input) = frozen.records()[0].payload()
+        else {
+            panic!("the frozen batch retains its boxed registration");
+        };
+        assert!(std::ptr::eq(input.as_ref(), frozen_input.as_ref()));
+    }
+    assert_ne!(batch.records().as_ptr(), cloned.records().as_ptr());
+    assert_eq!(
+        session.native_input_owned_capacity_bytes().unwrap(),
+        expected
+    );
+}
 
 #[test]
 fn native_input_capacity_counts_private_replay_buffers_without_recharging_payloads() {

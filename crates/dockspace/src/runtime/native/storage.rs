@@ -21,7 +21,7 @@ impl RuntimeNativeState {
                     // Its replay batches share the recorder's payload allocations.
                     journal.owned_contents_capacity_bytes()
                 }
-                BackendIngressPayload::SemanticInput(
+                BackendIngressPayload::SemanticInput(input) => match input.as_ref() {
                     EngineInput::RegisterViewport { .. }
                     | EngineInput::BootstrapChildViewport { .. }
                     | EngineInput::RequestSurfaceClose {
@@ -31,16 +31,14 @@ impl RuntimeNativeState {
                             | SurfaceCloseRequest::CloseContent,
                         ..
                     }
-                    | EngineInput::CancelSurfaceClose { .. },
-                )
-                | BackendIngressPayload::PlatformBindingQuiesced { .. }
+                    | EngineInput::CancelSurfaceClose { .. } => size_of::<EngineInput>(),
+                    _ => return Err(NativePlatformError::ProtocolInvariant),
+                },
+                BackendIngressPayload::PlatformBindingQuiesced { .. }
                 | BackendIngressPayload::NativeCloseObservation { .. }
                 | BackendIngressPayload::GlobalFocusObservation { .. }
                 | BackendIngressPayload::PlatformEffectResult(_)
                 | BackendIngressPayload::PresentationObservation { .. } => 0,
-                BackendIngressPayload::SemanticInput(_) => {
-                    return Err(NativePlatformError::ProtocolInvariant);
-                }
             };
             bytes = bytes.saturating_add(descendants);
         }

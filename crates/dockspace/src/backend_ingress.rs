@@ -617,7 +617,7 @@ pub enum BackendIngressPayload {
     /// One non-observational platform-effect dispatch result.
     PlatformEffectResult(EffectResult),
     /// One narrow non-pointer semantic action captured by the backend event loop.
-    SemanticInput(EngineInput),
+    SemanticInput(Box<EngineInput>),
     /// One presentation-stream fact captured at this exact backend position.
     PresentationObservation {
         /// Core-minted host bound when this backend provider was enrolled.
@@ -1259,7 +1259,7 @@ impl BackendIngressRecorder {
         if input.is_configuration_commit() {
             return Err(BackendIngressError::SemanticInputIsConfiguration);
         }
-        self.push(BackendIngressPayload::SemanticInput(input))
+        self.push(BackendIngressPayload::SemanticInput(Box::new(input)))
     }
 
     #[cfg(test)]
@@ -2551,7 +2551,8 @@ mod tests {
         ));
         assert!(matches!(
             batch.records()[3].payload(),
-            BackendIngressPayload::SemanticInput(EngineInput::ValidateWorkspace)
+            BackendIngressPayload::SemanticInput(input)
+                if matches!(input.as_ref(), EngineInput::ValidateWorkspace)
         ));
         assert!(matches!(
             batch.records()[4].payload(),
@@ -2705,6 +2706,17 @@ mod tests {
                 expected: BackendIngressOrdinal(1),
                 submitted: BackendIngressOrdinal::ORIGIN,
             }
+        );
+    }
+
+    #[test]
+    fn ingress_payload_fixed_storage_stays_within_the_snapshot_envelope() {
+        assert!(
+            size_of::<BackendIngressPayload>()
+                <= size_of::<PlatformSnapshot>()
+                    + size_of::<WorkspaceEpoch>()
+                    + std::mem::align_of::<BackendIngressPayload>(),
+            "semantic inputs must not inflate every pointer payload allocation",
         );
     }
 

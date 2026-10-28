@@ -15,6 +15,32 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 fixed payload footprint reduction
+
+The backend ingress payload now boxes its low-frequency semantic `EngineInput`.
+The recorder API and total ordering remain unchanged; reduction moves the boxed
+input into the existing semantic path. Platform and pointer payloads no longer
+reserve inline space for the largest semantic input. On the freshly compiled
+arm64 test artifact, payload data decreases from 584 to 248 bytes, saving 336
+data bytes per nonsemantic record before allocator overhead. These sizes are
+artifact-specific, not a cross-platform ABI or a total-memory claim.
+
+Semantic records pay for one additional Box allocation. The native input query
+charges that boxed data once through its recorder, while immutable batches and
+their clones continue sharing the same outer payload and box. Regressions bound
+the fixed envelope relative to the actual snapshot types and verify shared
+semantic box identity and capacity accounting. This reduces the ingress storage
+cost; ordinary byte admission and protected variable-payload backing are still
+unfinished.
+
+Fresh serialized checks pass 1,747 all-feature workspace tests, 306 native
+workspace tests normally and 306 without native debug assertions, plus core
+correctness/suspicious Clippy. The final boxed source also completes the macOS
+real-window programmatic redock smoke with exit 0. Independent review found no
+confirmed blocker in the boxing, reduction or byte accounting changes. Existing
+strict docs and external-consumer qualification in the transport prerequisite
+remain separate evidence; this layout-only slice adds no public API.
+
 ## 2026-10-29 U7 native snapshot capacity preparation
 
 The native adapter's raw journal now reports inline envelope data plus its
