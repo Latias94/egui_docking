@@ -370,7 +370,10 @@ flowchart TB
   U5 --> U7
   U15A --> U15B[U15 minimal native fork rebase]
   U15B --> U7
+  U15B --> U8A[U8 resource ownership prerequisite]
+  U8A --> U7
   U7 --> U8[U8 native runtime readiness]
+  U8A --> U8
   U8 --> U11[U11 per-platform certification]
   U12 --> U9[U9 evidence and deletion closure]
   U10 --> U9
@@ -381,6 +384,11 @@ U1's finite journey/oracle work continues as evidence for the behavior each repl
 Core readiness (U12) means public engine integration plus egui local validation, without waiting for Open-GPUI or every native backend.
 U5's common host port and truthful official-egui boundary satisfy U6/U12; exact fork-backed native hit parity is completed with U7/U8 after the native U15 slice.
 Native readiness (U8, then U9) adds the optional core host lifecycle and qualified X11 reference.
+U8's resource-ownership slice precedes U7's final capacity/overload integration;
+its lifecycle and platform readiness verification still follows U7. Inspection
+of the native callback path found that exact terminal admission otherwise needs
+duplicate reservation maps for sidecars that U8 already requires joining.
+This sequencing change preserves every U7/U8 exit criterion.
 U11 gates Windows/macOS capability claims separately; unsupported backends remain explicit rather than blocking the generic crate.
 These are packaging/readiness gates, not instructions to publish crates or upstream patches automatically.
 
@@ -588,9 +596,10 @@ updates/cancellation without self-invalidation or redundant compilation.
 
 - **Goal:** Make optional native hosting bounded and preserve useful local behavior without desktop facts.
 - **Requirements:** R6, R9, R11-R14, R18, R20; KTD7, KTD8, KTD12.
-- **Dependencies:** U3, U5, U14, and U15's native slice.
+- **Dependencies:** U3, U5, U14, U15's native slice, and U8's resource-ownership prerequisite for final bounded terminal admission.
 - **Files:** `crates/egui_dockspace_native/src/{mailbox,coordinator,pointer_event,input_control,surface_driver}.rs`, core ingress/pointer modules, native coordinator tests, public-host scoped-input tests.
 - **Approach:** Replace one-callback-per-cycle front/ACK families with bounded immutable prefix claims. Establish surface-local routing and validated desktop handoff through the same core kernel; preserve exact output and lifecycle barriers.
+- **Capacity integration:** Keep capture identity and original age through raw-to-core handoff until the committed boundary releases its source reservation. Share immutable recorded payloads across retry batches. On overload, freeze ordinary admission at one fixed accepted prefix; drain it before an independent terminal cancellation frame. Post-boundary callbacks that settle existing affine output/create/command/close/window obligations use already reserved, once-only owner slots with original capture order; they do not extend the cancellation boundary or create a second unbounded journal. A new ordinary pointer callback rejected after freeze is not an accepted edge; the platform still processes it, and overload cancellation ends the surviving core input. Only successful cancellation commit resets translator state, preserving identity counters and without emitting synthetic releases or claiming an empty physical roster.
 - **Test scenarios:** Covers AE7/AE11/AE14. Retry after a rejected batch, 10,000 interleaved records, sustained 1,000 Hz drag, overload, local touch coordinates, and scope/provider changes preserve one terminal release.
 - **Verification:** Resource budgets hold and no unbounded journal or forced desktop-only local route remains.
 
@@ -598,9 +607,10 @@ updates/cancellation without self-invalidation or redundant compilation.
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.
 - **Requirements:** R6, R11, R13-R15, R18-R22; KTD7, KTD16.
-- **Dependencies:** U7.
+- **Dependencies:** The resource-ownership prerequisite needs U15's native slice and the existing exact lifecycle contracts; native readiness and certification need completed U7.
 - **Files:** core native transfer/admission/runtime modules, `crates/egui_dockspace_native/src/`, public host harness, `integration/egui-native-smoke/`, native fork seams and conformance tests.
 - **Approach:** Join per-binding/incarnation host sidecars into one resource record, keeping semantic transfer in core. Remove universal assumptions about exact eframe hidden-stage passes. Make first-live the single durable transfer boundary and preserve failure recovery.
+- **Resource-ownership prerequisite:** Consolidate exact physical-window/create and command/output reservations before adding U7 protected terminal admission. Reserve finite terminal storage when the obligation is established; late results consume that existing slot exactly once and cannot mint another owner. Root control outputs must still run the shared budget and close the current output token while ordinary admission is frozen. Retained diagnostic control passes must not continuously append new ordinary output records. This slice does not certify U8 or bypass first-live, close, replacement or quiescence verification.
 - **Test scenarios:** Covers AE6. Hidden or directly prepared backends, delayed first valid output, A1/A2 replacement, no-frame, pass-through, close/veto/defer, failure recovery, redock, retirement and quiescence preserve one owner. Qualified X11 physical input docks at non-guide points and retires the child.
 - **Verification:** Public host lifecycle traces, programmatic real-window tests, and qualified X11 physical journeys pass; old distributed maps and obsolete staging contracts are removed.
 

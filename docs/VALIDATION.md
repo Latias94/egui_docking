@@ -15,6 +15,64 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U7 shared-ingress storage and source-age groundwork
+
+Backend records now share an immutable payload allocation between the recorder,
+frozen batches, batch clones and publication retries. Pointer journals also
+share their edge vector and complete authority checkpoint when the reducer
+clones a payload. Attaching a checkpoint to a shared journal uses copy-on-write
+after validation; the original branch remains unchanged. Consuming edges moves
+the vector for a unique owner and copies only the edges for a shared owner.
+Payload lifetime remains independent of publication authority: rollback revokes
+the old record, reused ordinals get new identities, and prefix retirement still
+requires the exact committed record identity.
+
+The native mailbox now records one private capture identity and timestamp for
+each accepted raw record, using the same injected clock source as its dispatch
+budget. Raw-to-core transfer drops the raw payload while retaining a source
+reservation count and the original oldest capture time through partial commit,
+yield and dropped-frame retry. Only completion of the corresponding committed
+boundary releases that reservation. Idle coalescing removes obsolete cursor
+records in place without re-numbering or re-timing the surviving observation.
+These are source reservations, not a claim of complete resident-byte accounting.
+
+Six core regressions check allocation sharing, copy-on-write isolation,
+rollback/ordinal reuse, and last-owner release after committed-prefix retirement.
+Scratch variants which restore payload or journal deep clones fail the relevant
+owner assertions. Four additional native tests cover transferred count/age,
+explicit handoff through partial commit, and dropped cursor claims/coalescing.
+Removing transfer reservations in a scratch variant reproduces two failures.
+Independent read-only review found no confirmed regression in either unit.
+
+The core storage/pointer neighborhood passes all 122 selected tests; the main
+workspace passes 1,674 all-feature/all-target cases. All six new storage tests
+also pass with core debug assertions disabled; the independent public host
+harness passes all 40 cases. The refreshed local-fork native
+workspace passes 230 all-target tests both normally and with native debug
+assertions disabled. Both workspaces pass correctness/suspicious Clippy and
+strict public rustdoc; Cargo formatting and diff whitespace pass. Three clean
+macOS Glow redock processes finish in 1.481, 0.624, and 0.619 seconds through
+first-live, retirement and runtime quiescence. They qualify programmatic
+renderer/window lifecycle compatibility, not physical dragging, mixed DPI,
+WM-close behavior, or overload admission.
+
+A shared target reused a deliberately mutated scratch artifact once without
+compilation; that run is excluded. Current-source recompilation was observed
+for the passing core storage tests and refreshed native integration. Scratch
+refresh now updates source timestamps instead of preserving older copied
+timestamps before switching the shared target between source locations.
+
+This is groundwork for U7 admission, not completed 4,096-record/4 MiB/250 ms
+enforcement. Owner slots, the fixed overload boundary, cancellation scheduling,
+and byte accounting remain open. The plan now performs U8's resource-ownership
+consolidation before that integration so protected terminals use existing exact
+owners instead of adding temporary reservation maps or a second unbounded queue.
+Ordinary pointer callbacks rejected after freeze are not accepted edges; they
+continue through the platform. The planned adapter integration must retire
+the surviving translator state only after cancellation commits, without
+synthesizing releases or an empty roster.
+U8's final readiness and platform verification still require completed U7.
+
 ## 2026-10-28 U7 overload kernel checkpoint (adapter admission pending)
 
 `DockspaceHostFrame::cancel_native_input_for_overload` provides a terminal
