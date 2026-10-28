@@ -951,6 +951,9 @@ pub enum ScrollEdgeError {
 pub enum PointerEdgeKind {
     /// The pointer moved.
     Moved,
+    /// A host woke to recheck one core-issued stationary gesture action.
+    /// This edge reports no motion and never starts a pointer stream.
+    Continuation(crate::interaction::PointerContinuationToken),
     /// One button became pressed.
     ButtonPressed(PointerButton),
     /// One button became released while the provider-local pointer remains live.
@@ -2043,6 +2046,8 @@ pub(crate) struct PointerJournalLedger {
     reason = "reserved for the independent pointer-ledger integration"
 )]
 pub enum PointerJournalLedgerError {
+    #[error("pointer continuation at {sequence} does not own an existing stream")]
+    ContinuationStreamMismatch { sequence: PointerEdgeSequence },
     #[error("pointer edge {sequence} time {submitted:?} precedes provider time {previous:?}")]
     NonMonotonicTime {
         sequence: PointerEdgeSequence,

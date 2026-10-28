@@ -434,6 +434,8 @@ impl SurfaceScrollEvent {
 pub enum SurfacePointerEvent {
     /// Pointer motion while the provider owns the stream.
     Moved,
+    /// Rechecks one core-issued stationary action with fresh receiver facts.
+    Continuation(crate::interaction::PointerContinuationToken),
     /// One button became pressed.
     ButtonPressed(SurfacePointerButton),
     /// One button became released.
@@ -1311,6 +1313,7 @@ impl DockspaceHostFrame<'_> {
     ) -> Result<PointerEdgeKind, DockspaceRuntimeError> {
         Ok(match event {
             SurfacePointerEvent::Moved => PointerEdgeKind::Moved,
+            SurfacePointerEvent::Continuation(token) => PointerEdgeKind::Continuation(token),
             SurfacePointerEvent::ButtonPressed(button) => {
                 PointerEdgeKind::ButtonPressed(surface_button(button))
             }

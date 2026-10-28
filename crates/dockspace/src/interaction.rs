@@ -2,6 +2,10 @@
 
 use std::sync::Arc;
 
+mod timed;
+pub use timed::PointerContinuationToken;
+pub(crate) use timed::{HoverSelectionState, PointerContinuationRequest};
+
 use thiserror::Error;
 
 use crate::close_plan::{CloseItemRequirement, ClosePlan, ClosePlanTarget};
@@ -536,7 +540,7 @@ pub(crate) struct SceneGestureContinuation {
 }
 
 impl SceneGestureContinuationDraft {
-    fn bind(self, session: SceneGestureSession) -> SceneGestureContinuation {
+    pub(crate) fn bind(self, session: SceneGestureSession) -> SceneGestureContinuation {
         SceneGestureContinuation {
             session,
             draft: self,
@@ -2210,6 +2214,7 @@ pub(crate) struct ActiveDrag {
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
+    pub(crate) hover_selection: Option<HoverSelectionState>,
     pub(crate) journal_presentation_reservation: Option<JournalPresentationReservation>,
     pub(crate) contained_offer: Option<ContainedPresentationOffer>,
     pub(crate) surface_background_offer: Option<SurfaceBackgroundRootOffer>,
@@ -2424,6 +2429,7 @@ pub struct InteractionState {
     last_resize_generation: ResizeGeneration,
     last_contained_transform_generation: ContainedTransformGeneration,
     last_preview_sequence: PreviewSequence,
+    last_continuation_generation: u64,
     last_consumed_drag: Option<DragSessionId>,
     last_consumed_contained_transform: Option<ContainedTransformSessionId>,
 }
@@ -2867,6 +2873,7 @@ impl InteractionState {
             source_layout_facts: armed.source_layout_facts.clone(),
             journal_source_geometry: armed.journal_source_geometry,
             continuation: armed.continuation.clone(),
+            hover_selection: None,
             journal_presentation_reservation: None,
             contained_offer: None,
             surface_background_offer: None,
@@ -3497,6 +3504,7 @@ impl Default for InteractionState {
             last_resize_generation: ResizeGeneration::default(),
             last_contained_transform_generation: ContainedTransformGeneration::default(),
             last_preview_sequence: PreviewSequence::default(),
+            last_continuation_generation: 0,
             last_consumed_drag: None,
             last_consumed_contained_transform: None,
         }
@@ -3521,6 +3529,9 @@ pub enum InteractionCounterError {
     /// Preview identities cannot advance without wrapping.
     #[error("preview sequence is exhausted")]
     PreviewSequenceExhausted,
+    /// Timed continuation identities cannot advance without wrapping.
+    #[error("pointer continuation generation is exhausted")]
+    ContinuationGenerationExhausted,
     /// Internal code attempted to publish a preview outside its live drag.
     #[error("interaction state invariant failed while publishing a preview")]
     StateInvariant,

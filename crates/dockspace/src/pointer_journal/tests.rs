@@ -1,5 +1,6 @@
 use super::*;
 
+mod continuation;
 mod metadata;
 use crate::backend_ingress::BackendIngressRecorder;
 use crate::geometry::{PhysicalRect, ScaleFactor};

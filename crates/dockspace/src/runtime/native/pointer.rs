@@ -62,6 +62,8 @@ impl NativePointerButton {
 pub enum NativePointerEvent {
     /// Pointer motion.
     Moved,
+    /// Rechecks one core-issued stationary action with fresh receiver facts.
+    Continuation(crate::interaction::PointerContinuationToken),
     /// One button became pressed.
     ButtonPressed(NativePointerButton),
     /// One button became released while the pointer remains live.
@@ -736,6 +738,7 @@ impl RuntimeNativeState {
         let capture = self.capture_owner(input.capture())?;
         let kind = match input.event() {
             NativePointerEvent::Moved => PointerEdgeKind::Moved,
+            NativePointerEvent::Continuation(token) => PointerEdgeKind::Continuation(token),
             NativePointerEvent::ButtonPressed(button) => {
                 PointerEdgeKind::ButtonPressed(button.into_core())
             }

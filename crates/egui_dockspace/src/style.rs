@@ -147,12 +147,14 @@ fn with_alpha(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(red, green, blue, alpha)
 }
 
-/// Configurable geometry and visual overrides used to paint a docking scene.
+/// Configurable docking geometry, interaction timing and visual overrides.
 ///
 /// All geometry is expressed in egui points. Values are fixed for a frame and
 /// are never derived from viewport size, pointer velocity, elapsed time, or DPI.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DockStyle {
+    /// Delay before an active drag selects its hovered tab; `None` disables it.
+    pub hover_selection_delay: Option<std::time::Duration>,
     /// Height of every tab bar.
     pub tab_bar_height: f32,
     /// Nominal square extent of the whole-tab-stack grip.
@@ -237,6 +239,7 @@ impl DockStyle {
         &self,
     ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
         DockPresentationConfig::builder()
+            .hover_selection_delay(self.hover_selection_delay)
             .tab_bar_height(f64::from(self.tab_bar_height))
             .tab_group_grip_extent(f64::from(self.tab_group_grip_extent))
             .tab_horizontal_padding(f64::from(self.tab_horizontal_padding))
@@ -362,6 +365,7 @@ impl Default for DockStyle {
     fn default() -> Self {
         let geometry = DockPresentationConfig::default();
         Self {
+            hover_selection_delay: geometry.hover_selection_delay(),
             tab_bar_height: geometry.tab_bar_height() as f32,
             tab_group_grip_extent: geometry.tab_group_grip_extent() as f32,
             tab_horizontal_padding: geometry.tab_horizontal_padding() as f32,

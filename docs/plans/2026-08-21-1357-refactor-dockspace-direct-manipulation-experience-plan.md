@@ -278,7 +278,7 @@ Hosts may style the controls and supply measured dimensions without changing tar
 | Magnetic center | Central 52% by 52% of the target content rectangle |
 | Other directions | Normalized nearest edge outside the center; outer-root band is 15% of the short side, clamped to 32-72 logical points |
 | Target stability | 8 logical-point release hysteresis with deterministic switch advantage |
-| Hover selection | Optional 150 ms event-time dwell, reset by target/scene/gesture/output/policy change; never implies pane focus |
+| Hover selection | Optional 150 ms event-time dwell, reset by target/semantic scene/gesture/stream/policy change; same-geometry emissions preserve the origin, execution needs current output proof; never implies pane focus |
 | Temporary suppression | Shift disables magnetic acquisition in the default editor profile; R25 arrangement lock remains independent |
 | Local touch | 350 ms long press and 8-point slop; pre-arm movement yields to pane scrolling, early release activates/selects, armed stationary release opens a semantic context menu |
 | Resize and controls | Eight contained directions; corners outrank edges; 8-point mouse edge band, 12-point corners, and at least 44-point touch targets clipped away from title/tab controls |
@@ -397,7 +397,10 @@ After the 2026-10-28 held-close ownership checkpoint, resume U3d's finite timed
 continuation and U10's shared stationary overflow owner in core and official egui
 before expanding the optional native overload/platform work. Metadata capture,
 hover dwell and touch arming remain separate implementation/qualification steps;
-the existing native resource checkpoint is retained. This priority change keeps
+the existing native resource checkpoint is retained. U3d now has a finite
+core-owned stationary continuation and official egui hover-selection slice; touch
+source capture and native stationary capture still require their own facts. This
+priority change keeps
 the custom-engine host central and does not remove U7/U8/U11 acceptance gates.
 U11 gates Windows/macOS capability claims separately; unsupported backends remain explicit rather than blocking the generic crate.
 These are packaging/readiness gates, not instructions to publish crates or upstream patches automatically.
@@ -547,18 +550,30 @@ class and optional monotonic time through core, local and native facade records.
 The existing pointer ledger validates provider-wide time order and stable known
 device class per live stream at its normal rollbackable commit boundary. Unknown
 samples grant no device/time facts, overload keeps the provider clock, and only
-a new provider may use a new origin. This is input groundwork; gesture-bound
-continuations and actual timed interactions remain implementation work.
-The official owned-run adapter now forwards explicit RawInput.time from the
-original ordered batch; reruns cannot replace it with egui's predicted time.
-It retains Unknown device for generic pointer events and does not claim
-per-OS-event timestamps. Native metadata capture and explicit local-touch
-routing still need their own source facts and qualification.
-Touch contact identity/loss tests do not prove long-press semantics,
-and geometric target hysteresis does not prove hover selection. Existing
-receiver-current capability flags certify authority, not these timing features.
-The default profile table remains a requirement rather than completed evidence
-for those rows. The full behavior plan cannot close before U3d qualification.
+a new provider may use a new origin. The official owned-run adapter forwards
+explicit RawInput.time from the original ordered batch; reruns cannot replace it
+with egui's predicted time. It retains Unknown device for generic pointer events
+and does not claim per-OS-event timestamps.
+
+The finite stationary slice now keeps one opaque continuation on the existing
+active drag and returns it through an explicit non-motion journal edge. Its
+150ms hover selection uses current framework/semantic receiver facts, retains
+the dwell origin across equivalent emissions in the same stream, selects without
+requesting content focus, and recaptures the same source for continued drag and
+release. A valid source-only continuation may preserve an unselected source's
+press activation; it never refreshes stale hover authority. Public-host and
+official egui tests cover stationary execution, exact retry, no added focus and
+final release. Motion only updates the challenge; timed selection uses an
+explicit continuation after the host's accepted raw batch, preserving a release
+which arrives at the deadline. Independent review found the source wake getter
+too strict; its fix and a mutation-red inactive-source regression are recorded
+in validation. A due Move+Release regression also guards terminal ordering.
+
+Native metadata/stationary capture and explicit local-touch routing still need
+their own source facts and qualification. Touch contact identity/loss tests do
+not prove 350ms long press or 8-point pre-arm scrolling behavior. U10 active-drag
+edge scrolling still needs the shared continuation owner and arbitration.
+The full behavior plan cannot close before the remaining U3d qualification.
 
 U3's replacement completion does not establish U4 full live-content projection, U5 broader
 blocker qualification, U6's full command/focus contract, or U12 structural-cost

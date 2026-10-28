@@ -63,6 +63,17 @@ impl DockEngine {
                 policy,
                 interaction_events,
             ),
+            PointerEdgeKind::Continuation(token) => self.reduce_journal_continuation(
+                cause,
+                owner,
+                token,
+                edge,
+                receipt,
+                snapshot,
+                policy,
+                events,
+                interaction_events,
+            ),
             PointerEdgeKind::ButtonReleased(PointerButton::Primary)
             | PointerEdgeKind::ContactEnded(PointerButton::Primary) => self
                 .reduce_journal_primary_release(
@@ -781,6 +792,7 @@ impl DockEngine {
         )? {
             outcomes.push(outcome);
         }
+        self.advance_hover_selection(cause, owner, session, edge, receipt, snapshot)?;
         Ok(outcomes)
     }
 

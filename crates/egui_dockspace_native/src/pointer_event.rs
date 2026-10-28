@@ -702,6 +702,7 @@ impl NativeMouseState {
                 self.capture = None;
             }
             NativePointerEvent::Moved
+            | NativePointerEvent::Continuation(_)
             | NativePointerEvent::CaptureChanged
             | NativePointerEvent::Scrolled(_) => {}
         }

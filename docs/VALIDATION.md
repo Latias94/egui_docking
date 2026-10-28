@@ -15,6 +15,69 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U3d finite stationary continuation
+
+The core now exposes one opaque, finite `DockspacePointerContinuation` from the
+existing active drag owner. It contains only the provider pointer, deadline,
+logical hover surface, stationary point and a core-minted token. Reading it does
+not mutate the workspace. A host schedules the deadline and returns the token
+through the normal ordered pointer batch with explicit event time, current
+capture and fresh receiver facts; the core rejects a different stream, stale
+owner, early time, stale presentation or changed hover target. The continuation
+edge is distinct from `Moved`, so a timer never fabricates motion.
+
+The initial timed behavior is hover tab selection. The core keeps the dwell start
+when the same semantic scene is repainted with a newer emission, while requiring
+the fresh receiver authority to remain current. It re-resolves framework
+clearance and the semantic click winner at the stationary point, selects only a
+different tab, does not request pane focus, recaptures the drag source facts and
+keeps the original drag active. Workspace/policy changes, a changed output stream,
+coordinate authority or owner, and loss of capture invalidate the action. The existing
+presentation configuration defaults to 150ms and can disable or customize it.
+
+The official egui adapter schedules repaint at the core deadline and submits an
+explicit continuation edge after the original raw batch time reaches that
+deadline. It never submits a synthetic move. A public-host regression covers
+cross-surface source/hover routing, 159ms versus 160ms behavior, dropped-frame
+retry, duplicate/foreign pointer rejection, fresh output repaint, no added pane
+focus, source-fingerprint recapture and final release, with selected and inactive
+source tabs. Blocked/Unknown hover invalidates the deadline; later fresh clearance
+cannot revive its token. Foreign capture ends the gesture. The official egui
+regression covers repeated same-scene repaints, Unknown-time non-execution,
+deadline selection and final docking. Two ledger-only tests prove continuations
+cannot create/reuse another stream or advance a rejected suffix's clock/sequence,
+and that stationary edges preserve buttons until an actual terminal edge.
+
+Independent review found a P1 in the wake getter: requiring the old source
+presentation to remain current hid valid work after an inactive-source press
+Select. It now reuses the existing exact source continuation proof, retaining
+provider/target currentness separately. Review confirms the fix without a new
+confirmed P1/P2. Removing that branch in a scratch mutation fails the inactive
+source regression; restoring it passes again.
+
+A further terminal-order regression found that a due Moved selecting before a
+same-batch release invalidated the release's target scene. Motion now only
+updates the finite challenge; only Continuation executes timed selection. The
+official adapter completes the accepted raw batch first, then submits a surviving
+due continuation using that same current point/receiver basis in the next ordered
+pointer boundary. It collects both reports. A released gesture has no continuation
+to execute, and moving pointers do not need to go idle. Public-host and real egui
+cases cover the previously failing due Move+Release batch, alongside idle and
+moving-pointer deadline selection. No stale-hover proof was relaxed.
+
+Fresh gates pass 1,705 workspace all-feature/all-target tests, 60 public-host
+cases, 114 complete product cases, and 260 local-fork native compatibility cases.
+Four targeted configuration/ledger/egui cases also pass without default features
+or core debug assertions. Correctness/suspicious Clippy, strict core/adapter docs
+with and without default features, and ten doctests pass. Independent review
+confirms the terminal-order fix and second-boundary receipt/feedback/retry
+handling without a new confirmed finding. The native count is unchanged and includes the new pointer
+edge translation arm. A direct native gate without the local override fails
+against the tracked earlier fork pin, which predates the required new seams;
+the patched fork workspace passes. Formatting and diff checks pass. This slice does not claim
+350ms touch long press, explicit native stationary input capture, active-drag
+edge scrolling, or full U3d/U10 completion; those remain open.
+
 ## 2026-10-28 U3d official-egui batch observation time
 
 The owned `run_ui` boundary captures explicit `RawInput.time` before egui runs,

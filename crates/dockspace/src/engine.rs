@@ -13,6 +13,7 @@ mod pointer_contained;
 mod pointer_proof;
 mod pointer_session;
 mod pointer_splitter;
+mod pointer_timed;
 mod pointer_transaction;
 mod presentation_authority;
 mod presentation_identity;
@@ -145,10 +146,11 @@ use crate::interaction::{
     ContainedTransformStart, DragArmStart, EscapeDelivery, FrozenClickAction, FrozenCloseClick,
     FrozenContainedDragOrigin, FrozenDragOrigin, FrozenPresentationAuthority, FrozenResizeHandle,
     FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick,
-    FrozenTabStripControlClick, GestureOwner, InteractionCancelReason, InteractionCounterError,
-    InteractionDelivery, InteractionEvent, InteractionEventKind, InteractionOutcome,
-    InteractionRejection, InteractionState, InteractionStatus, JournalDragSourceGeometry,
-    JournalDragThresholdOrigin, ManipulationPositionKey, PreviewProof, PreviewResolutionStatus,
+    FrozenTabStripControlClick, GestureOwner, HoverSelectionState, InteractionCancelReason,
+    InteractionCounterError, InteractionDelivery, InteractionEvent, InteractionEventKind,
+    InteractionOutcome, InteractionRejection, InteractionState, InteractionStatus,
+    JournalDragSourceGeometry, JournalDragThresholdOrigin, ManipulationPositionKey,
+    PointerContinuationRequest, PointerContinuationToken, PreviewProof, PreviewResolutionStatus,
     PreviewVisual, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
     SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
     ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,

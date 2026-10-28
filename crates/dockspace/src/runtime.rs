@@ -21,11 +21,13 @@ mod native_effect;
 mod paint;
 #[cfg(feature = "serde")]
 mod persistence;
+mod pointer_continuation;
 mod presentation;
 mod presentation_commands;
 mod report;
 mod session;
 
+pub use crate::interaction::PointerContinuationToken;
 pub use host_frame::DockspaceHostFrame;
 pub use layout_reset::PreparedDockspaceLayoutReset;
 pub use manipulation_feedback::{
@@ -34,6 +36,7 @@ pub use manipulation_feedback::{
     DockspaceManipulationPendingReason, DockspaceManipulationRejection,
     DockspaceManipulationStatus,
 };
+pub use pointer_continuation::DockspacePointerContinuation;
 pub use session::DockspaceSession;
 
 use error_kind::{

@@ -132,6 +132,36 @@ The official egui owned-run adapter forwards explicit `RawInput.time` as one
 batch observation time, preserving Unknown when it is absent. It does not
 claim per-OS-event timestamps or infer device class from generic pointer events.
 
+## Stationary interaction
+
+During a local drag, `DockspaceSession::pointer_continuation()` can return one
+finite wake request. Schedule its deadline using the same clock origin as pointer
+metadata. At wake time, query the request again and submit `request.event()` for
+`request.pointer()` through the normal host or surface pointer input. Supply the
+actual current observation time, capture and independently qualified manipulation
+route; resolve fresh hover facts at `request.position()` on `request.surface()`.
+The deadline itself does not prove that time advanced, and a retained receiver
+from an earlier output is not a fresh answer. Do not synthesize a `Moved` event.
+
+Drain accepted raw motion and terminal input before dispatching a due wake.
+Motion updates the challenge without executing timed selection; re-query the
+committed request after that batch and submit a surviving due continuation as
+its next ordered edge. This keeps a same-batch release from losing its target
+to a timer action, while permitting selection during continued motion.
+
+The core consumes only its current gesture's opaque token. A dropped candidate
+can retry it; successful execution, target loss, blockers or cancellation make
+old tokens inert. A continuation cannot create a new pointer stream. Equivalent
+repaints of the same semantic geometry and stream preserve the dwell start,
+while execution still requires exact current presentation authority. A stream
+takeover or changed scene cannot borrow the prior interval.
+
+The initial action is tab hover selection, with a default 150ms delay controlled
+by `DockPresentationConfig::builder().hover_selection_delay(...)`. `None`
+disables it. Selection keeps the active drag and requests no pane-content focus;
+only a subsequent normal release can deliver the payload. Native stationary
+input, touch long press and active-drag edge scrolling remain separate work.
+
 ## Budgeted Native Input
 
 Buffered native hosts can create a shared `NativeMonotonicClock` and start one

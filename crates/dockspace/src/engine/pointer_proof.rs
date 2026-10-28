@@ -110,7 +110,11 @@ pub(super) fn pointer_receiver_candidate_spec(
             PointerReceiverDeliveryRequest::None,
             position.hover_probe_requested(),
         ),
-        (InteractionStatus::Dragging { session }, PointerEdgeKind::Moved, true) => (
+        (
+            InteractionStatus::Dragging { session },
+            PointerEdgeKind::Moved | PointerEdgeKind::Continuation(_),
+            true,
+        ) => (
             PointerReceiverDeliveryRequest::None,
             engine
                 .interaction

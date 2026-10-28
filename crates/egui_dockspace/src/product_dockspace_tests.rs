@@ -194,6 +194,196 @@ fn ordered_pointer_transport_preserves_explicit_batch_clock_and_unknown_samples(
     assert_eq!(error.kind(), DockspaceRuntimeErrorKind::HostProtocol);
 }
 
+#[test]
+fn stationary_hover_selects_at_its_deadline_across_repainted_outputs_and_keeps_dragging() {
+    fn timed_frame(
+        context: &Context,
+        dockspace: &mut Dockspace,
+        panes: &mut MagneticPanes,
+        time: f64,
+        events: Vec<Event>,
+    ) {
+        let mut raw = input(events);
+        raw.time = Some(time);
+        let output = crate::run_ui(context, raw, |ui| {
+            dockspace.show_single_surface(SURFACE, ui, panes).unwrap();
+        });
+        let (output, receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        receipt.report(crate::SurfacePresentationResult::Presented);
+    }
+
+    for due_mode in ["idle", "motion", "release"] {
+        let context = Context::default();
+        context.enable_accesskit();
+        context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                ROOT,
+                DockspaceNode::equal_split(
+                    DockspaceAxis::Horizontal,
+                    [
+                        DockspaceNode::central_tabs([FIRST, SECOND]),
+                        DockspaceNode::tabs([THIRD, FOURTH]),
+                    ],
+                )
+                .unwrap(),
+            ),
+        )])
+        .unwrap();
+        let mut dockspace = Dockspace::builder("stationary-hover-clock", layout)
+            .build()
+            .unwrap();
+        let mut panes = MagneticPanes::new();
+        let (source, target) = settle_until(8, || {
+            let frame = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+            try_tab_rect(&frame.output, "First").zip(try_tab_rect(&frame.output, "Fourth"))
+        });
+        // Accept the output containing both real tab rectangles.
+        timed_frame(&context, &mut dockspace, &mut panes, 0.5, Vec::new());
+        timed_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            1.0,
+            vec![
+                Event::PointerMoved(source.center()),
+                pointer_button(source.center(), true),
+                Event::PointerMoved(target.center()),
+            ],
+        );
+        let wake = dockspace
+            .session
+            .pointer_continuation()
+            .expect("the real drag arms a hover deadline");
+        assert_eq!(wake.deadline(), std::time::Duration::from_millis(1150));
+        assert!(!dockspace.view().item(FOURTH).unwrap().is_selected());
+        for time in [1.1, 1.149] {
+            timed_frame(&context, &mut dockspace, &mut panes, time, Vec::new());
+            assert_eq!(dockspace.session.pointer_continuation(), Some(wake));
+            assert!(!dockspace.view().item(FOURTH).unwrap().is_selected());
+        }
+        {
+            use dockspace::runtime::{
+                HostPointerInput, HostPointerRoute, SurfacePointerCapture,
+                SurfacePointerReceiverFacts,
+            };
+            let surface = dockspace.session.presented_surface(SURFACE).unwrap();
+            let mut unknown_clock = dockspace.session.begin_host_frame().unwrap();
+            unknown_clock
+                .submit_host_pointer(HostPointerInput::new(
+                    wake.pointer(),
+                    wake.event(),
+                    HostPointerRoute::new(
+                        surface,
+                        LogicalPoint::new(
+                            f64::from(source.center().x),
+                            f64::from(source.center().y),
+                        )
+                        .unwrap(),
+                    ),
+                    HostPointerRoute::new(surface, wake.position()),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&surface),
+                ))
+                .unwrap();
+            unknown_clock
+                .complete_unpainted_surfaces(dockspace::runtime::SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            unknown_clock.commit().unwrap();
+            assert_eq!(dockspace.session.pointer_continuation(), Some(wake));
+            assert!(!dockspace.view().item(FOURTH).unwrap().is_selected());
+        }
+        let due_events = match due_mode {
+            "idle" => Vec::new(),
+            "motion" => vec![Event::PointerMoved(target.center())],
+            "release" => vec![
+                Event::PointerMoved(target.center()),
+                pointer_button(target.center(), false),
+            ],
+            _ => unreachable!(),
+        };
+        timed_frame(&context, &mut dockspace, &mut panes, 1.15, due_events);
+        if due_mode == "release" {
+            for step in 0..8 {
+                timed_frame(
+                    &context,
+                    &mut dockspace,
+                    &mut panes,
+                    1.2 + f64::from(step) * 0.1,
+                    Vec::new(),
+                );
+                if dockspace
+                    .view()
+                    .item(FIRST)
+                    .unwrap()
+                    .tabs()
+                    .items()
+                    .contains(&FOURTH)
+                {
+                    break;
+                }
+            }
+            assert!(
+                dockspace
+                    .view()
+                    .item(FIRST)
+                    .unwrap()
+                    .tabs()
+                    .items()
+                    .contains(&FOURTH)
+            );
+            assert!(!dockspace.session.has_active_gesture());
+            assert!(dockspace.session.pointer_continuation().is_none());
+            continue;
+        }
+        assert!(dockspace.view().item(FOURTH).unwrap().is_selected());
+        assert!(dockspace.session.has_active_gesture());
+        assert!(dockspace.session.pointer_continuation().is_none());
+        let version = dockspace.version();
+        timed_frame(&context, &mut dockspace, &mut panes, 1.3, Vec::new());
+        assert_eq!(dockspace.version(), version);
+        assert!(dockspace.session.has_active_gesture());
+        timed_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            1.31,
+            vec![pointer_button(target.center(), false)],
+        );
+        for step in 0..8 {
+            timed_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                1.4 + f64::from(step) * 0.1,
+                Vec::new(),
+            );
+            if dockspace
+                .view()
+                .item(FIRST)
+                .unwrap()
+                .tabs()
+                .items()
+                .contains(&FOURTH)
+            {
+                break;
+            }
+        }
+        assert!(
+            dockspace
+                .view()
+                .item(FIRST)
+                .unwrap()
+                .tabs()
+                .items()
+                .contains(&FOURTH)
+        );
+        assert!(!dockspace.session.has_active_gesture());
+    }
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the fixture constrains AccessKit bounds to an 800x600 egui viewport"

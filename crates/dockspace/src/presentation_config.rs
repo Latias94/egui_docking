@@ -1,4 +1,6 @@
-//! Renderer-neutral geometry configuration for semantic presentation compilation.
+//! Renderer-neutral geometry and interaction timing configuration.
+
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -35,9 +37,10 @@ impl PresentationConfigRevision {
     }
 }
 
-/// Validated core-owned geometry used to compile a semantic presentation.
+/// Validated core-owned geometry and interaction timing for a presentation.
 ///
-/// Every scalar uses renderer-independent logical units. Visual-only values
+/// Geometry uses renderer-independent logical units; delays use host-clock
+/// durations. Visual-only values
 /// such as colors, fonts, shadows, corner radii, and drag-ghost offsets belong
 /// to the UI adapter and are intentionally absent.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +56,7 @@ pub struct DockPresentationConfig {
     splitter_hit_extent: f64,
     splitter_keyboard_step: f64,
     pointer_drag_start_distance: f64,
+    hover_selection_delay: Option<Duration>,
     guide_extent: f64,
     guide_gap: f64,
     guide_hit_padding: f64,
@@ -152,6 +156,14 @@ impl DockPresentationConfig {
     #[must_use]
     pub const fn pointer_drag_start_distance(&self) -> f64 {
         self.pointer_drag_start_distance
+    }
+
+    /// Returns the delay before hover selection, or `None` when disabled.
+    ///
+    /// A zero delay allows immediate selection.
+    #[must_use]
+    pub const fn hover_selection_delay(&self) -> Option<Duration> {
+        self.hover_selection_delay
     }
 
     /// Returns the width and height of one docking guide button.
@@ -268,6 +280,7 @@ pub struct DockPresentationConfigBuilder {
     splitter_hit_extent: f64,
     splitter_keyboard_step: f64,
     pointer_drag_start_distance: f64,
+    hover_selection_delay: Option<Duration>,
     guide_extent: f64,
     guide_gap: f64,
     guide_hit_padding: f64,
@@ -301,6 +314,7 @@ impl Default for DockPresentationConfigBuilder {
             splitter_hit_extent: 6.0,
             splitter_keyboard_step: 16.0,
             pointer_drag_start_distance: 6.0,
+            hover_selection_delay: Some(Duration::from_millis(150)),
             guide_extent: 48.0,
             guide_gap: 12.0,
             guide_hit_padding: 6.0,
@@ -397,6 +411,15 @@ impl DockPresentationConfigBuilder {
     #[must_use]
     pub const fn pointer_drag_start_distance(mut self, value: f64) -> Self {
         self.pointer_drag_start_distance = value;
+        self
+    }
+
+    /// Sets the delay before hover selection, with `None` disabling selection.
+    ///
+    /// A zero delay allows immediate selection.
+    #[must_use]
+    pub const fn hover_selection_delay(mut self, value: Option<Duration>) -> Self {
+        self.hover_selection_delay = value;
         self
     }
 
@@ -640,6 +663,7 @@ impl DockPresentationConfigBuilder {
             splitter_hit_extent: self.splitter_hit_extent,
             splitter_keyboard_step: self.splitter_keyboard_step,
             pointer_drag_start_distance: self.pointer_drag_start_distance,
+            hover_selection_delay: self.hover_selection_delay,
             guide_extent: self.guide_extent,
             guide_gap: self.guide_gap,
             guide_hit_padding: self.guide_hit_padding,
@@ -784,6 +808,10 @@ mod tests {
             .expect("baseline geometry should be valid");
 
         assert_eq!(config, DockPresentationConfig::default());
+        assert_eq!(
+            config.hover_selection_delay(),
+            Some(Duration::from_millis(150))
+        );
         assert_eq!(config.tab_bar_height().to_bits(), 28.0_f64.to_bits());
         assert_eq!(config.dock_fraction().to_bits(), 0.5_f64.to_bits());
         assert_eq!(
@@ -822,6 +850,18 @@ mod tests {
             config.minimum_floating_size().height().to_bits(),
             120.0_f64.to_bits()
         );
+    }
+
+    #[test]
+    fn hover_selection_delay_can_be_disabled_or_customized() {
+        for delay in [None, Some(Duration::from_millis(350)), Some(Duration::ZERO)] {
+            let config = DockPresentationConfig::builder()
+                .hover_selection_delay(delay)
+                .build()
+                .expect("disabled, custom, and zero hover delays should be valid");
+
+            assert_eq!(config.hover_selection_delay(), delay);
+        }
     }
 
     #[test]

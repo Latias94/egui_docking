@@ -32,6 +32,7 @@ pub(crate) struct ProductPointer {
     position: Option<Pos2>,
 }
 
+#[derive(Clone, Copy)]
 struct Edge {
     event: SurfacePointerEvent,
     point: Option<LogicalPoint>,
@@ -79,16 +80,16 @@ impl ProductPointer {
         surface: SurfaceId,
         ui: &Ui,
         cancel: bool,
-    ) -> Result<Option<HostFrameReport>, DockspaceRuntimeError> {
+    ) -> Result<Vec<HostFrameReport>, DockspaceRuntimeError> {
         let Some(packet) = pointer_packet(ui) else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         if self
             .consumed_run
             .as_ref()
             .is_some_and(|previous| previous.same_run(&packet))
         {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         if self
             .rejected_run
@@ -161,9 +162,22 @@ impl ProductPointer {
                 records.push((event, position));
             }
         }
+        if records.is_empty()
+            && let Some(request) = session.pointer_continuation()
+            && request.surface() == surface
+            && packet
+                .observed_at()
+                .is_some_and(|now| now >= request.deadline())
+        {
+            // This is an explicit stationary recheck. It does not claim that
+            // the pointer moved; the ordinary receiver path below must prove
+            // current framework clearance at its retained logical point.
+            records.push((request.event(), position));
+        }
         if records.is_empty() {
+            schedule_pointer_continuation(session, ui, packet.observed_at());
             self.consumed_run = Some(packet);
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let interactive = ui.ctx().interactive_rects_last_pass();
         let edges = records
@@ -238,41 +252,7 @@ impl ProductPointer {
             .map_or_else(PointerEventMetadata::unknown, |time| {
                 PointerEventMetadata::new(PointerDeviceKind::Unknown, time)
             });
-        let inputs = edges.iter().map(|edge| {
-            let route = edge
-                .surface
-                .zip(edge.point)
-                .map_or(HostPointerRoute::Unknown, |(surface, point)| {
-                    HostPointerRoute::new(surface, point)
-                });
-            let mut facts = SurfacePointerReceiverFacts::unknown();
-            if let Some(surface) = edge.surface.as_ref() {
-                if edge.blocked {
-                    facts = facts
-                        .with_blocked_delivery(surface)
-                        .with_blocked_hover(surface);
-                } else {
-                    facts = edge.delivery.as_ref().map_or_else(
-                        || facts.with_no_delivery(surface),
-                        |receiver| facts.with_delivery(receiver),
-                    );
-                    facts = edge.drag_delivery.as_ref().map_or_else(
-                        || facts.with_no_drag_delivery(surface),
-                        |receiver| facts.with_drag_delivery(receiver),
-                    );
-                    facts = facts.with_clear_hover_lane(surface);
-                }
-            }
-            HostPointerInput::new(
-                SurfacePointerId::new(1),
-                edge.event,
-                route,
-                route,
-                SurfacePointerCapture::None,
-                facts,
-            )
-            .with_metadata(metadata)
-        });
+        let inputs = edges.iter().map(|edge| pointer_input(edge, metadata));
         // A failed packet must not acquire different facts during an egui rerun.
         // The next run cancels the prior owner before accepting fresh input.
         self.rejected_run = Some(packet.clone());
@@ -280,6 +260,29 @@ impl ProductPointer {
         frame.submit_host_pointer_batch(inputs)?;
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let report = frame.commit()?;
+        let mut reports = vec![report];
+        if let (Some(request), Some(now), Some(last)) = (
+            session.pointer_continuation(),
+            packet.observed_at(),
+            edges.last(),
+        ) && now >= request.deadline()
+            && request.surface() == surface
+            && last.point == Some(request.position())
+            && last.surface == session.presented_surface(surface)
+        {
+            // Complete accepted raw input first. A release in that batch ends
+            // the gesture before any deadline task can change its target scene.
+            // A surviving due action uses the same current framework facts in
+            // an explicit next journal edge; moving pointers need not go idle.
+            let edge = Edge {
+                event: request.event(),
+                ..*last
+            };
+            let mut frame = session.begin_host_frame()?;
+            frame.submit_host_pointer(pointer_input(&edge, metadata))?;
+            frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+            reports.push(frame.commit()?);
+        }
         if let Some(scene) = scene {
             for edge in &edges {
                 if matches!(
@@ -299,8 +302,56 @@ impl ProductPointer {
             }
         }
         self.position = position;
+        schedule_pointer_continuation(session, ui, packet.observed_at());
         self.consumed_run = Some(packet);
         self.rejected_run = None;
-        Ok(Some(report))
+        Ok(reports)
+    }
+}
+
+fn pointer_input(edge: &Edge, metadata: PointerEventMetadata) -> HostPointerInput<'_> {
+    let route = edge
+        .surface
+        .zip(edge.point)
+        .map_or(HostPointerRoute::Unknown, |(surface, point)| {
+            HostPointerRoute::new(surface, point)
+        });
+    let mut facts = SurfacePointerReceiverFacts::unknown();
+    if let Some(surface) = edge.surface.as_ref() {
+        if edge.blocked {
+            facts = facts
+                .with_blocked_delivery(surface)
+                .with_blocked_hover(surface);
+        } else {
+            facts = edge.delivery.as_ref().map_or_else(
+                || facts.with_no_delivery(surface),
+                |receiver| facts.with_delivery(receiver),
+            );
+            facts = edge.drag_delivery.as_ref().map_or_else(
+                || facts.with_no_drag_delivery(surface),
+                |receiver| facts.with_drag_delivery(receiver),
+            );
+            facts = facts.with_clear_hover_lane(surface);
+        }
+    }
+    HostPointerInput::new(
+        SurfacePointerId::new(1),
+        edge.event,
+        route,
+        route,
+        SurfacePointerCapture::None,
+        facts,
+    )
+    .with_metadata(metadata)
+}
+
+fn schedule_pointer_continuation(
+    session: &DockspaceSession,
+    ui: &Ui,
+    observed_at: Option<std::time::Duration>,
+) {
+    if let (Some(request), Some(now)) = (session.pointer_continuation(), observed_at) {
+        ui.ctx()
+            .request_repaint_after(request.deadline().saturating_sub(now));
     }
 }

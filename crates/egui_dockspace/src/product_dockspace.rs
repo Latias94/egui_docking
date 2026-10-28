@@ -824,7 +824,7 @@ impl Dockspace {
             self.session
                 .enable_host_pointer()
                 .map_err(DockspaceError::from_detail)?;
-            if let Some(report) = self
+            for report in self
                 .pointer
                 .submit(&mut self.session, surface, ui, cancel_active_gesture)
                 .map_err(DockspaceError::from_detail)?
