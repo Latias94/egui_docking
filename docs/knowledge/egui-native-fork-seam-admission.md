@@ -47,6 +47,45 @@ It must not publish known-empty or select a product receiver behind that area.
 Five real ScrollArea tests cover top/bottom edges, nested overscroll, momentum
 reservation, frozen state and candidate order, and non-consuming areas.
 
+### Local close-hold prerequisite (not yet pinned)
+
+The local egui fork adds neutral close ownership in
+`b4ec9ff8bc719321442cf421fc7f5a496b80154d`. This commit is not pushed and is not
+the native workspace's dependency revision. The published/pinned baseline above
+remains unchanged. It is a prerequisite for U7's budgeted native-driver migration,
+not a claim that the adapter already supports deferred native close decisions.
+
+Buffered input cannot use `CancelClose` as a scheduling hold: it would consume
+the real request and publish a policy cancellation before core decided. Instead,
+`NativeHostHandler::on_window_event` returns `NativeWindowEventDisposition`.
+An exact `HoldClose` claims the callback's canonical attachment/window/event
+request before backend input translation. Repeated pending OS close events keep
+the same identity. The existing close ledger owns both the hold and its optional
+final decision; there is no second close FIFO or docking policy in the fork.
+
+`resolve_native_viewport_close` accepts only that held request on its attached
+egui context. Root Allow requests application shutdown; child Allow releases the
+gate while the host remains responsible for child omission/retirement. Only Veto
+produces the original cancellation callback. Acceptance is not physical-close
+proof. Ordinary Close/CancelClose cannot resolve a held request. Full UI and
+logic-only updates share these semantics, including resolution from an input hook
+before the first UI callback. An unclaimed close retains ordinary eframe behavior.
+
+Both renderer input captures consume held Close from their original ViewportInfo,
+not just a temporary RawInput clone. This prevents a root event from reappearing
+after a child update resolves its Veto. Glow recreation now revokes the old
+request and exact bidirectional mappings before dropping the old Window Arc or
+requesting replacement admission. Window/viewport retirement and attachment drop
+invalidate the old request without inventing cancellation. Resizing or invalidating
+presentation alone does not end a held close.
+
+The local qualification includes 69 Glow, 63 WGPU, 69 combined-renderer and 69
+debug-assertions-disabled library tests. Real EpiIntegration Full/LogicOnly calls
+exercise deferred decisions; the Glow recreation test uses renderer-owned mapping
+state and a real deferred-admission callback without constructing an OS window.
+These are framework/renderer-model results, not OS, physical input or GPU proof.
+See `docs/VALIDATION.md` for review findings, fixes and exact remaining scope.
+
 ## Admitted seams
 
 | Seam | Missing upstream fact | Affected platforms | Minimal patch boundary | Checked evidence | Removal or upstream condition |

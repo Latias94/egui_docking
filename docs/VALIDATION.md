@@ -15,6 +15,70 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U7 local native-close hold prerequisite (not integrated)
+
+The local egui/eframe fork commit
+`b4ec9ff8bc719321442cf421fc7f5a496b80154d` adds neutral exact-request close hold.
+It is not pushed. The main native workspace and smoke still use the published
+`0716beee` revision; their handler and dependency pins have not migrated. These
+results qualify the local fork prerequisite only, not the production native
+adapter's budget or close workflow. The core runtime remains at its separately
+qualified `f719928` checkpoint.
+
+The pre-translation native callback carries a canonical request including its
+attachment, viewport, window and original event identity. Returning its exact
+HoldClose prevents backend translation without issuing CancelClose. The existing
+close ledger retains an optional Allow/Veto decision across updates. A weak
+context handle does not create another owner or queue. Final Veto reports the
+original cancellation once; root Allow requests shutdown, and child Allow leaves
+physical child retirement with its host. Duplicate OS requests and decisions are
+inert, foreign/retired requests fail closed, and exact cleanup preserves successor
+requests. Full UI, logic-only and first input-hook resolution use the same path.
+
+Independent static review found two P2 defects. A Veto resolved in a child update
+could let the renderer's retained root Close reappear after the held gate ended.
+The fix consumes the backend-owned event before cloning any viewport input, in
+all four Glow/WGPU capture paths. A real deferred-child EpiIntegration callback
+regression first reproduced the later root shutdown, then passed after the fix.
+Glow recreation also retained old close authority until successful successor
+creation. Its exact mapping/request cleanup now precedes old Window Arc drop and
+the replacement admission callback. The builder-recreate regression first failed
+because the old request still accepted Allow in a Defer callback; it now rejects
+both decisions, clears old events/maps and preserves a later successor. No fake
+Destroyed callback is used to make retirement pass.
+
+The original review and separate follow-up are preserved. Both findings are
+closed by the targeted follow-up; static review is not counted as a test run.
+The Glow recreation case deliberately uses renderer-owned mapping state without
+an OS Window, while calling actual builder-patch and admission code. It is not
+physical-window, real platform Defer, GPU or OS-input certification.
+
+Fresh local-fork gates (single build job and one nextest thread):
+
+| Gate | Result |
+| --- | --- |
+| Combined Glow/WGPU eframe library | 69 passed |
+| Glow-only eframe library | 69 passed |
+| WGPU-only eframe library | 63 passed |
+| Combined library, debug assertions disabled | 69 passed |
+| Glow without native-host-seam | Compiles |
+| Correctness and suspicious Clippy groups, all eframe targets | Passed with both groups denied |
+| Strict eframe rustdoc with inspection/persistence enabled | Passed |
+| eframe formatting and diff whitespace | Passed |
+
+The first strict-doc attempt with both optional features off exposed existing
+links to their absent exports; enabling those features qualifies the complete
+documentation without changing unrelated upstream docs. Existing non-denied
+style and feature-off unused-variable warnings remain.
+
+Next U7 integration must retain the canonical token with the callback-time exact
+native binding, translate core decisions through this seam, and share one budget
+across claim, poll, Repeat/finalization, close and shutdown. Partial reports must
+keep queued snapshot/close state and submitted output reservations. The eventual
+remote fork pin must be available and all egui-family sources aligned before CI
+or packaging can claim the new path. Admission caps, overload, scoped native
+input and release-latency qualification remain separate unfinished work.
+
 ## 2026-10-28 U7 budgeted runtime continuation checkpoint (in progress)
 
 The renderer-neutral runtime exposes `NativeMonotonicClock`, `NativeInputBudget`
