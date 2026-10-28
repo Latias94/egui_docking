@@ -15,6 +15,30 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 native snapshot capacity preparation
+
+The native adapter's raw journal now reports inline envelope data plus its
+`VecDeque` backing capacity. Pop, raw-to-core transfer, source commit and clear
+do not falsely subtract retained backing. Parked ingress remains charged to its
+existing external owner rather than being counted as another raw queue slot.
+This diagnostic helper is not yet an admission limit.
+
+Roster conversion now borrows frozen work-area facts, moves the core work-area
+Vec into the session, and retains only settlement data in the prepared sidecar.
+Unknown work areas revoke routing while preserving display token history and
+its monotonic frontier, without cloning that map. Restoring Exact facts reuses
+the original display token. Destroyed observations are consumed into the
+compiled roster without a second intermediate Vec. Capture and validation use
+unstable sorting while preserving duplicate-identity rejection.
+
+Serialized local-override qualification passes 306 native workspace tests
+normally and 306 with native debug assertions disabled, plus
+correctness/suspicious Clippy and formatting/diff checks. The macOS real-window
+programmatic redock smoke completes tear-off, first-live, redock and retirement
+with exit 0. Independent review found no confirmed P1/P2 in this slice. These
+checks use the local unpublished fork, do not change tracked remote pins and
+do not certify physical input or the unfinished 4 MiB admission budget.
+
 ## 2026-10-29 U7 recorded-input capacity measurement prerequisite
 
 The public session and open host frame now expose

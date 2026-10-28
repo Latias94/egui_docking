@@ -701,6 +701,13 @@ overhead are outside this narrow query. Actual 4 MiB ordinary admission,
 raw-to-core peak reservations and protected variable-payload preallocation
 remain unfinished.
 
+The adjacent native prerequisite measures actual raw backing capacity and
+removes work-area/roster conversion clones. Unknown work-area settlement
+preserves token history while revoking routes. The frozen local source passes
+306 native tests normally and without native debug assertions, Clippy and a
+macOS programmatic real-window redock; this does not qualify byte admission or
+physical input.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

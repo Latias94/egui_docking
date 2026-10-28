@@ -73,21 +73,14 @@ impl FrozenWorkAreaRoster {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PreparedWorkAreaRoster {
-    core: NativeWorkAreaRoster,
     next_token: u64,
     tokens: BTreeMap<DisplayIdentity, HostWorkAreaToken>,
     routes: PreparedRoutes,
 }
 
-impl PreparedWorkAreaRoster {
-    pub(crate) fn core(&self) -> NativeWorkAreaRoster {
-        self.core.clone()
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum PreparedRoutes {
     Exact(Vec<PreparedRoute>),
     Unknown,
@@ -127,12 +120,11 @@ impl NativeWorkAreaState {
     pub(crate) fn prepare(
         &self,
         roster: &FrozenWorkAreaRoster,
-    ) -> Result<PreparedWorkAreaRoster, NativeHostProtocolError> {
+    ) -> Result<(NativeWorkAreaRoster, PreparedWorkAreaRoster), NativeHostProtocolError> {
         let mut next_token = self.next_token;
         let mut tokens = BTreeMap::new();
         let (core, routes) = match roster {
             FrozenWorkAreaRoster::Unknown => {
-                tokens = self.tokens.clone();
                 (NativeWorkAreaRoster::Unknown, PreparedRoutes::Unknown)
             }
             FrozenWorkAreaRoster::Exact(records) => {
@@ -166,44 +158,43 @@ impl NativeWorkAreaState {
                 )
             }
         };
-        Ok(PreparedWorkAreaRoster {
-            core,
+        let prepared = PreparedWorkAreaRoster {
             next_token,
             tokens,
             routes,
-        })
+        };
+        Ok((core, prepared))
     }
 
     pub(crate) fn commit(&mut self, prepared: PreparedWorkAreaRoster, session: &DockspaceSession) {
-        let routes = match prepared.routes {
-            PreparedRoutes::Exact(prepared_routes) => {
-                let routes = prepared_routes
-                    .iter()
-                    .filter_map(|route| {
-                        session
-                            .native_work_area(route.token)
-                            .map(|binding| CommittedRoute {
-                                display_bounds: route.display_bounds,
-                                binding,
-                            })
-                    })
-                    .collect::<Vec<_>>();
-                debug_assert_eq!(
-                    routes.len(),
-                    prepared_routes.len(),
-                    "an applied core work-area roster must mint every adapter binding"
-                );
-                if routes.len() == prepared_routes.len() {
-                    routes
-                } else {
-                    Vec::new()
-                }
-            }
-            PreparedRoutes::Unknown => Vec::new(),
+        let PreparedRoutes::Exact(prepared_routes) = prepared.routes else {
+            // Unknown revokes routing without replacing display identity history.
+            self.routes = Vec::new();
+            return;
         };
+        let routes = prepared_routes
+            .iter()
+            .filter_map(|route| {
+                session
+                    .native_work_area(route.token)
+                    .map(|binding| CommittedRoute {
+                        display_bounds: route.display_bounds,
+                        binding,
+                    })
+            })
+            .collect::<Vec<_>>();
+        debug_assert_eq!(
+            routes.len(),
+            prepared_routes.len(),
+            "an applied core work-area roster must mint every adapter binding"
+        );
         self.next_token = prepared.next_token;
         self.tokens = prepared.tokens;
-        self.routes = routes;
+        self.routes = if routes.len() == prepared_routes.len() {
+            routes
+        } else {
+            Vec::new()
+        };
     }
 
     pub(crate) fn binding_at(&self, point: PhysicalPoint) -> Option<NativeWorkAreaBinding> {
@@ -257,7 +248,7 @@ fn validate_exact_roster(
     if records.is_empty() {
         return Err(NativeHostProtocolError::InvalidWorkAreaRoster);
     }
-    records.sort_by_key(|record| record.display);
+    records.sort_unstable_by_key(|record| record.display);
     if records
         .windows(2)
         .any(|pair| pair[0].display == pair[1].display)
@@ -287,9 +278,57 @@ mod tests {
             ScaleFactor::new(1.0).expect("scale validates"),
         )]);
 
-        let prepared = state.prepare(&roster).expect("exact roster prepares");
+        let (core, prepared) = state.prepare(&roster).expect("exact roster prepares");
 
+        assert!(matches!(core, NativeWorkAreaRoster::Exact(records) if records.len() == 1));
         assert_eq!(prepared.tokens, BTreeMap::from([(display, token)]));
         assert_eq!(prepared.next_token, 20);
+    }
+
+    #[test]
+    fn unknown_prepare_does_not_copy_display_identity_history() {
+        let display = DisplayIdentity::Test(7);
+        let token = HostWorkAreaToken::new(19);
+        let state = NativeWorkAreaState {
+            next_token: 20,
+            tokens: BTreeMap::from([(display, token)]),
+            routes: Vec::new(),
+        };
+
+        let (core, prepared) = state
+            .prepare(&FrozenWorkAreaRoster::Unknown)
+            .expect("unknown roster prepares without copying token history");
+
+        assert_eq!(core, NativeWorkAreaRoster::Unknown);
+        assert!(prepared.tokens.is_empty());
+        assert!(matches!(prepared.routes, PreparedRoutes::Unknown));
+        assert_eq!(state.tokens, BTreeMap::from([(display, token)]));
+        assert_eq!(state.next_token, 20);
+    }
+
+    #[test]
+    fn exact_validation_sorts_display_identities_and_rejects_duplicates() {
+        let display_bounds =
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("display bounds validate");
+        let work_area_bounds =
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0).expect("work-area bounds validate");
+        let scale = ScaleFactor::new(1.0).expect("scale validates");
+        let FrozenWorkAreaRoster::Exact(records) = FrozenWorkAreaRoster::for_test_exact([
+            (2, display_bounds, work_area_bounds, scale),
+            (1, display_bounds, work_area_bounds, scale),
+        ]) else {
+            unreachable!("the fixture constructs exact records");
+        };
+        let FrozenWorkAreaRoster::Exact(sorted) =
+            validate_exact_roster(records).expect("distinct displays validate")
+        else {
+            unreachable!("validation preserves exact records");
+        };
+        assert_eq!(sorted[0].display, DisplayIdentity::Test(1));
+        assert_eq!(sorted[1].display, DisplayIdentity::Test(2));
+        assert_eq!(
+            validate_exact_roster(vec![sorted[0], sorted[0], sorted[1]]),
+            Err(NativeHostProtocolError::InvalidWorkAreaRoster)
+        );
     }
 }

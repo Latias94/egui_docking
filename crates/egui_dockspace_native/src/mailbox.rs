@@ -211,7 +211,7 @@ impl NativeViewportRosterRecord {
                 record.window(),
             ));
         }
-        observations.sort_by_key(|observation| observation.binding().surface());
+        observations.sort_unstable_by_key(|observation| observation.binding().surface());
         Self {
             observations,
             work_areas: FrozenWorkAreaRoster::capture(roster.work_areas()),
@@ -225,8 +225,8 @@ impl NativeViewportRosterRecord {
         &self.observations
     }
 
-    pub(crate) fn work_areas(&self) -> Result<FrozenWorkAreaRoster, NativeHostProtocolError> {
-        self.work_areas.clone()
+    pub(crate) fn work_areas(&self) -> Result<&FrozenWorkAreaRoster, NativeHostProtocolError> {
+        self.work_areas.as_ref().map_err(|error| *error)
     }
 
     pub(crate) const fn backend(&self) -> NativeWindowingBackend {

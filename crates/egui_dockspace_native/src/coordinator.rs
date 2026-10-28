@@ -2003,14 +2003,15 @@ impl NativeCoordinator {
         if let (Ok(mut observations), Ok(frozen_work_areas)) =
             (self.compile_viewport_roster(roster), roster.work_areas())
         {
-            let prepared_work_areas = self.work_areas.prepare(&frozen_work_areas)?;
-            let destroyed = self
-                .bridge
-                .retirement_destroyed_observations()
-                .into_iter()
-                .map(|(binding, facts)| CompiledWindowObservation::new(binding, facts))
-                .collect::<Vec<_>>();
-            observations.extend(destroyed.iter().copied());
+            let (core_work_areas, prepared_work_areas) =
+                self.work_areas.prepare(frozen_work_areas)?;
+            let destroyed = self.bridge.retirement_destroyed_observations();
+            let has_destroyed = !destroyed.is_empty();
+            observations.extend(
+                destroyed
+                    .into_iter()
+                    .map(|(binding, facts)| CompiledWindowObservation::new(binding, facts)),
+            );
             let mut presentation_acknowledgements = Vec::new();
             let mut input_acknowledgement = None;
             let mut focus_reportable = Vec::new();
@@ -2034,7 +2035,7 @@ impl NativeCoordinator {
                 observations
                     .iter()
                     .map(|observation| (observation.binding(), observation.facts())),
-                prepared_work_areas.core(),
+                core_work_areas,
             ) {
                 Ok(()) => {
                     debug_assert!(self.queued_snapshot.is_none());
@@ -2046,7 +2047,7 @@ impl NativeCoordinator {
                         focus_reportable,
                         work_areas: prepared_work_areas,
                     });
-                    if !destroyed.is_empty() {
+                    if has_destroyed {
                         self.bridge.retirement_mark_snapshot_queued();
                     }
                     return Ok(());
@@ -2063,7 +2064,7 @@ impl NativeCoordinator {
                 Err(error) => return Err(error.into()),
             }
         }
-        let prepared_work_areas = self.work_areas.prepare(&FrozenWorkAreaRoster::Unknown)?;
+        let (_, prepared_work_areas) = self.work_areas.prepare(&FrozenWorkAreaRoster::Unknown)?;
         self.session.report_native_inventory_unknown()?;
         debug_assert!(self.queued_snapshot.is_none());
         self.queued_snapshot = Some(QueuedNativeSnapshot {

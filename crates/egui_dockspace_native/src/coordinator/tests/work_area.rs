@@ -164,9 +164,26 @@ fn committed_unknown_roster_revokes_the_previous_work_area_route() {
         )]),
     );
     let point = PhysicalPoint::new(1600.0, 1060.0).expect("desktop point validates");
-    assert!(native.work_area_for_point(point).is_some());
+    let previous = native
+        .work_area_for_point(point)
+        .expect("the exact roster publishes a work-area route");
 
     publish_work_areas(&mut native, [first, second], FrozenWorkAreaRoster::Unknown);
 
     assert_eq!(native.work_area_for_point(point), None);
+
+    publish_work_areas(
+        &mut native,
+        [first, second],
+        FrozenWorkAreaRoster::for_test_exact([(
+            1,
+            display_bounds(),
+            usable_work_area(),
+            ScaleFactor::new(1.0).expect("work-area scale validates"),
+        )]),
+    );
+    let restored = native
+        .work_area_for_point(point)
+        .expect("a later exact roster restores routing");
+    assert_eq!(restored.token(), previous.token());
 }

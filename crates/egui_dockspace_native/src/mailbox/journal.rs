@@ -1,6 +1,7 @@
 //! Callback identity and age retained across transfer into the core recorder.
 
 use std::collections::VecDeque;
+use std::mem::size_of;
 use std::time::Duration;
 
 use dockspace::runtime::NativeMonotonicClock;
@@ -69,6 +70,18 @@ impl HostIngressJournal {
 
     pub(super) fn retained_record_count(&self) -> usize {
         self.queue.len().saturating_add(self.transferred_count)
+    }
+
+    /// Returns inline journal storage and the raw queue's backing capacity.
+    ///
+    /// Excludes payload descendants and records retained by external owners.
+    /// Transferred records do not add a second charge.
+    pub(super) fn owned_buffer_capacity_bytes(&self) -> usize {
+        size_of::<Self>().saturating_add(
+            self.queue
+                .capacity()
+                .saturating_mul(size_of::<ReservedHostRecord>()),
+        )
     }
 
     pub(super) fn age_since(&self, captured_at: Duration) -> Duration {
@@ -185,6 +198,45 @@ mod tests {
 
     fn record(ordinal: u64) -> HostRecord {
         HostRecord::DeviceRemoval(NativeDeviceRemovalRecord::for_test(ordinal))
+    }
+
+    #[test]
+    fn buffer_capacity_survives_removal_without_charging_parked_or_transferred_records() {
+        let (mut journal, _) = journal();
+        let inline = size_of::<HostIngressJournal>();
+        assert_eq!(journal.owned_buffer_capacity_bytes(), inline);
+        let parked = journal.reserve(record(1));
+        assert_eq!(journal.queue.capacity(), 0);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), inline);
+
+        for ordinal in 2..=4 {
+            journal.push_back(record(ordinal));
+        }
+        let capacity = journal.queue.capacity();
+        assert!(capacity >= 3);
+        let expected = inline + capacity * size_of::<ReservedHostRecord>();
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
+
+        journal.pop_front().expect("the first raw record is queued");
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
+        journal.transfer_front(1);
+        assert_eq!(journal.retained_record_count(), 2);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
+        journal.transfer_reserved(parked);
+        assert_eq!(journal.retained_record_count(), 3);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
+        journal.transfer_front(1);
+        assert!(journal.is_empty());
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
+
+        journal.commit_transferred();
+        assert_eq!(journal.retained_record_count(), 0);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
+        journal.push_back(record(5));
+        journal.queue.clear();
+        assert!(journal.is_empty());
+        assert_eq!(journal.queue.capacity(), capacity);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
     }
 
     #[test]
