@@ -645,9 +645,15 @@ route into the existing unmaterialized retirement entry. Raw handoff and partial
 commit do not release it, and an unrecorded failure result cannot reach
 quiescence. HostRecords owns the sole retirement state and the complete frame
 commit hook. This native work is locally qualified against the unpublished fork
-and remains uncommitted with that adapter. Exact physical Destroyed/held-close
-ingress reservations, protected overload admission and the U7/U8 exit criteria
-remain open; the checkpoint does not establish native readiness.
+and remains uncommitted with that adapter. The physical-window follow-up reserves
+one non-Clone Destroyed receipt on attach and moves it to the same retirement
+owner across route displacement, unbind and release. Admission checks both live
+and retired binding/WindowId ownership, and terminal receipt commit gates
+tombstones and quiescence. A same-window rebind is allowed only before Destroyed
+capture; old pointer-reset and semantic tombstone ownership cannot be reassigned
+afterwards. Exact held-close ingress integration, protected overload admission
+and the U7/U8 exit criteria remain open; these checkpoints do not establish
+native readiness.
 
 ### U10. Complete layout management and a bounded editor showcase
 

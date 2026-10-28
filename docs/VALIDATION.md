@@ -15,6 +15,60 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U8 physical-window Destroyed reservations
+
+An attached physical window now owns one non-Clone terminal receipt in its
+current route. A displaced/unbound window or accepted release moves that same
+receipt into the existing retirement entry. The receipt retains viewport,
+WindowId, binding and actual create-attempt identity; no synthetic lifetime
+authority, parallel old-window registry or second journal is introduced.
+Create-success capture attaches the observed real window before the first output
+is reduced, so pre-admission retirement can still retain its physical obligation.
+
+Destroyed ingress first claims the exact current or retired receipt, suppresses
+only its matching route and freezes the old binding into the existing journal.
+Duplicates cannot append another record. Receipt Received, Transferred and
+Committed states remain distinct. Snapshot tombstones, route retirement and
+quiescence require the complete callback boundary. A later physical window on
+the same viewport has an independent binding/WindowId; old route retirement
+compares that binding before removal and preserves the successor's sidecars.
+
+Independent review found three gaps in the initial version. Admission checked
+only the live route map, permitting a binding or WindowId already retained by
+retirement to be reused; bind, attach, replacement and create-success now
+preflight against the existing retirement owner. `retain_window` returns its
+original receipt on conflict rather than overwriting another owner. Same-window
+rebind after Destroyed capture could orphan the old pointer-reset tail or copy
+old tombstone progress to a successor. Rebind now requires the route's receipt
+to remain Awaiting; once capture moves it into retirement, the operation rejects
+before mutation. Queued Destroyed records are no longer rewritten. An Awaiting
+same-physical-window rebind retains the original receipt.
+
+Public adapter-model regressions cover displaced W1 and successor W2, duplicate
+capture/transfer, dropped retirement preparation, partial/full commit, old late
+callbacks after quiescence, binding/WindowId reuse rejection and Awaiting versus
+Received rebind. The scroll regression still records provider reset before an
+independent later close-correlation failure using a real matching Destroyed
+owner; an unrelated window is rejected before journal admission instead of
+being treated as that owner. The pre-admission compensating-close fixture now
+reports its observed physical window explicitly before applying core facts.
+
+Native all-target gates pass 257 cases normally and 257 without native debug
+assertions. Correctness/suspicious Clippy, strict native rustdoc and the smoke
+build pass. Follow-up independent production review confirms all three findings
+closed without a new confirmed defect. Removing retirement admission protection
+in a scratch mutation makes the binding/WindowId reuse regression fail; restoring
+it passes the same case again. Three rebuilt macOS Glow redock runs
+complete in 1.637, 0.564 and 0.512 seconds. These are model and programmatic
+window-lifecycle results, not physical-input, mixed-DPI or WM-close certification.
+
+The close-owner body now has fixed current/successor capture and cancellation
+receipt primitives with four tokenless model tests. They are compiled in this
+gate but not yet integrated at callback ingress, and do not prove canonical fork
+Hold/Veto behavior. Held-close ingress integration and protected overload
+admission, capacity/load/latency/soak remain open. Native source stays dirty
+against the unpublished local fork; tracked pins are unchanged.
+
 ## 2026-10-28 U3d ordered device and event-time facts
 
 `PointerEventMetadata` retains an explicit device class and optional monotonic
