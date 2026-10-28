@@ -41,26 +41,31 @@ impl HostFrameReport {
                 },
             );
         let mut ordered_inputs = Vec::new();
-        let document_restore = transition.reduced_inputs().iter().find_map(|reduced| {
+        let replacement = transition.reduced_inputs().iter().find_map(|reduced| {
             let InputOutcome::WorkspaceReplaced {
                 before,
                 after,
-                restored_identity_frontier: Some(_),
+                restored_identity_frontier,
                 ..
             } = reduced.outcome()
             else {
                 return None;
             };
-            Some((reduced.causal_ordinal().get(), *before, *after))
+            let outcome = if restored_identity_frontier.is_some() {
+                HostInputOutcome::DocumentRestored {
+                    previous: *before,
+                    current: *after,
+                }
+            } else {
+                HostInputOutcome::LayoutReset {
+                    previous: *before,
+                    current: *after,
+                }
+            };
+            Some((reduced.causal_ordinal().get(), outcome))
         });
-        if let Some((ordinal, previous, current)) = document_restore {
-            ordered_inputs.push((
-                ordinal,
-                0,
-                0,
-                None,
-                HostInputOutcome::DocumentRestored { previous, current },
-            ));
+        if let Some((ordinal, outcome)) = replacement {
+            ordered_inputs.push((ordinal, 0, 0, None, outcome));
         } else {
             for reduced in transition.reduced_inputs() {
                 let outcome = match reduced.outcome() {

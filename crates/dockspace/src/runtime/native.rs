@@ -783,10 +783,9 @@ pub(super) enum NativePlatformError {
     /// Focus cannot become authoritative before the managed capability roster exists.
     #[error("native focus authority requires an initial managed platform snapshot")]
     FocusAuthorityUnavailable,
-    /// Standalone restore cannot bypass an enrolled native causal stream.
-    #[cfg(feature = "serde")]
-    #[error("document restore requires the enrolled native host causal frame")]
-    DocumentRestoreRequiresNativeFrame,
+    /// Standalone replacement cannot bypass an enrolled native causal stream.
+    #[error("workspace replacement requires the enrolled native host causal frame")]
+    ReplacementRequiresNativeFrame,
     /// A managed snapshot supplied an empty, duplicate, or invalid work-area roster.
     #[error("managed native work-area roster is invalid")]
     InvalidWorkAreaRoster,
@@ -827,9 +826,8 @@ impl NativePlatformError {
             | Self::BindingStillLive { .. }
             | Self::BindingNotRetired { .. }
             | Self::FocusAuthorityUnavailable
+            | Self::ReplacementRequiresNativeFrame
             | Self::CapabilityRosterUnavailable => NativeHostErrorKind::OperationConflict,
-            #[cfg(feature = "serde")]
-            Self::DocumentRestoreRequiresNativeFrame => NativeHostErrorKind::OperationConflict,
             Self::ReceiverResolverRequired | Self::HostProfileMismatch => {
                 NativeHostErrorKind::Unsupported
             }

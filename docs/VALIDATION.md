@@ -15,6 +15,70 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U10 layout-only reset without document lineage
+
+`DockspaceSession::prepare_layout_reset` produces an opaque non-cloneable value
+bound to one published session/version. Standalone and managed-native reset
+frames borrow it; dropping or failing the candidate preserves it for retry,
+while successful publication makes it stale. Arrangement lock and document
+item-key restrictions are checked at entry. Native hosts must join their
+ordered prefix rather than bypass it through standalone replacement. Both
+reset and document restore share the replacement phase, native pipeline and
+final semantic/configuration gate. Their native conflict classification remains
+available through both `kind()` and `native_kind()`.
+
+Retired surface, root and contained identities are rebased directly from the
+validated layout without serialization. Incoming fresh identities are reserved
+before allocating replacements, preventing collision with retired names.
+Application ItemIds, tab selection, node content and contained rectangles remain
+intact. The shared helper also replaces the former snapshot-based document
+rebase and remaps imported viewport placements. A document-bound reset may reuse
+closed registered items without replacing its document, key history, viewport
+placement sidecars or save generation; unknown numeric items are rejected.
+
+The public host proves repeated cloned defaults after actual close/retirement,
+mixed retired/fresh identity allocation, stale/foreign/locked preparation,
+dropped-frame retry, rejection of old actions/output/focus, native-prefix join
+and closed-key reuse. The private native fixture adds a workspace-mutating
+selection prefix before reset: preparation checks the published version,
+rebasing uses the prefix candidate, drop preserves both source and backend
+watermarks, retry is exact, and successful commit consumes the prefix once.
+The simpler public Moved-prefix case proves ordered joining, not a workspace
+mutation. Removing incoming-identity reservation in scratch fails the collision
+test with an invalid workspace rather than silently passing.
+
+The egui facade exposes `Dockspace::reset_layout` with no serde requirement,
+and the editor Default button uses its application-owned immutable layout.
+Named durable presets retain their document restore path. The product test
+closes the whole root, resets to fresh presentation identities, clears previous
+render observations, and proves current pane rendering, unsaved text retention,
+default selection and lock/unlock behavior. Measurement stages contributions;
+commit installs Ready scenes for a later paint frame. Reset does not add a
+second immediate-paint pipeline.
+
+Current main-source gates pass 1,694 workspace all-feature/all-target tests,
+57 public-host cases and 112 product cases. The no-serde reset suites pass five
+public-host cases and one product case. The workspace-mutating native-prefix
+case also passes with serde and core debug assertions disabled. Follow-up
+independent read-only review found no remaining confirmed reset defect after
+the shared native error classification was restored.
+
+The official compatibility harness passes 15 cases. Correctness/suspicious
+Clippy, strict core/adapter rustdoc, documentation examples, formatting and
+whitespace checks pass. Refreshed local-fork sources pass 244 native all-target
+cases normally and 244 without native debug assertions, plus native Clippy and
+strict rustdoc. Three rebuilt macOS Glow redock processes complete in 1.596,
+0.617 and 0.621 seconds through create, first-live, redock, retirement and
+quiescence. These are compatibility and programmatic real-window results,
+not physical-input, mixed-DPI, WM-close or OS-driven layout-reset qualification.
+The local fork remains unpublished at `7c7b32335`; tracked dependency pins are
+unchanged and do not yet reproduce the dirty native adapter.
+
+U10 still needs complete overflow-owner acceptance and the optional native
+showcase. U7/U8 physical-window/create/held-close reservations, finite capacity,
+overload integration and load/latency/soak remain open. This slice does not
+complete the whole refactor or qualify a physical-input platform.
+
 ## 2026-10-28 U10 live restore focus and missing-content recovery
 
 Shared ReplaceWorkspace/RestoreWorkspace now creates one semantic focus successor

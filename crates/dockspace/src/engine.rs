@@ -32,6 +32,11 @@ mod surface_contribution;
 mod surface_runtime;
 mod surface_vacancy;
 mod tab_strip_input;
+mod workspace_rebase;
+
+#[cfg(feature = "serde")]
+pub(crate) use workspace_rebase::WorkspaceRebaseEntity;
+pub(crate) use workspace_rebase::{WorkspaceRebaseError, rebase_workspace_presentation_identities};
 
 #[cfg(test)]
 use crate::behavior_tests::support as test_support;

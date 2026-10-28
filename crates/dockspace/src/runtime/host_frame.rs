@@ -47,6 +47,7 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
     pub(super) painted_native_staging:
         BTreeSet<crate::presentation_observation::NativeStagingPresentation>,
+    pub(super) replacement_submitted: bool,
     #[cfg(feature = "serde")]
     pub(super) document_restore: Option<PendingRuntimeDocumentRestore>,
 }
@@ -574,6 +575,7 @@ impl DockspaceHostFrame<'_> {
             submitted_presentation,
             painted_surfaces,
             painted_native_staging,
+            replacement_submitted: _,
             #[cfg(feature = "serde")]
             document_restore,
         } = self;
@@ -690,9 +692,8 @@ impl DockspaceHostFrame<'_> {
         if self.native_input_pending {
             return Err(NativePlatformError::InputPending.into());
         }
-        #[cfg(feature = "serde")]
-        if self.document_restore.is_some() {
-            return Err(DockspaceRuntimeError::document_restore_already_submitted());
+        if self.replacement_submitted {
+            return Err(DockspaceRuntimeError::replacement_already_submitted());
         }
         Ok(())
     }

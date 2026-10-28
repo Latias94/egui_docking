@@ -3,19 +3,19 @@ use super::*;
 mod budget;
 mod overload;
 
+use crate::engine::EngineInput;
 use crate::geometry::PhysicalPoint;
 use crate::graph::ContainedFloating;
-use crate::model::{DockAnchor, DockPlacement, FloatingPresentationId};
+use crate::model::{
+    DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, FloatingPresentationId,
+};
+#[cfg(feature = "serde")]
+use crate::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use crate::runtime::{
     DockspaceHostFrame, DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
     NativeEffectOperation, NativeStagingPresentationPhase, NativeWindowPlacement,
-};
-#[cfg(feature = "serde")]
-use crate::{
-    engine::EngineInput,
-    model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout},
-    runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId},
 };
 
 const SECOND_ITEM: ItemId = ItemId::new(2);
@@ -132,6 +132,108 @@ fn joined_document_restore_rebases_after_a_workspace_mutating_native_prefix() {
             .item(first)
             .is_some_and(|item| item.is_selected())
     );
+}
+
+#[test]
+fn joined_layout_reset_retries_after_a_workspace_mutating_native_prefix() {
+    let layout = |root| {
+        DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(root, DockspaceNode::central_tabs([ITEM, SECOND_ITEM])),
+        )])
+        .expect("the joined reset layout validates")
+    };
+    // The default's root is below the live frontier and must receive a fresh ID.
+    let mut target = DockspaceSession::from_layout(layout(RootId::new(2)), DockPolicy::default())
+        .expect("the layout-only session initializes");
+    target
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the managed native host enrolls");
+    target
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed backend capabilities configure");
+    let prepared = target
+        .prepare_layout_reset(layout(ROOT))
+        .expect("the reset prepares against the published version");
+    let expected = target.version();
+    let committed = target.engine.backend_ingress_committed_through();
+    let source_sequence = target.committed_source_sequence;
+    let prefix = target
+        .native
+        .as_mut()
+        .expect("the managed native state exists")
+        .recorder_mut()
+        .record_semantic_input(EngineInput::SelectItem {
+            expected,
+            item: SECOND_ITEM,
+        })
+        .expect("the workspace-mutating native prefix records");
+    let recorded = target.native_input_recorded_count();
+
+    let candidate_version = {
+        let reset = target
+            .begin_native_layout_reset_frame(&prepared, |_| NativeReceiverAnswer::Unknown)
+            .expect("the rollbackable joined reset begins");
+        assert_ne!(reset.version().epoch(), expected.epoch());
+        assert_eq!(reset.view().item(ITEM).unwrap().root(), RootId::new(3));
+        assert!(reset.view().item(ITEM).unwrap().is_selected());
+        assert_eq!(reset.frame.backend_ingress_through(), prefix);
+        reset.version()
+    };
+    assert_eq!(target.version(), expected);
+    assert_eq!(target.engine.backend_ingress_committed_through(), committed);
+    assert_eq!(target.committed_source_sequence, source_sequence);
+    assert_eq!(target.native_input_recorded_count(), recorded);
+    assert_eq!(target.view().item(ITEM).unwrap().root(), RootId::new(2));
+    assert!(target.view().item(ITEM).unwrap().is_selected());
+
+    let mut reset = target
+        .begin_native_layout_reset_frame(&prepared, |_| NativeReceiverAnswer::Unknown)
+        .expect("the same prepared reset replays the unchanged native prefix");
+    assert_eq!(reset.version(), candidate_version);
+    assert_eq!(reset.frame.backend_ingress_through(), prefix);
+    assert_eq!(reset.view().item(ITEM).unwrap().root(), RootId::new(3));
+    reset
+        .measure_surface(
+            SURFACE,
+            UniformSurfaceMetrics::new(
+                LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+                LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+                80.0,
+            )
+            .expect("test metrics validate"),
+        )
+        .expect("the reset candidate measures");
+    let report = reset.commit().expect("the joined reset commits once");
+    let [super::super::super::HostInputOutcome::LayoutReset { previous, current }] =
+        report.inputs()
+    else {
+        panic!("the reset must supersede the prefix's product-visible result");
+    };
+    assert_eq!(previous.epoch(), expected.epoch());
+    assert_ne!(
+        *previous, expected,
+        "the native selection must advance the prefix version"
+    );
+    assert_eq!(*current, candidate_version);
+    assert_eq!(target.engine.backend_ingress_committed_through(), prefix);
+    assert_eq!(target.committed_source_sequence, source_sequence + 1);
+    assert_eq!(target.native_input_recorded_count(), recorded);
+    assert!(target.view().item(ITEM).unwrap().is_selected());
+
+    let mut next = target
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the next native frame starts after the committed prefix");
+    next.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the measured layout remains paintable");
+    let report = next
+        .commit()
+        .expect("the next frame commits without replay");
+    assert!(report.inputs().is_empty());
+    assert_eq!(target.version(), candidate_version);
+    assert_eq!(target.engine.backend_ingress_committed_through(), prefix);
+    assert_eq!(target.committed_source_sequence, source_sequence + 1);
+    assert_eq!(target.native_input_recorded_count(), recorded);
 }
 
 #[test]

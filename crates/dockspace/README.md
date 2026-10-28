@@ -229,6 +229,40 @@ The internal Waiting state is excluded from published focus requests and focus
 deltas. A matching fresh global observation settles native facts without replacing
 the restored semantic request's identity or causal order.
 
+## Application defaults and layout reset
+
+Keep default layouts and preset names in the application. Applying a default
+does not require serde, JSON, document lineage or a second docking session:
+
+```rust
+# use dockspace::model::DockspaceLayout;
+# use dockspace::runtime::{DockspaceSession, SurfaceUnavailableReason};
+# fn apply(session: &mut DockspaceSession, default: DockspaceLayout) -> Result<(), Box<dyn std::error::Error>> {
+let reset = session.prepare_layout_reset(default)?;
+let mut frame = session.begin_layout_reset_frame(&reset)?;
+// A renderer may measure this candidate here. This example defers its surfaces.
+frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+let report = frame.commit()?;
+# let _ = report;
+# Ok(())
+# }
+```
+
+The prepared reset belongs to its session and published version. Drop or failed
+commit leaves it available for retry; successful reset advances the workspace
+epoch and invalidates it. A reset is the frame's last semantic mutation, followed
+by measurement contributions or explicit unavailability. Measurements install
+Ready scenes on commit, and a later frame paints them. Managed native hosts use
+`begin_native_layout_reset_frame` to reduce their accepted native prefix before
+the same replacement. Retired root, surface and contained identities are rebased
+against that candidate; stable pane items and declared selections remain intact.
+
+For a document-bound session, layout reset preserves key history and save
+generation. Every item must already have a recognized key, including closed
+history entries. Register new application keys before preparing the reset.
+Arrangement lock requires an explicit committed unlock. Existing policy and
+application pane data are not replaced by the supplied layout.
+
 ## Manipulation feedback and focus
 
 `HostFrameReport::manipulation_feedback()` exposes committed pending and terminal

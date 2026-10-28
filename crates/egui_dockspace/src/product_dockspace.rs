@@ -207,6 +207,36 @@ impl Dockspace {
         Ok(DockspaceMutation::from_runtime_report(&report))
     }
 
+    /// Atomically applies an application-owned default or preset layout.
+    ///
+    /// This path needs no serialization or document lineage. Pane data, item-key
+    /// history, configured policy and renderer style remain application/session
+    /// owned. Retired presentation identities are rebased by core before commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without partial publication when the arrangement is
+    /// locked, a document-bound item is unknown, or the replacement cannot commit.
+    pub fn reset_layout(
+        &mut self,
+        layout: DockspaceLayout,
+    ) -> Result<DockspaceMutation, DockspaceError> {
+        let reset = self
+            .session
+            .prepare_layout_reset(layout)
+            .map_err(DockspaceError::from_detail)?;
+        let mut frame = self
+            .session
+            .begin_layout_reset_frame(&reset)
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .map_err(DockspaceError::from_detail)?;
+        let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        self.pending_focus.clear();
+        Ok(DockspaceMutation::from_runtime_report(&report))
+    }
+
     /// Replaces renderer geometry and visual styling atomically.
     ///
     /// Geometry changes commit through core before the adapter publishes the new style. A

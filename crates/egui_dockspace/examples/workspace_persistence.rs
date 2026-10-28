@@ -41,6 +41,7 @@ fn main() -> eframe::Result {
 struct PersistenceApp {
     dockspace: Dockspace,
     panes: PersistencePanes,
+    default_layout: DockspaceLayout,
     // Names, storage and closed-pane data belong to the application, not the layout engine.
     presets: BTreeMap<String, Vec<u8>>,
     preset_name: String,
@@ -58,7 +59,8 @@ impl PersistenceApp {
                     .expect("the bounded pane identities fit")
             })
             .collect();
-        let mut dockspace = Dockspace::builder("persistence", example_layout(&items))
+        let default_layout = example_layout(&items);
+        let mut dockspace = Dockspace::builder("persistence", default_layout.clone())
             .persistence(bootstrap)
             .build()
             .expect("the static editor layout is valid");
@@ -68,6 +70,7 @@ impl PersistenceApp {
         Self {
             dockspace,
             panes: PersistencePanes::new(&items),
+            default_layout,
             presets: BTreeMap::from([(DEFAULT_PRESET.to_owned(), default)]),
             preset_name: "Working".to_owned(),
             status: "Layouts stay in application memory; pane data survives every layout change"
@@ -101,6 +104,14 @@ impl PersistenceApp {
     }
 
     fn restore_named(&mut self, name: &str) {
+        if name == DEFAULT_PRESET {
+            // Defaults are ordinary layouts; applying one does not need JSON or document authority.
+            match self.dockspace.reset_layout(self.default_layout.clone()) {
+                Ok(_) => self.status = format!("Applied layout: {name}"),
+                Err(error) => self.status = error.to_string(),
+            }
+            return;
+        }
         let Some(snapshot) = self.presets.get(name) else {
             "Choose a saved layout".clone_into(&mut self.status);
             return;

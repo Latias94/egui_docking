@@ -156,6 +156,9 @@ reset/apply/reopen controls require an explicit unlock, while normal pane use
 continues. Saved layouts contain docking state and stable keys, not pane data.
 The example resolves current presentation identities after a preset restore.
 Unmodified eframe still reports presented-output drag docking unavailable.
+`Dockspace::reset_layout(default_layout)` applies an ordinary application-owned
+layout through the same core transaction without enabling serde. The example's
+Default button uses this path; named user snapshots use document restore.
 
 Document key recognition and pane availability are separate application facts.
 Recognize a valid persisted key even when its plugin or resource cannot currently

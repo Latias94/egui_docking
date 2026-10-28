@@ -12,6 +12,7 @@ mod error_kind;
 mod focus;
 mod host_frame;
 mod interaction;
+mod layout_reset;
 mod local_action;
 mod manipulation_feedback;
 mod measurement;
@@ -26,6 +27,7 @@ mod report;
 mod session;
 
 pub use host_frame::DockspaceHostFrame;
+pub use layout_reset::PreparedDockspaceLayoutReset;
 pub use manipulation_feedback::{
     DockspaceManipulationCancelReason, DockspaceManipulationDelivery,
     DockspaceManipulationFeedback, DockspaceManipulationFeedbackId, DockspaceManipulationId,
@@ -217,6 +219,15 @@ pub enum HostInputOutcome {
     /// Earlier input outcomes from the same frame are intentionally omitted
     /// because the replacement superseded their product-visible state.
     DocumentRestored {
+        /// Workspace version immediately before replacement.
+        previous: WorkspaceVersion,
+        /// Workspace version published by the replacement.
+        current: WorkspaceVersion,
+    },
+    /// One validated application layout atomically replaced the workspace.
+    ///
+    /// Earlier product outcomes in this frame are superseded by this layout.
+    LayoutReset {
         /// Workspace version immediately before replacement.
         previous: WorkspaceVersion,
         /// Workspace version published by the replacement.
@@ -696,7 +707,6 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
-            #[cfg(feature = "serde")]
             DockspaceRuntimeErrorSource::ArrangementLocked => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
@@ -715,9 +725,16 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PaneFocusObservationGenerationExhausted => {
                 DockspaceRuntimeErrorKind::Internal
             }
-            #[cfg(feature = "serde")]
-            DockspaceRuntimeErrorSource::DocumentRestoreAlreadySubmitted => {
+            DockspaceRuntimeErrorSource::ReplacementAlreadySubmitted
+            | DockspaceRuntimeErrorSource::PreparedLayoutResetMismatch => {
                 DockspaceRuntimeErrorKind::OperationConflict
+            }
+            #[cfg(feature = "serde")]
+            DockspaceRuntimeErrorSource::LayoutResetItemUnknown { .. } => {
+                DockspaceRuntimeErrorKind::InvalidConfiguration
+            }
+            DockspaceRuntimeErrorSource::LayoutResetRebase(_) => {
+                DockspaceRuntimeErrorKind::Internal
             }
             #[cfg(feature = "serde")]
             DockspaceRuntimeErrorSource::PreparedDocumentRestoreMismatch => {
@@ -788,10 +805,28 @@ impl DockspaceRuntimeError {
         }
     }
 
-    #[cfg(feature = "serde")]
-    const fn document_restore_already_submitted() -> Self {
+    const fn replacement_already_submitted() -> Self {
         Self {
-            source: DockspaceRuntimeErrorSource::DocumentRestoreAlreadySubmitted,
+            source: DockspaceRuntimeErrorSource::ReplacementAlreadySubmitted,
+        }
+    }
+
+    const fn prepared_layout_reset_mismatch() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PreparedLayoutResetMismatch,
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    const fn layout_reset_item_unknown(item: crate::ids::ItemId) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::LayoutResetItemUnknown { item },
+        }
+    }
+
+    fn layout_reset_rebase(error: crate::engine::WorkspaceRebaseError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::LayoutResetRebase(Box::new(error)),
         }
     }
 
@@ -822,7 +857,6 @@ impl DockspaceRuntimeError {
         }
     }
 
-    #[cfg(feature = "serde")]
     const fn arrangement_locked() -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::ArrangementLocked,
@@ -876,7 +910,6 @@ impl std::error::Error for DockspaceRuntimeError {
 
 #[derive(Debug, Error)]
 enum DockspaceRuntimeErrorSource {
-    #[cfg(feature = "serde")]
     #[error("the arrangement is locked; commit an unlocked policy before replacing the layout")]
     ArrangementLocked,
     #[error(transparent)]
@@ -895,9 +928,15 @@ enum DockspaceRuntimeErrorSource {
     SourceSequenceExhausted,
     #[error("pane-focus observation generation is exhausted")]
     PaneFocusObservationGenerationExhausted,
+    #[error("workspace replacement is the final semantic mutation in its host frame")]
+    ReplacementAlreadySubmitted,
+    #[error("prepared layout reset belongs to an older or different session state")]
+    PreparedLayoutResetMismatch,
     #[cfg(feature = "serde")]
-    #[error("document replacement is the final semantic mutation in its host frame")]
-    DocumentRestoreAlreadySubmitted,
+    #[error("layout reset item {item} is not registered in the session document")]
+    LayoutResetItemUnknown { item: crate::ids::ItemId },
+    #[error(transparent)]
+    LayoutResetRebase(Box<crate::engine::WorkspaceRebaseError>),
     #[cfg(feature = "serde")]
     #[error("prepared document restore belongs to an older or different session state")]
     PreparedDocumentRestoreMismatch,

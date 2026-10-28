@@ -514,12 +514,10 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.version()
     }
 
-    #[cfg(feature = "serde")]
     pub(crate) const fn authority_domain(&self) -> EngineAuthorityDomainId {
         self.engine.authority_domain()
     }
 
-    #[cfg(feature = "serde")]
     pub(crate) const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
         self.engine.presentation_identity_frontier()
     }

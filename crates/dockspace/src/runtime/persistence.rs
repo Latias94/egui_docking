@@ -253,9 +253,14 @@ impl DockspaceSession {
         &mut self,
         restore: &PreparedDockspaceDocumentRestore,
     ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
-        self.ensure_standalone_document_restore_available()?;
+        self.ensure_standalone_replacement_available()?;
         self.ensure_prepared_document_restore_current(restore)?;
-        self.begin_host_frame_with_document_restore(restore.inner.clone())
+        self.begin_host_frame_with_replacement(
+            None,
+            Some(super::session::HostFrameReplacement::DocumentRestore(
+                restore.inner.clone(),
+            )),
+        )
     }
 
     /// Begins one native host frame that atomically replaces the live document.
@@ -286,7 +291,12 @@ impl DockspaceSession {
     ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
         self.ensure_managed_native_host_available()?;
         self.ensure_prepared_document_restore_current(restore)?;
-        self.begin_host_frame_with_options(Some(&mut resolve), Some(restore.inner.clone()))
+        self.begin_host_frame_with_replacement(
+            Some(&mut resolve),
+            Some(super::session::HostFrameReplacement::DocumentRestore(
+                restore.inner.clone(),
+            )),
+        )
     }
 
     fn ensure_prepared_document_restore_current(

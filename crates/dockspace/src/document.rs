@@ -5,7 +5,7 @@
 //! a valid workspace can otherwise be paired with an unrelated valid key map
 //! and silently resolve a numeric [`ItemId`] to the wrong application pane.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -24,10 +24,7 @@ use crate::external_item_key::{
     ExternalItemKeyRestoreError, ExternalItemKeySnapshot, ExternalItemKeySnapshotEnvelope,
 };
 use crate::graph::Workspace;
-use crate::ids::{
-    EngineAuthorityDomainId, FloatingPresentationId, ItemId, PresentationIdentityFrontier, RootId,
-    SurfaceId,
-};
+use crate::ids::{EngineAuthorityDomainId, ItemId, PresentationIdentityFrontier};
 use crate::persistence::{
     SnapshotCaptureError, SnapshotEntityKind, SnapshotNode, SnapshotRestoreError,
     WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
@@ -738,144 +735,45 @@ fn rebase_restored_presentation_identities(
     active_workspace: &Workspace,
     active_frontier: PresentationIdentityFrontier,
 ) -> Result<(), DockspaceDocumentRestoreError> {
-    let mut snapshot = WorkspaceSnapshot::capture(restored.restore.workspace())?;
-    let mut frontier = active_frontier;
-    frontier.merge(restored.restore.presentation_identity_frontier());
+    let rebased = crate::engine::rebase_workspace_presentation_identities(
+        restored.restore.workspace().clone(),
+        active_workspace,
+        active_frontier,
+        Some(restored.restore.presentation_identity_frontier()),
+    )
+    .map_err(document_rebase_error)?;
+    restored
+        .viewport_placements
+        .remap_surfaces(&rebased.surfaces);
+    restored.restore = ValidatedWorkspaceRestore::new(rebased.workspace, rebased.frontier);
+    Ok(())
+}
 
-    let mut surfaces = BTreeMap::new();
-    for record in &snapshot.surfaces {
-        let persisted = SurfaceId::new(record.id);
-        let runtime = if active_workspace.surface(persisted).is_some()
-            || persisted.get() > active_frontier.last_surface()
-        {
-            persisted
-        } else {
-            frontier.reserve_surface().ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentitySpaceExhausted {
-                    kind: SnapshotEntityKind::Surface,
-                },
-            )?
-        };
-        surfaces.insert(persisted, runtime);
-    }
-
-    let mut roots = BTreeMap::new();
-    for record in &snapshot.roots {
-        let persisted = RootId::new(record.id);
-        let runtime = if active_workspace.root(persisted).is_some()
-            || persisted.get() > active_frontier.last_root()
-        {
-            persisted
-        } else {
-            frontier.reserve_root().ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentitySpaceExhausted {
-                    kind: SnapshotEntityKind::Root,
-                },
-            )?
-        };
-        roots.insert(persisted, runtime);
-    }
-
-    let mut floatings = BTreeMap::new();
-    for record in &snapshot.contained_floatings {
-        let persisted = FloatingPresentationId::new(record.id);
-        let runtime = if active_workspace.contained_floating(persisted).is_some()
-            || persisted.get() > active_frontier.last_floating()
-        {
-            persisted
-        } else {
-            frontier.reserve_floating().ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentitySpaceExhausted {
-                    kind: SnapshotEntityKind::ContainedFloating,
-                },
-            )?
-        };
-        floatings.insert(persisted, runtime);
-    }
-
-    for record in &mut snapshot.roots {
-        let persisted = record.id;
-        record.id = roots
-            .get(&RootId::new(persisted))
-            .copied()
-            .ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                    kind: SnapshotEntityKind::Root,
-                    id: persisted,
-                },
-            )?
-            .get();
-    }
-    for record in &mut snapshot.surfaces {
-        let persisted = record.id;
-        record.id = surfaces
-            .get(&SurfaceId::new(persisted))
-            .copied()
-            .ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                    kind: SnapshotEntityKind::Surface,
-                    id: persisted,
-                },
-            )?
-            .get();
-        record.main_root = record
-            .main_root
-            .map(|root| {
-                roots
-                    .get(&RootId::new(root))
-                    .copied()
-                    .map(RootId::get)
-                    .ok_or(
-                        DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                            kind: SnapshotEntityKind::Root,
-                            id: root,
-                        },
-                    )
-            })
-            .transpose()?;
-        for floating in &mut record.contained {
-            let persisted = *floating;
-            *floating = floatings
-                .get(&FloatingPresentationId::new(persisted))
-                .copied()
-                .ok_or(
-                    DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                        kind: SnapshotEntityKind::ContainedFloating,
-                        id: persisted,
-                    },
-                )?
-                .get();
+fn document_rebase_error(
+    error: crate::engine::WorkspaceRebaseError,
+) -> DockspaceDocumentRestoreError {
+    use crate::engine::{WorkspaceRebaseEntity, WorkspaceRebaseError};
+    let snapshot_kind = |kind| match kind {
+        WorkspaceRebaseEntity::Surface => SnapshotEntityKind::Surface,
+        WorkspaceRebaseEntity::Root => SnapshotEntityKind::Root,
+        WorkspaceRebaseEntity::Floating => SnapshotEntityKind::ContainedFloating,
+    };
+    match error {
+        WorkspaceRebaseError::Exhausted { kind } => {
+            DockspaceDocumentRestoreError::PresentationIdentitySpaceExhausted {
+                kind: snapshot_kind(kind),
+            }
+        }
+        WorkspaceRebaseError::MissingReference { kind, id } => {
+            DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
+                kind: snapshot_kind(kind),
+                id,
+            }
+        }
+        WorkspaceRebaseError::InvalidWorkspace(source) => {
+            DockspaceDocumentRestoreError::Workspace(SnapshotRestoreError::InvalidWorkspace(source))
         }
     }
-    for record in &mut snapshot.contained_floatings {
-        let persisted_floating = record.id;
-        record.id = floatings
-            .get(&FloatingPresentationId::new(persisted_floating))
-            .copied()
-            .ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                    kind: SnapshotEntityKind::ContainedFloating,
-                    id: persisted_floating,
-                },
-            )?
-            .get();
-        let persisted_root = record.root;
-        record.root = roots
-            .get(&RootId::new(persisted_root))
-            .copied()
-            .ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                    kind: SnapshotEntityKind::Root,
-                    id: persisted_root,
-                },
-            )?
-            .get();
-    }
-
-    let workspace = snapshot.build_candidate(|_| true)?;
-    restored.viewport_placements.remap_surfaces(&surfaces);
-    restored.restore = ValidatedWorkspaceRestore::new(workspace, frontier);
-    Ok(())
 }
 
 /// Serialized representation used only while decoding an untrusted document.

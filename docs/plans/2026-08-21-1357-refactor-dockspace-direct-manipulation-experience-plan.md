@@ -654,9 +654,21 @@ identity and render recoverable placeholders; key rejection still rejects the
 whole document. Product acceptance also covers locked overflow navigation and
 contained raise/focus with protected geometry.
 
-The optional native showcase, complete overflow-owner acceptance and a general
-serde-free reset/default-layout entry remain open. These local checkpoints do
-not complete U10 or impose document lineage on every engine layout reset.
+The layout-only reset slice adds an opaque, session/version-bound prepared
+value and standalone/native reset-frame entries without requiring serde or
+document lineage. Reset and document restore reuse one replacement phase and
+ordered native prefix. A dropped frame retains the same preparation for retry;
+success invalidates it. Reused defaults rebase retired surface/root/floating
+identities after reserving every incoming fresh identity, keeping application
+items, selections and rectangles intact. A document-bound reset may reuse
+registered closed items but cannot introduce unknown numeric items or replace
+key history, placement sidecars or save generation. The egui facade and Default
+button use this core entry. Measurement installs Ready scenes at commit for
+painting in a later frame; it does not grant an immediate replacement paint.
+
+The optional native showcase and complete overflow-owner acceptance remain
+open. These local checkpoints do not complete U10. Qualification for the
+layout-only reset is recorded separately in `docs/VALIDATION.md`.
 
 ### U11. Certify Windows and macOS capability claims
 
