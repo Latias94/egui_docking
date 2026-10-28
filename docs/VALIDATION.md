@@ -15,6 +15,65 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 create and physical-window terminal storage prerequisite
+
+An admitted create receipt now holds its sole Created-or-Failed callback
+envelope inline. A physical-window receipt similarly holds its sole Destroyed
+envelope. Live routes and existing retirement entries participate in the same
+mailbox head, output barrier, retained count, original age and binding-retention
+queries. Only the first exact terminal invokes the capture closure. Transfer
+requires the existing semantic acknowledgement, and complete commit additionally
+requires handoff of that original envelope. Neither a duplicate nor an unrelated
+full boundary may reopen or prematurely release the receipt.
+
+Destroyed capture fills the already attached window receipt before any move to
+retirement. Its pointer suppression is stored inline on the route, replacing
+the separate set. The reducer validates the exact Received viewport, binding,
+window and event ordinal before moving the same receipt into retirement; the
+capture ordinal and age travel with it. Failure similarly moves the original
+create receipt to unmaterialized retirement before payload handoff. Missing
+effect-result recording still blocks failure quiescence after source accounting
+has completed.
+
+Review identified a remaining Created capture allocation in the reverse window
+index. `capture_output_window` now fills only the existing route's window and
+inline receipt; the Created reducer publishes the index through `attach_output`.
+Until then, exact-window route lookup falls back to the existing route records.
+Window conflict checks, pointer queries and output admission use that same
+lookup. Repeated capture cannot rebuild the index or receipt. A Destroyed event
+arriving in that interval remains Received, with its suppression and envelope
+unchanged when the reducer later publishes the index. Retirement map insertion
+also occurs in the reducer rather than terminal capture.
+
+Four bridge regressions cover raw/Destroyed/raw capture order, unchanged age and
+identity across the route-to-retirement move, A1 retirement with active A2,
+create-failure result-recorded variants, and Destroyed before Created index
+publication. A separate route model verifies absent index entries, exact-window
+fallback, peer exclusion and duplicate capture before publication. The new
+retirement model rejects a commit between semantic transfer and envelope handoff.
+All envelopes are captured by real journals; no arbitrary capture identity or
+opaque renderer token is fabricated. The Created tests remain route/receipt
+models rather than a complete opaque-token callback/effect matrix.
+
+Serialized qualification on the frozen source passes all 283 native workspace
+tests normally and all 283 with native debug assertions disabled.
+Correctness/suspicious Clippy, formatting and diff checks pass. The real-window
+macOS programmatic redock reaches tear-off, first-live, redock and retirement
+with exit 0. A disposable-snapshot negative control removes only Destroyed's
+envelope-handoff commit guard: the retirement regression fails at the premature
+commit assertion, and passes again after restoration. Independent final reviews
+found no remaining confirmed P1/P2 in the terminal-storage changes. No allocator
+instrumentation or new physical-input certification was performed.
+
+The source changes close the inline terminal-storage prerequisite for the
+existing output/create/command/close/staging/window owners. This is not a global
+allocation profile or completed overload protection. Fixed-boundary ordinary
+freeze, once-only committed cancellation and translator reset, byte/count/age
+admission, protected variable-size terminal-roster capacity,
+sustained-load/release-latency and soak gates remain open. The fork is
+still local at `1f7c541fde99fd69192622a1a36cb642de58ed29`; tracked remote pins are
+unchanged.
+
 ## 2026-10-29 U7 single native host-state prerequisite
 
 The native bridge now owns one mutex-protected `NativeHostState` containing

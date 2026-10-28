@@ -737,6 +737,18 @@ ownership. Local native compatibility passes 277 tests normally and 277 with
 native debug assertions disabled. Create/Destroyed storage and the final U7
 admission scheduler remain subsequent work.
 
+The create/physical-window follow-up stores their callback envelopes inline on
+the original receipts and joins live and retired receipt ingress into the same
+ordered head and count/age/binding retention. Destroyed capture does not create
+a retirement entry; an exact Received preflight precedes its reducer-side move.
+Pointer suppression is inline on the route. Created window index insertion is
+also deferred to its reducer, with exact route fallback and peer exclusion in
+the interim. Complete receipt commit requires both semantic transfer and
+original envelope handoff. This completes the existing owner terminal-storage
+prerequisite; fixed-boundary admission, capacity, load and the U7/U8 exit gates
+remain open. Variable-size terminal-roster storage must also be reserved and
+accounted before final protected-admission qualification.
+
 ### U10. Complete layout management and a bounded editor showcase
 
 - **Goal:** Validate realistic editor use without building the user's engine.

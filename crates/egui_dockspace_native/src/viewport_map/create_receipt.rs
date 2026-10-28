@@ -3,6 +3,8 @@
 use eframe::{NativeViewportCreateAttempt, NativeViewportCreateFailureKind};
 use winit::window::WindowId;
 
+use crate::mailbox::journal::ReservedHostRecord;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CreateTerminal {
     Created(WindowId),
@@ -30,6 +32,7 @@ pub(crate) struct NativeCreateReceipt {
     attempt: Option<NativeViewportCreateAttempt>,
     state: ReceiptState,
     result_recorded: bool,
+    terminal_ingress: Option<ReservedHostRecord>,
 }
 
 impl NativeCreateReceipt {
@@ -38,6 +41,7 @@ impl NativeCreateReceipt {
             attempt,
             state: ReceiptState::Awaiting,
             result_recorded: false,
+            terminal_ingress: None,
         }
     }
 
@@ -53,12 +57,15 @@ impl NativeCreateReceipt {
         &mut self,
         attempt: Option<NativeViewportCreateAttempt>,
         terminal: CreateTerminal,
+        reserve: impl FnOnce() -> ReservedHostRecord,
     ) -> CreateAdmission {
         if self.attempt != attempt {
             return CreateAdmission::Conflict;
         }
         match self.state {
             ReceiptState::Awaiting => {
+                let ingress = reserve();
+                self.terminal_ingress = Some(ingress);
                 self.state = ReceiptState::Received(terminal);
                 CreateAdmission::First
             }
@@ -85,6 +92,20 @@ impl NativeCreateReceipt {
         true
     }
 
+    pub(crate) fn ingress(&self) -> Option<&ReservedHostRecord> {
+        self.terminal_ingress.as_ref()
+    }
+
+    /// Payload handoff follows the exact terminal's existing transfer acknowledgement.
+    pub(crate) fn take_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
+        if !matches!(self.state, ReceiptState::Transferred(_))
+            || self.terminal_ingress.as_ref()?.ordinal() != ordinal
+        {
+            return None;
+        }
+        self.terminal_ingress.take()
+    }
+
     pub(crate) fn mark_failure_recorded(&mut self) {
         if matches!(
             self.state,
@@ -96,6 +117,7 @@ impl NativeCreateReceipt {
 
     pub(crate) fn commit_failure(&mut self) {
         if self.result_recorded
+            && self.terminal_ingress.is_none()
             && let ReceiptState::Transferred(terminal @ CreateTerminal::Failed(_)) = self.state
         {
             self.state = ReceiptState::Committed(terminal);
@@ -103,7 +125,9 @@ impl NativeCreateReceipt {
     }
 
     pub(crate) fn commit_created_boundary(&mut self) {
-        if let ReceiptState::Transferred(terminal @ CreateTerminal::Created(_)) = self.state {
+        if self.terminal_ingress.is_none()
+            && let ReceiptState::Transferred(terminal @ CreateTerminal::Created(_)) = self.state
+        {
             self.state = ReceiptState::Committed(terminal);
         }
     }
@@ -132,31 +156,101 @@ impl NativeCreateReceipt {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use dockspace::runtime::NativeMonotonicClock;
+
     use super::*;
+    use crate::event::NativeDeviceRemovalRecord;
+    use crate::mailbox::{HostRecord, journal::HostIngressJournal};
 
     #[test]
     fn one_attempt_selects_one_terminal_and_raw_transfer_never_reopens_it() {
+        let now = Arc::new(AtomicU64::new(10));
+        let clock = Arc::clone(&now);
+        let mut journal = HostIngressJournal::new(NativeMonotonicClock::new(move || {
+            Duration::from_millis(clock.load(Ordering::SeqCst))
+        }));
         let mut receipt = NativeCreateReceipt::new(None);
         let created = CreateTerminal::Created(WindowId::from(11));
         let failed = CreateTerminal::Failed(NativeViewportCreateFailureKind::WindowUnavailable);
-        assert_eq!(receipt.receive(None, created), CreateAdmission::First);
-        assert_eq!(receipt.receive(None, failed), CreateAdmission::Conflict);
+        // This tokenless receipt model uses a real journal reservation without
+        // fabricating an opaque renderer token or claiming Created callback coverage.
+        assert_eq!(
+            receipt.receive(None, created, || {
+                journal.reserve(HostRecord::DeviceRemoval(
+                    NativeDeviceRemovalRecord::for_test(1),
+                ))
+            }),
+            CreateAdmission::First
+        );
+        let ordinal = receipt.ingress().unwrap().ordinal();
+        assert_eq!(
+            receipt.ingress().unwrap().captured_at(),
+            Duration::from_millis(10)
+        );
+        now.store(20, Ordering::SeqCst);
+        assert_eq!(
+            receipt.receive(None, failed, || panic!(
+                "a conflicting terminal cannot reserve ingress"
+            )),
+            CreateAdmission::Conflict
+        );
+        assert!(
+            receipt.take_ingress(ordinal).is_none(),
+            "handoff requires semantic transfer first"
+        );
         assert!(!receipt.transfer(None, CreateTerminal::Created(WindowId::from(12))));
         assert!(receipt.transfer(None, created));
         assert!(!receipt.is_committed());
-        assert_eq!(receipt.receive(None, created), CreateAdmission::Duplicate);
+        assert_eq!(
+            receipt.receive(None, created, || panic!(
+                "a duplicate cannot reserve ingress"
+            )),
+            CreateAdmission::Duplicate
+        );
         assert!(!receipt.transfer(None, created));
+        assert!(receipt.take_ingress(ordinal + 1).is_none());
+        receipt.commit_created_boundary();
+        assert!(
+            !receipt.is_committed(),
+            "an unhanded payload blocks completion"
+        );
+        let ingress = receipt
+            .take_ingress(ordinal)
+            .expect("exact transferred ingress hands off");
+        assert_eq!(ingress.ordinal(), ordinal);
+        assert_eq!(ingress.captured_at(), Duration::from_millis(10));
+        assert!(receipt.take_ingress(ordinal).is_none());
+        assert!(receipt.ingress().is_none());
         receipt.commit_created_boundary();
         assert!(receipt.is_committed());
-        assert_eq!(receipt.receive(None, created), CreateAdmission::Duplicate);
+        assert_eq!(
+            receipt.receive(None, created, || panic!(
+                "a committed duplicate cannot reserve ingress"
+            )),
+            CreateAdmission::Duplicate
+        );
+        assert_eq!(journal.captured_through(), 1);
         assert!(!receipt.permits_output(WindowId::from(12)));
     }
 
     #[test]
     fn failure_keeps_the_same_receipt_until_its_recorded_result_commits() {
+        let mut journal = HostIngressJournal::new(NativeMonotonicClock::new(|| Duration::ZERO));
         let mut receipt = NativeCreateReceipt::new(None);
         let failed = CreateTerminal::Failed(NativeViewportCreateFailureKind::WindowUnavailable);
-        assert_eq!(receipt.receive(None, failed), CreateAdmission::First);
+        assert_eq!(
+            receipt.receive(None, failed, || {
+                journal.reserve(HostRecord::DeviceRemoval(
+                    NativeDeviceRemovalRecord::for_test(1),
+                ))
+            }),
+            CreateAdmission::First
+        );
+        let ordinal = receipt.ingress().unwrap().ordinal();
         receipt.commit_failure();
         assert!(!receipt.is_committed());
         assert!(receipt.transfer(None, failed));
@@ -170,14 +264,41 @@ mod tests {
             !receipt.is_committed(),
             "recorder handoff alone is not publication"
         );
-        assert_eq!(receipt.receive(None, failed), CreateAdmission::Duplicate);
+        receipt.commit_failure();
+        assert!(
+            !receipt.is_committed(),
+            "a recorded result still waits for payload handoff"
+        );
+        let mut moved = receipt;
+        assert_eq!(moved.ingress().unwrap().ordinal(), ordinal);
+        assert!(moved.take_ingress(ordinal + 1).is_none());
+        let ingress = moved
+            .take_ingress(ordinal)
+            .expect("the moved receipt retains its exact ingress");
+        assert_eq!(ingress.captured_at(), Duration::ZERO);
+        assert!(moved.take_ingress(ordinal).is_none());
+        assert_eq!(
+            moved.receive(None, failed, || panic!(
+                "a duplicate cannot reserve ingress"
+            )),
+            CreateAdmission::Duplicate
+        );
+        let mut receipt = moved;
         receipt.commit_failure();
         assert!(receipt.is_committed());
         assert_eq!(receipt.attempt(), None);
-        assert_eq!(receipt.receive(None, failed), CreateAdmission::Duplicate);
         assert_eq!(
-            receipt.receive(None, CreateTerminal::Created(WindowId::from(12))),
+            receipt.receive(None, failed, || panic!(
+                "a committed duplicate cannot reserve ingress"
+            )),
+            CreateAdmission::Duplicate
+        );
+        assert_eq!(
+            receipt.receive(None, CreateTerminal::Created(WindowId::from(12)), || {
+                panic!("a conflicting terminal cannot reserve ingress")
+            }),
             CreateAdmission::Conflict
         );
+        assert_eq!(journal.captured_through(), 1);
     }
 }

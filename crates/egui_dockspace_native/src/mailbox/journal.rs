@@ -40,7 +40,7 @@ impl ReservedHostRecord {
 /// Transferring a callback drops its raw payload, but must not make an accepted,
 /// uncommitted prefix disappear from record or oldest-age admission accounting.
 #[derive(Debug)]
-pub(super) struct HostIngressJournal {
+pub(crate) struct HostIngressJournal {
     clock: NativeMonotonicClock,
     queue: VecDeque<ReservedHostRecord>,
     last_ordinal: u64,
@@ -49,7 +49,7 @@ pub(super) struct HostIngressJournal {
 }
 
 impl HostIngressJournal {
-    pub(super) fn new(clock: NativeMonotonicClock) -> Self {
+    pub(crate) fn new(clock: NativeMonotonicClock) -> Self {
         Self {
             clock,
             queue: VecDeque::new(),
@@ -85,7 +85,7 @@ impl HostIngressJournal {
         Some(self.clock.now().saturating_sub(oldest))
     }
 
-    pub(super) fn captured_through(&self) -> u64 {
+    pub(crate) fn captured_through(&self) -> u64 {
         self.last_ordinal
     }
 
@@ -95,7 +95,7 @@ impl HostIngressJournal {
 
     /// Reserves identity and age even while an existing lifecycle owner holds
     /// the record behind its predecessor's terminal commit dependency.
-    pub(super) fn reserve(&mut self, record: HostRecord) -> ReservedHostRecord {
+    pub(crate) fn reserve(&mut self, record: HostRecord) -> ReservedHostRecord {
         self.last_ordinal = self
             .last_ordinal
             .checked_add(1)

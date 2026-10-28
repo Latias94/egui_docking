@@ -4,6 +4,8 @@ use dockspace::runtime::NativeSurfaceBinding;
 use eframe::{NativeViewportCreateAttempt, egui::ViewportId};
 use winit::window::WindowId;
 
+use crate::mailbox::journal::ReservedHostRecord;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DestroyedReceiptState {
     Awaiting,
@@ -21,6 +23,7 @@ pub(crate) struct NativeWindowReceipt {
     binding: NativeSurfaceBinding,
     attempt: Option<NativeViewportCreateAttempt>,
     destroyed: DestroyedReceiptState,
+    destroyed_ingress: Option<ReservedHostRecord>,
 }
 
 impl NativeWindowReceipt {
@@ -36,6 +39,7 @@ impl NativeWindowReceipt {
             binding,
             attempt,
             destroyed: DestroyedReceiptState::Awaiting,
+            destroyed_ingress: None,
         }
     }
 
@@ -55,12 +59,31 @@ impl NativeWindowReceipt {
         self.window == window && viewport.is_none_or(|viewport| viewport == self.viewport)
     }
 
-    pub(crate) fn receive_destroyed(&mut self, ordinal: u64) -> bool {
+    pub(crate) fn receive_destroyed(
+        &mut self,
+        ordinal: u64,
+        reserve: impl FnOnce() -> ReservedHostRecord,
+    ) -> bool {
         if ordinal == 0 || self.destroyed != DestroyedReceiptState::Awaiting {
             return false;
         }
+        self.destroyed_ingress = Some(reserve());
         self.destroyed = DestroyedReceiptState::Received(ordinal);
         true
+    }
+
+    pub(crate) fn ingress(&self) -> Option<&ReservedHostRecord> {
+        self.destroyed_ingress.as_ref()
+    }
+
+    /// Semantic transfer must precede handoff of the original capture reservation.
+    pub(crate) fn take_ingress(&mut self, capture_ordinal: u64) -> Option<ReservedHostRecord> {
+        if !matches!(self.destroyed, DestroyedReceiptState::Transferred(_))
+            || self.destroyed_ingress.as_ref()?.ordinal() != capture_ordinal
+        {
+            return None;
+        }
+        self.destroyed_ingress.take()
     }
 
     pub(crate) fn is_awaiting(&self) -> bool {
@@ -80,7 +103,9 @@ impl NativeWindowReceipt {
     }
 
     pub(crate) fn commit_destroyed(&mut self) {
-        if let DestroyedReceiptState::Transferred(ordinal) = self.destroyed {
+        if self.destroyed_ingress.is_none()
+            && let DestroyedReceiptState::Transferred(ordinal) = self.destroyed
+        {
             self.destroyed = DestroyedReceiptState::Committed(ordinal);
         }
     }

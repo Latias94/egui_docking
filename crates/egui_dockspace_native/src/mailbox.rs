@@ -42,6 +42,8 @@ mod command_callback;
 #[cfg(test)]
 mod command_ingress_tests;
 pub(crate) mod journal;
+#[cfg(test)]
+mod lifecycle_ingress_tests;
 mod output_resource;
 mod window_resource;
 use command_callback::CommandCallbackAdmission;
@@ -615,7 +617,8 @@ mod tests {
         };
         bridge.push_record(HostRecord::WindowEvent(destroyed(1)));
         bridge.push_record(HostRecord::WindowEvent(destroyed(2)));
-        assert_eq!(bridge.lock().journal.len(), 1);
+        assert_eq!(bridge.lock().journal.len(), 0);
+        assert_eq!(bridge.lock().retained_record_count(), 1);
         assert_eq!(bridge.front_event().unwrap().binding(), Some(predecessor));
         assert_eq!(
             bridge.retirement_observe_destroyed(viewport, predecessor, old_window, 1),
@@ -691,7 +694,8 @@ mod tests {
         );
         assert_eq!(bridge.front_event().unwrap().binding(), Some(predecessor));
         assert!(!bridge.with_viewports(|routes| routes.has_window_receipt(viewport, successor)));
-        assert!(bridge.lock().retirements.has_window(viewport, predecessor));
+        assert!(bridge.with_viewports(|routes| routes.has_window_receipt(viewport, predecessor)));
+        assert!(!bridge.lock().retirements.has_window(viewport, predecessor));
         bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             2,
             window,
@@ -699,7 +703,8 @@ mod tests {
             Some(successor),
             WindowEvent::Destroyed,
         )));
-        assert_eq!(bridge.lock().journal.len(), 1);
+        assert_eq!(bridge.lock().journal.len(), 0);
+        assert_eq!(bridge.lock().retained_record_count(), 1);
         assert_eq!(
             bridge.retirement_observe_destroyed(viewport, predecessor, window, 1),
             DestroyedObservation::Recorded
@@ -775,7 +780,10 @@ mod tests {
         )));
         assert_eq!(bridge.front_event().unwrap().binding(), Some(successor));
         assert!(!bridge.lock().retirements.has_window(viewport, predecessor));
-        assert!(bridge.lock().retirements.has_window(viewport, successor));
+        assert!(!bridge.lock().retirements.has_window(viewport, successor));
+        assert!(bridge.with_viewports(|routes| {
+            routes.has_received_destroyed(viewport, successor, window, 1)
+        }));
     }
 
     #[test]
@@ -840,7 +848,8 @@ mod tests {
             bridge.record_viewport_create_failure_for_test(viewport),
             NativeHostWake::Wait
         );
-        assert_eq!(bridge.lock().journal.len(), 1);
+        assert_eq!(bridge.lock().journal.len(), 0);
+        assert_eq!(bridge.lock().retained_record_count(), 1);
         assert!(!bridge.acknowledge_viewport_create_failure(
             NativeViewportCreateFailureRecord::new(viewport, successor, failure.kind()),
             true
@@ -883,6 +892,7 @@ mod tests {
         let viewport = ViewportId::from_hash_of("create-receipt-success");
         let window = WindowId::from(81);
         let mut routes = NativeViewportMap::default();
+        let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
         {
             routes.reserve(viewport, binding).unwrap();
             assert!(routes.admit_test_create(viewport, binding));
@@ -891,7 +901,10 @@ mod tests {
                     viewport,
                     binding,
                     None,
-                    CreateTerminal::Created(window)
+                    CreateTerminal::Created(window),
+                    || journal.reserve(HostRecord::DeviceRemoval(
+                        NativeDeviceRemovalRecord::for_test(1)
+                    )),
                 ),
                 CreateAdmission::First
             );
@@ -909,7 +922,8 @@ mod tests {
                     viewport,
                     binding,
                     None,
-                    CreateTerminal::Created(window)
+                    CreateTerminal::Created(window),
+                    || panic!("a duplicate cannot recapture create ingress"),
                 ),
                 CreateAdmission::Duplicate
             );
@@ -918,7 +932,8 @@ mod tests {
                     viewport,
                     binding,
                     None,
-                    CreateTerminal::Failed(NativeViewportCreateFailureKind::WindowUnavailable)
+                    CreateTerminal::Failed(NativeViewportCreateFailureKind::WindowUnavailable),
+                    || panic!("a conflicting terminal cannot recapture create ingress"),
                 ),
                 CreateAdmission::Conflict
             );
@@ -928,7 +943,12 @@ mod tests {
                     .is_err()
             );
         }
+        // The receipt-state model transfers its real capture without fabricating
+        // an opaque renderer output token for the Created payload.
+        let ordinal = routes.create_ingress().next().unwrap().ordinal();
+        journal.transfer_reserved(routes.take_create_ingress(ordinal).unwrap());
         let bridge = NativeHostBridge::new(routes);
+        bridge.lock().journal = journal;
         bridge.commit_frame_boundary(true);
         assert!(bridge.with_viewports(|routes| routes.has_pending_create_receipts()));
         bridge.commit_frame_boundary(false);
@@ -938,7 +958,8 @@ mod tests {
                 viewport,
                 binding,
                 None,
-                CreateTerminal::Created(window)
+                CreateTerminal::Created(window),
+                || panic!("a committed duplicate cannot recapture create ingress"),
             )),
             CreateAdmission::Duplicate
         );
@@ -955,7 +976,8 @@ mod tests {
                 viewport,
                 binding,
                 None,
-                CreateTerminal::Created(window)
+                CreateTerminal::Created(window),
+                || panic!("a successor route cannot accept the old terminal"),
             )),
             CreateAdmission::Conflict
         );
@@ -1931,6 +1953,10 @@ impl NativeHostState {
         self.window_resources
             .callback_ingress()
             .chain(self.close_control.callback_ingress())
+            .chain(self.viewports.create_ingress())
+            .chain(self.viewports.window_ingress())
+            .chain(self.retirements.create_ingress())
+            .chain(self.retirements.window_ingress())
             .chain(
                 self.output_resources
                     .values()
@@ -1991,6 +2017,10 @@ impl NativeHostState {
             .window_resources
             .take_callback_ingress(ordinal)
             .or_else(|| self.close_control.take_callback_ingress(ordinal))
+            .or_else(|| self.viewports.take_create_ingress(ordinal))
+            .or_else(|| self.viewports.take_window_ingress(ordinal))
+            .or_else(|| self.retirements.take_create_ingress(ordinal))
+            .or_else(|| self.retirements.take_window_ingress(ordinal))
         {
             self.journal.transfer_reserved(record);
         } else {
@@ -2148,12 +2178,14 @@ impl NativeHostState {
             failure.binding(),
             failure.attempt(),
             CreateTerminal::Failed(failure.kind()),
+            || {
+                self.journal
+                    .reserve(HostRecord::ViewportCreateFailed(failure))
+            },
         ) != CreateAdmission::First
         {
             return false;
         }
-        self.journal
-            .push_back(HostRecord::ViewportCreateFailed(failure));
         true
     }
 
@@ -2262,7 +2294,7 @@ impl NativeHostState {
         }
         if self
             .viewports
-            .attach_output(
+            .capture_output_window(
                 record.token.viewport_id(),
                 record.binding,
                 record.token.window_id(),
@@ -2277,6 +2309,7 @@ impl NativeHostState {
             record.binding,
             record.token.create_attempt(),
             CreateTerminal::Created(record.token.window_id()),
+            || self.journal.reserve(HostRecord::ViewportCreated(record)),
         ) != CreateAdmission::First
         {
             return false;
@@ -2284,7 +2317,6 @@ impl NativeHostState {
         if matches!(self.mode, HostIngressMode::Quarantined) {
             self.terminal_roster.require();
         }
-        self.journal.push_back(HostRecord::ViewportCreated(record));
         true
     }
 
@@ -2432,31 +2464,26 @@ impl NativeHostState {
         if matches!(record.event(), winit::event::WindowEvent::Destroyed) {
             let window = record.window_id();
             let viewport = record.viewport_id();
-            if !self.retirements.owns_window(window, viewport) {
-                let Some((_, binding)) = self.viewports.route_for_event(window, viewport) else {
-                    return false;
-                };
-                if !self.retirements.can_retain_window(binding, window) {
-                    return false;
-                }
-                let Some(receipt) = self
-                    .viewports
-                    .take_window_receipt_for_event(window, viewport)
-                else {
-                    return false;
-                };
+            let ordinal = record.ordinal();
+            let reserve = |owner_viewport, binding| {
+                record.qualify_destroyed(owner_viewport, binding);
+                self.journal.reserve(HostRecord::WindowEvent(record))
+            };
+            let received = if self.retirements.owns_window(window, viewport) {
                 self.retirements
-                    .retain_window(receipt)
-                    .expect("preflighted Destroyed retains its sole window owner");
-            }
-            let Some((viewport, binding)) =
-                self.retirements
-                    .receive_destroyed(window, viewport, record.ordinal())
-            else {
+                    .receive_destroyed(window, viewport, ordinal, reserve)
+            } else {
+                self.viewports
+                    .receive_window_destroyed(window, viewport, ordinal, reserve)
+            };
+            let Some((viewport, binding)) = received else {
                 return false;
             };
             self.viewports.suppress_pointer_route(viewport, binding);
-            record.qualify_destroyed(viewport, binding);
+            if matches!(self.mode, HostIngressMode::Quarantined) {
+                self.terminal_roster.require();
+            }
+            return true;
         }
         self.record_window_event(record);
         true
@@ -2674,29 +2701,33 @@ impl NativeHostState {
     }
 
     fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        self.journal.iter().any(|record| match record {
-            HostRecord::WindowEvent(event) => event.references_binding(binding),
-            HostRecord::DeviceRemoval(_) => false,
-            HostRecord::GlobalFocus(focus) => focus.references_binding(binding),
-            HostRecord::ViewportFocus(focus) => focus.references_binding(binding),
-            HostRecord::ViewportPointerPassthrough(input) => input.references_binding(binding),
-            // Binding retention belongs to the exact pending close, not a
-            // callback-time route lookup which may now name its successor.
-            HostRecord::ViewportCloseCancelled(_) => false,
-            HostRecord::ViewportRoster(roster) => roster
-                .roster()
-                .observations()
-                .iter()
-                .any(|observation| observation.binding() == binding),
-            HostRecord::ViewportCreateFailed(failure) => failure.binding() == binding,
-            HostRecord::ViewportVisibility(visibility) => visibility.binding() == binding,
-            HostRecord::ViewportCreated(created) => created.binding() == binding,
-            HostRecord::StagingPainted(staging) => staging.request().binding() == binding,
-            HostRecord::Output { .. } => false,
-        }) || self
-            .output_resources
-            .values()
-            .any(|resource| resource.reservation.binding() == Some(binding))
+        self.journal
+            .iter()
+            .chain(self.owner_ingress().map(ReservedHostRecord::record))
+            .any(|record| match record {
+                HostRecord::WindowEvent(event) => event.references_binding(binding),
+                HostRecord::DeviceRemoval(_) => false,
+                HostRecord::GlobalFocus(focus) => focus.references_binding(binding),
+                HostRecord::ViewportFocus(focus) => focus.references_binding(binding),
+                HostRecord::ViewportPointerPassthrough(input) => input.references_binding(binding),
+                // Binding retention belongs to the exact pending close, not a
+                // callback-time route lookup which may now name its successor.
+                HostRecord::ViewportCloseCancelled(_) => false,
+                HostRecord::ViewportRoster(roster) => roster
+                    .roster()
+                    .observations()
+                    .iter()
+                    .any(|observation| observation.binding() == binding),
+                HostRecord::ViewportCreateFailed(failure) => failure.binding() == binding,
+                HostRecord::ViewportVisibility(visibility) => visibility.binding() == binding,
+                HostRecord::ViewportCreated(created) => created.binding() == binding,
+                HostRecord::StagingPainted(staging) => staging.request().binding() == binding,
+                HostRecord::Output { .. } => false,
+            })
+            || self
+                .output_resources
+                .values()
+                .any(|resource| resource.reservation.binding() == Some(binding))
             || self.window_resources.references_binding(binding)
             || self.close_control.references_binding(binding)
     }
@@ -4058,7 +4089,24 @@ impl NativeHostBridge {
         window: winit::window::WindowId,
         ordinal: u64,
     ) -> DestroyedObservation {
-        self.lock()
+        let mut records = self.lock();
+        if !records.retirements.owns_window(window, Some(viewport)) {
+            if !records.retirements.can_retain_window(binding, window)
+                || !records
+                    .viewports
+                    .has_received_destroyed(viewport, binding, window, ordinal)
+            {
+                return DestroyedObservation::Rejected;
+            }
+            let Some(receipt) = records.viewports.take_window_receipt(viewport, binding) else {
+                return DestroyedObservation::Rejected;
+            };
+            records
+                .retirements
+                .retain_window(receipt)
+                .expect("the reducer moves the exact captured window owner into retirement");
+        }
+        records
             .retirements
             .observe_destroyed(viewport, binding, window, ordinal)
     }

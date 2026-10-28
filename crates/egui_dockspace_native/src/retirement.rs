@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::mailbox::journal::ReservedHostRecord;
 use crate::viewport_map::{NativeCreateReceipt, NativeWindowReceipt};
 use dockspace::runtime::{
     NativeCleanupObservation, NativeCloseEffectAcknowledgement, NativeEffectResult,
@@ -188,6 +189,21 @@ impl NativeRetirementState {
         }
     }
 
+    pub(crate) fn create_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+        self.unmaterialized
+            .values()
+            .filter_map(NativeCreateReceipt::ingress)
+    }
+
+    pub(crate) fn take_create_ingress(
+        &mut self,
+        capture_ordinal: u64,
+    ) -> Option<ReservedHostRecord> {
+        self.unmaterialized
+            .values_mut()
+            .find_map(|receipt| receipt.take_ingress(capture_ordinal))
+    }
+
     pub(crate) fn requires_snapshot(&self) -> bool {
         self.pending.values().any(|pending| {
             pending.phase == RetirementPhase::DestroyedObserved
@@ -301,15 +317,32 @@ impl NativeRetirementState {
         window: WindowId,
         viewport: Option<ViewportId>,
         ordinal: u64,
+        reserve: impl FnOnce(ViewportId, NativeSurfaceBinding) -> ReservedHostRecord,
     ) -> Option<(ViewportId, NativeSurfaceBinding)> {
         let (binding, pending) = self
             .pending
             .iter_mut()
             .find(|(_, pending)| pending.window.matches_window(window, viewport))?;
+        let owner = (pending.viewport, *binding);
         pending
             .window
-            .receive_destroyed(ordinal)
-            .then_some((pending.viewport, *binding))
+            .receive_destroyed(ordinal, || reserve(owner.0, owner.1))
+            .then_some(owner)
+    }
+
+    pub(crate) fn window_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+        self.pending
+            .values()
+            .filter_map(|pending| pending.window.ingress())
+    }
+
+    pub(crate) fn take_window_ingress(
+        &mut self,
+        capture_ordinal: u64,
+    ) -> Option<ReservedHostRecord> {
+        self.pending
+            .values_mut()
+            .find_map(|pending| pending.window.take_ingress(capture_ordinal))
     }
 
     pub(crate) fn owns_window(&self, window: WindowId, viewport: Option<ViewportId>) -> bool {
@@ -600,17 +633,45 @@ impl NativeRetirementState {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use dockspace::model::{
         DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
         RootId, SurfaceId,
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
-        DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster,
-        SurfaceUnavailableReason,
+        DockspaceSession, HostInputOutcome, HostWindowToken, NativeMonotonicClock,
+        NativePointerRoster, SurfaceUnavailableReason,
     };
 
     use super::*;
+    use crate::mailbox::HostRecord;
+    use crate::mailbox::journal::HostIngressJournal;
+
+    fn destroyed_ingress(
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+        event_ordinal: u64,
+    ) -> ReservedHostRecord {
+        let mut journal =
+            HostIngressJournal::new(NativeMonotonicClock::new(|| Duration::from_millis(17)));
+        let predecessor = journal.reserve(HostRecord::DeviceRemoval(
+            crate::event::NativeDeviceRemovalRecord::for_test(99),
+        ));
+        let ingress = journal.reserve(HostRecord::WindowEvent(
+            crate::event::NativeWindowEventRecord::for_test(
+                event_ordinal,
+                window,
+                Some(viewport),
+                Some(binding),
+                winit::event::WindowEvent::Destroyed,
+            ),
+        ));
+        assert_eq!(ingress.ordinal(), predecessor.ordinal() + 1);
+        ingress
+    }
 
     fn binding() -> NativeSurfaceBinding {
         let surface = SurfaceId::new(1);
@@ -659,10 +720,44 @@ mod tests {
         state
             .retain_window(routes.take_window_receipt(viewport, binding).unwrap())
             .unwrap();
+        for (candidate_window, candidate_viewport, ordinal) in [
+            (WindowId::from(23), Some(viewport), 1),
+            (window, Some(ViewportId::ROOT), 1),
+            (window, Some(viewport), 0),
+        ] {
+            assert_eq!(
+                state.receive_destroyed(
+                    candidate_window,
+                    candidate_viewport,
+                    ordinal,
+                    |_, _| panic!("an unmatched or zero-ordinal terminal cannot reserve ingress"),
+                ),
+                None,
+            );
+        }
         assert_eq!(
-            state.receive_destroyed(window, Some(viewport), 1),
+            state.receive_destroyed(
+                window,
+                Some(viewport),
+                1,
+                |owner_viewport, owner_binding| {
+                    assert_eq!(owner_viewport, viewport);
+                    assert_eq!(owner_binding, binding);
+                    destroyed_ingress(owner_viewport, owner_binding, window, 1)
+                }
+            ),
             Some((viewport, binding))
         );
+        assert_eq!(state.window_ingress().count(), 1);
+        let capture_ordinal = state.window_ingress().next().unwrap().ordinal();
+        assert_ne!(capture_ordinal, 1);
+        assert_eq!(
+            state.receive_destroyed(window, Some(viewport), 2, |_, _| panic!(
+                "a duplicate Destroyed cannot mint another capture"
+            )),
+            None,
+        );
+        assert!(state.take_window_ingress(capture_ordinal).is_none());
         assert_eq!(
             state.observe_destroyed(viewport, binding, window, 1),
             DestroyedObservation::Recorded
@@ -676,6 +771,23 @@ mod tests {
             "raw admission is not a committed boundary"
         );
         assert!(state.transfer_destroyed(binding, window, 1));
+        assert!(!state.requires_snapshot());
+        state.commit_destroyed_callbacks();
+        assert!(
+            !state.requires_snapshot(),
+            "semantic transfer cannot commit before the original capture hands off"
+        );
+        assert!(state.take_window_ingress(1).is_none());
+        let ingress = state.take_window_ingress(capture_ordinal).unwrap();
+        assert_eq!(ingress.ordinal(), capture_ordinal);
+        assert_eq!(ingress.captured_at(), Duration::from_millis(17));
+        let event = ingress.window_event().unwrap();
+        assert_eq!(event.ordinal(), 1);
+        assert_eq!(event.binding(), Some(binding));
+        assert_eq!(event.viewport_id(), Some(viewport));
+        assert_eq!(event.window_id(), window);
+        assert!(state.window_ingress().next().is_none());
+        assert!(state.take_window_ingress(capture_ordinal).is_none());
         assert!(!state.requires_snapshot());
         state.commit_destroyed_callbacks();
         assert!(state.requires_snapshot());
@@ -697,5 +809,42 @@ mod tests {
         assert_eq!(state.quiescence_candidates().collect::<Vec<_>>(), [binding]);
         assert!(state.finish_quiescence(binding));
         assert!(state.quiescence_candidates().next().is_none());
+    }
+
+    #[test]
+    fn received_live_window_receipt_moves_its_exact_ingress_into_retirement() {
+        let binding = binding();
+        let viewport = ViewportId::from_hash_of("captured-live-window");
+        let window = WindowId::from(24);
+        let mut routes = crate::viewport_map::NativeViewportMap::default();
+        routes.bind(viewport, window, binding).unwrap();
+        let mut receipt = routes.take_window_receipt(viewport, binding).unwrap();
+        assert!(receipt.receive_destroyed(3, || destroyed_ingress(viewport, binding, window, 3)));
+        assert!(!receipt.receive_destroyed(4, || panic!(
+            "capturing an attached receipt is once-only before retirement"
+        )));
+        let mut state = NativeRetirementState::default();
+        assert_eq!(state.window_ingress().count(), 0);
+        state.retain_window(receipt).unwrap();
+        let ingress = state.window_ingress().next().unwrap();
+        let capture_ordinal = ingress.ordinal();
+        assert_ne!(capture_ordinal, 3);
+        assert_eq!(ingress.captured_at(), Duration::from_millis(17));
+        assert_eq!(ingress.window_event().unwrap().ordinal(), 3);
+        assert_eq!(
+            state.observe_destroyed(viewport, binding, window, 3),
+            DestroyedObservation::Recorded,
+        );
+        assert!(state.take_window_ingress(capture_ordinal).is_none());
+        assert!(!state.transfer_destroyed(binding, window, capture_ordinal));
+        assert!(state.transfer_destroyed(binding, window, 3));
+        state.commit_destroyed_callbacks();
+        assert!(!state.requires_snapshot());
+        let ingress = state.take_window_ingress(capture_ordinal).unwrap();
+        assert_eq!(ingress.window_event().unwrap().binding(), Some(binding));
+        assert_eq!(ingress.ordinal(), capture_ordinal);
+        assert!(state.take_window_ingress(capture_ordinal).is_none());
+        state.commit_destroyed_callbacks();
+        assert!(state.requires_snapshot());
     }
 }
