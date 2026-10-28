@@ -469,7 +469,9 @@ impl PointerJournalLedger {
         self.active_streams.clear();
         self.authority =
             JournalPointerAuthority::unknown(AuthorityUnavailableReason::ProviderUnavailable);
-        self.authority_checkpoint_boundary = Some(committed_through);
+        self.authority_checkpoint_boundary = Some(PointerAuthorityCheckpointBoundary::Enrollment(
+            committed_through,
+        ));
         self.last_checkpoint = None;
         self.active = Some(ActivePointerProvider {
             lease,
@@ -477,6 +479,59 @@ impl PointerJournalLedger {
         });
         self.surface_local_producer = None;
         Ok(lease)
+    }
+
+    /// Ends live streams and revokes button/capture facts without retiring the provider.
+    pub(crate) fn cancel_live_streams_for_overload(
+        &mut self,
+        lease: PointerInputLease,
+    ) -> Result<(), PointerJournalLedgerError> {
+        let committed_through = self.require_active(lease)?;
+        let next_version = self.next_version()?;
+        self.active_streams.clear();
+        self.authority = JournalPointerAuthority::unknown(AuthorityUnavailableReason::NotReported);
+        self.authority_checkpoint_boundary = Some(
+            PointerAuthorityCheckpointBoundary::OverloadResync(committed_through),
+        );
+        self.last_checkpoint = None;
+        self.version = next_version;
+        Ok(())
+    }
+
+    /// Validates a fresh recovery report without changing published authority.
+    pub(crate) fn validate_overload_authority_resync(
+        &self,
+        lease: PointerInputLease,
+        observed_through: PointerEdgeSequence,
+    ) -> Result<(), PointerJournalLedgerError> {
+        let committed_through = self.require_active(lease)?;
+        if observed_through < committed_through {
+            return Err(PointerJournalLedgerError::JournalReplay {
+                lease,
+                committed_through,
+                submitted_previous: observed_through,
+            });
+        }
+        if observed_through > committed_through {
+            return Err(PointerJournalLedgerError::JournalAhead {
+                lease,
+                committed_through,
+                submitted_previous: observed_through,
+            });
+        }
+        if self.authority_checkpoint_boundary
+            != Some(PointerAuthorityCheckpointBoundary::OverloadResync(
+                observed_through,
+            ))
+        {
+            return Err(
+                PointerJournalLedgerError::AuthorityCheckpointAfterPointerEdges {
+                    lease,
+                    observed_through,
+                },
+            );
+        }
+        Ok(())
     }
 
     /// Permanently retires one exact live provider incarnation.
@@ -986,7 +1041,7 @@ impl PointerJournalLedger {
             PointerStreamIncarnation,
             BTreeMap<PointerId, PointerStreamId>,
             JournalPointerAuthority,
-            Option<PointerEdgeSequence>,
+            Option<PointerAuthorityCheckpointBoundary>,
             Option<PointerAuthorityCheckpoint>,
             Vec<AcceptedPointerEdge>,
         ),
@@ -1000,7 +1055,9 @@ impl PointerJournalLedger {
         let mut accepted_edges = Vec::with_capacity(journal.len());
 
         if let Some(checkpoint) = journal.authority_checkpoint() {
-            if authority_checkpoint_boundary != Some(checkpoint.observed_through()) {
+            if authority_checkpoint_boundary.map(PointerAuthorityCheckpointBoundary::watermark)
+                != Some(checkpoint.observed_through())
+            {
                 return Err(
                     PointerJournalLedgerError::AuthorityCheckpointAfterPointerEdges {
                         lease,
@@ -1008,7 +1065,18 @@ impl PointerJournalLedger {
                     },
                 );
             }
-            if last_checkpoint.as_ref().is_some_and(|retained| {
+            if matches!(
+                authority_checkpoint_boundary,
+                Some(PointerAuthorityCheckpointBoundary::OverloadResync(_))
+            ) {
+                authority.apply_checkpoint(checkpoint);
+                if matches!(checkpoint.pointers(), Authority::Known(_)) {
+                    authority_checkpoint_boundary = None;
+                }
+                // Unknown reports keep the recovery opportunity open for fresh facts,
+                // including a later complete observation at this same pointer watermark.
+                last_checkpoint = None;
+            } else if last_checkpoint.as_ref().is_some_and(|retained| {
                 retained.observed_through() == checkpoint.observed_through()
             }) {
                 if last_checkpoint.as_ref() != Some(checkpoint) {
@@ -1068,7 +1136,12 @@ impl PointerJournalLedger {
         }
 
         if !journal.is_empty() {
-            authority_checkpoint_boundary = None;
+            authority_checkpoint_boundary = match authority_checkpoint_boundary {
+                Some(PointerAuthorityCheckpointBoundary::OverloadResync(_)) => Some(
+                    PointerAuthorityCheckpointBoundary::OverloadResync(journal.through()),
+                ),
+                _ => None,
+            };
             last_checkpoint = None;
         }
 

@@ -861,6 +861,8 @@ impl<'state> ActiveContainedTransformView<'state> {
 /// Why an active gesture was cancelled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InteractionCancelReason {
+    /// The host cancelled live input after exhausting its ordinary input capacity.
+    InputOverload,
     /// The user explicitly pressed Escape.
     Escape,
     /// The source button was released before the renderer began dragging.
@@ -1384,6 +1386,8 @@ pub enum ScrollSuppressionReason {
 /// Exact terminal cause of one core-owned smooth-scroll session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollTerminationReason {
+    /// The host cancelled live input after exhausting its ordinary input capacity.
+    InputOverload,
     /// The provider emitted the matching terminal `End` edge.
     Completed,
     /// The provider explicitly cancelled the native sequence.

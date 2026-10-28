@@ -1226,6 +1226,9 @@ impl BackendIngressRecorder {
         &mut self,
         input: EngineInput,
     ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        if matches!(input, EngineInput::CancelNativeInputForOverload { .. }) {
+            return Err(BackendIngressError::SemanticInputIsHostControl);
+        }
         if input.is_backend_ingress_fact() {
             return Err(BackendIngressError::SemanticInputIsBackendFact);
         }
@@ -2104,6 +2107,9 @@ pub enum BackendIngressError {
     /// A terminal configuration update was submitted inside the causal input prefix.
     #[error("backend configuration input belongs to the terminal configuration phase")]
     SemanticInputIsConfiguration,
+    /// Overload cancellation must remain available outside recorder capacity.
+    #[error("terminal host control cannot enter the backend ingress recorder")]
+    SemanticInputIsHostControl,
     /// A requested suffix starts after the latest captured record.
     #[error(
         "backend ingress committed watermark {committed:?} is ahead of recorded watermark {recorded:?}"

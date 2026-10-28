@@ -36,3 +36,7 @@ path = "tests/managed_native_lifecycle.rs"
 [[test]]
 name = "native_input_budget"
 path = "tests/native_input_budget.rs"
+
+[[test]]
+name = "native_input_overload"
+path = "tests/overload.rs"

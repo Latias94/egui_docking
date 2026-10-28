@@ -1130,6 +1130,7 @@ impl CoreHostFrame {
             surface_contributions: BTreeMap::new(),
             presentation_phase_started: false,
             configuration_phase_started: false,
+            input_terminated_for_overload: false,
             next_causal_ordinal: 0,
             poison: None,
             input_prefix_error: None,
@@ -1330,6 +1331,10 @@ impl CoreHostFrame {
     #[must_use]
     pub const fn backend_ingress_provider(&self) -> Option<BackendIngressLease> {
         self.backend_ingress
+    }
+
+    pub(crate) const fn input_terminated_for_overload(&self) -> bool {
+        self.input_terminated_for_overload
     }
 
     pub(crate) const fn backend_ingress_through(&self) -> BackendIngressOrdinal {
@@ -1844,6 +1849,9 @@ impl CoreHostFrame {
         if let Some(error) = self.poison {
             return Err(error);
         }
+        if self.input_terminated_for_overload {
+            return self.reject(CoreHostFrameError::InputAfterOverloadCancellation);
+        }
         if self.backend_ingress.is_some()
             && authority != PointerJournalSubmissionAuthority::BackendIngress
         {
@@ -2133,6 +2141,9 @@ impl CoreHostFrame {
         if let Some(error) = self.poison {
             return Err(error);
         }
+        if self.input_terminated_for_overload {
+            return self.reject(CoreHostFrameError::InputAfterOverloadCancellation);
+        }
         if self.presentation_phase_started {
             return self.reject(CoreHostFrameError::InputAfterPresentation);
         }
@@ -2183,6 +2194,30 @@ impl CoreHostFrame {
         if let Some(error) = self.poison {
             return Err(error);
         }
+        if self.input_terminated_for_overload {
+            return self.reject(CoreHostFrameError::InputAfterOverloadCancellation);
+        }
+        let overload_cancellation =
+            if let EngineInput::CancelNativeInputForOverload { provider } = &input {
+                self.ensure_backend_ingress_complete()?;
+                let Some(expected) = self.backend_ingress else {
+                    return self.reject(CoreHostFrameError::BackendIngressUnexpected);
+                };
+                if from_backend_ingress
+                    || *provider != expected
+                    || provider.presentation_host() != self.presentation_host
+                {
+                    return self.reject(CoreHostFrameError::BackendIngressRejected {
+                        source: BackendIngressError::ProviderLeaseMismatch {
+                            expected,
+                            submitted: *provider,
+                        },
+                    });
+                }
+                true
+            } else {
+                false
+            };
         if self.pending_pointer_segment.is_some() {
             return self.reject(CoreHostFrameError::PointerReceiverReceiptsMissingBeforeInput);
         }
@@ -2295,6 +2330,10 @@ impl CoreHostFrame {
                 self.configuration_inputs.push(input);
                 self.configuration_phase_started = true;
             }
+        }
+        if overload_cancellation {
+            self.input_terminated_for_overload = true;
+            self.staged_pointer_journal = self.candidate.pointer_journal.clone();
         }
         Ok(())
     }

@@ -24,6 +24,9 @@ mod scroll;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod overload;
+
 /// Exact endpoint from which one surface-local provider reports input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SurfaceLocalPointerEndpoint {
@@ -1885,6 +1888,22 @@ pub(crate) struct PointerJournalCommit {
     accepted_edges: Vec<AcceptedPointerEdge>,
 }
 
+/// Exact watermark at which a complete authority baseline may be observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerAuthorityCheckpointBoundary {
+    Enrollment(PointerEdgeSequence),
+    /// Recovery follows accepted edges until a complete roster commits.
+    OverloadResync(PointerEdgeSequence),
+}
+
+impl PointerAuthorityCheckpointBoundary {
+    const fn watermark(self) -> PointerEdgeSequence {
+        match self {
+            Self::Enrollment(through) | Self::OverloadResync(through) => through,
+        }
+    }
+}
+
 /// Core-owned authority ledger for the sole live pointer provider.
 ///
 /// This is intentionally not an adapter facade. `DockEngine` integration must
@@ -1903,7 +1922,7 @@ pub(crate) struct PointerJournalLedger {
     last_stream_incarnation: PointerStreamIncarnation,
     active_streams: BTreeMap<PointerId, PointerStreamId>,
     authority: JournalPointerAuthority,
-    authority_checkpoint_boundary: Option<PointerEdgeSequence>,
+    authority_checkpoint_boundary: Option<PointerAuthorityCheckpointBoundary>,
     last_checkpoint: Option<PointerAuthorityCheckpoint>,
     active: Option<ActivePointerProvider>,
     surface_local_producer: Option<(PointerInputLease, SurfaceLocalPointerProducerMonitor)>,
@@ -2003,7 +2022,7 @@ pub enum PointerJournalLedgerError {
         observed_through: PointerEdgeSequence,
     },
     #[error(
-        "pointer provider {lease:?} submitted an authority checkpoint at {observed_through} after its enrollment baseline was closed"
+        "pointer provider {lease:?} has no authority checkpoint boundary at {observed_through}"
     )]
     AuthorityCheckpointAfterPointerEdges {
         lease: PointerInputLease,

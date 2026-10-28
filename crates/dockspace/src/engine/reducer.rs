@@ -241,6 +241,7 @@ impl DockEngine {
             surface_contributions,
             presentation_phase_started: _,
             configuration_phase_started: _,
+            input_terminated_for_overload: _,
             next_causal_ordinal: _,
             poison,
             input_prefix_error,
@@ -1199,6 +1200,7 @@ impl DockEngine {
                         .effect_settlement()
                         .map_or(&[][..], |settlement| settlement.observed_effects()),
                     InputOutcome::ViewportRegistered { .. }
+                    | InputOutcome::NativeInputCancelledForOverload
                     | InputOutcome::ViewportRegistrationRejected { .. }
                     | InputOutcome::NativeCloseObservationPublished { .. }
                     | InputOutcome::PlatformSnapshotStale { .. }
@@ -1734,6 +1736,13 @@ impl DockEngine {
             EngineInput::CancelActiveInteractionWithEscape { expected, delivery } => {
                 self.reduce_escape_input(input.sequence, *expected, *delivery, interaction_events)
             }
+            EngineInput::CancelNativeInputForOverload { provider } => self
+                .cancel_native_input_for_overload(
+                    input.sequence,
+                    cause,
+                    *provider,
+                    interaction_events,
+                ),
             EngineInput::RequestSurfaceClose {
                 expected,
                 edge,

@@ -52,6 +52,8 @@ pub enum InputPriority {
 /// Result of reducing one sequenced input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputOutcome {
+    /// The exact managed provider accepted terminal overload cancellation.
+    NativeInputCancelledForOverload,
     /// A programmatic content-close request opened or reused one exact plan.
     ContentCloseRequested {
         /// Stable target supplied by the caller.

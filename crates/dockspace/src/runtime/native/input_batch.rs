@@ -19,6 +19,25 @@ pub(in crate::runtime) struct PendingNativeReplay {
 }
 
 impl RuntimeNativeState {
+    pub(in crate::runtime) fn overload_cancellation_input(
+        &self,
+        frame: &CoreHostFrame,
+    ) -> Result<crate::engine::EngineInput, NativePlatformError> {
+        if self.profile != super::NativeHostProfile::ManagedDesktop {
+            return Err(NativePlatformError::HostProfileMismatch);
+        }
+        if self.input_pending_after(frame) {
+            return Err(NativePlatformError::InputPending);
+        }
+        let provider = self.recorder.lease();
+        if frame.backend_ingress_provider() != Some(provider)
+            || frame.pointer_provider() != Some(provider.pointer_provider())
+        {
+            return Err(NativePlatformError::ProviderSuperseded);
+        }
+        Ok(crate::engine::EngineInput::CancelNativeInputForOverload { provider })
+    }
+
     pub(in crate::runtime) fn prepare_pending_input(
         &self,
         engine: &DockEngine,

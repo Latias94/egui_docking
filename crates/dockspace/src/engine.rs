@@ -8,6 +8,7 @@ mod host_frame;
 mod input;
 mod native_admission;
 mod native_tear_off;
+mod overload;
 mod pointer_contained;
 mod pointer_proof;
 mod pointer_session;
@@ -352,6 +353,9 @@ pub enum CoreHostFrameError {
     /// semantic input would silently reorder the core-minted append sequence.
     #[error("a semantic input cannot follow the terminal configuration phase")]
     SemanticAfterConfiguration,
+    /// No semantic, configuration, or pointer input may follow overload cancellation.
+    #[error("input cannot follow terminal overload cancellation")]
+    InputAfterOverloadCancellation,
     /// A host frame may submit exactly one presentation observation.
     #[error("a host frame already contains a presentation observation")]
     DuplicatePresentationObservation,
@@ -797,6 +801,7 @@ pub struct CoreHostFrame {
     surface_contributions: BTreeMap<SurfaceId, PreparedSurfaceContribution>,
     presentation_phase_started: bool,
     configuration_phase_started: bool,
+    input_terminated_for_overload: bool,
     next_causal_ordinal: u64,
     poison: Option<CoreHostFrameError>,
     input_prefix_error: Option<EngineError>,

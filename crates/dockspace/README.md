@@ -137,10 +137,33 @@ returned frame or failing an attempt leaves its input retryable.
 
 The synchronous `begin_native_host_frame` convenience remains available for
 hosts deliberately draining a complete interval; it does not enforce a time
-budget. The repository's egui native coordinator has not yet migrated to the
-budgeted protocol. In particular, deferred close needs exact neutral hold
-semantics rather than fabricating a policy cancellation. This API checkpoint
-does not qualify native queue capacity, release latency or physical OS behavior.
+budget. The working egui native coordinator uses the budgeted protocol and
+exact neutral close holds under a local, unpublished fork override. Its tracked
+dependency pins do not yet reproduce that adapter. See `docs/VALIDATION.md` for
+the separately qualified core, adapter-model, and real-window evidence.
+
+When a buffered managed host exhausts its own ingress capacity, it must freeze
+ordinary admission and commit all previously accepted input before invoking
+`DockspaceHostFrame::cancel_native_input_for_overload`. This terminal operation
+needs no additional backend record or pointer edge, including when the ordinary
+record budget is exhausted. It ends live gestures, routing and scrolling while
+preserving the provider, monotonic identities, and accepted release, output and
+lifecycle obligations. Measurement and paint may follow; further input in that
+frame is rejected. Consume the exact submitted-action outcome only after the
+frame commits. Dropping or failing the frame leaves cancellation unpublished.
+
+Cancellation revokes button/capture authority to `Unknown`; it does not prove
+physical release. Once earlier native records are committed, a host with fresh
+complete facts can call `DockspaceSession::report_native_pointer_roster`.
+That ordinary recorded checkpoint restores authority only after its frame
+commits. Held buttons remain down, and an unknown roster keeps recovery open
+for later complete facts, including after subsequent press/release edges.
+Do not invent an empty roster when the platform cannot observe all pointers.
+The runtime validates the exact current provider, bindings and pointer watermark.
+
+The cancellation API does not itself impose ingress record/byte/age caps or
+reserve a host overload latch. Those adapter responsibilities, release latency,
+and physical OS behavior remain separate qualification work.
 
 ## Application Close Decisions
 

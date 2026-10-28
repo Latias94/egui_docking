@@ -292,6 +292,13 @@ pub(crate) enum LocalTabChromeAction {
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
+    /// Ends managed input at the current fully reduced host-frame boundary.
+    ///
+    /// This terminal host control must not enter a backend ingress recorder.
+    CancelNativeInputForOverload {
+        /// Exact joined provider and presentation host whose input is cancelled.
+        provider: BackendIngressLease,
+    },
     /// Bind an existing adapter window to a current logical surface.
     RegisterViewport {
         /// Exact platform provider enrolling this native binding.
@@ -738,6 +745,7 @@ impl EngineInput {
             Self::PublishPaneFocusObservation { .. }
             | Self::PublishPaneFocusRequestObservation { .. } => InputPriority::PlatformObservation,
             Self::ActivateViewport { .. }
+            | Self::CancelNativeInputForOverload { .. }
             | Self::WorkspaceCommand { .. }
             | Self::SelectItem { .. }
             | Self::OpenItem { .. }

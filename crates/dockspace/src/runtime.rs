@@ -208,6 +208,10 @@ pub enum DockspaceCloseRejection {
 /// Public actionable result produced by one facade-owned input.
 #[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
+    /// Managed input ended at this frame's terminal overload boundary.
+    ///
+    /// The provider and all previously accepted release obligations remain live.
+    NativeInputCancelledForOverload,
     /// One validated document atomically replaced the complete workspace.
     ///
     /// Earlier input outcomes from the same frame are intentionally omitted

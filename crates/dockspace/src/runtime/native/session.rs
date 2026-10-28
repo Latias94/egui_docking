@@ -86,6 +86,44 @@ impl DockspaceSession {
         self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint))
     }
 
+    /// Reports a freshly observed complete pointer roster after overload cancellation.
+    ///
+    /// Earlier native records must be committed before reporting. The runtime
+    /// binds the observation to its exact current provider and pointer watermark;
+    /// authority changes only when a subsequent host frame commits. An unknown
+    /// roster cannot prove that held buttons were released and keeps recovery
+    /// available. Recovery remains available across later pointer edges until
+    /// one complete roster commits. Native capture must name a current binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a nonmanaged or superseded provider, pending native
+    /// input, invalid facts, or an unavailable resynchronization boundary.
+    pub fn report_native_pointer_roster(
+        &mut self,
+        roster: NativePointerRoster,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let native = self
+            .native
+            .as_ref()
+            .ok_or(NativePlatformError::ProviderUnavailable)?;
+        if native.profile != NativeHostProfile::ManagedDesktop {
+            return Err(NativePlatformError::HostProfileMismatch.into());
+        }
+        if self.engine.backend_ingress_provider() != Some(native.recorder.lease()) {
+            return Err(NativePlatformError::ProviderSuperseded.into());
+        }
+        if self.engine.backend_ingress_committed_through() != native.recorder.recorded_through() {
+            return Err(NativePlatformError::InputPending.into());
+        }
+        let checkpoint = native.compile_pointer_roster(roster)?;
+        self.engine
+            .validate_native_pointer_roster_resync(native.recorder.lease(), &checkpoint)?;
+        self.native_state_mut()?
+            .record_pointer_authority(checkpoint)?;
+        Ok(())
+    }
+
     /// Configures the immutable capabilities of the attached managed backend.
     ///
     /// The native coordinator should call this after the real windowing backend

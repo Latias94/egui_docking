@@ -55,6 +55,7 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
         | Error::ItemIdentityScopeMismatch
         | Error::InputPhaseMismatch { .. }
         | Error::SemanticAfterConfiguration
+        | Error::InputAfterOverloadCancellation
         | Error::DuplicatePresentationObservation
         | Error::PresentationObservationHostOutsideScope { .. }
         | Error::DuplicatePresentationObservationForHost { .. }
@@ -119,6 +120,7 @@ const fn backend_ingress_error_kind(error: &BackendIngressError) -> DockspaceRun
         | BackendIngressError::PointerSegmentPreviousMismatch { .. }
         | BackendIngressError::SemanticInputIsBackendFact
         | BackendIngressError::SemanticInputIsConfiguration
+        | BackendIngressError::SemanticInputIsHostControl
         | BackendIngressError::CommittedWatermarkAhead { .. }
         | BackendIngressError::CommittedWatermarkRetired { .. }
         | BackendIngressError::CommitWatermarkLeaseMismatch { .. }

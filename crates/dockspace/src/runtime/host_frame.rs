@@ -52,6 +52,31 @@ pub struct DockspaceHostFrame<'session> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Cancels managed pointer and scroll input without retiring its provider.
+    ///
+    /// Earlier native input must be fully reduced. This is the frame's final
+    /// input operation; measurement and paint may still follow. Dropping or
+    /// failing to commit the frame publishes no cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a nonmanaged host, pending native input, a stale
+    /// provider, or an input phase which has already closed.
+    pub fn cancel_native_input_for_overload(
+        &mut self,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        let input = self
+            .session
+            .native
+            .as_ref()
+            .ok_or(NativePlatformError::ProviderUnavailable)?
+            .overload_cancellation_input(&self.frame)?;
+        let attempt = self.frame.presentation_attempt();
+        let sequence = self.append_identified(input)?;
+        Ok(DockspaceSubmittedAction::new(attempt, sequence))
+    }
+
     /// Returns whether accepted native input remains after this candidate prefix.
     ///
     /// Render and commit this prefix, then poll again before taking an application
@@ -658,6 +683,9 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn ensure_semantic_input_allowed(&self) -> Result<(), DockspaceRuntimeError> {
+        if self.frame.input_terminated_for_overload() {
+            return Err(crate::engine::CoreHostFrameError::InputAfterOverloadCancellation.into());
+        }
         if self.native_input_pending {
             return Err(NativePlatformError::InputPending.into());
         }

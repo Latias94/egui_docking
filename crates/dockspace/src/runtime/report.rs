@@ -64,6 +64,9 @@ impl HostFrameReport {
         } else {
             for reduced in transition.reduced_inputs() {
                 let outcome = match reduced.outcome() {
+                    InputOutcome::NativeInputCancelledForOverload => {
+                        Some(HostInputOutcome::NativeInputCancelledForOverload)
+                    }
                     InputOutcome::ProductActionProcessed { outcome, .. } => {
                         Some(product_action_host_outcome(outcome, reduced.cause()))
                     }

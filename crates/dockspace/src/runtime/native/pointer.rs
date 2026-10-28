@@ -124,7 +124,7 @@ pub enum NativePointerOwner {
     Unknown,
 }
 
-/// Complete native pointer state observed at provider enrollment.
+/// Complete native pointer state observed at enrollment or overload recovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePointerState {
     pointer: NativePointerId,
@@ -160,14 +160,19 @@ impl NativePointerState {
     }
 }
 
-/// Initial complete button and capture authority for a managed pointer provider.
+/// Complete button and capture authority observed by a managed pointer provider.
 ///
-/// This value is consumed by
+/// Supply the initial roster to
 /// [`DockspaceSession::enable_managed_native_host`](crate::runtime::DockspaceSession::enable_managed_native_host)
-/// as part of provider enrollment. It cannot be appended after platform or
-/// pointer records have started. Native-binding capture cannot appear in the
-/// initial roster because binding capabilities are minted by that enrollment;
-/// use [`Self::Unknown`] when a pre-existing capture cannot be expressed exactly.
+/// as part of enrollment. After overload cancellation,
+/// [`DockspaceSession::report_native_pointer_roster`](crate::runtime::DockspaceSession::report_native_pointer_roster)
+/// accepts fresh observations at the current committed pointer watermark until
+/// one complete roster commits, including after subsequent press/release edges.
+/// Unknown reports leave recovery available and never imply all buttons released.
+///
+/// Native capture cannot appear in the initial roster because enrollment mints
+/// binding capabilities; use [`Self::Unknown`] when it cannot be expressed exactly.
+/// A recovery roster may name an exact current native capture binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePointerRoster {
     /// Complete current pointer roster. An empty roster proves all buttons released.
@@ -636,12 +641,31 @@ impl RuntimeNativeState {
         debug_assert_eq!(self.profile, NativeHostProfile::ManagedDesktop);
         let watermark = self.recorder.pointer_through();
         debug_assert_eq!(checkpoint.observed_through(), watermark);
+        self.record_pointer_authority(checkpoint)
+            .expect("a fresh managed recorder accepts its enrollment checkpoint");
+    }
+
+    pub(super) fn compile_pointer_roster(
+        &self,
+        roster: NativePointerRoster,
+    ) -> Result<PointerAuthorityCheckpoint, NativePlatformError> {
+        compile_pointer_authority(roster, self.recorder.pointer_through(), |owner| {
+            self.capture_owner(owner)
+        })
+    }
+
+    pub(super) fn record_pointer_authority(
+        &mut self,
+        checkpoint: PointerAuthorityCheckpoint,
+    ) -> Result<(), NativePlatformError> {
+        let watermark = self.recorder.pointer_through();
         let journal = PointerEdgeJournal::new(watermark, watermark, Vec::new())
             .and_then(|journal| journal.with_authority_checkpoint(checkpoint))
-            .expect("a prevalidated enrollment checkpoint forms a valid empty journal");
+            .map_err(|_| NativePlatformError::InvalidPointerFacts)?;
         self.recorder
             .record_pointer_segment(journal)
-            .expect("a fresh managed recorder accepts its enrollment checkpoint");
+            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+        Ok(())
     }
 
     pub(super) fn record_pointer_batch(
@@ -925,6 +949,24 @@ pub(super) fn compile_initial_pointer_authority(
     roster: NativePointerRoster,
 ) -> Result<PointerAuthorityCheckpoint, NativePlatformError> {
     let watermark = crate::pointer_journal::PointerEdgeSequence::new(0);
+    compile_pointer_authority(roster, watermark, |owner| match owner {
+        NativePointerOwner::Foreign => Ok(Authority::Known(PointerCaptureOwner::Foreign)),
+        NativePointerOwner::None => Ok(Authority::Known(PointerCaptureOwner::None)),
+        NativePointerOwner::Unknown => {
+            Ok(Authority::Unknown(AuthorityUnavailableReason::NotReported))
+        }
+        // Native bindings are minted by enrollment and cannot pre-exist it.
+        NativePointerOwner::Native(_) => Err(NativePlatformError::InvalidPointerFacts),
+    })
+}
+
+fn compile_pointer_authority(
+    roster: NativePointerRoster,
+    watermark: crate::pointer_journal::PointerEdgeSequence,
+    resolve_capture: impl Fn(
+        NativePointerOwner,
+    ) -> Result<Authority<PointerCaptureOwner>, NativePlatformError>,
+) -> Result<PointerAuthorityCheckpoint, NativePlatformError> {
     match roster {
         NativePointerRoster::Exact(states) => {
             let states = states
@@ -936,20 +978,7 @@ pub(super) fn compile_initial_pointer_authority(
                         .copied()
                         .map(NativePointerButton::into_core)
                         .collect();
-                    let capture = match state.capture() {
-                        NativePointerOwner::Foreign => {
-                            Authority::Known(PointerCaptureOwner::Foreign)
-                        }
-                        NativePointerOwner::None => Authority::Known(PointerCaptureOwner::None),
-                        NativePointerOwner::Unknown => {
-                            Authority::Unknown(AuthorityUnavailableReason::NotReported)
-                        }
-                        // Native bindings are minted by enrollment and cannot
-                        // pre-exist this atomic boundary.
-                        NativePointerOwner::Native(_) => {
-                            return Err(NativePlatformError::InvalidPointerFacts);
-                        }
-                    };
+                    let capture = resolve_capture(state.capture())?;
                     PointerStateObservation::new(state.pointer().into_core(), buttons, capture)
                         .map_err(|_| NativePlatformError::InvalidPointerFacts)
                 })
