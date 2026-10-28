@@ -664,13 +664,15 @@ fn prepare_revalidates_a_structurally_complete_journal_before_freezing_it() {
     let malformed = PointerEdgeJournal {
         previous: PointerEdgeSequence::new(0),
         through: PointerEdgeSequence::new(2),
-        edges: vec![edge(
-            2,
-            PointerEdgeKind::Moved,
-            desktop_location(Authority::Known(PointerWindow::None)),
-            Authority::Known(PointerCaptureOwner::None),
-        )],
-        authority_checkpoint: None,
+        contents: Arc::new(PointerEdgeJournalContents {
+            edges: vec![edge(
+                2,
+                PointerEdgeKind::Moved,
+                desktop_location(Authority::Known(PointerWindow::None)),
+                Authority::Known(PointerCaptureOwner::None),
+            )],
+            authority_checkpoint: None,
+        }),
     };
 
     let error = ledger

@@ -621,12 +621,15 @@ pub enum BackendIngressPayload {
 }
 
 /// One immutable provider-bound record in a backend ingress stream.
+///
+/// The recorder and every frozen copy share one payload allocation, including
+/// any vectors owned by its platform snapshot or pointer journal.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendIngressRecord {
     lease: BackendIngressLease,
     ordinal: BackendIngressOrdinal,
     identity: BackendIngressRecordIdentity,
-    payload: BackendIngressPayload,
+    payload: Arc<BackendIngressPayload>,
     liveness: BackendIngressRecordLiveness,
     commit_boundary_after: bool,
 }
@@ -640,7 +643,7 @@ impl BackendIngressRecord {
 
     /// Returns the typed fact captured at this position.
     #[must_use]
-    pub const fn payload(&self) -> &BackendIngressPayload {
+    pub fn payload(&self) -> &BackendIngressPayload {
         &self.payload
     }
 
@@ -1175,7 +1178,7 @@ impl BackendIngressRecorder {
         }
         if self.records.iter().any(|record| {
             matches!(
-                &record.payload,
+                record.payload(),
                 BackendIngressPayload::PlatformBindingQuiesced {
                     binding: recorded
                 } if *recorded == binding
@@ -1509,7 +1512,7 @@ impl BackendIngressRecorder {
         }
         let mut binding_quiescences = self.records[..retained]
             .iter()
-            .filter_map(|record| match &record.payload {
+            .filter_map(|record| match record.payload() {
                 BackendIngressPayload::PlatformBindingQuiesced { binding } => Some(*binding),
                 BackendIngressPayload::PlatformSnapshot { .. }
                 | BackendIngressPayload::NativeCloseObservation { .. }
@@ -1560,7 +1563,7 @@ impl BackendIngressRecorder {
             lease: self.lease,
             ordinal,
             identity,
-            payload,
+            payload: Arc::new(payload),
             liveness,
             commit_boundary_after: true,
         });
@@ -2316,6 +2319,13 @@ mod tests {
     }
 
     fn snapshot(generation: u64) -> PlatformSnapshot {
+        snapshot_with_close_observations(generation, Vec::new())
+    }
+
+    fn snapshot_with_close_observations(
+        generation: u64,
+        close_observations: Vec<WindowCloseObservation>,
+    ) -> PlatformSnapshot {
         let reason = AuthorityUnavailableReason::NotReported;
         PlatformSnapshot::new(
             PlatformSnapshotGeneration::new(generation),
@@ -2333,7 +2343,7 @@ mod tests {
                 reason,
             ),
             Vec::new(),
-            Vec::new(),
+            close_observations,
             WorkAreaRosterObservation::unknown(
                 WorkAreaObservationGeneration::new(generation),
                 reason,
@@ -2652,6 +2662,231 @@ mod tests {
                 submitted: BackendIngressOrdinal::ORIGIN,
             }
         );
+    }
+
+    #[test]
+    fn payload_owner_is_shared_by_recorder_frozen_batches_and_retries() {
+        let (authority, mut recorder) = authority_and_recorder(1);
+        let platform = snapshot_with_close_observations(
+            1,
+            vec![WindowCloseObservation::new(
+                binding(1, 1),
+                CloseObservationGeneration::new(1),
+                Authority::Known(WindowCloseState::Destroyed),
+                CloseEffectAcknowledgement::known(None),
+            )],
+        );
+        let close_observations = platform.close_observations().as_ptr();
+        let pointer = pointer_segment(0);
+        let edges = pointer.edges().as_ptr();
+        let group = recorder.savepoint();
+        recorder
+            .record_platform_snapshot(WorkspaceEpoch::new(0), platform)
+            .expect("the platform payload must append");
+        recorder
+            .record_pointer_segment(pointer)
+            .expect("the pointer payload must append");
+        recorder
+            .finish_atomic_append(group)
+            .expect("the captured group must finalize before freezing");
+
+        let first = recorder.pending_batch().expect("the group must freeze");
+        let second = recorder.pending_batch().expect("another batch must freeze");
+        let cloned = first.clone();
+        assert_eq!(
+            cloned
+                .commit_guard()
+                .publish_with(|| Err::<(), _>("rejected"))
+                .expect("the shared payload must remain publication-safe"),
+            Err("rejected"),
+        );
+        let retry = recorder
+            .batch_after(BackendIngressOrdinal::ORIGIN)
+            .expect("failed publication must remain retryable");
+        let prefix = recorder
+            .batch_prefix_after(BackendIngressOrdinal::ORIGIN, NonZeroUsize::new(2).unwrap())
+            .expect("the complete group must fit the selected prefix");
+
+        for batch in [&first, &second, &cloned, &retry, &prefix] {
+            assert_eq!(batch, &first);
+            authority
+                .validate_batch(batch)
+                .expect("each shared batch must retain live publication authority");
+            for (recorded, frozen) in recorder.records.iter().zip(batch.records()) {
+                assert!(Arc::ptr_eq(&recorded.payload, &frozen.payload));
+                assert!(std::ptr::eq(recorded.payload(), frozen.payload()));
+                assert_eq!(recorded.identity, frozen.identity);
+                assert_eq!(recorded.liveness, frozen.liveness);
+                assert_eq!(recorded.is_commit_boundary(), frozen.is_commit_boundary());
+            }
+            assert!(!batch.records()[0].is_commit_boundary());
+            assert!(batch.records()[1].is_commit_boundary());
+            let BackendIngressPayload::PlatformSnapshot { snapshot, .. } =
+                batch.records()[0].payload()
+            else {
+                panic!("the first record must retain its platform payload");
+            };
+            assert_eq!(snapshot.close_observations().len(), 1);
+            assert_eq!(snapshot.close_observations().as_ptr(), close_observations);
+            let BackendIngressPayload::PointerSegment(journal) = batch.records()[1].payload()
+            else {
+                panic!("the second record must retain its pointer payload");
+            };
+            assert_eq!(journal.edges().len(), 1);
+            assert_eq!(journal.edges().as_ptr(), edges);
+        }
+    }
+
+    #[test]
+    fn payload_owner_survives_rollback_without_authenticating_reused_ordinals() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        let savepoint = recorder.savepoint();
+        recorder
+            .record_pointer_segment(pointer_segment(0))
+            .expect("the original pointer payload must append");
+        let owner = Arc::downgrade(&recorder.records[0].payload);
+        let frozen = recorder.pending_batch().expect("the original must freeze");
+        let second = recorder
+            .batch_after(BackendIngressOrdinal::ORIGIN)
+            .expect("another original batch must freeze");
+        let cloned = frozen.clone();
+
+        // Advancing the candidate ledger alone does not publish record liveness.
+        authority
+            .commit_batch(&frozen)
+            .expect("the candidate ledger must retain the original identity");
+        let watermark = authority
+            .commit_watermark()
+            .expect("the identity must exist");
+        recorder
+            .rollback_to(savepoint)
+            .expect("an unpublished branch must remain revocable");
+        assert_eq!(recorder.retained_record_count(), 0);
+        assert!(owner.upgrade().is_some());
+        for batch in [&frozen, &second, &cloned] {
+            assert!(Weak::ptr_eq(
+                &owner,
+                &Arc::downgrade(&batch.records()[0].payload),
+            ));
+            assert_eq!(
+                batch.commit_guard().validate(),
+                Err(BackendIngressError::RecordRevoked {
+                    ordinal: BackendIngressOrdinal(1),
+                }),
+            );
+        }
+
+        recorder
+            .record_pointer_segment(pointer_segment(0))
+            .expect("rollback must restore the pointer frontier for the same payload");
+        assert_eq!(recorder.records[0].ordinal, frozen.records()[0].ordinal);
+        assert_eq!(recorder.records[0].payload(), frozen.records()[0].payload());
+        assert_ne!(recorder.records[0].identity, frozen.records()[0].identity);
+        assert!(!Arc::ptr_eq(
+            &recorder.records[0].payload,
+            &frozen.records()[0].payload,
+        ));
+        recorder
+            .record_pointer_segment(pointer_segment(1))
+            .expect("a later record must follow the rewritten predecessor");
+        let suffix = recorder
+            .batch_after(watermark.through())
+            .expect("the rewritten predecessor must expose its suffix");
+        assert_eq!(
+            authority.validate_batch(&suffix),
+            Err(BackendIngressError::BatchPreviousIdentityMismatch {
+                ordinal: BackendIngressOrdinal(1),
+            }),
+        );
+        assert_eq!(
+            recorder.retire_committed_prefix(watermark),
+            Err(BackendIngressError::CommitWatermarkContentMismatch {
+                ordinal: BackendIngressOrdinal(1),
+            }),
+        );
+
+        drop(frozen);
+        drop(second);
+        assert!(owner.upgrade().is_some());
+        let BackendIngressPayload::PointerSegment(journal) = cloned.records()[0].payload() else {
+            panic!("the revoked clone must retain its readable pointer payload");
+        };
+        assert_eq!(journal, &pointer_segment(0));
+        drop(cloned);
+        assert!(owner.upgrade().is_none());
+    }
+
+    #[test]
+    fn payload_owner_survives_committed_prefix_retirement_until_last_batch_drops() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        let pointer = pointer_segment(0);
+        let edges = pointer.edges().as_ptr();
+        recorder
+            .record_pointer_segment(pointer)
+            .expect("the retained pointer payload must append");
+        let owner = Arc::downgrade(&recorder.records[0].payload);
+        recorder
+            .record_pointer_segment(pointer_segment(1))
+            .expect("the independent suffix must append");
+        let frozen = recorder.pending_batch().expect("both records must freeze");
+        let prefix = recorder
+            .batch_prefix_after(BackendIngressOrdinal::ORIGIN, NonZeroUsize::MIN)
+            .expect("only the committed prefix must be selected");
+        let cloned = prefix.clone();
+        authority
+            .commit_batch(&prefix)
+            .expect("the candidate prefix identity must commit");
+        prefix
+            .commit_guard()
+            .publish_with(|| Ok::<(), ()>(()))
+            .expect("the exact prefix must remain publishable")
+            .expect("the prepared prefix must publish");
+        let watermark = authority
+            .commit_watermark()
+            .expect("the identity must exist");
+        assert!(
+            recorder
+                .retire_committed_prefix(watermark)
+                .expect("the exact committed prefix must retire")
+                .is_none()
+        );
+        assert_eq!(recorder.retained_record_count(), 1);
+        assert!(owner.upgrade().is_some());
+        for batch in [&frozen, &prefix, &cloned] {
+            assert!(Weak::ptr_eq(
+                &owner,
+                &Arc::downgrade(&batch.records()[0].payload),
+            ));
+            assert_eq!(batch.records()[0].identity, watermark.record_identity);
+            assert_eq!(
+                batch.commit_guard().validate(),
+                Err(BackendIngressError::RecordAlreadyCommitted {
+                    ordinal: watermark.through(),
+                }),
+            );
+        }
+        let suffix = recorder
+            .batch_after(watermark.through())
+            .expect("the unretired suffix must retain its predecessor identity");
+        authority
+            .validate_batch(&suffix)
+            .expect("the prefix retirement must preserve suffix replay authority");
+        assert!(Arc::ptr_eq(
+            &recorder.records[0].payload,
+            &suffix.records()[0].payload,
+        ));
+
+        drop(frozen);
+        drop(prefix);
+        assert!(owner.upgrade().is_some());
+        let BackendIngressPayload::PointerSegment(journal) = cloned.records()[0].payload() else {
+            panic!("the committed clone must retain its readable pointer payload");
+        };
+        assert_eq!(journal.edges().len(), 1);
+        assert_eq!(journal.edges().as_ptr(), edges);
+        assert_eq!(journal, &pointer_segment(0));
+        drop(cloned);
+        assert!(owner.upgrade().is_none());
     }
 
     #[test]

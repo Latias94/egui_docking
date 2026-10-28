@@ -27,6 +27,9 @@ mod tests;
 #[cfg(test)]
 mod overload;
 
+#[cfg(test)]
+mod shared_storage;
+
 /// Exact endpoint from which one surface-local provider reports input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SurfaceLocalPointerEndpoint {
@@ -1036,11 +1039,17 @@ impl PointerEdge {
 ///
 /// The journal proves that its edges exactly and contiguously cover
 /// `(previous, through]`. An empty journal is therefore valid exactly when the
-/// two watermarks are equal.
+/// two watermarks are equal. Clones share the immutable edges and authority
+/// checkpoint until a clone attaches its own checkpoint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointerEdgeJournal {
     previous: PointerEdgeSequence,
     through: PointerEdgeSequence,
+    contents: Arc<PointerEdgeJournalContents>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PointerEdgeJournalContents {
     edges: Vec<PointerEdge>,
     authority_checkpoint: Option<PointerAuthorityCheckpoint>,
 }
@@ -1062,8 +1071,10 @@ impl PointerEdgeJournal {
         Ok(Self {
             previous,
             through,
-            edges,
-            authority_checkpoint: None,
+            contents: Arc::new(PointerEdgeJournalContents {
+                edges,
+                authority_checkpoint: None,
+            }),
         })
     }
 
@@ -1084,17 +1095,17 @@ impl PointerEdgeJournal {
                 observed_through: checkpoint.observed_through(),
             });
         }
-        if self.authority_checkpoint.is_some() {
+        if self.contents.authority_checkpoint.is_some() {
             return Err(PointerJournalError::AuthorityCheckpointAlreadyAttached {
                 previous: self.previous,
             });
         }
-        self.authority_checkpoint = Some(checkpoint);
+        Arc::make_mut(&mut self.contents).authority_checkpoint = Some(checkpoint);
         Ok(self)
     }
 
     fn validate(&self) -> Result<(), PointerJournalError> {
-        Self::validate_interval(self.previous, self.through, &self.edges)
+        Self::validate_interval(self.previous, self.through, &self.contents.edges)
     }
 
     fn validate_interval(
@@ -1161,31 +1172,37 @@ impl PointerEdgeJournal {
     /// Returns the edges in provider order.
     #[must_use]
     pub fn edges(&self) -> &[PointerEdge] {
-        &self.edges
+        &self.contents.edges
     }
 
     /// Returns the optional complete authority baseline for this interval.
     #[must_use]
-    pub const fn authority_checkpoint(&self) -> Option<&PointerAuthorityCheckpoint> {
-        self.authority_checkpoint.as_ref()
+    pub fn authority_checkpoint(&self) -> Option<&PointerAuthorityCheckpoint> {
+        self.contents.authority_checkpoint.as_ref()
     }
 
     /// Returns the number of edges in this interval.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.edges.len()
+        self.contents.edges.len()
     }
 
     /// Returns whether this interval contains no edges.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.edges.is_empty()
+        self.contents.edges.is_empty()
     }
 
     /// Consumes the journal and returns its provider-ordered edges.
+    ///
+    /// The vector is moved when this journal is the sole owner; otherwise the
+    /// edges are copied so other journal clones retain their immutable contents.
     #[must_use]
     pub fn into_edges(self) -> Vec<PointerEdge> {
-        self.edges
+        match Arc::try_unwrap(self.contents) {
+            Ok(contents) => contents.edges,
+            Err(contents) => contents.edges.clone(),
+        }
     }
 }
 
