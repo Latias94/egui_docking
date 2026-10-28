@@ -69,11 +69,11 @@ pub use self::records::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,
     PaneRecord, PaneSceneId, PresentationMenuAnchorHost, PresentationMenuAnchorRecord,
     SplitterGapPresentation, SplitterGapRecord, SplitterJunctionDirection, SplitterJunctionId,
-    SplitterJunctionRecord, SplitterRecord, SplitterResizeHitError, SplitterResizeTarget,
-    SplitterSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord, TabGroupDragRegionKind,
-    TabGroupDragRegionRecord, TabListMenuBackdropRecord, TabListMenuGeometryAvailability,
-    TabListMenuRecord, TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord,
-    TabStripMemberRecord, TabStripMemberVisibility,
+    SplitterJunctionRecord, SplitterRecord, SplitterResizeTarget, SplitterSceneId, TabBarRecord,
+    TabBarSceneId, TabGroupDragRecord, TabGroupDragRegionKind, TabGroupDragRegionRecord,
+    TabListMenuBackdropRecord, TabListMenuGeometryAvailability, TabListMenuRecord,
+    TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord, TabStripMemberRecord,
+    TabStripMemberVisibility,
 };
 pub use crate::drop_target::SceneLayerKey;
 
@@ -1454,63 +1454,6 @@ impl PresentationPlan {
     #[must_use]
     pub fn splitter_junction_records(&self) -> &[SplitterJunctionRecord] {
         &self.splitter_junction_records
-    }
-
-    /// Resolves the unique splitter target at a logical point.
-    ///
-    /// The frontmost contained occlusion first selects the sole presentation
-    /// layer eligible for input. On that layer an exact junction intersection
-    /// takes precedence over an ordinary handle. Ambiguous geometry is rejected
-    /// rather than resolved by distance, insertion order, or stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SplitterResizeHitError`] when multiple targets of the winning
-    /// class claim the same point on the authoritative layer.
-    pub fn splitter_resize_target_at(
-        &self,
-        point: crate::geometry::LogicalPoint,
-    ) -> Result<Option<SplitterResizeTarget>, SplitterResizeHitError> {
-        if !self.bounds.contains(point) {
-            return Ok(None);
-        }
-        let layer = self
-            .drop_occlusions
-            .iter()
-            .filter(|occlusion| occlusion.region().contains(point))
-            .map(|occlusion| occlusion.layer())
-            .max()
-            .unwrap_or_else(SceneLayerKey::surface_base);
-
-        let mut junctions = self.splitter_junction_records.iter().filter(|junction| {
-            junction.operable() && junction.layer() == layer && junction.hit().contains(point)
-        });
-        let junction = junctions.next().map(SplitterJunctionRecord::id);
-        let extra_junctions = junctions.count();
-        if extra_junctions > 0 {
-            return Err(SplitterResizeHitError::AmbiguousJunctions {
-                surface: self.surface,
-                layer,
-                count: extra_junctions + 1,
-            });
-        }
-        if let Some(junction) = junction {
-            return Ok(Some(SplitterResizeTarget::Junction(junction)));
-        }
-
-        let mut handles = self.splitter_records.iter().filter(|splitter| {
-            splitter.operable() && splitter.layer() == layer && splitter.hit().contains(point)
-        });
-        let handle = handles.next().map(|splitter| *splitter.id());
-        let extra_handles = handles.count();
-        if extra_handles > 0 {
-            return Err(SplitterResizeHitError::AmbiguousHandles {
-                surface: self.surface,
-                layer,
-                count: extra_handles + 1,
-            });
-        }
-        Ok(handle.map(SplitterResizeTarget::Handle))
     }
 
     /// Returns core-compiled contained-floating chrome in structural roster order.

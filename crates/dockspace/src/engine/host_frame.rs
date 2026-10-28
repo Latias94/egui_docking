@@ -1363,6 +1363,10 @@ impl CoreHostFrame {
         self.input_prefix_error.as_ref()
     }
 
+    pub(crate) fn take_input_prefix_error(&mut self) -> Option<EngineError> {
+        self.input_prefix_error.take()
+    }
+
     /// Starts one immutable backend interval and reduces at most its first record.
     ///
     /// Platform records reduce immediately. A pointer record pauses replay after

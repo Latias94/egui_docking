@@ -340,6 +340,7 @@ impl DockEngine {
                 &presentation,
                 click.region,
                 touch.initial_pointer,
+                crate::pointer_journal::PointerDeviceKind::Touch,
                 policy,
                 events,
             )?
@@ -429,6 +430,7 @@ impl DockEngine {
             presentation,
             region,
             touch.initial_pointer,
+            crate::pointer_journal::PointerDeviceKind::Touch,
             policy,
             events,
         )?;

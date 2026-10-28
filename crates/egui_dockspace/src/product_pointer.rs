@@ -298,7 +298,9 @@ impl ProductPointer {
                 .and_then(|position| {
                     LogicalPoint::new(f64::from(position.x), f64::from(position.y)).ok()
                 });
-            let hit = point.and_then(|point| session.host_pointer_hit(surface, point));
+            let hit = point.and_then(|point| {
+                session.host_pointer_hit_for_device(surface, point, sample.device)
+            });
             let qualified = scene.zip(position).is_some_and(|(scene, position)| {
                 if !ui.is_enabled()
                     || ui.ctx().cumulative_pass_nr() != scene.completed_pass

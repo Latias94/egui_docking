@@ -1,12 +1,10 @@
 //! Splitter, structural gap, and junction presentation records.
 
-use thiserror::Error;
-
 use crate::drop_target::SceneLayerKey;
 use crate::geometry::LogicalRect;
 use crate::graph::{Axis, SplitWeight};
 use crate::hit_region::HitRegion;
-use crate::ids::{NodeId, RootId, SurfaceId};
+use crate::ids::{NodeId, RootId};
 
 /// Structural identity of one rendered splitter rectangle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -182,35 +180,6 @@ pub enum SplitterResizeTarget {
     Handle(SplitterSceneId),
     /// One three- or four-arm splitter junction owns all incident handles.
     Junction(SplitterJunctionId),
-}
-
-/// A presentation plan could not resolve a unique splitter target at one point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum SplitterResizeHitError {
-    /// More than one junction target claimed the point on the authoritative layer.
-    #[error(
-        "{count} splitter junctions overlap at one point on layer {layer:?} of surface {surface}"
-    )]
-    AmbiguousJunctions {
-        /// Surface containing the ambiguous hit.
-        surface: SurfaceId,
-        /// Authoritative presentation layer.
-        layer: SceneLayerKey,
-        /// Number of matching junction targets.
-        count: usize,
-    },
-    /// More than one ordinary handle claimed the point on the authoritative layer.
-    #[error(
-        "{count} splitter handles overlap at one point on layer {layer:?} of surface {surface}"
-    )]
-    AmbiguousHandles {
-        /// Surface containing the ambiguous hit.
-        surface: SurfaceId,
-        /// Authoritative presentation layer.
-        layer: SceneLayerKey,
-        /// Number of matching handle targets.
-        count: usize,
-    },
 }
 
 impl SplitterJunctionRecord {

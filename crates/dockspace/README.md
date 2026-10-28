@@ -217,8 +217,29 @@ The host retains responsibility for ordinary pane input and actual scrolling;
 the core does not replay or synthesize content events after yielding. End the
 actual contact with `ContactEnded`, or use explicit stream cancellation for
 platform loss. Late terminals cannot create a contact or repeat an action.
-Expanded touch hit targets and native touch event-time/stationary capture remain
-separate qualification work.
+For an explicitly observed Touch contact, query
+`host_pointer_hit_for_device(surface, point, PointerDeviceKind::Touch)` and retain
+that device class in each input edge. The same exact-output manifest supplies
+expanded splitter, junction and contained resize targets to the query, receipt
+validation and gesture preparation. Mouse, Pen, Unknown and `host_pointer_hit`
+retain the base hit geometry.
+
+`touch_resize_hit_extent` defaults to 44 logical points and accepts finite values
+of at least 44. It specifies the requested extent before clipping, and never
+reduces a larger configured base target. Surface/root bounds, title/tab/close/menu
+chrome, visible strip controls and front contained windows may reduce a target
+or leave it empty. A crowded highest-priority overlap is unavailable; structural
+junctions still take precedence over ordinary handles. Contained targets may
+extend outside the painted frame, while its drawing, durable bounds and drop
+occlusion remain unchanged. Resize displacement starts at the real contact
+point, including an outside-frame press.
+
+Receiver descriptors continue to describe the base control, whose clipped
+rectangle may be empty while a touch fragment remains visible. It is not a
+bounding box for the touch fragments and cannot replace the device-aware
+query or exact receipt validation. Framework widgets still need their ordinary
+clearance proof. Native touch event-time/stationary capture remains separate
+qualification work.
 
 ## Budgeted Native Input
 

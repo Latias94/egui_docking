@@ -159,6 +159,12 @@ pub struct DockStyle {
     pub touch_long_press_delay: std::time::Duration,
     /// Logical movement distance allowed before an unarmed touch yields to content.
     pub touch_press_slop_distance: f32,
+    /// Requested touch resize hit extent in logical points before clipping.
+    ///
+    /// Must be finite and at least 44 points. Surface bounds, protected chrome,
+    /// and crowding may shrink the actual hit region or leave it empty. Mouse,
+    /// pen, and unknown-device hit geometry are unaffected.
+    pub touch_resize_hit_extent: f32,
     /// Height of every tab bar.
     pub tab_bar_height: f32,
     /// Width of each tab-strip edge scroll band in egui points; zero disables it.
@@ -250,6 +256,7 @@ impl DockStyle {
             .hover_selection_delay(self.hover_selection_delay)
             .touch_long_press_delay(self.touch_long_press_delay)
             .touch_press_slop_distance(f64::from(self.touch_press_slop_distance))
+            .touch_resize_hit_extent(f64::from(self.touch_resize_hit_extent))
             .tab_bar_height(f64::from(self.tab_bar_height))
             .tab_strip_edge_scroll_band(f64::from(self.tab_strip_edge_scroll_band))
             .tab_strip_edge_scroll_interval(self.tab_strip_edge_scroll_interval)
@@ -288,7 +295,8 @@ impl DockStyle {
     /// # Errors
     ///
     /// Returns [`DockStyleError`] when a metric is not finite, violates its
-    /// sign constraint, a scroll interval is zero, or metrics conflict.
+    /// sign constraint, the touch resize hit extent is below 44 points,
+    /// a scroll interval is zero, or metrics conflict.
     pub fn validate(&self) -> Result<(), DockStyleError> {
         for (field, value) in [
             ("tab_bar_height", self.tab_bar_height),
@@ -321,6 +329,10 @@ impl DockStyle {
             ("ghost_offset.y", self.ghost_offset.y),
         ] {
             require_non_negative(field, value)?;
+        }
+        require_finite("touch_resize_hit_extent", self.touch_resize_hit_extent)?;
+        if self.touch_resize_hit_extent < 44.0 {
+            return Err(DockStyleError::TouchResizeHitExtentTooSmall);
         }
         if self.tab_strip_edge_scroll_interval == Some(std::time::Duration::ZERO) {
             return Err(DockStyleError::ZeroEdgeScrollInterval);
@@ -388,6 +400,7 @@ impl Default for DockStyle {
             hover_selection_delay: geometry.hover_selection_delay(),
             touch_long_press_delay: geometry.touch_long_press_delay(),
             touch_press_slop_distance: geometry.touch_press_slop_distance() as f32,
+            touch_resize_hit_extent: geometry.touch_resize_hit_extent() as f32,
             tab_bar_height: geometry.tab_bar_height() as f32,
             tab_strip_edge_scroll_band: geometry.tab_strip_edge_scroll_band() as f32,
             tab_strip_edge_scroll_interval: geometry.tab_strip_edge_scroll_interval(),
@@ -430,6 +443,8 @@ pub enum DockStyleError {
     Negative { field: &'static str },
     /// A metric that represents a size is zero or negative.
     NotPositive { field: &'static str },
+    /// The requested touch resize hit extent was below 44 logical points.
+    TouchResizeHitExtentTooSmall,
     /// A zero edge scroll interval would continuously reschedule work.
     ZeroEdgeScrollInterval,
     /// A configured minimum is greater than its maximum.
@@ -461,6 +476,9 @@ impl fmt::Display for DockStyleError {
             Self::NonFinite { field } => write!(formatter, "`{field}` must be finite"),
             Self::Negative { field } => write!(formatter, "`{field}` must not be negative"),
             Self::NotPositive { field } => write!(formatter, "`{field}` must be positive"),
+            Self::TouchResizeHitExtentTooSmall => {
+                formatter.write_str("`touch_resize_hit_extent` must be at least 44 logical points")
+            }
             Self::ZeroEdgeScrollInterval => formatter
                 .write_str("tab-strip edge scroll interval must be positive or disabled with None"),
             Self::MinimumExceedsMaximum { minimum, maximum } => {
@@ -526,6 +544,7 @@ mod tests {
         assert_eq!(style.validate(), Ok(()));
         let config = style.presentation_config().unwrap();
         assert_eq!(config, DockPresentationConfig::default());
+        assert_eq!(style.touch_resize_hit_extent.to_bits(), 44.0_f32.to_bits());
         assert_eq!(
             style.tab_strip_edge_scroll_band.to_bits(),
             24.0_f32.to_bits()
@@ -534,6 +553,70 @@ mod tests {
             style.tab_strip_edge_scroll_interval,
             Some(std::time::Duration::from_millis(50))
         );
+    }
+
+    #[test]
+    fn touch_resize_hit_extent_style_bridges_minimum_and_custom_values() {
+        let baseline = DockStyle::default();
+        for extent in [44.0, 64.5] {
+            let style = DockStyle {
+                touch_resize_hit_extent: extent,
+                ..DockStyle::default()
+            };
+            assert_eq!(style.validate(), Ok(()));
+            let config = style.presentation_config().unwrap();
+            assert_eq!(
+                config.touch_resize_hit_extent().to_bits(),
+                f64::from(extent).to_bits()
+            );
+            assert_eq!(
+                config.splitter_hit_extent().to_bits(),
+                f64::from(baseline.splitter_hit_extent).to_bits()
+            );
+            assert_eq!(
+                config.floating_resize_extent().to_bits(),
+                f64::from(baseline.floating_resize_extent).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn touch_resize_hit_extent_style_rejects_non_finite_and_below_minimum_values() {
+        for extent in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let style = DockStyle {
+                touch_resize_hit_extent: extent,
+                ..DockStyle::default()
+            };
+            assert_eq!(
+                style.validate(),
+                Err(DockStyleError::NonFinite {
+                    field: "touch_resize_hit_extent",
+                })
+            );
+            assert!(matches!(
+                style.presentation_config(),
+                Err(DockPresentationConfigError::NonFinite {
+                    field: "touch_resize_hit_extent",
+                    ..
+                })
+            ));
+        }
+        for extent in [-1.0, 0.0, 43.5] {
+            let style = DockStyle {
+                touch_resize_hit_extent: extent,
+                ..DockStyle::default()
+            };
+            assert_eq!(
+                style.validate(),
+                Err(DockStyleError::TouchResizeHitExtentTooSmall)
+            );
+            assert_eq!(
+                style.presentation_config(),
+                Err(DockPresentationConfigError::TouchResizeHitExtentTooSmall {
+                    value: f64::from(extent),
+                })
+            );
+        }
     }
 
     #[test]

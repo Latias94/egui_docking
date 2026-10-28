@@ -12,6 +12,7 @@ use crate::drop_guide::{DropGuideClusterRecord, DropGuideScope};
 use crate::drop_target::{DropTargetKind, SceneLayerKey};
 use crate::hit_region::HitRegion;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
+use crate::pointer_journal::PointerDeviceKind;
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
     ContainedResizeDirection, PaneSceneId, PresentationPlan, ResolvedSurfaceProgramOperation,
@@ -21,6 +22,8 @@ use crate::scene::{
 };
 use crate::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use crate::{drop_guide::DropGuideClusterId, drop_target::DropTargetId};
+
+mod touch;
 
 /// Stable semantic identity of one core-compiled hit region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -366,7 +369,9 @@ impl PresentationHitRegion {
         self.id
     }
 
-    /// Returns the exact half-open hit geometry.
+    /// Returns the half-open base hit geometry.
+    ///
+    /// This may be empty when only the device-specific touch target survives clipping.
     #[must_use]
     pub const fn hit(self) -> HitRegion {
         self.hit
@@ -397,6 +402,7 @@ impl PresentationHitRegion {
 pub struct PresentationHitManifest {
     output: SurfacePresentationOutputTicket,
     regions: Vec<PresentationHitRegion>,
+    touch_regions: Vec<(PresentationHitRegionId, crate::geometry::LogicalRect)>,
 }
 
 impl PresentationHitManifest {
@@ -439,7 +445,19 @@ impl PresentationHitManifest {
 
         regions.sort_unstable_by_key(|region| region.id());
         debug_assert!(regions.windows(2).all(|pair| pair[0].id() != pair[1].id()));
-        Ok(Self { output, regions })
+        let touch_regions = touch::compile(plan, &regions);
+        regions.retain(|region| {
+            let rect = region.hit().rect();
+            (rect.width() > 0.0 && rect.height() > 0.0)
+                || touch_regions
+                    .binary_search_by_key(&region.id(), |(id, _)| *id)
+                    .is_ok()
+        });
+        Ok(Self {
+            output,
+            regions,
+            touch_regions,
+        })
     }
 
     /// Returns the exact semantic output to which every region belongs.
@@ -495,7 +513,51 @@ impl PresentationHitManifest {
         point: crate::geometry::LogicalPoint,
         suppression: PresentationHitSuppression,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
-        resolve_exclusive_regions(&self.regions, lane, point, suppression)
+        self.resolve_exclusive_for_device(lane, point, suppression, PointerDeviceKind::Unknown)
+    }
+
+    pub(crate) fn region_contains_for_device(
+        &self,
+        id: PresentationHitRegionId,
+        point: crate::geometry::LogicalPoint,
+        device: PointerDeviceKind,
+    ) -> bool {
+        let Some(region) = self.region(id) else {
+            return false;
+        };
+        self.region_contains(region, point, device)
+    }
+
+    fn region_contains(
+        &self,
+        region: &PresentationHitRegion,
+        point: crate::geometry::LogicalPoint,
+        device: PointerDeviceKind,
+    ) -> bool {
+        if device == PointerDeviceKind::Touch && touch::replaces(region.id().kind()) {
+            // An empty replacement stays empty; it never falls back to mouse geometry.
+            let first = self
+                .touch_regions
+                .partition_point(|(id, _)| *id < region.id());
+            self.touch_regions[first..]
+                .iter()
+                .take_while(|(id, _)| *id == region.id())
+                .any(|(id, rect)| *id == region.id() && rect.contains(point))
+        } else {
+            region.hit().contains(point)
+        }
+    }
+
+    pub(crate) fn resolve_exclusive_for_device(
+        &self,
+        lane: PresentationPointerLane,
+        point: crate::geometry::LogicalPoint,
+        suppression: PresentationHitSuppression,
+        device: PointerDeviceKind,
+    ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
+        resolve_exclusive_matching(&self.regions, lane, suppression, |region| {
+            self.region_contains(region, point, device)
+        })
     }
 }
 
@@ -893,26 +955,42 @@ fn push_guide_regions(
     }
 }
 
-fn resolve_exclusive_regions<'a>(
-    regions: &'a [PresentationHitRegion],
+#[cfg(test)]
+fn resolve_exclusive_regions(
+    regions: &[PresentationHitRegion],
     lane: PresentationPointerLane,
     point: crate::geometry::LogicalPoint,
     suppression: PresentationHitSuppression,
-) -> Result<Option<&'a PresentationHitRegion>, PresentationHitResolutionError> {
+) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
+    resolve_exclusive_matching(regions, lane, suppression, |region| {
+        region.hit().contains(point)
+    })
+}
+
+fn resolve_exclusive_matching(
+    regions: &[PresentationHitRegion],
+    lane: PresentationPointerLane,
+    suppression: PresentationHitSuppression,
+    contains: impl Fn(&PresentationHitRegion) -> bool,
+) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
     let mut winner: Option<&PresentationHitRegion> = None;
+    let mut ambiguity = None;
     for candidate in regions.iter().filter(|candidate| {
         !candidate.is_passive()
             && !suppression.excludes(candidate.id())
             && candidate.lanes().contains(lane)
-            && candidate.hit().contains(point)
+            && contains(candidate)
     }) {
         match winner {
             None => winner = Some(candidate),
             Some(current) => match candidate.stack().cmp(&current.stack()) {
-                Ordering::Greater => winner = Some(candidate),
+                Ordering::Greater => {
+                    winner = Some(candidate);
+                    ambiguity = None;
+                }
                 Ordering::Less => {}
                 Ordering::Equal if candidate.id() != current.id() => {
-                    return Err(PresentationHitResolutionError::Ambiguous {
+                    ambiguity = Some(PresentationHitResolutionError::Ambiguous {
                         lane,
                         first: current.id(),
                         second: candidate.id(),
@@ -922,7 +1000,10 @@ fn resolve_exclusive_regions<'a>(
             },
         }
     }
-    Ok(winner)
+    match ambiguity {
+        Some(error) => Err(error),
+        None => Ok(winner),
+    }
 }
 
 const fn drop_target_root(target: DropTargetId) -> Option<RootId> {
@@ -1145,7 +1226,9 @@ fn push_region_if_hittable(
     region: PresentationHitRegion,
 ) {
     let rect = region.hit().rect();
-    if rect.width() > 0.0 && rect.height() > 0.0 {
+    // A clipped base band may be empty while its touch footprint is visible.
+    // Compilation removes the identity if neither profile can hit it.
+    if (rect.width() > 0.0 && rect.height() > 0.0) || touch::replaces(region.id().kind()) {
         regions.push(region);
     }
 }

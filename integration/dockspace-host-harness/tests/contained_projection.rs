@@ -1037,7 +1037,14 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presen
         // Freeze all facts before press; core must suppress the complete source
         // at the very first threshold move, without another framework hit query.
         let clear = SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&surface);
-        let press_facts = clear.with_no_delivery(&surface).with_drag_delivery(&title);
+        let click = session
+            .host_pointer_hit(SURFACE, press)
+            .unwrap()
+            .delivery()
+            .expect("the contained frame owns the independent click lane");
+        let press_facts = SurfacePointerReceiverFacts::delivery(&click)
+            .with_drag_delivery(&title)
+            .with_clear_hover_lane(&surface);
         let release_facts = if blocked_release {
             clear.with_blocked_hover(&surface)
         } else {

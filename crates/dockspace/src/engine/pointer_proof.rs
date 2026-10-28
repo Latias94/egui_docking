@@ -1,7 +1,7 @@
 //! Pointer receiver and presentation authority validation.
 
 use super::*;
-use crate::pointer_journal::{DesktopDockRoute, HostLocalPointerRoute};
+use crate::pointer_journal::{DesktopDockRoute, HostLocalPointerRoute, PointerDeviceKind};
 use crate::pointer_receiver::PointerReceiverDeliveryRequest;
 use crate::presentation_hit::PresentationHitSuppression;
 
@@ -390,6 +390,14 @@ pub enum PointerReceiverGeometryError {
 }
 
 impl DockEngine {
+    pub(super) fn journal_pointer_hit_device(edge: &PointerEdge) -> PointerDeviceKind {
+        match edge.location() {
+            PointerEdgeLocation::SurfaceLocal { .. } | PointerEdgeLocation::HostLocal { .. } => {
+                edge.metadata().device()
+            }
+            PointerEdgeLocation::Desktop { .. } => PointerDeviceKind::Unknown,
+        }
+    }
     pub(crate) fn hover_drop_suppression(&self) -> PresentationHitSuppression {
         let source = match self.interaction.status() {
             InteractionStatus::Armed { session } => self
@@ -440,10 +448,16 @@ impl DockEngine {
         let receipts = receipts
             .receipts()
             .iter()
-            .map(|receipt| (receipt.candidate().sequence(), receipt.observation()))
+            .map(|receipt| {
+                (
+                    receipt.candidate().sequence(),
+                    (receipt.observation(), receipt.delivery_request()),
+                )
+            })
             .collect::<BTreeMap<_, _>>();
         for edge in journal.edges() {
-            let Some(observation) = receipts.get(&edge.sequence()).copied() else {
+            let Some((observation, delivery_request)) = receipts.get(&edge.sequence()).copied()
+            else {
                 return Err(EngineError::ReductionCauseInvariant {
                     detail: "validated pointer receipt is absent for a journal edge",
                 });
@@ -462,15 +476,28 @@ impl DockEngine {
                             (PresentationPointerLane::Scroll, delivery.scroll()),
                         ] {
                             let desktop_route = desktop_delivery_route;
-                            if lane == PresentationPointerLane::Scroll
+                            let requested = matches!(
+                                (delivery_request, lane),
+                                (
+                                    PointerReceiverDeliveryRequest::Click
+                                        | PointerReceiverDeliveryRequest::ClickAndDrag,
+                                    PresentationPointerLane::Click
+                                ) | (
+                                    PointerReceiverDeliveryRequest::ClickAndDrag,
+                                    PresentationPointerLane::Drag
+                                )
+                            );
+                            let explicit_absence = requested
+                                && disposition == PointerReceiverDeliveryDisposition::NoReceiver;
+                            let scroll_absence = lane == PresentationPointerLane::Scroll
                                 && matches!(edge.kind(), PointerEdgeKind::Scrolled(scroll)
                                     if matches!(scroll.phase(), crate::pointer_journal::ScrollPhase::Discrete | crate::pointer_journal::ScrollPhase::Begin))
                                 && matches!(
                                     disposition,
                                     PointerReceiverDeliveryDisposition::NoReceiver
                                         | PointerReceiverDeliveryDisposition::DockCanvas
-                                )
-                            {
+                                );
+                            if explicit_absence || scroll_absence {
                                 self.validate_pointer_receiver_absence(
                                     provider,
                                     edge,
@@ -657,7 +684,12 @@ impl DockEngine {
         };
         let winner = presentation
             .hit_manifest()
-            .resolve_exclusive_with_suppression(lane, point, suppression)
+            .resolve_exclusive_for_device(
+                lane,
+                point,
+                suppression,
+                Self::journal_pointer_hit_device(edge),
+            )
             .map_err(|_| EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::ReceiverWinnerAmbiguous {
                     sequence: edge.sequence(),
@@ -789,7 +821,11 @@ impl DockEngine {
                         surface,
                     },
                 })?;
-        if !region_record.hit().contains(point) {
+        if !manifest.region_contains_for_device(
+            region_record.id(),
+            point,
+            Self::journal_pointer_hit_device(edge),
+        ) {
             return Err(EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::RegionDoesNotCoverPoint {
                     sequence: edge.sequence(),
@@ -805,7 +841,12 @@ impl DockEngine {
         } else {
             PresentationHitSuppression::default()
         };
-        let winner = match manifest.resolve_exclusive_with_suppression(lane, point, suppression) {
+        let winner = match manifest.resolve_exclusive_for_device(
+            lane,
+            point,
+            suppression,
+            Self::journal_pointer_hit_device(edge),
+        ) {
             Ok(winner) => winner.map(|winner| winner.id()),
             Err(_) => {
                 return Err(EngineError::PointerReceiverGeometry {

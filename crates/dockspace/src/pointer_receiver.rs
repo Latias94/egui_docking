@@ -721,6 +721,7 @@ impl PointerReceiverCandidateRoster {
                 self.validate_observation(candidate, &receipt.observation, presented_outputs)?;
                 Ok(ValidatedPointerReceiverReceipt {
                     candidate: receipt.candidate,
+                    delivery_request: candidate.delivery_request,
                     observation: receipt.observation,
                 })
             })
@@ -1692,6 +1693,7 @@ impl ValidatedPointerReceiverReceiptBatch {
 )]
 pub(crate) struct ValidatedPointerReceiverReceipt {
     candidate: PointerReceiverCandidateId,
+    delivery_request: PointerReceiverDeliveryRequest,
     observation: PointerReceiverObservation,
 }
 
@@ -1702,6 +1704,10 @@ pub(crate) struct ValidatedPointerReceiverReceipt {
 impl ValidatedPointerReceiverReceipt {
     pub(crate) const fn candidate(&self) -> PointerReceiverCandidateId {
         self.candidate
+    }
+
+    pub(crate) const fn delivery_request(&self) -> PointerReceiverDeliveryRequest {
+        self.delivery_request
     }
 
     pub(crate) const fn observation(&self) -> &PointerReceiverObservation {

@@ -30,6 +30,8 @@ const SIXTH: ItemId = ItemId::new(6);
 mod edge_scroll;
 #[path = "product_touch_tests.rs"]
 mod touch;
+#[path = "product_touch_target_tests.rs"]
+mod touch_targets;
 
 struct MagneticPanes {
     target_rect: Cell<Option<Rect>>,

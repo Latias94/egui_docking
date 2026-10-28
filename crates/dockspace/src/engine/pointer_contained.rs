@@ -9,31 +9,11 @@ impl DockEngine {
         floating: crate::ids::FloatingPresentationId,
         kind: ContainedGestureKind,
         point: crate::geometry::LogicalPoint,
+        device: crate::pointer_journal::PointerDeviceKind,
     ) -> Result<PreparedContainedGesture, InteractionRejection> {
-        self.prepare_contained_gesture(
-            presentation.surface(),
-            presentation.scene(),
-            presentation.plan(),
-            presentation.coordinate_capture(),
-            floating,
-            kind,
-            point,
-            Self::freeze_journal_presentation(presentation),
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn prepare_contained_gesture(
-        &self,
-        surface: SurfaceId,
-        scene: SurfaceSceneStamp,
-        plan: &PresentationPlan,
-        coordinate_capture: SurfaceCoordinateCapture,
-        floating: crate::ids::FloatingPresentationId,
-        kind: ContainedGestureKind,
-        point: crate::geometry::LogicalPoint,
-        presentation: FrozenPresentationAuthority,
-    ) -> Result<PreparedContainedGesture, InteractionRejection> {
+        let surface = presentation.surface();
+        let scene = presentation.scene();
+        let plan = presentation.plan();
         if scene.requirement().workspace_epoch() != self.version.epoch() {
             return Err(InteractionRejection::StaleScene);
         }
@@ -43,15 +23,25 @@ impl DockEngine {
         let contained = plan.contained_record(floating).ok_or(
             InteractionRejection::ContainedTransformPresentationUnavailable { surface, floating },
         )?;
-        let hit = match kind {
-            ContainedGestureKind::TitleDrag => contained.title_drag_hit().contains(point),
-            ContainedGestureKind::Resize(direction) => contained
-                .resize()
-                .iter()
-                .find(|record| record.direction() == direction)
-                .is_some_and(|record| record.hit().contains(point)),
+        let expected = match kind {
+            ContainedGestureKind::TitleDrag => PresentationHitRegionKind::ContainedTitle(floating),
+            ContainedGestureKind::Resize(direction) => PresentationHitRegionKind::ContainedResize {
+                floating,
+                direction,
+            },
         };
-        if !hit {
+        let winner = presentation
+            .hit_manifest()
+            .resolve_exclusive_for_device(
+                PresentationPointerLane::Drag,
+                point,
+                Default::default(),
+                device,
+            )
+            .ok()
+            .flatten()
+            .map(|region| region.id().kind());
+        if winner != Some(expected) {
             return Err(InteractionRejection::ContainedGestureHitMismatch { floating, kind });
         }
         if let Some(occluding) = plan
@@ -113,8 +103,8 @@ impl DockEngine {
             kind,
             scene,
             surface_bounds: plan.bounds(),
-            coordinate_capture,
-            presentation,
+            coordinate_capture: presentation.coordinate_capture(),
+            presentation: Self::freeze_journal_presentation(presentation),
             source_layout_facts: plan.layout_facts().cloned().map(std::sync::Arc::new),
         })
     }

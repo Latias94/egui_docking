@@ -84,8 +84,12 @@ the existing root presentation menu without selecting or focusing the tab.
 `DockStyle::touch_long_press_delay` and `touch_press_slop_distance` customize the
 profile. Read `DockspaceResponse::touch_events()` for ordered semantic events,
 including context-menu requests. Missing batch time disables timed arming while
-preserving short taps. Native touch/stationary capture and expanded touch hit
-targets remain implementation work.
+preserving short taps. Explicit Touch uses the core output's expanded splitter,
+junction and contained resize targets; `DockStyle::touch_resize_hit_extent`
+defaults to 44 points before surface/protected-chrome clipping. Mouse, pen and
+unknown-device hit geometry retain their existing profile. Ordinary interactive
+widgets and disabled UI still block docking. Native touch/stationary capture
+remains separate work.
 
 The adapter validates the complete ordered surface span after all output hooks,
 including ordinary geometry, previews, clipping and transforms. Pane drawing must

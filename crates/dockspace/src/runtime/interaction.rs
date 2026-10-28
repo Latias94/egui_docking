@@ -11,10 +11,10 @@ use crate::ids::SurfaceId;
 use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use crate::pointer_journal::{
     FiniteScrollVector, HostLocalPointerRoute, PhysicalScrollCoordinates, PointerCaptureOwner,
-    PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint, ScrollDelta,
-    ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
-    SurfaceLocalPointerProvider,
+    PointerDeviceKind, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
+    PointerEdgeSequence, PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint,
+    ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
+    ScrollSequenceToken, SurfaceLocalPointerProvider,
 };
 use crate::pointer_receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
@@ -124,7 +124,10 @@ impl PresentedDockReceiver {
         })
     }
 
-    /// Returns the exact receiver rectangle presented by the renderer.
+    /// Returns the base receiver rectangle from this exact presented output.
+    ///
+    /// Expanded touch targets may extend beyond it, or survive an empty base
+    /// rectangle. Use the device-aware query to resolve those targets.
     #[must_use]
     pub const fn bounds(self) -> LogicalRect {
         self.descriptor.bounds()
@@ -901,6 +904,23 @@ impl DockspaceSession {
         surface: SurfaceId,
         point: LogicalPoint,
     ) -> Option<HostPointerHit> {
+        self.host_pointer_hit_for_device(surface, point, PointerDeviceKind::Unknown)
+    }
+
+    /// Queries current semantic receivers using an explicitly observed device class.
+    ///
+    /// Explicit Touch uses the output's expanded resize targets. Mouse, Pen and
+    /// Unknown retain the base geometry. Receiver descriptors still describe the
+    /// base control; their bounds may be empty and are not a union of touch hit fragments.
+    /// Framework clearance, capture and exact-output input validation remain
+    /// required before a candidate can start a gesture.
+    #[must_use]
+    pub fn host_pointer_hit_for_device(
+        &self,
+        surface: SurfaceId,
+        point: LogicalPoint,
+        device: PointerDeviceKind,
+    ) -> Option<HostPointerHit> {
         use crate::presentation_hit::PresentationPointerLane;
         let projection = self.engine.interaction_projection(surface)?;
         let resolve = |lane| {
@@ -911,7 +931,7 @@ impl DockspaceSession {
             };
             projection
                 .hit_manifest()
-                .resolve_exclusive_with_suppression(lane, point, suppression)
+                .resolve_exclusive_for_device(lane, point, suppression, device)
                 .ok()
                 .map(|region| {
                     region.and_then(|region| {
@@ -1302,7 +1322,12 @@ impl DockspaceHostFrame<'_> {
             )?;
             let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
                 .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
-            self.frame.submit_pointer_receiver_receipts(receipts)?;
+            if let Err(error) = self.frame.submit_pointer_receiver_receipts(receipts) {
+                return Err(self
+                    .frame
+                    .take_input_prefix_error()
+                    .map_or_else(|| error.into(), Into::into));
+            }
         }
         self.next_pointer_sequence = Some(sequence);
         self.pointer_input_submitted = true;

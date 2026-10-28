@@ -32,8 +32,9 @@ The earlier product-boundary plan supplies the persistence and ownership context
 Caller-owned official-egui runs also retain explicit local touch identities:
 short taps activate on release, pre-arm movement yields to pane content, and a
 350ms stationary continuation arms ordinary docking/resize or a semantic context
-menu. Touch targets are not yet expanded to the planned 44-point minimum, and
-native touch/stationary capture remains unqualified.
+menu. Explicit Touch resize targets request at least 44 logical points before
+surface and protected-control clipping; mouse/pen/unknown-device geometry keeps
+its existing profile. Native touch/stationary capture remains unqualified.
 
 Local drags use the same finite continuation for tab hover selection and
 overflow-edge scrolling. Each automatic scroll step waits for exact presentation

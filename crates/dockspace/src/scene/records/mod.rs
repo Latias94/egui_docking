@@ -16,8 +16,7 @@ pub use contained::{
 pub use presentation::{PresentationMenuAnchorHost, PresentationMenuAnchorRecord};
 pub use splitter::{
     SplitterGapPresentation, SplitterGapRecord, SplitterJunctionDirection, SplitterJunctionId,
-    SplitterJunctionRecord, SplitterRecord, SplitterResizeHitError, SplitterResizeTarget,
-    SplitterSceneId,
+    SplitterJunctionRecord, SplitterRecord, SplitterResizeTarget, SplitterSceneId,
 };
 pub use tab::{
     PaneRecord, PaneSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord,

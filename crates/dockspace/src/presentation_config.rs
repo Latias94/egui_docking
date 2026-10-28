@@ -61,6 +61,7 @@ pub struct DockPresentationConfig {
     hover_selection_delay: Option<Duration>,
     touch_long_press_delay: Duration,
     touch_press_slop_distance: f64,
+    touch_resize_hit_extent: f64,
     guide_extent: f64,
     guide_gap: f64,
     guide_hit_padding: f64,
@@ -194,6 +195,16 @@ impl DockPresentationConfig {
         self.touch_press_slop_distance
     }
 
+    /// Returns the requested touch resize hit extent in logical points before clipping.
+    ///
+    /// This is finite and at least 44 points. Surface bounds, protected chrome,
+    /// and crowding may shrink the actual hit region or leave it empty. Mouse,
+    /// pen, and unknown-device hit geometry are unaffected.
+    #[must_use]
+    pub const fn touch_resize_hit_extent(&self) -> f64 {
+        self.touch_resize_hit_extent
+    }
+
     /// Returns the width and height of one docking guide button.
     #[must_use]
     pub const fn guide_extent(&self) -> f64 {
@@ -313,6 +324,7 @@ pub struct DockPresentationConfigBuilder {
     hover_selection_delay: Option<Duration>,
     touch_long_press_delay: Duration,
     touch_press_slop_distance: f64,
+    touch_resize_hit_extent: f64,
     guide_extent: f64,
     guide_gap: f64,
     guide_hit_padding: f64,
@@ -351,6 +363,7 @@ impl Default for DockPresentationConfigBuilder {
             hover_selection_delay: Some(Duration::from_millis(150)),
             touch_long_press_delay: Duration::from_millis(350),
             touch_press_slop_distance: 8.0,
+            touch_resize_hit_extent: 44.0,
             guide_extent: 48.0,
             guide_gap: 12.0,
             guide_hit_padding: 6.0,
@@ -489,6 +502,17 @@ impl DockPresentationConfigBuilder {
         self
     }
 
+    /// Sets the requested touch resize hit extent in logical points before clipping.
+    ///
+    /// The value must be finite and at least 44 points. Surface bounds, protected
+    /// chrome, and crowding may shrink the actual hit region or leave it empty.
+    /// Mouse, pen, and unknown-device hit geometry are unaffected.
+    #[must_use]
+    pub const fn touch_resize_hit_extent(mut self, value: f64) -> Self {
+        self.touch_resize_hit_extent = value;
+        self
+    }
+
     /// Sets the width and height of one docking guide button.
     #[must_use]
     pub const fn guide_extent(mut self, value: f64) -> Self {
@@ -595,7 +619,8 @@ impl DockPresentationConfigBuilder {
     /// # Errors
     ///
     /// Returns [`DockPresentationConfigError`] for non-finite values, invalid
-    /// signs, a zero edge scroll interval, or a violated cross-field geometry invariant.
+    /// signs, a touch resize hit extent below 44 points, a zero edge scroll
+    /// interval, or a violated cross-field geometry invariant.
     pub fn build(self) -> Result<DockPresentationConfig, DockPresentationConfigError> {
         for (field, value) in [
             ("tab_bar_height", self.tab_bar_height),
@@ -646,6 +671,12 @@ impl DockPresentationConfigBuilder {
             ("floating_border_width", self.floating_border_width),
         ] {
             require_non_negative(field, value)?;
+        }
+        require_finite("touch_resize_hit_extent", self.touch_resize_hit_extent)?;
+        if self.touch_resize_hit_extent < 44.0 {
+            return Err(DockPresentationConfigError::TouchResizeHitExtentTooSmall {
+                value: self.touch_resize_hit_extent,
+            });
         }
         if self.tab_strip_edge_scroll_interval == Some(Duration::ZERO) {
             return Err(DockPresentationConfigError::ZeroEdgeScrollInterval);
@@ -742,6 +773,7 @@ impl DockPresentationConfigBuilder {
             hover_selection_delay: self.hover_selection_delay,
             touch_long_press_delay: self.touch_long_press_delay,
             touch_press_slop_distance: self.touch_press_slop_distance,
+            touch_resize_hit_extent: self.touch_resize_hit_extent,
             guide_extent: self.guide_extent,
             guide_gap: self.guide_gap,
             guide_hit_padding: self.guide_hit_padding,
@@ -818,6 +850,12 @@ pub enum DockPresentationConfigError {
         /// Name of the rejected metric.
         field: &'static str,
         /// Rejected value.
+        value: f64,
+    },
+    /// The requested touch resize hit extent was below 44 logical points.
+    #[error("touch resize hit extent must be at least 44 logical points, got {value}")]
+    TouchResizeHitExtentTooSmall {
+        /// Rejected extent before clipping.
         value: f64,
     },
     /// A zero edge scroll interval would continuously reschedule work.
@@ -902,6 +940,10 @@ mod tests {
             Some(Duration::from_millis(150))
         );
         assert_eq!(config.touch_long_press_delay(), Duration::from_millis(350));
+        assert_eq!(
+            config.touch_resize_hit_extent().to_bits(),
+            44.0_f64.to_bits()
+        );
         assert_eq!(
             config.touch_press_slop_distance().to_bits(),
             8.0_f64.to_bits()
@@ -1054,6 +1096,50 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn touch_resize_hit_extent_accepts_minimum_and_custom_values() {
+        let baseline = DockPresentationConfig::default();
+        for extent in [44.0, 64.5] {
+            let config = DockPresentationConfig::builder()
+                .touch_resize_hit_extent(extent)
+                .build()
+                .expect("finite touch resize hit extents of at least 44 points are valid");
+
+            assert_eq!(config.touch_resize_hit_extent().to_bits(), extent.to_bits());
+            assert_eq!(
+                config.splitter_hit_extent().to_bits(),
+                baseline.splitter_hit_extent().to_bits()
+            );
+            assert_eq!(
+                config.floating_resize_extent().to_bits(),
+                baseline.floating_resize_extent().to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn touch_resize_hit_extent_rejects_non_finite_and_below_minimum_values() {
+        for extent in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                DockPresentationConfig::builder()
+                    .touch_resize_hit_extent(extent)
+                    .build(),
+                Err(DockPresentationConfigError::NonFinite {
+                    field: "touch_resize_hit_extent",
+                    ..
+                })
+            ));
+        }
+        for extent in [-1.0, 0.0, 43.5] {
+            assert_eq!(
+                DockPresentationConfig::builder()
+                    .touch_resize_hit_extent(extent)
+                    .build(),
+                Err(DockPresentationConfigError::TouchResizeHitExtentTooSmall { value: extent })
+            );
+        }
     }
 
     #[test]

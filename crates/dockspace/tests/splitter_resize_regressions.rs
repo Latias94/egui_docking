@@ -1267,13 +1267,12 @@ fn fully_occluded_splitter_has_no_pointer_or_scene_bound_action_authority() {
         .cloned()
         .expect("rear splitter remains paintable");
     assert!(!record.operable());
-    let point = center(record.hit().rect());
-    assert_eq!(
+    assert!(
         ready
-            .plan()
-            .splitter_resize_target_at(point)
-            .expect("occluded hit map is unambiguous"),
-        None
+            .hit_manifest()
+            .region_for_kind(PresentationHitRegionKind::SplitterHandle(*record.id()))
+            .is_none(),
+        "the exact output must not expose the occluded splitter as an input receiver"
     );
     let scene = ready.stamp();
     let splitter = *record.id();

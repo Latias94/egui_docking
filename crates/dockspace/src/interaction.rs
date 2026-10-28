@@ -1131,8 +1131,6 @@ pub enum InteractionRejection {
     SplitterGesturePointerOutsideSurface { surface: SurfaceId },
     /// No splitter target owns the pressed point on the authoritative layer.
     SplitterGestureHitUnavailable { surface: SurfaceId },
-    /// The authoritative presentation plan contains ambiguous splitter geometry.
-    SplitterGestureHitAmbiguous(crate::scene::SplitterResizeHitError),
     /// The scene's coordinate capture no longer matches current platform authority.
     SplitterGestureCoordinateAuthorityUnavailable { surface: SurfaceId },
     /// An update named a surface other than the session's frozen owner.

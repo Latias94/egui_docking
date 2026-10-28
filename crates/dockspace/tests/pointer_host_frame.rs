@@ -2769,6 +2769,12 @@ fn journal_close_release_outside_consumes_without_opening_a_plan() {
     let (close, press) = point_inside_tab_close(projection, ItemId::new(1));
     let outside = LogicalPoint::new(560.0, 420.0).expect("outside point is finite");
     arm_journal_close(&mut engine, &mut host, provider, close, press);
+    let release_receiver = interaction(&engine)
+        .hit_manifest()
+        .resolve_exclusive(PresentationPointerLane::Click, outside)
+        .expect("outside-close point has an unambiguous click receiver")
+        .expect("outside-close point is inside the pane body")
+        .id();
 
     let release = release_journal_click(
         &mut engine,
@@ -2776,7 +2782,7 @@ fn journal_close_release_outside_consumes_without_opening_a_plan() {
         provider,
         1,
         outside,
-        PointerReceiverDeliveryDisposition::NoReceiver,
+        PointerReceiverDeliveryDisposition::Dock(release_receiver),
     );
 
     assert!(matches!(
@@ -7193,17 +7199,18 @@ fn later_segment_candidates_follow_the_exact_reduced_receiver_prefix() {
         .expect("press freezes one candidate")
         .candidates()[0]
         .clone();
-    let no_receiver =
-        PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::NoReceiver)
-            .expect("known receiver absence is bound to the presented output");
+    // Framework occlusion blocks the actual tab receiver and leaves the reduced prefix idle.
+    let blocked_press =
+        PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::Blocked)
+            .expect("framework-blocked press is bound to the presented output");
     frame
         .submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([press_candidate.receipt(
-                exact_candidate_observation(&press_candidate, Some(no_receiver), None),
+                exact_candidate_observation(&press_candidate, Some(blocked_press), None),
             )])
             .expect("press receipt set is exact"),
         )
-        .expect("press receipt reduces the private input prefix");
+        .expect("blocked press receipt reduces the private input prefix");
 
     frame
         .submit_surface_pointer_journal(provider, moved_journal(1, Authority::Known(press)))
@@ -7215,7 +7222,7 @@ fn later_segment_candidates_follow_the_exact_reduced_receiver_prefix() {
     assert_eq!(
         move_candidate.probes(),
         PointerReceiverProbeRequest::NotApplicable,
-        "a known receiver miss leaves the reducer idle, so a later move must not inherit a speculative armed branch",
+        "a framework-blocked press leaves the reducer idle, so a later move must not inherit a speculative armed branch",
     );
 }
 

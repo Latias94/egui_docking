@@ -1664,6 +1664,7 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
             floating,
             ContainedGestureKind::TitleDrag,
             title_point,
+            crate::pointer_journal::PointerDeviceKind::Unknown,
         )
         .expect("real contained title press must prepare");
     let policy = engine.policy.clone();

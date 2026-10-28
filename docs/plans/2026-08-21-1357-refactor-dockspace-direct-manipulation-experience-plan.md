@@ -281,7 +281,7 @@ Hosts may style the controls and supply measured dimensions without changing tar
 | Hover selection | Optional 150 ms event-time dwell, reset by target/semantic scene/gesture/stream/policy change; same-geometry emissions preserve the origin, execution needs current output proof; never implies pane focus |
 | Temporary suppression | Shift disables magnetic acquisition in the default editor profile; R25 arrangement lock remains independent |
 | Local touch | 350 ms long press and 8-point slop; pre-arm movement yields to pane scrolling, early release activates/selects, armed stationary release opens a semantic context menu |
-| Resize and controls | Eight contained directions; corners outrank edges; 8-point mouse edge band, 12-point corners, and at least 44-point touch targets clipped away from title/tab controls |
+| Resize and controls | Eight disjoint contained directions; existing mouse/pen/unknown geometry stays independent. Explicit Touch requests at least 44 logical points for resize targets before surface, root, protected-chrome and occlusion clipping; junctions outrank ordinary handles and final same-stack ambiguity is rejected |
 | Splitter commands | 16-point keyboard/accessibility adjustment; double-click equalizes only the adjacent pair while preserving their combined share |
 | Overflow completion | Under R25, one owner at a time: selected-tab reveal, manual scrollbar, active-drag edge scroll, or menu selection; clipped subcontrols cannot execute. Local edge scroll uses a 24-point content band capped at half-width, a 50ms interval and one scroll-line step per current-output continuation |
 
@@ -400,8 +400,9 @@ hover dwell and touch arming remain separate implementation/qualification steps;
 the existing native resource checkpoint is retained. U3d now has a finite
 core-owned stationary continuation, hover selection and explicit local-touch
 source capture in official egui. Local active-drag edge scrolling shares that
-continuation and the existing overflow owner. Expanded touch targets and native
-stationary capture still require their own slices. This priority change keeps
+continuation and the existing overflow owner. The following local-touch slice
+binds expanded resize footprints to that same exact output; native stationary
+capture still requires its own qualification. This priority change keeps
 the custom-engine host central and does not remove U7/U8/U11 acceptance gates.
 U11 gates Windows/macOS capability claims separately; unsupported backends remain explicit rather than blocking the generic crate.
 These are packaging/readiness gates, not instructions to publish crates or upstream patches automatically.
@@ -587,8 +588,14 @@ suppresses duplicate synthesized generic pointer ingress and reuses its existing
 root presentation menu and prepared commands. Ordinary egui content input remains
 owned by the pane. Public-host and product qualifications are recorded separately
 in `docs/VALIDATION.md`; no physical touch-device claim follows from headless
-journeys. Native metadata/stationary capture and the at-least-44-point touch
-target geometry remain open. U10 local active-drag edge scrolling now uses the
+journeys. Expanded local resize targets now share the exact output manifest,
+device-aware query, receipt proof and gesture preparation. Explicit Touch uses
+at least 44 logical points before clipping; all other device classes keep their
+base geometry. Title/tab/close/menu chrome and visible front windows stay
+protected; empty or ambiguous targets grant no input. A clipped-empty base
+contained direction retains its semantic identity when a nonempty Touch fragment
+is visible. Receiver descriptors continue to describe the base geometry. Native
+metadata/stationary capture remains open. U10 local active-drag edge scrolling uses the
 shared continuation owner; native stationary routing remains separate.
 The full behavior plan cannot close before the remaining U3d qualification.
 

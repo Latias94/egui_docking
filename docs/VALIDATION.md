@@ -15,6 +15,102 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U3d output-bound touch resize targets
+
+Explicit local Touch now uses device-specific resize footprints compiled into
+the same exact-output hit manifest as the base controls. Splitter handles expand
+around their structural divider, junctions around their structural intersection,
+and contained directions use disjoint eight-way partitions around the original
+mouse bands. `touch_resize_hit_extent` defaults to 44 logical points, accepts
+finite values of at least 44, and never reduces a larger configured base target.
+Mouse, Pen, Unknown and the original `host_pointer_hit` query keep base geometry.
+
+The requested extent precedes clipping. Splitters/junctions clip to root and
+surface bounds; contained targets may extend outside the painted frame and then
+clip to the surface. Visible title/tab/close/menu chrome, complete disabled
+strips and real front-window occlusions are removed from touch fragments. Hidden
+background controls cannot cut holes in a front window. Pane content does not
+automatically exclude an expanded target, but framework widgets retain their
+ordinary delivery-clearance proof. Junctions retain precedence over ordinary
+handles. Only the final highest stack can be ambiguous; lower-stack conflicts
+cannot hide a later unique higher receiver. Highest-stack ambiguity rejects.
+
+`host_pointer_hit_for_device` queries this manifest using explicit device facts.
+Positive receiver coverage, semantic winner and requested-lane absence validation
+use the same profile. Gesture preparation rechecks the same exact Drag winner
+and preserves source, policy, coordinate, durable-rectangle, roster and occlusion
+checks. The obsolete scene-only splitter resolver, its error family and two
+single-caller prepare wrappers are removed. Armed touch starts from its frozen
+real press point; there is no snap to the painted edge or first-motion jump.
+Desktop input remains on the existing base geometry until native device and
+stationary capture receive their separate qualification.
+
+Independent review found and closed two P2s:
+
+- A known-empty Drag receipt could conceal a real expanded Touch receiver.
+  Validated receipts now privately retain their trusted candidate's requested
+  delivery lanes. Only actually requested Click/Drag `NoReceiver` facts receive
+  the corresponding device-aware absence check. Unknown, Blocked, unrequested
+  lanes and the existing phaseful Scroll rules retain their meanings. The public
+  failure/retry regression proves rollback and once-only arming at the original
+  provider sequence. Runtime pointer submission returns the original reduction
+  cause, preserving its error chain and `HostProtocol` classification while the
+  failed frame remains poisoned.
+- A surface-clipped empty base resize band lost its semantic identity before the
+  compiler could create its still-visible Touch fragment. Manifest construction
+  now temporarily retains resize identities and removes them only when both
+  profiles are empty. The public West-edge regression starts at `(2,300)` for a
+  frame at `(-20,160,320,240)`, with a zero-width base hit. A +30 contact movement
+  previews `(10,160,290,240)` and commits only after exact Presented settlement.
+  Mouse/Pen/Unknown remain unable to hit that empty base.
+
+Receiver descriptors describe the base rectangle, which may be empty; they do
+not expose a misleading union box for clipped touch fragments. Drawing bounds,
+durable bounds and drop occlusions remain unchanged. Large finite extents use
+the original unclipped center rather than subtracting expanded endpoints; unit
+coverage includes `1e20` and `f64::MAX`, preserving disjoint small-window and
+partially off-surface partitions.
+
+Public journeys cover real splitter/junction and contained edge/corner gestures
+from outside the original hit, explicit device distinctions, unchanged
+pre-delivery state, Presented/Dropped settlement, terminal deduplication,
+protected controls, front occlusion, surface clipping and stale-output rejection.
+Real owned-run egui journeys cover outside-base splitter and contained resizing,
+ordinary pointer misses, external widgets, disabled UI and an actual contained
+close tap. Split weights retain the shared f32 projection tolerance of `1e-4`;
+contained rectangles are checked at the exact contact delta.
+
+Fresh serialized qualification on the frozen source:
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Workspace nextest, all features and targets | 1,735 passed | Includes five geometry regressions, four configuration cases and four real egui journeys |
+| Public-host consumer, all features and targets | 79 passed | Six new touch-target cases plus all previous host contracts |
+| Complete product harness, all features and targets | 114 passed | Ordinary, contained, blocker, overflow, focus, restore and Burst matrix |
+| No-default workspace touch/continuation filter, core debug assertions disabled | 38 passed | Device/time, geometry, configuration, contact and existing continuation behavior |
+| No-default public touch-target consumer, core debug assertions disabled | 6 passed | All new public device/geometry/proof journeys |
+| Local-fork native compatibility, all targets | 260 passed | Existing native lifecycle and adapter compatibility |
+| Correctness/suspicious Clippy | Passed | Workspace, all features and targets |
+| Strict docs, all features and no defaults | Passed | Warnings denied |
+| Doctests | 10 passed | Workspace, all features |
+
+A disposable-snapshot negative control removes requested-lane absence checking
+and early empty-base identity retention. Both corresponding public regressions
+fail: the false absence is accepted, and the clipped West query returns PaneBody
+instead of ContainedResize. Restoring production source passes both. The main
+working tree is unchanged by these mutations. Independent final static review
+confirms both P2s closed and no other confirmed P1/P2 in this slice.
+Workspace/public formatting and diff checks pass. Native compatibility uses the
+retained authorized native tree and local egui fork
+`7c7b3233541ec724bee561454ba8e9fca384f32e` through a refreshed disposable snapshot;
+tracked native pins and the separate native/CI/smoke changes remain outside this
+commit. No fork publication is implied.
+
+This is local input and headless renderer-contract qualification. Native
+device/time/stationary capture, physical touch hardware, optional native
+overload/lifecycle/load/soak/platform gates and the native showcase remain open.
+This slice does not complete the overall docking/multiview plan.
+
 ## 2026-10-28 U10 local stationary tab-strip edge scrolling
 
 An active local drag now shares one finite continuation between hover selection

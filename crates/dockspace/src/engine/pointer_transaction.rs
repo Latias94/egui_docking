@@ -339,6 +339,7 @@ impl DockEngine {
             presentation,
             region,
             point,
+            Self::journal_pointer_hit_device(edge),
             policy,
             events,
         )
@@ -355,6 +356,7 @@ impl DockEngine {
         presentation: &JournalSurfacePresentation,
         region: PresentationHitRegionId,
         point: LogicalPoint,
+        device: crate::pointer_journal::PointerDeviceKind,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
@@ -408,6 +410,7 @@ impl DockEngine {
                     owner,
                     capture_authority,
                     point,
+                    device,
                     policy,
                 ) {
                     Ok(start) => start,
@@ -433,6 +436,7 @@ impl DockEngine {
                     floating,
                     ContainedGestureKind::TitleDrag,
                     point,
+                    device,
                 ) {
                     Ok(prepared) => prepared,
                     Err(rejection) => return Ok(Some(InteractionOutcome::Rejected(rejection))),
@@ -458,6 +462,7 @@ impl DockEngine {
                     floating,
                     ContainedGestureKind::Resize(direction),
                     point,
+                    device,
                 ) {
                     Ok(prepared) => prepared,
                     Err(rejection) => return Ok(Some(InteractionOutcome::Rejected(rejection))),

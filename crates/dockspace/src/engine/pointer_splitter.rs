@@ -10,9 +10,12 @@ impl DockEngine {
         owner: GestureOwner,
         capture_authority: Authority<PointerCaptureOwner>,
         point: crate::geometry::LogicalPoint,
+        device: crate::pointer_journal::PointerDeviceKind,
         policy: &DockPolicySnapshot,
     ) -> Result<ResizeStart, InteractionRejection> {
         let surface = presentation.surface();
+        let plan = presentation.plan();
+        let scene = presentation.scene();
         let target = match region.kind() {
             PresentationHitRegionKind::SplitterHandle(splitter) => {
                 SplitterResizeTarget::Handle(splitter)
@@ -24,58 +27,38 @@ impl DockEngine {
                 return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
             }
         };
-        self.prepare_splitter_resize(
-            presentation.plan(),
-            presentation.scene(),
-            presentation.coordinate_capture(),
-            target,
-            owner,
-            capture_authority,
-            Self::freeze_journal_presentation(presentation),
-            point,
-            policy,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn prepare_splitter_resize(
-        &self,
-        plan: &PresentationPlan,
-        scene: SurfaceSceneStamp,
-        coordinate_capture: SurfaceCoordinateCapture,
-        target: SplitterResizeTarget,
-        owner: GestureOwner,
-        journal_capture_authority: Authority<PointerCaptureOwner>,
-        authority: FrozenPresentationAuthority,
-        point: crate::geometry::LogicalPoint,
-        policy: &DockPolicySnapshot,
-    ) -> Result<ResizeStart, InteractionRejection> {
-        let surface = plan.surface();
         if scene.requirement().workspace_epoch() != self.version.epoch() {
             return Err(InteractionRejection::StaleScene);
         }
         if !plan.bounds().contains(point) {
             return Err(InteractionRejection::SplitterGesturePointerOutsideSurface { surface });
         }
-        let resolved = plan
-            .splitter_resize_target_at(point)
-            .map_err(InteractionRejection::SplitterGestureHitAmbiguous)?
-            .ok_or(InteractionRejection::SplitterGestureHitUnavailable { surface })?;
-        if resolved != target {
+        let winner = presentation
+            .hit_manifest()
+            .resolve_exclusive_for_device(
+                PresentationPointerLane::Drag,
+                point,
+                Default::default(),
+                device,
+            )
+            .ok()
+            .flatten()
+            .map(|winner| winner.id());
+        if winner != Some(region) {
             return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
         }
-        let handles = self.prepare_splitter_resize_handles(plan, target, point, policy)?;
+        let handles = self.prepare_splitter_resize_handles(plan, target, policy)?;
         let axis_groups = prepare_resize_axis_groups(handles)
             .ok_or(InteractionRejection::SplitterResizeGeometryUnavailable)?;
         Ok(ResizeStart {
             owner,
-            journal_capture_authority,
+            journal_capture_authority: capture_authority,
             button: PointerButton::Primary,
             surface,
             scene,
             target,
-            coordinate_capture,
-            authority,
+            coordinate_capture: presentation.coordinate_capture(),
+            authority: Self::freeze_journal_presentation(presentation),
             initial_pointer: point,
             axis_groups,
         })
@@ -85,13 +68,12 @@ impl DockEngine {
         &self,
         plan: &PresentationPlan,
         target: SplitterResizeTarget,
-        point: crate::geometry::LogicalPoint,
         policy: &DockPolicySnapshot,
     ) -> Result<Vec<(NodeSource, crate::scene::SplitterRecord)>, InteractionRejection> {
         let surface = plan.surface();
-        let (ids, require_direct_hit) = match target {
-            SplitterResizeTarget::Handle(handle) => (vec![handle], true),
-            SplitterResizeTarget::Junction(junction) => (junction.splitters(), false),
+        let ids = match target {
+            SplitterResizeTarget::Handle(handle) => vec![handle],
+            SplitterResizeTarget::Junction(junction) => junction.splitters(),
         };
         ids.into_iter()
             .map(|id| {
@@ -112,9 +94,7 @@ impl DockEngine {
                 }
                 let record = plan
                     .splitter_record(id)
-                    .filter(|record| {
-                        record.operable() && (!require_direct_hit || record.hit().contains(point))
-                    })
+                    .filter(|record| record.operable())
                     .cloned()
                     .ok_or(InteractionRejection::SplitterGestureHitUnavailable { surface })?;
                 let source = self
