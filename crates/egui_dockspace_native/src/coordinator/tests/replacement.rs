@@ -69,19 +69,15 @@ fn request_replacement_on_existing_viewport() -> (
         .expect("the exact live roster records");
     measure_ready_surfaces(&mut native);
 
-    let destroyed = {
-        let mut viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let destroyed = native.bridge.with_viewports_mut(|routes| {
         NativeWindowEventRecord::for_test_ingress(
             14,
             WindowId::from(22),
             None,
             WindowEvent::Destroyed,
-            &mut viewports,
+            routes,
         )
-    };
+    });
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));

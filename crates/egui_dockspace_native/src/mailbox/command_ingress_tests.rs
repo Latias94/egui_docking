@@ -58,7 +58,7 @@ fn bridge_with_clock() -> (NativeHostBridge, Arc<AtomicU64>) {
     let now = Arc::new(AtomicU64::new(0));
     let source = Arc::clone(&now);
     let bridge = NativeHostBridge::with_clock(
-        Arc::new(Mutex::new(NativeViewportMap::default())),
+        NativeViewportMap::default(),
         NativeMonotonicClock::new(move || Duration::from_millis(source.load(Ordering::SeqCst))),
     );
     (bridge, now)
@@ -335,7 +335,7 @@ fn external_callback_stays_raw_and_exact_duplicates_never_recapture_ingress() {
     let external = eframe::queue_native_viewport_pointer_passthrough(&context, viewport, false);
     let callback = pointer_callback(reserved, viewport, window, Some(binding), true);
     let ordinary = pointer_callback(external, viewport, window, None, false);
-    let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+    let bridge = NativeHostBridge::new(NativeViewportMap::default());
     {
         let mut records = bridge.lock();
         assert!(
@@ -394,7 +394,7 @@ fn fatal_rearms_terminal_roster_for_an_owner_held_pointer_callback() {
         true,
     );
     for with_raw_prefix in [false, true] {
-        let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
 
         // Settle an earlier obligation so fatal must rearm a fresh generation.
         bridge.require_terminal_roster();
@@ -641,7 +641,7 @@ fn assert_retired_callback_order(received_before_retirement: bool) {
     let next_token = eframe::queue_native_viewport_pointer_passthrough(&context, viewport, false);
     let callback = pointer_callback(first_token, viewport, old_window, Some(first), true);
     let late = callback.qualified_for_binding(next);
-    let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+    let bridge = NativeHostBridge::new(NativeViewportMap::default());
     let rect = NativePhysicalRect::new(0, 0, 640, 480);
     bridge.push_record(cursor(1, old_window, viewport, first));
     {

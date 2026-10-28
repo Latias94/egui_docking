@@ -71,13 +71,7 @@ fn prefix_before_snapshot(native: &mut NativeCoordinator) -> HostFrameReport {
         .expect("exhaustion is not a protocol error")
         .expect("the first independent pointer record can seal");
     assert!(frame.native_input_pending());
-    let mut frame = NativeHostFrame::new(
-        frame,
-        native.bridge.clone(),
-        native.viewports.clone(),
-        &mut native.receivers,
-        None,
-    );
+    let mut frame = NativeHostFrame::new(frame, native.bridge.clone(), &mut native.receivers, None);
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the retained-output prefix settles without semantic paint");

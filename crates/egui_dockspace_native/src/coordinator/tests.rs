@@ -673,10 +673,8 @@ fn viewport_reservation_requires_exact_window_attachment() {
     assert_eq!(native.viewport_binding(child), Some(second));
     assert_eq!(
         native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_event(window, Some(child)),
+            .bridge
+            .with_viewports(|routes| routes.binding_for_event(window, Some(child))),
         None
     );
 
@@ -685,10 +683,8 @@ fn viewport_reservation_requires_exact_window_attachment() {
         .expect("exact created window attaches");
     assert_eq!(
         native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_event(window, Some(child)),
+            .bridge
+            .with_viewports(|routes| routes.binding_for_event(window, Some(child))),
         Some(second)
     );
     assert!(matches!(
@@ -835,15 +831,13 @@ fn reserved_replacement_revokes_the_predecessor_window_route() {
         )
         .expect("successor reservation replaces the exact predecessor");
 
-    let viewports = native
-        .viewports
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    assert_eq!(viewports.binding(child), Some(successor));
-    assert_eq!(
-        viewports.binding_for_event(predecessor_window, Some(child)),
-        None
-    );
+    native.bridge.with_viewports(|routes| {
+        assert_eq!(routes.binding(child), Some(successor));
+        assert_eq!(
+            routes.binding_for_event(predecessor_window, Some(child)),
+            None
+        );
+    });
 }
 
 #[test]
@@ -887,10 +881,8 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
     let (_, successor) = register_roots(&mut successor_source);
     assert!(matches!(
         native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .reserve_replacement(child, failed_binding, successor),
+            .bridge
+            .with_viewports_mut(|routes| routes.reserve_replacement(child, failed_binding, successor)),
         Err(NativeViewportBindingError::BindingNotCurrent { viewport, .. })
             if viewport == child
     ));
@@ -1232,10 +1224,12 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
     let (_, successor) = register_roots(&mut successor_source);
     assert!(
         native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .reserve_replacement(child, failed_binding, successor)
+            .bridge
+            .with_viewports_mut(|routes| routes.reserve_replacement(
+                child,
+                failed_binding,
+                successor
+            ))
             .is_err(),
         "an uncommitted create receipt cannot be overwritten by a successor"
     );
@@ -1288,25 +1282,23 @@ fn staged_viewport_output_requires_an_admitted_create_attempt() {
         .reserve_viewport(viewport, binding)
         .expect("the deferred viewport reserves its exact binding");
 
-    let viewports = native
-        .viewports
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    assert_eq!(
-        viewports.binding_for_event(window, Some(viewport)),
-        None,
-        "the reverse window route is intentionally absent before attachment"
-    );
-    assert_eq!(
-        viewports.binding_for_output(viewport, window, None),
-        None,
-        "a logical reservation alone cannot authorize a physical output"
-    );
-    assert_eq!(
-        viewports.binding_for_roster(viewport, window),
-        None,
-        "a root roster cannot retarget an unattached predecessor window"
-    );
+    native.bridge.with_viewports(|routes| {
+        assert_eq!(
+            routes.binding_for_event(window, Some(viewport)),
+            None,
+            "the reverse window route is intentionally absent before attachment"
+        );
+        assert_eq!(
+            routes.binding_for_output(viewport, window, None),
+            None,
+            "a logical reservation alone cannot authorize a physical output"
+        );
+        assert_eq!(
+            routes.binding_for_roster(viewport, window),
+            None,
+            "a root roster cannot retarget an unattached predecessor window"
+        );
+    });
 }
 
 #[test]
@@ -1659,19 +1651,15 @@ fn pointer_routes_are_frozen_before_viewport_replacement() {
             capture: PointerWindowRoute::Window(first_window),
         },
     };
-    let record = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let record = native.bridge.with_viewports(|routes| {
         NativeWindowEventRecord::for_test_snapshot(
             7,
             first_window,
             Some(ViewportId::ROOT),
             event,
-            &viewports,
+            routes,
         )
-    };
+    });
 
     let mut successor_source = coordinator();
     let (successor, _) = register_roots(&mut successor_source);
@@ -1733,19 +1721,15 @@ fn pointer_translation_preserves_delivery_hover_and_capture() {
             capture: PointerWindowRoute::Window(first_window),
         },
     };
-    let record = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let record = native.bridge.with_viewports(|routes| {
         NativeWindowEventRecord::for_test_snapshot(
             8,
             first_window,
             Some(ViewportId::ROOT),
             event,
-            &viewports,
+            routes,
         )
-    };
+    });
 
     let mut translator = NativePointerTranslator::default();
     let actual = translator.translate(&record, |_| None);
@@ -1790,19 +1774,9 @@ fn pointer_reduction_acknowledges_only_after_core_acceptance() {
             capture: PointerWindowRoute::Window(window),
         },
     };
-    let record = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        NativeWindowEventRecord::for_test_snapshot(
-            9,
-            window,
-            Some(ViewportId::ROOT),
-            event,
-            &viewports,
-        )
-    };
+    let record = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(9, window, Some(ViewportId::ROOT), event, routes)
+    });
     native.bridge.push_record(HostRecord::WindowEvent(record));
 
     assert!(

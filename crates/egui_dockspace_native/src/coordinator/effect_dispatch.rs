@@ -62,27 +62,23 @@ impl NativeCoordinator {
     }
 
     fn exact_viewport_for_binding(&self, binding: NativeSurfaceBinding) -> Option<ViewportId> {
-        let viewports = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let viewport = viewports.viewport(binding.surface())?;
-        (viewports.binding(viewport) == Some(binding)).then_some(viewport)
+        self.bridge.with_viewports(|viewports| {
+            let viewport = viewports.viewport(binding.surface())?;
+            (viewports.binding(viewport) == Some(binding)).then_some(viewport)
+        })
     }
 
     pub(super) fn exact_window_route_for_binding(
         &self,
         binding: NativeSurfaceBinding,
     ) -> Option<(ViewportId, WindowId)> {
-        let viewports = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let viewport = viewports.viewport(binding.surface())?;
-        if viewports.binding(viewport) != Some(binding) {
-            return None;
-        }
-        Some((viewport, viewports.window(viewport)?))
+        self.bridge.with_viewports(|viewports| {
+            let viewport = viewports.viewport(binding.surface())?;
+            if viewports.binding(viewport) != Some(binding) {
+                return None;
+            }
+            Some((viewport, viewports.window(viewport)?))
+        })
     }
 
     pub(super) fn fail_pending_viewport_effect(
@@ -109,18 +105,11 @@ impl NativeCoordinator {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) {
-        let current_route = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding(viewport)
-            == Some(binding);
-        if current_route {
-            self.viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .suppress_pointer_route(viewport, binding);
-        }
+        self.bridge.with_viewports_mut(|viewports| {
+            if viewports.binding(viewport) == Some(binding) {
+                viewports.suppress_pointer_route(viewport, binding);
+            }
+        });
         self.deferred_viewports.remove(binding);
         self.effects.remove_show(binding);
         self.terminalize_focus(binding);
@@ -575,13 +564,9 @@ impl NativeCoordinator {
         if !self.session.is_current_native_binding(plan.binding()) {
             return Err(request);
         }
-        let predecessor = {
-            let viewports = self
-                .viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            viewports.binding(viewport)
-        };
+        let predecessor = self
+            .bridge
+            .with_viewports(|viewports| viewports.binding(viewport));
         if matches!(plan.kind(), NativeViewportEffectKind::Replacement) && predecessor.is_none() {
             return Err(request);
         }
@@ -602,10 +587,8 @@ impl NativeCoordinator {
 
         let reserve_result = match (plan.kind(), predecessor) {
             (NativeViewportEffectKind::Create, None) => self
-                .viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .reserve(viewport, plan.binding()),
+                .bridge
+                .with_viewports_mut(|viewports| viewports.reserve(viewport, plan.binding())),
             (NativeViewportEffectKind::Replacement, Some(predecessor)) => {
                 self.bridge.replace_viewport_route(
                     viewport,
@@ -618,10 +601,8 @@ impl NativeCoordinator {
                 Err(NativeViewportBindingError::ViewportAlreadyBound {
                     viewport,
                     existing: self
-                        .viewports
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .binding(viewport)
+                        .bridge
+                        .with_viewports(|viewports| viewports.binding(viewport))
                         .expect("matched viewport binding remains present")
                         .surface(),
                 })

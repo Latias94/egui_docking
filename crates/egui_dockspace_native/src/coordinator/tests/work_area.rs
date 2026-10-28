@@ -85,19 +85,15 @@ fn outside_all_translation_uses_the_exact_committed_work_area() {
             capture: PointerWindowRoute::Window(first_window),
         },
     };
-    let record = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let record = native.bridge.with_viewports(|routes| {
         NativeWindowEventRecord::for_test_snapshot(
             1,
             first_window,
             Some(ViewportId::ROOT),
             event,
-            &viewports,
+            routes,
         )
-    };
+    });
 
     let point = PhysicalPoint::new(1600.0, 1060.0).expect("desktop point validates");
     let work_area = native

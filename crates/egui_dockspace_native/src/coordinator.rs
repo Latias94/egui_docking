@@ -1,7 +1,7 @@
 //! Thin coordinator between eframe callbacks and the renderer-neutral session.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
@@ -89,7 +89,6 @@ const fn staging_paint_failure_disposition(
 pub(crate) struct NativeCoordinator {
     session: DockspaceSession,
     bridge: Arc<NativeHostBridge>,
-    viewports: Arc<Mutex<NativeViewportMap>>,
     pending_no_frame_invalidations: BTreeMap<NativeSurfaceBinding, PendingNoFrameInvalidation>,
     pending_presentation_acknowledgements:
         BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
@@ -134,17 +133,6 @@ impl PendingNoFrameInvalidation {
 
     pub(crate) const fn viewport(self) -> ViewportId {
         self.viewport
-    }
-
-    fn observe_terminal(&mut self, bridge: &NativeHostBridge) -> bool {
-        match self.terminal {
-            NoFrameTerminal::Awaiting(token) if bridge.output_reservation(token).is_some() => true,
-            NoFrameTerminal::Awaiting(_) => {
-                self.terminal = NoFrameTerminal::Observed;
-                false
-            }
-            NoFrameTerminal::Observed => false,
-        }
     }
 
     #[cfg(test)]
@@ -290,16 +278,12 @@ pub(crate) struct PreparedNativeRetirements {
 
 impl std::fmt::Debug for NativeCoordinator {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("NativeCoordinator")
-            .field("session", &self.session)
-            .field(
-                "viewports",
-                &self
-                    .viewports
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner),
-            )
+        let mut state = formatter.debug_struct("NativeCoordinator");
+        state.field("session", &self.session);
+        self.bridge.with_viewports(|viewports| {
+            state.field("viewports", viewports);
+        });
+        state
             .field("pending_outputs", &self.bridge.pending_output_count())
             .field(
                 "pending_no_frame_invalidations",
@@ -360,11 +344,9 @@ impl NativeCoordinator {
     ) -> Result<Self, NativeRuntimeError> {
         session.enable_managed_native_host(initial_pointer_roster)?;
         session.report_native_inventory_unknown()?;
-        let viewports = Arc::new(Mutex::new(NativeViewportMap::default()));
         Ok(Self {
             session,
-            bridge: Arc::new(NativeHostBridge::new(viewports.clone())),
-            viewports,
+            bridge: Arc::new(NativeHostBridge::new(NativeViewportMap::default())),
             pending_no_frame_invalidations: BTreeMap::new(),
             pending_presentation_acknowledgements: BTreeMap::new(),
             queued_snapshot: None,
@@ -475,10 +457,8 @@ impl NativeCoordinator {
                 surface: binding.surface(),
             });
         }
-        self.viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .reserve(viewport, binding)
+        self.bridge
+            .with_viewports_mut(|viewports| viewports.reserve(viewport, binding))
     }
 
     /// Attaches the native window created for an exact reserved viewport binding.
@@ -582,19 +562,15 @@ impl NativeCoordinator {
     /// Returns the current exact binding for one eframe viewport.
     #[must_use]
     pub fn viewport_binding(&self, viewport: ViewportId) -> Option<NativeSurfaceBinding> {
-        self.viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding(viewport)
+        self.bridge
+            .with_viewports(|viewports| viewports.binding(viewport))
     }
 
     /// Returns the eframe viewport currently presenting one logical surface.
     #[must_use]
     pub fn surface_viewport(&self, surface: SurfaceId) -> Option<ViewportId> {
-        self.viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .viewport(surface)
+        self.bridge
+            .with_viewports(|viewports| viewports.viewport(surface))
     }
 
     /// Returns every child viewport which the next root pass must re-declare.
@@ -684,15 +660,13 @@ impl NativeCoordinator {
             | DeferredViewportPaint::Staging(_)
             | DeferredViewportPaint::Waiting => return disposition,
         };
-        let current = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_output(
+        let current = self.bridge.with_viewports(|viewports| {
+            viewports.binding_for_output(
                 token.viewport_id(),
                 token.window_id(),
                 token.create_attempt(),
-            );
+            )
+        });
         let authority = deferred_binding_authority(
             current == Some(binding),
             self.session.is_current_native_binding(binding),
@@ -839,10 +813,9 @@ impl NativeCoordinator {
         self.bridge.retirement_settle_snapshot(snapshot_applied);
         if snapshot_applied {
             self.work_areas.commit(queued.work_areas, &self.session);
-            self.viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .set_focus_reportable(queued.focus_reportable);
+            self.bridge.with_viewports_mut(|viewports| {
+                viewports.set_focus_reportable(queued.focus_reportable)
+            });
             let presentation_acknowledged = !queued.presentation_acknowledgements.is_empty();
             for binding in queued.presentation_acknowledgements {
                 self.pending_presentation_acknowledgements.remove(&binding);
@@ -1608,12 +1581,9 @@ impl NativeCoordinator {
             NativeFocusResultDisposition::Unrelated => {}
             NativeFocusResultDisposition::Current { binding, status }
                 if self.session.is_current_native_binding(binding)
-                    && self
-                        .viewports
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .focus_binding_for_event(record.window(), Some(record.viewport()))
-                        == Some(binding) =>
+                    && self.bridge.with_viewports(|viewports| {
+                        viewports.focus_binding_for_event(record.window(), Some(record.viewport()))
+                    }) == Some(binding) =>
             {
                 match status {
                     NativeViewportFocusStatus::AlreadyFocused => {
@@ -1658,12 +1628,10 @@ impl NativeCoordinator {
                 callback_error = self.report_callback_terminal_result(result);
                 debug_assert!(
                     !self.session.is_current_native_binding(binding)
-                        || self
-                            .viewports
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .focus_binding_for_event(record.window(), Some(record.viewport()))
-                            != Some(binding),
+                        || self.bridge.with_viewports(|viewports| {
+                            viewports
+                                .focus_binding_for_event(record.window(), Some(record.viewport()))
+                        }) != Some(binding),
                     "a current focus callback must take the exact route branch"
                 );
             }
@@ -1706,11 +1674,9 @@ impl NativeCoordinator {
             return Ok(false);
         };
         self.bridge.invalidate_viewport_roster();
-        let current = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_event(record.window(), Some(record.viewport()));
+        let current = self.bridge.with_viewports(|viewports| {
+            viewports.binding_for_event(record.window(), Some(record.viewport()))
+        });
         if current != Some(record.binding())
             || !self.session.is_current_native_binding(record.binding())
         {
@@ -1778,16 +1744,14 @@ impl NativeCoordinator {
         {
             return Err(NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into());
         }
-        let attach = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .attach_output(
+        let attach = self.bridge.with_viewports_mut(|viewports| {
+            viewports.attach_output(
                 created.token().viewport_id(),
                 created.binding(),
                 created.token().window_id(),
                 created.token().create_attempt(),
-            );
+            )
+        });
         if attach.is_err() {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
         }
@@ -1833,13 +1797,8 @@ impl NativeCoordinator {
         // Replay and the staging callback are distinct records. Spending the
         // final credit on its predecessors must leave staging at the raw head.
         if frame.native_input_pending() || budget.is_exhausted() {
-            let mut frame = NativeHostFrame::new(
-                frame,
-                self.bridge.clone(),
-                self.viewports.clone(),
-                &mut self.receivers,
-                None,
-            );
+            let mut frame =
+                NativeHostFrame::new(frame, self.bridge.clone(), &mut self.receivers, None);
             frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
             let report = frame.commit()?;
             self.finish_internal_report(context, report)?;
@@ -2291,7 +2250,6 @@ impl NativeCoordinator {
         Ok(NativeHostFrame::new(
             self.session.begin_native_host_frame(resolve)?,
             self.bridge.clone(),
-            self.viewports.clone(),
             &mut self.receivers,
             None,
         ))
@@ -2322,7 +2280,6 @@ impl NativeCoordinator {
         Ok(Some(NativeHostFrame::new(
             frame,
             bridge,
-            self.viewports.clone(),
             &mut self.receivers,
             Some(context.clone()),
         )))
@@ -2347,7 +2304,6 @@ impl NativeCoordinator {
         Ok(Some(NativeHostFrame::new(
             frame,
             self.bridge.clone(),
-            self.viewports.clone(),
             &mut self.receivers,
             None,
         )))
@@ -2381,15 +2337,13 @@ impl NativeCoordinator {
                 output,
             ));
         }
-        let current_binding = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_output(
+        let current_binding = self.bridge.with_viewports(|viewports| {
+            viewports.binding_for_output(
                 token.viewport_id(),
                 token.window_id(),
                 token.create_attempt(),
-            );
+            )
+        });
         let binding = reservation.binding().or(current_binding);
         let Some(binding) = binding else {
             return Err(NativeOutputBindingError::new(
@@ -2513,19 +2467,29 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn prepare_no_frame_invalidations(&mut self) -> Vec<PendingNoFrameInvalidation> {
-        let viewports = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
         let mut ready = Vec::new();
         let mut stale = Vec::new();
         for invalidation in self.pending_no_frame_invalidations.values_mut() {
-            let terminal_pending = invalidation.observe_terminal(&self.bridge);
-            let route_is_current = viewports.binding_for_output(
-                invalidation.viewport,
-                invalidation.window,
-                invalidation.create_attempt,
-            ) == Some(invalidation.binding);
+            let (terminal_pending, current_binding) = match invalidation.terminal {
+                NoFrameTerminal::Awaiting(token) => {
+                    let (reservation, binding) = self.bridge.output_route_state(token);
+                    if reservation.is_none() {
+                        invalidation.terminal = NoFrameTerminal::Observed;
+                    }
+                    (reservation.is_some(), binding)
+                }
+                NoFrameTerminal::Observed => (
+                    false,
+                    self.bridge.with_viewports(|viewports| {
+                        viewports.binding_for_output(
+                            invalidation.viewport,
+                            invalidation.window,
+                            invalidation.create_attempt,
+                        )
+                    }),
+                ),
+            };
+            let route_is_current = current_binding == Some(invalidation.binding);
             match no_frame_invalidation_readiness(
                 terminal_pending,
                 route_is_current,
@@ -2536,7 +2500,6 @@ impl NativeCoordinator {
                 NoFrameInvalidationReadiness::Stale => stale.push(invalidation.binding),
             }
         }
-        drop(viewports);
         for binding in stale {
             self.pending_no_frame_invalidations.remove(&binding);
         }
@@ -2596,18 +2559,14 @@ impl NativeCoordinator {
     }
 
     fn cancel_unadmitted_viewport_effects(&mut self) -> Vec<NativeOutputToken> {
-        let plans = {
-            let viewports = self
-                .viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+        let plans = self.bridge.with_viewports(|viewports| {
             self.effects
                 .awaiting_viewport_callbacks()
                 .filter(|plan| {
                     !viewports.has_admitted_create_attempt(plan.viewport(), plan.binding())
                 })
                 .collect::<Vec<_>>()
-        };
+        });
         let mut abandoned = Vec::new();
         for plan in plans {
             let Some(request) = self.effects.remove_unstarted(plan) else {
@@ -2619,11 +2578,9 @@ impl NativeCoordinator {
             );
             self.deferred_viewports.remove(plan.binding());
             self.receivers.retire_binding(plan.binding());
-            let removed = self
-                .viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove_viewport(plan.viewport(), plan.binding());
+            let removed = self.bridge.with_viewports_mut(|viewports| {
+                viewports.remove_viewport(plan.viewport(), plan.binding())
+            });
             debug_assert!(
                 removed.is_ok(),
                 "unadmitted viewport effect retains one exact route"

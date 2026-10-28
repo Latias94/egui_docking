@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn committed_host_frame_promotes_receivers_without_follow_up_input() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         use crate::host_frame::NativeHostFrame;
         use crate::mailbox::NativeHostBridge;
@@ -948,12 +948,10 @@ mod tests {
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("the output owner reports presentation");
 
-        let viewports = Arc::new(Mutex::new(NativeViewportMap::default()));
-        let bridge = Arc::new(NativeHostBridge::new(Arc::clone(&viewports)));
+        let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
         let mut frame = NativeHostFrame::new(
             session.begin_host_frame().expect("settlement begins"),
             bridge,
-            viewports,
             &mut receivers,
             None,
         );

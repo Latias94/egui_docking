@@ -120,11 +120,7 @@ fn cross_window_capture_fixture() -> CrossWindowCaptureFixture {
             ..PointerEventFacts::default()
         },
     };
-    let (press, target_notification, source_callback) = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let (press, target_notification, source_callback) = native.bridge.with_viewports(|routes| {
         (
             NativeWindowEventRecord::for_test_snapshot(
                 1,
@@ -142,24 +138,24 @@ fn cross_window_capture_fixture() -> CrossWindowCaptureFixture {
                         ..PointerEventFacts::default()
                     },
                 },
-                &viewports,
+                routes,
             ),
             NativeWindowEventRecord::for_test_snapshot(
                 2,
                 target_window,
                 Some(target_viewport),
                 cursor_event(),
-                &viewports,
+                routes,
             ),
             NativeWindowEventRecord::for_test_snapshot(
                 3,
                 source_window,
                 Some(ViewportId::ROOT),
                 cursor_event(),
-                &viewports,
+                routes,
             ),
         )
-    };
+    });
 
     CrossWindowCaptureFixture {
         native,
@@ -208,19 +204,15 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
     );
     commit_pending_pointer_frame(&mut native);
 
-    let destroyed = {
-        let mut viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let destroyed = native.bridge.with_viewports_mut(|routes| {
         NativeWindowEventRecord::for_test_ingress(
             2,
             first_window,
             Some(ViewportId::ROOT),
             WindowEvent::Destroyed,
-            &mut viewports,
+            routes,
         )
-    };
+    });
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
@@ -370,24 +362,23 @@ fn pressed_delivery_and_capture_bindings_remain_independent() {
         .bind_viewport(captured_viewport, captured_window, captured)
         .expect("captured viewport binds");
 
-    let press = NativeWindowEventRecord::for_test_snapshot(
-        1,
-        delivery_window,
-        Some(ViewportId::ROOT),
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            facts: PointerEventFacts {
-                capture: PointerWindowRoute::Window(captured_window),
-                ..PointerEventFacts::default()
+    let press = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            1,
+            delivery_window,
+            Some(ViewportId::ROOT),
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                facts: PointerEventFacts {
+                    capture: PointerWindowRoute::Window(captured_window),
+                    ..PointerEventFacts::default()
+                },
             },
-        },
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+            routes,
+        )
+    });
     assert!(matches!(
         native.pointer_translator.translate(&press, |_| None),
         NativePointerTranslation::Input(_)
@@ -395,19 +386,18 @@ fn pressed_delivery_and_capture_bindings_remain_independent() {
     assert!(native.pointer_translator.references_binding(delivery));
     assert!(native.pointer_translator.references_binding(captured));
 
-    let capture_released = NativeWindowEventRecord::for_test_snapshot(
-        2,
-        delivery_window,
-        Some(ViewportId::ROOT),
-        WindowEvent::PointerCaptureChanged {
-            device_id: DeviceId::dummy(),
-            capture: PointerWindowRoute::None,
-        },
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+    let capture_released = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            2,
+            delivery_window,
+            Some(ViewportId::ROOT),
+            WindowEvent::PointerCaptureChanged {
+                device_id: DeviceId::dummy(),
+                capture: PointerWindowRoute::None,
+            },
+            routes,
+        )
+    });
     assert!(matches!(
         native
             .pointer_translator
@@ -433,24 +423,23 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
         .expect("captured viewport binds");
 
     let unknown_window = WindowId::from(33);
-    let press = NativeWindowEventRecord::for_test_snapshot(
-        1,
-        unknown_window,
-        None,
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            facts: PointerEventFacts {
-                capture: PointerWindowRoute::Window(captured_window),
-                ..PointerEventFacts::default()
+    let press = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            1,
+            unknown_window,
+            None,
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                facts: PointerEventFacts {
+                    capture: PointerWindowRoute::Window(captured_window),
+                    ..PointerEventFacts::default()
+                },
             },
-        },
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+            routes,
+        )
+    });
     assert!(matches!(
         native.pointer_translator.translate(&press, |_| None),
         NativePointerTranslation::Input(_)
@@ -786,19 +775,15 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         .accept_native_effects(&egui::Context::default(), effects)
         .expect("the exact child release acknowledgement is retained");
 
-    let destroyed = {
-        let mut viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let destroyed = native.bridge.with_viewports_mut(|routes| {
         NativeWindowEventRecord::for_test_ingress(
             14,
             second_window,
             None,
             WindowEvent::Destroyed,
-            &mut viewports,
+            routes,
         )
-    };
+    });
     assert_eq!(destroyed.viewport_id(), Some(child));
     assert_eq!(destroyed.binding(), Some(second));
     native
@@ -807,24 +792,23 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
-    let late_pointer = NativeWindowEventRecord::for_test_snapshot(
-        15,
-        first_window,
-        Some(ViewportId::ROOT),
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(10.0, 20.0),
-            facts: PointerEventFacts {
-                hover: PointerWindowRoute::Window(second_window),
-                capture: PointerWindowRoute::Window(second_window),
-                ..PointerEventFacts::default()
+    let late_pointer = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            15,
+            first_window,
+            Some(ViewportId::ROOT),
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(10.0, 20.0),
+                facts: PointerEventFacts {
+                    hover: PointerWindowRoute::Window(second_window),
+                    capture: PointerWindowRoute::Window(second_window),
+                    ..PointerEventFacts::default()
+                },
             },
-        },
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+            routes,
+        )
+    });
     let routes = late_pointer
         .pointer_routes()
         .expect("the late event retains explicit pointer authority");
@@ -1024,19 +1008,15 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
         .expect("the child release is accepted before shutdown");
     assert!(native.quarantine_after_fatal().is_empty());
 
-    let destroyed = {
-        let mut viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let destroyed = native.bridge.with_viewports_mut(|routes| {
         NativeWindowEventRecord::for_test_ingress(
             41,
             child_window,
             Some(child),
             WindowEvent::Destroyed,
-            &mut viewports,
+            routes,
         )
-    };
+    });
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
@@ -1157,16 +1137,15 @@ fn queued_pointer_routes_keep_every_referenced_binding_live() {
             ..PointerEventFacts::default()
         },
     };
-    let record = NativeWindowEventRecord::for_test_snapshot(
-        15,
-        delivery_window,
-        Some(ViewportId::ROOT),
-        event,
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+    let record = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            15,
+            delivery_window,
+            Some(ViewportId::ROOT),
+            event,
+            routes,
+        )
+    });
 
     assert_eq!(record.binding(), Some(delivery));
     assert!(record.references_binding(captured));

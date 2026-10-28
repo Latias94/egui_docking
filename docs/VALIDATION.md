@@ -15,6 +15,38 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 single native host-state prerequisite
+
+The native bridge now owns one mutex-protected `NativeHostState` containing
+routes, ingress, resource reservations and retirement. Coordinator and host
+frames no longer retain a separately shared viewport-map lock. Live and retired
+receipts keep their previous sole owner; this change does not duplicate them or
+add a lifecycle registry. Private route closures return copied or owned results
+before core, eframe or another bridge operation runs.
+
+Staging route/binding/duplicate checks and resource publishability now use one
+state snapshot. No-frame readiness reads output reservation and exact route
+together, including a valid route after the output reservation disappeared.
+Debug formatting, frame commit, prepared route retirement and callback capture
+avoid nested bridge locking. The finalizer remains outside the state mutex.
+
+Review found that duplicate finalizer installation could drop the rejected
+external trait object while holding the host lock. Installation now keeps its
+atomic attachment check but moves the result out before disposal. A regression
+uses a destructor which checks lock availability and re-enters the real bridge
+query; it does not require a fake output token or a blocking timeout.
+
+The frozen local-fork workspace passes 277 all-target tests normally and 277
+with native debug assertions disabled. Correctness/suspicious Clippy, formatting
+and diff checks pass. A real-window macOS programmatic redock completes with
+exit 0. Restoring the rejected-finalizer lock scope in a disposable snapshot
+makes the destructor regression fail at its lock-availability assertion, without
+blocking; restoring production code passes. Independent review found no remaining confirmed lock or
+ownership P1/P2 in this migration. Create/Destroyed inline terminal storage,
+fixed-boundary overload admission, capacity/load/soak and physical-platform
+qualification remain open. The unpublished fork and tracked remote pins are
+unchanged.
+
 ## 2026-10-29 U7 output, staging and close terminal storage prerequisite
 
 Exact output results now retain their callback envelope inside the output

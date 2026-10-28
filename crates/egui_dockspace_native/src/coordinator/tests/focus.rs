@@ -59,17 +59,16 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
         .bind_viewport(child, second_window, second)
         .expect("the child route binds");
 
-    let before_roster = NativeGlobalFocusRecord::capture_for_test(
-        2,
-        EframeGlobalFocus::Viewport {
-            viewport_id: ViewportId::ROOT,
-            window_id: first_window,
-        },
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+    let before_roster = native.bridge.with_viewports(|routes| {
+        NativeGlobalFocusRecord::capture_for_test(
+            2,
+            EframeGlobalFocus::Viewport {
+                viewport_id: ViewportId::ROOT,
+                window_id: first_window,
+            },
+            routes,
+        )
+    });
     assert_eq!(before_roster.focus(), NativeGlobalFocus::Unknown);
 
     let visible = |binding| {
@@ -105,17 +104,16 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
             .expect("the exact visible snapshot settles")
     );
 
-    let committed = NativeGlobalFocusRecord::capture_for_test(
-        3,
-        EframeGlobalFocus::Viewport {
-            viewport_id: ViewportId::ROOT,
-            window_id: first_window,
-        },
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+    let committed = native.bridge.with_viewports(|routes| {
+        NativeGlobalFocusRecord::capture_for_test(
+            3,
+            EframeGlobalFocus::Viewport {
+                viewport_id: ViewportId::ROOT,
+                window_id: first_window,
+            },
+            routes,
+        )
+    });
     assert_eq!(committed.focus(), NativeGlobalFocus::Dock(first));
 
     native
@@ -140,17 +138,16 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
             .expect("the exact unknown snapshot settles")
     );
 
-    let after_unknown = NativeGlobalFocusRecord::capture_for_test(
-        4,
-        EframeGlobalFocus::Viewport {
-            viewport_id: ViewportId::ROOT,
-            window_id: first_window,
-        },
-        &native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
+    let after_unknown = native.bridge.with_viewports(|routes| {
+        NativeGlobalFocusRecord::capture_for_test(
+            4,
+            EframeGlobalFocus::Viewport {
+                viewport_id: ViewportId::ROOT,
+                window_id: first_window,
+            },
+            routes,
+        )
+    });
     assert_eq!(after_unknown.focus(), NativeGlobalFocus::Unknown);
 }
 

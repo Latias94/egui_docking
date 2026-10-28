@@ -3,8 +3,6 @@
 //! No opaque fork token is fabricated here. These tests do not qualify canonical
 //! token routing or real HoldClose/Veto callbacks; those need the fork fixture.
 
-use std::sync::{Arc, Mutex};
-
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
     SurfaceId,
@@ -123,7 +121,7 @@ fn parked_successor() -> (
     let successor = event(binding, 72, 11);
     let request = core_request(&mut session, binding);
     let acknowledgement = cancellation(&mut session, request);
-    let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+    let bridge = NativeHostBridge::new(NativeViewportMap::default());
     bridge.with_close_control(|control| {
         assert!(control.observe_request(&first, binding));
         assert_eq!(control.bind_request(request), Ok(true));

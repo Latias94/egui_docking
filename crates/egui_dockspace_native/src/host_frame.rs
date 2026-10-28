@@ -1,7 +1,7 @@
 //! Native host-frame adapter over the renderer-neutral session frame.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
@@ -16,7 +16,6 @@ use crate::error::NativeHostProtocolError;
 use crate::error::NativeRuntimeError;
 use crate::mailbox::NativeHostBridge;
 use crate::receiver::NativeReceiverStore;
-use crate::viewport_map::NativeViewportMap;
 
 /// Final-pass paint metadata plus fork-owned scroll identities from that same pass.
 pub(crate) struct NativeSurfacePaint {
@@ -49,7 +48,6 @@ impl NativeSurfacePaint {
 pub(crate) struct NativeHostFrame<'session> {
     pub(crate) frame: DockspaceHostFrame<'session>,
     bridge: Arc<NativeHostBridge>,
-    viewports: Arc<Mutex<NativeViewportMap>>,
     receivers: &'session mut NativeReceiverStore,
     repaint_context: Option<egui::Context>,
 }
@@ -70,14 +68,12 @@ impl<'session> NativeHostFrame<'session> {
     pub(crate) fn new(
         frame: DockspaceHostFrame<'session>,
         bridge: Arc<NativeHostBridge>,
-        viewports: Arc<Mutex<NativeViewportMap>>,
         receivers: &'session mut NativeReceiverStore,
         repaint_context: Option<egui::Context>,
     ) -> Self {
         NativeHostFrame {
             frame,
             bridge,
-            viewports,
             receivers,
             repaint_context,
         }
@@ -203,7 +199,6 @@ impl<'session> NativeHostFrame<'session> {
         let Self {
             frame,
             bridge,
-            viewports: _,
             receivers,
             repaint_context,
         } = self;
@@ -225,25 +220,9 @@ impl<'session> NativeHostFrame<'session> {
     fn compile_staging_requests(
         &self,
     ) -> Result<BTreeMap<egui::ViewportId, NativeStagingPaintRequest>, NativeRuntimeError> {
-        let viewports = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let mut requests = BTreeMap::new();
-        for request in self.frame.native_staging_paints() {
-            let Some(viewport) = viewports.viewport(request.surface()) else {
-                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-            };
-            if viewports.binding(viewport) != Some(request.binding())
-                || requests.insert(viewport, request).is_some()
-            {
-                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-            }
-        }
-        if !self.bridge.can_publish_staging_requests(&requests) {
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
-        Ok(requests)
+        self.bridge
+            .compile_staging_requests(self.frame.native_staging_paints())
+            .map_err(Into::into)
     }
 }
 

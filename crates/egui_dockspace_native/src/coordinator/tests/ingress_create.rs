@@ -217,19 +217,15 @@ fn measure_and_present_source(
 }
 
 fn push_window_event(native: &mut NativeCoordinator, ordinal: u64, event: WindowEvent) {
-    let record = {
-        let mut viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let record = native.bridge.with_viewports_mut(|routes| {
         NativeWindowEventRecord::for_test_ingress(
             ordinal,
             source_window(),
             Some(ViewportId::ROOT),
             event,
-            &mut viewports,
+            routes,
         )
-    };
+    });
     native.bridge.push_record(HostRecord::WindowEvent(record));
     assert!(
         native

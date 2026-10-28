@@ -46,19 +46,15 @@ fn wheel_translation_preserves_event_time_routes_position_and_modifiers() {
             capture: PointerWindowRoute::Window(delivery_window),
         },
     };
-    let record = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let record = native.bridge.with_viewports(|routes| {
         NativeWindowEventRecord::for_test_snapshot(
             1,
             delivery_window,
             Some(ViewportId::ROOT),
             event,
-            &viewports,
+            routes,
         )
-    };
+    });
 
     let actual = NativePointerTranslator::default().translate(&record, |_| None);
     let expected = NativePointerInput::new(
@@ -388,11 +384,7 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
     native
         .bind_viewport(scroll_viewport, scroll_window, scroll_binding)
         .expect("the scroll binding attaches to its own viewport");
-    let press = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let press = native.bridge.with_viewports(|routes| {
         NativeWindowEventRecord::for_test_snapshot(
             1,
             mouse_window,
@@ -407,14 +399,10 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
                     ..PointerEventFacts::default()
                 },
             },
-            &viewports,
+            routes,
         )
-    };
-    let scroll_begin = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    });
+    let scroll_begin = native.bridge.with_viewports(|routes| {
         phaseful_scroll_record_with_routes(
             2,
             scroll_window,
@@ -422,9 +410,9 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
             mouse_window,
             TouchPhase::Started,
             1.0,
-            &viewports,
+            routes,
         )
-    };
+    });
     let mut translator = NativePointerTranslator::default();
 
     assert!(matches!(
@@ -447,11 +435,7 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
     assert!(!translator.references_binding(mouse_binding));
     assert!(translator.references_binding(scroll_binding));
 
-    let scroll_update = {
-        let viewports = native
-            .viewports
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scroll_update = native.bridge.with_viewports(|routes| {
         phaseful_scroll_record_with_routes(
             3,
             scroll_window,
@@ -459,9 +443,9 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
             mouse_window,
             TouchPhase::Moved,
             2.0,
-            &viewports,
+            routes,
         )
-    };
+    });
     assert!(
         matches!(
             translator.translate_for_test_device(&scroll_update, 303, |_| None),

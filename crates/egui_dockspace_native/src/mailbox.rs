@@ -545,19 +545,57 @@ mod tests {
     use winit::window::WindowId;
 
     #[test]
+    fn rejected_finalizer_drops_after_host_state_unlocks() {
+        use std::sync::Weak;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Finalizer {
+            bridge: Weak<NativeHostBridge>,
+            dropped: Arc<AtomicUsize>,
+        }
+
+        impl NativeOutputPassFinalizer for Finalizer {
+            fn finalize(&self, _: NativeOutputPassFinalization<'_>) -> NativeHostWake {
+                NativeHostWake::Wait
+            }
+        }
+
+        impl Drop for Finalizer {
+            fn drop(&mut self) {
+                if let Some(bridge) = self.bridge.upgrade() {
+                    assert!(
+                        bridge.records.try_lock().is_ok(),
+                        "a rejected external finalizer must drop outside the host-state lock"
+                    );
+                    assert!(!bridge.has_pending_coordinator_work());
+                    self.dropped.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        assert!(bridge.install_output_pass_finalizer(Arc::new(Finalizer {
+            bridge: Weak::new(),
+            dropped: Arc::clone(&dropped),
+        })));
+        assert!(!bridge.install_output_pass_finalizer(Arc::new(Finalizer {
+            bridge: Arc::downgrade(&bridge),
+            dropped: Arc::clone(&dropped),
+        })));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn displaced_window_destroyed_is_once_only_and_cannot_retire_its_successor() {
         let predecessor = bindings().0;
         let successor = bindings().0;
         let viewport = ViewportId::from_hash_of("overlapping-destroyed-receipts");
         let old_window = WindowId::from(81);
         let new_window = WindowId::from(82);
-        let routes = Arc::new(Mutex::new(NativeViewportMap::default()));
-        routes
-            .lock()
-            .unwrap()
-            .bind(viewport, old_window, predecessor)
-            .unwrap();
-        let bridge = Arc::new(NativeHostBridge::new(Arc::clone(&routes)));
+        let mut routes = NativeViewportMap::default();
+        routes.bind(viewport, old_window, predecessor).unwrap();
+        let bridge = Arc::new(NativeHostBridge::new(routes));
         bridge
             .replace_viewport_route(
                 viewport,
@@ -610,14 +648,19 @@ mod tests {
         assert!(bridge.retirement_finish_quiescence(predecessor));
         bridge.push_record(HostRecord::WindowEvent(destroyed(4)));
         assert!(bridge.lock().journal.is_empty());
-        let routes = routes.lock().unwrap();
-        assert_eq!(routes.binding(viewport), Some(successor));
-        assert_eq!(routes.window(viewport), Some(new_window));
         assert_eq!(
-            routes.pointer_binding_for_window(new_window),
+            bridge.with_viewports(|routes| routes.binding(viewport)),
             Some(successor)
         );
-        assert!(routes.has_window_receipt(viewport, successor));
+        assert_eq!(
+            bridge.with_viewports(|routes| routes.window(viewport)),
+            Some(new_window)
+        );
+        assert_eq!(
+            bridge.with_viewports(|routes| routes.pointer_binding_for_window(new_window)),
+            Some(successor)
+        );
+        assert!(bridge.with_viewports(|routes| routes.has_window_receipt(viewport, successor)));
     }
 
     #[test]
@@ -626,13 +669,9 @@ mod tests {
         let successor = bindings().0;
         let viewport = ViewportId::from_hash_of("same-window-rebind-receipt");
         let window = WindowId::from(83);
-        let routes = Arc::new(Mutex::new(NativeViewportMap::default()));
-        routes
-            .lock()
-            .unwrap()
-            .bind(viewport, window, predecessor)
-            .unwrap();
-        let bridge = NativeHostBridge::new(Arc::clone(&routes));
+        let mut routes = NativeViewportMap::default();
+        routes.bind(viewport, window, predecessor).unwrap();
+        let bridge = NativeHostBridge::new(routes);
         bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             1,
             window,
@@ -651,12 +690,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(bridge.front_event().unwrap().binding(), Some(predecessor));
-        assert!(
-            !routes
-                .lock()
-                .unwrap()
-                .has_window_receipt(viewport, successor)
-        );
+        assert!(!bridge.with_viewports(|routes| routes.has_window_receipt(viewport, successor)));
         assert!(bridge.lock().retirements.has_window(viewport, predecessor));
         bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             2,
@@ -684,7 +718,7 @@ mod tests {
         let successor = bindings().0;
         let viewport = ViewportId::from_hash_of("retired-window-admission");
         let old_window = WindowId::from(86);
-        let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
         bridge
             .bind_viewport_route(viewport, old_window, predecessor)
             .unwrap();
@@ -699,12 +733,19 @@ mod tests {
                 .bind_viewport_route(viewport, old_window, successor)
                 .is_err()
         );
-        assert!(bridge.lock_viewports().binding(viewport).is_none());
+        assert!(
+            bridge
+                .with_viewports(|viewports| viewports.binding(viewport))
+                .is_none()
+        );
         assert!(bridge.lock().retirements.has_window(viewport, predecessor));
         bridge
             .bind_viewport_route(viewport, WindowId::from(87), successor)
             .unwrap();
-        assert_eq!(bridge.lock_viewports().binding(viewport), Some(successor));
+        assert_eq!(
+            bridge.with_viewports(|viewports| viewports.binding(viewport)),
+            Some(successor)
+        );
     }
 
     #[test]
@@ -713,7 +754,7 @@ mod tests {
         let successor = bindings().0;
         let viewport = ViewportId::from_hash_of("awaiting-window-rebind");
         let window = WindowId::from(88);
-        let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
         bridge
             .bind_viewport_route(viewport, window, predecessor)
             .unwrap();
@@ -743,21 +784,15 @@ mod tests {
         let successor = bindings().0;
         let viewport = ViewportId::from_hash_of("unbound-window-receipt");
         let window = WindowId::from(84);
-        let routes = Arc::new(Mutex::new(NativeViewportMap::default()));
-        routes
-            .lock()
-            .unwrap()
-            .bind(viewport, window, predecessor)
-            .unwrap();
-        let bridge = NativeHostBridge::new(Arc::clone(&routes));
+        let mut routes = NativeViewportMap::default();
+        routes.bind(viewport, window, predecessor).unwrap();
+        let bridge = NativeHostBridge::new(routes);
         assert_eq!(
             bridge.unbind_viewport_route(viewport, predecessor).unwrap(),
             predecessor
         );
-        routes
-            .lock()
-            .unwrap()
-            .bind(viewport, WindowId::from(85), successor)
+        bridge
+            .with_viewports_mut(|routes| routes.bind(viewport, WindowId::from(85), successor))
             .unwrap();
         bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             1,
@@ -769,24 +804,32 @@ mod tests {
         let event = bridge.front_event().unwrap();
         assert_eq!(event.binding(), Some(predecessor));
         assert_eq!(event.viewport_id(), Some(viewport));
-        assert_eq!(routes.lock().unwrap().binding(viewport), Some(successor));
+        assert_eq!(
+            bridge.with_viewports(|routes| routes.binding(viewport)),
+            Some(successor)
+        );
 
         let pending = ViewportId::from_hash_of("unattached-create-receipt");
         let binding = bindings().1;
-        routes.lock().unwrap().reserve(pending, binding).unwrap();
-        assert!(routes.lock().unwrap().admit_test_create(pending, binding));
+        bridge
+            .with_viewports_mut(|routes| routes.reserve(pending, binding))
+            .unwrap();
+        assert!(bridge.with_viewports_mut(|routes| routes.admit_test_create(pending, binding)));
         assert!(bridge.unbind_viewport_route(pending, binding).is_err());
-        assert_eq!(routes.lock().unwrap().binding(pending), Some(binding));
-        assert!(routes.lock().unwrap().has_pending_create_receipts());
+        assert_eq!(
+            bridge.with_viewports(|routes| routes.binding(pending)),
+            Some(binding)
+        );
+        assert!(bridge.with_viewports(|routes| routes.has_pending_create_receipts()));
     }
 
     #[test]
     fn failed_create_receipt_moves_once_and_waits_for_its_recorded_full_boundary() {
         let (binding, successor) = bindings();
         let viewport = ViewportId::from_hash_of("create-receipt-transfer");
-        let routes = Arc::new(Mutex::new(NativeViewportMap::default()));
-        routes.lock().unwrap().reserve(viewport, binding).unwrap();
-        let bridge = NativeHostBridge::new(Arc::clone(&routes));
+        let mut routes = NativeViewportMap::default();
+        routes.reserve(viewport, binding).unwrap();
+        let bridge = NativeHostBridge::new(routes);
         assert!(bridge.reserve_create(viewport, binding, NativePhysicalRect::new(0, 0, 320, 240)));
         assert_eq!(
             bridge.record_viewport_create_failure_for_test(viewport),
@@ -803,7 +846,10 @@ mod tests {
             true
         ));
         assert!(bridge.acknowledge_viewport_create_failure(failure, false));
-        assert_eq!(routes.lock().unwrap().binding(viewport), None);
+        assert_eq!(
+            bridge.with_viewports(|routes| routes.binding(viewport)),
+            None
+        );
         assert!(!bridge.acknowledge_viewport_create_failure(failure, true));
         assert_eq!(
             bridge.record_viewport_create_failure_for_test(viewport),
@@ -836,9 +882,8 @@ mod tests {
         let (successor, _) = bindings();
         let viewport = ViewportId::from_hash_of("create-receipt-success");
         let window = WindowId::from(81);
-        let routes = Arc::new(Mutex::new(NativeViewportMap::default()));
+        let mut routes = NativeViewportMap::default();
         {
-            let mut routes = routes.lock().unwrap();
             routes.reserve(viewport, binding).unwrap();
             assert!(routes.admit_test_create(viewport, binding));
             assert_eq!(
@@ -883,18 +928,18 @@ mod tests {
                     .is_err()
             );
         }
-        let bridge = NativeHostBridge::new(Arc::clone(&routes));
+        let bridge = NativeHostBridge::new(routes);
         bridge.commit_frame_boundary(true);
-        assert!(routes.lock().unwrap().has_pending_create_receipts());
+        assert!(bridge.with_viewports(|routes| routes.has_pending_create_receipts()));
         bridge.commit_frame_boundary(false);
-        assert!(!routes.lock().unwrap().has_pending_create_receipts());
+        assert!(!bridge.with_viewports(|routes| routes.has_pending_create_receipts()));
         assert_eq!(
-            routes.lock().unwrap().receive_create_terminal(
+            bridge.with_viewports_mut(|routes| routes.receive_create_terminal(
                 viewport,
                 binding,
                 None,
                 CreateTerminal::Created(window)
-            ),
+            )),
             CreateAdmission::Duplicate
         );
         bridge
@@ -906,15 +951,18 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            routes.lock().unwrap().receive_create_terminal(
+            bridge.with_viewports_mut(|routes| routes.receive_create_terminal(
                 viewport,
                 binding,
                 None,
                 CreateTerminal::Created(window)
-            ),
+            )),
             CreateAdmission::Conflict
         );
-        assert_eq!(routes.lock().unwrap().binding(viewport), Some(successor));
+        assert_eq!(
+            bridge.with_viewports(|routes| routes.binding(viewport)),
+            Some(successor)
+        );
     }
 
     use super::*;
@@ -991,7 +1039,7 @@ mod tests {
         let context = eframe::egui::Context::default();
         let first = eframe::queue_native_viewport_pointer_passthrough(&context, viewport, true);
         let next = eframe::queue_native_viewport_pointer_passthrough(&context, viewport, false);
-        let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let record = NativePointerPassthroughRecord::for_test(
             first,
             viewport,
@@ -1136,7 +1184,7 @@ mod tests {
             );
         }
 
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         records.event_boundary_pending = true;
         assert!(!records.semantic_prelude_ready());
         records.event_boundary_pending = false;
@@ -1182,7 +1230,7 @@ mod tests {
             position: PhysicalPosition::new(10.0, 20.0),
             facts: PointerEventFacts::default(),
         };
-        let records = HostRecords::active();
+        let records = NativeHostState::active();
 
         assert!(records.accepts_window_event(&moved));
         assert!(records.accepts_window_event(&WindowEvent::CloseRequested));
@@ -1194,7 +1242,7 @@ mod tests {
     fn idle_cursor_prefix_keeps_only_the_latest_same_lane_observation() {
         let (binding, _) = bindings();
         let window = WindowId::from(11);
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         for ordinal in 1..=128 {
             records.record_window_event(NativeWindowEventRecord::for_test(
                 ordinal,
@@ -1247,7 +1295,7 @@ mod tests {
     fn blocked_child_repaints_only_after_the_ordered_boundary_is_clear() {
         let (binding, _) = bindings();
         let child = ViewportId::from_hash_of("blocked-semantic-child");
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         records.record_window_event(NativeWindowEventRecord::for_test(
             1,
             WindowId::from(22),
@@ -1271,7 +1319,7 @@ mod tests {
 
     #[test]
     fn claimed_native_suffix_cannot_release_a_blocked_child_with_an_empty_raw_journal() {
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         let child = ViewportId::from_hash_of("claimed-native-child");
         records.block_semantic_viewport(child);
         records.event_boundary_pending = true;
@@ -1295,7 +1343,7 @@ mod tests {
         let now = Arc::new(AtomicU64::new(0));
         let source = Arc::clone(&now);
         let bridge = NativeHostBridge::with_clock(
-            Arc::new(Mutex::new(NativeViewportMap::default())),
+            NativeViewportMap::default(),
             NativeMonotonicClock::new(move || Duration::from_millis(source.load(Ordering::SeqCst))),
         );
         bridge.push_record(HostRecord::DeviceRemoval(
@@ -1333,7 +1381,7 @@ mod tests {
         let now = Arc::new(AtomicU64::new(0));
         let source = Arc::clone(&now);
         let bridge = NativeHostBridge::with_clock(
-            Arc::new(Mutex::new(NativeViewportMap::default())),
+            NativeViewportMap::default(),
             NativeMonotonicClock::new(move || Duration::from_millis(source.load(Ordering::SeqCst))),
         );
         for ordinal in 1..=3 {
@@ -1381,7 +1429,7 @@ mod tests {
             std::iter::empty::<CompiledWindowObservation>(),
             true,
         );
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
 
         assert!(records.record_viewport_roster(roster.clone()));
         assert!(!records.record_viewport_roster(roster.clone()));
@@ -1404,7 +1452,7 @@ mod tests {
         records.invalidate_viewport_roster();
         assert!(records.record_viewport_roster(roster.clone()));
 
-        let mut queued = HostRecords::active();
+        let mut queued = NativeHostState::active();
         assert!(queued.record_viewport_roster(roster.clone()));
         queued.invalidate_viewport_roster();
         assert!(queued.record_viewport_roster(roster));
@@ -1424,7 +1472,7 @@ mod tests {
             std::iter::empty::<CompiledWindowObservation>(),
             true,
         );
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         assert!(records.record_viewport_roster(roster));
         let queued = records.front_viewport_roster().unwrap();
         let retry = records.front_viewport_roster().unwrap();
@@ -1461,7 +1509,7 @@ mod tests {
     #[test]
     fn active_destroyed_does_not_leave_a_shutdown_roster_obligation() {
         let (binding, _) = bindings();
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         records.record_window_event(NativeWindowEventRecord::for_test(
             1,
             WindowId::from(11),
@@ -1488,7 +1536,7 @@ mod tests {
     #[test]
     fn quarantine_preserves_an_existing_visibility_roster_obligation() {
         let (binding, _) = bindings();
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         assert!(
             records.record_viewport_visibility(NativeViewportVisibilityRecord::for_test(
                 eframe::queue_native_viewport_visibility(
@@ -1512,7 +1560,7 @@ mod tests {
 
     #[test]
     fn rejected_terminal_roster_is_rearmed_until_applied() {
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         records.quarantine_after_fatal();
         records.require_terminal_roster();
         let roster = NativeViewportRosterRecord::for_test([], true);
@@ -1537,7 +1585,7 @@ mod tests {
 
     #[test]
     fn fresh_roster_state_is_clean_until_facts_are_invalidated() {
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
 
         assert!(!records.viewport_roster_dirty());
         records.invalidate_viewport_roster();
@@ -1546,7 +1594,7 @@ mod tests {
 
     #[test]
     fn newer_terminal_roster_obligation_survives_an_older_settlement() {
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
         records.quarantine_after_fatal();
         records.require_terminal_roster();
         let roster = NativeViewportRosterRecord::for_test([], true);
@@ -1585,7 +1633,8 @@ mod tests {
             Some(binding),
             WindowEvent::Focused(true),
         );
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
+        records.viewports = viewports;
         records
             .journal
             .push_back(HostRecord::WindowEvent(pending.clone()));
@@ -1610,14 +1659,12 @@ mod tests {
             records.window_resources.hidden_binding(viewport),
             Some(binding)
         );
-        let accepted = records.record_viewport_create_failure(
-            NativeViewportCreateFailureRecord::new(
+        let accepted =
+            records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
                 viewport,
                 binding,
                 NativeViewportCreateFailureKind::WindowUnavailable,
-            ),
-            &mut viewports,
-        );
+            ));
         assert!(!accepted);
     }
 
@@ -1629,7 +1676,8 @@ mod tests {
         viewports.reserve(viewport, binding).unwrap();
         assert!(viewports.admit_test_create(viewport, binding));
         let window = WindowId::from(11);
-        let mut records = HostRecords::active();
+        let mut records = NativeHostState::active();
+        records.viewports = viewports;
         records.blocked_semantic_viewports.insert(viewport);
         records.ready_semantic_viewports.insert(viewport);
 
@@ -1642,14 +1690,13 @@ mod tests {
         assert!(records.accepts_window_event(&WindowEvent::CloseRequested));
         assert!(records.accepts_window_event(&WindowEvent::Destroyed));
         assert!(!records.accepts_window_event(&WindowEvent::Focused(true)));
-        assert!(records.record_viewport_create_failure(
-            NativeViewportCreateFailureRecord::new(
+        assert!(
+            records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
                 viewport,
                 binding,
                 NativeViewportCreateFailureKind::WindowUnavailable,
-            ),
-            &mut viewports
-        ));
+            ),)
+        );
         assert!(
             records.record_viewport_visibility(NativeViewportVisibilityRecord::for_test(
                 eframe::queue_native_viewport_visibility(
@@ -1686,14 +1733,13 @@ mod tests {
         assert_eq!(records.mode, HostIngressMode::Frozen);
         assert!(!records.accepts_no_frame_invalidation());
         assert!(!records.accepts_window_event(&WindowEvent::Destroyed));
-        assert!(!records.record_viewport_create_failure(
-            NativeViewportCreateFailureRecord::new(
+        assert!(
+            !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
                 viewport,
                 binding,
                 NativeViewportCreateFailureKind::WindowUnavailable,
-            ),
-            &mut viewports
-        ));
+            ),)
+        );
     }
 }
 
@@ -1764,7 +1810,8 @@ impl HostIngressMode {
 }
 
 #[derive(Debug)]
-struct HostRecords {
+struct NativeHostState {
+    viewports: NativeViewportMap,
     attachment: HostAttachmentState,
     mode: HostIngressMode,
     journal: HostIngressJournal,
@@ -1792,7 +1839,7 @@ struct HostRecords {
 /// claim leaves its raw records untouched. After retention only the recorder
 /// owns the payload; the mailbox keeps the existing commit boundary.
 pub(crate) struct CursorPrefixClaim<'records> {
-    records: MutexGuard<'records, HostRecords>,
+    records: MutexGuard<'records, NativeHostState>,
     len: std::num::NonZeroUsize,
 }
 
@@ -1826,13 +1873,14 @@ impl CursorPrefixClaim<'_> {
     }
 }
 
-impl HostRecords {
+impl NativeHostState {
     fn active() -> Self {
-        Self::with_clock(NativeMonotonicClock::system())
+        Self::with_clock(NativeViewportMap::default(), NativeMonotonicClock::system())
     }
 
-    fn with_clock(clock: NativeMonotonicClock) -> Self {
+    fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
         Self {
+            viewports,
             attachment: HostAttachmentState::Available,
             mode: HostIngressMode::Active,
             journal: HostIngressJournal::new(clock),
@@ -2091,12 +2139,11 @@ impl HostRecords {
     fn record_viewport_create_failure(
         &mut self,
         failure: NativeViewportCreateFailureRecord,
-        viewports: &mut NativeViewportMap,
     ) -> bool {
         if !self.mode.accepts_terminal_callbacks() {
             return false;
         }
-        if viewports.receive_create_terminal(
+        if self.viewports.receive_create_terminal(
             failure.viewport(),
             failure.binding(),
             failure.attempt(),
@@ -2201,11 +2248,7 @@ impl HostRecords {
             == CommandCallbackAdmission::First
     }
 
-    fn record_viewport_created(
-        &mut self,
-        record: NativeViewportCreatedRecord,
-        viewports: &mut NativeViewportMap,
-    ) -> bool {
+    fn record_viewport_created(&mut self, record: NativeViewportCreatedRecord) -> bool {
         if !self.mode.accepts_terminal_callbacks() {
             return false;
         }
@@ -2217,7 +2260,8 @@ impl HostRecords {
         {
             return false;
         }
-        if viewports
+        if self
+            .viewports
             .attach_output(
                 record.token.viewport_id(),
                 record.binding,
@@ -2228,7 +2272,7 @@ impl HostRecords {
         {
             return false;
         }
-        if viewports.receive_create_terminal(
+        if self.viewports.receive_create_terminal(
             record.token.viewport_id(),
             record.binding,
             record.token.create_attempt(),
@@ -2365,11 +2409,7 @@ impl HostRecords {
         self.journal.push_back(HostRecord::WindowEvent(record));
     }
 
-    fn capture_window_event(
-        &mut self,
-        mut record: NativeWindowEventRecord,
-        viewports: &mut NativeViewportMap,
-    ) -> bool {
+    fn capture_window_event(&mut self, mut record: NativeWindowEventRecord) -> bool {
         if matches!(record.event(), winit::event::WindowEvent::CloseRequested)
             && let Some(binding) = record.binding()
         {
@@ -2393,13 +2433,15 @@ impl HostRecords {
             let window = record.window_id();
             let viewport = record.viewport_id();
             if !self.retirements.owns_window(window, viewport) {
-                let Some((_, binding)) = viewports.route_for_event(window, viewport) else {
+                let Some((_, binding)) = self.viewports.route_for_event(window, viewport) else {
                     return false;
                 };
                 if !self.retirements.can_retain_window(binding, window) {
                     return false;
                 }
-                let Some(receipt) = viewports.take_window_receipt_for_event(window, viewport)
+                let Some(receipt) = self
+                    .viewports
+                    .take_window_receipt_for_event(window, viewport)
                 else {
                     return false;
                 };
@@ -2413,7 +2455,7 @@ impl HostRecords {
             else {
                 return false;
             };
-            viewports.suppress_pointer_route(viewport, binding);
+            self.viewports.suppress_pointer_route(viewport, binding);
             record.qualify_destroyed(viewport, binding);
         }
         self.record_window_event(record);
@@ -2689,8 +2731,7 @@ const fn is_next_output_ordinal(previous: u64, current: u64) -> bool {
 }
 
 pub(crate) struct NativeHostBridge {
-    records: Mutex<HostRecords>,
-    viewports: Arc<Mutex<NativeViewportMap>>,
+    records: Mutex<NativeHostState>,
     output_pass_finalizer: OnceLock<Arc<dyn NativeOutputPassFinalizer>>,
     clock: NativeMonotonicClock,
 }
@@ -2740,7 +2781,6 @@ pub(crate) struct PreparedRouteRetirements {
 
 impl PreparedRouteRetirements {
     pub(crate) fn commit(mut self) -> Vec<NativeOutputToken> {
-        let mut viewports = self.bridge.lock_viewports();
         let mut records = self.bridge.lock();
         let mut abandoned = Vec::new();
         for retirement in &self.routes {
@@ -2748,7 +2788,7 @@ impl PreparedRouteRetirements {
                 records.retire_deferred_binding(retirement.viewport(), retirement.binding()),
             );
         }
-        viewports.commit_retirements(&self.routes);
+        records.viewports.commit_retirements(&self.routes);
         self.active = false;
         abandoned
     }
@@ -2759,7 +2799,7 @@ impl Drop for PreparedRouteRetirements {
         if !self.active {
             return;
         }
-        self.bridge.lock_viewports().abort_retirements(&self.routes);
+        self.bridge.lock().viewports.abort_retirements(&self.routes);
     }
 }
 
@@ -2770,15 +2810,14 @@ impl NativeHostBridge {
         window: WindowId,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
-        let mut viewports = self.lock_viewports();
-        let records = self.lock();
+        let mut records = self.lock();
         if !records.retirements.can_retain_window(binding, window) {
             return Err(NativeViewportBindingError::BindingNotCurrent {
                 viewport,
                 surface: binding.surface(),
             });
         }
-        viewports.bind(viewport, window, binding)
+        records.viewports.bind(viewport, window, binding)
     }
 
     pub(crate) fn attach_viewport_route(
@@ -2787,15 +2826,14 @@ impl NativeHostBridge {
         window: WindowId,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
-        let mut viewports = self.lock_viewports();
-        let records = self.lock();
+        let mut records = self.lock();
         if !records.retirements.can_retain_window(binding, window) {
             return Err(NativeViewportBindingError::BindingNotCurrent {
                 viewport,
                 surface: binding.surface(),
             });
         }
-        viewports.attach(viewport, binding, window)
+        records.viewports.attach(viewport, binding, window)
     }
 
     pub(crate) fn unbind_viewport_route(
@@ -2803,10 +2841,10 @@ impl NativeHostBridge {
         viewport: ViewportId,
         expected: NativeSurfaceBinding,
     ) -> Result<NativeSurfaceBinding, NativeViewportBindingError> {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
-        if viewports.has_window_receipt(viewport, expected)
-            && viewports
+        if records.viewports.has_window_receipt(viewport, expected)
+            && records
+                .viewports
                 .window(viewport)
                 .is_some_and(|window| !records.retirements.can_retain_window(expected, window))
         {
@@ -2815,7 +2853,7 @@ impl NativeHostBridge {
                 surface: expected.surface(),
             });
         }
-        let (binding, receipt) = viewports.remove_viewport(viewport, expected)?;
+        let (binding, receipt) = records.viewports.remove_viewport(viewport, expected)?;
         if let Some(receipt) = receipt {
             records
                 .retirements
@@ -2833,11 +2871,10 @@ impl NativeHostBridge {
         successor: NativeSurfaceBinding,
         replacement: NativeViewportReplacement,
     ) -> Result<(), NativeViewportBindingError> {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         let same_window = match replacement {
             NativeViewportReplacement::Attach(window)
-                if viewports.window(viewport) == Some(window) =>
+                if records.viewports.window(viewport) == Some(window) =>
             {
                 Some(window)
             }
@@ -2853,8 +2890,9 @@ impl NativeHostBridge {
             });
         }
         if same_window.is_none()
-            && viewports.has_window_receipt(viewport, expected)
-            && viewports
+            && records.viewports.has_window_receipt(viewport, expected)
+            && records
+                .viewports
                 .window(viewport)
                 .is_some_and(|window| !records.retirements.can_retain_window(expected, window))
         {
@@ -2864,15 +2902,15 @@ impl NativeHostBridge {
             });
         }
         let displaced = match replacement {
-            NativeViewportReplacement::Reserve => {
-                viewports.reserve_replacement(viewport, expected, successor)?
-            }
-            NativeViewportReplacement::ReserveRetired => {
-                viewports.reserve_retired_replacement(viewport, expected, successor)?
-            }
-            NativeViewportReplacement::Attach(window) => {
-                viewports.replace(viewport, expected, window, successor)?
-            }
+            NativeViewportReplacement::Reserve => records
+                .viewports
+                .reserve_replacement(viewport, expected, successor)?,
+            NativeViewportReplacement::ReserveRetired => records
+                .viewports
+                .reserve_retired_replacement(viewport, expected, successor)?,
+            NativeViewportReplacement::Attach(window) => records
+                .viewports
+                .replace(viewport, expected, window, successor)?,
         };
         if let Some(receipt) = displaced {
             records
@@ -2883,14 +2921,13 @@ impl NativeHostBridge {
         Ok(())
     }
 
-    pub(crate) fn new(viewports: Arc<Mutex<NativeViewportMap>>) -> Self {
+    pub(crate) fn new(viewports: NativeViewportMap) -> Self {
         Self::with_clock(viewports, NativeMonotonicClock::system())
     }
 
-    fn with_clock(viewports: Arc<Mutex<NativeViewportMap>>, clock: NativeMonotonicClock) -> Self {
+    fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
         Self {
-            records: Mutex::new(HostRecords::with_clock(clock.clone())),
-            viewports,
+            records: Mutex::new(NativeHostState::with_clock(viewports, clock.clone())),
             output_pass_finalizer: OnceLock::new(),
             clock,
         }
@@ -2913,7 +2950,7 @@ impl NativeHostBridge {
     }
 
     /// The borrow cannot escape this closure. Callers release the mailbox lock
-    /// before invoking core or eframe, preserving the route-to-records lock order.
+    /// before invoking core, eframe, or another bridge operation.
     pub(crate) fn with_close_control<R>(
         &self,
         action: impl FnOnce(&mut NativeCloseControl) -> R,
@@ -2925,19 +2962,67 @@ impl NativeHostBridge {
         self.lock().close_control.settle_clear(applied)
     }
 
-    fn lock(&self) -> MutexGuard<'_, HostRecords> {
+    fn lock(&self) -> MutexGuard<'_, NativeHostState> {
         self.records.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn lock_viewports(&self) -> MutexGuard<'_, NativeViewportMap> {
-        self.viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    /// Runs a route query under the single host-state lock.
+    /// The closure must not invoke core, eframe, or another bridge operation.
+    pub(crate) fn with_viewports<R>(&self, action: impl FnOnce(&NativeViewportMap) -> R) -> R {
+        action(&self.lock().viewports)
+    }
+
+    /// Mutates routes under the single host-state lock.
+    /// The closure must not invoke core, eframe, or another bridge operation.
+    pub(crate) fn with_viewports_mut<R>(
+        &self,
+        action: impl FnOnce(&mut NativeViewportMap) -> R,
+    ) -> R {
+        action(&mut self.lock().viewports)
+    }
+
+    pub(crate) fn compile_staging_requests(
+        &self,
+        staging: impl IntoIterator<Item = NativeStagingPaintRequest>,
+    ) -> Result<BTreeMap<ViewportId, NativeStagingPaintRequest>, NativeHostProtocolError> {
+        let records = self.lock();
+        let mut requests = BTreeMap::new();
+        for request in staging {
+            let Some(viewport) = records.viewports.viewport(request.surface()) else {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
+            };
+            if records.viewports.binding(viewport) != Some(request.binding())
+                || requests.insert(viewport, request).is_some()
+            {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
+            }
+        }
+        if !records.window_resources.can_publish_staging(&requests) {
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
+        }
+        Ok(requests)
+    }
+
+    pub(crate) fn output_route_state(
+        &self,
+        token: NativeOutputToken,
+    ) -> (Option<OutputReservation>, Option<NativeSurfaceBinding>) {
+        let records = self.lock();
+        let reservation = records
+            .output_resources
+            .get(&token)
+            .map(|resource| resource.reservation);
+        let binding = records.viewports.binding_for_output(
+            token.viewport_id(),
+            token.window_id(),
+            token.create_attempt(),
+        );
+        (reservation, binding)
     }
 
     pub(crate) fn has_pending_coordinator_work(&self) -> bool {
-        self.lock_viewports().has_pending_create_receipts()
-            || self.lock().has_pending_coordinator_work()
+        let records = self.lock();
+        records.viewports.has_pending_create_receipts() || records.has_pending_coordinator_work()
     }
 
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {
@@ -3269,7 +3354,6 @@ impl NativeHostBridge {
         expected: NativeViewportCreateFailureRecord,
         result_recorded: bool,
     ) -> bool {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         let matches = matches!(
             records.front_record(),
@@ -3277,7 +3361,7 @@ impl NativeHostBridge {
         );
         if matches {
             if records.retirements.has_quiescence_owner(expected.binding())
-                || !viewports.transfer_create_terminal(
+                || !records.viewports.transfer_create_terminal(
                     expected.viewport(),
                     expected.binding(),
                     expected.attempt(),
@@ -3286,8 +3370,9 @@ impl NativeHostBridge {
             {
                 return false;
             }
-            let Some(mut receipt) =
-                viewports.take_failed_create(expected.viewport(), expected.binding())
+            let Some(mut receipt) = records
+                .viewports
+                .take_failed_create(expected.viewport(), expected.binding())
             else {
                 return false;
             };
@@ -3362,14 +3447,13 @@ impl NativeHostBridge {
         &self,
         expected: NativeViewportCreatedRecord,
     ) -> bool {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         let matches = matches!(
             records.front_record(),
             Some(HostRecord::ViewportCreated(created)) if *created == expected
         );
         if matches {
-            if !viewports.transfer_create_terminal(
+            if !records.viewports.transfer_create_terminal(
                 expected.token.viewport_id(),
                 expected.binding,
                 expected.token.create_attempt(),
@@ -3498,8 +3582,7 @@ impl NativeHostBridge {
         self: &Arc<Self>,
         retirements: &[CommittedRetirement],
     ) -> Result<PreparedRouteRetirements, NativeSurfaceBinding> {
-        let mut viewports = self.lock_viewports();
-        let records = self.lock();
+        let mut records = self.lock();
         for retirement in retirements {
             if !records
                 .retirements
@@ -3511,7 +3594,7 @@ impl NativeHostBridge {
                 return Err(retirement.binding());
             }
         }
-        viewports.prepare_retirements(retirements)?;
+        records.viewports.prepare_retirements(retirements)?;
         Ok(PreparedRouteRetirements {
             bridge: self.clone(),
             routes: retirements.to_vec(),
@@ -3544,11 +3627,10 @@ impl NativeHostBridge {
         token: eframe::NativeViewportPointerPassthroughCommandToken,
         enabled: bool,
     ) -> bool {
-        let viewports = self.lock_viewports();
-        if viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
+        let mut records = self.lock();
+        if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
             return false;
         }
-        let mut records = self.lock();
         records.mode.accepts_terminal_callbacks()
             && records
                 .window_resources
@@ -3562,11 +3644,10 @@ impl NativeHostBridge {
         window: winit::window::WindowId,
         token: eframe::NativeViewportFocusCommandToken,
     ) -> bool {
-        let viewports = self.lock_viewports();
-        if viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
+        let mut records = self.lock();
+        if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
             return false;
         }
-        let mut records = self.lock();
         records.mode.accepts_terminal_callbacks()
             && records
                 .window_resources
@@ -3581,11 +3662,10 @@ impl NativeHostBridge {
         token: eframe::NativeViewportVisibilityCommandToken,
         visible: bool,
     ) -> bool {
-        let viewports = self.lock_viewports();
-        if viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
+        let mut records = self.lock();
+        if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
             return false;
         }
-        let mut records = self.lock();
         records.mode.accepts_terminal_callbacks()
             && records
                 .window_resources
@@ -3597,13 +3677,14 @@ impl NativeHostBridge {
         binding: NativeSurfaceBinding,
         request: NativeViewportCloseRequest,
     ) -> bool {
-        let viewports = self.lock_viewports();
-        if viewports.binding_for_event(request.window_id(), Some(request.viewport_id()))
+        let mut records = self.lock();
+        if records
+            .viewports
+            .binding_for_event(request.window_id(), Some(request.viewport_id()))
             != Some(binding)
         {
             return false;
         }
-        let mut records = self.lock();
         records.mode.accepts_terminal_callbacks()
             && records
                 .close_control
@@ -3645,7 +3726,6 @@ impl NativeHostBridge {
         &self,
         token: NativeOutputToken,
     ) -> DeferredViewportPaint {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         let Some(reservation) = records
             .output_resources
@@ -3658,7 +3738,7 @@ impl NativeHostBridge {
             && reservation.binding() == Some(create.binding)
         {
             let created = NativeViewportCreatedRecord::new(token, create.binding);
-            let recorded = records.record_viewport_created(created, &mut viewports);
+            let recorded = records.record_viewport_created(created);
             records
                 .output_resources
                 .get_mut(&token)
@@ -3714,19 +3794,16 @@ impl NativeHostBridge {
         root_roster: Option<NativeViewportRoster<'_>>,
     ) -> bool {
         let budget = NativeInputBudget::new(&self.clock);
-        // Keep the route lock until the reservation is recorded. Retirement
-        // takes the same route-then-records lock order, so it cannot report
-        // quiescence between observing this callback and publishing its
-        // exact binding reference.
-        let mut viewports = self.lock_viewports();
-        let binding = viewports.binding_for_output(
+        // Route lookup and reservation share the host-state lock, so retirement
+        // cannot report quiescence before this exact binding reference is visible.
+        let mut records = self.lock();
+        let binding = records.viewports.binding_for_output(
             token.viewport_id(),
             token.window_id(),
             token.create_attempt(),
         );
-        let roster =
-            root_roster.map(|roster| NativeViewportRosterRecord::capture(roster, &viewports));
-        let mut records = self.lock();
+        let roster = root_roster
+            .map(|roster| NativeViewportRosterRecord::capture(roster, &records.viewports));
         if !records.reserve_output(token, binding, window, budget) {
             return false;
         }
@@ -3738,10 +3815,7 @@ impl NativeHostBridge {
                 .create(token.viewport_id())
                 .is_some_and(|create| create.binding == binding)
         {
-            records.record_viewport_created(
-                NativeViewportCreatedRecord::new(token, binding),
-                &mut viewports,
-            );
+            records.record_viewport_created(NativeViewportCreatedRecord::new(token, binding));
         }
         if let Some(roster) = roster {
             match records.mode {
@@ -3900,14 +3974,13 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn commit_frame_boundary(&self, input_pending: bool) {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         records.event_boundary_pending = input_pending;
         if input_pending {
             return;
         }
         records.journal.commit_transferred();
-        viewports.commit_create_boundary();
+        records.viewports.commit_create_boundary();
         records.window_resources.commit_transferred_callbacks();
         records.close_control.commit_transferred_callbacks();
         records.retirements.commit_create_failures();
@@ -4015,9 +4088,8 @@ impl NativeHostBridge {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        let viewports = self.lock_viewports();
         let records = self.lock();
-        (viewports.has_window_receipt(viewport, binding)
+        (records.viewports.has_window_receipt(viewport, binding)
             || records.retirements.has_window(viewport, binding))
             && records.retirements.can_begin_release(viewport, binding)
     }
@@ -4028,17 +4100,16 @@ impl NativeHostBridge {
         binding: NativeSurfaceBinding,
         acknowledgement: NativeCloseEffectAcknowledgement,
     ) -> bool {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         if !records.retirements.can_begin_release(viewport, binding) {
             return false;
         }
-        if !viewports.has_window_receipt(viewport, binding)
+        if !records.viewports.has_window_receipt(viewport, binding)
             && !records.retirements.has_window(viewport, binding)
         {
             return false;
         }
-        let window = viewports.take_window_receipt(viewport, binding);
+        let window = records.viewports.take_window_receipt(viewport, binding);
         records
             .retirements
             .begin_release(viewport, binding, acknowledgement, window)
@@ -4119,14 +4190,15 @@ impl NativeHostBridge {
         attempt: NativeViewportCreateAttempt,
     ) -> NativeViewportCreateAdmission {
         let viewport = attempt.viewport_id();
-        let mut viewports = self.lock_viewports();
-        let records = self.lock();
+        let mut records = self.lock();
         let Some(reservation) = records.window_resources.create(viewport) else {
             return NativeViewportCreateAdmission::Defer;
         };
         if !records.mode.accepts_new_work()
             || records.window_resources.hidden_binding(viewport) != Some(reservation.binding)
-            || !viewports.admit_create_attempt(viewport, reservation.binding, attempt)
+            || !records
+                .viewports
+                .admit_create_attempt(viewport, reservation.binding, attempt)
         {
             return NativeViewportCreateAdmission::Defer;
         }
@@ -4141,11 +4213,10 @@ impl NativeHostBridge {
     ) -> NativeHostWake {
         let attempt = failure.create_attempt();
         let viewport = attempt.viewport_id();
-        let mut viewports = self.lock_viewports();
-        let Some(binding) = viewports.binding_for_create_attempt(attempt) else {
+        let mut records = self.lock();
+        let Some(binding) = records.viewports.binding_for_create_attempt(attempt) else {
             return NativeHostWake::Wait;
         };
-        let mut records = self.lock();
         if records
             .window_resources
             .create(viewport)
@@ -4153,10 +4224,11 @@ impl NativeHostBridge {
         {
             return NativeHostWake::Wait;
         }
-        if !records.record_viewport_create_failure(
-            NativeViewportCreateFailureRecord::from_attempt(attempt, binding, failure.kind()),
-            &mut viewports,
-        ) {
+        if !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::from_attempt(
+            attempt,
+            binding,
+            failure.kind(),
+        )) {
             return NativeHostWake::Wait;
         }
         NativeHostWake::RepaintRoot
@@ -4168,18 +4240,21 @@ impl NativeHostBridge {
         viewport: ViewportId,
         kind: NativeViewportCreateFailureKind,
     ) -> NativeHostWake {
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         let Some(reservation) = records.window_resources.create(viewport) else {
             return NativeHostWake::Wait;
         };
-        if !viewports.admit_test_create(viewport, reservation.binding) {
+        if !records
+            .viewports
+            .admit_test_create(viewport, reservation.binding)
+        {
             return NativeHostWake::Wait;
         }
-        if !records.record_viewport_create_failure(
-            NativeViewportCreateFailureRecord::new(viewport, reservation.binding, kind),
-            &mut viewports,
-        ) {
+        if !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
+            viewport,
+            reservation.binding,
+            kind,
+        )) {
             return NativeHostWake::Wait;
         }
         NativeHostWake::RepaintRoot
@@ -4208,12 +4283,11 @@ impl NativeHostBridge {
 
     #[cfg(test)]
     pub(crate) fn push_record(&self, record: HostRecord) {
+        let mut records = self.lock();
         if let HostRecord::WindowEvent(record) = record {
-            let mut viewports = self.lock_viewports();
-            self.lock().capture_window_event(record, &mut viewports);
+            records.capture_window_event(record);
             return;
         }
-        let mut records = self.lock();
         match record {
             HostRecord::ViewportFocus(record) => {
                 records.record_viewport_focus(record);
@@ -4281,11 +4355,14 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn install_output_pass_finalizer(&self, finalizer: Arc<dyn NativeOutputPassFinalizer>) -> bool {
-        let records = self.lock();
-        if records.attachment != HostAttachmentState::Available {
-            return false;
-        }
-        self.output_pass_finalizer.set(finalizer).is_ok()
+        let installed = {
+            let records = self.lock();
+            if records.attachment != HostAttachmentState::Available {
+                return false;
+            }
+            self.output_pass_finalizer.set(finalizer)
+        };
+        installed.is_ok()
     }
 
     fn try_attach(&self, _attachment: NativeHostAttachment) -> bool {
@@ -4311,17 +4388,16 @@ impl NativeHostHandler for NativeHostBridge {
         // Freeze the route and publish the event atomically with respect to
         // route retirement. Otherwise retirement could report quiescence
         // after route lookup but before this event became visible.
-        let mut viewports = self.lock_viewports();
         let mut records = self.lock();
         if !records.accepts_window_event(event.event()) {
             return NativeWindowEventDisposition::Continue;
         }
-        let record = NativeWindowEventRecord::from_eframe(event, &mut viewports);
+        let record = NativeWindowEventRecord::from_eframe(event, &mut records.viewports);
         let disposition = match (record.binding(), record.close_request()) {
             (Some(_), Some(request)) => NativeWindowEventDisposition::HoldClose(request),
             _ => NativeWindowEventDisposition::Continue,
         };
-        if records.capture_window_event(record, &mut viewports) {
+        if records.capture_window_event(record) {
             disposition
         } else {
             NativeWindowEventDisposition::Continue
@@ -4337,9 +4413,8 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn on_global_focus(&self, observation: NativeGlobalFocusObservation) -> NativeHostWake {
-        let viewports = self.lock_viewports();
-        let record = NativeGlobalFocusRecord::capture(observation, &viewports);
         let mut records = self.lock();
+        let record = NativeGlobalFocusRecord::capture(observation, &records.viewports);
         if records.record_global_focus(record) {
             NativeHostWake::RepaintRoot
         } else {
@@ -4348,9 +4423,8 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn on_viewport_focus(&self, result: NativeViewportFocusResult) -> NativeHostWake {
-        let viewports = self.lock_viewports();
-        let record = NativeViewportFocusRecord::capture(result, &viewports);
         let mut records = self.lock();
+        let record = NativeViewportFocusRecord::capture(result, &records.viewports);
         if records.record_viewport_focus(record) {
             NativeHostWake::RepaintRoot
         } else {
@@ -4362,9 +4436,8 @@ impl NativeHostHandler for NativeHostBridge {
         &self,
         result: NativeViewportPointerPassthroughResult,
     ) -> NativeHostWake {
-        let viewports = self.lock_viewports();
-        let record = NativePointerPassthroughRecord::capture(result, &viewports);
         let mut records = self.lock();
+        let record = NativePointerPassthroughRecord::capture(result, &records.viewports);
         if records.record_viewport_pointer_passthrough(record) {
             NativeHostWake::RepaintRoot
         } else {
@@ -4422,7 +4495,6 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn on_viewport_visibility(&self, result: NativeViewportVisibilityResult) -> NativeHostWake {
-        let viewports = self.lock_viewports();
         let mut records = self.lock();
         let Some(binding) = records
             .window_resources
@@ -4433,7 +4505,9 @@ impl NativeHostHandler for NativeHostBridge {
                 result.visible(),
             )
             .or_else(|| {
-                viewports.binding_for_event(result.window_id(), Some(result.viewport_id()))
+                records
+                    .viewports
+                    .binding_for_event(result.window_id(), Some(result.viewport_id()))
             })
         else {
             return NativeHostWake::Wait;

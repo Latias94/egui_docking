@@ -41,17 +41,15 @@ fn pointer_record_at(
             facts,
         }
     };
-    let viewports = native
-        .viewports
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let record = NativeWindowEventRecord::for_test_snapshot(
-        ordinal,
-        window,
-        Some(ViewportId::ROOT),
-        event,
-        &viewports,
-    );
+    let record = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            ordinal,
+            window,
+            Some(ViewportId::ROOT),
+            event,
+            routes,
+        )
+    });
     assert_eq!(record.binding(), Some(binding));
     record
 }

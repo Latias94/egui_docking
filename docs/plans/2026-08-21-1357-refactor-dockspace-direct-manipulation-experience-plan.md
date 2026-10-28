@@ -730,6 +730,13 @@ head until full commit. Create/Destroyed storage and unified route/resource
 observation still precede final protected admission; these changes do not
 establish the record/byte/age caps or fixed-boundary cancellation.
 
+The single-state follow-up joins route and resource observation under one
+private host mutex, removes separately shared route handles, and performs
+staging/no-frame checks on that same state. Existing receipts retain sole
+ownership. Local native compatibility passes 277 tests normally and 277 with
+native debug assertions disabled. Create/Destroyed storage and the final U7
+admission scheduler remain subsequent work.
+
 ### U10. Complete layout management and a bounded editor showcase
 
 - **Goal:** Validate realistic editor use without building the user's engine.

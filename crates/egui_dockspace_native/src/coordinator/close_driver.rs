@@ -99,7 +99,6 @@ impl NativeCoordinator {
         let mut frame = crate::host_frame::NativeHostFrame::new(
             frame,
             self.bridge.clone(),
-            self.viewports.clone(),
             &mut self.receivers,
             None,
         );
