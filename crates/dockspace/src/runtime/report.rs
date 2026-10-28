@@ -129,12 +129,18 @@ impl HostFrameReport {
                     InputOutcome::GlobalFocusObservationPublished { .. } => {
                         Some(HostInputOutcome::NativeFocusObservationApplied)
                     }
-                    InputOutcome::SurfaceCloseRequested { request, plan, .. } => {
-                        Some(HostInputOutcome::NativeSurfaceCloseRequested {
+                    InputOutcome::SurfaceCloseRequested {
+                        edge,
+                        request,
+                        plan,
+                        ..
+                    } => native_provider.map(|provider| {
+                        HostInputOutcome::NativeSurfaceCloseRequested {
+                            close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
                             disposition: request.disposition(),
                             plan: DockspaceClosePlan::from_core(plan),
-                        })
-                    }
+                        }
+                    }),
                     InputOutcome::SurfaceCloseRejected {
                         edge,
                         request,

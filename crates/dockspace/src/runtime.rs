@@ -275,6 +275,8 @@ pub enum HostInputOutcome {
     NativeFocusObservationApplied,
     /// One explicit native surface-close request opened a core-owned close plan.
     NativeSurfaceCloseRequested {
+        /// Exact native close edge which owns this plan.
+        close: NativeSurfaceCloseRequest,
         /// Stable surface disposition accepted by the core.
         disposition: SurfaceCloseDisposition,
         /// Frozen close plan shared with the ordinary decision workflow.

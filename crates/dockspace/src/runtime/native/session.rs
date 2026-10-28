@@ -5,6 +5,18 @@ use crate::intent::Authority;
 use crate::pointer_journal::PointerEdgeSequence;
 
 impl DockspaceSession {
+    /// Returns the cumulative number of records accepted by this native producer.
+    ///
+    /// Hosts may compare this diagnostic counter around callback translation to
+    /// account for host-only work without charging sequenced records twice.
+    /// It is not an input capability, commit acknowledgement, or replay cursor.
+    #[must_use]
+    pub fn native_input_recorded_count(&self) -> u64 {
+        self.native
+            .as_ref()
+            .map_or(0, |native| native.recorder.recorded_through().get())
+    }
+
     fn native_state_mut(&mut self) -> Result<&mut RuntimeNativeState, NativePlatformError> {
         self.native
             .as_mut()

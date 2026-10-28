@@ -87,6 +87,15 @@ impl NativeInputBudget {
         self.clock.now().saturating_sub(self.started_at)
     }
 
+    /// Accounts for host callbacks discarded or coalesced before sequencing.
+    ///
+    /// Do not count work also recorded into the native runtime: polling counts
+    /// those records itself. This shares the same limit across host-only work,
+    /// replay, and repeated passes without restarting the deadline.
+    pub fn complete_unsequenced_records(&mut self, count: usize) {
+        self.completed_records = self.completed_records.saturating_add(count);
+    }
+
     /// Counts one completed record without overflowing, even after exhaustion.
     pub(crate) fn complete_record(&mut self) {
         self.completed_records = self.completed_records.saturating_add(1);
@@ -151,6 +160,19 @@ mod tests {
         budget.complete_record();
         assert_eq!(budget.completed_records, usize::MAX);
         assert!(budget.is_exhausted());
+        assert_eq!(budget.remaining_records(), 0);
+    }
+
+    #[test]
+    fn unsequenced_host_work_shares_the_replay_record_limit() {
+        let (clock, _) = clock_at(Duration::ZERO);
+        let mut budget = NativeInputBudget::new(&clock);
+        budget.complete_unsequenced_records(255);
+        assert_eq!(budget.remaining_records(), 1);
+        assert!(!budget.is_exhausted());
+        budget.complete_record();
+        assert!(budget.is_exhausted());
+        budget.complete_unsequenced_records(usize::MAX);
         assert_eq!(budget.remaining_records(), 0);
     }
 

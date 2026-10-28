@@ -31,6 +31,7 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
         .expect("the application layout must validate");
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("the renderer-neutral session must initialize");
+        assert_eq!(session.native_input_recorded_count(), 0);
         session
             .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("the native provider must enroll");
@@ -40,6 +41,7 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
                 .expect("the initial authority checkpoint must settle"),
         );
         let version = session.version();
+        let recorded_before = session.native_input_recorded_count();
         let inputs = (0..257).map(|_| {
             NativePointerInput::new(
                 NativePointerId::new(1),
@@ -59,6 +61,7 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
             session.record_native_pointer_sequence(inputs)
         }
         .expect("the complete input transaction must record");
+        assert_eq!(session.native_input_recorded_count(), recorded_before + 257);
 
         let clock = NativeMonotonicClock::new(|| Duration::ZERO);
         let mut first_budget = NativeInputBudget::new(&clock);
@@ -85,5 +88,6 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
         assert!(!second.native_input_pending());
         assert!(!commit(second).native_input_pending());
         assert_eq!(session.version(), version);
+        assert_eq!(session.native_input_recorded_count(), recorded_before + 257);
     }
 }
