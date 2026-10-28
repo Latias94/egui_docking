@@ -1367,6 +1367,7 @@ impl DockEngine {
             } => self.reduce_viewport_cleanup_retry(input.sequence, *expected, *failed_effect),
             EngineInput::ReplaceWorkspace(workspace) => self.reduce_workspace_replacement(
                 input.sequence,
+                focus_causal,
                 workspace,
                 None,
                 application_base,
@@ -1375,6 +1376,7 @@ impl DockEngine {
             ),
             EngineInput::RestoreWorkspace(restore) => self.reduce_workspace_replacement(
                 input.sequence,
+                focus_causal,
                 restore.workspace(),
                 Some(restore.presentation_identity_frontier()),
                 application_base,

@@ -742,6 +742,250 @@ fn local_tab_selection_without_a_native_binding_publishes_pane_focus() {
 }
 
 #[test]
+fn workspace_replacement_waits_for_fresh_native_binding_readiness() {
+    let mut fixture = focus_reveal_fixture();
+    let expected = fixture.engine.version();
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::SelectItem {
+            expected,
+            item: ItemId::new(1),
+        },
+    )
+    .unwrap();
+    let old = fixture
+        .engine
+        .viewport_focus()
+        .published_pane_intent()
+        .unwrap();
+    let workspace = fixture.engine.workspace().clone();
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::ReplaceWorkspace(workspace),
+    )
+    .unwrap();
+    let waiting = fixture
+        .engine
+        .viewport_focus()
+        .pending_pane_intent()
+        .unwrap();
+    assert!(waiting.awaiting_native_binding());
+    assert_eq!(waiting.native_guard(), None);
+    assert_ne!(waiting.id(), old.id());
+    assert_eq!(
+        fixture.engine.viewport_focus().published_pane_intent(),
+        None
+    );
+    let rebound = fixture
+        .engine
+        .viewport()
+        .viewport(SOURCE_SURFACE)
+        .unwrap()
+        .binding();
+    assert_ne!(rebound, fixture.binding);
+    let stale = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::PublishPaneFocusRequestObservation {
+            expected_epoch: old.native_guard().unwrap().epoch(),
+            observation: PaneFocusRequestObservation::new(
+                PaneFocusObservationGeneration::new(1),
+                old,
+                PaneFocusRequestObservationState::Focused,
+            ),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        stale.reduced_inputs()[0].outcome(),
+        InputOutcome::PaneFocusObservationStale { .. }
+    ));
+    assert_eq!(
+        fixture.engine.viewport_focus().pending_pane_intent(),
+        Some(waiting)
+    );
+
+    fixture.binding = rebound;
+    for focus in [
+        Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        Authority::Known(GlobalFocusedWindow::Foreign),
+        Authority::Known(GlobalFocusedWindow::Foreign),
+    ] {
+        fixture.focus_generation += 1;
+        let generation = fixture.focus_generation;
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        let snapshot = test_platform_snapshot(
+            capabilities,
+            FocusObservationEnvelope::new(
+                FocusObservationGeneration::new(generation),
+                focus,
+                Authority::Known(None),
+            ),
+            vec![ObservedWindow::new(rebound)],
+            Vec::new(),
+            unknown_work_area_observation(generation),
+        )
+        .unwrap();
+        let provider = test_platform_provider(&mut fixture.engine);
+        let expected_epoch = fixture.engine.version().epoch();
+        submit_test_input(
+            &mut fixture.engine,
+            fixture.presentation_host,
+            EngineInput::PublishPlatformSnapshot {
+                provider,
+                expected_epoch,
+                snapshot,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fixture.engine.viewport_focus().published_pane_intent(),
+            None
+        );
+        let retained = fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .unwrap();
+        assert!(retained.awaiting_native_binding());
+        assert_eq!(retained.id(), waiting.id());
+        assert_eq!(retained.causal(), waiting.causal());
+        assert_eq!(retained.item(), waiting.item());
+    }
+
+    publish_focus_snapshot(
+        &mut fixture,
+        Authority::Known(GlobalFocusedWindow::Dock(rebound)),
+    );
+    let ready = fixture
+        .engine
+        .viewport_focus()
+        .published_pane_intent()
+        .unwrap();
+    assert_eq!(ready.id(), waiting.id());
+    assert_eq!(ready.causal(), waiting.causal());
+    assert_eq!(ready.item(), waiting.item());
+    assert_eq!(ready.native_guard(), Some(rebound));
+    assert!(!ready.awaiting_native_binding());
+    assert_eq!(
+        fixture.engine.viewport_focus().winning_focus_target(),
+        Some(rebound)
+    );
+}
+
+#[test]
+fn workspace_replacement_preserves_explicit_outside_focus_without_fallback() {
+    for outside in [GlobalFocusedWindow::Foreign, GlobalFocusedWindow::None] {
+        let mut fixture = focus_reveal_fixture();
+        let expected = fixture.engine.version();
+        submit_test_input(
+            &mut fixture.engine,
+            fixture.presentation_host,
+            EngineInput::SelectItem {
+                expected,
+                item: ItemId::new(1),
+            },
+        )
+        .unwrap();
+        let intent = fixture
+            .engine
+            .viewport_focus()
+            .published_pane_intent()
+            .unwrap();
+        let expected_epoch = fixture.engine.version().epoch();
+        submit_test_input(
+            &mut fixture.engine,
+            fixture.presentation_host,
+            EngineInput::PublishPaneFocusRequestObservation {
+                expected_epoch,
+                observation: PaneFocusRequestObservation::new(
+                    PaneFocusObservationGeneration::new(1),
+                    intent,
+                    PaneFocusRequestObservationState::Focused,
+                ),
+            },
+        )
+        .unwrap();
+        publish_focus_snapshot(&mut fixture, Authority::Known(outside));
+        assert_eq!(
+            fixture.engine.viewport_focus().panel_focus(SOURCE_SURFACE),
+            PanelFocusRecord::Item(ItemId::new(1))
+        );
+        let workspace = fixture.engine.workspace().clone();
+        submit_test_input(
+            &mut fixture.engine,
+            fixture.presentation_host,
+            EngineInput::ReplaceWorkspace(workspace),
+        )
+        .unwrap();
+        assert!(
+            fixture
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_none()
+        );
+        assert!(
+            fixture
+                .engine
+                .viewport_focus()
+                .published_pane_intent()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn another_native_surface_does_not_turn_a_logical_replacement_target_native() {
+    let mut fixture = focus_reveal_fixture();
+    let mut builder = Workspace::builder();
+    let native = builder.insert_node(Node::tabs([ItemId::new(1)]));
+    let logical = builder.insert_node(Node::tabs([ItemId::new(5)]));
+    builder.set_root(SOURCE_ROOT, RootRecord::new(native));
+    builder.set_root(TARGET_ROOT, RootRecord::new(logical));
+    builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+    builder.set_surface(TARGET_SURFACE, SurfacePresentation::with_main(TARGET_ROOT));
+    let workspace = builder.build().unwrap();
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::ReplaceWorkspace(workspace.clone()),
+    )
+    .unwrap();
+    let expected = fixture.engine.version();
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::SelectItem {
+            expected,
+            item: ItemId::new(5),
+        },
+    )
+    .unwrap();
+    assert!(fixture.engine.viewport().viewport(SOURCE_SURFACE).is_some());
+    assert!(fixture.engine.viewport().viewport(TARGET_SURFACE).is_none());
+
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::ReplaceWorkspace(workspace),
+    )
+    .unwrap();
+    let intent = fixture
+        .engine
+        .viewport_focus()
+        .published_pane_intent()
+        .unwrap();
+    assert_eq!(intent.surface(), TARGET_SURFACE);
+    assert_eq!(intent.item(), Some(ItemId::new(5)));
+    assert_eq!(intent.native_guard(), None);
+    assert!(!intent.awaiting_native_binding());
+}
+
+#[test]
 fn explicit_focus_minimally_reveals_from_the_current_strip_scroll() {
     let mut fixture = focus_reveal_fixture();
     let bar = TabBarSceneId {

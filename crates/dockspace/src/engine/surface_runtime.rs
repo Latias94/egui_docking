@@ -1325,6 +1325,13 @@ impl DockEngine {
         let observed = self.focus_binding_snapshot(|record| record.can_observe_focus());
         let activatable = self.focus_binding_snapshot(|record| record.can_accept_activation());
         let items = self.focus_item_snapshot();
+        self.viewport_focus
+            .resume_workspace_replacement_focus(|surface| {
+                activatable
+                    .iter()
+                    .find(|binding| binding.surface() == surface)
+                    .copied()
+            });
         let _ = self.viewport_focus.reconcile_authority(
             |surface| items.contains_key(&surface),
             |binding| observed.contains(&binding),

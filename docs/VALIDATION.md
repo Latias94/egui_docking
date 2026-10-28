@@ -15,6 +15,83 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U10 live restore focus and missing-content recovery
+
+Shared ReplaceWorkspace/RestoreWorkspace now creates one semantic focus successor
+inside the rollbackable candidate using the replacement input's original causal
+stamp. A newer pending intent wins over older observed surface history. A stable
+item remains preferred only when it is selected in the restored layout; restoring
+focus never changes the saved tab selection. Otherwise the existing target
+surface, or first current surface in stable order, selects main central, main
+visual-order selection, front contained selection, then workspace. An empty
+workspace emits no request. Replacement clears old authority and preserves
+monotonic request identities; drop leaves the published old intent unchanged,
+retry produces the exact new successor, and old-epoch observations are inert.
+Capture distinguishes NoHistory, Dock and OutsideDock. Explicit Foreign/None
+focus does not invoke the primary-pane fallback, while a newer semantic pending
+intent still takes precedence.
+
+The same intent carries Local, Waiting or Bound native-target state. A native
+destination starts Waiting and cannot be published or acknowledged as a local
+pane request. Only a current eligible binding resumes it with the same ID and
+causal stamp. Other surfaces' native registration does not turn a logical target
+native. Native-root model tests prove changed epoch/incarnation, no request while
+unready, rejection of the old observation and exact fresh-binding resumption;
+they do not claim OS focus execution. Waiting is retained across the existing
+provider-replacement/focus-stream-fault paths without changing its type. Those
+paths can re-enroll a successor; no production terminal provider-stop API is
+currently exposed. Logical surface/item retirement still reconciles the intent.
+
+Independent review found three gaps in the first version: a fresh target focus
+observation could replace the retained intent, explicit outside focus was folded
+into no history, and FocusDelta could expose internal Waiting state. Matching
+replacement observations now advance only their baseline, capture uses explicit
+three-way state, and both sides of FocusDelta filter Waiting. The native fixture
+includes repeated KnownForeign while hidden followed by the exact Ready target;
+the original request ID/causal survive. Outside focus with old pane history and
+Waiting-to-Bound/Local delta transitions have direct regressions. Restoring all
+three earlier behaviors in scratch fails four selected tests. Follow-up read-only
+review confirmed the three findings closed without a new confirmed defect.
+
+Four new public document/recording-host cases cover no-history primary fallback, relocated stable targets,
+pending versus observed history, each fallback, saved background selection,
+dropped restore and exact retry, old observation rejection and NotFocused/Focused
+settlement. The fixture resolves remapped current surface identities rather than
+assuming IDs from the saved declaration survive retirement. Stubbing successor
+creation initially failed all three existing cases; the no-history case was
+added during review. Final current-source recompilation includes all four.
+
+A separate public egui product case restores a recognized key whose pane content
+is temporarily unavailable. It renders the built-in placeholder, reports the
+missing stable ItemId, leaves its location intact and ends an unavailable focus
+request without claiming Focused. Restoring the application registry renders
+the same item in place; the completed unavailable request does not replay, and
+ordinary selection can focus the actual TextEdit. Key validation remains strict:
+rejecting an identity rejects the complete document. Content availability does
+not silently delete layout ownership or bypass the application close workflow.
+
+Two additional product cases prove locked overflow selection by pointer,
+AccessKit and keyboard, inert old close controls, and locked rear contained
+tab/content activation with real pane focus and raise. Title/resize attempts,
+including old AccessKit resize actions, preserve rectangles, item ownership and
+tab order. These exercise the real adapter rather than only policy evaluation.
+
+The final main workspace passes 1,693 all-feature/all-target tests; the independent
+public host passes 51 and the product harness passes 111. Five replacement focus,
+outside-capture, native-readiness and delta tests also pass without core debug assertions. Correctness/suspicious
+Clippy, strict core/adapter rustdoc, formatting and whitespace pass. Refreshed
+local-fork native sources pass 244 all-target cases normally and 244 without
+native debug assertions. Three rebuilt macOS Glow redock runs complete in
+1.601, 0.509 and 0.562 seconds through the existing lifecycle/quiescence checks.
+These are recording/model and programmatic real-window evidence, not physical
+input, WM-close, mixed-DPI or an OS-driven document-restore focus journey.
+
+U10 still needs a general serde-free reset/default-layout entry, final overflow
+owner acceptance and the optional native showcase. U7/U8 physical resource
+ownership, finite capacity, overload integration and load/latency/soak remain
+open. The local fork is unchanged at unpublished `7c7b32335`; tracked pins remain
+unchanged. The whole refactor remains active.
+
 ## 2026-10-28 U10 arrangement lock, reopen focus and bounded editor layouts
 
 `DockPolicy::set_arrangement_locked` adds an independent revisioned restriction

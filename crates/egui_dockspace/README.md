@@ -157,6 +157,17 @@ continues. Saved layouts contain docking state and stable keys, not pane data.
 The example resolves current presentation identities after a preset restore.
 Unmodified eframe still reports presented-output drag docking unavailable.
 
+Document key recognition and pane availability are separate application facts.
+Recognize a valid persisted key even when its plugin or resource cannot currently
+load. Returning `None` from `PaneView::title` renders a missing-pane placeholder
+and reports the stable item through `DockspaceResponse::missing_panes()`; layout
+ownership is retained. A missing focus target terminates that exact request as
+unavailable, without claiming focus. When the registry entry becomes available,
+the same item renders in place. An ordinary selection can issue a new focus
+request; the completed unavailable request does not replay. Rejecting a document
+key instead rejects the complete identity association. Removing unavailable
+content is an application decision through the ordinary close workflow.
+
 - `serde`: product document save and restore.
 - `example-app`: builds the eframe examples.
 - `native-render-support`: internal rendering seam for the unpublished native

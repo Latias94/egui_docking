@@ -21,6 +21,7 @@ mod presentation_roster;
 mod product_action;
 mod provider_lifecycle;
 mod reducer;
+mod replacement_focus;
 mod retention;
 mod scroll_interaction;
 mod semantic_candidate;
@@ -3510,6 +3511,7 @@ impl DockEngine {
     fn reduce_workspace_replacement(
         &mut self,
         input: InputSequence,
+        focus_causal: FocusCausalStamp,
         workspace: &Workspace,
         restored_identity_frontier: Option<PresentationIdentityFrontier>,
         application_base: &mut WorkspaceVersion,
@@ -3527,6 +3529,18 @@ impl DockEngine {
             .map_err(EngineError::InvalidWorkspace)?;
         self.validate_workspace_replacement_identity_freshness(workspace)
             .map_err(|source| EngineError::WorkspaceReplacementIdentityRetired { input, source })?;
+        let previous_focus = self.viewport_focus.workspace_replacement_focus();
+        let mut native_focus_surfaces = self
+            .viewport
+            .registry()
+            .records()
+            .map(|(surface, _)| surface)
+            .collect::<BTreeSet<_>>();
+        if let Some(intent) = self.viewport_focus.pending_pane_intent()
+            && (intent.awaiting_native_binding() || intent.native_guard().is_some())
+        {
+            native_focus_surfaces.insert(intent.surface());
+        }
         let before = self.version;
         let epoch = before
             .epoch()
@@ -3573,6 +3587,11 @@ impl DockEngine {
             input,
             InteractionCancelReason::WorkspaceRestored,
             interaction_events,
+        )?;
+        self.request_workspace_replacement_focus(
+            previous_focus,
+            &native_focus_surfaces,
+            focus_causal,
         )?;
         events.push(WorkspaceEvent::new(
             input,

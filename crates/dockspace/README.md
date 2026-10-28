@@ -209,6 +209,26 @@ before submitting layout edits or applying a saved layout in a later frame.
 Dropping the unlock frame retains the published lock. Live document restore
 rejects a locked arrangement; constructing an initially locked session is valid.
 
+Live layout replacement creates a new focus request inside the same rollbackable
+frame. It prefers the previous semantic target when that stable item remains
+selected in the restored layout. Otherwise it uses the prior target surface when
+retained, or the first current surface in stable identity order: main central
+selection, the main tree's first visible selection, frontmost contained selection,
+then the workspace. An empty workspace has no request. The saved selection and
+topology are preserved. A newer pending intent takes precedence over older focus
+history. Explicit Foreign/None focus stays outside dock content; it is distinct
+from having no history and does not trigger the primary-pane fallback.
+Old-epoch observations cannot settle the replacement request.
+
+For a native destination the same intent waits internally for a fresh eligible
+binding. It never reuses the old binding or publishes local authority while the
+native window is unready. A pure logical surface stays local even when another
+surface is bound to a native window. Hosts still confirm actual focus through
+the request-bound observation API; requesting focus does not establish it.
+The internal Waiting state is excluded from published focus requests and focus
+deltas. A matching fresh global observation settles native facts without replacing
+the restored semantic request's identity or causal order.
+
 ## Manipulation feedback and focus
 
 `HostFrameReport::manipulation_feedback()` exposes committed pending and terminal

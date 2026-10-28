@@ -205,6 +205,9 @@ impl DockspaceSession {
     /// numeric [`ItemId`] values remain document-owned. The returned opaque value
     /// is bound to the current session authority, workspace version, and document
     /// sidecars. It can be retried unchanged after a recoverable host-frame error.
+    /// Recognizing an identity does not require its application content to be loaded.
+    /// Hosts may retain a known unavailable item and draw a recoverable placeholder;
+    /// returning `false` rejects the complete document rather than closing that item.
     ///
     /// # Errors
     ///

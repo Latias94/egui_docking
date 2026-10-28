@@ -1,3 +1,5 @@
+#[path = "product/arrangement_lock.rs"]
+mod arrangement_lock;
 #[path = "product/close_commands.rs"]
 mod close_commands;
 

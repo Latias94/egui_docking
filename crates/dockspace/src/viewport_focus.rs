@@ -519,6 +519,7 @@ pub enum PaneFocusIntentSource {
     ExplicitViewportActivation,
     PointerTabGesture,
     CloseRecovery,
+    WorkspaceReplacement,
 }
 
 impl PaneFocusIntentSource {
@@ -529,6 +530,7 @@ impl PaneFocusIntentSource {
             Self::ExplicitViewportActivation => 1,
             Self::PointerTabGesture => 2,
             Self::CloseRecovery => 3,
+            Self::WorkspaceReplacement => 2,
         }
     }
 }
@@ -561,11 +563,30 @@ pub struct PaneFocusIntent {
     activation: Option<ActivationGeneration>,
     surface: SurfaceId,
     item: Option<ItemId>,
-    native_guard: Option<ViewportBinding>,
+    native: PaneFocusNativeTarget,
     source: PaneFocusIntentSource,
     cause: Option<ViewportActivationCause>,
     focus_observation_baseline: FocusObservationGeneration,
     pane_observation_baseline: Option<PaneFocusObservationGeneration>,
+}
+
+/// An unresolved native destination must never acquire local focus authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneFocusNativeTarget {
+    Local,
+    Waiting,
+    Bound(ViewportBinding),
+}
+
+/// Replacement distinguishes deliberate outside focus from an absent history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceReplacementFocus {
+    NoHistory,
+    OutsideDock,
+    Dock {
+        surface: SurfaceId,
+        item: Option<ItemId>,
+    },
 }
 
 impl PaneFocusIntent {
@@ -601,7 +622,18 @@ impl PaneFocusIntent {
 
     #[must_use]
     pub const fn native_guard(self) -> Option<ViewportBinding> {
-        self.native_guard
+        match self.native {
+            PaneFocusNativeTarget::Bound(binding) => Some(binding),
+            PaneFocusNativeTarget::Local | PaneFocusNativeTarget::Waiting => None,
+        }
+    }
+
+    /// Returns whether this intent still needs a fresh, eligible native binding.
+    ///
+    /// Such an intent is retained internally and cannot be published to an adapter.
+    #[must_use]
+    pub const fn awaiting_native_binding(self) -> bool {
+        matches!(self.native, PaneFocusNativeTarget::Waiting)
     }
 
     #[must_use]
@@ -1144,7 +1176,7 @@ impl PaneFocusRequestObservation {
             intent: intent.id,
             surface: intent.surface,
             item: intent.item,
-            native_guard: intent.native_guard,
+            native_guard: intent.native_guard(),
             state,
         }
     }
@@ -1628,8 +1660,12 @@ impl FocusDelta {
                 after.recorded_observe_only_activation,
             ),
             pane_intent: FocusValueChange::between(
-                before.pending_pane_intent,
-                after.pending_pane_intent,
+                before
+                    .pending_pane_intent
+                    .filter(|intent| !intent.awaiting_native_binding()),
+                after
+                    .pending_pane_intent
+                    .filter(|intent| !intent.awaiting_native_binding()),
             ),
             ..Self::default()
         };
@@ -1791,7 +1827,7 @@ impl ViewportFocusCoordinator {
         PaneCausalClaim {
             causal: intent.causal,
             source: intent.source,
-            target: intent.native_guard.map_or(
+            target: intent.native_guard().map_or(
                 FocusClaimTarget::Surface(intent.surface),
                 FocusClaimTarget::Dock,
             ),
@@ -2123,7 +2159,10 @@ impl ViewportFocusCoordinator {
         self.admitted_observe_only_activation = self
             .recorded_observe_only_activation
             .map(|record| record.generation);
-        self.admitted_pane_intent = self.pending_pane_intent.map(|intent| intent.id);
+        self.admitted_pane_intent = self
+            .pending_pane_intent
+            .filter(|intent| !intent.awaiting_native_binding())
+            .map(|intent| intent.id);
     }
 
     fn clear_admitted_observe_only(&mut self, generation: ActivationGeneration) {
@@ -2173,6 +2212,40 @@ impl ViewportFocusCoordinator {
             .get(&surface)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Captures semantic focus without choosing among unrelated surface histories.
+    pub(crate) fn workspace_replacement_focus(&self) -> WorkspaceReplacementFocus {
+        if let Some(intent) = self.pending_pane_intent {
+            return WorkspaceReplacementFocus::Dock {
+                surface: intent.surface(),
+                item: intent.item(),
+            };
+        }
+        let Some(target) = self
+            .focus_lane
+            .winner
+            .map(|claim| claim.target)
+            .or_else(|| {
+                self.focus_observations
+                    .current()
+                    .and_then(Self::known_focus_target)
+            })
+        else {
+            return WorkspaceReplacementFocus::NoHistory;
+        };
+        let surface = match target {
+            FocusClaimTarget::Dock(binding) => binding.surface(),
+            FocusClaimTarget::Surface(surface) => surface,
+            FocusClaimTarget::Foreign | FocusClaimTarget::None => {
+                return WorkspaceReplacementFocus::OutsideDock;
+            }
+        };
+        let item = match self.panel_focus(surface) {
+            PanelFocusRecord::Item(item) => Some(item),
+            PanelFocusRecord::NoHistory | PanelFocusRecord::None => None,
+        };
+        WorkspaceReplacementFocus::Dock { surface, item }
     }
 
     fn surface_focus_state(&self, surface: SurfaceId) -> Option<SurfaceFocusState> {
@@ -3005,18 +3078,31 @@ impl ViewportFocusCoordinator {
         if !focused_is_isolated
             && self.pending_pane_intent.is_some_and(|intent| {
                 observation.generation > intent.focus_observation_baseline
-                    && intent.native_guard.is_some()
+                    && intent.native_guard().is_some()
                     && matches!(
                         observation.focused,
                         Authority::Known(focused)
                             if Some(focused)
-                                != intent.native_guard.map(GlobalFocusedWindow::Dock)
+                                != intent.native_guard().map(GlobalFocusedWindow::Dock)
                     )
             })
         {
             if let Some(intent) = self.pending_pane_intent.take() {
                 self.clear_admitted_pane_intent(intent.id);
             }
+        }
+
+        // Readiness completes the replacement's existing obligation. Ordinary
+        // platform observations advance facts, not its semantic causal owner.
+        let preserves_replacement = self.pending_pane_intent.is_some_and(|intent| {
+            intent.source == PaneFocusIntentSource::WorkspaceReplacement
+                && (intent.awaiting_native_binding()
+                    || intent
+                        .native_guard()
+                        .is_some_and(|binding| Self::observation_focuses(observation, binding)))
+        });
+        if preserves_replacement && let Some(intent) = self.pending_pane_intent.as_mut() {
+            intent.focus_observation_baseline = observation.generation;
         }
 
         let focused_current_binding = if (focus_changed || focus_requires_reconciliation)
@@ -3032,6 +3118,7 @@ impl ViewportFocusCoordinator {
             focused_current_binding.is_some() && self.destroyed_previous_focus.take().is_some();
 
         if applied.pane_intent().is_none()
+            && !preserves_replacement
             && (focus_changed || focus_requires_reconciliation)
             && restore_gate.allows_ordinary_restore()
             && !suppress_destroyed_previous_restore
@@ -3069,9 +3156,10 @@ impl ViewportFocusCoordinator {
             if target.dock().is_none_or(|binding| {
                 !is_isolated_binding(binding) && !self.focus_lane.quarantined.contains(&binding)
             }) {
-                if target
-                    .dock()
-                    .is_some_and(|binding| self.focus_matches_reserved_claim(binding))
+                if preserves_replacement
+                    || target
+                        .dock()
+                        .is_some_and(|binding| self.focus_matches_reserved_claim(binding))
                 {
                     if focus_requires_reconciliation {
                         self.focus_lane.barrier = FocusBarrier::None;
@@ -3402,7 +3490,7 @@ impl ViewportFocusCoordinator {
                     PaneFocusObservationRejection::IntentNotPublished { intent: intent_id },
                 );
             }
-            if intent.native_guard != Some(observation.binding) {
+            if intent.native_guard() != Some(observation.binding) {
                 return PaneFocusObservationTransition::Rejected(
                     PaneFocusObservationRejection::IntentBindingMismatch,
                 );
@@ -3462,7 +3550,7 @@ impl ViewportFocusCoordinator {
         }
         if intent.surface != observation.surface
             || intent.item != observation.item
-            || intent.native_guard != observation.native_guard
+            || intent.native_guard() != observation.native_guard
         {
             return PaneFocusObservationTransition::Rejected(
                 PaneFocusObservationRejection::IntentTargetMismatch,
@@ -3581,7 +3669,7 @@ impl ViewportFocusCoordinator {
         }
         if self
             .pending_pane_intent
-            .is_some_and(|intent| intent.native_guard == Some(binding))
+            .is_some_and(|intent| intent.native_guard() == Some(binding))
         {
             cleanup.pending_intent_removed = self.pending_pane_intent.take().map(|intent| {
                 self.clear_admitted_pane_intent(intent.id);
@@ -3860,12 +3948,14 @@ impl ViewportFocusCoordinator {
             }
         }
         if let Some(intent) = self.pending_pane_intent {
-            let binding_is_current = match intent.native_guard {
-                Some(binding) if self.admitted_pane_intent == Some(intent.id) => {
+            let binding_is_current = match intent.native {
+                PaneFocusNativeTarget::Bound(binding)
+                    if self.admitted_pane_intent == Some(intent.id) =>
+                {
                     can_observe_binding(binding)
                 }
-                Some(binding) => can_accept_activation(binding),
-                None => true,
+                PaneFocusNativeTarget::Bound(binding) => can_accept_activation(binding),
+                PaneFocusNativeTarget::Local | PaneFocusNativeTarget::Waiting => true,
             };
             if !surface_exists(intent.surface)
                 || !binding_is_current
@@ -3930,9 +4020,9 @@ impl ViewportFocusCoordinator {
             )
         });
         let pending_intent = self.pending_pane_intent.take();
-        let retained_pane_intent = pending_intent.filter(|intent| intent.native_guard.is_none());
+        let retained_pane_intent = pending_intent.filter(|intent| intent.native_guard().is_none());
         let pending_intent_removed = pending_intent
-            .filter(|intent| intent.native_guard.is_some())
+            .filter(|intent| intent.native_guard().is_some())
             .map(|intent| intent.id);
         let admitted_pane_intent = self
             .admitted_pane_intent
@@ -3973,6 +4063,67 @@ impl ViewportFocusCoordinator {
         self.panel_focus_by_surface.clear();
         self.pane_observation_by_surface.clear();
         self.pane_request_observation_by_surface.clear();
+    }
+
+    /// Mints the replacement's sole successor within the rollbackable candidate.
+    pub(crate) fn request_workspace_replacement_focus(
+        &mut self,
+        surface: SurfaceId,
+        focus: PanelFocus,
+        requires_native_binding: bool,
+        causal: FocusCausalStamp,
+    ) -> Result<Option<PaneFocusIntent>, ViewportFocusError> {
+        let Some(mut intent) = self.install_pane_intent(PaneIntentInstall {
+            causal,
+            activation: None,
+            surface,
+            native_guard: None,
+            focus,
+            source: PaneFocusIntentSource::WorkspaceReplacement,
+            cause: None,
+            focus_observation_baseline: FocusObservationGeneration::default(),
+        })?
+        else {
+            return Ok(None);
+        };
+        if requires_native_binding {
+            intent.native = PaneFocusNativeTarget::Waiting;
+            self.pending_pane_intent = Some(intent);
+        }
+        Ok(Some(intent))
+    }
+
+    /// Resolves only the existing waiting intent, using current activation eligibility.
+    pub(crate) fn resume_workspace_replacement_focus(
+        &mut self,
+        eligible_binding: impl FnOnce(SurfaceId) -> Option<ViewportBinding>,
+    ) {
+        let Some(mut intent) = self
+            .pending_pane_intent
+            .filter(|intent| intent.awaiting_native_binding())
+        else {
+            return;
+        };
+        let Some(binding) = eligible_binding(intent.surface) else {
+            return;
+        };
+        let previous_claim = Self::pending_intent_claim(intent);
+        intent.native = PaneFocusNativeTarget::Bound(binding);
+        intent.focus_observation_baseline = self
+            .focus_observations
+            .current()
+            .map_or_else(FocusObservationGeneration::default, |observation| {
+                observation.generation()
+            });
+        intent.pane_observation_baseline = self.pane_observation_generation(intent.surface);
+        self.pending_pane_intent = Some(intent);
+        if let Some(watermark) = self.pane_intent_watermark.as_mut() {
+            watermark.native_guard = Some(binding);
+        }
+        if self.focus_lane.settled_winner == Some(previous_claim) {
+            self.focus_lane.settled_winner = Some(Self::pending_intent_claim(intent));
+            self.recompute_focus_winner();
+        }
     }
 
     fn validate_focus_target(
@@ -4138,7 +4289,7 @@ impl ViewportFocusCoordinator {
             activation,
             surface,
             item,
-            native_guard,
+            native: native_guard.map_or(PaneFocusNativeTarget::Local, PaneFocusNativeTarget::Bound),
             source,
             cause,
             focus_observation_baseline,
@@ -6455,6 +6606,119 @@ mod tests {
             )
         );
         assert_eq!(coordinator.pending_pane_intent(), Some(replacement));
+    }
+
+    #[test]
+    fn replacement_capture_distinguishes_outside_focus_and_pending_semantic_owner() {
+        let target = binding();
+        let mut coordinator = ViewportFocusCoordinator::default();
+        assert_eq!(
+            coordinator.workspace_replacement_focus(),
+            WorkspaceReplacementFocus::NoHistory
+        );
+        coordinator
+            .panel_focus_by_surface
+            .insert(target.surface(), PanelFocusRecord::Item(ItemId::new(1)));
+        publish_platform_focus(
+            &mut coordinator,
+            focus_observation(1, GlobalFocusedWindow::Foreign),
+            1,
+            PlatformFocusRestoreGate::KnownAllReleased,
+        );
+        assert_eq!(
+            coordinator.workspace_replacement_focus(),
+            WorkspaceReplacementFocus::OutsideDock
+        );
+        let waiting = coordinator
+            .request_workspace_replacement_focus(
+                target.surface(),
+                PanelFocus::Item(ItemId::new(1)),
+                true,
+                focus_stamp(2),
+            )
+            .unwrap()
+            .unwrap();
+        publish_platform_focus(
+            &mut coordinator,
+            focus_observation(2, GlobalFocusedWindow::Foreign),
+            3,
+            PlatformFocusRestoreGate::KnownAllReleased,
+        );
+        assert_eq!(
+            coordinator.pending_pane_intent().unwrap().id(),
+            waiting.id()
+        );
+        assert_eq!(
+            coordinator.workspace_replacement_focus(),
+            WorkspaceReplacementFocus::Dock {
+                surface: target.surface(),
+                item: Some(ItemId::new(1)),
+            }
+        );
+        let semantic = coordinator
+            .request_local_workspace_focus(target.surface(), None, focus_stamp(4))
+            .unwrap()
+            .unwrap();
+        assert_ne!(semantic.id(), waiting.id());
+        assert_eq!(coordinator.pending_pane_intent(), Some(semantic));
+        assert_eq!(
+            coordinator.workspace_replacement_focus(),
+            WorkspaceReplacementFocus::Dock {
+                surface: target.surface(),
+                item: None,
+            }
+        );
+    }
+
+    #[test]
+    fn focus_delta_hides_waiting_and_publishes_only_local_or_ready_bound_intents() {
+        let target = binding();
+        let effects = EffectLedger::default();
+        let before = ViewportFocusCoordinator::default();
+        let mut waiting = before.clone();
+        let intent = waiting
+            .request_workspace_replacement_focus(
+                target.surface(),
+                PanelFocus::Item(ItemId::new(1)),
+                true,
+                focus_stamp(1),
+            )
+            .unwrap()
+            .unwrap();
+        waiting.mark_boundary_published();
+        assert_eq!(waiting.published_pane_intent(), None);
+        assert!(
+            FocusDelta::between(&before, &waiting, &effects, &effects, &[])
+                .pane_intent()
+                .is_none()
+        );
+        assert!(
+            FocusDelta::between(&waiting, &before, &effects, &effects, &[])
+                .pane_intent()
+                .is_none()
+        );
+
+        let mut ready = waiting.clone();
+        ready.resume_workspace_replacement_focus(|_| Some(target));
+        ready.mark_boundary_published();
+        let bound = ready.published_pane_intent().unwrap();
+        assert_eq!(bound.id(), intent.id());
+        let delta = FocusDelta::between(&waiting, &ready, &effects, &effects, &[]);
+        let change = delta.pane_intent().unwrap();
+        assert_eq!(change.before(), &None);
+        assert_eq!(change.after(), &Some(bound));
+
+        let mut local = before.clone();
+        let local_intent = local
+            .request_local_pane_focus(target.surface(), ItemId::new(1), None, focus_stamp(1))
+            .unwrap()
+            .unwrap();
+        local.mark_boundary_published();
+        let delta = FocusDelta::between(&before, &local, &effects, &effects, &[]);
+        assert_eq!(delta.pane_intent().unwrap().after(), &Some(local_intent));
+        let delta = FocusDelta::between(&local, &waiting, &effects, &effects, &[]);
+        assert_eq!(delta.pane_intent().unwrap().before(), &Some(local_intent));
+        assert_eq!(delta.pane_intent().unwrap().after(), &None);
     }
 
     #[test]

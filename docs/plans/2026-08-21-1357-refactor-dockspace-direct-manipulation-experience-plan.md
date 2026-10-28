@@ -645,9 +645,18 @@ Local U10 implementation checkpoint (2026-10-28, remaining acceptance open):
   scroll and drawn content. It resolves restored surface/root identities from
   the current view and retains application pane data across close/reopen/reset.
 
-Restore-time focus and missing-pane recovery, complete overflow-owner acceptance,
-and the optional native showcase remain to be qualified. This checkpoint does
-not complete U10 or impose serde/document lineage on every engine layout reset.
+The subsequent restore slice preserves semantic focus across shared live
+replacement with one successor intent, a deterministic selection/workspace
+fallback, rollback and old-observation rejection. Native destinations wait for
+fresh eligible bindings; mixed logical/native surfaces retain their distinct
+scope. Known keys with temporarily unavailable pane content keep their layout
+identity and render recoverable placeholders; key rejection still rejects the
+whole document. Product acceptance also covers locked overflow navigation and
+contained raise/focus with protected geometry.
+
+The optional native showcase, complete overflow-owner acceptance and a general
+serde-free reset/default-layout entry remain open. These local checkpoints do
+not complete U10 or impose document lineage on every engine layout reset.
 
 ### U11. Certify Windows and macOS capability claims
 
