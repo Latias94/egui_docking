@@ -72,8 +72,9 @@ impl BackendIngressRecorder {
     /// Bounds facade-owned transport while leaving generic recorders unlimited.
     ///
     /// Configure before exposing native replay. The fixed allowance covers one
-    /// recorder buffer, one replay batch and its overlapping commit guard, and
-    /// one pending prefix-retirement receipt. It is admission credit, not a
+    /// recorder buffer, one prepared-pointer handle buffer, one replay batch and
+    /// its overlapping commit guard, and one pending prefix-retirement receipt.
+    /// It is admission credit, not a
     /// resident-capacity diagnostic. Native replay must retain at most one
     /// candidate and must not let arbitrary batch clones escape the facade.
     /// Existing records must satisfy the same finite native payload contract.
@@ -129,6 +130,37 @@ impl BackendIngressRecorder {
         self.native_transport_capacity
             .as_ref()
             .map(|capacity| capacity.fixed_reserved_bytes + capacity.retained_data_bytes)
+    }
+
+    /// Bounds preparation while committed payloads remain physically retained.
+    ///
+    /// A committed prefix can release slots and data for the eventual append,
+    /// but preparation must also fit alongside that prefix before it is retired.
+    /// A suspended replay supplies no watermark and receives no retirement credit.
+    pub(crate) fn native_pointer_preparation_limit(
+        &self,
+        reclaimable: Option<BackendIngressCommitWatermark>,
+    ) -> Result<Option<usize>, BackendIngressError> {
+        let Some(capacity) = self.native_transport_capacity.as_ref() else {
+            return Ok(None);
+        };
+        let reclaimed_records = reclaimable
+            .map(|watermark| self.validate_committed_prefix(watermark))
+            .transpose()?
+            .unwrap_or(0);
+        let reclaimed_data =
+            retained_data_bytes(&self.records[..reclaimed_records], capacity.byte_limit)?;
+        let descendants = PointerEdgeJournal::single_edge_owned_contents_capacity_bytes();
+        let per_record = descendants + size_of::<BackendIngressPayload>() + size_of::<AtomicU8>();
+        let available =
+            capacity.byte_limit - capacity.fixed_reserved_bytes - capacity.retained_data_bytes;
+        let preparation_limit = available / descendants;
+        let append_limit = available
+            .checked_add(reclaimed_data)
+            .ok_or_else(|| capacity_overflow(capacity.byte_limit))?
+            / per_record;
+        let slot_limit = capacity.record_slots.get() - (self.records.len() - reclaimed_records);
+        Ok(Some(preparation_limit.min(append_limit).min(slot_limit)))
     }
 
     /// Checks an entire finite native append before any record identity is minted.
@@ -233,7 +265,8 @@ fn fixed_reserved_bytes(
         + size_of::<BackendIngressPrefixRetirementReceipt>();
     let per_replay_slot = size_of::<BackendIngressRecord>()
         + size_of::<(BackendIngressOrdinal, BackendIngressRecordLiveness)>()
-        + size_of::<ViewportBinding>();
+        + size_of::<ViewportBinding>()
+        + size_of::<PointerEdgeJournal>();
     backing_slots
         .checked_mul(size_of::<BackendIngressRecord>())
         .and_then(|bytes| bytes.checked_add(inline))

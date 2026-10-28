@@ -22,6 +22,7 @@ mod input_capacity;
 mod managed_lifecycle;
 mod pointer_metadata;
 mod pointer_sequence;
+mod prepared_pointer;
 mod storage;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -1472,7 +1473,7 @@ fn unknown_native_pointer_input(pointer: u64, event: NativePointerEvent) -> Nati
 }
 
 #[test]
-fn native_pointer_batch_rolls_back_a_rejected_suffix_before_exact_retry() {
+fn native_pointer_batch_rejects_malformed_facts_before_exact_retry() {
     let (mut session, _) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
     let first = unknown_native_pointer_input(11, NativePointerEvent::Moved);
     let invalid_second = unknown_native_pointer_input(
@@ -1518,8 +1519,8 @@ fn native_pointer_batch_rolls_back_a_rejected_suffix_before_exact_retry() {
         .recorder
         .batch_after(recorded_before)
         .expect("the retried suffix freezes");
-    // Rollback deliberately does not reuse private anti-ABA record identities;
-    // the adapter-visible ingress and pointer sequences must still retry exactly.
+    // Preparation rejects malformed facts before recorder identities are minted;
+    // the adapter-visible ingress and pointer sequences must retry exactly.
     let sequence = retry
         .records()
         .iter()

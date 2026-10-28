@@ -79,6 +79,63 @@ fn pointer_segment(previous: u64) -> PointerEdgeJournal {
 }
 
 #[test]
+fn native_pointer_preparation_credits_only_proven_retirement_and_keeps_the_staging_peak() {
+    let descendants = PointerEdgeJournal::single_edge_owned_contents_capacity_bytes();
+    let data = payload_data_bytes(
+        &BackendIngressPayload::PointerSegment(pointer_segment(0)),
+        usize::MAX,
+    )
+    .unwrap();
+    let (mut authority, mut recorder) = bounded_recorder(2, 2 * data + descendants - 1);
+    let fixed = recorder.native_transport_reserved_bytes().unwrap();
+    recorder.record_pointer_segment(pointer_segment(0)).unwrap();
+    recorder.record_pointer_segment(pointer_segment(1)).unwrap();
+    let batch = recorder.pending_batch().unwrap();
+    authority.commit_batch(&batch).unwrap();
+    batch
+        .commit_guard()
+        .publish_with(|| Ok::<(), ()>(()))
+        .unwrap()
+        .unwrap();
+    drop(batch);
+    let committed = authority.commit_watermark().unwrap();
+    assert_eq!(recorder.native_pointer_preparation_limit(None), Ok(Some(0)));
+    assert_eq!(
+        recorder.native_pointer_preparation_limit(Some(committed)),
+        Ok(Some(0)),
+        "a committed payload still occupies data capacity during caller iteration"
+    );
+    assert_eq!(recorder.retired_through, BackendIngressOrdinal::ORIGIN);
+    assert_eq!(recorder.retained_records().len(), 2);
+
+    recorder
+        .configure_native_transport_capacity(
+            NonZeroUsize::new(2).unwrap(),
+            fixed + 2 * data + 2 * descendants,
+        )
+        .unwrap();
+    assert_eq!(
+        recorder.native_pointer_preparation_limit(None),
+        Ok(Some(0)),
+        "a suspended replay must not receive retirement credit"
+    );
+    assert_eq!(
+        recorder.native_pointer_preparation_limit(Some(committed)),
+        Ok(Some(2))
+    );
+    let forged = BackendIngressCommitWatermark {
+        record_identity: BackendIngressRecordIdentity::ORIGIN,
+        ..committed
+    };
+    assert!(matches!(
+        recorder.native_pointer_preparation_limit(Some(forged)),
+        Err(BackendIngressError::CommitWatermarkContentMismatch { .. })
+    ));
+    assert_eq!(recorder.retained_records().len(), 2);
+    assert_eq!(recorder.retired_through, BackendIngressOrdinal::ORIGIN);
+}
+
+#[test]
 fn native_capacity_rejects_full_bytes_or_slots_before_minting_or_growing() {
     let fixed_data =
         payload_data_bytes(&BackendIngressPayload::NativeInputDeviceRemoval, usize::MAX).unwrap();
@@ -292,7 +349,8 @@ fn native_capacity_replay_reserves_full_atomic_group_and_shares_payload_data() {
             + size_of::<BackendIngressPrefixRetirementReceipt>()
             + batch.record_buffer_capacity_bytes()
             + guard.owned_capacity_bytes()
-            + count * size_of::<ViewportBinding>(),
+            + count * size_of::<ViewportBinding>()
+            + count * size_of::<PointerEdgeJournal>(),
     );
     assert_eq!(recorder.native_transport_reserved_bytes(), reserved);
 }

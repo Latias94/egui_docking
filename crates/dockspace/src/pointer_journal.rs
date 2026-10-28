@@ -1145,6 +1145,11 @@ impl PointerEdgeJournal {
         size_of::<PointerEdgeJournalContents>()
     }
 
+    /// Returns contents data for one edge without an authority checkpoint.
+    pub(crate) const fn single_edge_owned_contents_capacity_bytes() -> usize {
+        size_of::<PointerEdgeJournalContents>() + size_of::<PointerEdge>()
+    }
+
     /// Returns shared contents storage and its owned vector capacities.
     ///
     /// Excludes this journal handle and the Arc control block. The caller is

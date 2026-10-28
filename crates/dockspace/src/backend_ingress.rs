@@ -1518,41 +1518,9 @@ impl BackendIngressRecorder {
         &mut self,
         committed: BackendIngressCommitWatermark,
     ) -> Result<Option<BackendIngressPrefixRetirementReceipt>, BackendIngressError> {
-        if committed.lease != self.lease {
-            return Err(BackendIngressError::CommitWatermarkLeaseMismatch {
-                expected: self.lease,
-                submitted: committed.lease,
-            });
-        }
-        if committed.through < self.retired_through {
-            return Err(BackendIngressError::RetirementWatermarkRegressed {
-                retired: self.retired_through,
-                submitted: committed.through,
-            });
-        }
-        if committed.through > self.last_ordinal {
-            return Err(BackendIngressError::CommittedWatermarkAhead {
-                committed: committed.through,
-                recorded: self.last_ordinal,
-            });
-        }
-        if committed.through == self.retired_through {
+        let retained = self.validate_committed_prefix(committed)?;
+        if retained == 0 {
             return Ok(None);
-        }
-        let retained = self
-            .records
-            .partition_point(|record| record.ordinal <= committed.through);
-        let committed_record = self.records.get(retained.saturating_sub(1)).ok_or(
-            BackendIngressError::CommitWatermarkContentMismatch {
-                ordinal: committed.through,
-            },
-        )?;
-        if committed_record.ordinal != committed.through
-            || committed_record.identity != committed.record_identity
-        {
-            return Err(BackendIngressError::CommitWatermarkContentMismatch {
-                ordinal: committed.through,
-            });
         }
         let released_data_bytes = self.native_retained_data_bytes(&self.records[..retained])?;
         let quiescence_count = self.records[..retained]
@@ -1598,6 +1566,54 @@ impl BackendIngressRecorder {
                 binding_quiescences,
             )))
         }
+    }
+
+    fn validate_committed_prefix(
+        &self,
+        committed: BackendIngressCommitWatermark,
+    ) -> Result<usize, BackendIngressError> {
+        if committed.lease != self.lease {
+            return Err(BackendIngressError::CommitWatermarkLeaseMismatch {
+                expected: self.lease,
+                submitted: committed.lease,
+            });
+        }
+        if committed.through < self.retired_through {
+            return Err(BackendIngressError::RetirementWatermarkRegressed {
+                retired: self.retired_through,
+                submitted: committed.through,
+            });
+        }
+        if committed.through > self.last_ordinal {
+            return Err(BackendIngressError::CommittedWatermarkAhead {
+                committed: committed.through,
+                recorded: self.last_ordinal,
+            });
+        }
+        if committed.through == self.retired_through {
+            if committed.record_identity != self.retired_record_identity {
+                return Err(BackendIngressError::CommitWatermarkContentMismatch {
+                    ordinal: committed.through,
+                });
+            }
+            return Ok(0);
+        }
+        let retained = self
+            .records
+            .partition_point(|record| record.ordinal <= committed.through);
+        let committed_record = self.records.get(retained.saturating_sub(1)).ok_or(
+            BackendIngressError::CommitWatermarkContentMismatch {
+                ordinal: committed.through,
+            },
+        )?;
+        if committed_record.ordinal != committed.through
+            || committed_record.identity != committed.record_identity
+        {
+            return Err(BackendIngressError::CommitWatermarkContentMismatch {
+                ordinal: committed.through,
+            });
+        }
+        Ok(retained)
     }
 
     /// Returns the number of captured records not yet reclaimed.

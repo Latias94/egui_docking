@@ -8,8 +8,9 @@ use std::num::NonZeroUsize;
 /// Optional admission limit for a managed host's recorded input transport.
 ///
 /// The allowance includes recorder backing, retained payload capacity, and
-/// reserved space for one replay batch, its commit guard, and prefix retirement.
-/// It excludes host callback buffers, temporary producer/iterator buffers,
+/// reserved space for pointer preparation, one replay batch, its commit guard,
+/// and prefix retirement. Preparation fits alongside still-retained payloads.
+/// It excludes host callback buffers, producer maps and caller-owned iterators,
 /// pending reports, renderer state, reducer state, allocator overhead and Arc
 /// control blocks. Hosts must account for
 /// those owners separately when enforcing a total native-input budget.

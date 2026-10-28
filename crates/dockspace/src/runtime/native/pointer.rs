@@ -671,53 +671,65 @@ impl RuntimeNativeState {
         Ok(())
     }
 
-    pub(super) fn record_pointer_batch(
-        &mut self,
-        inputs: Vec<NativePointerInput>,
-    ) -> Result<(), NativePlatformError> {
-        self.append_pointer_batch(inputs, true)
-    }
-
-    pub(super) fn record_pointer_sequence(
-        &mut self,
-        inputs: Vec<NativePointerInput>,
-    ) -> Result<(), NativePlatformError> {
-        self.append_pointer_batch(inputs, false)
-    }
-
-    fn append_pointer_batch(
-        &mut self,
-        inputs: Vec<NativePointerInput>,
-        atomic_commit: bool,
-    ) -> Result<(), NativePlatformError> {
+    pub(super) fn prepare_pointer_journals(
+        &self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+        reclaimable: Option<crate::backend_ingress::BackendIngressCommitWatermark>,
+    ) -> Result<Vec<PointerEdgeJournal>, NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
         }
-        let count = inputs.len();
-        let mut inputs = inputs.into_iter();
-        let Some(first) = inputs.next() else {
-            return Ok(());
-        };
-        let first = self.compile_pointer_journal(first)?;
-        // Every native edge owns one identically sized, checkpoint-free journal.
-        // Reuse the first real payload to preflight the call before minting records.
-        let descendants = first
-            .owned_contents_capacity_bytes()
-            .checked_mul(count)
-            .ok_or(NativePlatformError::InputCapacity)?;
+        let limit = self
+            .recorder
+            .native_pointer_preparation_limit(reclaimable)
+            .map_err(NativePlatformError::from_ingress)?;
+        let mut journals = Vec::new();
+        let mut previous = self.recorder.pointer_through();
+        for input in inputs {
+            if limit.is_some_and(|limit| journals.len() >= limit) {
+                return Err(NativePlatformError::InputCapacity);
+            }
+            if journals.len() == journals.capacity() {
+                if let Some(limit) = limit {
+                    journals
+                        .try_reserve_exact(limit)
+                        .map_err(|_| NativePlatformError::InputCapacity)?;
+                    if journals.capacity() > limit {
+                        return Err(NativePlatformError::InputCapacity);
+                    }
+                } else {
+                    journals
+                        .try_reserve(1)
+                        .map_err(|_| NativePlatformError::InputCapacity)?;
+                }
+            }
+            let journal = self.compile_pointer_journal(input, previous)?;
+            previous = journal.through();
+            journals.push(journal);
+        }
+        Ok(journals)
+    }
+
+    pub(super) fn append_prepared_pointer_journals(
+        &mut self,
+        journals: Vec<PointerEdgeJournal>,
+        atomic_commit: bool,
+    ) -> Result<(), NativePlatformError> {
+        let descendants = journals.iter().try_fold(0_usize, |bytes, journal| {
+            bytes
+                .checked_add(journal.owned_contents_capacity_bytes())
+                .ok_or(NativePlatformError::InputCapacity)
+        })?;
         self.recorder
-            .preflight_native_transport_append(count, descendants)
+            .preflight_native_transport_append(journals.len(), descendants)
             .map_err(NativePlatformError::from_ingress)?;
         let savepoint = self.recorder.savepoint();
-        self.recorder
-            .record_pointer_segment(first)
-            .map_err(NativePlatformError::from_ingress)?;
-        for input in inputs {
-            if let Err(error) = self.record_pointer(input) {
+        for journal in journals {
+            if let Err(error) = self.recorder.record_pointer_segment(journal) {
                 self.recorder
                     .rollback_to(savepoint)
                     .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-                return Err(error);
+                return Err(NativePlatformError::from_ingress(error));
             }
         }
         if atomic_commit {
@@ -732,7 +744,13 @@ impl RuntimeNativeState {
         &mut self,
         input: NativePointerInput,
     ) -> Result<(), NativePlatformError> {
-        let journal = self.compile_pointer_journal(input)?;
+        self.recorder
+            .preflight_native_transport_append(
+                1,
+                PointerEdgeJournal::single_edge_owned_contents_capacity_bytes(),
+            )
+            .map_err(NativePlatformError::from_ingress)?;
+        let journal = self.compile_pointer_journal(input, self.recorder.pointer_through())?;
         self.recorder
             .record_pointer_segment(journal)
             .map_err(NativePlatformError::from_ingress)?;
@@ -742,11 +760,11 @@ impl RuntimeNativeState {
     fn compile_pointer_journal(
         &self,
         input: NativePointerInput,
+        previous: crate::pointer_journal::PointerEdgeSequence,
     ) -> Result<PointerEdgeJournal, NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
         }
-        let previous = self.recorder.pointer_through();
         let sequence = previous
             .checked_next()
             .ok_or(NativePlatformError::PointerSequenceExhausted)?;

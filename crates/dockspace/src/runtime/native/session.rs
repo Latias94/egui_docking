@@ -352,6 +352,9 @@ impl DockspaceSession {
     /// Admission and host-frame commit are both atomic: no commit boundary
     /// occurs between these edges. Use [`Self::record_native_pointer_sequence`]
     /// for independent records that only require all-or-none admission.
+    /// A bounded host rejects at the first item which cannot fit without reading
+    /// the remaining iterator. Caller iteration and its destructor finish before
+    /// any committed data is reclaimed or any record is appended.
     ///
     /// # Errors
     ///
@@ -361,18 +364,15 @@ impl DockspaceSession {
         &mut self,
         inputs: impl IntoIterator<Item = NativePointerInput>,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.ensure_managed_native_host_available()?;
-        // Caller iteration must finish before reclaiming or appending any input.
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
-        self.native_state_mut()?.record_pointer_batch(inputs)?;
-        Ok(())
+        self.record_native_pointer_journals(inputs, true)
     }
 
     /// Records native pointer edges with all-or-none admission in iterator order.
     ///
-    /// The runtime collects the complete iterator before appending any edge and
-    /// assigns consecutive provider sequences. If any input is rejected, every
-    /// edge appended by this call is rolled back to the preceding boundary.
+    /// The runtime prepares the iterator before appending any edge and assigns
+    /// consecutive provider sequences. Invalid facts or a full bounded allowance
+    /// reject the entire call without accepting an edge. Capacity rejection stops
+    /// at the first unaccepted item, without reading the remaining iterator.
     /// Unlike [`Self::record_native_pointer_batch`], each admitted record retains
     /// its own commit boundary, so host frames may commit a prefix of the
     /// sequence and replay its remaining suffix.
@@ -385,9 +385,31 @@ impl DockspaceSession {
         &mut self,
         inputs: impl IntoIterator<Item = NativePointerInput>,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.record_native_pointer_journals(inputs, false)
+    }
+
+    fn record_native_pointer_journals(
+        &mut self,
+        inputs: impl IntoIterator<Item = NativePointerInput>,
+        atomic_commit: bool,
+    ) -> Result<(), DockspaceRuntimeError> {
         self.ensure_managed_native_host_available()?;
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
-        self.native_state_mut()?.record_pointer_sequence(inputs)?;
+        let native = self
+            .native
+            .as_ref()
+            .ok_or(NativePlatformError::ProviderUnavailable)?;
+        let reclaimable = if native.pending_replay.is_none() {
+            self.engine.backend_ingress_commit_watermark()
+        } else {
+            None
+        };
+        // Caller iteration and its destructor finish before maintenance or append.
+        let journals = native.prepare_pointer_journals(inputs, reclaimable)?;
+        if journals.is_empty() {
+            return Ok(());
+        }
+        self.native_state_mut()?
+            .append_prepared_pointer_journals(journals, atomic_commit)?;
         Ok(())
     }
 

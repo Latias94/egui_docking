@@ -15,6 +15,60 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 bounded prepared-pointer transfer
+
+Public native pointer batch/sequence recording now prepares a bounded vector of
+`PointerEdgeJournal` handles directly, replacing whole-iterator
+`Vec<NativePointerInput>` collection and the old private append wrappers. Each
+edge is compiled against the producer's captured pointer watermark. Journals
+move into the recorder after successful preparation; their owned contents are
+not copied. Atomic batches retain one commit boundary, while sequences keep
+their independent boundaries.
+
+The optional transport allowance reserves N prepared-journal handles. Its
+read-only preparation limit checks both the staging peak beside all currently
+retained payloads and the final append after permitted prefix retirement. A
+core-issued watermark must match the recorder's provider, ordinal and record
+identity before it can release prospective slots or data. A suspended replay
+receives no retirement credit. Fixed backing credit is never released. The
+staging check cannot subtract committed payloads which are still physically
+retained during caller iteration.
+
+Caller-controlled `size_hint` does not choose allocations. A full allowance
+rejects at the first nonadmissible item without reading the remaining suffix.
+Iteration and the iterator's destructor finish before maintenance or append;
+`into_iter`, `next` and exhausted-iterator `Drop` panics preserve committed
+payloads, buffer backing, producer watermarks and non-rewinding append identity.
+Invalid later facts also fail during preparation. Successful preparation is
+followed by existing prefix reclamation, an actual-capacity preflight and one
+append transaction. Single-edge recording checks capacity before allocating its
+journal contents.
+
+The new public-path regressions cover early rejection of an unbounded iterator,
+huge size hints, all three caller panic boundaries, captured-sequence ordering,
+unchanged backing, staging-peak rejection and later successful retirement credit.
+Recorder tests independently reject forged retirement identity and prove that
+committed data remains charged at the staging peak. The original pointer-prefix,
+atomic-257, replay and byte/slot tests remain ordinary gates.
+
+Fresh serialized qualification passes all 1,777 all-feature workspace tests,
+80 external public-host tests, ten doctests, strict rustdoc, and
+correctness/suspicious Clippy. The local unpublished-fork native workspace passes
+316 tests normally and 316 without native debug assertions, plus its
+correctness/suspicious Clippy and the macOS programmatic tear-off, first-live,
+redock and retirement journey. A disposable-snapshot negative control changes
+only staging admission to subtract committed data prematurely; the peak
+regression fails because an over-budget preparation is admitted. Restoring the
+implementation passes the same regression. The qualification record is
+`/tmp/dockspace-prepared-pointer-qualification.json`; the control results are
+`/tmp/dockspace-prepared-pointer-peak-control.json`.
+
+This closes public pointer iterator collection inside the selected transport
+allowance. Producer maps, callback buffers, window/output/terminal resource
+owners and pending report queues still require combined native admission before
+claiming the complete 4 MiB gate. Native scoped input, load/latency, soak and
+physical-platform qualification remain open.
+
 ## 2026-10-29 U7 optional recorded-transport admission
 
 `NativeInputStorageLimit` lets a managed host select a retained record limit
