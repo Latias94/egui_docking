@@ -15,6 +15,63 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U8 output resource ownership and U7 translator recovery groundwork
+
+The native output token now has one resource owner for its reservation,
+dispatch budget, affine surface/staging paint, renderer terminal and submitted
+state. The coordinator's separate `pending_outputs` map and the bridge's
+separate dispatch-budget map are removed. The callback journal retains only
+the output token, so a renderer result is no longer copied into a parallel
+envelope with an independent submitted flag. The coordinator still reports
+the owned paint to core before marking that exact token submitted; callback
+arrival alone does not promote receiver or presentation authority.
+
+The budget starts before root-roster capture. Its affine loan releases the
+mailbox lock before reduction, preserves credits across pass/finalizer loans,
+and returns to the same output owner. A physical terminal closes the loan slot;
+late return cannot reopen it or recreate a deleted owner. A terminal arriving
+before paint attachment can still receive its exact paint until submission.
+Duplicate, abandoned, mismatched and already submitted attachments fail while
+returning the affine output to the caller. Partial commit retains the owner;
+complete causal-boundary commit reclaims submitted tokens in journal order.
+Quarantine and exact binding retirement keep their prior terminal/drop rules.
+
+Two new owner tests exercise budget reuse/late return and a real core-painted
+native surface with late attachment and rejected rebind ownership. The terminal
+flag is set directly in these unit models; they do not claim to mint a fork
+renderer token. Scratch variants permitting late budget restoration and
+submitted paint reattachment fail both assertions. Independent output-owner
+review found no confirmed new attachment, commit-cursor, receiver or lock-order
+regression. Real-window validation below separately exercises actual tokens.
+
+`NativePointerTranslator::finish_overload_cancellation` is also implemented as
+a post-commit hook for the upcoming latch integration. It discards old mouse
+buttons/origins/capture, touch enrollment and scroll state without emitting
+another input journal or claiming physical release. Pointer and scroll identity
+counters remain monotonic. Old phaseful scroll lanes retain a tombstone until
+an explicit new Start; their Moved/Ended/Cancelled tails cannot become new
+discrete input. Idle Moved-only wheel lanes and ordinary hover resume, while
+existing device-removal restart gates remain intact. This hook is not called
+by the driver yet: only the future committed overload terminal may invoke it.
+
+The translator stub first failed four of five focused translation regressions;
+the implementation passes all five. Independent translator review found no
+confirmed defect; helper invocation after an already retired scroll tail and
+repeated overload are statically checked paths rather than additional exercised
+test cases in this slice. The refreshed local-fork native workspace
+passes 238 all-target tests normally and 238 with native debug assertions
+disabled. Correctness/suspicious Clippy, strict rustdoc, formatting and diff
+whitespace pass. Three clean macOS Glow redock processes finish in 2.078,
+0.563, and 0.618 seconds through first-live, retirement and runtime quiescence.
+This is programmatic output/window lifecycle evidence, not physical-input,
+mixed-DPI, WM-close or overload-trigger qualification.
+
+Command and exact window-terminal reservations remain separate prerequisite
+work. Record/owned-byte/oldest-age limits, the fixed accepted overload boundary,
+protected once-only terminal admission, invoking translator recovery after
+the exact cancellation commit, and load/latency/soak qualification remain open.
+The local egui fork is still unpublished and tracked native/CI pins unchanged.
+
 ## 2026-10-28 U8 deferred-window resource ownership prerequisite (partial)
 
 The mailbox's separate create-reservation, hidden-render-binding and staging
