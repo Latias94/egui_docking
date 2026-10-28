@@ -95,6 +95,10 @@ pub(super) struct NativeWindowResources {
 }
 
 impl NativeWindowResources {
+    pub(super) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        self.entries.values().map(|resource| resource.binding)
+    }
+
     pub(super) fn has_pending_work(&self) -> bool {
         self.entries
             .values()

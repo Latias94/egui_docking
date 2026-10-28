@@ -722,6 +722,21 @@ The committed-256/next-256 and atomic-257 continuation checks pass with all 1,74
 workspace tests and Clippy. Remaining capacity work must still bound other
 prelude/fanout growth and protected variable payloads.
 
+Raw callback storage is now preallocated for 4,096 entries and cannot expand on
+push. Ordinary and terminal rosters share two preallocated 256-window/64-display
+backings with exact borrowed fact deduplication; a busy pool freezes admission
+and closes the current output as diagnostic without minting another roster.
+Route/resource/retirement lifetime union admission reserves a complete window
+slot before create or binding. Display overflow revokes only work-area authority
+to Unknown without dropping window facts or backing capacity. Shared core/replay
+byte allowance, prelude/fanout growth, load and soak are still unfinished.
+The frozen source passes 316 native tests normally and without native debug
+assertions, Clippy and a macOS programmatic real-window redock. Removing the raw
+push guard fails the overflow regression; restoring it passes. A quarantine
+DeviceRemoval journey commits both preexisting mouse/touch stream terminals
+through the production gate. This is not a complete 4 MiB or physical-input
+qualification.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

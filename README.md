@@ -48,6 +48,14 @@ from the 2026-10-27 audit are repaired and covered by fresh regressions. See
 [`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
 docking and multiview crate.
 
+The experimental native adapter reserves 4,096 raw callback slots and two
+reusable complete-roster payloads. It admits at most 256 simultaneously retained
+native binding lifetimes, including pending retirement; a route/create pair
+shares one commitment. More than 64 work-area records revoke work-area authority
+to `Unknown` while preserving the complete window inventory. Snapshot storage
+pressure freezes ordinary admission through the existing overload boundary.
+The full 4 MiB transfer budget and input-load qualification remain unfinished.
+
 ## Architecture
 
 - `dockspace` is the only semantic authority for topology, selection, drop,

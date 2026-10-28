@@ -18,7 +18,7 @@ use eframe::{
     NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeViewportCreateFailure,
     NativeViewportFocusResult, NativeViewportPointerPassthroughResult, NativeViewportRoster,
     NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowEventDisposition,
-    NativeWindowSnapshot, NativeWindowingBackend, egui::ViewportId,
+    NativeWindowSnapshot, egui::ViewportId,
 };
 
 use crate::close_control::{
@@ -36,13 +36,13 @@ use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewport
 use crate::viewport_map::{CreateAdmission, CreateTerminal, NativeViewportMap};
 #[cfg(test)]
 use crate::window_snapshot::CompiledWindowObservation;
-use crate::work_area::FrozenWorkAreaRoster;
 
 mod admission;
 #[cfg(test)]
 mod admission_tests;
 use admission::NativeAdmission;
 pub(crate) use admission::NativeDispatch;
+mod capacity;
 mod command_callback;
 #[cfg(test)]
 mod command_ingress_tests;
@@ -50,12 +50,15 @@ pub(crate) mod journal;
 #[cfg(test)]
 mod lifecycle_ingress_tests;
 mod output_resource;
+mod roster;
 mod terminal_roster;
 mod window_resource;
 use command_callback::CommandCallbackAdmission;
 use journal::{HostIngressJournal, ReservedHostRecord};
 use output_resource::NativeOutputResource;
 pub(crate) use output_resource::PendingNativeOutput;
+use roster::NativeViewportRosterKey;
+pub(crate) use roster::{NativeViewportRosterEnvelope, NativeViewportRosterRecord};
 use terminal_roster::TerminalRosterState;
 use window_resource::NativeWindowResources;
 
@@ -149,187 +152,6 @@ impl NativeStagingPaintRecord {
 
     pub(crate) const fn request(self) -> NativeStagingPaintRequest {
         self.request
-    }
-}
-
-/// Frozen dockspace observations captured from one complete root-window roster.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct NativeViewportRosterRecord {
-    observations: Vec<FrozenWindowObservation>,
-    work_areas: Result<FrozenWorkAreaRoster, NativeHostProtocolError>,
-    backend: NativeWindowingBackend,
-    #[cfg(test)]
-    compiled_override: Option<Result<Vec<CompiledWindowObservation>, NativeHostProtocolError>>,
-}
-
-/// One callback-time window snapshot paired with its exact dockspace binding.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct FrozenWindowObservation {
-    viewport: ViewportId,
-    window_id: winit::window::WindowId,
-    binding: NativeSurfaceBinding,
-    snapshot: NativeWindowSnapshot,
-}
-
-impl FrozenWindowObservation {
-    const fn new(
-        viewport: ViewportId,
-        window_id: winit::window::WindowId,
-        binding: NativeSurfaceBinding,
-        snapshot: NativeWindowSnapshot,
-    ) -> Self {
-        Self {
-            viewport,
-            window_id,
-            binding,
-            snapshot,
-        }
-    }
-
-    pub(crate) const fn binding(self) -> NativeSurfaceBinding {
-        self.binding
-    }
-
-    pub(crate) const fn snapshot(self) -> NativeWindowSnapshot {
-        self.snapshot
-    }
-}
-
-impl NativeViewportRosterRecord {
-    fn capture(roster: NativeViewportRoster<'_>, viewports: &NativeViewportMap) -> Self {
-        let mut observations = Vec::new();
-        for record in roster.records() {
-            let Some(binding) =
-                viewports.binding_for_roster(record.viewport_id(), record.window_id())
-            else {
-                continue;
-            };
-            observations.push(FrozenWindowObservation::new(
-                record.viewport_id(),
-                record.window_id(),
-                binding,
-                record.window(),
-            ));
-        }
-        observations.sort_unstable_by_key(|observation| observation.binding().surface());
-        Self {
-            observations,
-            work_areas: FrozenWorkAreaRoster::capture(roster.work_areas()),
-            backend: roster.backend(),
-            #[cfg(test)]
-            compiled_override: None,
-        }
-    }
-
-    pub(crate) fn observations(&self) -> &[FrozenWindowObservation] {
-        &self.observations
-    }
-
-    pub(crate) fn work_areas(&self) -> Result<&FrozenWorkAreaRoster, NativeHostProtocolError> {
-        self.work_areas.as_ref().map_err(|error| *error)
-    }
-
-    pub(crate) const fn backend(&self) -> NativeWindowingBackend {
-        self.backend
-    }
-
-    #[cfg(test)]
-    pub(crate) fn compiled_override(
-        &self,
-    ) -> Option<Result<Vec<CompiledWindowObservation>, NativeHostProtocolError>> {
-        self.compiled_override.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(
-        observations: impl IntoIterator<Item = CompiledWindowObservation>,
-        facts_valid: bool,
-    ) -> Self {
-        Self {
-            observations: Vec::new(),
-            work_areas: Ok(FrozenWorkAreaRoster::Unknown),
-            // Coordinator tests model the fully managed desktop contract. The
-            // capability roster is immutable after the first snapshot, so a
-            // deterministic desktop backend keeps later synthetic rosters
-            // compatible with that contract.
-            backend: NativeWindowingBackend::Windows,
-            compiled_override: Some(if facts_valid {
-                Ok(observations.into_iter().collect())
-            } else {
-                Err(NativeHostProtocolError::InvalidWindowSnapshot)
-            }),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test_with_work_areas(
-        observations: impl IntoIterator<Item = CompiledWindowObservation>,
-        work_areas: FrozenWorkAreaRoster,
-    ) -> Self {
-        Self::for_test_with_backend_and_work_areas(
-            observations,
-            work_areas,
-            NativeWindowingBackend::Windows,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test_with_backend_and_work_areas(
-        observations: impl IntoIterator<Item = CompiledWindowObservation>,
-        work_areas: FrozenWorkAreaRoster,
-        backend: NativeWindowingBackend,
-    ) -> Self {
-        Self {
-            observations: Vec::new(),
-            work_areas: Ok(work_areas),
-            backend,
-            compiled_override: Some(Ok(observations.into_iter().collect())),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct NativeViewportRosterKey {
-    context: u64,
-    roster: Arc<NativeViewportRosterRecord>,
-}
-
-impl NativeViewportRosterKey {
-    fn new(context: u64, roster: NativeViewportRosterRecord) -> Self {
-        Self {
-            context,
-            roster: Arc::new(roster),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct NativeViewportRosterEnvelope {
-    key: NativeViewportRosterKey,
-    commit_baseline: bool,
-    terminal_generation: Option<u64>,
-}
-
-impl NativeViewportRosterEnvelope {
-    fn new(
-        context: u64,
-        roster: NativeViewportRosterRecord,
-        commit_baseline: bool,
-        terminal_generation: Option<u64>,
-    ) -> Self {
-        Self {
-            key: NativeViewportRosterKey::new(context, roster),
-            commit_baseline,
-            terminal_generation,
-        }
-    }
-
-    pub(crate) fn roster(&self) -> &NativeViewportRosterRecord {
-        &self.key.roster
-    }
-
-    pub(crate) const fn is_terminal(&self) -> bool {
-        self.terminal_generation.is_some()
     }
 }
 
@@ -1941,10 +1763,8 @@ impl NativeHostState {
     }
 
     fn admit_ordinary(&mut self) -> bool {
-        if !self.mode.accepts_new_work() {
-            return false;
-        }
-        if self.retained_record_count() >= admission::RECORD_LIMIT
+        if !self.journal.can_push_raw()
+            || self.retained_record_count() >= admission::RECORD_LIMIT
             || self
                 .oldest_record_age()
                 .is_some_and(|age| age >= admission::AGE_LIMIT)
@@ -1952,7 +1772,7 @@ impl NativeHostState {
             self.freeze_ordinary();
             return false;
         }
-        matches!(self.admission, NativeAdmission::Running)
+        self.mode.accepts_new_work() && matches!(self.admission, NativeAdmission::Running)
     }
 
     fn dispatch(&self) -> NativeDispatch {
@@ -2282,7 +2102,8 @@ impl NativeHostState {
             self.terminal_roster.require();
         }
         if admission == CommandCallbackAdmission::Unreserved {
-            self.journal
+            return self
+                .journal
                 .push_back(HostRecord::ViewportVisibility(record));
         }
         true
@@ -2292,8 +2113,7 @@ impl NativeHostState {
         if !self.admit_ordinary() {
             return false;
         }
-        self.journal.push_back(HostRecord::GlobalFocus(record));
-        true
+        self.journal.push_back(HostRecord::GlobalFocus(record))
     }
 
     fn record_viewport_focus(&mut self, record: NativeViewportFocusRecord) -> bool {
@@ -2314,7 +2134,7 @@ impl NativeHostState {
             if !self.admit_ordinary() {
                 return false;
             }
-            self.journal.push_back(HostRecord::ViewportFocus(record));
+            return self.journal.push_back(HostRecord::ViewportFocus(record));
         }
         true
     }
@@ -2345,7 +2165,8 @@ impl NativeHostState {
             self.terminal_roster.require();
         }
         if admission == CommandCallbackAdmission::Unreserved {
-            self.journal
+            return self
+                .journal
                 .push_back(HostRecord::ViewportPointerPassthrough(record));
         }
         true
@@ -2513,7 +2334,7 @@ impl NativeHostState {
         self.mode.accepts_window_event(event)
     }
 
-    fn record_window_event(&mut self, record: NativeWindowEventRecord) {
+    fn record_window_event(&mut self, record: NativeWindowEventRecord) -> bool {
         if matches!(
             (self.mode, record.event()),
             (
@@ -2523,7 +2344,7 @@ impl NativeHostState {
         ) {
             self.terminal_roster.require();
         }
-        self.journal.push_back(HostRecord::WindowEvent(record));
+        self.journal.push_back(HostRecord::WindowEvent(record))
     }
 
     fn capture_window_event(&mut self, mut record: NativeWindowEventRecord) -> bool {
@@ -2534,8 +2355,12 @@ impl NativeHostState {
         {
             return true;
         }
-        if matches!(self.mode, HostIngressMode::Active)
-            && !matches!(record.event(), winit::event::WindowEvent::Destroyed)
+        let reserved_close = matches!(record.event(), winit::event::WindowEvent::CloseRequested)
+            && record
+                .binding()
+                .is_some_and(|binding| self.close_control.references_binding(binding));
+        if !matches!(record.event(), winit::event::WindowEvent::Destroyed)
+            && !reserved_close
             && !self.admit_ordinary()
         {
             return false;
@@ -2548,13 +2373,12 @@ impl NativeHostState {
                 NativeCloseCaptureAdmission::Duplicate => return true,
                 NativeCloseCaptureAdmission::First => {
                     if self.close_control.needs_request_recording(&record, binding) {
-                        self.record_window_event(record);
-                    } else {
-                        let ingress = self.journal.reserve(HostRecord::WindowEvent(record));
-                        self.close_control
-                            .retain_successor_ingress(binding, ingress)
-                            .expect("a first successor capture owns its sole ingress reservation");
+                        return self.record_window_event(record);
                     }
+                    let ingress = self.journal.reserve(HostRecord::WindowEvent(record));
+                    self.close_control
+                        .retain_successor_ingress(binding, ingress)
+                        .expect("a first successor capture owns its sole ingress reservation");
                     return true;
                 }
             }
@@ -2585,14 +2409,16 @@ impl NativeHostState {
             }
             return true;
         }
-        self.record_window_event(record);
-        true
+        self.record_window_event(record)
     }
 
-    fn record_device_removal(&mut self, record: NativeDeviceRemovalRecord) {
-        if matches!(self.mode, HostIngressMode::Quarantined) || self.admit_ordinary() {
-            self.journal.push_back(HostRecord::DeviceRemoval(record));
-        }
+    fn record_device_removal(&mut self, record: NativeDeviceRemovalRecord) -> bool {
+        let ordinary = self.admit_ordinary();
+        // Quarantine may still terminate an existing provider tail, within the
+        // same raw capacity and fixed admission boundary as every other source.
+        let terminal = matches!(self.mode, HostIngressMode::Quarantined)
+            && matches!(self.admission, NativeAdmission::Running);
+        (ordinary || terminal) && self.journal.push_back(HostRecord::DeviceRemoval(record))
     }
 
     fn coalesce_idle_cursor_prefix(&mut self, budget: &mut NativeInputBudget) -> bool {
@@ -2661,13 +2487,30 @@ impl NativeHostState {
             .expect("native viewport roster context exhausted");
     }
 
-    fn record_viewport_roster(&mut self, roster: NativeViewportRosterRecord) -> bool {
+    fn viewport_roster_known_borrowed(&self, roster: NativeViewportRoster<'_>) -> bool {
+        let known = |key: &NativeViewportRosterKey| {
+            key.context == self.roster_context
+                && key.roster.matches_borrowed(roster, &self.viewports)
+        };
+        self.committed_viewport_roster.as_ref().is_some_and(known)
+            || self.in_flight_viewport_roster.as_ref().is_some_and(known)
+            || self
+                .journal
+                .iter()
+                .chain(self.owner_ingress().map(ReservedHostRecord::record))
+                .any(|record| matches!(record, HostRecord::ViewportRoster(envelope) if known(&envelope.key)))
+    }
+
+    fn record_viewport_roster(
+        &mut self,
+        roster: impl Into<Arc<NativeViewportRosterRecord>>,
+    ) -> bool {
         if !self.admit_ordinary() {
             return false;
         }
-        let envelope = NativeViewportRosterEnvelope::new(
+        let envelope = NativeViewportRosterEnvelope::from_shared(
             self.roster_context,
-            roster,
+            roster.into(),
             matches!(self.mode, HostIngressMode::Active),
             None,
         );
@@ -2679,16 +2522,18 @@ impl NativeHostState {
         if already_known {
             return false;
         }
-        self.journal.push_back(HostRecord::ViewportRoster(envelope));
-        true
+        self.journal.push_back(HostRecord::ViewportRoster(envelope))
     }
 
-    fn record_terminal_viewport_roster(&mut self, roster: NativeViewportRosterRecord) -> bool {
+    fn record_terminal_viewport_roster(
+        &mut self,
+        roster: impl Into<Arc<NativeViewportRosterRecord>>,
+    ) -> bool {
         self.terminal_roster.capture(|generation| {
             self.journal.reserve(HostRecord::ViewportRoster(
-                NativeViewportRosterEnvelope::new(
+                NativeViewportRosterEnvelope::from_shared(
                     self.roster_context,
-                    roster,
+                    roster.into(),
                     true,
                     Some(generation),
                 ),
@@ -2943,6 +2788,20 @@ impl Drop for PreparedRouteRetirements {
 }
 
 impl NativeHostBridge {
+    pub(crate) fn reserve_viewport_route(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        let mut records = self.lock();
+        if !records.can_admit_binding(binding) {
+            return Err(NativeViewportBindingError::CapacityExceeded {
+                limit: records.terminal_roster.window_capacity(),
+            });
+        }
+        records.viewports.reserve(viewport, binding)
+    }
+
     pub(crate) fn bind_viewport_route(
         &self,
         viewport: ViewportId,
@@ -2950,6 +2809,11 @@ impl NativeHostBridge {
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
         let mut records = self.lock();
+        if !records.can_admit_binding(binding) {
+            return Err(NativeViewportBindingError::CapacityExceeded {
+                limit: records.terminal_roster.window_capacity(),
+            });
+        }
         if !records.retirements.can_retain_window(binding, window) {
             return Err(NativeViewportBindingError::BindingNotCurrent {
                 viewport,
@@ -2966,6 +2830,11 @@ impl NativeHostBridge {
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
         let mut records = self.lock();
+        if !records.can_admit_binding(binding) {
+            return Err(NativeViewportBindingError::CapacityExceeded {
+                limit: records.terminal_roster.window_capacity(),
+            });
+        }
         if !records.retirements.can_retain_window(binding, window) {
             return Err(NativeViewportBindingError::BindingNotCurrent {
                 viewport,
@@ -3011,6 +2880,11 @@ impl NativeHostBridge {
         replacement: NativeViewportReplacement,
     ) -> Result<(), NativeViewportBindingError> {
         let mut records = self.lock();
+        if !records.can_admit_binding(successor) {
+            return Err(NativeViewportBindingError::CapacityExceeded {
+                limit: records.terminal_roster.window_capacity(),
+            });
+        }
         let same_window = match replacement {
             NativeViewportReplacement::Attach(window)
                 if records.viewports.window(viewport) == Some(window) =>
@@ -3105,13 +2979,12 @@ impl NativeHostBridge {
         let mut records = self.lock();
         let count = records.retained_record_count();
         let age = records.oldest_record_age();
-        if records.mode.accepts_new_work() {
-            if matches!(records.admission, NativeAdmission::Running)
-                && (count >= admission::RECORD_LIMIT
-                    || age.is_some_and(|age| age >= admission::AGE_LIMIT))
-            {
-                records.freeze_ordinary();
-            }
+        if matches!(records.admission, NativeAdmission::Running)
+            && (!records.journal.can_push_raw()
+                || count >= admission::RECORD_LIMIT
+                || age.is_some_and(|age| age >= admission::AGE_LIMIT))
+        {
+            records.freeze_ordinary();
         }
         records.admission.try_resume(count, age);
         records.dispatch()
@@ -3721,7 +3594,7 @@ impl NativeHostBridge {
         rect: NativePhysicalRect,
     ) -> bool {
         let mut records = self.lock();
-        if !records.admit_ordinary() {
+        if !records.can_admit_binding(binding) || !records.admit_ordinary() {
             return false;
         }
         records
@@ -3974,10 +3847,6 @@ impl NativeHostBridge {
             token.create_attempt(),
         );
         let ordinary_roster = root_roster.is_some() && records.admit_ordinary();
-        let capture_roster = records.terminal_roster.needs_capture() || ordinary_roster;
-        let roster = root_roster
-            .filter(|_| capture_roster)
-            .map(|roster| NativeViewportRosterRecord::capture(roster, &records.viewports));
         if !records.reserve_output(token, binding, window, budget) {
             return false;
         }
@@ -3991,17 +3860,54 @@ impl NativeHostBridge {
         {
             records.record_viewport_created(NativeViewportCreatedRecord::new(token, binding));
         }
-        if let Some(roster) = roster {
+        if let Some(roster) = root_roster {
             match records.mode {
                 HostIngressMode::Active | HostIngressMode::Quarantined
                     if records.terminal_roster.needs_capture() =>
                 {
-                    records.record_terminal_viewport_roster(roster);
+                    let NativeHostState {
+                        terminal_roster,
+                        viewports,
+                        ..
+                    } = &mut *records;
+                    let payload = terminal_roster.capture_roster(roster, viewports);
+                    if let Some(payload) = payload {
+                        records.record_terminal_viewport_roster(payload);
+                    } else {
+                        // Both preallocated payloads may still be retained by a
+                        // baseline or settling snapshot. Keep the obligation and
+                        // retry after this output without allocating a third one.
+                        records.require_output_wake_after_current(token);
+                    }
                 }
-                HostIngressMode::Active => {
-                    records.record_viewport_roster(roster);
+                HostIngressMode::Active if ordinary_roster => {
+                    if !records.viewport_roster_known_borrowed(roster) {
+                        let NativeHostState {
+                            terminal_roster,
+                            viewports,
+                            ..
+                        } = &mut *records;
+                        let payload = terminal_roster.capture_ordinary_roster(roster, viewports);
+                        if let Some(payload) = payload {
+                            records.record_viewport_roster(payload);
+                        } else {
+                            // Drain the already accepted snapshot before a
+                            // protected recapture. Neither ordinary nor terminal
+                            // ingress may allocate a third payload backing.
+                            records.freeze_ordinary();
+                            records
+                                .output_resources
+                                .get_mut(&token)
+                                .expect("the current output was reserved before roster capture")
+                                .reservation
+                                .abandon_silently();
+                            records.require_output_wake_after_current(token);
+                        }
+                    }
                 }
-                HostIngressMode::Quarantined | HostIngressMode::Frozen => {}
+                HostIngressMode::Active
+                | HostIngressMode::Quarantined
+                | HostIngressMode::Frozen => {}
             }
         }
         true
@@ -4483,6 +4389,9 @@ impl NativeHostBridge {
             return;
         }
         match record {
+            HostRecord::DeviceRemoval(record) => {
+                records.record_device_removal(record);
+            }
             HostRecord::ViewportFocus(record) => {
                 records.record_viewport_focus(record);
             }
@@ -4495,7 +4404,9 @@ impl NativeHostBridge {
             HostRecord::ViewportCloseCancelled(record) => {
                 records.record_viewport_close_cancelled(record);
             }
-            record => records.journal.push_back(record),
+            record => {
+                records.journal.push_back(record);
+            }
         }
     }
 

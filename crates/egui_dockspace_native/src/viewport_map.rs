@@ -60,6 +60,10 @@ pub(crate) struct NativeViewportMap {
 }
 
 impl NativeViewportMap {
+    pub(crate) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        self.viewports.values().map(|route| route.binding)
+    }
+
     pub(crate) fn reserve(
         &mut self,
         viewport: ViewportId,

@@ -37,20 +37,58 @@ pub(crate) enum FrozenWorkAreaRoster {
 }
 
 impl FrozenWorkAreaRoster {
-    pub(crate) fn capture(
+    /// Reuses caller-owned storage, including when facts become unavailable.
+    /// The spare retains its allocation on Unknown, invalid or oversized input.
+    pub(crate) fn capture_reusing(
         roster: EframeWorkAreaRoster<'_>,
-    ) -> Result<Self, NativeHostProtocolError> {
+        spare: &mut Vec<FrozenWorkArea>,
+    ) -> (Result<Self, NativeHostProtocolError>, bool) {
         match roster {
-            EframeWorkAreaRoster::Exact(records) => {
-                let records = records
-                    .iter()
-                    .copied()
-                    .map(compile_work_area)
-                    .collect::<Result<Vec<_>, _>>()?;
-                validate_exact_roster(records)
+            EframeWorkAreaRoster::Unknown => {
+                spare.clear();
+                (Ok(Self::Unknown), false)
             }
-            EframeWorkAreaRoster::Unknown => Ok(Self::Unknown),
+            EframeWorkAreaRoster::Exact(records) => {
+                fill_exact_reusing(records.iter().copied().map(compile_work_area), spare)
+            }
         }
+    }
+
+    /// Compares borrowed backend facts without allocating a normalized roster.
+    pub(crate) fn matches_borrowed(&self, roster: EframeWorkAreaRoster<'_>) -> bool {
+        match (self, roster) {
+            (Self::Unknown, EframeWorkAreaRoster::Unknown) => true,
+            (Self::Exact(expected), EframeWorkAreaRoster::Exact(records)) => {
+                expected.len() == records.len()
+                    && Self::validate_borrowed(roster).is_ok()
+                    && records.iter().copied().all(|record| {
+                        compile_work_area(record)
+                            .is_ok_and(|record| expected.iter().any(|expected| *expected == record))
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn validate_borrowed(
+        roster: EframeWorkAreaRoster<'_>,
+    ) -> Result<(), NativeHostProtocolError> {
+        let EframeWorkAreaRoster::Exact(records) = roster else {
+            return Ok(());
+        };
+        if records.is_empty() {
+            return Err(NativeHostProtocolError::InvalidWorkAreaRoster);
+        }
+        for (index, record) in records.iter().copied().enumerate() {
+            compile_work_area(record)?;
+            if records[..index]
+                .iter()
+                .any(|previous| previous.display_id() == record.display_id())
+            {
+                return Err(NativeHostProtocolError::InvalidWorkAreaRoster);
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -71,6 +109,33 @@ impl FrozenWorkAreaRoster {
                 .collect(),
         )
     }
+}
+
+fn fill_exact_reusing(
+    records: impl ExactSizeIterator<Item = Result<FrozenWorkArea, NativeHostProtocolError>>,
+    spare: &mut Vec<FrozenWorkArea>,
+) -> (Result<FrozenWorkAreaRoster, NativeHostProtocolError>, bool) {
+    spare.clear();
+    if records.len() > spare.capacity() {
+        return (Ok(FrozenWorkAreaRoster::Unknown), true);
+    }
+    for record in records {
+        match record {
+            Ok(record) => spare.push(record),
+            Err(error) => {
+                spare.clear();
+                return (Err(error), false);
+            }
+        }
+    }
+    if let Err(error) = validate_exact_records(spare) {
+        spare.clear();
+        return (Err(error), false);
+    }
+    (
+        Ok(FrozenWorkAreaRoster::Exact(std::mem::take(spare))),
+        false,
+    )
 }
 
 #[derive(Debug)]
@@ -242,9 +307,15 @@ fn physical_rect(rect: NativePhysicalRect) -> Result<PhysicalRect, NativeHostPro
     .map_err(|_| NativeHostProtocolError::InvalidWorkAreaRoster)
 }
 
+#[cfg(test)]
 fn validate_exact_roster(
     mut records: Vec<FrozenWorkArea>,
 ) -> Result<FrozenWorkAreaRoster, NativeHostProtocolError> {
+    validate_exact_records(&mut records)?;
+    Ok(FrozenWorkAreaRoster::Exact(records))
+}
+
+fn validate_exact_records(records: &mut [FrozenWorkArea]) -> Result<(), NativeHostProtocolError> {
     if records.is_empty() {
         return Err(NativeHostProtocolError::InvalidWorkAreaRoster);
     }
@@ -255,12 +326,67 @@ fn validate_exact_roster(
     {
         return Err(NativeHostProtocolError::InvalidWorkAreaRoster);
     }
-    Ok(FrozenWorkAreaRoster::Exact(records))
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reusable_capture_keeps_storage_through_unknown_invalid_and_display_overflow() {
+        let FrozenWorkAreaRoster::Exact(records) = FrozenWorkAreaRoster::for_test_exact([(
+            7,
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).unwrap(),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0).unwrap(),
+            ScaleFactor::new(1.0).unwrap(),
+        )]) else {
+            unreachable!("the fixture constructs exact work-area facts");
+        };
+        let record = records[0];
+        let mut spare = Vec::with_capacity(1);
+        let original = spare.as_ptr();
+        let capacity = spare.capacity();
+
+        let (exact, exceeded) = fill_exact_reusing([Ok(record)].into_iter(), &mut spare);
+        assert!(!exceeded);
+        let Ok(FrozenWorkAreaRoster::Exact(storage)) = exact else {
+            panic!("one valid display fits the protected backing");
+        };
+        assert_eq!(storage.as_ptr(), original);
+        assert_eq!(storage.capacity(), capacity);
+        spare = storage;
+
+        let (unknown, exceeded) =
+            FrozenWorkAreaRoster::capture_reusing(EframeWorkAreaRoster::Unknown, &mut spare);
+        assert_eq!(unknown, Ok(FrozenWorkAreaRoster::Unknown));
+        assert!(!exceeded);
+        assert_eq!(spare.as_ptr(), original);
+        let (invalid, exceeded) = fill_exact_reusing(
+            [Err(NativeHostProtocolError::InvalidWorkAreaRoster)].into_iter(),
+            &mut spare,
+        );
+        assert_eq!(invalid, Err(NativeHostProtocolError::InvalidWorkAreaRoster));
+        assert!(!exceeded);
+        assert_eq!(spare.as_ptr(), original);
+
+        let (overflow, exceeded) =
+            fill_exact_reusing(vec![Ok(record); capacity + 1].into_iter(), &mut spare);
+        assert_eq!(overflow, Ok(FrozenWorkAreaRoster::Unknown));
+        assert!(exceeded);
+        assert_eq!(spare.capacity(), capacity);
+        assert_eq!(spare.as_ptr(), original);
+        assert!(spare.is_empty());
+
+        let (exact, exceeded) = fill_exact_reusing([Ok(record)].into_iter(), &mut spare);
+        assert!(!exceeded);
+        let Ok(FrozenWorkAreaRoster::Exact(storage)) = exact else {
+            panic!("the same backing accepts a later exact display roster");
+        };
+        assert_eq!(storage, records);
+        assert_eq!(storage.as_ptr(), original);
+        assert_eq!(storage.capacity(), capacity);
+    }
 
     #[test]
     fn exact_prepare_retains_the_existing_display_token() {

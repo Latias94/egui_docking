@@ -146,6 +146,43 @@ fn reserved_close_ingress() -> ReservedHostRecord {
 }
 
 #[test]
+fn frozen_raw_admission_preserves_the_existing_close_successor_slot() {
+    let (mut session, binding) = fixture();
+    let first = event(binding, 71, 11);
+    let successor = event(binding, 72, 11);
+    let request = core_request(&mut session, binding);
+    let acknowledgement = cancellation(&mut session, request);
+    let bridge = NativeHostBridge::new(NativeViewportMap::default());
+    bridge.with_close_control(|control| {
+        assert!(control.observe_request(&first, binding));
+        assert_eq!(control.bind_request(request), Ok(true));
+        assert_eq!(
+            control.begin_cancellation(request, acknowledgement),
+            Some(ViewportId::ROOT),
+        );
+    });
+    assert_eq!(bridge.freeze_ordinary_for_test(), 0);
+    bridge.push_record(HostRecord::WindowEvent(successor.clone()));
+    bridge.with_close_control(|control| {
+        let parked = control.parked_ingress().next().unwrap();
+        assert_eq!(parked.ordinal(), 1);
+        assert_eq!(parked.window_event(), Some(&successor));
+        assert_eq!(control.progress().requests_retained(), 2);
+    });
+    // A duplicate and a later conflicting successor cannot consume another slot.
+    bridge.push_record(HostRecord::WindowEvent(successor.clone()));
+    bridge.push_record(HostRecord::WindowEvent(event(binding, 73, 11)));
+    bridge.with_close_control(|control| {
+        assert_eq!(control.parked_ingress().count(), 1);
+        assert_eq!(control.callback_ingress().count(), 0);
+        assert_eq!(control.progress().requests_retained(), 2);
+        let parked = control.parked_ingress().next().unwrap();
+        assert_eq!(parked.ordinal(), 1);
+        assert_eq!(parked.window_event(), Some(&successor));
+    });
+}
+
+#[test]
 fn capture_is_exact_and_cannot_bind_core_before_requested_was_recorded() {
     let (mut session, binding) = fixture();
     let (_, foreign) = fixture();

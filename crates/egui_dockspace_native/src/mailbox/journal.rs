@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use dockspace::runtime::NativeMonotonicClock;
 
-use super::HostRecord;
+use super::{HostRecord, admission::RECORD_LIMIT};
 
 #[derive(Debug)]
 pub(crate) struct ReservedHostRecord {
@@ -53,7 +53,7 @@ impl HostIngressJournal {
     pub(crate) fn new(clock: NativeMonotonicClock) -> Self {
         Self {
             clock,
-            queue: VecDeque::new(),
+            queue: VecDeque::with_capacity(RECORD_LIMIT),
             last_ordinal: 0,
             transferred_count: 0,
             transferred_oldest: None,
@@ -66,6 +66,10 @@ impl HostIngressJournal {
 
     pub(super) fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+
+    pub(super) fn can_push_raw(&self) -> bool {
+        self.queue.len() < RECORD_LIMIT
     }
 
     pub(super) fn retained_record_count(&self) -> usize {
@@ -120,9 +124,14 @@ impl HostIngressJournal {
         }
     }
 
-    pub(super) fn push_back(&mut self, record: HostRecord) {
+    /// Rejects an unaccepted raw record before minting its ingress identity.
+    pub(super) fn push_back(&mut self, record: HostRecord) -> bool {
+        if !self.can_push_raw() {
+            return false;
+        }
         let record = self.reserve(record);
         self.queue.push_back(record);
+        true
     }
 
     pub(super) fn front(&self) -> Option<&HostRecord> {
@@ -204,17 +213,18 @@ mod tests {
     fn buffer_capacity_survives_removal_without_charging_parked_or_transferred_records() {
         let (mut journal, _) = journal();
         let inline = size_of::<HostIngressJournal>();
-        assert_eq!(journal.owned_buffer_capacity_bytes(), inline);
+        let capacity = journal.queue.capacity();
+        assert!(capacity >= RECORD_LIMIT);
+        let expected = inline + capacity * size_of::<ReservedHostRecord>();
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
         let parked = journal.reserve(record(1));
-        assert_eq!(journal.queue.capacity(), 0);
-        assert_eq!(journal.owned_buffer_capacity_bytes(), inline);
+        assert_eq!(journal.queue.capacity(), capacity);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
 
         for ordinal in 2..=4 {
-            journal.push_back(record(ordinal));
+            assert!(journal.push_back(record(ordinal)));
         }
-        let capacity = journal.queue.capacity();
-        assert!(capacity >= 3);
-        let expected = inline + capacity * size_of::<ReservedHostRecord>();
+        assert_eq!(journal.queue.capacity(), capacity);
         assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
 
         journal.pop_front().expect("the first raw record is queued");
@@ -232,11 +242,74 @@ mod tests {
         journal.commit_transferred();
         assert_eq!(journal.retained_record_count(), 0);
         assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
-        journal.push_back(record(5));
+        assert!(journal.push_back(record(5)));
         journal.queue.clear();
         assert!(journal.is_empty());
         assert_eq!(journal.queue.capacity(), capacity);
         assert_eq!(journal.owned_buffer_capacity_bytes(), expected);
+    }
+
+    #[test]
+    fn raw_limit_rejects_without_minting_and_reuses_backing_after_pop_and_transfer() {
+        let (mut journal, _) = journal();
+        let capacity = journal.queue.capacity();
+        let bytes = journal.owned_buffer_capacity_bytes();
+        assert!(journal.can_push_raw());
+        for ordinal in 1..=RECORD_LIMIT {
+            assert!(journal.push_back(record(ordinal as u64)));
+        }
+        let backing = journal.queue.as_slices().0.as_ptr();
+        let second_slot = journal.queue.get(1).unwrap() as *const ReservedHostRecord;
+        let third_slot = journal.queue.get(2).unwrap() as *const ReservedHostRecord;
+        assert_eq!(journal.len(), RECORD_LIMIT);
+        assert!(!journal.can_push_raw());
+        assert!(!journal.push_back(record(RECORD_LIMIT as u64 + 1)));
+        assert_eq!(journal.captured_through(), RECORD_LIMIT as u64);
+        assert_eq!(journal.front_ordinal(), Some(1));
+        assert_eq!(journal.queue.back().unwrap().ordinal(), RECORD_LIMIT as u64);
+        assert_eq!(journal.queue.capacity(), capacity);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), bytes);
+
+        let parked = journal.reserve(record(RECORD_LIMIT as u64 + 1));
+        assert_eq!(parked.ordinal(), RECORD_LIMIT as u64 + 1);
+        assert_eq!(journal.len(), RECORD_LIMIT);
+        assert!(!journal.can_push_raw());
+        assert_eq!(journal.queue.capacity(), capacity);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), bytes);
+
+        journal.pop_front().expect("a full raw queue has a head");
+        assert!(journal.can_push_raw());
+        assert_eq!(
+            journal.front_reserved().unwrap() as *const ReservedHostRecord,
+            second_slot
+        );
+        assert!(journal.push_back(record(RECORD_LIMIT as u64 + 2)));
+        assert_eq!(
+            journal.queue.back().unwrap() as *const ReservedHostRecord,
+            backing.wrapping_add(RECORD_LIMIT % capacity)
+        );
+        assert_eq!(journal.queue.capacity(), capacity);
+
+        journal.transfer_front(1);
+        assert_eq!(journal.retained_record_count(), RECORD_LIMIT);
+        assert!(journal.can_push_raw());
+        assert_eq!(
+            journal.front_reserved().unwrap() as *const ReservedHostRecord,
+            third_slot
+        );
+        assert!(journal.push_back(record(RECORD_LIMIT as u64 + 3)));
+        assert_eq!(
+            journal.queue.back().unwrap() as *const ReservedHostRecord,
+            backing.wrapping_add((RECORD_LIMIT + 1) % capacity)
+        );
+        journal.transfer_reserved(parked);
+        journal.commit_transferred();
+        assert_eq!(journal.len(), RECORD_LIMIT);
+        assert!(!journal.can_push_raw());
+        assert!(!journal.push_back(record(RECORD_LIMIT as u64 + 4)));
+        assert_eq!(journal.captured_through(), RECORD_LIMIT as u64 + 3);
+        assert_eq!(journal.queue.capacity(), capacity);
+        assert_eq!(journal.owned_buffer_capacity_bytes(), bytes);
     }
 
     #[test]

@@ -136,6 +136,13 @@ pub(crate) struct NativeRetirementState {
 }
 
 impl NativeRetirementState {
+    pub(crate) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        self.pending
+            .keys()
+            .chain(self.unmaterialized.keys())
+            .copied()
+    }
+
     pub(crate) fn has_pending_work(&self) -> bool {
         !self.pending.is_empty() || !self.unmaterialized.is_empty()
     }

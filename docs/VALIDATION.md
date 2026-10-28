@@ -15,6 +15,57 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 preallocated raw and roster storage
+
+The native raw journal now allocates its 4,096 callback slots at initialization
+and cannot grow at push. A rejected push receives no capture ordinal. Pop,
+transfer and commit reuse the same backing. Fatal quarantine shares the source
+count/age boundary instead of bypassing capacity. A DeviceRemoval may still end
+an existing provider tail while quarantine is Running, but cannot cross its
+fixed boundary; a new close cannot create an ordinary owner after freeze.
+Existing exact close successors retain their single parked owner slot.
+
+Ordinary and terminal root rosters share two preallocated payload backings,
+each with 256 window slots and 64 work-area slots. Capture mutates only a
+uniquely owned Arc and never creates a third backing. Complete borrowed facts
+are compared before capture, including geometry, backend and work areas, so an
+unchanged root does not generate another snapshot. Backing exhaustion freezes
+ordinary admission without minting a roster ordinal. The current output becomes
+diagnostic and retains an after-current wake; it cannot wait for a new semantic
+paint. Accepted snapshots still settle without a newer capture, releasing a
+backing for the protected obligation.
+
+New lifetime admission checks the union of route, resource and retirement roots
+against the reserved window capacity. Duplicate roots share one lifetime
+commitment; moving a window into retirement does not return it prematurely.
+Checks precede route reserve/bind/attach/replace and create reservation. Both
+coordinator reserve paths now use that bridge boundary. Oversized work-area
+facts revoke only work-area authority to Unknown, retain the full window roster
+and preserve reusable backing. Invalid and Unknown facts also retain storage.
+
+The new tests cover raw full/reject/reuse identity, quarantine full and exact
+age boundaries, close successor admission while frozen, duplicate lifetime
+roots and retirement capacity, both terminal receipt barriers, retained Arc
+references, rejected retry and ordinary-to-terminal backing reuse. The pool
+tests are private owner/receipt models; they do not fabricate fork output tokens
+or claim a complete real-token exhaustion interleaving matrix.
+
+Fresh serialized local-override qualification passes 316 native workspace tests
+normally and 316 with native debug assertions disabled, plus
+correctness/suspicious Clippy and formatting/diff checks. The final source
+completes the macOS real-window programmatic tear-off, first-live, redock and
+retirement smoke with exit 0. A disposable-snapshot negative control removes
+only the raw push capacity check: its full/reject/reuse regression fails at the
+unexpectedly accepted overflow; restoring the implementation passes that test.
+Independent final review reports no remaining confirmed P1/P2 in this slice.
+The quarantine DeviceRemoval journey also commits mouse and touch terminals
+through the production capture gate, checking exactly two new core records and
+an empty translator after commit.
+
+Core/replay and prelude/fanout growth still need their shared byte allowance.
+These bounded raw and roster stores do not yet qualify the total 4 MiB budget,
+native input-load/latency, lifecycle soak or physical-platform input.
+
 ## 2026-10-29 U7 reclaim before native input append
 
 Native facade recording now retires committed input before appending its next

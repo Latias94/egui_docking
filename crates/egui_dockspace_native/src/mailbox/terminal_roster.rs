@@ -1,6 +1,15 @@
 //! One terminal roster reservation survives transfer until both settlement gates.
 
+use std::sync::Arc;
+
+use eframe::NativeViewportRoster;
+
 use super::journal::ReservedHostRecord;
+use super::roster::NativeViewportRosterRecord;
+use crate::viewport_map::NativeViewportMap;
+
+pub(super) const DEFAULT_WINDOW_CAPACITY: usize = 256;
+pub(super) const DEFAULT_WORK_AREA_CAPACITY: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReceiptPhase {
@@ -17,14 +26,113 @@ struct TerminalRosterReceipt {
     settlement: Option<bool>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct TerminalRosterState {
     required_generation: u64,
     settled_generation: u64,
     receipt: Option<TerminalRosterReceipt>,
+    backings: [Arc<NativeViewportRosterRecord>; 2],
+    window_capacity_exceeded: bool,
+    work_area_capacity_exceeded: bool,
+}
+
+impl Default for TerminalRosterState {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_WINDOW_CAPACITY, DEFAULT_WORK_AREA_CAPACITY)
+    }
 }
 
 impl TerminalRosterState {
+    pub(super) fn with_capacity(window_slots: usize, work_area_slots: usize) -> Self {
+        Self {
+            required_generation: 0,
+            settled_generation: 0,
+            receipt: None,
+            backings: std::array::from_fn(|_| {
+                Arc::new(NativeViewportRosterRecord::with_capacity(
+                    window_slots,
+                    work_area_slots,
+                ))
+            }),
+            window_capacity_exceeded: false,
+            work_area_capacity_exceeded: false,
+        }
+    }
+
+    pub(super) fn window_capacity(&self) -> usize {
+        self.backings[0]
+            .window_capacity()
+            .min(self.backings[1].window_capacity())
+    }
+
+    /// Charges each preallocated Record and its actual vector capacities once.
+    /// Arc handles are inline owner state; Arc control blocks are not estimated.
+    pub(super) fn reserved_payload_capacity_bytes(&self) -> usize {
+        self.backings.iter().fold(0usize, |bytes, backing| {
+            bytes.saturating_add(backing.owned_payload_capacity_bytes())
+        })
+    }
+
+    pub(super) fn owns_payload(&self, payload: &Arc<NativeViewportRosterRecord>) -> bool {
+        self.backings
+            .iter()
+            .any(|backing| Arc::ptr_eq(backing, payload))
+    }
+
+    pub(super) const fn window_capacity_exceeded(&self) -> bool {
+        self.window_capacity_exceeded
+    }
+
+    pub(super) const fn work_area_capacity_exceeded(&self) -> bool {
+        self.work_area_capacity_exceeded
+    }
+
+    pub(super) fn capture_roster(
+        &mut self,
+        roster: NativeViewportRoster<'_>,
+        viewports: &NativeViewportMap,
+    ) -> Option<Arc<NativeViewportRosterRecord>> {
+        self.capture_with(|backing| backing.capture_into(roster, viewports))
+    }
+
+    pub(super) fn capture_ordinary_roster(
+        &mut self,
+        roster: NativeViewportRoster<'_>,
+        viewports: &NativeViewportMap,
+    ) -> Option<Arc<NativeViewportRosterRecord>> {
+        self.capture_backing_with(|backing| backing.capture_into(roster, viewports))
+    }
+
+    fn capture_with(
+        &mut self,
+        fill: impl FnOnce(&mut NativeViewportRosterRecord) -> bool,
+    ) -> Option<Arc<NativeViewportRosterRecord>> {
+        if !self.needs_capture() {
+            return None;
+        }
+        self.capture_backing_with(fill)
+    }
+
+    fn capture_backing_with(
+        &mut self,
+        fill: impl FnOnce(&mut NativeViewportRosterRecord) -> bool,
+    ) -> Option<Arc<NativeViewportRosterRecord>> {
+        let index = self
+            .backings
+            .iter_mut()
+            .position(|backing| Arc::get_mut(backing).is_some())?;
+        let backing = &mut self.backings[index];
+        let payload = Arc::get_mut(backing)
+            .expect("the exclusively owned backing remains private during capture");
+        if !fill(payload) {
+            self.window_capacity_exceeded = true;
+            return None;
+        }
+        self.window_capacity_exceeded = false;
+        self.work_area_capacity_exceeded = payload.work_area_capacity_exceeded();
+        Some(Arc::clone(backing))
+    }
+
     pub(super) fn require(&mut self) {
         self.required_generation = self
             .required_generation
@@ -133,7 +241,7 @@ mod tests {
 
     use super::*;
     use crate::event::NativeDeviceRemovalRecord;
-    use crate::mailbox::{HostRecord, journal::HostIngressJournal};
+    use crate::mailbox::{HostRecord, NativeHostBridge, journal::HostIngressJournal};
 
     fn journal() -> (HostIngressJournal, Arc<AtomicU64>) {
         let now = Arc::new(AtomicU64::new(0));
@@ -150,6 +258,157 @@ mod tests {
     // payload capture or the coordinator's exact snapshot-envelope validation.
     fn protocol_record(generation: u64) -> HostRecord {
         HostRecord::DeviceRemoval(NativeDeviceRemovalRecord::for_test(generation))
+    }
+
+    // Empty private payloads qualify allocation/receipt ownership only. Real
+    // borrowed fork rosters and OS window snapshots are not fabricated here.
+    #[test]
+    fn two_backings_wait_for_both_barriers_and_external_baseline_references() {
+        let (mut journal, _) = journal();
+        let mut state = TerminalRosterState::with_capacity(2, 1);
+        let reserved = state.reserved_payload_capacity_bytes();
+        assert_eq!(state.window_capacity(), 2);
+        assert!(reserved >= 2 * std::mem::size_of::<NativeViewportRosterRecord>());
+
+        state.require();
+        let baseline = state.capture_with(|_| true).unwrap();
+        assert!(state.owns_payload(&baseline));
+        let first_identity = Arc::as_ptr(&baseline);
+        let first = super::super::NativeViewportRosterEnvelope::from_shared(
+            0,
+            Arc::clone(&baseline),
+            true,
+            Some(1),
+        );
+        assert!(std::ptr::eq(first.roster(), baseline.as_ref()));
+        assert!(state.capture(|_| journal.reserve(HostRecord::ViewportRoster(first))));
+        let ordinal = state.ingress().unwrap().ordinal();
+        journal.transfer_reserved(state.take_ingress(ordinal).unwrap());
+        assert!(state.settle(1, true));
+        assert!(
+            state
+                .capture_with(|_| panic!("settlement alone retains the receipt"))
+                .is_none()
+        );
+        journal.commit_transferred();
+        state.commit_transferred();
+
+        state.require();
+        let settling = state.capture_with(|_| true).unwrap();
+        let second_identity = Arc::as_ptr(&settling);
+        assert_ne!(first_identity, second_identity);
+        let second = super::super::NativeViewportRosterEnvelope::from_shared(
+            0,
+            Arc::clone(&settling),
+            true,
+            Some(2),
+        );
+        assert!(state.capture(|_| journal.reserve(HostRecord::ViewportRoster(second))));
+        let ordinal = state.ingress().unwrap().ordinal();
+        journal.transfer_reserved(state.take_ingress(ordinal).unwrap());
+        journal.commit_transferred();
+        state.commit_transferred();
+        assert!(
+            state
+                .capture_with(|_| panic!("full commit alone retains the receipt"))
+                .is_none()
+        );
+        assert!(state.settle(2, false));
+        assert!(state.needs_capture());
+        let captured_through = journal.captured_through();
+        assert!(
+            state
+                .capture_with(|_| panic!("both shared backings remain immutable"))
+                .is_none()
+        );
+        assert!(state.needs_capture());
+        assert_eq!(journal.captured_through(), captured_through);
+        assert_eq!(state.reserved_payload_capacity_bytes(), reserved);
+
+        drop(baseline);
+        let reused = state.capture_with(|_| true).unwrap();
+        assert_eq!(Arc::as_ptr(&reused), first_identity);
+        assert_eq!(Arc::as_ptr(&settling), second_identity);
+        assert_eq!(state.reserved_payload_capacity_bytes(), reserved);
+        assert!(!state.window_capacity_exceeded());
+        assert!(!state.work_area_capacity_exceeded());
+    }
+
+    #[test]
+    fn failed_payload_fill_preserves_the_capture_obligation_without_reserving_ingress() {
+        let (journal, _) = journal();
+        let mut state = TerminalRosterState::with_capacity(2, 1);
+        let reserved = state.reserved_payload_capacity_bytes();
+        state.require();
+        assert!(state.capture_with(|_| false).is_none());
+        assert!(state.window_capacity_exceeded());
+        assert!(state.needs_capture());
+        assert!(state.ingress().is_none());
+        assert_eq!(journal.captured_through(), 0);
+        assert!(state.capture_with(|_| true).is_some());
+        assert!(!state.window_capacity_exceeded());
+        assert_eq!(state.reserved_payload_capacity_bytes(), reserved);
+    }
+
+    #[test]
+    fn ordinary_snapshot_settlement_frees_backing_for_terminal_recapture() {
+        let bridge = NativeHostBridge::with_clock(
+            NativeViewportMap::default(),
+            NativeMonotonicClock::new(|| Duration::ZERO),
+        );
+        let first_identity = {
+            let mut records = bridge.lock();
+            records.terminal_roster = TerminalRosterState::with_capacity(2, 1);
+            let payload = records
+                .terminal_roster
+                .capture_backing_with(|_| true)
+                .unwrap();
+            let identity = Arc::as_ptr(&payload);
+            assert!(records.record_viewport_roster(payload));
+            identity
+        };
+        let first = bridge.front_viewport_roster().unwrap();
+        assert!(!first.is_terminal());
+        assert!(bridge.acknowledge_viewport_roster(&first));
+        bridge.commit_frame_boundary(false);
+        assert!(bridge.settle_viewport_roster(&first, true));
+        drop(first);
+
+        {
+            let mut records = bridge.lock();
+            records.invalidate_viewport_roster();
+            let payload = records
+                .terminal_roster
+                .capture_backing_with(|_| true)
+                .unwrap();
+            assert_ne!(Arc::as_ptr(&payload), first_identity);
+            assert!(records.record_viewport_roster(payload));
+            let ordinal = records.journal.captured_through();
+            assert!(
+                records
+                    .terminal_roster
+                    .capture_backing_with(|_| panic!("both ordinary backings remain shared"))
+                    .is_none()
+            );
+            records.freeze_ordinary();
+            assert_eq!(records.journal.captured_through(), ordinal);
+            assert!(records.event_boundary_pending);
+            assert!(records.terminal_roster.needs_capture());
+        }
+
+        // The already accepted snapshot settles without a newer root capture.
+        // Its baseline replacement releases the old backing for the obligation.
+        bridge.commit_frame_boundary(false);
+        let second = bridge.front_viewport_roster().unwrap();
+        assert!(!second.is_terminal());
+        assert!(bridge.acknowledge_viewport_roster(&second));
+        bridge.commit_frame_boundary(false);
+        assert!(bridge.settle_viewport_roster(&second, true));
+        drop(second);
+        let mut records = bridge.lock();
+        let recaptured = records.terminal_roster.capture_with(|_| true).unwrap();
+        assert_eq!(Arc::as_ptr(&recaptured), first_identity);
+        assert!(records.terminal_roster.needs_capture());
     }
 
     #[test]

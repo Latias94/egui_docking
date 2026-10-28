@@ -435,6 +435,15 @@ fn removed_device_tail_cannot_reenroll_before_an_explicit_stream_start() {
 
 #[test]
 fn device_removal_callback_commits_the_complete_input_roster_in_one_boundary() {
+    assert_device_removal_commits(false);
+}
+
+#[test]
+fn quarantined_device_removal_still_commits_existing_stream_cancellations() {
+    assert_device_removal_commits(true);
+}
+
+fn assert_device_removal_commits(quarantined: bool) {
     let mut native = coordinator();
     let (binding, _) = register_roots(&mut native);
     let window = WindowId::from(111);
@@ -466,6 +475,11 @@ fn device_removal_callback_commits_the_complete_input_roster_in_one_boundary() {
         commit_pending_pointer_frame(&mut native);
     }
 
+    assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
+    if quarantined {
+        assert!(native.quarantine_after_fatal().is_empty());
+    }
+    let recorded = native.session.native_input_recorded_count();
     native.bridge.push_record(HostRecord::DeviceRemoval(
         NativeDeviceRemovalRecord::for_test(3),
     ));
@@ -474,6 +488,11 @@ fn device_removal_callback_commits_the_complete_input_roster_in_one_boundary() {
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("one removal callback records the complete adapter roster atomically")
             .is_some()
+    );
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        recorded + 2,
+        "one accepted removal records both existing stream terminals atomically",
     );
     commit_pending_pointer_frame(&mut native);
 

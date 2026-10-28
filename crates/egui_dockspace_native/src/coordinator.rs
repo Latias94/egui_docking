@@ -458,8 +458,7 @@ impl NativeCoordinator {
                 surface: binding.surface(),
             });
         }
-        self.bridge
-            .with_viewports_mut(|viewports| viewports.reserve(viewport, binding))
+        self.bridge.reserve_viewport_route(viewport, binding)
     }
 
     /// Attaches the native window created for an exact reserved viewport binding.

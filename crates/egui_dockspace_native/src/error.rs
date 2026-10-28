@@ -276,6 +276,9 @@ impl From<DockspaceError> for NativeRuntimeError {
 /// Why a viewport could not be associated with one logical native surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum NativeViewportBindingError {
+    /// A new lifetime cannot fit the already reserved complete-roster storage.
+    #[error("native viewport storage admits at most {limit} simultaneous window lifetimes")]
+    CapacityExceeded { limit: usize },
     /// The binding is foreign, retired, or no longer current in this session.
     #[error("native viewport {viewport:?} names a non-current binding for surface {surface}")]
     BindingNotCurrent {

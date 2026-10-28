@@ -76,6 +76,159 @@ fn cursor(ordinal: u64, window: WindowId, binding: NativeSurfaceBinding) -> Host
     ))
 }
 
+fn three_bindings() -> [NativeSurfaceBinding; 3] {
+    let layout = DockspaceLayout::new((1..=3).map(|id| {
+        DockspaceSurfaceLayout::new(
+            SurfaceId::new(id),
+            DockspaceRootLayout::new(
+                RootId::new(id),
+                DockspaceNode::central_tabs([ItemId::new(id)]),
+            ),
+        )
+    }))
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .unwrap();
+    for id in 1..=3 {
+        session
+            .register_native_root(SurfaceId::new(id), HostWindowToken::new(id))
+            .unwrap();
+    }
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame
+        .commit()
+        .unwrap()
+        .inputs()
+        .iter()
+        .filter_map(|input| match input {
+            HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
+}
+
+#[test]
+fn new_window_lifetimes_require_complete_roster_capacity_before_route_or_create_admission() {
+    let [first, second, third] = three_bindings();
+    let bridge = NativeHostBridge::new(NativeViewportMap::default());
+    bridge.lock().terminal_roster = TerminalRosterState::with_capacity(2, 1);
+    let viewport = |id| ViewportId::from_hash_of(id);
+    bridge
+        .bind_viewport_route(viewport(1), WindowId::from(11), first)
+        .unwrap();
+    bridge.reserve_viewport_route(viewport(2), second).unwrap();
+    // The route and create sidecar share one lifetime's existing commitment.
+    assert!(bridge.reserve_create(viewport(2), second, NativePhysicalRect::new(0, 0, 320, 240)));
+    assert!(matches!(
+        bridge.reserve_viewport_route(viewport(3), third),
+        Err(NativeViewportBindingError::CapacityExceeded { limit: 2 }),
+    ));
+    assert!(!bridge.reserve_create(viewport(3), third, NativePhysicalRect::new(0, 0, 320, 240)));
+    assert!(
+        bridge
+            .with_viewports(|routes| routes.binding(viewport(3)))
+            .is_none()
+    );
+    assert!(bridge.lock().window_resources.create(viewport(3)).is_none());
+
+    // Moving the first window to retirement does not return its commitment.
+    bridge.unbind_viewport_route(viewport(1), first).unwrap();
+    assert_eq!(bridge.lock().viewports.bindings().count(), 1);
+    assert_eq!(bridge.lock().retirements.bindings().count(), 1);
+    assert!(matches!(
+        bridge.bind_viewport_route(viewport(3), WindowId::from(33), third),
+        Err(NativeViewportBindingError::CapacityExceeded { limit: 2 }),
+    ));
+
+    assert!(bridge.clear_create(viewport(2), second));
+    assert!(bridge.clear_hidden_render(viewport(2), second));
+    bridge.unbind_viewport_route(viewport(2), second).unwrap();
+    bridge.reserve_viewport_route(viewport(3), third).unwrap();
+    assert_eq!(
+        bridge.lock().viewports.bindings().collect::<Vec<_>>(),
+        [third]
+    );
+    assert_eq!(
+        bridge.lock().retirements.bindings().collect::<Vec<_>>(),
+        [first]
+    );
+}
+
+#[test]
+fn quarantine_cannot_grow_raw_storage_or_capture_a_new_close_owner() {
+    let (bridge, _, binding, window) = bridge_with_clock();
+    for ordinal in 1..=admission::RECORD_LIMIT as u64 {
+        bridge.push_record(cursor(ordinal, window, binding));
+    }
+    let mut records = bridge.lock();
+    let bytes = records.journal.owned_buffer_capacity_bytes();
+    let captured = records.journal.captured_through();
+    records.quarantine_after_fatal();
+    for ordinal in 10_000..10_100 {
+        assert!(!records.record_device_removal(NativeDeviceRemovalRecord::for_test(ordinal)));
+        assert!(
+            !records.capture_window_event(NativeWindowEventRecord::for_test(
+                ordinal,
+                window,
+                Some(ViewportId::ROOT),
+                Some(binding),
+                WindowEvent::CloseRequested,
+            ))
+        );
+        assert!(
+            !records.capture_window_event(NativeWindowEventRecord::for_test(
+                ordinal,
+                WindowId::from(99),
+                Some(ViewportId::from_hash_of("unmapped close")),
+                None,
+                WindowEvent::CloseRequested,
+            ))
+        );
+    }
+    assert_eq!(records.journal.len(), admission::RECORD_LIMIT);
+    assert_eq!(records.journal.captured_through(), captured);
+    assert_eq!(records.journal.owned_buffer_capacity_bytes(), bytes);
+    assert_eq!(
+        records.admission,
+        NativeAdmission::Draining { boundary: captured },
+        "fatal mode must not bypass the full source boundary cancellation",
+    );
+    assert!(!records.close_control.has_pending_work());
+    assert_eq!(records.close_control.progress().requests_retained(), 0);
+}
+
+#[test]
+fn quarantine_device_terminal_uses_capacity_and_freezes_at_the_original_age_boundary() {
+    let (bridge, now, binding, window) = bridge_with_clock();
+    bridge.push_record(cursor(1, window, binding));
+    bridge.lock().quarantine_after_fatal();
+    now.store(249, Ordering::SeqCst);
+    assert!(
+        bridge
+            .lock()
+            .record_device_removal(NativeDeviceRemovalRecord::for_test(2))
+    );
+    assert_eq!(bridge.lock().journal.captured_through(), 2);
+    now.store(250, Ordering::SeqCst);
+    assert!(
+        !bridge
+            .lock()
+            .record_device_removal(NativeDeviceRemovalRecord::for_test(3))
+    );
+    let records = bridge.lock();
+    assert_eq!(records.journal.captured_through(), 2);
+    assert_eq!(records.journal.len(), 2);
+    assert_eq!(records.admission, NativeAdmission::Draining { boundary: 2 });
+    assert!(matches!(records.mode, HostIngressMode::Quarantined));
+}
+
 #[test]
 fn ordinary_record_limit_freezes_before_minting_and_preserves_post_boundary_command_owner() {
     let (bridge, now, binding, window) = bridge_with_clock();

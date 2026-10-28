@@ -606,9 +606,9 @@ impl NativeCoordinator {
         }
 
         let reserve_result = match (plan.kind(), predecessor) {
-            (NativeViewportEffectKind::Create, None) => self
-                .bridge
-                .with_viewports_mut(|viewports| viewports.reserve(viewport, plan.binding())),
+            (NativeViewportEffectKind::Create, None) => {
+                self.bridge.reserve_viewport_route(viewport, plan.binding())
+            }
             (NativeViewportEffectKind::Replacement, Some(predecessor)) => {
                 self.bridge.replace_viewport_route(
                     viewport,
