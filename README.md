@@ -29,6 +29,12 @@ The earlier product-boundary plan supplies the persistence and ownership context
 | `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Native consolidation and fresh physical qualification remain open. The existing reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify it |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
+Caller-owned official-egui runs also retain explicit local touch identities:
+short taps activate on release, pre-arm movement yields to pane content, and a
+350ms stationary continuation arms ordinary docking/resize or a semantic context
+menu. Touch targets are not yet expanded to the planned 44-point minimum, and
+native touch/stationary capture remains unqualified.
+
 The current implementation has a qualified renderer-neutral local/contained
 contract, an official-egui caller-owned validation path, and an experimental
 native multiview adapter. The fast-gesture and configuration-dependent failures

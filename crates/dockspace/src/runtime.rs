@@ -26,6 +26,7 @@ mod presentation;
 mod presentation_commands;
 mod report;
 mod session;
+mod touch;
 
 pub use crate::interaction::PointerContinuationToken;
 pub use host_frame::DockspaceHostFrame;
@@ -38,6 +39,7 @@ pub use manipulation_feedback::{
 };
 pub use pointer_continuation::DockspacePointerContinuation;
 pub use session::DockspaceSession;
+pub use touch::{DockspaceContextMenuRequest, DockspaceTouchEvent};
 
 use error_kind::{
     engine_error_kind, host_frame_error_kind, interaction_error_kind,
@@ -248,6 +250,8 @@ pub enum HostInputOutcome {
     },
     /// One stable item- or root-centric product action was rejected without mutation.
     ProductActionRejected(DockspaceActionRejection),
+    /// One core-owned touch or context-menu interaction was reported.
+    Touch(DockspaceTouchEvent),
     /// One content-close request opened or reused a plan.
     CloseRequested {
         /// Read-only core-owned close plan.

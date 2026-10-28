@@ -45,7 +45,11 @@ const fn pointer_move_outcome_allows_local_presentation_refresh(
         | InteractionOutcome::ResizeUpdated { .. }
         | InteractionOutcome::ContainedTransformPreviewUpdated { .. }
         | InteractionOutcome::Rejected(_) => true,
-        InteractionOutcome::Scroll(_)
+        InteractionOutcome::TouchArmed { .. }
+        | InteractionOutcome::TouchActivated { .. }
+        | InteractionOutcome::TouchYieldedToContent { .. }
+        | InteractionOutcome::ContextMenuRequested { .. }
+        | InteractionOutcome::Scroll(_)
         | InteractionOutcome::CloseRequested { .. }
         | InteractionOutcome::ProductActionApplied(_)
         | InteractionOutcome::ProductActionRejected(_)

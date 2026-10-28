@@ -15,6 +15,13 @@ use egui::{Event, Key, LayerId, PointerButton, Pos2, Ui};
 use crate::pass_settlement::{ProductPointerPacket, pointer_packet};
 use crate::product_render::ProductReceiverBinding;
 
+mod touch;
+
+#[cfg(test)]
+mod tests;
+
+use touch::TouchContacts;
+
 struct PointerScene {
     artifact: SurfacePresentationArtifact,
     layer: LayerId,
@@ -30,10 +37,34 @@ pub(crate) struct ProductPointer {
     consumed_run: Option<ProductPointerPacket>,
     rejected_run: Option<ProductPointerPacket>,
     position: Option<Pos2>,
+    // Adapter input enrollment only; core remains the sole gesture owner.
+    generic_live: bool,
+    touches: TouchContacts,
+}
+
+#[derive(Clone, Copy)]
+struct PointerSample {
+    pointer: SurfacePointerId,
+    device: PointerDeviceKind,
+    event: SurfacePointerEvent,
+    position: Option<Pos2>,
+}
+
+impl PointerSample {
+    const fn generic(event: SurfacePointerEvent, position: Option<Pos2>) -> Self {
+        Self {
+            pointer: SurfacePointerId::new(1),
+            device: PointerDeviceKind::Unknown,
+            event,
+            position,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct Edge {
+    pointer: SurfacePointerId,
+    device: PointerDeviceKind,
     event: SurfacePointerEvent,
     point: Option<LogicalPoint>,
     surface: Option<PresentedDockspaceSurface>,
@@ -44,7 +75,12 @@ struct Edge {
 
 impl ProductPointer {
     pub(crate) fn clear(&mut self) {
-        *self = Self::default();
+        let mut touches = std::mem::take(&mut self.touches);
+        touches.clear();
+        *self = Self {
+            touches,
+            ..Self::default()
+        };
     }
 
     pub(crate) fn emitted(
@@ -109,18 +145,75 @@ impl ProductPointer {
         };
         let coordinates_supported = identity_layer(ui.layer_id())
             && scene.is_none_or(|scene| scene.coordinates_supported && identity_layer(scene.layer));
+        let rejected_previous = self.rejected_run.is_some();
+        // Normalization may also fail. Neither boundary may replay this run
+        // with a new contact identity or different receiver facts.
+        self.rejected_run = Some(packet.clone());
         let mut position = self.position;
+        let mut generic_live = self.generic_live;
+        let mut touches = self.touches.clone();
+        let touch_packet = !touches.is_empty()
+            || packet
+                .events()
+                .iter()
+                .any(|event| matches!(event, Event::Touch { .. }));
         let mut records = Vec::new();
-        if cancel || self.rejected_run.is_some() || !coordinates_supported {
-            records.push((
-                SurfacePointerEvent::StreamCancelled(
-                    SurfacePointerCancelReason::ExplicitPlatformCancellation,
-                ),
-                position,
-            ));
+        if cancel || rejected_previous || !coordinates_supported {
+            if generic_live {
+                records.push(PointerSample::generic(
+                    SurfacePointerEvent::StreamCancelled(
+                        SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                    ),
+                    position,
+                ));
+                generic_live = false;
+            }
+            records.extend(
+                touches.cancel_all(SurfacePointerCancelReason::ExplicitPlatformCancellation),
+            );
         }
         for event in packet.events().iter().cloned() {
+            if touch_packet
+                && generic_live
+                && matches!(
+                    &event,
+                    Event::Touch { .. }
+                        | Event::PointerMoved(_)
+                        | Event::PointerButton { .. }
+                        | Event::PointerGone
+                )
+            {
+                // Touch input suppresses ambiguous synthesized generic tails.
+                // Retire an enrolled generic stream at that exact raw boundary
+                // before its terminal could disappear or a contact requests ownership.
+                records.push(PointerSample::generic(
+                    SurfacePointerEvent::StreamCancelled(
+                        SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                    ),
+                    position,
+                ));
+                generic_live = false;
+            }
             let event = match event {
+                Event::Touch {
+                    device_id,
+                    id,
+                    phase,
+                    pos,
+                    ..
+                } => {
+                    if coordinates_supported
+                        && let Some(sample) = touches.observe(device_id, id, phase, pos)?
+                    {
+                        records.push(sample);
+                    }
+                    None
+                }
+                Event::PointerMoved(_) | Event::PointerButton { .. } | Event::PointerGone
+                    if touch_packet =>
+                {
+                    None
+                }
                 Event::PointerMoved(point) => {
                     position = Some(point);
                     Some(SurfacePointerEvent::Moved)
@@ -142,24 +235,37 @@ impl ProductPointer {
                     position = None;
                     Some(SurfacePointerEvent::Moved)
                 }
-                Event::Touch {
-                    phase: egui::TouchPhase::Cancel,
-                    ..
+                Event::WindowFocused(false) => {
+                    records.extend(
+                        touches
+                            .cancel_all(SurfacePointerCancelReason::ExplicitPlatformCancellation),
+                    );
+                    Some(SurfacePointerEvent::StreamCancelled(
+                        SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                    ))
                 }
-                | Event::WindowFocused(false) => Some(SurfacePointerEvent::StreamCancelled(
-                    SurfacePointerCancelReason::ExplicitPlatformCancellation,
-                )),
                 Event::Key {
                     key: Key::Escape,
                     pressed: true,
                     ..
-                } => Some(SurfacePointerEvent::StreamCancelled(
-                    SurfacePointerCancelReason::Escape,
-                )),
+                } => {
+                    records.extend(touches.cancel_all(SurfacePointerCancelReason::Escape));
+                    Some(SurfacePointerEvent::StreamCancelled(
+                        SurfacePointerCancelReason::Escape,
+                    ))
+                }
                 _ => None,
             };
             if let Some(event) = event {
-                records.push((event, position));
+                if matches!(event, SurfacePointerEvent::StreamCancelled(_)) {
+                    if !generic_live {
+                        continue;
+                    }
+                    generic_live = false;
+                } else {
+                    generic_live = true;
+                }
+                records.push(PointerSample::generic(event, position));
             }
         }
         if records.is_empty()
@@ -172,123 +278,131 @@ impl ProductPointer {
             // This is an explicit stationary recheck. It does not claim that
             // the pointer moved; the ordinary receiver path below must prove
             // current framework clearance at its retained logical point.
-            records.push((request.event(), position));
+            if let Some(sample) =
+                continuation_sample(&touches, position, request.pointer(), request.event())
+            {
+                records.push(sample);
+            }
         }
         if records.is_empty() {
             schedule_pointer_continuation(session, ui, packet.observed_at());
             self.consumed_run = Some(packet);
+            self.rejected_run = None;
             return Ok(Vec::new());
         }
         let interactive = ui.ctx().interactive_rects_last_pass();
+        let edge_at = |sample: PointerSample, session: &DockspaceSession| {
+            let position = sample.position;
+            let point = position
+                .filter(|_| coordinates_supported)
+                .and_then(|position| {
+                    LogicalPoint::new(f64::from(position.x), f64::from(position.y)).ok()
+                });
+            let hit = point.and_then(|point| session.host_pointer_hit(surface, point));
+            let qualified = scene.zip(position).is_some_and(|(scene, position)| {
+                if !ui.is_enabled()
+                    || ui.ctx().cumulative_pass_nr() != scene.completed_pass
+                    || ui.ctx().layer_id_at(position) != Some(scene.layer)
+                    || !coordinates_supported
+                {
+                    return false;
+                }
+                // Unknown interactive widgets are blockers. Remove only exact
+                // registrations owned by this output's interactive dock chrome.
+                let mut unknown = interactive
+                    .iter()
+                    .copied()
+                    .filter(|rect| rect.contains(position))
+                    .collect::<Vec<_>>();
+                let mut credited_widgets = std::collections::HashSet::new();
+                for binding in scene.receivers.iter().filter(|binding| {
+                    binding.interactive
+                        && binding.layer_id == scene.layer
+                        && ui.ctx().viewport(|viewport| {
+                            viewport
+                                .prev_pass
+                                .widgets
+                                .get(binding.widget_id)
+                                .is_some_and(|widget| {
+                                    widget.enabled
+                                        && widget.sense.interactive()
+                                        && widget.layer_id == binding.layer_id
+                                        && widget.interact_rect == binding.interact_rect
+                                })
+                        })
+                        && credited_widgets.insert(binding.widget_id)
+                }) {
+                    if let Some(index) = unknown
+                        .iter()
+                        .position(|rect| *rect == binding.interact_rect)
+                    {
+                        unknown.remove(index);
+                    }
+                }
+                unknown.is_empty()
+            });
+            Edge {
+                pointer: sample.pointer,
+                device: sample.device,
+                event: sample.event,
+                point,
+                surface: hit.map(|hit| hit.surface()),
+                delivery: qualified
+                    .then(|| hit.and_then(|hit| hit.delivery()))
+                    .flatten(),
+                drag_delivery: qualified
+                    .then(|| hit.and_then(|hit| hit.drag_delivery()))
+                    .flatten(),
+                blocked: !qualified,
+            }
+        };
         let edges = records
             .into_iter()
-            .map(|(event, position)| {
-                let point = position
-                    .filter(|_| coordinates_supported)
-                    .and_then(|position| {
-                        LogicalPoint::new(f64::from(position.x), f64::from(position.y)).ok()
-                    });
-                let hit = point.and_then(|point| session.host_pointer_hit(surface, point));
-                let qualified = scene.zip(position).is_some_and(|(scene, position)| {
-                    if !ui.is_enabled()
-                        || ui.ctx().cumulative_pass_nr() != scene.completed_pass
-                        || ui.ctx().layer_id_at(position) != Some(scene.layer)
-                        || !coordinates_supported
-                    {
-                        return false;
-                    }
-                    // Unknown interactive widgets are blockers. Remove only exact
-                    // registrations owned by this output's interactive dock chrome.
-                    let mut unknown = interactive
-                        .iter()
-                        .copied()
-                        .filter(|rect| rect.contains(position))
-                        .collect::<Vec<_>>();
-                    let mut credited_widgets = std::collections::HashSet::new();
-                    for binding in scene.receivers.iter().filter(|binding| {
-                        binding.interactive
-                            && binding.layer_id == scene.layer
-                            && ui.ctx().viewport(|viewport| {
-                                viewport
-                                    .prev_pass
-                                    .widgets
-                                    .get(binding.widget_id)
-                                    .is_some_and(|widget| {
-                                        widget.enabled
-                                            && widget.sense.interactive()
-                                            && widget.layer_id == binding.layer_id
-                                            && widget.interact_rect == binding.interact_rect
-                                    })
-                            })
-                            && credited_widgets.insert(binding.widget_id)
-                    }) {
-                        if let Some(index) = unknown
-                            .iter()
-                            .position(|rect| *rect == binding.interact_rect)
-                        {
-                            unknown.remove(index);
-                        }
-                    }
-                    unknown.is_empty()
-                });
-                Edge {
-                    event,
-                    point,
-                    surface: hit.map(|hit| hit.surface()),
-                    delivery: qualified
-                        .then(|| hit.and_then(|hit| hit.delivery()))
-                        .flatten(),
-                    drag_delivery: qualified
-                        .then(|| hit.and_then(|hit| hit.drag_delivery()))
-                        .flatten(),
-                    blocked: !qualified,
-                }
-            })
+            .map(|sample| edge_at(sample, session))
             .collect::<Vec<_>>();
-        // Generic egui pointer events may be synthesized from touch. Preserve
-        // only the batch clock supplied at raw capture; device class stays unknown.
-        let metadata = packet
-            .observed_at()
-            .map_or_else(PointerEventMetadata::unknown, |time| {
-                PointerEventMetadata::new(PointerDeviceKind::Unknown, time)
-            });
-        let inputs = edges.iter().map(|edge| pointer_input(edge, metadata));
-        // A failed packet must not acquire different facts during an egui rerun.
-        // The next run cancels the prior owner before accepting fresh input.
-        self.rejected_run = Some(packet.clone());
+        let observed_at = packet.observed_at();
+        let inputs = edges.iter().map(|edge| pointer_input(edge, observed_at));
         let mut frame = session.begin_host_frame()?;
         frame.submit_host_pointer_batch(inputs)?;
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let report = frame.commit()?;
+        // The raw boundary accepted these identities and positions. A later
+        // continuation failure must not roll their roster back.
+        self.position = position;
+        self.generic_live = generic_live;
+        self.touches = touches;
         let mut reports = vec![report];
-        if let (Some(request), Some(now), Some(last)) = (
-            session.pointer_continuation(),
-            packet.observed_at(),
-            edges.last(),
-        ) && now >= request.deadline()
+        if let (Some(request), Some(now)) = (session.pointer_continuation(), observed_at)
+            && now >= request.deadline()
             && request.surface() == surface
-            && last.point == Some(request.position())
-            && last.surface == session.presented_surface(surface)
+            && current.is_some()
+            && current == session.presented_surface(surface)
+            && let Some(sample) = continuation_sample(
+                &self.touches,
+                self.position,
+                request.pointer(),
+                request.event(),
+            )
         {
             // Complete accepted raw input first. A release in that batch ends
             // the gesture before any deadline task can change its target scene.
             // A surviving due action uses the same current framework facts in
             // an explicit next journal edge; moving pointers need not go idle.
-            let edge = Edge {
-                event: request.event(),
-                ..*last
-            };
-            let mut frame = session.begin_host_frame()?;
-            frame.submit_host_pointer(pointer_input(&edge, metadata))?;
-            frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-            reports.push(frame.commit()?);
+            let edge = edge_at(sample, session);
+            if edge.point == Some(request.position()) && edge.surface == current {
+                let mut frame = session.begin_host_frame()?;
+                frame.submit_host_pointer(pointer_input(&edge, observed_at))?;
+                frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+                reports.push(frame.commit()?);
+            }
         }
         if let Some(scene) = scene {
             for edge in &edges {
                 if matches!(
                     edge.event,
                     SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary)
-                ) && let Some(receiver) = edge.delivery
+                ) && edge.device == PointerDeviceKind::Unknown
+                    && let Some(receiver) = edge.delivery
                     && receiver.descriptor().role()
                         == dockspace::runtime::DockspaceReceiverRole::TabBody
                     && let Some(binding) = scene
@@ -301,7 +415,6 @@ impl ProductPointer {
                 }
             }
         }
-        self.position = position;
         schedule_pointer_continuation(session, ui, packet.observed_at());
         self.consumed_run = Some(packet);
         self.rejected_run = None;
@@ -309,7 +422,20 @@ impl ProductPointer {
     }
 }
 
-fn pointer_input(edge: &Edge, metadata: PointerEventMetadata) -> HostPointerInput<'_> {
+fn continuation_sample(
+    touches: &TouchContacts,
+    position: Option<Pos2>,
+    pointer: SurfacePointerId,
+    event: SurfacePointerEvent,
+) -> Option<PointerSample> {
+    if pointer == SurfacePointerId::new(1) {
+        Some(PointerSample::generic(event, position))
+    } else {
+        touches.continuation(pointer, event)
+    }
+}
+
+fn pointer_input(edge: &Edge, observed_at: Option<std::time::Duration>) -> HostPointerInput<'_> {
     let route = edge
         .surface
         .zip(edge.point)
@@ -335,14 +461,17 @@ fn pointer_input(edge: &Edge, metadata: PointerEventMetadata) -> HostPointerInpu
         }
     }
     HostPointerInput::new(
-        SurfacePointerId::new(1),
+        edge.pointer,
         edge.event,
         route,
         route,
         SurfacePointerCapture::None,
         facts,
     )
-    .with_metadata(metadata)
+    .with_metadata(observed_at.map_or_else(
+        || PointerEventMetadata::untimed(edge.device),
+        |time| PointerEventMetadata::new(edge.device, time),
+    ))
 }
 
 fn schedule_pointer_continuation(

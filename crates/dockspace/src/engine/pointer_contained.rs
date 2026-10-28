@@ -123,6 +123,7 @@ impl DockEngine {
     pub(super) fn activate_prepared_journal_contained_gesture(
         &mut self,
         cause: ReductionCause,
+        intent: SourcePressIntent,
         owner: GestureOwner,
         capture_authority: Authority<PointerCaptureOwner>,
         threshold_origin: JournalDragThresholdOrigin,
@@ -140,12 +141,22 @@ impl DockEngine {
                 floating: prepared.floating,
                 expected_roster: prepared.expected_roster.clone(),
             };
-            match self.apply_journal_workspace_command(cause, &raise, policy, events)? {
-                Ok(_) => {}
-                Err(source) => {
+            if intent == SourcePressIntent::Manipulate {
+                if let Err(source) =
+                    crate::operation::authorize_workspace_command(&self.workspace, policy, &raise)
+                {
                     return Ok(InteractionOutcome::Rejected(
                         InteractionRejection::CommandRejected(source),
                     ));
+                }
+            } else {
+                match self.apply_journal_workspace_command(cause, &raise, policy, events)? {
+                    Ok(_) => {}
+                    Err(source) => {
+                        return Ok(InteractionOutcome::Rejected(
+                            InteractionRejection::CommandRejected(source),
+                        ));
+                    }
                 }
             }
         }
@@ -579,15 +590,21 @@ impl DockEngine {
             expected_rect: transform.source_rect,
             rect: placement.rect(),
         };
-        let (outcome, changed) =
-            match self.apply_journal_workspace_command(cause, &command, policy, events)? {
-                Ok(result) => result,
-                Err(error) => {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::CommandRejected(error),
-                    ));
-                }
-            };
+        let (outcome, changed) = match self.apply_journal_workspace_command_with_authority(
+            cause,
+            &command,
+            policy,
+            WorkspacePublicationAuthority::Ordinary,
+            JournalDeliveryActivation::RaiseContained(transform.floating),
+            events,
+        )? {
+            Ok(result) => result,
+            Err(error) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(error),
+                ));
+            }
+        };
         interaction_events.push(InteractionEvent::new_caused(
             cause,
             self.version,

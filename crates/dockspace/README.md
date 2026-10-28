@@ -123,9 +123,8 @@ recovery preserves the provider clock, while a new provider may use a new origin
 
 Omitting metadata preserves Unknown device/time. Unknown samples do not inherit
 another edge's observations or reset the retained clock. These fields retain
-input facts; they do not by themselves enable hover dwell, touch long press or
-stationary drag scrolling. Hosts must not use a timer to fabricate pointer
-motion or claim current receiver authority.
+input facts; they do not independently authorize a timed mutation. Hosts must
+not use a timer to fabricate pointer motion or claim current receiver authority.
 `PointerEventMetadata::untimed(device)` preserves an observed device class when
 the event timestamp is unavailable.
 The official egui owned-run adapter forwards explicit `RawInput.time` as one
@@ -134,7 +133,7 @@ claim per-OS-event timestamps or infer device class from generic pointer events.
 
 ## Stationary interaction
 
-During a local drag, `DockspaceSession::pointer_continuation()` can return one
+During a local drag or touch press, `DockspaceSession::pointer_continuation()` can return one
 finite wake request. Schedule its deadline using the same clock origin as pointer
 metadata. At wake time, query the request again and submit `request.event()` for
 `request.pointer()` through the normal host or surface pointer input. Supply the
@@ -156,11 +155,44 @@ repaints of the same semantic geometry and stream preserve the dwell start,
 while execution still requires exact current presentation authority. A stream
 takeover or changed scene cannot borrow the prior interval.
 
-The initial action is tab hover selection, with a default 150ms delay controlled
+Tab hover selection has a default 150ms delay controlled
 by `DockPresentationConfig::builder().hover_selection_delay(...)`. `None`
 disables it. Selection keeps the active drag and requests no pane-content focus;
 only a subsequent normal release can deliver the payload. Native stationary
-input, touch long press and active-drag edge scrolling remain separate work.
+input and active-drag edge scrolling remain separate work.
+
+## Local touch
+
+An explicitly classified local `Touch` contact waits on the existing pressed
+gesture owner when it begins on a tab body, group grip, contained title, resize
+handle or splitter. Pressing alone does not select, raise, focus or change
+geometry. The default long-press delay is 350ms and the movement slop is 8 logical
+points; configure them with `touch_long_press_delay` and
+`touch_press_slop_distance` on the presentation builder.
+
+A timely continuation arms the contact without changing selection. Moving beyond
+the slop after arming enters the ordinary tab, splitter or contained manipulation
+path, including its exact-output release barrier. A stationary armed
+`ContactEnded(Primary)` requests a semantic menu through
+`HostInputOutcome::Touch(DockspaceTouchEvent::ContextMenuRequested(...))`. The
+request contains the published workspace version, pointer, surface, root,
+optional item and logical point, with opaque equality identity for deduplication.
+It does not select the item or execute a menu command.
+
+An early contact end within slop activates the original source through the
+shared selection/raise/focus path and consumes the gesture once. Pre-arm motion
+beyond slop yields to application content without selecting or starting a drag.
+Ordinary close and strip/menu controls retain short-tap semantics and apply the
+same slop to both motion and release; they have no docking long-press deadline.
+Unknown coordinates never prove motion or activate a frozen source. Untimed
+touch can tap or yield, but cannot earn a timed long press.
+
+The host retains responsibility for ordinary pane input and actual scrolling;
+the core does not replay or synthesize content events after yielding. End the
+actual contact with `ContactEnded`, or use explicit stream cancellation for
+platform loss. Late terminals cannot create a contact or repeat an action.
+Expanded touch hit targets and native touch event-time/stationary capture remain
+separate qualification work.
 
 ## Budgeted Native Input
 

@@ -31,7 +31,10 @@ fn token(owner: PointerStreamId) -> PointerContinuationToken {
     // minted the token or its deadline action is eligible to execute.
     PointerContinuationToken {
         owner,
-        session: DragSessionId::new(WorkspaceEpoch::new(1), DragGeneration::new(1)),
+        session: crate::interaction::PointerContinuationSession::Drag(DragSessionId::new(
+            WorkspaceEpoch::new(1),
+            DragGeneration::new(1),
+        )),
         generation: 1,
         deadline: Duration::from_millis(160),
     }

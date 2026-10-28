@@ -398,9 +398,9 @@ continuation and U10's shared stationary overflow owner in core and official egu
 before expanding the optional native overload/platform work. Metadata capture,
 hover dwell and touch arming remain separate implementation/qualification steps;
 the existing native resource checkpoint is retained. U3d now has a finite
-core-owned stationary continuation and official egui hover-selection slice; touch
-source capture and native stationary capture still require their own facts. This
-priority change keeps
+core-owned stationary continuation, hover selection and explicit local-touch
+source capture in official egui. Expanded touch targets, native stationary
+capture and active-drag edge scrolling still require their own slices. This priority change keeps
 the custom-engine host central and does not remove U7/U8/U11 acceptance gates.
 U11 gates Windows/macOS capability claims separately; unsupported backends remain explicit rather than blocking the generic crate.
 These are packaging/readiness gates, not instructions to publish crates or upstream patches automatically.
@@ -569,10 +569,26 @@ which arrives at the deadline. Independent review found the source wake getter
 too strict; its fix and a mutation-red inactive-source regression are recorded
 in validation. A due Move+Release regression also guards terminal ordering.
 
-Native metadata/stationary capture and explicit local-touch routing still need
-their own source facts and qualification. Touch contact identity/loss tests do
-not prove 350ms long press or 8-point pre-arm scrolling behavior. U10 active-drag
-edge scrolling still needs the shared continuation owner and arbitration.
+The local-touch slice reuses the existing Pressed owner and click-bound finite
+continuation. Explicit Touch contacts on manipulation chrome wait without Select,
+Raise, focus or geometry changes. A current due continuation arms at 350ms;
+pre-arm movement beyond 8 logical points yields to application content, early
+release activates once, and stationary armed release emits a semantic context
+menu request. Armed movement enters the same ordinary tab, splitter and contained
+owners. Manipulation entry retains the displayed selection and contained order;
+delivery performs the durable action. It does not revoke same-batch target
+authority through an eager Select/Raise or broaden stale hover proof. Ordinary
+close and strip/menu controls retain tap behavior with movement and release slop,
+without a docking deadline.
+
+The official egui adapter retains independent explicit-contact identities,
+suppresses duplicate synthesized generic pointer ingress and reuses its existing
+root presentation menu and prepared commands. Ordinary egui content input remains
+owned by the pane. Public-host and product qualifications are recorded separately
+in `docs/VALIDATION.md`; no physical touch-device claim follows from headless
+journeys. Native metadata/stationary capture and the at-least-44-point touch
+target geometry remain open. U10 active-drag edge scrolling still needs the
+shared continuation owner and arbitration.
 The full behavior plan cannot close before the remaining U3d qualification.
 
 U3's replacement completion does not establish U4 full live-content projection, U5 broader

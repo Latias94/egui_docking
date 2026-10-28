@@ -14,6 +14,7 @@ mod pointer_proof;
 mod pointer_session;
 mod pointer_splitter;
 mod pointer_timed;
+mod pointer_touch;
 mod pointer_transaction;
 mod presentation_authority;
 mod presentation_identity;
@@ -150,10 +151,11 @@ use crate::interaction::{
     InteractionCounterError, InteractionDelivery, InteractionEvent, InteractionEventKind,
     InteractionOutcome, InteractionRejection, InteractionState, InteractionStatus,
     JournalDragSourceGeometry, JournalDragThresholdOrigin, ManipulationPositionKey,
-    PointerContinuationRequest, PointerContinuationToken, PreviewProof, PreviewResolutionStatus,
-    PreviewVisual, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
-    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
-    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
+    PointerContinuationRequest, PointerContinuationSession, PointerContinuationToken, PreviewProof,
+    PreviewResolutionStatus, PreviewVisual, ResizeStart, SceneGestureContinuation,
+    SceneGestureContinuationDraft, SceneGestureContinuationSource, SceneGestureSession,
+    ScrollApplication, ScrollReductionOutcome, ScrollSessionId, ScrollSuppressionReason,
+    ScrollTerminationReason, TouchPressState, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
@@ -1845,7 +1847,15 @@ struct PreviewEvaluation {
 struct StagedJournalWorkspaceCommand {
     publication: StagedWorkspacePublication,
     outcome: CommandOutcome,
+    activation: Vec<CommandOutcome>,
     changed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum JournalDeliveryActivation {
+    None,
+    SelectItem { item: ItemId, source_root: RootId },
+    RaiseContained(crate::ids::FloatingPresentationId),
 }
 
 impl PreviewEvaluation {
@@ -1934,6 +1944,12 @@ struct PreparedContainedGesture {
     coordinate_capture: SurfaceCoordinateCapture,
     presentation: FrozenPresentationAuthority,
     source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourcePressIntent {
+    Activate,
+    Manipulate,
 }
 
 #[derive(Clone)]
@@ -3295,6 +3311,7 @@ impl DockEngine {
             command,
             policy,
             WorkspacePublicationAuthority::Ordinary,
+            JournalDeliveryActivation::None,
             events,
         )
     }
@@ -3305,11 +3322,12 @@ impl DockEngine {
         command: &WorkspaceCommand,
         policy: &DockPolicySnapshot,
         authority: WorkspacePublicationAuthority,
+        activation: JournalDeliveryActivation,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Result<(CommandOutcome, bool), CommandError>, EngineError> {
-        let staged = match self
-            .stage_journal_workspace_command_with_authority(cause, command, policy, authority)?
-        {
+        let staged = match self.stage_journal_workspace_command_with_authority(
+            cause, command, policy, authority, activation,
+        )? {
             Ok(staged) => staged,
             Err(source) => return Ok(Err(source)),
         };
@@ -3322,6 +3340,13 @@ impl DockEngine {
                 self.version,
                 WorkspaceEventKind::CommandCommitted(staged.outcome.clone()),
             ));
+            for activation in staged.activation {
+                events.push(WorkspaceEvent::new_caused(
+                    cause,
+                    self.version,
+                    WorkspaceEventKind::CommandCommitted(activation),
+                ));
+            }
         }
         Ok(Ok((staged.outcome, staged.changed)))
     }
@@ -3337,6 +3362,7 @@ impl DockEngine {
             command,
             policy,
             WorkspacePublicationAuthority::Ordinary,
+            JournalDeliveryActivation::None,
         )
     }
 
@@ -3346,6 +3372,7 @@ impl DockEngine {
         command: &WorkspaceCommand,
         policy: &DockPolicySnapshot,
         authority: WorkspacePublicationAuthority,
+        activation: JournalDeliveryActivation,
     ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
         let mut workspace = self.clone_workspace_candidate();
         let report = match WorkspaceTransaction::from_commands([command.clone()])
@@ -3364,6 +3391,49 @@ impl DockEngine {
                 });
             }
         };
+        let mut changed = report.changed();
+        // A successful manipulation may activate its delivered content. Stage
+        // that command against the post-move source and publish both together;
+        // failure cannot leave a move without its required activation.
+        let raise = match activation {
+            JournalDeliveryActivation::SelectItem { item, source_root } => workspace
+                .locate_item_by_id(item)
+                .filter(|(root, _, _)| *root == source_root)
+                .and_then(|(root, _, _)| workspace.presentation_for_root(root))
+                .and_then(|owner| match owner {
+                    crate::RootPresentationOwner::Contained { floating, .. } => {
+                        Some(JournalDeliveryActivation::RaiseContained(floating))
+                    }
+                    crate::RootPresentationOwner::Main { .. } => None,
+                }),
+            JournalDeliveryActivation::None | JournalDeliveryActivation::RaiseContained(_) => None,
+        };
+        let mut activation_outcomes = Vec::new();
+        for activation in [Some(activation), raise].into_iter().flatten() {
+            let command = match Self::journal_delivery_activation_command(&workspace, activation) {
+                Ok(Some(command)) => command,
+                Ok(None) => continue,
+                Err(source) => return Ok(Err(source)),
+            };
+            let activated = match WorkspaceTransaction::from_commands([command])
+                .apply(&mut workspace, policy)
+            {
+                Ok(report) => report,
+                Err(TransactionError::Command { index: 0, source })
+                    if source.is_expected_rejection() =>
+                {
+                    return Ok(Err(source));
+                }
+                Err(source) => {
+                    return Err(EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: source.to_string(),
+                    });
+                }
+            };
+            changed |= activated.changed();
+            activation_outcomes.extend(activated.into_outcomes());
+        }
         if let Some(surface) =
             self.first_pending_presentation_source_mismatch(&workspace, authority)
         {
@@ -3372,7 +3442,6 @@ impl DockEngine {
         if let Some(surface) = self.first_workspace_publication_mismatch(&workspace, None, None) {
             return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
         }
-        let changed = report.changed();
         let mut outcomes = report.into_outcomes();
         if outcomes.len() != 1 {
             return Err(EngineError::PointerInteractionInvariant {
@@ -3397,8 +3466,61 @@ impl DockEngine {
         Ok(Ok(StagedJournalWorkspaceCommand {
             publication,
             outcome,
+            activation: activation_outcomes,
             changed,
         }))
+    }
+
+    fn journal_delivery_activation_command(
+        workspace: &Workspace,
+        activation: JournalDeliveryActivation,
+    ) -> Result<Option<WorkspaceCommand>, CommandError> {
+        match activation {
+            JournalDeliveryActivation::None => Ok(None),
+            JournalDeliveryActivation::SelectItem { item, .. } => {
+                let source =
+                    workspace
+                        .capture_item_source_by_id(item)?
+                        .ok_or(CommandError::Invariant {
+                            stage: "select delivered item after manipulation",
+                        })?;
+                if matches!(
+                    workspace.nodes.get(source.tabs()),
+                    Some(Node::Tabs { selected: Some(selected), .. }) if *selected == item
+                ) {
+                    Ok(None)
+                } else {
+                    Ok(Some(WorkspaceCommand::Select { source }))
+                }
+            }
+            JournalDeliveryActivation::RaiseContained(floating) => {
+                let contained = workspace
+                    .contained_floating(floating)
+                    .ok_or(CommandError::MissingFloating { floating })?;
+                let Some(crate::RootPresentationOwner::Contained { surface, .. }) =
+                    workspace.presentation_for_root(contained.root)
+                else {
+                    return Err(CommandError::Invariant {
+                        stage: "raise delivered contained manipulation",
+                    });
+                };
+                let expected_roster = workspace.capture_contained_roster(surface)?;
+                if expected_roster.contained().last() == Some(&floating) {
+                    return Ok(None);
+                }
+                let root = workspace
+                    .root(contained.root)
+                    .ok_or(CommandError::MissingRoot {
+                        root: contained.root,
+                    })?;
+                let source = workspace.capture_node_source(contained.root, root.node)?;
+                Ok(Some(WorkspaceCommand::RaiseContained {
+                    source,
+                    floating,
+                    expected_roster,
+                }))
+            }
+        }
     }
 
     fn capture_surface_coordinates(

@@ -155,6 +155,10 @@ fn with_alpha(color: Color32, alpha: u8) -> Color32 {
 pub struct DockStyle {
     /// Delay before an active drag selects its hovered tab; `None` disables it.
     pub hover_selection_delay: Option<std::time::Duration>,
+    /// Delay before a touch press becomes a long press.
+    pub touch_long_press_delay: std::time::Duration,
+    /// Logical movement distance allowed before an unarmed touch yields to content.
+    pub touch_press_slop_distance: f32,
     /// Height of every tab bar.
     pub tab_bar_height: f32,
     /// Nominal square extent of the whole-tab-stack grip.
@@ -240,6 +244,8 @@ impl DockStyle {
     ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
         DockPresentationConfig::builder()
             .hover_selection_delay(self.hover_selection_delay)
+            .touch_long_press_delay(self.touch_long_press_delay)
+            .touch_press_slop_distance(f64::from(self.touch_press_slop_distance))
             .tab_bar_height(f64::from(self.tab_bar_height))
             .tab_group_grip_extent(f64::from(self.tab_group_grip_extent))
             .tab_horizontal_padding(f64::from(self.tab_horizontal_padding))
@@ -297,6 +303,7 @@ impl DockStyle {
 
         for (field, value) in [
             ("tab_horizontal_padding", self.tab_horizontal_padding),
+            ("touch_press_slop_distance", self.touch_press_slop_distance),
             ("drop_guide_gap", self.drop_guide_gap),
             ("drop_guide_hit_padding", self.drop_guide_hit_padding),
             ("floating_border_width", self.floating_border_width),
@@ -366,6 +373,8 @@ impl Default for DockStyle {
         let geometry = DockPresentationConfig::default();
         Self {
             hover_selection_delay: geometry.hover_selection_delay(),
+            touch_long_press_delay: geometry.touch_long_press_delay(),
+            touch_press_slop_distance: geometry.touch_press_slop_distance() as f32,
             tab_bar_height: geometry.tab_bar_height() as f32,
             tab_group_grip_extent: geometry.tab_group_grip_extent() as f32,
             tab_horizontal_padding: geometry.tab_horizontal_padding() as f32,

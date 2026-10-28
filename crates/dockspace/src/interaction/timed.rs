@@ -12,9 +12,25 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PointerContinuationToken {
     pub(crate) owner: GestureOwner,
-    pub(crate) session: DragSessionId,
+    pub(crate) session: PointerContinuationSession,
     pub(crate) generation: u64,
     pub(crate) deadline: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerContinuationSession {
+    Click(ClickSessionId),
+    Drag(DragSessionId),
+}
+
+/// Touch waiting shares the existing pressed-click owner and frozen output.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TouchPressState {
+    pub(crate) initial_pointer: LogicalPoint,
+    pub(crate) current_pointer: LogicalPoint,
+    pub(crate) threshold_origin: JournalDragThresholdOrigin,
+    pub(crate) request: Option<PointerContinuationRequest>,
+    pub(crate) armed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,7 +53,7 @@ impl InteractionState {
     pub(crate) fn mint_continuation(
         &mut self,
         owner: GestureOwner,
-        session: DragSessionId,
+        session: PointerContinuationSession,
         deadline: Duration,
     ) -> Result<PointerContinuationToken, InteractionCounterError> {
         self.last_continuation_generation = self

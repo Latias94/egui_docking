@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 mod timed;
 pub use timed::PointerContinuationToken;
-pub(crate) use timed::{HoverSelectionState, PointerContinuationRequest};
+pub(crate) use timed::{
+    HoverSelectionState, PointerContinuationRequest, PointerContinuationSession, TouchPressState,
+};
 
 use thiserror::Error;
 
@@ -456,6 +458,7 @@ pub(crate) struct FrozenTabListMenuBackdropClick {
 /// Immutable semantic action owned by one press/release click session.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum FrozenClickAction {
+    Touch,
     Close(FrozenCloseClick),
     TabStripControl(FrozenTabStripControlClick),
     TabListMenuRow(FrozenTabListMenuRowClick),
@@ -574,6 +577,7 @@ pub(crate) struct ActiveClick {
     pub(crate) coordinates: SurfaceCoordinateCapture,
     pub(crate) presentation: FrozenPresentationAuthority,
     pub(crate) action: Arc<FrozenClickAction>,
+    pub(crate) touch: Option<TouchPressState>,
 }
 
 /// Read-only view of one pressed Click-lane receiver.
@@ -1457,6 +1461,29 @@ pub enum ScrollReductionOutcome {
 /// Result of reducing one renderer intent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InteractionOutcome {
+    /// A local touch completed its finite long-press qualification.
+    TouchArmed {
+        pointer: PointerId,
+        surface: SurfaceId,
+    },
+    /// A local touch activated chrome on early release.
+    TouchActivated {
+        pointer: PointerId,
+        surface: SurfaceId,
+    },
+    /// Pre-arm motion yielded without changing selection or layout.
+    TouchYieldedToContent {
+        pointer: PointerId,
+        surface: SurfaceId,
+    },
+    /// A stationary armed release requests the host's semantic context menu.
+    ContextMenuRequested {
+        pointer: PointerId,
+        surface: SurfaceId,
+        root: RootId,
+        item: Option<ItemId>,
+        position: LogicalPoint,
+    },
     /// One pointer-journal scroll reduction or lifecycle terminal transition.
     Scroll(ScrollReductionOutcome),
     /// One exact close plan was opened without mutating workspace topology.
@@ -2623,6 +2650,7 @@ impl InteractionState {
             coordinates: start.coordinates,
             presentation: start.presentation,
             action: start.action,
+            touch: None,
         }));
         Ok((session, replaced))
     }
@@ -2632,6 +2660,17 @@ impl InteractionState {
         session: ClickSessionId,
     ) -> Result<&ActiveClick, InteractionRejection> {
         match &self.active {
+            ActiveGesture::Pressed(click) if click.session == session => Ok(click),
+            ActiveGesture::Idle => Err(InteractionRejection::NoActiveGesture),
+            _ => Err(InteractionRejection::SessionMismatch),
+        }
+    }
+
+    pub(crate) fn active_click_mut(
+        &mut self,
+        session: ClickSessionId,
+    ) -> Result<&mut ActiveClick, InteractionRejection> {
+        match &mut self.active {
             ActiveGesture::Pressed(click) if click.session == session => Ok(click),
             ActiveGesture::Idle => Err(InteractionRejection::NoActiveGesture),
             _ => Err(InteractionRejection::SessionMismatch),

@@ -1387,6 +1387,7 @@ fn joined_replacement_revokes_all_lanes_and_cancels_owned_gesture() {
         .activate_prepared_journal_tab_gesture(
             tab_strip_test_cause(),
             tab_strip_test_focus_causal(),
+            SourcePressIntent::Activate,
             owner,
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
             JournalDragThresholdOrigin::DesktopPhysical {

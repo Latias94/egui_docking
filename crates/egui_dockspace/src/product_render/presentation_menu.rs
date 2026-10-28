@@ -9,6 +9,8 @@ use dockspace::runtime::{
 use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Button, Popup, Sense, vec2};
 
+use crate::touch_menu::take_touch_context_menu;
+
 use super::RenderContext;
 use super::geometry::{accesskit_bounds, egui_rect};
 
@@ -29,6 +31,13 @@ pub(super) fn paint(
     contained: Option<ContainedPaintRecord<'_>>,
     paint: SurfacePaintDisposition,
 ) -> Result<(), DockspaceRuntimeError> {
+    let touch_requested = take_touch_context_menu(
+        context.ui,
+        context.instance_id,
+        context.plan.surface(),
+        anchor.root(),
+    )
+    .is_some();
     let Some(bounds) = egui_rect(anchor.bounds()) else {
         return Ok(());
     };
@@ -52,6 +61,9 @@ pub(super) fn paint(
         )
         .on_hover_text("Window actions");
     let ui_enabled = context.ui.is_enabled() && operable;
+    if ui_enabled && touch_requested {
+        Popup::open_id(context.ui.ctx(), popup_id);
+    }
     let menu_open = Popup::is_id_open(context.ui.ctx(), popup_id);
     let menu_open = if ui_enabled {
         menu_open
@@ -93,7 +105,13 @@ pub(super) fn paint(
         .collect::<Vec<_>>();
     let mut activated = None;
     let mut close_group = false;
-    Popup::menu(&response).id(popup_id).show(|ui| {
+    let popup = Popup::menu(&response).id(popup_id);
+    let popup = if touch_requested {
+        popup.open_memory(None)
+    } else {
+        popup
+    };
+    popup.show(|ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(Role::Menu);
             node.set_label("Presentation commands");

@@ -9,8 +9,8 @@ pub use dockspace::runtime::{
     DockspaceCloseResolution, DockspaceManipulationFeedback,
 };
 use dockspace::runtime::{
-    DockspacePresentationTransitionResult, HostCloseRequestOrigin, HostFrameReport,
-    HostInputOutcome, HostSurfaceCommitStatus,
+    DockspacePresentationTransitionResult, DockspaceTouchEvent, HostCloseRequestOrigin,
+    HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,
 };
 
 /// Product-level summary of committed docking publications.
@@ -456,6 +456,7 @@ pub struct DockspaceResponse {
     paint: SurfacePaintResponse,
     surface_commit_status: DockspaceSurfaceCommitStatus,
     close_requests: Vec<DockspaceCloseRequest>,
+    touch_events: Vec<DockspaceTouchEvent>,
 }
 
 impl DockspaceResponse {
@@ -471,6 +472,7 @@ impl DockspaceResponse {
             self.mutation.before = first.before();
         }
         let mut close_requests = Vec::new();
+        let mut touch_events = Vec::new();
         for report in reports {
             self.mutation.workspace_changed |= report.workspace_changed();
             self.mutation.published_state_changed |= report.published_state_changed();
@@ -485,11 +487,17 @@ impl DockspaceResponse {
                 } => Some(DockspaceCloseRequest::new(plan, *reused)),
                 _ => None,
             }));
+            touch_events.extend(report.inputs().iter().filter_map(|input| match input {
+                HostInputOutcome::Touch(event) => Some(*event),
+                _ => None,
+            }));
         }
         self.mutation.affected_surfaces.sort_unstable();
         self.mutation.affected_surfaces.dedup();
         close_requests.append(&mut self.close_requests);
         self.close_requests = close_requests;
+        touch_events.append(&mut self.touch_events);
+        self.touch_events = touch_events;
     }
 
     pub(crate) fn from_product_report(
@@ -527,6 +535,14 @@ impl DockspaceResponse {
                 _ => None,
             })
             .collect();
+        let touch_events = report
+            .inputs()
+            .iter()
+            .filter_map(|input| match input {
+                HostInputOutcome::Touch(event) => Some(*event),
+                _ => None,
+            })
+            .collect();
         Some(Self {
             mutation: DockspaceMutation::from_runtime_report(report),
             paint: SurfacePaintResponse {
@@ -540,6 +556,7 @@ impl DockspaceResponse {
             },
             surface_commit_status: status,
             close_requests,
+            touch_events,
         })
     }
 
@@ -564,6 +581,12 @@ impl DockspaceResponse {
     #[must_use]
     pub fn close_request_events(&self) -> &[DockspaceCloseRequest] {
         &self.close_requests
+    }
+
+    /// Returns touch events in committed report and input order.
+    #[must_use]
+    pub fn touch_events(&self) -> &[DockspaceTouchEvent] {
+        &self.touch_events
     }
 
     /// Returns core manipulation feedback in committed report and event order.

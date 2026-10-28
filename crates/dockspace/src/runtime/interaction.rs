@@ -777,6 +777,9 @@ pub enum DockspaceInteractionError {
     /// No facade-owned pointer provider is active.
     #[error("no facade-owned pointer provider is active")]
     PointerProviderUnavailable,
+    /// The adapter-owned pointer identity cannot advance without wrapping.
+    #[error("pointer identity is exhausted")]
+    PointerIdentityExhausted,
     /// The provider-owned pointer sequence cannot advance without wrapping.
     #[error("pointer sequence is exhausted")]
     PointerSequenceExhausted,

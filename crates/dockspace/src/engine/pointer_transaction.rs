@@ -55,12 +55,14 @@ impl DockEngine {
             }
             PointerEdgeKind::Moved => self.reduce_journal_move(
                 cause,
+                focus_causal,
                 owner,
                 edge,
                 receipt,
                 snapshot,
                 desktop_hover_route,
                 policy,
+                events,
                 interaction_events,
             ),
             PointerEdgeKind::Continuation(token) => self.reduce_journal_continuation(
@@ -280,7 +282,7 @@ impl DockEngine {
                 | PresentationHitRegionKind::TabListMenuBlocker(_)
                 | PresentationHitRegionKind::TabListMenuBackdrop(_)
         ) {
-            return self.arm_journal_click(
+            let outcome = self.arm_journal_click(
                 cause,
                 owner,
                 capture_authority,
@@ -288,12 +290,76 @@ impl DockEngine {
                 region,
                 point,
                 policy,
-            );
-        }
-        match region.kind() {
-            PresentationHitRegionKind::TabBody(tab) => {
+            )?;
+            if edge.metadata().device() == crate::pointer_journal::PointerDeviceKind::Touch
+                && owner.lease().scope().is_local()
+                && let InteractionStatus::Pressed { session } = self.interaction.status()
+            {
                 let threshold_origin =
                     self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
+                self.interaction
+                    .active_click_mut(session)
+                    .map_err(|error| EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: format!("{error:?}"),
+                    })?
+                    .touch = Some(TouchPressState {
+                    initial_pointer: point,
+                    current_pointer: point,
+                    threshold_origin,
+                    request: None,
+                    armed: false,
+                });
+            }
+            return Ok(outcome);
+        }
+        let threshold_origin = self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
+        if edge.metadata().device() == crate::pointer_journal::PointerDeviceKind::Touch
+            && owner.lease().scope().is_local()
+            && Self::touch_wait_region(region.kind())
+        {
+            return self.arm_journal_touch_press(
+                cause,
+                owner,
+                capture_authority,
+                presentation,
+                region,
+                point,
+                threshold_origin,
+                edge.metadata(),
+            );
+        }
+        self.activate_journal_source_press(
+            cause,
+            focus_causal,
+            SourcePressIntent::Activate,
+            owner,
+            capture_authority,
+            threshold_origin,
+            presentation,
+            region,
+            point,
+            policy,
+            events,
+        )
+    }
+
+    pub(super) fn activate_journal_source_press(
+        &mut self,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        intent: SourcePressIntent,
+        owner: GestureOwner,
+        capture_authority: Authority<PointerCaptureOwner>,
+        threshold_origin: JournalDragThresholdOrigin,
+        presentation: &JournalSurfacePresentation,
+        region: PresentationHitRegionId,
+        point: LogicalPoint,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<Option<InteractionOutcome>, EngineError> {
+        match region.kind() {
+            PresentationHitRegionKind::TabBody(tab) => {
                 let source = TabGestureSource::Item(tab);
                 let prepared = match self.prepare_journal_tab_gesture(presentation, source, point) {
                     Ok(prepared) => prepared,
@@ -302,6 +368,7 @@ impl DockEngine {
                 self.activate_prepared_journal_tab_gesture(
                     cause,
                     focus_causal,
+                    intent,
                     owner,
                     capture_authority,
                     threshold_origin,
@@ -312,8 +379,6 @@ impl DockEngine {
                 .map(Some)
             }
             PresentationHitRegionKind::TabGroupDrag { bar: group, .. } => {
-                let threshold_origin =
-                    self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let source = TabGestureSource::Group(group);
                 let prepared = match self.prepare_journal_tab_gesture(presentation, source, point) {
                     Ok(prepared) => prepared,
@@ -322,6 +387,7 @@ impl DockEngine {
                 self.activate_prepared_journal_tab_gesture(
                     cause,
                     focus_causal,
+                    intent,
                     owner,
                     capture_authority,
                     threshold_origin,
@@ -362,8 +428,6 @@ impl DockEngine {
                 Ok(Some(InteractionOutcome::ResizeBegan { session, replaced }))
             }
             PresentationHitRegionKind::ContainedTitle(floating) => {
-                let threshold_origin =
-                    self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let prepared = match self.prepare_journal_contained_gesture(
                     presentation,
                     floating,
@@ -375,6 +439,7 @@ impl DockEngine {
                 };
                 self.activate_prepared_journal_contained_gesture(
                     cause,
+                    intent,
                     owner,
                     capture_authority,
                     threshold_origin,
@@ -388,8 +453,6 @@ impl DockEngine {
                 floating,
                 direction,
             } => {
-                let threshold_origin =
-                    self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let prepared = match self.prepare_journal_contained_gesture(
                     presentation,
                     floating,
@@ -401,6 +464,7 @@ impl DockEngine {
                 };
                 self.activate_prepared_journal_contained_gesture(
                     cause,
+                    intent,
                     owner,
                     capture_authority,
                     threshold_origin,
@@ -640,15 +704,17 @@ impl DockEngine {
             && distance_squared >= threshold_squared
     }
 
-    fn reduce_journal_move(
+    pub(super) fn reduce_journal_move(
         &mut self,
         cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
         owner: GestureOwner,
         edge: &PointerEdge,
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
         desktop_hover_route: Option<DesktopRouteValidation>,
         policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let mut outcomes = Vec::new();
@@ -682,6 +748,21 @@ impl DockEngine {
         }
         if let Some(outcome) = self.cancel_revoked_presentation_caused(cause, interaction_events)? {
             outcomes.push(outcome);
+            return Ok(outcomes);
+        }
+        if let Some(touch_outcomes) = self.reduce_touch_move(
+            cause,
+            focus_causal,
+            owner,
+            edge,
+            receipt,
+            snapshot,
+            desktop_hover_route,
+            policy,
+            events,
+            interaction_events,
+        )? {
+            outcomes.extend(touch_outcomes);
             return Ok(outcomes);
         }
         if let InteractionStatus::Armed { session } = self.interaction.status() {
@@ -1075,6 +1156,25 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
+        if self
+            .interaction
+            .active_click(session)
+            .is_ok_and(|click| matches!(click.action.as_ref(), FrozenClickAction::Touch))
+        {
+            return self.finish_journal_touch_release(
+                cause,
+                focus_causal,
+                owner,
+                session,
+                edge,
+                receipt,
+                snapshot,
+                desktop_route,
+                policy,
+                events,
+                interaction_events,
+            );
+        }
         let click =
             match self
                 .interaction
@@ -1129,6 +1229,24 @@ impl DockEngine {
                 interaction_events,
             ));
         }
+        if let Some(touch) = click.touch.as_ref()
+            && self
+                .journal_logical_point(edge, desktop_route)
+                .is_some_and(|point| {
+                    super::pointer_touch::exceeds_touch_slop(
+                        touch.initial_pointer,
+                        point,
+                        self.presentation_authority
+                            .presentation_config
+                            .touch_press_slop_distance(),
+                    )
+                })
+        {
+            return Ok(InteractionOutcome::TouchYieldedToContent {
+                pointer: owner.pointer(),
+                surface: click.region.surface(),
+            });
+        }
         if matches!(
             click.action.as_ref(),
             FrozenClickAction::TabListMenuRow(_)
@@ -1151,6 +1269,9 @@ impl DockEngine {
         }
 
         match click.action.as_ref() {
+            FrozenClickAction::Touch => Err(EngineError::ReductionCauseInvariant {
+                detail: "touch release bypassed its exact pressed owner",
+            }),
             FrozenClickAction::Close(close) => {
                 self.finish_journal_close_click(cause, pressed, close, policy, interaction_events)
             }
@@ -1884,7 +2005,10 @@ impl DockEngine {
             });
         };
         let pane_focus = match self.freeze_payload_focus(&drag.payload) {
-            Ok(pane_focus) => pane_focus,
+            Ok(pane_focus) => match &drag.payload {
+                MovePayload::Item(source) => PaneFocusDisposition::Set(source.item()),
+                MovePayload::Tabs(_) | MovePayload::Subtree(_) => pane_focus,
+            },
             Err(error) => {
                 return Ok(InteractionOutcome::Rejected(
                     InteractionRejection::CommandRejected(error),
@@ -1929,15 +2053,28 @@ impl DockEngine {
                 });
             }
         };
-        let (outcome, changed) =
-            match self.apply_journal_workspace_command(cause, &command, policy, events)? {
-                Ok(result) => result,
-                Err(error) => {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::CommandRejected(error),
-                    ));
-                }
-            };
+        let activation = match &drag.payload {
+            MovePayload::Item(source) => JournalDeliveryActivation::SelectItem {
+                item: source.item(),
+                source_root: source.root(),
+            },
+            MovePayload::Tabs(_) | MovePayload::Subtree(_) => JournalDeliveryActivation::None,
+        };
+        let (outcome, changed) = match self.apply_journal_workspace_command_with_authority(
+            cause,
+            &command,
+            policy,
+            WorkspacePublicationAuthority::Ordinary,
+            activation,
+            events,
+        )? {
+            Ok(result) => result,
+            Err(error) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(error),
+                ));
+            }
+        };
         if let Some(binding) = self
             .viewport
             .viewport(focus_surface)
@@ -1949,6 +2086,8 @@ impl DockEngine {
                 focus_causal,
                 events,
             )?;
+        } else if let PaneFocusDisposition::Set(item) = pane_focus {
+            self.request_product_item_focus(item, focus_causal)?;
         }
         interaction_events.push(InteractionEvent::new_caused(
             cause,
@@ -2941,6 +3080,7 @@ impl DockEngine {
         &mut self,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
+        intent: SourcePressIntent,
         owner: GestureOwner,
         capture_authority: Authority<PointerCaptureOwner>,
         threshold_origin: JournalDragThresholdOrigin,
@@ -3000,7 +3140,8 @@ impl DockEngine {
             Ok(()) => true,
             // Selecting a tab and focusing its content do not require docking permission.
             Err(CommandError::Policy(_))
-                if matches!(prepared.source, TabGestureSource::Item(_)) =>
+                if intent == SourcePressIntent::Activate
+                    && matches!(prepared.source, TabGestureSource::Item(_)) =>
             {
                 false
             }
@@ -3016,13 +3157,24 @@ impl DockEngine {
         if let Some(contained) = &prepared.contained
             && contained.expected_roster.contained().last() != Some(&contained.floating)
         {
-            commands.push(WorkspaceCommand::RaiseContained {
+            let raise = WorkspaceCommand::RaiseContained {
                 source: contained.root_source.clone(),
                 floating: contained.floating,
                 expected_roster: contained.expected_roster.clone(),
-            });
+            };
+            if intent == SourcePressIntent::Activate {
+                commands.push(raise);
+            } else if let Err(source) =
+                crate::operation::authorize_workspace_command(&self.workspace, policy, &raise)
+            {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(source),
+                ));
+            }
         }
-        if let TabGestureSource::Item(source) = prepared.source {
+        if intent == SourcePressIntent::Activate
+            && let TabGestureSource::Item(source) = prepared.source
+        {
             let already_selected = matches!(
                 self.workspace.nodes.get(source.tabs),
                 Some(Node::Tabs {
@@ -3112,7 +3264,9 @@ impl DockEngine {
                 }));
             }
         }
-        if let TabGestureSource::Item(source) = prepared.source {
+        if intent == SourcePressIntent::Activate
+            && let TabGestureSource::Item(source) = prepared.source
+        {
             if let Some(binding) = self
                 .viewport
                 .viewport(prepared.surface)

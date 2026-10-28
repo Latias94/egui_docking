@@ -4,6 +4,23 @@ use super::*;
 
 impl DockEngine {
     pub(crate) fn pointer_continuation(&self) -> Option<PointerContinuationRequest> {
+        if let InteractionStatus::Pressed { session } = self.interaction.status() {
+            let click = self.interaction.active_click(session).ok()?;
+            let touch = click.touch.as_ref()?;
+            if touch.armed
+                || self.pointer_provider() != Some(click.owner.lease())
+                || !self.presentation_authority_is_current(click.presentation)
+            {
+                return None;
+            }
+            let current = self.interaction_projection(click.region.surface())?;
+            return (current.authority().stream() == click.presentation.presented.stream()
+                && current
+                    .authority()
+                    .same_interaction_semantics(click.presentation.presented))
+            .then_some(touch.request)
+            .flatten();
+        }
         let InteractionStatus::Dragging { session } = self.interaction.status() else {
             return None;
         };
@@ -137,7 +154,7 @@ impl DockEngine {
         // it remains over the same tab. Only the dwell origin is retained.
         let token = self
             .interaction
-            .mint_continuation(owner, session, deadline)
+            .mint_continuation(owner, PointerContinuationSession::Drag(session), deadline)
             .map_err(|source| EngineError::PointerInteractionInvariant {
                 cause,
                 detail: source.to_string(),
@@ -175,9 +192,20 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
+        let PointerContinuationSession::Drag(session) = token.session else {
+            return self.reduce_touch_continuation(
+                cause,
+                owner,
+                token,
+                edge,
+                receipt,
+                snapshot,
+                interaction_events,
+            );
+        };
         let pending = self
             .interaction
-            .active_drag(token.session)
+            .active_drag(session)
             .ok()
             .filter(|drag| drag.owner == owner)
             .and_then(|drag| drag.hover_selection.as_ref())
@@ -219,7 +247,7 @@ impl DockEngine {
                     || !authority.same_interaction_semantics(pending.authority)
             })
         {
-            self.clear_hover_selection(token.session);
+            self.clear_hover_selection(session);
             return Ok(outcomes);
         }
         if edge
@@ -229,11 +257,11 @@ impl DockEngine {
         {
             return Ok(outcomes);
         }
-        self.clear_hover_selection(token.session);
+        self.clear_hover_selection(session);
         outcomes.push(self.select_hovered_tab(
             cause,
             owner,
-            token.session,
+            session,
             pending.target,
             policy,
             events,

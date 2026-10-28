@@ -15,6 +15,115 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U3d explicit local-touch arbitration
+
+Local touch now shares the existing Pressed owner and finite continuation token.
+Explicit Touch on manipulation chrome waits without Select, Raise, pane focus or
+geometry mutation. The configurable defaults are 350ms long press and 8 logical
+points of slop. A fresh current-output continuation arms the contact; motion
+beyond slop before arming yields to content, early contact end activates once,
+and stationary armed end emits a renderer-neutral context-menu request. Untimed
+Touch can tap or yield but cannot earn timed arming. Missing coordinates cannot
+activate a frozen source. Ordinary close and strip/menu controls keep tap
+semantics and apply slop on both motion and release, without a docking deadline.
+
+Armed motion uses the existing tab, splitter and contained owners. It prepares
+manipulation without eagerly selecting the source or raising its contained root,
+which preserves the same-surface target proof for a first Move+ContactEnded
+batch. Required source Raise is still authorized without executing it. Successful
+item delivery stages Select and a same-root contained-source Raise against the
+post-move candidate; contained resize stages its Raise after the rectangle
+command. The original command and activation publish together once, under the
+same policy and recovery guards, or the entire candidate is rejected. Item
+content focus uses the existing post-delivery focus contract. Cross-root docking
+does not add an unrelated destination Raise policy to the qualified primary
+operation. No hover stale
+proof is broadened, and pending/dropped outputs cannot activate the source.
+
+The official owned-run adapter keeps an explicit contact roster with monotonically
+allocated provider pointer IDs. Generic pointer events remain Unknown. Potential
+synthesized generic duplicates are suppressed only from docking ingress; they
+still reach ordinary egui content. Entering suppression retires an already
+accepted generic stream once with cancellation at its actual raw boundary, so a
+held generic terminal cannot vanish behind Touch. Adapter identities/positions
+publish after the accepted raw boundary, before the separate due-continuation
+boundary. A later failure cannot rewind that accepted roster. End/Cancel retire
+only an enrolled contact; reusing an OS contact ID allocates a fresh pointer.
+
+The semantic menu request carries opaque equality identity, final report version,
+pointer, surface, root, optional item and logical point. The official adapter
+checks version and surface after measurement, consumes it for the current
+viewport/paint pass, and opens the existing root presentation menu using current
+prepared commands. It does not create another docking policy or select the tab.
+The product test actually clicks Float from that menu and verifies the contained
+result. A separate real ScrollArea journey verifies an 80-point content drag
+changes its scroll offset while core layout and gesture state remain unchanged.
+Its pane explicitly registers drag scrolling and uses a nonshrinking viewport;
+this is headless egui widget evidence, not physical touch-device certification.
+
+Independent review and new public/product regressions exposed and repaired:
+
+- Release-only movement inside a large close region bypassed slop and requested
+  a close. The regression fails before the terminal slop check and passes after it,
+  while a fresh short tap still requests one close.
+- Eager Select/Raise on first armed motion invalidated the same-batch release
+  target. The inactive-source product Burst failed before manipulation-only entry
+  and now reaches exact preview delivery. Public-host tests also cover rear title
+  sources without changing durable selection/order before settlement.
+- Suppression could lose pointer one's generic terminal. The mixed-source test
+  covers the generic release both before and after Touch Start, exact cancellation,
+  subsequent touch activation and a fresh generic press.
+- Armed complete-root touch needed the same source suppression as the drag it
+  enters. Without it, first contained motion claimed its own tab gap and failed
+  receiver geometry validation. The shared complete-root classifier now resolves
+  the same winner on both sides of that transition.
+- Deferring activation also required successful same-group reorder to select/focus
+  the item and rear resize to raise. Public tests exercise Presented/Dropped
+  results, unchanged pre-delivery state and once-only terminal activation; the
+  reorder matrix includes main and rear-contained sources.
+
+The new transform regression preserves existing terminal contracts: a splitter
+uses its presented source handle and frozen constraints to commit at release;
+contained move/resize and docking wait for the exact output barrier. Temporary
+drag decoration is not mistaken for a durable pane subtree. A disposable-snapshot
+negative control removes the source-root restriction from deferred Raise. The
+cross-root policy regression then fails at exact-output settlement with
+`ContainedTransformDisabled`; restoring current production source passes the
+same case. The production worktree is unchanged by that mutation.
+
+Fresh serialized qualification passes on the final source:
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Workspace nextest, all features and targets | 1,714 passed | Core, conformance and official egui, including seven new product touch/mixed-source cases |
+| Public-host consumer, all features and targets | 68 passed | Eight new local-touch cases; source activation covers main/rear, Presented/Dropped and unrelated destination policy |
+| Complete product harness, all features and targets | 114 passed | Existing ordinary, contained, blocker, overflow, focus and Burst matrix |
+| No-default workspace touch/continuation filter, core debug assertions disabled | 25 passed | Timing configuration, token/stream and real product input behavior |
+| No-default public touch consumer, core debug assertions disabled | 8 passed | All new public touch and delivery-activation journeys |
+| Local-fork native compatibility, all targets | 260 passed | Existing native lifecycle and adapter compatibility |
+| Correctness/suspicious Clippy | Passed | Workspace, all features and targets |
+| Strict docs, all features and no defaults | Passed | Core, conformance and official adapter with warnings denied |
+| Doctests | 10 passed | Workspace, all features |
+
+The focused public regression files are
+`integration/dockspace-host-harness/tests/touch_interaction.rs` and
+`touch_delivery_activation.rs`; product journeys are in
+`crates/egui_dockspace/src/product_touch_tests.rs` and
+`product_pointer/tests.rs`. Independent final review confirms no remaining
+confirmed P1/P2 in the touch owner, deferred activation, source suppression and
+publication boundaries. Formatting and diff checks pass.
+
+Native compatibility uses the authorized native working tree and local egui fork
+`7c7b3233541ec724bee561454ba8e9fca384f32e`, via a refreshed disposable source
+snapshot and local patch configuration. Tracked native dependency pins remain
+unchanged and do not yet reproduce those newer seams. The native working tree,
+CI and smoke changes stay outside this touch commit. No fork publication or
+physical WM-close, mixed-DPI or touch-device certification is claimed.
+
+Expanded at-least-44-point touch targets clipped away from title/tab controls,
+native device/time/stationary capture and active-drag edge scrolling remain
+open. This slice does not close all of U3d, U10 or the overall plan.
+
 ## 2026-10-28 U3d finite stationary continuation
 
 The core now exposes one opaque, finite `DockspacePointerContinuation` from the

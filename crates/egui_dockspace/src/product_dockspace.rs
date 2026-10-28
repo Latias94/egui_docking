@@ -871,6 +871,20 @@ impl Dockspace {
                 .map_err(DockspaceError::from_detail)?;
         }
         let measurement_report = frame.commit().map_err(DockspaceError::from_detail)?;
+        for request in preceding_reports
+            .iter()
+            .flat_map(|report| report.inputs())
+            .filter_map(|input| match input {
+                dockspace::runtime::HostInputOutcome::Touch(
+                    dockspace::runtime::DockspaceTouchEvent::ContextMenuRequested(request),
+                ) => Some(*request),
+                _ => None,
+            })
+        {
+            if request.version() == self.session.version() && request.surface() == surface {
+                crate::touch_menu::stage_touch_context_menu(ui, self.id, request);
+            }
+        }
         let mut frame = self
             .session
             .begin_host_frame()

@@ -26,6 +26,9 @@ const FOURTH: ItemId = ItemId::new(4);
 const FIFTH: ItemId = ItemId::new(5);
 const SIXTH: ItemId = ItemId::new(6);
 
+#[path = "product_touch_tests.rs"]
+mod touch;
+
 struct MagneticPanes {
     target_rect: Cell<Option<Rect>>,
 }

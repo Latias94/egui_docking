@@ -4,12 +4,13 @@ use std::collections::BTreeSet;
 
 use super::{
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
-    DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspacePresentationTransition,
-    DockspacePresentationTransitionId, DockspacePresentationTransitionResult,
-    DockspaceSubmittedAction, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
-    HostSurfaceCommit, NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
-    NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput,
-    SurfacePresentationCommit, native_effect,
+    DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspaceContextMenuRequest,
+    DockspacePresentationTransition, DockspacePresentationTransitionId,
+    DockspacePresentationTransitionResult, DockspaceSubmittedAction, DockspaceTouchEvent,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommit,
+    NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
+    NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput, SurfacePointerId,
+    SurfacePresentationCommit, WorkspaceVersion, native_effect,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
@@ -184,7 +185,7 @@ impl HostFrameReport {
                         accepted: *accepted_base,
                     }),
                     InputOutcome::InteractionProcessed { outcome, .. } => {
-                        interaction_host_outcome(outcome, reduced.cause())
+                        interaction_host_outcome(outcome, reduced.cause(), transition.after())
                     }
                     _ => None,
                 };
@@ -205,7 +206,9 @@ impl HostFrameReport {
             }
             for (edge_index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
                 for (outcome_index, outcome) in edge.interaction_outcomes().iter().enumerate() {
-                    if let Some(outcome) = interaction_host_outcome(outcome, edge.cause()) {
+                    if let Some(outcome) =
+                        interaction_host_outcome(outcome, edge.cause(), transition.after())
+                    {
                         ordered_inputs.push((
                             edge.causal_ordinal().get(),
                             edge_index,
@@ -338,6 +341,7 @@ fn product_action_host_outcome(
 fn interaction_host_outcome(
     outcome: &InteractionOutcome,
     cause: crate::event::ReductionCause,
+    version: WorkspaceVersion,
 ) -> Option<HostInputOutcome> {
     match outcome {
         InteractionOutcome::ProductActionApplied(outcome) => {
@@ -353,6 +357,41 @@ fn interaction_host_outcome(
                 origin: HostCloseRequestOrigin::Interaction,
             })
         }
+        InteractionOutcome::TouchArmed { pointer, surface } => {
+            Some(HostInputOutcome::Touch(DockspaceTouchEvent::Armed {
+                pointer: SurfacePointerId::new(pointer.get()),
+                surface: *surface,
+            }))
+        }
+        InteractionOutcome::TouchActivated { pointer, surface } => {
+            Some(HostInputOutcome::Touch(DockspaceTouchEvent::Activated {
+                pointer: SurfacePointerId::new(pointer.get()),
+                surface: *surface,
+            }))
+        }
+        InteractionOutcome::TouchYieldedToContent { pointer, surface } => Some(
+            HostInputOutcome::Touch(DockspaceTouchEvent::YieldedToContent {
+                pointer: SurfacePointerId::new(pointer.get()),
+                surface: *surface,
+            }),
+        ),
+        InteractionOutcome::ContextMenuRequested {
+            pointer,
+            surface,
+            root,
+            item,
+            position,
+        } => Some(HostInputOutcome::Touch(
+            DockspaceTouchEvent::ContextMenuRequested(DockspaceContextMenuRequest::new(
+                cause,
+                version,
+                SurfacePointerId::new(pointer.get()),
+                *surface,
+                *root,
+                *item,
+                *position,
+            )),
+        )),
         _ => None,
     }
 }

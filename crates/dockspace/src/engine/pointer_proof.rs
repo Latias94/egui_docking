@@ -100,6 +100,36 @@ pub(super) fn pointer_receiver_candidate_spec(
         (InteractionStatus::Idle, PointerEdgeKind::ButtonPressed(PointerButton::Primary), _) => {
             (PointerReceiverDeliveryRequest::ClickAndDrag, false)
         }
+        (InteractionStatus::Pressed { session }, kind, true)
+            if engine
+                .interaction
+                .active_click(session)
+                .is_ok_and(|click| click.touch.is_some()) =>
+        {
+            match kind {
+                PointerEdgeKind::Continuation(_)
+                | PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+                | PointerEdgeKind::ContactEnded(PointerButton::Primary) => {
+                    (PointerReceiverDeliveryRequest::ClickAndDrag, false)
+                }
+                PointerEdgeKind::Moved => {
+                    let hover = engine.interaction.active_click(session).is_ok_and(|click| {
+                        click.touch.as_ref().is_some_and(|touch| touch.armed)
+                            && matches!(
+                                click.region.kind(),
+                                PresentationHitRegionKind::TabBody(_)
+                                    | PresentationHitRegionKind::TabGroupDrag { .. }
+                                    | PresentationHitRegionKind::ContainedTitle(_)
+                            )
+                    });
+                    (
+                        PointerReceiverDeliveryRequest::None,
+                        hover && position.hover_probe_requested(),
+                    )
+                }
+                _ => (PointerReceiverDeliveryRequest::None, false),
+            }
+        }
         (
             InteractionStatus::Pressed { .. },
             PointerEdgeKind::ButtonReleased(PointerButton::Primary)
@@ -366,23 +396,31 @@ impl DockEngine {
                 .interaction
                 .armed_drag(session)
                 .ok()
-                .and_then(|drag| drag.complete_root.as_ref()),
+                .and_then(|drag| drag.complete_root.as_ref())
+                .map(NodeSource::root),
             InteractionStatus::Dragging { session } => self
                 .interaction
                 .active_drag(session)
                 .ok()
-                .and_then(|drag| drag.complete_root.as_ref()),
+                .and_then(|drag| drag.complete_root.as_ref())
+                .map(NodeSource::root),
+            InteractionStatus::Pressed { session } => self
+                .interaction
+                .active_click(session)
+                .ok()
+                .filter(|click| click.touch.as_ref().is_some_and(|touch| touch.armed))
+                .and_then(|click| self.touch_complete_drag_root(click.region.kind())),
             _ => None,
         };
         let Some(source) = source else {
             return PresentationHitSuppression::default();
         };
-        let contained = match self.workspace.presentation_for_root(source.root()) {
+        let contained = match self.workspace.presentation_for_root(source) {
             Some(crate::RootPresentationOwner::Contained { floating, .. }) => Some(floating),
             Some(crate::RootPresentationOwner::Main { .. }) => None,
             None => return PresentationHitSuppression::default(),
         };
-        PresentationHitSuppression::complete_root(source.root(), contained)
+        PresentationHitSuppression::complete_root(source, contained)
     }
 
     pub(super) fn validate_pointer_receiver_geometry(

@@ -499,6 +499,7 @@ pub(super) const fn interaction_error_kind(
             DockspaceRuntimeErrorKind::OperationConflict
         }
         DockspaceInteractionError::MeasurementRosterInvariant
+        | DockspaceInteractionError::PointerIdentityExhausted
         | DockspaceInteractionError::PointerSequenceExhausted
         | DockspaceInteractionError::PointerProtocolInvariant => {
             DockspaceRuntimeErrorKind::Internal

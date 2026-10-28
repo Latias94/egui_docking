@@ -317,6 +317,7 @@ impl DockEngine {
             &command,
             policy,
             WorkspacePublicationAuthority::Ordinary,
+            JournalDeliveryActivation::None,
         )? {
             Ok(_) => {}
             Err(error) => {
@@ -819,6 +820,7 @@ impl DockEngine {
             &command,
             policy,
             publication_authority,
+            JournalDeliveryActivation::None,
         )? {
             Ok(_) => {}
             Err(error) => {
@@ -956,6 +958,7 @@ impl DockEngine {
             command,
             &self.policy.clone(),
             publication_authority,
+            JournalDeliveryActivation::None,
             events,
         )? {
             Ok(result) => result,

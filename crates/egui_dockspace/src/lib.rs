@@ -27,6 +27,8 @@ mod product_pointer;
 mod product_render;
 #[path = "product_response.rs"]
 mod response;
+#[path = "product_render/touch_menu.rs"]
+mod touch_menu;
 
 pub use builder::DockspaceBuilder;
 pub use dockspace::close::{
@@ -47,10 +49,11 @@ pub use dockspace::runtime::SurfacePresentationResult;
 pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePhase,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
-    DockspaceCloseResolution, DockspaceFocusTarget, DockspaceManipulationCancelReason,
-    DockspaceManipulationDelivery, DockspaceManipulationFeedback, DockspaceManipulationFeedbackId,
-    DockspaceManipulationId, DockspaceManipulationPendingReason, DockspaceManipulationRejection,
-    DockspaceManipulationStatus, PreparedCloseRequest,
+    DockspaceCloseResolution, DockspaceContextMenuRequest, DockspaceFocusTarget,
+    DockspaceManipulationCancelReason, DockspaceManipulationDelivery,
+    DockspaceManipulationFeedback, DockspaceManipulationFeedbackId, DockspaceManipulationId,
+    DockspaceManipulationPendingReason, DockspaceManipulationRejection,
+    DockspaceManipulationStatus, DockspaceTouchEvent, PreparedCloseRequest,
 };
 #[cfg(feature = "serde")]
 pub use dockspace::runtime::{

@@ -63,7 +63,20 @@ continuation. A stationary active drag can select an inactive tab after the
 default 150ms dwell without requesting pane-content focus. The wake submits an
 explicit continuation with fresh receiver checks; it never fabricates pointer
 motion. `DockStyle::hover_selection_delay` can customize or disable this behavior.
-Touch long press and stationary drag edge scrolling remain implementation work.
+
+Explicit `Event::Touch` contacts keep independent provider pointer identities
+and Known-Touch metadata. A packet with explicit or live touch input does not
+also submit its potentially synthesized generic pointer events to docking.
+The ordinary egui events still reach pane widgets, including content scrolling.
+On dock chrome, a short tap activates on contact end, movement beyond 8 points
+before arming yields to content, and a 350ms stationary continuation arms docking.
+Armed motion uses the ordinary drag/resize path; stationary armed release opens
+the existing root presentation menu without selecting or focusing the tab.
+`DockStyle::touch_long_press_delay` and `touch_press_slop_distance` customize the
+profile. Read `DockspaceResponse::touch_events()` for ordered semantic events,
+including context-menu requests. Missing batch time disables timed arming while
+preserving short taps. Native touch capture, expanded touch hit targets and
+stationary drag edge scrolling remain implementation work.
 
 The adapter validates the complete ordered surface span after all output hooks,
 including ordinary geometry, previews, clipping and transforms. Pane drawing must

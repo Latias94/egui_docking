@@ -57,6 +57,8 @@ pub struct DockPresentationConfig {
     splitter_keyboard_step: f64,
     pointer_drag_start_distance: f64,
     hover_selection_delay: Option<Duration>,
+    touch_long_press_delay: Duration,
+    touch_press_slop_distance: f64,
     guide_extent: f64,
     guide_gap: f64,
     guide_hit_padding: f64,
@@ -164,6 +166,18 @@ impl DockPresentationConfig {
     #[must_use]
     pub const fn hover_selection_delay(&self) -> Option<Duration> {
         self.hover_selection_delay
+    }
+
+    /// Returns the delay before a touch press becomes a long press.
+    #[must_use]
+    pub const fn touch_long_press_delay(&self) -> Duration {
+        self.touch_long_press_delay
+    }
+
+    /// Returns the logical movement distance allowed before an unarmed touch yields to content.
+    #[must_use]
+    pub const fn touch_press_slop_distance(&self) -> f64 {
+        self.touch_press_slop_distance
     }
 
     /// Returns the width and height of one docking guide button.
@@ -281,6 +295,8 @@ pub struct DockPresentationConfigBuilder {
     splitter_keyboard_step: f64,
     pointer_drag_start_distance: f64,
     hover_selection_delay: Option<Duration>,
+    touch_long_press_delay: Duration,
+    touch_press_slop_distance: f64,
     guide_extent: f64,
     guide_gap: f64,
     guide_hit_padding: f64,
@@ -315,6 +331,8 @@ impl Default for DockPresentationConfigBuilder {
             splitter_keyboard_step: 16.0,
             pointer_drag_start_distance: 6.0,
             hover_selection_delay: Some(Duration::from_millis(150)),
+            touch_long_press_delay: Duration::from_millis(350),
+            touch_press_slop_distance: 8.0,
             guide_extent: 48.0,
             guide_gap: 12.0,
             guide_hit_padding: 6.0,
@@ -420,6 +438,20 @@ impl DockPresentationConfigBuilder {
     #[must_use]
     pub const fn hover_selection_delay(mut self, value: Option<Duration>) -> Self {
         self.hover_selection_delay = value;
+        self
+    }
+
+    /// Sets the delay before a touch press becomes a long press.
+    #[must_use]
+    pub const fn touch_long_press_delay(mut self, value: Duration) -> Self {
+        self.touch_long_press_delay = value;
+        self
+    }
+
+    /// Sets the logical movement distance allowed before an unarmed touch yields to content.
+    #[must_use]
+    pub const fn touch_press_slop_distance(mut self, value: f64) -> Self {
+        self.touch_press_slop_distance = value;
         self
     }
 
@@ -570,6 +602,7 @@ impl DockPresentationConfigBuilder {
         }
         for (field, value) in [
             ("tab_horizontal_padding", self.tab_horizontal_padding),
+            ("touch_press_slop_distance", self.touch_press_slop_distance),
             ("guide_gap", self.guide_gap),
             ("guide_hit_padding", self.guide_hit_padding),
             ("floating_border_width", self.floating_border_width),
@@ -664,6 +697,8 @@ impl DockPresentationConfigBuilder {
             splitter_keyboard_step: self.splitter_keyboard_step,
             pointer_drag_start_distance: self.pointer_drag_start_distance,
             hover_selection_delay: self.hover_selection_delay,
+            touch_long_press_delay: self.touch_long_press_delay,
+            touch_press_slop_distance: self.touch_press_slop_distance,
             guide_extent: self.guide_extent,
             guide_gap: self.guide_gap,
             guide_hit_padding: self.guide_hit_padding,
@@ -812,6 +847,11 @@ mod tests {
             config.hover_selection_delay(),
             Some(Duration::from_millis(150))
         );
+        assert_eq!(config.touch_long_press_delay(), Duration::from_millis(350));
+        assert_eq!(
+            config.touch_press_slop_distance().to_bits(),
+            8.0_f64.to_bits()
+        );
         assert_eq!(config.tab_bar_height().to_bits(), 28.0_f64.to_bits());
         assert_eq!(config.dock_fraction().to_bits(), 0.5_f64.to_bits());
         assert_eq!(
@@ -862,6 +902,44 @@ mod tests {
 
             assert_eq!(config.hover_selection_delay(), delay);
         }
+    }
+
+    #[test]
+    fn touch_configuration_accepts_custom_values_and_zero() {
+        for (delay, slop) in [(Duration::from_millis(500), 12.5), (Duration::ZERO, 0.0)] {
+            let config = DockPresentationConfig::builder()
+                .touch_long_press_delay(delay)
+                .touch_press_slop_distance(slop)
+                .build()
+                .expect("custom and zero touch values should be valid");
+
+            assert_eq!(config.touch_long_press_delay(), delay);
+            assert_eq!(config.touch_press_slop_distance().to_bits(), slop.to_bits());
+        }
+    }
+
+    #[test]
+    fn touch_configuration_rejects_non_finite_and_negative_slop() {
+        for slop in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                DockPresentationConfig::builder()
+                    .touch_press_slop_distance(slop)
+                    .build(),
+                Err(DockPresentationConfigError::NonFinite {
+                    field: "touch_press_slop_distance",
+                    ..
+                })
+            ));
+        }
+        assert!(matches!(
+            DockPresentationConfig::builder()
+                .touch_press_slop_distance(-1.0)
+                .build(),
+            Err(DockPresentationConfigError::Negative {
+                field: "touch_press_slop_distance",
+                ..
+            })
+        ));
     }
 
     #[test]
