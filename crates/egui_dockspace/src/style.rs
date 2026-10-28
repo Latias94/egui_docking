@@ -161,6 +161,10 @@ pub struct DockStyle {
     pub touch_press_slop_distance: f32,
     /// Height of every tab bar.
     pub tab_bar_height: f32,
+    /// Width of each tab-strip edge scroll band in egui points; zero disables it.
+    pub tab_strip_edge_scroll_band: f32,
+    /// Positive interval between edge scroll steps; `None` disables edge scrolling.
+    pub tab_strip_edge_scroll_interval: Option<std::time::Duration>,
     /// Nominal square extent of the whole-tab-stack grip.
     pub tab_group_grip_extent: f32,
     /// Horizontal padding on each side of tab content.
@@ -247,6 +251,8 @@ impl DockStyle {
             .touch_long_press_delay(self.touch_long_press_delay)
             .touch_press_slop_distance(f64::from(self.touch_press_slop_distance))
             .tab_bar_height(f64::from(self.tab_bar_height))
+            .tab_strip_edge_scroll_band(f64::from(self.tab_strip_edge_scroll_band))
+            .tab_strip_edge_scroll_interval(self.tab_strip_edge_scroll_interval)
             .tab_group_grip_extent(f64::from(self.tab_group_grip_extent))
             .tab_horizontal_padding(f64::from(self.tab_horizontal_padding))
             .tab_min_width(f64::from(self.tab_min_width))
@@ -282,7 +288,7 @@ impl DockStyle {
     /// # Errors
     ///
     /// Returns [`DockStyleError`] when a metric is not finite, violates its
-    /// sign constraint, or conflicts with another metric.
+    /// sign constraint, a scroll interval is zero, or metrics conflict.
     pub fn validate(&self) -> Result<(), DockStyleError> {
         for (field, value) in [
             ("tab_bar_height", self.tab_bar_height),
@@ -303,6 +309,10 @@ impl DockStyle {
 
         for (field, value) in [
             ("tab_horizontal_padding", self.tab_horizontal_padding),
+            (
+                "tab_strip_edge_scroll_band",
+                self.tab_strip_edge_scroll_band,
+            ),
             ("touch_press_slop_distance", self.touch_press_slop_distance),
             ("drop_guide_gap", self.drop_guide_gap),
             ("drop_guide_hit_padding", self.drop_guide_hit_padding),
@@ -311,6 +321,9 @@ impl DockStyle {
             ("ghost_offset.y", self.ghost_offset.y),
         ] {
             require_non_negative(field, value)?;
+        }
+        if self.tab_strip_edge_scroll_interval == Some(std::time::Duration::ZERO) {
+            return Err(DockStyleError::ZeroEdgeScrollInterval);
         }
 
         for (field, value) in [
@@ -376,6 +389,8 @@ impl Default for DockStyle {
             touch_long_press_delay: geometry.touch_long_press_delay(),
             touch_press_slop_distance: geometry.touch_press_slop_distance() as f32,
             tab_bar_height: geometry.tab_bar_height() as f32,
+            tab_strip_edge_scroll_band: geometry.tab_strip_edge_scroll_band() as f32,
+            tab_strip_edge_scroll_interval: geometry.tab_strip_edge_scroll_interval(),
             tab_group_grip_extent: geometry.tab_group_grip_extent() as f32,
             tab_horizontal_padding: geometry.tab_horizontal_padding() as f32,
             tab_min_width: geometry.tab_min_width() as f32,
@@ -406,7 +421,7 @@ impl Default for DockStyle {
     }
 }
 
-/// Error returned when [`DockStyle`] geometry is not internally consistent.
+/// Error returned when [`DockStyle`] geometry or interaction timing is invalid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DockStyleError {
     /// A metric is NaN or infinite.
@@ -415,6 +430,8 @@ pub enum DockStyleError {
     Negative { field: &'static str },
     /// A metric that represents a size is zero or negative.
     NotPositive { field: &'static str },
+    /// A zero edge scroll interval would continuously reschedule work.
+    ZeroEdgeScrollInterval,
     /// A configured minimum is greater than its maximum.
     MinimumExceedsMaximum {
         minimum: &'static str,
@@ -444,6 +461,8 @@ impl fmt::Display for DockStyleError {
             Self::NonFinite { field } => write!(formatter, "`{field}` must be finite"),
             Self::Negative { field } => write!(formatter, "`{field}` must not be negative"),
             Self::NotPositive { field } => write!(formatter, "`{field}` must be positive"),
+            Self::ZeroEdgeScrollInterval => formatter
+                .write_str("tab-strip edge scroll interval must be positive or disabled with None"),
             Self::MinimumExceedsMaximum { minimum, maximum } => {
                 write!(formatter, "`{minimum}` must not exceed `{maximum}`")
             }
@@ -503,7 +522,95 @@ mod tests {
 
     #[test]
     fn default_style_is_valid() {
-        assert_eq!(DockStyle::default().validate(), Ok(()));
+        let style = DockStyle::default();
+        assert_eq!(style.validate(), Ok(()));
+        let config = style.presentation_config().unwrap();
+        assert_eq!(config, DockPresentationConfig::default());
+        assert_eq!(
+            style.tab_strip_edge_scroll_band.to_bits(),
+            24.0_f32.to_bits()
+        );
+        assert_eq!(
+            style.tab_strip_edge_scroll_interval,
+            Some(std::time::Duration::from_millis(50))
+        );
+    }
+
+    #[test]
+    fn tab_strip_edge_scroll_style_bridges_custom_and_disabled_values() {
+        for (band, interval) in [
+            (12.5, Some(std::time::Duration::from_millis(25))),
+            (0.0, Some(std::time::Duration::from_nanos(1))),
+            (24.0, None),
+            (0.0, None),
+        ] {
+            let style = DockStyle {
+                tab_strip_edge_scroll_band: band,
+                tab_strip_edge_scroll_interval: interval,
+                ..DockStyle::default()
+            };
+            assert_eq!(style.validate(), Ok(()));
+            let config = style.presentation_config().unwrap();
+            assert_eq!(
+                config.tab_strip_edge_scroll_band().to_bits(),
+                f64::from(band).to_bits()
+            );
+            assert_eq!(config.tab_strip_edge_scroll_interval(), interval);
+        }
+    }
+
+    #[test]
+    fn tab_strip_edge_scroll_style_rejects_zero_interval_and_invalid_band() {
+        let style = DockStyle {
+            tab_strip_edge_scroll_band: 0.0,
+            tab_strip_edge_scroll_interval: Some(std::time::Duration::ZERO),
+            ..DockStyle::default()
+        };
+        assert_eq!(
+            style.validate(),
+            Err(DockStyleError::ZeroEdgeScrollInterval)
+        );
+        assert_eq!(
+            style.presentation_config(),
+            Err(DockPresentationConfigError::ZeroEdgeScrollInterval)
+        );
+        for band in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let style = DockStyle {
+                tab_strip_edge_scroll_band: band,
+                tab_strip_edge_scroll_interval: None,
+                ..DockStyle::default()
+            };
+            assert_eq!(
+                style.validate(),
+                Err(DockStyleError::NonFinite {
+                    field: "tab_strip_edge_scroll_band",
+                })
+            );
+            assert!(matches!(
+                style.presentation_config(),
+                Err(DockPresentationConfigError::NonFinite {
+                    field: "tab_strip_edge_scroll_band",
+                    ..
+                })
+            ));
+        }
+        let style = DockStyle {
+            tab_strip_edge_scroll_band: -1.0,
+            ..DockStyle::default()
+        };
+        assert_eq!(
+            style.validate(),
+            Err(DockStyleError::Negative {
+                field: "tab_strip_edge_scroll_band",
+            })
+        );
+        assert_eq!(
+            style.presentation_config(),
+            Err(DockPresentationConfigError::Negative {
+                field: "tab_strip_edge_scroll_band",
+                value: -1.0,
+            })
+        );
     }
 
     #[test]

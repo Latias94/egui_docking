@@ -10,6 +10,7 @@ mod native_admission;
 mod native_tear_off;
 mod overload;
 mod pointer_contained;
+mod pointer_edge_scroll;
 mod pointer_proof;
 mod pointer_session;
 mod pointer_splitter;
@@ -144,18 +145,19 @@ use crate::intent::{
 use crate::interaction::{
     ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart, ContainedDragIntent,
     ContainedTransformPlacement, ContainedTransformPreview, ContainedTransformSessionId,
-    ContainedTransformStart, DragArmStart, EscapeDelivery, FrozenClickAction, FrozenCloseClick,
-    FrozenContainedDragOrigin, FrozenDragOrigin, FrozenPresentationAuthority, FrozenResizeHandle,
-    FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick,
-    FrozenTabStripControlClick, GestureOwner, HoverSelectionState, InteractionCancelReason,
-    InteractionCounterError, InteractionDelivery, InteractionEvent, InteractionEventKind,
-    InteractionOutcome, InteractionRejection, InteractionState, InteractionStatus,
-    JournalDragSourceGeometry, JournalDragThresholdOrigin, ManipulationPositionKey,
-    PointerContinuationRequest, PointerContinuationSession, PointerContinuationToken, PreviewProof,
-    PreviewResolutionStatus, PreviewVisual, ResizeStart, SceneGestureContinuation,
-    SceneGestureContinuationDraft, SceneGestureContinuationSource, SceneGestureSession,
-    ScrollApplication, ScrollReductionOutcome, ScrollSessionId, ScrollSuppressionReason,
-    ScrollTerminationReason, TouchPressState, WorkspaceDeliveryKind,
+    ContainedTransformStart, DragArmStart, DragTimedContinuation, EscapeDelivery,
+    FrozenClickAction, FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin,
+    FrozenPresentationAuthority, FrozenResizeHandle, FrozenTabListMenuBackdropClick,
+    FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
+    GestureOwner, HoverSelectionState, InteractionCancelReason, InteractionCounterError,
+    InteractionDelivery, InteractionEvent, InteractionEventKind, InteractionOutcome,
+    InteractionRejection, InteractionState, InteractionStatus, JournalDragSourceGeometry,
+    JournalDragThresholdOrigin, ManipulationPositionKey, PointerContinuationRequest,
+    PointerContinuationSession, PointerContinuationToken, PreviewProof, PreviewResolutionStatus,
+    PreviewVisual, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
+    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
+    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, TabStripEdgeDirection,
+    TabStripEdgeScrollState, TouchPressState, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};

@@ -5,7 +5,8 @@ use std::sync::Arc;
 mod timed;
 pub use timed::PointerContinuationToken;
 pub(crate) use timed::{
-    HoverSelectionState, PointerContinuationRequest, PointerContinuationSession, TouchPressState,
+    DragTimedContinuation, HoverSelectionState, PointerContinuationRequest,
+    PointerContinuationSession, TabStripEdgeDirection, TabStripEdgeScrollState, TouchPressState,
 };
 
 use thiserror::Error;
@@ -2241,7 +2242,7 @@ pub(crate) struct ActiveDrag {
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
-    pub(crate) hover_selection: Option<HoverSelectionState>,
+    pub(crate) timed: Option<DragTimedContinuation>,
     pub(crate) journal_presentation_reservation: Option<JournalPresentationReservation>,
     pub(crate) contained_offer: Option<ContainedPresentationOffer>,
     pub(crate) surface_background_offer: Option<SurfaceBackgroundRootOffer>,
@@ -2912,7 +2913,7 @@ impl InteractionState {
             source_layout_facts: armed.source_layout_facts.clone(),
             journal_source_geometry: armed.journal_source_geometry,
             continuation: armed.continuation.clone(),
-            hover_selection: None,
+            timed: None,
             journal_presentation_reservation: None,
             contained_offer: None,
             surface_background_offer: None,

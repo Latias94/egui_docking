@@ -159,7 +159,33 @@ Tab hover selection has a default 150ms delay controlled
 by `DockPresentationConfig::builder().hover_selection_delay(...)`. `None`
 disables it. Selection keeps the active drag and requests no pane-content focus;
 only a subsequent normal release can deliver the payload. Native stationary
-input and active-drag edge scrolling remain separate work.
+input still needs independently captured routing and event-time facts.
+
+Local active drags also scroll an overflowing tab strip while stationary near
+its content edge. The default band is 24 logical points and the interval is
+50ms; each accepted continuation advances at most one existing scroll-line
+extent (40 points by default). Overlay controls are removed from the content
+viewport, and each band is capped at half the remaining width with deterministic
+midpoint direction. Close buttons, enabled or disabled strip controls, popups,
+foreign blockers and ambiguous receivers prevent automatic scrolling.
+`tab_strip_edge_scroll_band(0.0)` or `tab_strip_edge_scroll_interval(None)` disables
+it. A zero-duration interval is rejected.
+
+Edge scrolling and hover selection share one pending drag continuation, with
+edge scrolling taking priority. Each step revokes its old token and waits for
+the exact newly compiled output to be presented before returning the next wake.
+The host still supplies fresh current-output receiver facts for every step.
+`pointer_continuation_awaits_presentation(surface)` tells a deferred renderer host
+when its terminal output result must wake the host to accept that result; it is
+not a request to repaint continuously. A dropped candidate frame is retryable;
+stale receipts, blockers and cancellation do not grant another step.
+
+Manual scroll input, strip commands and menu changes revoke automatic work.
+An active manual scroll sequence owns its strip until its terminal boundary;
+fresh drag motion can reacquire an edge afterward. Scrolling changes neither
+workspace selection nor pane focus. During dragging, the shared offset commit
+reuses valid measurements to compile fresh geometry, preserving the source
+gesture while keeping target authority behind the normal presentation barrier.
 
 ## Local touch
 

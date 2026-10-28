@@ -873,7 +873,7 @@ impl DockEngine {
         )? {
             outcomes.push(outcome);
         }
-        self.advance_hover_selection(cause, owner, session, edge, receipt, snapshot)?;
+        self.advance_drag_continuation(cause, owner, session, edge, receipt, snapshot)?;
         Ok(outcomes)
     }
 

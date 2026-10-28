@@ -57,6 +57,18 @@ impl DockspacePointerContinuation {
 }
 
 impl DockspaceSession {
+    /// Returns whether one finite stationary action waits for this surface's exact output.
+    ///
+    /// The renderer owner should wake the host when that output receives its
+    /// terminal result, so the normal next frame can accept it and re-query
+    /// [`Self::pointer_continuation`]. This is scheduling information only; it
+    /// grants no receiver authority and does not request continuous repainting.
+    #[must_use]
+    pub fn pointer_continuation_awaits_presentation(&self, surface: SurfaceId) -> bool {
+        self.engine
+            .pointer_continuation_awaits_presentation(surface)
+    }
+
     /// Returns the current committed gesture's finite stationary wake, if any.
     ///
     /// Schedule the deadline on the input provider's clock. After waking, query

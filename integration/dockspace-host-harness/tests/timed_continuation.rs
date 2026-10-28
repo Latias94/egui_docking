@@ -321,19 +321,35 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
         if drop_due_frame {
             let third_point = {
                 let mut inspect = session.begin_host_frame().unwrap();
-                inspect.paint_plan(B).unwrap().unwrap().tab_receiver(THIRD).unwrap().center()
+                inspect
+                    .paint_plan(B)
+                    .unwrap()
+                    .unwrap()
+                    .tab_receiver(THIRD)
+                    .unwrap()
+                    .center()
             };
             for (index, failure) in ["blocked", "unknown", "capture"].into_iter().enumerate() {
                 let now = 200 + u64::try_from(index).unwrap() * 400;
                 let a = session.presented_surface(A).unwrap();
                 let b = session.presented_surface(B).unwrap();
                 let mut frame = session.begin_host_frame().unwrap();
-                frame.submit_host_pointer(HostPointerInput::new(
-                    POINTER, SurfacePointerEvent::Moved,
-                    HostPointerRoute::new(a, moved), HostPointerRoute::new(b, third_point),
-                    SurfacePointerCapture::ProviderEndpoint,
-                    SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&b),
-                ).with_metadata(PointerEventMetadata::new(PointerDeviceKind::Mouse, Duration::from_millis(now)))).unwrap();
+                frame
+                    .submit_host_pointer(
+                        HostPointerInput::new(
+                            POINTER,
+                            SurfacePointerEvent::Moved,
+                            HostPointerRoute::new(a, moved),
+                            HostPointerRoute::new(b, third_point),
+                            SurfacePointerCapture::ProviderEndpoint,
+                            SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&b),
+                        )
+                        .with_metadata(PointerEventMetadata::new(
+                            PointerDeviceKind::Mouse,
+                            Duration::from_millis(now),
+                        )),
+                    )
+                    .unwrap();
                 assert!(!commit(frame).workspace_changed());
                 let wake = session.pointer_continuation().unwrap();
                 assert_eq!(wake.deadline(), Duration::from_millis(now + 150));
@@ -344,12 +360,26 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
                     _ => unreachable!(),
                 };
                 let mut frame = session.begin_host_frame().unwrap();
-                frame.submit_host_pointer(HostPointerInput::new(
-                    wake.pointer(), wake.event(),
-                    HostPointerRoute::new(a, moved), HostPointerRoute::new(b, third_point),
-                    if failure == "capture" { SurfacePointerCapture::Foreign } else { SurfacePointerCapture::ProviderEndpoint },
-                    facts,
-                ).with_metadata(PointerEventMetadata::new(PointerDeviceKind::Mouse, wake.deadline()))).unwrap();
+                frame
+                    .submit_host_pointer(
+                        HostPointerInput::new(
+                            wake.pointer(),
+                            wake.event(),
+                            HostPointerRoute::new(a, moved),
+                            HostPointerRoute::new(b, third_point),
+                            if failure == "capture" {
+                                SurfacePointerCapture::Foreign
+                            } else {
+                                SurfacePointerCapture::ProviderEndpoint
+                            },
+                            facts,
+                        )
+                        .with_metadata(PointerEventMetadata::new(
+                            PointerDeviceKind::Mouse,
+                            wake.deadline(),
+                        )),
+                    )
+                    .unwrap();
                 assert!(!commit(frame).workspace_changed());
                 assert!(!session.view().item(THIRD).unwrap().is_selected());
                 assert!(session.view().item(FOURTH).unwrap().is_selected());
@@ -359,12 +389,22 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
                     // Once invalidated, this token cannot borrow a later clear
                     // receiver to complete the discarded dwell interval.
                     let mut frame = session.begin_host_frame().unwrap();
-                    frame.submit_host_pointer(HostPointerInput::new(
-                        wake.pointer(), wake.event(),
-                        HostPointerRoute::new(a, moved), HostPointerRoute::new(b, third_point),
-                        SurfacePointerCapture::ProviderEndpoint,
-                        SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&b),
-                    ).with_metadata(PointerEventMetadata::new(PointerDeviceKind::Mouse, Duration::from_millis(now + 151)))).unwrap();
+                    frame
+                        .submit_host_pointer(
+                            HostPointerInput::new(
+                                wake.pointer(),
+                                wake.event(),
+                                HostPointerRoute::new(a, moved),
+                                HostPointerRoute::new(b, third_point),
+                                SurfacePointerCapture::ProviderEndpoint,
+                                SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&b),
+                            )
+                            .with_metadata(PointerEventMetadata::new(
+                                PointerDeviceKind::Mouse,
+                                Duration::from_millis(now + 151),
+                            )),
+                        )
+                        .unwrap();
                     assert!(!commit(frame).workspace_changed());
                     assert!(!session.view().item(THIRD).unwrap().is_selected());
                     assert!(session.pointer_continuation().is_none());
@@ -393,7 +433,10 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
             frame
                 .submit_host_pointer_batch(
                     [
-                        (SurfacePointerEvent::Moved, if release_at_deadline { 160 } else { 162 }),
+                        (
+                            SurfacePointerEvent::Moved,
+                            if release_at_deadline { 160 } else { 162 },
+                        ),
                         (
                             SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
                             if release_at_deadline { 160 } else { 163 },

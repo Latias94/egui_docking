@@ -47,6 +47,8 @@ impl PresentationConfigRevision {
 pub struct DockPresentationConfig {
     tab_bar_height: f64,
     tab_strip_scroll_line_extent: f64,
+    tab_strip_edge_scroll_band: f64,
+    tab_strip_edge_scroll_interval: Option<Duration>,
     tab_group_grip_extent: f64,
     tab_horizontal_padding: f64,
     tab_min_width: f64,
@@ -101,6 +103,18 @@ impl DockPresentationConfig {
     #[must_use]
     pub const fn tab_strip_scroll_line_extent(&self) -> f64 {
         self.tab_strip_scroll_line_extent
+    }
+
+    /// Returns the logical width of each tab-strip edge scroll band; zero disables it.
+    #[must_use]
+    pub const fn tab_strip_edge_scroll_band(&self) -> f64 {
+        self.tab_strip_edge_scroll_band
+    }
+
+    /// Returns the positive interval between edge scroll steps, or `None` when disabled.
+    #[must_use]
+    pub const fn tab_strip_edge_scroll_interval(&self) -> Option<Duration> {
+        self.tab_strip_edge_scroll_interval
     }
 
     /// Returns the nominal square extent of a whole-tab-stack grip.
@@ -285,6 +299,8 @@ impl DockPresentationConfig {
 pub struct DockPresentationConfigBuilder {
     tab_bar_height: f64,
     tab_strip_scroll_line_extent: f64,
+    tab_strip_edge_scroll_band: f64,
+    tab_strip_edge_scroll_interval: Option<Duration>,
     tab_group_grip_extent: f64,
     tab_horizontal_padding: f64,
     tab_min_width: f64,
@@ -321,6 +337,8 @@ impl Default for DockPresentationConfigBuilder {
         Self {
             tab_bar_height: 28.0,
             tab_strip_scroll_line_extent: 40.0,
+            tab_strip_edge_scroll_band: 24.0,
+            tab_strip_edge_scroll_interval: Some(Duration::from_millis(50)),
             tab_group_grip_extent: 28.0,
             tab_horizontal_padding: 10.0,
             tab_min_width: 72.0,
@@ -366,6 +384,22 @@ impl DockPresentationConfigBuilder {
     #[must_use]
     pub const fn tab_strip_scroll_line_extent(mut self, value: f64) -> Self {
         self.tab_strip_scroll_line_extent = value;
+        self
+    }
+
+    /// Sets the logical width of each tab-strip edge scroll band; zero disables it.
+    #[must_use]
+    pub const fn tab_strip_edge_scroll_band(mut self, value: f64) -> Self {
+        self.tab_strip_edge_scroll_band = value;
+        self
+    }
+
+    /// Sets the interval between edge scroll steps; `None` disables edge scrolling.
+    ///
+    /// A zero interval is rejected by [`Self::build`] to prevent a busy loop.
+    #[must_use]
+    pub const fn tab_strip_edge_scroll_interval(mut self, value: Option<Duration>) -> Self {
+        self.tab_strip_edge_scroll_interval = value;
         self
     }
 
@@ -561,7 +595,7 @@ impl DockPresentationConfigBuilder {
     /// # Errors
     ///
     /// Returns [`DockPresentationConfigError`] for non-finite values, invalid
-    /// signs, or a violated cross-field geometry invariant.
+    /// signs, a zero edge scroll interval, or a violated cross-field geometry invariant.
     pub fn build(self) -> Result<DockPresentationConfig, DockPresentationConfigError> {
         for (field, value) in [
             ("tab_bar_height", self.tab_bar_height),
@@ -602,12 +636,19 @@ impl DockPresentationConfigBuilder {
         }
         for (field, value) in [
             ("tab_horizontal_padding", self.tab_horizontal_padding),
+            (
+                "tab_strip_edge_scroll_band",
+                self.tab_strip_edge_scroll_band,
+            ),
             ("touch_press_slop_distance", self.touch_press_slop_distance),
             ("guide_gap", self.guide_gap),
             ("guide_hit_padding", self.guide_hit_padding),
             ("floating_border_width", self.floating_border_width),
         ] {
             require_non_negative(field, value)?;
+        }
+        if self.tab_strip_edge_scroll_interval == Some(Duration::ZERO) {
+            return Err(DockPresentationConfigError::ZeroEdgeScrollInterval);
         }
         require_finite("dock_fraction", self.dock_fraction)?;
         if self.dock_fraction <= 0.0 || self.dock_fraction >= 1.0 {
@@ -687,6 +728,8 @@ impl DockPresentationConfigBuilder {
         Ok(DockPresentationConfig {
             tab_bar_height: self.tab_bar_height,
             tab_strip_scroll_line_extent: self.tab_strip_scroll_line_extent,
+            tab_strip_edge_scroll_band: self.tab_strip_edge_scroll_band,
+            tab_strip_edge_scroll_interval: self.tab_strip_edge_scroll_interval,
             tab_group_grip_extent: self.tab_group_grip_extent,
             tab_horizontal_padding: self.tab_horizontal_padding,
             tab_min_width: self.tab_min_width,
@@ -750,7 +793,7 @@ fn require_non_negative(
     }
 }
 
-/// Why core presentation geometry could not be constructed.
+/// Why core presentation geometry or interaction timing could not be constructed.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum DockPresentationConfigError {
     /// A scalar was NaN or infinite.
@@ -777,6 +820,9 @@ pub enum DockPresentationConfigError {
         /// Rejected value.
         value: f64,
     },
+    /// A zero edge scroll interval would continuously reschedule work.
+    #[error("tab-strip edge scroll interval must be positive or disabled with None")]
+    ZeroEdgeScrollInterval,
     /// The docking fraction was outside the open interval `(0, 1)`.
     #[error("dock fraction must be strictly between zero and one, got {value}")]
     DockFractionOutOfRange {
@@ -844,6 +890,14 @@ mod tests {
 
         assert_eq!(config, DockPresentationConfig::default());
         assert_eq!(
+            config.tab_strip_edge_scroll_band().to_bits(),
+            24.0_f64.to_bits()
+        );
+        assert_eq!(
+            config.tab_strip_edge_scroll_interval(),
+            Some(Duration::from_millis(50))
+        );
+        assert_eq!(
             config.hover_selection_delay(),
             Some(Duration::from_millis(150))
         );
@@ -902,6 +956,66 @@ mod tests {
 
             assert_eq!(config.hover_selection_delay(), delay);
         }
+    }
+
+    #[test]
+    fn tab_strip_edge_scroll_configuration_accepts_custom_and_disabled_values() {
+        for (band, interval) in [
+            (12.5, Some(Duration::from_millis(25))),
+            (0.0, Some(Duration::from_nanos(1))),
+            (24.0, None),
+            (0.0, None),
+        ] {
+            let config = DockPresentationConfig::builder()
+                .tab_strip_edge_scroll_band(band)
+                .tab_strip_edge_scroll_interval(interval)
+                .build()
+                .expect("finite non-negative bands and positive or disabled intervals are valid");
+
+            assert_eq!(
+                config.tab_strip_edge_scroll_band().to_bits(),
+                band.to_bits()
+            );
+            assert_eq!(config.tab_strip_edge_scroll_interval(), interval);
+            assert_eq!(
+                config.tab_strip_scroll_line_extent().to_bits(),
+                40.0_f64.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn tab_strip_edge_scroll_configuration_rejects_zero_interval_and_invalid_band() {
+        for band in [0.0, 24.0] {
+            assert_eq!(
+                DockPresentationConfig::builder()
+                    .tab_strip_edge_scroll_band(band)
+                    .tab_strip_edge_scroll_interval(Some(Duration::ZERO))
+                    .build(),
+                Err(DockPresentationConfigError::ZeroEdgeScrollInterval)
+            );
+        }
+        for band in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                DockPresentationConfig::builder()
+                    .tab_strip_edge_scroll_band(band)
+                    .tab_strip_edge_scroll_interval(None)
+                    .build(),
+                Err(DockPresentationConfigError::NonFinite {
+                    field: "tab_strip_edge_scroll_band",
+                    ..
+                })
+            ));
+        }
+        assert_eq!(
+            DockPresentationConfig::builder()
+                .tab_strip_edge_scroll_band(-1.0)
+                .build(),
+            Err(DockPresentationConfigError::Negative {
+                field: "tab_strip_edge_scroll_band",
+                value: -1.0,
+            })
+        );
     }
 
     #[test]

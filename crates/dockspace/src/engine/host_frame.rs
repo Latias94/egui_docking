@@ -1245,6 +1245,16 @@ impl CoreHostFrame {
                             )
                         })
                 });
+            dirty_surfaces.extend(
+                [
+                    before.drag_preview_surface,
+                    after.drag_preview_surface,
+                    before.contained_preview_surface,
+                    after.contained_preview_surface,
+                ]
+                .into_iter()
+                .flatten(),
+            );
             if scrolled_only && self.try_refresh_presentation_surfaces(dirty_surfaces) {
                 return Ok(());
             }

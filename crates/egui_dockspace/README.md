@@ -64,6 +64,15 @@ default 150ms dwell without requesting pane-content focus. The wake submits an
 explicit continuation with fresh receiver checks; it never fabricates pointer
 motion. `DockStyle::hover_selection_delay` can customize or disable this behavior.
 
+The same finite continuation drives stationary overflow-edge scrolling during
+a local drag. `DockStyle::tab_strip_edge_scroll_band` defaults to 24 points and
+`tab_strip_edge_scroll_interval` to `Some(50ms)`; zero band or `None` disables it.
+Each step waits for the exact newly scrolled output to be presented before
+scheduling another. The renderer receipt wakes an otherwise idle host to accept
+that result, without polling or inventing motion. Close/strip controls and
+blockers stop automatic scrolling; explicit scroll and menu selection take
+ownership through the existing core paths.
+
 Explicit `Event::Touch` contacts keep independent provider pointer identities
 and Known-Touch metadata. A packet with explicit or live touch input does not
 also submit its potentially synthesized generic pointer events to docking.
@@ -75,8 +84,8 @@ the existing root presentation menu without selecting or focusing the tab.
 `DockStyle::touch_long_press_delay` and `touch_press_slop_distance` customize the
 profile. Read `DockspaceResponse::touch_events()` for ordered semantic events,
 including context-menu requests. Missing batch time disables timed arming while
-preserving short taps. Native touch capture, expanded touch hit targets and
-stationary drag edge scrolling remain implementation work.
+preserving short taps. Native touch/stationary capture and expanded touch hit
+targets remain implementation work.
 
 The adapter validates the complete ordered surface span after all output hooks,
 including ordinary geometry, previews, clipping and transforms. Pane drawing must

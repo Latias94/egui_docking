@@ -283,7 +283,7 @@ Hosts may style the controls and supply measured dimensions without changing tar
 | Local touch | 350 ms long press and 8-point slop; pre-arm movement yields to pane scrolling, early release activates/selects, armed stationary release opens a semantic context menu |
 | Resize and controls | Eight contained directions; corners outrank edges; 8-point mouse edge band, 12-point corners, and at least 44-point touch targets clipped away from title/tab controls |
 | Splitter commands | 16-point keyboard/accessibility adjustment; double-click equalizes only the adjacent pair while preserving their combined share |
-| Overflow completion | Under R25, one owner at a time: selected-tab reveal, manual scrollbar, active-drag edge scroll, or menu selection; clipped subcontrols cannot execute |
+| Overflow completion | Under R25, one owner at a time: selected-tab reveal, manual scrollbar, active-drag edge scroll, or menu selection; clipped subcontrols cannot execute. Local edge scroll uses a 24-point content band capped at half-width, a 50ms interval and one scroll-line step per current-output continuation |
 
 Focus intent under R8/R17 uses the following successors.
 Native window focus and pane-content focus still require actual host facts and are not inferred from semantic selection.
@@ -399,8 +399,9 @@ before expanding the optional native overload/platform work. Metadata capture,
 hover dwell and touch arming remain separate implementation/qualification steps;
 the existing native resource checkpoint is retained. U3d now has a finite
 core-owned stationary continuation, hover selection and explicit local-touch
-source capture in official egui. Expanded touch targets, native stationary
-capture and active-drag edge scrolling still require their own slices. This priority change keeps
+source capture in official egui. Local active-drag edge scrolling shares that
+continuation and the existing overflow owner. Expanded touch targets and native
+stationary capture still require their own slices. This priority change keeps
 the custom-engine host central and does not remove U7/U8/U11 acceptance gates.
 U11 gates Windows/macOS capability claims separately; unsupported backends remain explicit rather than blocking the generic crate.
 These are packaging/readiness gates, not instructions to publish crates or upstream patches automatically.
@@ -587,8 +588,8 @@ root presentation menu and prepared commands. Ordinary egui content input remain
 owned by the pane. Public-host and product qualifications are recorded separately
 in `docs/VALIDATION.md`; no physical touch-device claim follows from headless
 journeys. Native metadata/stationary capture and the at-least-44-point touch
-target geometry remain open. U10 active-drag edge scrolling still needs the
-shared continuation owner and arbitration.
+target geometry remain open. U10 local active-drag edge scrolling now uses the
+shared continuation owner; native stationary routing remains separate.
 The full behavior plan cannot close before the remaining U3d qualification.
 
 U3's replacement completion does not establish U4 full live-content projection, U5 broader
@@ -762,12 +763,18 @@ painting in a later frame; it does not grant an immediate replacement paint.
 The optional native showcase and complete overflow-owner acceptance remain
 open. These local checkpoints do not complete U10. Qualification for the
 layout-only reset is recorded separately in `docs/VALIDATION.md`.
-The remaining overflow slice must add active-drag edge scrolling through the
-existing ordered pointer kernel and prove transitions among selection reveal,
-explicit strip/menu scrolling and menu selection. Existing reveal, wheel,
-back/forward-control and menu-scrollbar tests do not establish that arbitration
-or authorize an adapter-owned drag timer. Clipped close/drag controls must remain
-unavailable throughout those transitions.
+The local overflow slice adds active-drag edge scrolling through the existing
+ordered pointer kernel. Edge scrolling and hover selection occupy one mutually
+exclusive continuation; a step uses fresh current-output clearance, excludes
+close/control receivers, writes through the shared tab-strip offset boundary and
+waits for exact presentation of the new geometry. Manual scrolling and menu
+actions revoke timed work; smooth manual ownership blocks reacquisition until
+its terminal boundary. Product journeys cover automatic scroll, explicit strip
+scroll, menu selection and selection reveal, with independent public-host
+stationary, retry, terminal-order and receiver-proof checks. Deferred renderer
+results wake an idle official-egui host once for acceptance. Native stationary
+routing and the native editor showcase remain open; full U10 readiness still
+requires their stated qualification. See `docs/VALIDATION.md` for current gates.
 
 ### U11. Certify Windows and macOS capability claims
 

@@ -15,6 +15,87 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U10 local stationary tab-strip edge scrolling
+
+An active local drag now shares one finite continuation between hover selection
+and tab-strip edge scrolling. Edge scrolling takes precedence while a fresh
+current-output hover receipt places the pointer in an overflowing content edge.
+The default band is 24 logical points, interval 50ms, and step one existing
+40-point scroll line. A zero band or `None` interval disables it; a zero interval
+is rejected. Each band is capped at half the remaining content width, with the
+midpoint choosing Forward. A narrow content viewport may have no neutral center.
+
+The exact Scroll winner must be that strip. Click/Drag winners also exclude
+close buttons, enabled and disabled strip controls, foreign blockers and
+ambiguous receivers. Overlay controls are removed using their exact measured
+leading/trailing placement, rather than inferred from their screen position.
+After one step, a new token waits for the exact newly compiled output to be
+accepted as Presented. A delayed wake performs one step without replaying missed
+intervals; maximum offset stops scheduling. Selection, workspace version and pane
+focus remain unchanged. Native stationary routing is not inferred from this
+local capability.
+
+Manual scroll input and strip/menu commands revoke timed drag work. A phaseful
+manual owner retains its strip until End/Cancel; fresh motion can reacquire an
+edge afterward. The shared offset commit reuses current valid measurements to
+compile new geometry while retaining the active source gesture and last logical
+position. It clears stale preview/affordance state and refreshes every affected
+surface, including a different surface whose preview was removed. New target
+geometry still requires the ordinary exact presentation barrier.
+
+`pointer_continuation_awaits_presentation(surface)` supplies scheduling
+information for deferred renderers. The official adapter includes it in terminal
+receipt wake scheduling, so a sleeping host accepts the result before asking for
+the next deadline. It does not request continuous repainting while the renderer
+has not reported a result. A real egui regression first exhausts repaint demand
+to `Duration::MAX`, reports the exact output and verifies that the renderer result
+wakes the host; the test failed before this fix.
+
+Fresh public-host coverage verifies stationary repeated steps with independent
+source/hover coordinates, early deadlines, dropped-frame retry with the same
+token, independent surface settlement, stale receiver rejection, blocked/left
+edges, terminal-before-continuation order and final quiescence. Manual-owner
+tests cover Begin/Update/End, explicit wheel input, revoked-token rejection and
+cross-surface preview removal with exact output identity. A leading/trailing
+matrix allocates three overlay controls whose group crosses the raw viewport
+midpoint while leaving usable content, proving that placement retains scrolling.
+The test accepts unclaimed strip space, which is a valid current-output edge
+location even when a partially clipped tab has no operable body.
+
+Real owned-run egui journeys cover repeated automatic steps, delayed renderer
+waking, explicit scroll takeover, hidden-tab menu selection and selected-tab
+reveal. The close-control case first proves that the visible close lies in the
+forward edge band with remaining overflow. In a disposable snapshot, removing
+Click/Drag control clearance makes that test fail with offset 40 instead of 0;
+restoring production passes. Production source is unchanged by the mutation.
+
+Fresh serialized qualification on this source:
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Workspace nextest, all features and targets | 1,722 passed | Core, conformance and official egui, including four real edge-scroll journeys and timing/style configuration |
+| Public-host consumer, all features and targets | 73 passed | Five new stationary, manual-owner and overlay-placement tests |
+| Complete product harness, all features and targets | 114 passed | Existing ordinary, contained, overflow, focus, restore and Burst matrix |
+| No-default workspace edge/continuation filter, core debug assertions disabled | 17 passed | Timing configuration, stream/token behavior and real product continuation paths |
+| No-default public edge-scroll consumer, core debug assertions disabled | 5 passed | All new public stationary, manual-owner and placement journeys |
+| Local-fork native compatibility, all targets | 260 passed | Existing native lifecycle and adapter compatibility |
+| Correctness/suspicious Clippy | Passed | Workspace, all features and targets |
+| Strict docs, all features and no defaults | Passed | Warnings denied |
+| Doctests | 10 passed | Workspace, all features |
+
+Independent final review found and closed two P2s: cross-surface preview refresh
+after explicit scroll, and same-side overlay groups crossing the midpoint. It
+reports no remaining confirmed P1/P2 in the timed owner, exact-output boundary,
+source continuation, shared recompile, control clearance or wake path.
+Formatting and diff checks pass after import/module ordering normalization.
+
+Native compatibility uses the retained authorized native working tree and local
+egui fork `7c7b3233541ec724bee561454ba8e9fca384f32e` through a refreshed disposable
+source snapshot. Tracked native pins, native/CI/smoke changes and existing review
+notes are outside this commit. No push, physical touch, WM-close, mixed-DPI,
+native stationary input, overload/soak or whole-plan completion is claimed.
+Expanded touch targets and the optional native editor showcase remain open.
+
 ## 2026-10-28 U3d explicit local-touch arbitration
 
 Local touch now shares the existing Pressed owner and finite continuation token.

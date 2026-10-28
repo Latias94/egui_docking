@@ -398,7 +398,7 @@ impl DockEngine {
 
     pub(super) fn tab_strip_state_invariant(
         cause: ReductionCause,
-        source: TabStripStateError,
+        source: impl std::fmt::Display,
     ) -> EngineError {
         EngineError::PointerInteractionInvariant {
             cause,
@@ -414,9 +414,55 @@ impl DockEngine {
         if !delta.state_changed() {
             return Ok(());
         }
+        let dragging = if let InteractionStatus::Dragging { session } = self.interaction.status() {
+            self.clear_drag_continuation(session);
+            self.interaction
+                .clear_preview(session, PreviewResolutionStatus::Unavailable)
+                .map_err(|error| Self::tab_strip_state_invariant(cause, format!("{error:?}")))?;
+            self.interaction
+                .set_drop_affordance(session, None)
+                .map_err(|error| Self::tab_strip_state_invariant(cause, format!("{error:?}")))?;
+            true
+        } else {
+            false
+        };
         match delta.influence() {
             TabStripInfluenceDomain::Local(surfaces) => {
-                self.invalidate_tab_strip_presentation(cause, surfaces)
+                // Scrolling during a drag changes only presentation state.
+                // Reuse current measurements to compile the new strip before
+                // the host completes this frame; input still needs its exact
+                // newly presented output rather than the predecessor geometry.
+                let cached = if dragging {
+                    surfaces
+                        .iter()
+                        .filter_map(|surface| {
+                            let measurements = self
+                                .scene()
+                                .ready_candidate(*surface)?
+                                .plan()
+                                .layout_facts()?
+                                .measurements();
+                            Some((*surface, Arc::clone(measurements)))
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                self.invalidate_tab_strip_presentation(cause, surfaces)?;
+                for (surface, measurements) in cached {
+                    let token = self
+                        .begin_surface_contribution(surface)
+                        .map_err(|error| Self::tab_strip_state_invariant(cause, error))?;
+                    if measurements.ticket() != token.ticket() {
+                        continue;
+                    }
+                    let contribution = self
+                        .prepare_surface_contribution(token, (*measurements).clone())
+                        .map_err(|error| Self::tab_strip_state_invariant(cause, error))?;
+                    let policy = self.policy.clone();
+                    self.reduce_surface_contribution(cause.tick(), contribution, &policy)?;
+                }
+                Ok(())
             }
             TabStripInfluenceDomain::PopupRoster => self
                 .try_rebuild_presentation_requirements(Some(delta.influence()))
@@ -745,7 +791,7 @@ impl DockEngine {
         self.commit_tab_strip_scroll(cause, key, offset)
     }
 
-    fn commit_tab_strip_scroll(
+    pub(super) fn commit_tab_strip_scroll(
         &mut self,
         cause: ReductionCause,
         key: TabStripStateKey,

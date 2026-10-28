@@ -90,6 +90,22 @@ pub enum ReductionCause {
     },
 }
 
+impl ReductionCause {
+    pub(crate) const fn tick(self) -> ReducerTickId {
+        match self {
+            Self::Input { tick, .. }
+            | Self::PointerEdge { tick, .. }
+            | Self::PointerProviderRetirement { tick, .. }
+            | Self::PlatformProviderReplacement { tick, .. }
+            | Self::SurfaceContribution { tick, .. }
+            | Self::SurfacePresentationObservationBatch { tick }
+            | Self::PresentationObservation { tick, .. }
+            | Self::SurfaceContributionBatch { tick }
+            | Self::PresentationHostRetirement { tick, .. } => tick,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingReductionCause {
     Input(InputSequence),

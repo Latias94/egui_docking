@@ -273,6 +273,19 @@ enum ObservedScrollReceiver<'a> {
 }
 
 impl DockEngine {
+    pub(super) fn tab_strip_has_manual_scroll_owner(&self, key: TabStripStateKey) -> bool {
+        self.scroll_interaction.active.values().any(|session| {
+            matches!(
+                session.disposition,
+                ActiveScrollDisposition::Owned(ScrollOwner {
+                    receiver,
+                    ..
+                }) if receiver.surface() == key.surface()
+                    && receiver.kind() == PresentationHitRegionKind::TabStripScroll(key.bar())
+            )
+        })
+    }
+
     pub(super) fn scroll_receiver_challenge(
         &self,
         stream: PointerStreamId,
@@ -320,6 +333,9 @@ impl DockEngine {
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
+        if let InteractionStatus::Dragging { session } = self.interaction.status() {
+            self.clear_drag_continuation(session);
+        }
         let mut observed = match (scroll.delta(), scroll.modifiers()) {
             (
                 Some(ScrollDelta::PhysicalPixels {

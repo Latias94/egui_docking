@@ -32,31 +32,33 @@ impl DockEngine {
         if self.pointer_provider() != Some(drag.owner.lease()) || !source_current {
             return None;
         }
-        let pending = drag.hover_selection.as_ref()?;
-        let current = self.interaction_projection(pending.request.surface)?;
-        (pending.workspace == self.version
-            && pending.authority.stream() == current.authority().stream()
-            && pending
-                .authority
-                .same_interaction_semantics(current.authority()))
-        .then_some(pending.request)
-    }
-
-    fn clear_hover_selection(&mut self, session: crate::interaction::DragSessionId) {
-        if let Ok(drag) = self.interaction.active_drag_mut(session) {
-            drag.hover_selection = None;
+        match drag.timed.as_ref()? {
+            DragTimedContinuation::TabStripEdgeScroll(pending) => self
+                .edge_scroll_continuation_is_current(pending)
+                .then_some(pending.request),
+            DragTimedContinuation::HoverSelection(pending) => {
+                let current = self.interaction_projection(pending.request.surface)?;
+                (pending.workspace == self.version
+                    && pending.authority.stream() == current.authority().stream()
+                    && pending
+                        .authority
+                        .same_interaction_semantics(current.authority()))
+                .then_some(pending.request)
+            }
         }
     }
 
-    fn hover_selection_target(
+    pub(super) fn clear_drag_continuation(&mut self, session: crate::interaction::DragSessionId) {
+        if let Ok(drag) = self.interaction.active_drag_mut(session) {
+            drag.timed = None;
+        }
+    }
+
+    pub(super) fn stationary_hover_presentation<'snapshot>(
         &self,
         receipt: &ValidatedPointerReceiverReceipt,
-        snapshot: &JournalPresentationSnapshot,
-    ) -> Option<(
-        crate::scene::TabSceneId,
-        PresentedSurfaceAuthority,
-        LogicalPoint,
-    )> {
+        snapshot: &'snapshot JournalPresentationSnapshot,
+    ) -> Option<(&'snapshot JournalSurfacePresentation, LogicalPoint)> {
         let PointerReceiverObservation::Presented(observation) = receipt.observation() else {
             return None;
         };
@@ -74,9 +76,20 @@ impl DockEngine {
         let (output, authority, point) = (hover.output()?, hover.authority()?, hover.point()?);
         let presentation = snapshot.presentation(output, authority).ok()?;
         let current = self.interaction_projection(authority.surface())?;
-        if current.authority() != authority {
-            return None;
-        }
+        (current.authority() == authority).then_some((presentation, point))
+    }
+
+    fn hover_selection_target(
+        &self,
+        receipt: &ValidatedPointerReceiverReceipt,
+        snapshot: &JournalPresentationSnapshot,
+    ) -> Option<(
+        crate::scene::TabSceneId,
+        PresentedSurfaceAuthority,
+        LogicalPoint,
+    )> {
+        let (presentation, point) = self.stationary_hover_presentation(receipt, snapshot)?;
+        let authority = presentation.authority();
         // The already validated hover receipt proves framework clearance at
         // this point. Click geometry identifies a tab without treating docking
         // target fields, tab-close buttons or strip controls as tab bodies.
@@ -98,7 +111,7 @@ impl DockEngine {
         .then_some((tab, authority, point))
     }
 
-    pub(super) fn advance_hover_selection(
+    pub(super) fn advance_drag_continuation(
         &mut self,
         cause: ReductionCause,
         owner: GestureOwner,
@@ -110,28 +123,34 @@ impl DockEngine {
         // Local scheduling uses a host clock and logical receiver challenge.
         // A native desktop host needs independently observed stationary routing
         // before it can opt into the same contract.
+        if self.advance_tab_strip_edge_scroll(cause, owner, session, edge, receipt, snapshot)? {
+            return Ok(());
+        }
         let delay = self
             .presentation_authority
             .presentation_config
             .hover_selection_delay();
         let (Some(delay), Some(now)) = (delay, edge.metadata().observed_at()) else {
-            self.clear_hover_selection(session);
+            self.clear_drag_continuation(session);
             return Ok(());
         };
         if !owner.lease().scope().is_local() {
-            self.clear_hover_selection(session);
+            self.clear_drag_continuation(session);
             return Ok(());
         }
         let Some((target, authority, point)) = self.hover_selection_target(receipt, snapshot)
         else {
-            self.clear_hover_selection(session);
+            self.clear_drag_continuation(session);
             return Ok(());
         };
         let previous = self
             .interaction
             .active_drag(session)
             .ok()
-            .and_then(|drag| drag.hover_selection.as_ref())
+            .and_then(|drag| match drag.timed.as_ref() {
+                Some(DragTimedContinuation::HoverSelection(state)) => Some(state),
+                _ => None,
+            })
             .cloned();
         let same_target = previous.as_ref().is_some_and(|previous| {
             previous.target == target
@@ -144,7 +163,7 @@ impl DockEngine {
             .filter(|_| same_target)
             .map_or(now, |previous| previous.started_at);
         let Some(deadline) = started_at.checked_add(delay) else {
-            self.clear_hover_selection(session);
+            self.clear_drag_continuation(session);
             return Ok(());
         };
         // Motion updates the finite challenge even if it is already due.
@@ -176,7 +195,7 @@ impl DockEngine {
                 cause,
                 detail: format!("{source:?}"),
             })?
-            .hover_selection = Some(pending);
+            .timed = Some(DragTimedContinuation::HoverSelection(pending));
         Ok(())
     }
 
@@ -208,9 +227,9 @@ impl DockEngine {
             .active_drag(session)
             .ok()
             .filter(|drag| drag.owner == owner)
-            .and_then(|drag| drag.hover_selection.as_ref())
+            .and_then(|drag| drag.timed.as_ref())
             .cloned();
-        let Some(pending) = pending.filter(|pending| pending.request.token == token) else {
+        let Some(pending) = pending.filter(|pending| pending.request().token == token) else {
             return Ok(Vec::new());
         };
         let (delivery, delivery_outcome) = self.gate_journal_delivery_action(
@@ -238,6 +257,22 @@ impl DockEngine {
             outcomes.push(outcome);
             return Ok(outcomes);
         }
+        let pending = match pending {
+            DragTimedContinuation::TabStripEdgeScroll(pending) => {
+                outcomes.extend(self.reduce_tab_strip_edge_scroll(
+                    cause,
+                    owner,
+                    session,
+                    pending,
+                    edge,
+                    receipt,
+                    snapshot,
+                    interaction_events,
+                )?);
+                return Ok(outcomes);
+            }
+            DragTimedContinuation::HoverSelection(pending) => pending,
+        };
         let target = self.hover_selection_target(receipt, snapshot);
         if pending.workspace != self.version
             || target.is_none_or(|(target, authority, point)| {
@@ -247,7 +282,7 @@ impl DockEngine {
                     || !authority.same_interaction_semantics(pending.authority)
             })
         {
-            self.clear_hover_selection(session);
+            self.clear_drag_continuation(session);
             return Ok(outcomes);
         }
         if edge
@@ -257,7 +292,7 @@ impl DockEngine {
         {
             return Ok(outcomes);
         }
-        self.clear_hover_selection(session);
+        self.clear_drag_continuation(session);
         outcomes.push(self.select_hovered_tab(
             cause,
             owner,

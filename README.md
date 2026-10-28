@@ -35,6 +35,11 @@ short taps activate on release, pre-arm movement yields to pane content, and a
 menu. Touch targets are not yet expanded to the planned 44-point minimum, and
 native touch/stationary capture remains unqualified.
 
+Local drags use the same finite continuation for tab hover selection and
+overflow-edge scrolling. Each automatic scroll step waits for exact presentation
+of its new geometry, and explicit scrolling or menu actions take ownership
+through the existing tab-strip state.
+
 The current implementation has a qualified renderer-neutral local/contained
 contract, an official-egui caller-owned validation path, and an experimental
 native multiview adapter. The fast-gesture and configuration-dependent failures

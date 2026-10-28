@@ -49,6 +49,41 @@ pub(crate) struct HoverSelectionState {
     pub(crate) started_at: Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabStripEdgeDirection {
+    Backward,
+    Forward,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TabStripEdgeScrollState {
+    pub(crate) request: PointerContinuationRequest,
+    pub(crate) authority: PresentedSurfaceAuthority,
+    pub(crate) output: crate::presentation_observation::SurfacePresentationOutputTicket,
+    pub(crate) workspace: WorkspaceVersion,
+    pub(crate) key: crate::tab_strip::TabStripStateKey,
+    pub(crate) direction: TabStripEdgeDirection,
+    pub(crate) viewport: LogicalRect,
+    pub(crate) offset: f64,
+    pub(crate) maximum: f64,
+    pub(crate) started_at: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DragTimedContinuation {
+    HoverSelection(HoverSelectionState),
+    TabStripEdgeScroll(TabStripEdgeScrollState),
+}
+
+impl DragTimedContinuation {
+    pub(crate) const fn request(&self) -> PointerContinuationRequest {
+        match self {
+            Self::HoverSelection(state) => state.request,
+            Self::TabStripEdgeScroll(state) => state.request,
+        }
+    }
+}
+
 impl InteractionState {
     pub(crate) fn mint_continuation(
         &mut self,

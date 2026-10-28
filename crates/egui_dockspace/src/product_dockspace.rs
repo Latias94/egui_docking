@@ -1006,6 +1006,9 @@ impl Dockspace {
         }
         let needs_presentation_settlement =
             defer_measurement || pane_focus_observation.is_some() || pane_focus_pending.is_some();
+        let continuation_awaits_presentation = self
+            .session
+            .pointer_continuation_awaits_presentation(surface);
         let settlement_staged = settlement_claim.is_some_and(|claim| {
             claim.stage(ProductPassSettlementBatch {
                 emission_incomplete: had_plan && output.is_none(),
@@ -1013,7 +1016,7 @@ impl Dockspace {
                 proof,
                 pane_focus_observation,
                 pane_focus_pending,
-                needs_repaint: needs_presentation_settlement,
+                needs_repaint: needs_presentation_settlement || continuation_awaits_presentation,
             })
         });
         let presentation_settlement_capability = match presentation_failure {
