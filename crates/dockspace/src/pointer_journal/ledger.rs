@@ -476,6 +476,7 @@ impl PointerJournalLedger {
         self.active = Some(ActivePointerProvider {
             lease,
             committed_through,
+            last_observed_at: None,
         });
         self.surface_local_producer = None;
         Ok(lease)
@@ -835,6 +836,7 @@ impl PointerJournalLedger {
             authority_checkpoint_boundary,
             last_checkpoint,
             accepted_edges,
+            last_observed_at,
         ) = self.plan_accepted_edges(prepared.lease, &prepared.journal)?;
 
         let Some(active) = &mut self.active else {
@@ -848,6 +850,7 @@ impl PointerJournalLedger {
             });
         }
         active.committed_through = prepared.journal.through();
+        active.last_observed_at = last_observed_at;
         self.last_stream_incarnation = last_stream_incarnation;
         self.active_streams = active_streams;
         self.authority = authority;
@@ -1039,11 +1042,12 @@ impl PointerJournalLedger {
     ) -> Result<
         (
             PointerStreamIncarnation,
-            BTreeMap<PointerId, PointerStreamId>,
+            BTreeMap<PointerId, ActivePointerStream>,
             JournalPointerAuthority,
             Option<PointerAuthorityCheckpointBoundary>,
             Option<PointerAuthorityCheckpoint>,
             Vec<AcceptedPointerEdge>,
+            Option<Duration>,
         ),
         PointerJournalLedgerError,
     > {
@@ -1053,6 +1057,7 @@ impl PointerJournalLedger {
         let mut authority_checkpoint_boundary = self.authority_checkpoint_boundary;
         let mut last_checkpoint = self.last_checkpoint.clone();
         let mut accepted_edges = Vec::with_capacity(journal.len());
+        let mut last_observed_at = self.active.and_then(|active| active.last_observed_at);
 
         if let Some(checkpoint) = journal.authority_checkpoint() {
             if authority_checkpoint_boundary.map(PointerAuthorityCheckpointBoundary::watermark)
@@ -1092,18 +1097,46 @@ impl PointerJournalLedger {
         }
 
         for edge in journal.edges() {
-            let stream = match active_streams.get(&edge.pointer()).copied() {
+            if let Some(submitted) = edge.metadata().observed_at() {
+                if let Some(previous) = last_observed_at
+                    && submitted < previous
+                {
+                    return Err(PointerJournalLedgerError::NonMonotonicTime {
+                        sequence: edge.sequence(),
+                        previous,
+                        submitted,
+                    });
+                }
+                last_observed_at = Some(submitted);
+            }
+            let metadata = edge.metadata();
+            let mut stream = match active_streams.get(&edge.pointer()).copied() {
                 Some(stream) => stream,
                 None => {
                     last_stream_incarnation = last_stream_incarnation
                         .checked_next()
                         .ok_or(PointerJournalLedgerError::StreamIncarnationExhausted)?;
-                    let stream =
-                        PointerStreamId::new(lease, edge.pointer(), last_stream_incarnation.0);
+                    let stream = ActivePointerStream {
+                        id: PointerStreamId::new(lease, edge.pointer(), last_stream_incarnation.0),
+                        device: metadata.device(),
+                    };
                     let _ = active_streams.insert(edge.pointer(), stream);
                     stream
                 }
             };
+            if metadata.device() != PointerDeviceKind::Unknown {
+                if stream.device != PointerDeviceKind::Unknown && stream.device != metadata.device()
+                {
+                    return Err(PointerJournalLedgerError::DeviceKindChanged {
+                        sequence: edge.sequence(),
+                        stream: stream.id,
+                        expected: stream.device,
+                        submitted: metadata.device(),
+                    });
+                }
+                stream.device = metadata.device();
+                active_streams.insert(edge.pointer(), stream);
+            }
             authority.apply_edge(edge)?;
             let stream_ended = edge.ends_stream();
             let (button_authority_after, capture_authority_for_reduction) =
@@ -1123,7 +1156,7 @@ impl PointerJournalLedger {
             }
             let capture_authority_after = authority.edge_authority_after(edge.pointer()).1;
             accepted_edges.push(AcceptedPointerEdge {
-                stream,
+                stream: stream.id,
                 ticket: PointerEdgeTicket::new(lease, edge.sequence()),
                 button_authority_after,
                 capture_authority_for_reduction,
@@ -1152,6 +1185,7 @@ impl PointerJournalLedger {
             authority_checkpoint_boundary,
             last_checkpoint,
             accepted_edges,
+            last_observed_at,
         ))
     }
 

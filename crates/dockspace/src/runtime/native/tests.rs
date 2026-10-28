@@ -18,6 +18,7 @@ use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
 mod budget_replay;
 mod managed_lifecycle;
+mod pointer_metadata;
 mod pointer_sequence;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);

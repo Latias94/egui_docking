@@ -110,6 +110,25 @@ this contract without egui or native hosting. The common public-host and egui ge
 single-batch input. Optional native consolidation and platform qualification
 remain separate; see `docs/VALIDATION.md` for evidence and limits.
 
+## Pointer device and event time
+
+Local and native pointer inputs accept `with_metadata(PointerEventMetadata::new(
+PointerDeviceKind::Touch, observed_at))`. The timestamp is a `Duration` from one
+nondecreasing host clock origin for the whole provider incarnation. Equal times
+are valid within a batch; events from different pointer IDs still share that
+ordering. The journal rejects a decreasing time or a change between known
+device kinds within one live pointer stream without advancing its candidate
+frontiers. Stream end permits pointer-ID reuse with a different device; overload
+recovery preserves the provider clock, while a new provider may use a new origin.
+
+Omitting metadata preserves Unknown device/time. Unknown samples do not inherit
+another edge's observations or reset the retained clock. These fields retain
+input facts; they do not by themselves enable hover dwell, touch long press or
+stationary drag scrolling. Hosts must not use a timer to fabricate pointer
+motion or claim current receiver authority.
+`PointerEventMetadata::untimed(device)` preserves an observed device class when
+the event timestamp is unavailable.
+
 ## Budgeted Native Input
 
 Buffered native hosts can create a shared `NativeMonotonicClock` and start one

@@ -389,6 +389,7 @@ pub struct NativePointerInput {
     location: NativeDesktopPointerLocation,
     delivery: NativePointerOwner,
     capture: NativePointerOwner,
+    metadata: crate::runtime::PointerEventMetadata,
 }
 
 impl NativePointerInput {
@@ -407,7 +408,15 @@ impl NativePointerInput {
             location,
             delivery,
             capture,
+            metadata: crate::runtime::PointerEventMetadata::unknown(),
         }
+    }
+
+    /// Attaches host-observed device and monotonic clock facts to this edge.
+    #[must_use]
+    pub const fn with_metadata(mut self, metadata: crate::runtime::PointerEventMetadata) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     pub(super) const fn pointer(self) -> NativePointerId {
@@ -752,7 +761,8 @@ impl RuntimeNativeState {
             location,
             delivery,
             capture,
-        );
+        )
+        .with_metadata(input.metadata);
         let journal = PointerEdgeJournal::new(previous, sequence, vec![edge])
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
         self.recorder

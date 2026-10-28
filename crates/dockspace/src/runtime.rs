@@ -43,6 +43,7 @@ use error_kind::{
 use native::NativePlatformError;
 
 pub use crate::model::{NativeWindowPlacement, PreparedDockAction, WorkspaceVersion};
+pub use crate::pointer_journal::{PointerDeviceKind, PointerEventMetadata};
 pub use crate::presentation_config::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
 };

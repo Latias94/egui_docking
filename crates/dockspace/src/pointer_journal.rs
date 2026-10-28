@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -29,6 +30,71 @@ mod overload;
 
 #[cfg(test)]
 mod shared_storage;
+
+/// Physical input class reported for one exact pointer sample.
+///
+/// An unreported class never implies mouse or touch behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PointerDeviceKind {
+    /// The host did not observe the device class.
+    #[default]
+    Unknown,
+    /// A mouse or equivalent indirect pointing device.
+    Mouse,
+    /// A direct touch contact.
+    Touch,
+    /// A pen or stylus.
+    Pen,
+}
+
+/// Event-time device and clock facts retained by the ordered pointer journal.
+///
+/// Times use one nondecreasing host clock origin for the provider incarnation.
+/// Equal times are valid for a batch. Unknown metadata remains unknown rather
+/// than inheriting another edge's time or device class.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct PointerEventMetadata {
+    device: PointerDeviceKind,
+    observed_at: Option<Duration>,
+}
+
+impl PointerEventMetadata {
+    /// Reports no device or clock observation for this edge.
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self::untimed(PointerDeviceKind::Unknown)
+    }
+
+    /// Retains an observed device class when the host has no event timestamp.
+    #[must_use]
+    pub const fn untimed(device: PointerDeviceKind) -> Self {
+        Self {
+            device,
+            observed_at: None,
+        }
+    }
+
+    /// Reports the device class and monotonic time observed for this edge.
+    #[must_use]
+    pub const fn new(device: PointerDeviceKind, observed_at: Duration) -> Self {
+        Self {
+            device,
+            observed_at: Some(observed_at),
+        }
+    }
+
+    /// Returns the class observed for this edge alone.
+    #[must_use]
+    pub const fn device(self) -> PointerDeviceKind {
+        self.device
+    }
+
+    /// Returns the host-clock time observed for this edge alone.
+    #[must_use]
+    pub const fn observed_at(self) -> Option<Duration> {
+        self.observed_at
+    }
+}
 
 /// Exact endpoint from which one surface-local provider reports input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -923,6 +989,7 @@ pub struct PointerEdge {
     location: PointerEdgeLocation,
     delivery_owner: Authority<PointerEventDeliveryOwner>,
     capture_owner: Authority<PointerCaptureOwner>,
+    metadata: PointerEventMetadata,
 }
 
 impl PointerEdge {
@@ -974,7 +1041,21 @@ impl PointerEdge {
             location,
             delivery_owner,
             capture_owner,
+            metadata: PointerEventMetadata::unknown(),
         }
+    }
+
+    /// Retains device and clock facts without changing sequence or authority.
+    #[must_use]
+    pub const fn with_metadata(mut self, metadata: PointerEventMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Returns the device and time observed for this exact edge.
+    #[must_use]
+    pub const fn metadata(&self) -> PointerEventMetadata {
+        self.metadata
     }
 
     /// Returns this edge's provider-owned sequence.
@@ -1827,6 +1908,13 @@ struct JournalPointerAuthority {
 struct ActivePointerProvider {
     lease: PointerInputLease,
     committed_through: PointerEdgeSequence,
+    last_observed_at: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActivePointerStream {
+    id: PointerStreamId,
+    device: PointerDeviceKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1937,7 +2025,7 @@ pub(crate) struct PointerJournalLedger {
     version: PointerJournalLedgerVersion,
     last_incarnation: PointerProviderIncarnation,
     last_stream_incarnation: PointerStreamIncarnation,
-    active_streams: BTreeMap<PointerId, PointerStreamId>,
+    active_streams: BTreeMap<PointerId, ActivePointerStream>,
     authority: JournalPointerAuthority,
     authority_checkpoint_boundary: Option<PointerAuthorityCheckpointBoundary>,
     last_checkpoint: Option<PointerAuthorityCheckpoint>,
@@ -1955,6 +2043,21 @@ pub(crate) struct PointerJournalLedger {
     reason = "reserved for the independent pointer-ledger integration"
 )]
 pub enum PointerJournalLedgerError {
+    #[error("pointer edge {sequence} time {submitted:?} precedes provider time {previous:?}")]
+    NonMonotonicTime {
+        sequence: PointerEdgeSequence,
+        previous: Duration,
+        submitted: Duration,
+    },
+    #[error(
+        "pointer edge {sequence} changes live stream {stream:?} device from {expected:?} to {submitted:?}"
+    )]
+    DeviceKindChanged {
+        sequence: PointerEdgeSequence,
+        stream: PointerStreamId,
+        expected: PointerDeviceKind,
+        submitted: PointerDeviceKind,
+    },
     #[error("pointer provider {active:?} is already active")]
     ProviderAlreadyActive { active: PointerInputLease },
     #[error("pointer provider incarnation counter is exhausted")]

@@ -15,6 +15,43 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U3d ordered device and event-time facts
+
+`PointerEventMetadata` retains an explicit device class and optional monotonic
+timestamp on the existing pointer edge. The host-local, surface-local and native
+facades forward the same metadata without deriving receiver, capture or motion
+facts. Unknown samples remain unknown; `untimed(device)` preserves an observed
+class when time is unavailable. No gesture timer or new input owner is added.
+
+The existing ledger stores time in its active provider record and known device
+class in each active stream record. Time is nondecreasing across all pointer IDs
+within that provider incarnation, including equal-time batches. A known device
+class cannot change in a live stream. Unknown samples neither reset the clock
+nor reclassify a known stream, and historical observations are not copied into
+the sample. End/cancel permits a fresh stream for a reused pointer ID. Overload
+retains provider time; creating a new provider permits a new clock origin.
+
+All validation and frontiers advance in the speculative journal plan. A bad
+suffix leaves time, stream allocation, buttons, capture and sequence unchanged.
+Four ledger cases cover cross-pointer ordering, unknown samples, device reuse,
+overload/new-provider clocks and untimed device observations. Two downstream
+public-host cases prove dropped-frame and bad-suffix retry using only public
+input; a private native case verifies metadata in the immutable recorder payload
+before raw-to-core replay, frame drop, exact retry and contact reuse.
+
+The complete workspace passes 1,699 all-feature/all-target cases. The independent
+public host passes 59 and the product harness passes 114. Five metadata cases
+also pass without serde or core debug assertions. Correctness/suspicious Clippy
+and strict core/adapter rustdoc pass. Independent read-only review found no
+confirmed defect in provider ordering, rollback, unknown facts or device-stream
+identity.
+
+This completes the input-fact groundwork only. Existing adapters still omit
+metadata until their capture paths are adapted. The finite gesture-bound
+continuation, actual hover selection, touch long press and stationary edge
+scroll remain U3d/U10 work. Input metadata alone grants no timed interaction
+capability and does not complete the refactor.
+
 ## 2026-10-28 U8 create-attempt terminal ownership
 
 One admitted deferred-create attempt now owns a non-Clone receipt in its

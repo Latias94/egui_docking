@@ -1,4 +1,6 @@
 use super::*;
+
+mod metadata;
 use crate::backend_ingress::BackendIngressRecorder;
 use crate::geometry::{PhysicalRect, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};
@@ -538,6 +540,7 @@ fn preparation_is_pure_and_a_rejected_receipt_can_retry_the_same_interval() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease,
             committed_through: PointerEdgeSequence::new(1),
         })
@@ -568,6 +571,7 @@ fn an_empty_prepared_interval_cannot_be_replayed_after_another_commit() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease,
             committed_through: PointerEdgeSequence::new(5),
         })
@@ -639,6 +643,7 @@ fn prepared_journal_cannot_cross_to_an_equivalent_but_distinct_ledger() {
     assert_eq!(
         target.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease: target_lease,
             committed_through: PointerEdgeSequence::new(0),
         })
@@ -646,6 +651,7 @@ fn prepared_journal_cannot_cross_to_an_equivalent_but_distinct_ledger() {
     assert_eq!(
         source.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease: source_lease,
             committed_through: PointerEdgeSequence::new(0),
         })
@@ -688,6 +694,7 @@ fn prepare_revalidates_a_structurally_complete_journal_before_freezing_it() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease,
             committed_through: PointerEdgeSequence::new(0),
         })
@@ -730,6 +737,7 @@ fn surface_local_scope_is_frozen_across_committed_watermarks() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease,
             committed_through: PointerEdgeSequence::new(3),
         })
@@ -903,6 +911,7 @@ fn location_scope_mismatch_is_atomic_in_both_directions() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease: desktop,
             committed_through: PointerEdgeSequence::new(0),
         })
@@ -931,6 +940,7 @@ fn location_scope_mismatch_is_atomic_in_both_directions() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease: local,
             committed_through: PointerEdgeSequence::new(10),
         })
@@ -1147,6 +1157,7 @@ fn desktop_route_from_another_engine_domain_is_rejected_before_watermark_commit(
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease,
             committed_through: PointerEdgeSequence::new(4),
         })
@@ -1334,6 +1345,7 @@ fn terminal_release_with_another_pressed_button_is_rejected_atomically() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease,
             committed_through: PointerEdgeSequence::new(0),
         })
@@ -1455,6 +1467,7 @@ fn complete_authority_rejects_invalid_button_transitions_atomically() {
         assert_eq!(
             ledger.active,
             Some(ActivePointerProvider {
+                last_observed_at: None,
                 lease,
                 committed_through: PointerEdgeSequence::new(0),
             })
@@ -1928,6 +1941,7 @@ fn retirement_rejections_preserve_the_active_lease_and_watermark() {
         .expect("first provider");
     commit_candidate(&mut ledger, first, moved_journal(5, 7)).expect("advance first watermark");
     let expected_first = ActivePointerProvider {
+        last_observed_at: None,
         lease: first,
         committed_through: PointerEdgeSequence::new(7),
     };
@@ -1963,6 +1977,7 @@ fn retirement_rejections_preserve_the_active_lease_and_watermark() {
     commit_candidate(&mut ledger, successor, moved_journal(20, 21))
         .expect("advance successor watermark");
     let expected_successor = ActivePointerProvider {
+        last_observed_at: None,
         lease: successor,
         committed_through: PointerEdgeSequence::new(21),
     };
@@ -2066,6 +2081,7 @@ fn stream_incarnation_exhaustion_is_atomic() {
     assert_eq!(
         ledger.active,
         Some(ActivePointerProvider {
+            last_observed_at: None,
             lease,
             committed_through: PointerEdgeSequence::new(0),
         })

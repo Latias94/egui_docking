@@ -475,6 +475,7 @@ pub struct SurfacePointerInput<'receiver> {
     position: SurfacePointerPosition,
     capture: SurfacePointerCapture,
     receivers: SurfacePointerReceiverFacts<'receiver>,
+    metadata: super::PointerEventMetadata,
 }
 
 /// Event-time route within one host's logical presentation domain.
@@ -529,6 +530,7 @@ pub struct HostPointerInput<'receiver> {
     hover: HostPointerRoute,
     capture: SurfacePointerCapture,
     receivers: SurfacePointerReceiverFacts<'receiver>,
+    metadata: super::PointerEventMetadata,
 }
 
 impl<'receiver> HostPointerInput<'receiver> {
@@ -549,7 +551,15 @@ impl<'receiver> HostPointerInput<'receiver> {
             hover,
             capture,
             receivers,
+            metadata: super::PointerEventMetadata::unknown(),
         }
+    }
+
+    /// Attaches device and monotonic event time without deriving receiver facts.
+    #[must_use]
+    pub const fn with_metadata(mut self, metadata: super::PointerEventMetadata) -> Self {
+        self.metadata = metadata;
+        self
     }
 }
 
@@ -569,7 +579,15 @@ impl<'receiver> SurfacePointerInput<'receiver> {
             position,
             capture,
             receivers,
+            metadata: super::PointerEventMetadata::unknown(),
         }
+    }
+
+    /// Attaches device and monotonic event time without deriving receiver facts.
+    #[must_use]
+    pub const fn with_metadata(mut self, metadata: super::PointerEventMetadata) -> Self {
+        self.metadata = metadata;
+        self
     }
 }
 
@@ -1103,6 +1121,7 @@ struct RuntimePointerInput<'receiver> {
     hover_surface: Option<SurfaceId>,
     capture: SurfacePointerCapture,
     receivers: SurfacePointerReceiverFacts<'receiver>,
+    metadata: super::PointerEventMetadata,
 }
 
 impl DockspaceHostFrame<'_> {
@@ -1161,6 +1180,7 @@ impl DockspaceHostFrame<'_> {
                 hover_surface: Some(surface),
                 capture: input.capture,
                 receivers: input.receivers,
+                metadata: input.metadata,
             })
             .collect::<Vec<_>>();
         self.submit_pointer_batch(inputs)
@@ -1213,6 +1233,7 @@ impl DockspaceHostFrame<'_> {
                 hover_surface: input.hover.surface(),
                 capture: input.capture,
                 receivers: input.receivers,
+                metadata: input.metadata,
             })
             .collect::<Vec<_>>();
         self.submit_pointer_batch(inputs)
@@ -1246,7 +1267,8 @@ impl DockspaceHostFrame<'_> {
                 kind,
                 input.location,
                 surface_capture(input.capture),
-            );
+            )
+            .with_metadata(input.metadata);
             let journal = PointerEdgeJournal::new(
                 PointerEdgeSequence::new(segment_start),
                 edge_sequence,

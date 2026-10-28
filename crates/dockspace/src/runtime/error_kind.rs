@@ -177,6 +177,8 @@ const fn pointer_journal_error_kind(
         | PointerJournalLedgerError::ScrollDeliveryScopeMismatch { .. }
         | PointerJournalLedgerError::DesktopScrollDeliveryBindingMissing { .. }
         | PointerJournalLedgerError::ScrollDeliveryOwnerMismatch { .. }
+        | PointerJournalLedgerError::NonMonotonicTime { .. }
+        | PointerJournalLedgerError::DeviceKindChanged { .. }
         | PointerJournalLedgerError::InvalidJournal(_)
         | PointerJournalLedgerError::ForeignPreparedJournal
         | PointerJournalLedgerError::PreparedJournalStale { .. } => {

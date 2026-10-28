@@ -532,8 +532,14 @@ Burst matrix passes without ignore. Independent proof/continuation review and
 fresh downstream gates are recorded in `docs/VALIDATION.md`.
 
 The 2026-10-28 timing audit confirms U3a/U3b/U3c's migration and replacement
-gates, but leaves U3d open. Pointer records currently lack device class and
-gesture time; touch contact identity/loss tests do not prove long-press semantics,
+gates, but leaves U3d open. The follow-up input slice retains explicit device
+class and optional monotonic time through core, local and native facade records.
+The existing pointer ledger validates provider-wide time order and stable known
+device class per live stream at its normal rollbackable commit boundary. Unknown
+samples grant no device/time facts, overload keeps the provider clock, and only
+a new provider may use a new origin. This is input groundwork; gesture-bound
+continuations and actual timed interactions remain implementation work.
+Touch contact identity/loss tests do not prove long-press semantics,
 and geometric target hysteresis does not prove hover selection. Existing
 receiver-current capability flags certify authority, not these timing features.
 The default profile table remains a requirement rather than completed evidence
