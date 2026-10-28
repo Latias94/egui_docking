@@ -52,8 +52,9 @@ reservation, frozen state and candidate order, and non-consuming areas.
 The local egui fork adds neutral close ownership in
 `b4ec9ff8bc719321442cf421fc7f5a496b80154d`. This commit is not pushed and is not
 the native workspace's dependency revision. The published/pinned baseline above
-remains unchanged. It is a prerequisite for U7's budgeted native-driver migration,
-not a claim that the adapter already supports deferred native close decisions.
+remains unchanged. The working adapter consumes this API under explicit local
+Cargo overrides, but this is not a remotely reproducible native dependency or a
+completed budgeted native-driver migration.
 
 Buffered input cannot use `CancelClose` as a scheduling hold: it would consume
 the real request and publish a policy cancellation before core decided. Instead,
@@ -85,6 +86,17 @@ exercise deferred decisions; the Glow recreation test uses renderer-owned mappin
 state and a real deferred-admission callback without constructing an OS window.
 These are framework/renderer-model results, not OS, physical input or GPU proof.
 See `docs/VALIDATION.md` for review findings, fixes and exact remaining scope.
+
+The adapter retains the complete opaque request in the callback's original
+window-event record. Typed Allow/Veto uses the active UI context rather than a
+cached context or a second command queue. Cancellation callbacks keep only the
+complete token; the pending close owner supplies its original binding. An exact
+callback is never redirected through the current viewport mapping. Missing
+tokens, wrong contexts, or changed window routes fail closed without ordinary
+Close/CancelClose fallback. Model fixtures deliberately carry no fork authority.
+The public two-counter close-progress snapshot distinguishes retained input from
+committed cancellation and lets the real WM-close smoke reject initially idle
+false positives. The adapter's synchronous input driver remains to be budgeted.
 
 ## Admitted seams
 

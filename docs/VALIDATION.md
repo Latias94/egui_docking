@@ -15,15 +15,64 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
-## 2026-10-28 U7 local native-close hold prerequisite (not integrated)
+## 2026-10-28 U7 local adapter held-close checkpoint (not remotely pinned)
+
+The working native adapter now consumes the local fork's exact held-close API.
+The callback freezes its core binding and canonical opaque request together;
+only successfully retained mapped callbacks return HoldClose. Core Allow/Veto
+effects resolve that request on the actual UI context. Cancellation retains the
+complete token, finds its original pending binding, and does not look up a newer
+window route. Neither policy branch falls back to ordinary Close/CancelClose.
+Requested facts enter the recorder before duplicate-suppression state is added,
+so a rejected append cannot make retry silently swallow the original callback.
+
+`NativeCloseProgress` exposes two fixed-size saturating counters: requests
+retained at ingress and pending cancellations actually cleared by a committed
+core transition. The new `cancel-close` smoke waits for one new committed
+cancellation, both live/presented windows, the unchanged child layout, and
+quiescence. It cannot succeed merely because the initial runtime is idle.
+The X11 CI matrix now includes this real WM-close scenario. Eframe CI runs the
+complete combined-renderer library suite rather than module-name filters that
+would omit sibling close-test modules. These CI changes have not run here.
+
+Local adapter gates use a current-working-tree snapshot outside the repository
+and an explicit Cargo config override to the unpublished fork, leaving tracked
+dependency pins and lockfiles untouched. Cargo metadata proves all ten selected
+egui-family packages use one local 0.37.0 source; Winit remains at `f378b50f`.
+Native workspace all-target tests pass: 211 normally and 211 with debug
+assertions disabled. Correctness/suspicious Clippy groups are denied and pass;
+Strict adapter rustdoc, formatting and diff whitespace pass. Existing non-denied
+style/dead-code warnings remain. Exact gate counts and source fingerprints are recorded separately.
+
+Independent read-only review found no confirmed defect in the token/original
+binding and retirement paths. It did not treat a filtered ordinary Close as a
+proven root deadlock: runtime-owned roots use deferred viewport omission, while
+the external eframe root is retained by the core's external-owner policy.
+The new rejected-Requested-fact regression first failed when suppression state
+was deliberately inserted before the fallible append in a temporary source
+snapshot; the current append-first implementation passes and preserves the same
+raw callback across repeated rejection without creating pending close state.
+Real-token success through the entire adapter, held-close/independent-cleanup
+interleaving, and Clear-append failure still need targeted runtime/window proof.
+Synthetic fixtures explicitly test tokenless rejection or correlation models;
+they no longer pretend to authorize typed platform decisions.
+
+This is not remotely reproducible native CI qualification: the workspace, smoke
+and checkout pins still name `0716beee`, and the required local fork commit is
+not pushed. No real-window, physical-input or GPU run is claimed. The adapter
+still uses synchronous host-frame entry points; sharing the budget through
+claim/poll/Repeat/finalization/close/shutdown and preserving partial settlement
+remain unfinished U7 work. This checkpoint does not complete U7 or U8.
+
+## 2026-10-28 U7 local native-close hold prerequisite (historical fork checkpoint)
 
 The local egui/eframe fork commit
 `b4ec9ff8bc719321442cf421fc7f5a496b80154d` adds neutral exact-request close hold.
-It is not pushed. The main native workspace and smoke still use the published
-`0716beee` revision; their handler and dependency pins have not migrated. These
-results qualify the local fork prerequisite only, not the production native
-adapter's budget or close workflow. The core runtime remains at its separately
-qualified `f719928` checkpoint.
+It is not pushed. At this checkpoint the main native workspace and smoke still
+used the published `0716beee` revision; neither handlers nor dependency pins had
+migrated. These results qualify the local fork prerequisite only, not the
+production native adapter's budget or close workflow. The core runtime remains
+at its separately qualified `f719928` checkpoint.
 
 The pre-translation native callback carries a canonical request including its
 attachment, viewport, window and original event identity. Returning its exact
