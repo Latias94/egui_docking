@@ -14,6 +14,36 @@ use crate::scene_manifest::{
     SurfaceRequirements, SurfaceSceneRevision,
 };
 
+#[test]
+fn disjoint_and_empty_cuts_keep_the_fragment_buffer_without_rebuilding() {
+    let original = rect(0.0, 0.0, 44.0, 44.0);
+    let mut fragments = vec![original];
+    FRAGMENT_BUFFER_REBUILDS.set(0);
+    for index in 0..1_024 {
+        subtract_from(
+            &mut fragments,
+            rect(44.0 + f64::from(index), 0.0, 1.0, 44.0),
+        );
+    }
+    for empty in [rect(20.0, 20.0, 0.0, 10.0), rect(20.0, 20.0, 10.0, 0.0)] {
+        subtract_from(&mut fragments, empty);
+    }
+    assert_eq!(fragments, [original]);
+    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 0);
+
+    subtract_from(&mut fragments, rect(20.0, 0.0, 4.0, 44.0));
+    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 1);
+    assert_eq!(
+        fragments,
+        [rect(0.0, 0.0, 20.0, 44.0), rect(24.0, 0.0, 20.0, 44.0)]
+    );
+    subtract_from(&mut fragments, original);
+    assert!(fragments.is_empty());
+    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 2);
+    subtract_from(&mut fragments, original);
+    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 2);
+}
+
 fn rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
     LogicalRect::new(x, y, width, height).expect("test rectangle is valid")
 }

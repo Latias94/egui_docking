@@ -11,6 +11,11 @@ use super::{PresentationHitRegion, PresentationHitRegionId, PresentationHitRegio
 #[path = "touch_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+thread_local! {
+    static FRAGMENT_BUFFER_REBUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) const fn replaces(kind: PresentationHitRegionKind) -> bool {
     matches!(
         kind,
@@ -262,6 +267,14 @@ fn visible_fragments(
 }
 
 fn subtract_from(fragments: &mut Vec<LogicalRect>, cut: LogicalRect) {
+    if !fragments
+        .iter()
+        .any(|rect| intersection(*rect, cut).is_some())
+    {
+        return;
+    }
+    #[cfg(test)]
+    FRAGMENT_BUFFER_REBUILDS.set(FRAGMENT_BUFFER_REBUILDS.get() + 1);
     let mut remaining = Vec::new();
     for rect in fragments.drain(..) {
         let Some(overlap) = intersection(rect, cut) else {

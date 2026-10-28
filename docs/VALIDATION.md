@@ -15,6 +15,33 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 Disjoint touch-cut buffer reuse
+
+Touch fragment subtraction now checks for a positive intersection before
+rebuilding its buffer. Disjoint cuts, empty cuts and an empty fragment set return
+without replacing the Vec; overlapping cuts retain the existing exact partition
+logic. A test-only counter measures buffer rebuild paths, not allocator calls or
+RSS. The regression submits 1,024 disjoint cuts and two empty cuts with zero
+rebuilds, then verifies the actual overlapping split and full removal.
+
+Focused qualification passes 12 workspace cases: all six touch-geometry units,
+four real egui touch-target journeys and the existing 1,024-pane selection and
+contained-cancellation profiles. Seven public-host tests pass, including all six
+touch-target contracts and the balanced 16/128/1,024-pane owned-output fixture.
+Correctness/suspicious Clippy and formatting remain passing gates.
+A disposable-snapshot negative control removes only the intersection guard:
+the counter regression then observes 1,026 rebuilds instead of zero and fails.
+Restoring production source passes the same case.
+
+On this machine's debug build, the public structural fixture took 4.096s before
+the guard and 3.319s after it; the 1,024-pane resize-selection profile changed
+from 4.872s to 4.222s, and the contained-cancellation profile from 8.332s to 7.345s.
+These are single-run observations, not a latency guarantee or a controlled
+allocator profile. The deterministic counter is the regression authority.
+Resize-by-protected-region traversal and existing record lookup costs remain;
+this change does not claim linear total hit-manifest compilation or introduce a
+spatial tree.
+
 ## 2026-10-28 U3d output-bound touch resize targets
 
 Explicit local Touch now uses device-specific resize footprints compiled into
