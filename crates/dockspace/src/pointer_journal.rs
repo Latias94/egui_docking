@@ -2035,13 +2035,13 @@ pub(crate) struct PointerJournalCommit {
 enum PointerAuthorityCheckpointBoundary {
     Enrollment(PointerEdgeSequence),
     /// Recovery follows accepted edges until a complete roster commits.
-    OverloadResync(PointerEdgeSequence),
+    RecoveryResync(PointerEdgeSequence),
 }
 
 impl PointerAuthorityCheckpointBoundary {
     const fn watermark(self) -> PointerEdgeSequence {
         match self {
-            Self::Enrollment(through) | Self::OverloadResync(through) => through,
+            Self::Enrollment(through) | Self::RecoveryResync(through) => through,
         }
     }
 }

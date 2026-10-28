@@ -135,21 +135,15 @@ impl NativePointerTranslator {
         terminals.into_iter().map(|(_, input)| input).collect()
     }
 
-    /// Conservatively terminates every adapter-owned input identity.
+    /// Forgets adapter identities after the provider-wide removal fact records.
     ///
     /// Winit raw-device identifiers are not correlated with the virtual
     /// identifiers carried by window input, so one raw removal cannot safely
-    /// target a subset of these states.
-    pub(crate) fn remove_all_devices(&mut self) -> Vec<NativePointerInput> {
+    /// target a subset of these states. Tombstones reject their late tails
+    /// until an explicit start allocates a fresh identity.
+    pub(crate) fn forget_removed_devices(&mut self) {
         self.removed_inputs.extend(self.devices.keys().copied());
-        let mut devices = std::mem::take(&mut self.devices)
-            .into_values()
-            .collect::<Vec<_>>();
-        devices.sort_by_key(|device| device.pointer);
-        devices
-            .into_iter()
-            .flat_map(NativePointerDeviceState::device_removed_terminals)
-            .collect()
+        self.devices.clear();
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -649,25 +643,6 @@ impl NativePointerDeviceState {
     const fn has_pending_provider_tail(&self) -> bool {
         self.mouse.has_pending_provider_tail()
             || matches!(self.scroll, NativeScrollState::RetiredTail { .. })
-    }
-
-    fn device_removed_terminals(self) -> Vec<NativePointerInput> {
-        let mut terminals = Vec::with_capacity(2);
-        if let NativeScrollState::Live { sequence, .. } = self.scroll {
-            terminals.push(scroll_cancel_input(
-                self.pointer,
-                self.scroll_device,
-                sequence,
-                NativeScrollCancelReason::DeviceRemoved,
-            ));
-        }
-        if self.stream_live {
-            terminals.push(pointer_cancel_input(
-                self.pointer,
-                NativePointerCancelReason::DeviceRemoved,
-            ));
-        }
-        terminals
     }
 }
 

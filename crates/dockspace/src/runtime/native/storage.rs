@@ -34,7 +34,8 @@ impl RuntimeNativeState {
                     | EngineInput::CancelSurfaceClose { .. } => size_of::<EngineInput>(),
                     _ => return Err(NativePlatformError::ProtocolInvariant),
                 },
-                BackendIngressPayload::PlatformBindingQuiesced { .. }
+                BackendIngressPayload::NativeInputDeviceRemoval
+                | BackendIngressPayload::PlatformBindingQuiesced { .. }
                 | BackendIngressPayload::NativeCloseObservation { .. }
                 | BackendIngressPayload::GlobalFocusObservation { .. }
                 | BackendIngressPayload::PlatformEffectResult(_)

@@ -1205,6 +1205,7 @@ impl DockEngine {
                         .map_or(&[][..], |settlement| settlement.observed_effects()),
                     InputOutcome::ViewportRegistered { .. }
                     | InputOutcome::NativeInputCancelledForOverload
+                    | InputOutcome::NativeInputDeviceRemoval
                     | InputOutcome::ViewportRegistrationRejected { .. }
                     | InputOutcome::NativeCloseObservationPublished { .. }
                     | InputOutcome::PlatformSnapshotStale { .. }
@@ -1744,6 +1745,13 @@ impl DockEngine {
             }
             EngineInput::CancelNativeInputForOverload { provider } => self
                 .cancel_native_input_for_overload(
+                    input.sequence,
+                    cause,
+                    *provider,
+                    interaction_events,
+                ),
+            EngineInput::ObserveNativeInputDeviceRemoval { provider } => self
+                .observe_native_input_device_removal(
                     input.sequence,
                     cause,
                     *provider,

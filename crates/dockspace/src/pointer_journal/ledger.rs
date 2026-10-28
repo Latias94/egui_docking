@@ -484,7 +484,7 @@ impl PointerJournalLedger {
     }
 
     /// Ends live streams and revokes button/capture facts without retiring the provider.
-    pub(crate) fn cancel_live_streams_for_overload(
+    pub(crate) fn cancel_live_streams_for_reset(
         &mut self,
         lease: PointerInputLease,
     ) -> Result<(), PointerJournalLedgerError> {
@@ -493,7 +493,7 @@ impl PointerJournalLedger {
         self.active_streams.clear();
         self.authority = JournalPointerAuthority::unknown(AuthorityUnavailableReason::NotReported);
         self.authority_checkpoint_boundary = Some(
-            PointerAuthorityCheckpointBoundary::OverloadResync(committed_through),
+            PointerAuthorityCheckpointBoundary::RecoveryResync(committed_through),
         );
         self.last_checkpoint = None;
         self.version = next_version;
@@ -501,7 +501,7 @@ impl PointerJournalLedger {
     }
 
     /// Validates a fresh recovery report without changing published authority.
-    pub(crate) fn validate_overload_authority_resync(
+    pub(crate) fn validate_reset_authority_resync(
         &self,
         lease: PointerInputLease,
         observed_through: PointerEdgeSequence,
@@ -522,7 +522,7 @@ impl PointerJournalLedger {
             });
         }
         if self.authority_checkpoint_boundary
-            != Some(PointerAuthorityCheckpointBoundary::OverloadResync(
+            != Some(PointerAuthorityCheckpointBoundary::RecoveryResync(
                 observed_through,
             ))
         {
@@ -1073,7 +1073,7 @@ impl PointerJournalLedger {
             }
             if matches!(
                 authority_checkpoint_boundary,
-                Some(PointerAuthorityCheckpointBoundary::OverloadResync(_))
+                Some(PointerAuthorityCheckpointBoundary::RecoveryResync(_))
             ) {
                 authority.apply_checkpoint(checkpoint);
                 if matches!(checkpoint.pointers(), Authority::Known(_)) {
@@ -1178,8 +1178,8 @@ impl PointerJournalLedger {
 
         if !journal.is_empty() {
             authority_checkpoint_boundary = match authority_checkpoint_boundary {
-                Some(PointerAuthorityCheckpointBoundary::OverloadResync(_)) => Some(
-                    PointerAuthorityCheckpointBoundary::OverloadResync(journal.through()),
+                Some(PointerAuthorityCheckpointBoundary::RecoveryResync(_)) => Some(
+                    PointerAuthorityCheckpointBoundary::RecoveryResync(journal.through()),
                 ),
                 _ => None,
             };

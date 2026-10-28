@@ -1341,16 +1341,9 @@ impl NativeCoordinator {
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if let Some(removal) = self.next_device_removal()? {
-            let mut candidate = self.pointer_translator.clone();
-            // Winit does not correlate raw-device IDs with window-input IDs.
-            // Fail closed by terminating the complete adapter-owned roster in
-            // the same atomic host boundary instead of inventing a match.
-            let terminals = candidate.remove_all_devices();
-            if !terminals.is_empty() {
-                self.record_pointer_batch(terminals)?;
-            }
+            self.session.report_native_input_device_removal()?;
+            self.pointer_translator.forget_removed_devices();
             self.acknowledge_device_removal(removal)?;
-            self.pointer_translator = candidate;
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if !self.session.has_active_gesture()

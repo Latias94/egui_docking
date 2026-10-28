@@ -316,7 +316,7 @@ fn overload_preserves_device_removal_gates_and_binding_retired_tail_policy() {
         translator.translate(&hover, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert_eq!(translator.remove_all_devices().len(), 1);
+    translator.forget_removed_devices();
     translator.finish_overload_cancellation();
     assert_eq!(
         translator.translate(&hover, |_| None),

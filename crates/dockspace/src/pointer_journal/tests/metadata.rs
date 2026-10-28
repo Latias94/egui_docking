@@ -204,7 +204,7 @@ fn metadata_overload_keeps_provider_clock_and_only_new_provider_can_reset_it() {
         ),
     )
     .unwrap();
-    ledger.cancel_live_streams_for_overload(lease).unwrap();
+    ledger.cancel_live_streams_for_reset(lease).unwrap();
     let before = ledger.clone();
     assert!(matches!(
         commit_candidate(

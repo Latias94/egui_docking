@@ -94,7 +94,10 @@ impl DockspaceSession {
         self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint))
     }
 
-    /// Reports a freshly observed complete pointer roster after overload cancellation.
+    /// Reports a freshly observed complete pointer roster after a managed input reset.
+    ///
+    /// Overload cancellation and uncorrelated device removal both open this
+    /// recovery boundary without claiming a complete physical roster.
     ///
     /// Earlier native records must be committed before reporting. The runtime
     /// binds the observation to its exact current provider and pointer watermark;
@@ -324,6 +327,33 @@ impl DockspaceSession {
         self.ensure_managed_native_host_available()?;
         let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.native_state_mut()?.record_pointer_sequence(inputs)?;
+        Ok(())
+    }
+
+    /// Records an uncorrelated native input-device removal in backend order.
+    ///
+    /// A backend which cannot correlate its raw device identity with delivered
+    /// pointer/scroll identities must conservatively end every live stream in
+    /// the current managed provider. This captures one fixed-size fact, without
+    /// synthesizing a pointer edge for each stream. The pointer edge watermark,
+    /// provider incarnation and accepted release/output obligations survive.
+    /// Later backend records may follow in the same host frame.
+    ///
+    /// Button/capture facts become Unknown; this does not report an empty
+    /// physical roster. Fresh complete facts may be reported through
+    /// [`Self::report_native_pointer_roster`]. A rejected or dropped frame leaves
+    /// the recorded removal retryable until its exact backend prefix commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a managed native host, when committed transport
+    /// cannot be reclaimed, or when the producer cannot record the observation.
+    pub fn report_native_input_device_removal(&mut self) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        self.native_state_mut()?
+            .recorder
+            .record_native_input_device_removal()
+            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
         Ok(())
     }
 

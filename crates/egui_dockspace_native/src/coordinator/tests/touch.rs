@@ -249,7 +249,7 @@ fn destroyed_touch_binding_tombstones_late_terminal_before_contact_id_reuse() {
 }
 
 #[test]
-fn uncorrelated_raw_removal_drains_all_window_input_identity_shapes() {
+fn uncorrelated_raw_removal_forgets_all_window_input_identity_shapes() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
     let first_window = WindowId::from(101);
@@ -295,15 +295,10 @@ fn uncorrelated_raw_removal_drains_all_window_input_identity_shapes() {
         NativePointerTranslation::Input(_)
     ));
 
-    assert_eq!(
-        translator.remove_all_devices(),
-        vec![
-            cancelled_pointer(NativePointerId::new(1)),
-            cancelled_pointer(NativePointerId::new(2)),
-            cancelled_pointer(NativePointerId::new(3)),
-        ],
-        "one raw removal conservatively covers Windows' fixed virtual ID and X11 master/slave mismatch shapes"
-    );
+    translator.forget_removed_devices();
+    assert!(translator.can_coalesce_idle_cursor_moves());
+    assert!(!translator.references_binding(first));
+    assert!(!translator.references_binding(second));
 
     let late_release = NativeWindowEventRecord::for_test(
         4,
@@ -340,6 +335,15 @@ fn uncorrelated_raw_removal_drains_all_window_input_identity_shapes() {
         NativePointerTranslation::Ignored,
         "a different virtual window device is also tombstoned by the uncorrelated removal"
     );
+    assert_eq!(
+        translator.translate_for_test_device(
+            &touch_record(6, first_window, first, device, 21, TouchPhase::Moved),
+            2,
+            |_| None,
+        ),
+        NativePointerTranslation::Ignored,
+        "the same provider reset also tombstones touch contacts"
+    );
 
     assert_eq!(
         translator.translate_for_test_device(&first_mouse, 0, |_| None),
@@ -358,6 +362,15 @@ fn uncorrelated_raw_removal_drains_all_window_input_identity_shapes() {
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
         )),
         "an explicit start independently reenrolls the X11-style master identity"
+    );
+    assert_eq!(
+        translator.translate_for_test_device(&first_touch, 2, |_| None),
+        NativePointerTranslation::Input(pointer_input(
+            first,
+            NativePointerId::new(6),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+        )),
+        "a fresh touch start preserves the identity allocator's monotonic order"
     );
 }
 
@@ -385,10 +398,7 @@ fn removed_device_tail_cannot_reenroll_before_an_explicit_stream_start() {
         translator.translate_for_test_device(&press, 404, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert_eq!(
-        translator.remove_all_devices(),
-        vec![cancelled_pointer(NativePointerId::new(1))]
-    );
+    translator.forget_removed_devices();
 
     let late_move = NativeWindowEventRecord::for_test(
         2,
@@ -434,12 +444,12 @@ fn removed_device_tail_cannot_reenroll_before_an_explicit_stream_start() {
 }
 
 #[test]
-fn device_removal_callback_commits_the_complete_input_roster_in_one_boundary() {
+fn device_removal_callback_commits_one_provider_reset_fact() {
     assert_device_removal_commits(false);
 }
 
 #[test]
-fn quarantined_device_removal_still_commits_existing_stream_cancellations() {
+fn quarantined_device_removal_still_commits_one_provider_reset_fact() {
     assert_device_removal_commits(true);
 }
 
@@ -486,19 +496,30 @@ fn assert_device_removal_commits(quarantined: bool) {
     assert!(
         native
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect("one removal callback records the complete adapter roster atomically")
+            .expect("one removal callback records the provider reset fact")
             .is_some()
     );
     assert_eq!(
         native.session.native_input_recorded_count(),
-        recorded + 2,
-        "one accepted removal records both existing stream terminals atomically",
+        recorded + 1,
+        "one accepted removal records one fact regardless of the live stream count",
     );
-    commit_pending_pointer_frame(&mut native);
+    drop(
+        native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the provider reset candidate can be dropped"),
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    let report = commit_pending_pointer_frame(&mut native);
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::NativeInputDeviceRemoval]
+    );
 
     assert!(!native.bridge.has_pending_callback_records());
     assert!(!native.session.has_active_gesture());
-    assert!(native.pointer_translator.remove_all_devices().is_empty());
+    assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+    assert!(!native.pointer_translator.references_binding(binding));
 }
 
 fn touch_record(
@@ -542,13 +563,6 @@ fn pointer_input(
     )
 }
 
-fn cancelled_pointer(pointer: NativePointerId) -> NativePointerInput {
-    authority_free_pointer_input(
-        pointer,
-        NativePointerEvent::StreamCancelled(NativePointerCancelReason::DeviceRemoved),
-    )
-}
-
 fn authority_free_pointer_input(
     pointer: NativePointerId,
     event: NativePointerEvent,
@@ -566,12 +580,12 @@ fn authority_free_pointer_input(
     )
 }
 
-fn commit_pending_pointer_frame(native: &mut NativeCoordinator) {
+fn commit_pending_pointer_frame(native: &mut NativeCoordinator) -> HostFrameReport {
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the pending pointer frame begins");
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the pending pointer frame settles every surface");
-    frame.commit().expect("the pending pointer frame commits");
+    frame.commit().expect("the pending pointer frame commits")
 }

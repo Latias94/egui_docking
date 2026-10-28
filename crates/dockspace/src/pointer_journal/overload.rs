@@ -50,7 +50,7 @@ fn overload_revokes_capture_and_old_candidates_without_resetting_identity_or_wat
         .unwrap();
     let old_counter = ledger.last_stream_incarnation;
 
-    ledger.cancel_live_streams_for_overload(lease).unwrap();
+    ledger.cancel_live_streams_for_reset(lease).unwrap();
     assert_eq!(ledger.active_lease(), Some(lease));
     assert_eq!(
         ledger.retained_committed_through(lease).unwrap(),
@@ -70,7 +70,7 @@ fn overload_revokes_capture_and_old_candidates_without_resetting_identity_or_wat
         Err(PointerJournalLedgerError::PreparedJournalStale { .. })
     ));
 
-    ledger.cancel_live_streams_for_overload(lease).unwrap();
+    ledger.cancel_live_streams_for_reset(lease).unwrap();
     let next = ledger
         .prepare_candidate(
             lease,
@@ -115,7 +115,7 @@ fn overload_rejects_a_foreign_or_retired_lease_without_clearing_live_state() {
         lease.incarnation(),
         PointerProviderScope::DesktopGlobal,
     );
-    assert!(ledger.cancel_live_streams_for_overload(foreign).is_err());
+    assert!(ledger.cancel_live_streams_for_reset(foreign).is_err());
     assert_eq!(ledger, before);
 
     ledger.retire_provider(lease).unwrap();
@@ -133,7 +133,7 @@ fn overload_rejects_a_foreign_or_retired_lease_without_clearing_live_state() {
         .unwrap();
     ledger.commit_prepared(prepared).unwrap();
     let before = ledger.clone();
-    assert!(ledger.cancel_live_streams_for_overload(lease).is_err());
+    assert!(ledger.cancel_live_streams_for_reset(lease).is_err());
     assert_eq!(ledger, before);
 }
 
@@ -154,7 +154,7 @@ fn overload_roster_resync_recovers_complete_authority_without_fabricating_releas
             )
             .unwrap();
         let old = ledger.commit_prepared(prepared).unwrap().accepted_edges()[0].stream();
-        ledger.cancel_live_streams_for_overload(lease).unwrap();
+        ledger.cancel_live_streams_for_reset(lease).unwrap();
         assert!(matches!(
             ledger.button_authority(),
             AnyButtonDownAuthority::Unknown(_)
@@ -234,7 +234,7 @@ fn overload_roster_resync_accepts_fresh_watermark_after_press_release_but_reject
         )
         .unwrap();
     ledger.commit_prepared(prepared).unwrap();
-    ledger.cancel_live_streams_for_overload(lease).unwrap();
+    ledger.cancel_live_streams_for_reset(lease).unwrap();
     for (previous, kind) in [
         (1, PointerEdgeKind::ButtonPressed(PointerButton::Primary)),
         (2, PointerEdgeKind::ButtonReleased(PointerButton::Primary)),

@@ -299,6 +299,11 @@ pub enum EngineInput {
         /// Exact joined provider and presentation host whose input is cancelled.
         provider: BackendIngressLease,
     },
+    /// Observes native input device removal without ending the host-frame input phase.
+    ObserveNativeInputDeviceRemoval {
+        /// Exact joined provider whose live pointer and scroll streams are cancelled.
+        provider: BackendIngressLease,
+    },
     /// Bind an existing adapter window to a current logical surface.
     RegisterViewport {
         /// Exact platform provider enrolling this native binding.
@@ -741,6 +746,7 @@ impl EngineInput {
             Self::PublishPlatformSnapshot { .. }
             | Self::PublishNativeCloseObservation { .. }
             | Self::PublishGlobalFocusObservation { .. }
+            | Self::ObserveNativeInputDeviceRemoval { .. }
             | Self::ReportPlatformEffect { .. } => InputPriority::PlatformObservation,
             Self::PublishPaneFocusObservation { .. }
             | Self::PublishPaneFocusRequestObservation { .. } => InputPriority::PlatformObservation,
@@ -801,6 +807,7 @@ impl EngineInput {
             Self::PublishPlatformSnapshot { .. }
                 | Self::PublishNativeCloseObservation { .. }
                 | Self::PublishGlobalFocusObservation { .. }
+                | Self::ObserveNativeInputDeviceRemoval { .. }
                 | Self::ReportPlatformEffect { .. }
         )
     }

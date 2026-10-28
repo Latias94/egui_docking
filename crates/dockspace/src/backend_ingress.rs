@@ -616,6 +616,8 @@ pub enum BackendIngressPayload {
     },
     /// One non-observational platform-effect dispatch result.
     PlatformEffectResult(EffectResult),
+    /// Removal of native input devices resets this provider's live input streams.
+    NativeInputDeviceRemoval,
     /// One narrow non-pointer semantic action captured by the backend event loop.
     SemanticInput(Box<EngineInput>),
     /// One presentation-stream fact captured at this exact backend position.
@@ -1242,6 +1244,13 @@ impl BackendIngressRecorder {
         self.push(BackendIngressPayload::PlatformEffectResult(result))
     }
 
+    /// Records native input device removal at the next backend position.
+    pub fn record_native_input_device_removal(
+        &mut self,
+    ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        self.push(BackendIngressPayload::NativeInputDeviceRemoval)
+    }
+
     /// Records one non-pointer semantic action at the next backend position.
     ///
     /// Platform facts must use their typed lanes and configuration remains a
@@ -1539,6 +1548,7 @@ impl BackendIngressRecorder {
                 | BackendIngressPayload::NativeCloseObservation { .. }
                 | BackendIngressPayload::GlobalFocusObservation { .. }
                 | BackendIngressPayload::PlatformEffectResult(_)
+                | BackendIngressPayload::NativeInputDeviceRemoval
                 | BackendIngressPayload::SemanticInput(_)
                 | BackendIngressPayload::PresentationObservation { .. }
                 | BackendIngressPayload::PointerSegment(_) => None,

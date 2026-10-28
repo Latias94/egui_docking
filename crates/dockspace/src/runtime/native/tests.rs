@@ -17,6 +17,7 @@ use crate::runtime::{
 use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
 mod budget_replay;
+mod device_removal;
 mod managed_lifecycle;
 mod pointer_metadata;
 mod pointer_sequence;

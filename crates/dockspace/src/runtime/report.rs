@@ -70,6 +70,9 @@ impl HostFrameReport {
         } else {
             for reduced in transition.reduced_inputs() {
                 let outcome = match reduced.outcome() {
+                    InputOutcome::NativeInputDeviceRemoval => {
+                        Some(HostInputOutcome::NativeInputDeviceRemoval)
+                    }
                     InputOutcome::NativeInputCancelledForOverload => {
                         Some(HostInputOutcome::NativeInputCancelledForOverload)
                     }

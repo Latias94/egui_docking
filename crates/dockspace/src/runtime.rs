@@ -216,6 +216,11 @@ pub enum DockspaceCloseRejection {
 /// Public actionable result produced by one facade-owned input.
 #[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
+    /// An uncorrelated native device-removal observation ended live input.
+    ///
+    /// The provider and accepted release/output obligations remain live. Button
+    /// and capture facts become Unknown until fresh host facts establish them.
+    NativeInputDeviceRemoval,
     /// Managed input ended at this frame's terminal overload boundary.
     ///
     /// The provider and all previously accepted release obligations remain live.

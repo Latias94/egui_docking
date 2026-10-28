@@ -678,6 +678,7 @@ updates/cancellation without self-invalidation or redundant compilation.
 - **Approach:** Replace one-callback-per-cycle front/ACK families with bounded immutable prefix claims. Establish surface-local routing and validated desktop handoff through the same core kernel; preserve exact output and lifecycle barriers.
 - **Capacity integration:** Keep capture identity and original age through raw-to-core handoff until the committed boundary releases its source reservation. Share immutable recorded payloads across retry batches. On overload, freeze ordinary admission at one fixed capture boundary B; commit all currently replayable accepted input through B before an independent terminal cancellation frame. Accepted lifecycle records parked behind unresolved external dependencies retain their existing owner, capture identity, age and reservation across cancellation; they publish only after their original dependency and commit barriers settle. Post-boundary callbacks that settle existing affine output/create/command/close/window obligations use already reserved, once-only owner slots with original capture order; they do not move B or create a second unbounded journal. Neither an unresolved held-close successor nor an unrelated post-B terminal delays live-input cancellation; source reservations already transferred to core still require their complete original boundary commit. A new ordinary pointer callback rejected after freeze is not an accepted edge; the platform still processes it, and overload cancellation ends the surviving core input. Only successful cancellation commit resets translator state, preserving identity counters and without emitting synthetic releases or claiming an empty physical roster. Pending releases retain their separate exact-output obligations.
 - **Storage implementation direction:** Reuse the serialized callback boundary for a bounded raw backing and one shared core/replay work allowance, instead of reserving a complete core payload copy for every queued source or introducing per-allocation authority tokens. Reclaim committed recorder payloads before the next raw transfer, or charge their actual overlap. Effect/presentation preludes and whole atomic terminal groups use the same allowance; the 256-record scheduling limit is not an atomic-group storage bound. Prospective complete-roster size must be checked from borrowed facts before capture, and existing terminal owners must reserve variable backing when their obligation is admitted. The final implementation must state and enforce the maximum complete roster and terminal fanout it can retain, without truncating Exact facts or dropping accepted terminals. Shared roster data is counted by allocation identity through its existing owners, without a persistent address registry.
+- **Core capacity boundary:** Keep generic/core host recording unbounded unless its host selects a limit. The optional native profile can preallocate a finite recorder buffer and reserve batch, guard and retirement-receipt transport space for its complete admitted record set, including whole atomic groups. Final admission belongs at the recorder's single append boundary; finite snapshot/checkpoint construction also needs prospective checks. Capacity rejection preserves the existing producer/output owner and allows already accepted input to replay instead of trapping poll in a full-prelude error loop. Enrollment must reject insufficient storage before publishing an ownerless provider, without panic. Resource/adapter data and shared core allowance must be combined before claiming the total 4 MiB gate.
 - **Test scenarios:** Covers AE7/AE11/AE14. Retry after a rejected batch, 10,000 interleaved records, sustained 1,000 Hz drag, overload, local touch coordinates, and scope/provider changes preserve one terminal release.
 - **Verification:** Resource budgets hold and no unbounded journal or forced desktop-only local route remains.
 
@@ -736,6 +737,19 @@ push guard fails the overflow regression; restoring it passes. A quarantine
 DeviceRemoval journey commits both preexisting mouse/touch stream terminals
 through the production gate. This is not a complete 4 MiB or physical-input
 qualification.
+
+DeviceRemoval no longer expands into per-stream synthetic pointer/scroll
+records. One exact-provider backend fact invokes the shared live-input reset
+kernel, preserves pointer sequence and accepted release/output obligations,
+keeps the frame open for subsequent input and supports fresh roster recovery.
+Adapter state is forgotten only after recording succeeds. Destroy-binding
+fanout and caller atomic groups still need bounded shared work admission.
+Qualification passes 1,753 workspace tests, 79 public-host tests, strict docs
+and Clippy, 316 native tests in both normal and no-debug-assertion builds, and
+the macOS programmatic real-window redock. A real presented-receiver regression
+also reuses the same pointer after removal in one backend batch and requires a
+new stream incarnation. Removing only DeviceRemoval staged-ledger sync fails
+that regression with ButtonAlreadyPressed; restoring the implementation passes.
 
 ### U8. Consolidate optional viewport hosting and certify native readiness
 

@@ -1,10 +1,11 @@
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerCancelReason,
-    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner, NativeReceiverAnswer, NativeScrollCancelReason, NativeScrollDelta,
-    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
-    NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding, SurfaceUnavailableReason,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
+    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativeReceiverAnswer, NativeScrollCancelReason,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding,
+    SurfaceUnavailableReason,
 };
 use eframe::egui::{self, ViewportId};
 use winit::dpi::PhysicalPosition;
@@ -129,7 +130,7 @@ fn wheel_translation_never_upgrades_missing_event_time_facts() {
 }
 
 #[test]
-fn device_removal_deterministically_drains_mouse_then_scroll_identities() {
+fn device_removal_forgets_mouse_and_scroll_without_reusing_their_identities() {
     let mut native = coordinator();
     let (binding, _) = register_roots(&mut native);
     let window = WindowId::from(45);
@@ -145,28 +146,35 @@ fn device_removal_deterministically_drains_mouse_then_scroll_identities() {
         translator.translate_for_test_device(&started, 303, |_| None),
         NativePointerTranslation::Input(_)
     ));
+    translator.forget_removed_devices();
+    assert!(translator.can_coalesce_idle_cursor_moves());
+    assert!(!translator.references_binding(binding));
+    assert!(!translator.has_pending_provider_tail());
     assert_eq!(
-        translator.remove_all_devices(),
-        vec![
-            cancelled_pointer_input(
-                NativePointerId::new(1),
-                NativePointerCancelReason::DeviceRemoved,
-            ),
-            phaseful_scroll_input_for_device(
-                NativePointerId::new(2),
-                NativeScrollDeviceId::new(2),
+        translator.translate_for_test_device(&press, 303, |_| None),
+        NativePointerTranslation::Input(NativePointerInput::new(
+            NativePointerId::new(3),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::Unknown,
                 None,
-                NativeScrollPhase::Cancel {
-                    sequence: NativeScrollSequenceId::new(1),
-                    reason: NativeScrollCancelReason::DeviceRemoved,
-                },
             ),
-            cancelled_pointer_input(
-                NativePointerId::new(2),
-                NativePointerCancelReason::DeviceRemoved,
-            ),
-        ],
-        "device removal drains identities by pointer allocation order and closes scroll before its pointer"
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::Unknown,
+        )),
+    );
+    assert_eq!(
+        translator.translate_for_test_device(&started, 303, |_| None),
+        NativePointerTranslation::Input(phaseful_scroll_input_for_device(
+            NativePointerId::new(4),
+            NativeScrollDeviceId::new(4),
+            Some(binding),
+            NativeScrollPhase::Begin {
+                sequence: NativeScrollSequenceId::new(2),
+                delta: Some(NativeScrollDelta::Lines { x: 0.0, y: 1.0 }),
+            },
+        )),
     );
 }
 
@@ -184,7 +192,7 @@ fn removed_device_ignores_wheel_moved_and_ended_until_a_new_phase_begins() {
         translator.translate_for_test_device(&started, 304, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert_eq!(translator.remove_all_devices().len(), 2);
+    translator.forget_removed_devices();
     assert_eq!(
         translator.translate_for_test_device(&moved, 304, |_| None),
         NativePointerTranslation::Ignored,

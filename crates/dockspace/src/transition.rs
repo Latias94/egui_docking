@@ -54,6 +54,8 @@ pub enum InputPriority {
 pub enum InputOutcome {
     /// The exact managed provider accepted terminal overload cancellation.
     NativeInputCancelledForOverload,
+    /// Native input device removal cancelled live input without ending input capture.
+    NativeInputDeviceRemoval,
     /// A programmatic content-close request opened or reused one exact plan.
     ContentCloseRequested {
         /// Stable target supplied by the caller.

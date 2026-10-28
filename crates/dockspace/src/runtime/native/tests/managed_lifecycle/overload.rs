@@ -9,6 +9,32 @@ use crate::runtime::{
 };
 use std::time::Duration;
 
+#[derive(Debug, Clone, Copy)]
+enum FiniteReset {
+    Overload,
+    DeviceRemoval,
+}
+
+impl FiniteReset {
+    const ALL: [Self; 2] = [Self::Overload, Self::DeviceRemoval];
+
+    const fn recorded_delta(self) -> u64 {
+        match self {
+            Self::Overload => 0,
+            Self::DeviceRemoval => 1,
+        }
+    }
+
+    const fn gesture_cause(self) -> crate::interaction::InteractionCancelReason {
+        match self {
+            Self::Overload => crate::interaction::InteractionCancelReason::InputOverload,
+            Self::DeviceRemoval => {
+                crate::interaction::InteractionCancelReason::PointerStreamCancelled
+            }
+        }
+    }
+}
+
 #[test]
 fn overload_cancel_rejects_nonmanaged_hosts_without_poisoning_the_frame() {
     let (mut session, binding) = native_root_session();
@@ -227,17 +253,50 @@ fn native_input(
 }
 
 fn cancel_and_commit(session: &mut DockspaceSession) -> HostFrameReport {
+    reset_and_commit(session, FiniteReset::Overload)
+}
+
+fn reset_and_commit(session: &mut DockspaceSession, reset: FiniteReset) -> HostFrameReport {
+    let recorded = session.native_input_recorded_count();
+    let through = session.native.as_ref().unwrap().recorder.pointer_through();
+    if matches!(reset, FiniteReset::DeviceRemoval) {
+        session.report_native_input_device_removal().unwrap();
+    }
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the terminal cancellation frame begins");
-    let submitted = frame.cancel_native_input_for_overload().unwrap();
+        .expect("the finite input-reset frame begins");
+    let submitted = match reset {
+        FiniteReset::Overload => Some(frame.cancel_native_input_for_overload().unwrap()),
+        FiniteReset::DeviceRemoval => None,
+    };
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
-    let report = frame.commit().expect("terminal cancellation commits");
+    let report = frame.commit().expect("the finite input reset commits");
+    if let Some(submitted) = submitted {
+        assert_eq!(
+            report.submitted_action_outcome(submitted),
+            Some(&HostInputOutcome::NativeInputCancelledForOverload)
+        );
+    } else {
+        assert_eq!(
+            report
+                .inputs()
+                .iter()
+                .filter(|input| matches!(input, HostInputOutcome::NativeInputDeviceRemoval))
+                .count(),
+            1
+        );
+    }
     assert_eq!(
-        report.submitted_action_outcome(submitted),
-        Some(&HostInputOutcome::NativeInputCancelledForOverload)
+        session.native_input_recorded_count(),
+        recorded + reset.recorded_delta(),
+        "reset={reset:?}"
+    );
+    assert_eq!(
+        session.native.as_ref().unwrap().recorder.pointer_through(),
+        through,
+        "a reset records no synthetic pointer edge: {reset:?}"
     );
     report
 }
@@ -249,6 +308,57 @@ fn paint_and_commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     frame.commit().expect("the real surface output commits")
+}
+
+#[test]
+fn device_removal_then_same_pointer_press_rebinds_the_presented_receiver_in_one_batch() {
+    let (mut session, binding, receiver) = pressed_session();
+    let previous = session.engine.interaction().active_stream().unwrap();
+    let recorded = session.native_input_recorded_count();
+    let pointer = session.native.as_ref().unwrap().recorder.pointer_through();
+    session.report_native_input_device_removal().unwrap();
+    session
+        .record_native_pointer(native_input(
+            binding,
+            1,
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            receiver.center(),
+        ))
+        .unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|query| receiver_answer(query, receiver))
+        .expect("reset and fresh press share the original exact presented receiver");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert!(
+        report
+            .inputs()
+            .iter()
+            .any(|outcome| matches!(outcome, HostInputOutcome::NativeInputDeviceRemoval))
+    );
+    assert!(report.manipulation_feedback().iter().any(|feedback| {
+        feedback.status()
+            == DockspaceManipulationStatus::Cancelled(
+                crate::interaction::InteractionCancelReason::PointerStreamCancelled,
+            )
+    }));
+    let current = session.engine.interaction().active_stream().unwrap();
+    assert_eq!(current.lease(), previous.lease());
+    assert_eq!(current.pointer(), previous.pointer());
+    assert!(current.incarnation() > previous.incarnation());
+    assert_eq!(session.native_input_recorded_count(), recorded + 2);
+    assert_eq!(
+        session
+            .native
+            .as_ref()
+            .unwrap()
+            .recorder
+            .pointer_through()
+            .get(),
+        pointer.get() + 1,
+    );
 }
 
 #[test]
@@ -347,142 +457,149 @@ fn overload_cancel_is_terminal_and_a_failed_commit_preserves_the_published_owner
 
 #[test]
 fn overload_cancel_ends_gesture_and_owned_and_suppressed_scroll_idempotently() {
-    let mut builder = Workspace::builder();
-    let tabs = builder.insert_node(Node::tabs((1..=16).map(ItemId::new)));
-    builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let (mut session, binding) = managed_session_from_workspace(builder.build().unwrap());
-    let tab = presented_tab_receiver(&mut session, ITEM);
-    let scroll_receiver = {
-        let mut frame = session
-            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+    for reset in FiniteReset::ALL {
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs((1..=16).map(ItemId::new)));
+        builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+        let (mut session, binding) = managed_session_from_workspace(builder.build().unwrap());
+        let tab = presented_tab_receiver(&mut session, ITEM);
+        let scroll_receiver = {
+            let mut frame = session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+            plan.tab_bars()
+                .find_map(|bar| plan.receiver_for_tab_strip_scroll(bar))
+                .expect("the overflowing strip publishes a real scroll receiver")
+        };
+        let begin = |token| {
+            NativePointerEvent::Scrolled(NativeScrollEvent::new(
+                NativeScrollDeviceId::new(1),
+                NativeScrollPhase::Begin {
+                    sequence: NativeScrollSequenceId::new(token),
+                    delta: None,
+                },
+                NativeScrollMomentum::Direct,
+                NativeScrollModifiers::Exact {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    command: false,
+                },
+            ))
+        };
+        session
+            .record_native_pointer_batch([
+                native_input(
+                    binding,
+                    1,
+                    NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                    tab.center(),
+                ),
+                native_input(binding, 2, begin(41), scroll_receiver.center()),
+                unknown_native_pointer_input(3, begin(42)),
+            ])
             .unwrap();
-        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
-        plan.tab_bars()
-            .find_map(|bar| plan.receiver_for_tab_strip_scroll(bar))
-            .expect("the overflowing strip publishes a real scroll receiver")
-    };
-    let begin = |token| {
-        NativePointerEvent::Scrolled(NativeScrollEvent::new(
-            NativeScrollDeviceId::new(1),
-            NativeScrollPhase::Begin {
-                sequence: NativeScrollSequenceId::new(token),
-                delta: None,
-            },
-            NativeScrollMomentum::Direct,
-            NativeScrollModifiers::Exact {
-                shift: false,
-                control: false,
-                alt: false,
-                command: false,
-            },
-        ))
-    };
-    session
-        .record_native_pointer_batch([
-            native_input(
-                binding,
-                1,
-                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
-                tab.center(),
-            ),
-            native_input(binding, 2, begin(41), scroll_receiver.center()),
-            unknown_native_pointer_input(3, begin(42)),
-        ])
-        .unwrap();
-    let mut frame = session
-        .begin_native_host_frame(|query| {
-            let descriptor = if matches!(query.purpose(), NativeReceiverPurpose::ScrollDelivery(_))
-            {
-                scroll_receiver
-            } else {
-                tab
-            };
-            receiver_answer(query, descriptor)
-        })
-        .unwrap();
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    frame.commit().unwrap();
-    assert!(session.has_active_gesture());
-    assert_eq!(
-        session
-            .engine
-            .runtime_retention_manifest()
-            .scroll()
-            .active_sessions(),
-        2
-    );
-    let version = session.version();
-    let provider = session.engine.backend_ingress_provider();
-    let recorded = session.native_input_recorded_count();
-    let report = cancel_and_commit(&mut session);
-    assert!(
-        report
-            .manipulation_feedback()
-            .iter()
-            .any(|feedback| feedback.status()
-                == DockspaceManipulationStatus::Cancelled(
-                    crate::interaction::InteractionCancelReason::InputOverload
-                ))
-    );
-    assert!(!session.has_active_gesture());
-    assert_eq!(
-        session
-            .engine
-            .runtime_retention_manifest()
-            .scroll()
-            .active_sessions(),
-        0
-    );
-    assert_eq!(
-        session
-            .engine
-            .runtime_retention_manifest()
-            .scroll()
-            .sequence_watermark_guards(),
-        1
-    );
-    assert_eq!(
-        session
-            .engine
-            .runtime_retention_manifest()
-            .pointer()
-            .active_stream_count(),
-        0
-    );
-    assert!(
-        cancel_and_commit(&mut session)
-            .manipulation_feedback()
-            .is_empty()
-    );
-    assert_eq!(session.version(), version);
-    assert_eq!(session.engine.backend_ingress_provider(), provider);
-    assert_eq!(session.native_input_recorded_count(), recorded);
+        let mut frame = session
+            .begin_native_host_frame(|query| {
+                let descriptor =
+                    if matches!(query.purpose(), NativeReceiverPurpose::ScrollDelivery(_)) {
+                        scroll_receiver
+                    } else {
+                        tab
+                    };
+                receiver_answer(query, descriptor)
+            })
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap();
+        assert!(session.has_active_gesture());
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .scroll()
+                .active_sessions(),
+            2
+        );
+        let version = session.version();
+        let provider = session.engine.backend_ingress_provider();
+        let recorded = session.native_input_recorded_count();
+        let report = reset_and_commit(&mut session, reset);
+        assert!(
+            report
+                .manipulation_feedback()
+                .iter()
+                .any(|feedback| feedback.status()
+                    == DockspaceManipulationStatus::Cancelled(reset.gesture_cause()))
+        );
+        assert!(!session.has_active_gesture());
+        assert!(matches!(
+            session.engine.pointer_button_authority(),
+            AnyButtonDownAuthority::Unknown(_)
+        ));
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .scroll()
+                .active_sessions(),
+            0
+        );
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .scroll()
+                .sequence_watermark_guards(),
+            1
+        );
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .pointer()
+                .active_stream_count(),
+            0
+        );
+        assert!(
+            reset_and_commit(&mut session, reset)
+                .manipulation_feedback()
+                .is_empty()
+        );
+        assert_eq!(session.version(), version);
+        assert_eq!(session.engine.backend_ingress_provider(), provider);
+        assert_eq!(
+            session.native_input_recorded_count(),
+            recorded + 2 * reset.recorded_delta()
+        );
 
-    session
-        .record_native_pointer(unknown_native_pointer_input(3, begin(43)))
-        .unwrap();
-    commit_managed_frame(&mut session);
-    assert_eq!(
         session
-            .engine
-            .runtime_retention_manifest()
-            .scroll()
-            .active_sessions(),
-        1
-    );
-    cancel_and_commit(&mut session);
-    session
-        .record_native_pointer(unknown_native_pointer_input(3, begin(43)))
-        .unwrap();
-    assert!(
+            .record_native_pointer(unknown_native_pointer_input(3, begin(43)))
+            .unwrap();
+        commit_managed_frame(&mut session);
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .scroll()
+                .active_sessions(),
+            1
+        );
+        reset_and_commit(&mut session, reset);
         session
-            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-            .is_err(),
-        "cancellation must not reset the provider's scroll token watermark"
-    );
+            .record_native_pointer(unknown_native_pointer_input(3, begin(43)))
+            .unwrap();
+        assert!(
+            session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .is_err(),
+            "neither reset may reset the provider's scroll token watermark: {reset:?}"
+        );
+    }
 }
 
 fn contained_resize_receiver(session: &mut DockspaceSession) -> DockspaceReceiverDescriptor {
@@ -552,10 +669,11 @@ fn overload_cancel_restores_durable_contained_projection_without_changing_worksp
     assert!(!session.has_active_gesture());
 }
 
-fn assert_release_survives_overload(
+fn assert_release_survives_reset(
     mut session: DockspaceSession,
     mut release_report: HostFrameReport,
     delivery: DockspaceManipulationDelivery,
+    reset: FiniteReset,
 ) {
     let pending = (
         session.engine.pending_release_preview(),
@@ -575,13 +693,55 @@ fn assert_release_survives_overload(
     let key = output.presentation_artifact().output().key();
     let version = session.version();
     let workspace = session.engine.workspace().clone();
+    let recorded = session.native_input_recorded_count();
+    let through = session.native.as_ref().unwrap().recorder.pointer_through();
+    if matches!(reset, FiniteReset::DeviceRemoval) {
+        session.report_native_input_device_removal().unwrap();
+    }
     {
         let mut frame = session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
             .unwrap();
-        frame.cancel_native_input_for_overload().unwrap();
+        if matches!(reset, FiniteReset::Overload) {
+            frame.cancel_native_input_for_overload().unwrap();
+        }
     }
-    let report = cancel_and_commit(&mut session);
+    assert_eq!(
+        session.native_input_recorded_count(),
+        recorded + reset.recorded_delta()
+    );
+    assert_eq!(
+        (
+            session.engine.pending_release_preview(),
+            session.engine.pending_contained_transform_release_preview()
+        ),
+        pending,
+        "dropping the reset candidate preserves the accepted release: {reset:?}"
+    );
+    let report = match reset {
+        FiniteReset::Overload => cancel_and_commit(&mut session),
+        FiniteReset::DeviceRemoval => {
+            let report = commit_managed_frame_report(&mut session);
+            assert_eq!(
+                report
+                    .inputs()
+                    .iter()
+                    .filter(|input| matches!(input, HostInputOutcome::NativeInputDeviceRemoval))
+                    .count(),
+                1,
+                "the dropped removal replays its original single backend record"
+            );
+            report
+        }
+    };
+    assert_eq!(
+        session.native_input_recorded_count(),
+        recorded + reset.recorded_delta()
+    );
+    assert_eq!(
+        session.native.as_ref().unwrap().recorder.pointer_through(),
+        through
+    );
     assert!(
         report.manipulation_feedback().is_empty(),
         "accepted release is not a live gesture to cancel"
@@ -625,7 +785,7 @@ fn assert_release_survives_overload(
     assert_ne!(session.version(), version);
     let delivered_version = session.version();
     assert!(
-        cancel_and_commit(&mut session)
+        reset_and_commit(&mut session, reset)
             .manipulation_feedback()
             .is_empty()
     );
@@ -634,35 +794,38 @@ fn assert_release_survives_overload(
 
 #[test]
 fn overload_cancel_preserves_pending_contained_release_and_its_exact_output() {
-    let (mut session, binding) = programmatic_tear_off_session();
-    let receiver = contained_resize_receiver(&mut session);
-    let moved = LogicalPoint::new(receiver.center().x() + 32.0, receiver.center().y()).unwrap();
-    session
-        .record_native_pointer_batch([
-            native_input(
-                binding,
-                1,
-                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
-                receiver.center(),
-            ),
-            native_input(binding, 1, NativePointerEvent::Moved, moved),
-            native_input(
-                binding,
-                1,
-                NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
-                moved,
-            ),
-        ])
-        .unwrap();
-    let frame = session
-        .begin_native_host_frame(|query| receiver_answer(query, receiver))
-        .unwrap();
-    let report = paint_and_commit(frame);
-    assert_release_survives_overload(
-        session,
-        report,
-        DockspaceManipulationDelivery::ContainedTransform,
-    );
+    for reset in FiniteReset::ALL {
+        let (mut session, binding) = programmatic_tear_off_session();
+        let receiver = contained_resize_receiver(&mut session);
+        let moved = LogicalPoint::new(receiver.center().x() + 32.0, receiver.center().y()).unwrap();
+        session
+            .record_native_pointer_batch([
+                native_input(
+                    binding,
+                    1,
+                    NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                    receiver.center(),
+                ),
+                native_input(binding, 1, NativePointerEvent::Moved, moved),
+                native_input(
+                    binding,
+                    1,
+                    NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+                    moved,
+                ),
+            ])
+            .unwrap();
+        let frame = session
+            .begin_native_host_frame(|query| receiver_answer(query, receiver))
+            .unwrap();
+        let report = paint_and_commit(frame);
+        assert_release_survives_reset(
+            session,
+            report,
+            DockspaceManipulationDelivery::ContainedTransform,
+            reset,
+        );
+    }
 }
 
 #[test]
@@ -704,10 +867,11 @@ fn overload_cancel_preserves_a_release_accepted_earlier_in_the_same_frame() {
         report.submitted_action_outcome(submitted),
         Some(&HostInputOutcome::NativeInputCancelledForOverload)
     );
-    assert_release_survives_overload(
+    assert_release_survives_reset(
         session,
         report,
         DockspaceManipulationDelivery::ContainedTransform,
+        FiniteReset::Overload,
     );
 }
 
@@ -728,57 +892,59 @@ fn overload_cancel_cannot_be_recorded_as_an_ordinary_backend_action() {
 
 #[test]
 fn overload_cancel_preserves_pending_drag_release_and_its_exact_output() {
-    let mut builder = Workspace::builder();
-    let source_tabs = builder.insert_node(Node::tabs([ITEM, SECOND_ITEM]));
-    let target_tabs = builder.insert_node(Node::tabs([ItemId::new(3)]));
-    let split = builder
-        .insert_node(Node::equal_split(Axis::Horizontal, [source_tabs, target_tabs]).unwrap());
-    builder.set_root(ROOT, RootRecord::new(split).with_central(target_tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let (mut session, binding) = managed_session_from_workspace(builder.build().unwrap());
-    let receiver = presented_tab_receiver(&mut session, ITEM);
-    let target = {
-        let mut frame = session
-            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+    for reset in FiniteReset::ALL {
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([ITEM, SECOND_ITEM]));
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(3)]));
+        let split = builder
+            .insert_node(Node::equal_split(Axis::Horizontal, [source_tabs, target_tabs]).unwrap());
+        builder.set_root(ROOT, RootRecord::new(split).with_central(target_tabs));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+        let (mut session, binding) = managed_session_from_workspace(builder.build().unwrap());
+        let receiver = presented_tab_receiver(&mut session, ITEM);
+        let target = {
+            let mut frame = session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            frame
+                .paint_plan(SURFACE)
+                .unwrap()
+                .unwrap()
+                .center_drop_receiver_for_item(ItemId::new(3))
+                .unwrap()
+        };
+        session
+            .record_native_pointer_batch([
+                native_input(
+                    binding,
+                    1,
+                    NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                    receiver.center(),
+                ),
+                native_input(binding, 1, NativePointerEvent::Moved, target.center()),
+                native_input(
+                    binding,
+                    1,
+                    NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+                    target.center(),
+                ),
+            ])
             .unwrap();
-        frame
-            .paint_plan(SURFACE)
-            .unwrap()
-            .unwrap()
-            .center_drop_receiver_for_item(ItemId::new(3))
-            .unwrap()
-    };
-    session
-        .record_native_pointer_batch([
-            native_input(
-                binding,
-                1,
-                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
-                receiver.center(),
-            ),
-            native_input(binding, 1, NativePointerEvent::Moved, target.center()),
-            native_input(
-                binding,
-                1,
-                NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
-                target.center(),
-            ),
-        ])
-        .unwrap();
-    let frame = session
-        .begin_native_host_frame(|query| {
-            receiver_answer(
-                query,
-                if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
-                    target
-                } else {
-                    receiver
-                },
-            )
-        })
-        .unwrap();
-    let report = paint_and_commit(frame);
-    assert_release_survives_overload(session, report, DockspaceManipulationDelivery::Dock);
+        let frame = session
+            .begin_native_host_frame(|query| {
+                receiver_answer(
+                    query,
+                    if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
+                        target
+                    } else {
+                        receiver
+                    },
+                )
+            })
+            .unwrap();
+        let report = paint_and_commit(frame);
+        assert_release_survives_reset(session, report, DockspaceManipulationDelivery::Dock, reset);
+    }
 }
 
 #[test]

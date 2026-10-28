@@ -15,6 +15,56 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 single-record native device removal
+
+An uncorrelated raw DeviceRemoval now records one provider-bound fact in joined
+backend order, replacing the adapter's per-pointer/per-scroll synthetic terminal
+Vec. Recording advances the backend ordinal once without advancing the pointer
+watermark. Core uses the shared managed-input cancellation kernel with
+PointerStreamCancelled and DeviceRemoved scroll reasons; this observed fact
+does not close the host-frame input phase or reuse the overload outcome.
+
+The reset clears live streams and revokes button/capture facts to Unknown while
+preserving the provider, clock, identity counters, native lifecycle and consumed
+release/output obligations. Frame staged and candidate pointer ledgers are
+synchronized before the next record, and presented interaction authority is
+refreshed. A fresh complete roster can recover authority at the committed reset
+boundary, including after later edges. No empty physical roster is invented.
+
+The adapter first records the fact, then forgets its device state and retains
+late-tail tombstones; recording failure cannot clear the translator or consume
+the raw callback. A dropped candidate replays the same record. The shared native
+gesture/scroll and exact pending-drag/contained-release fixtures cover both
+overload cancellation and device removal without duplicating their setup.
+Transport tests cover one-record cost, unchanged pointer sequence, drop/retry,
+subsequent same-frame input and nonmanaged rejection. The public consumer test
+also submits an application action after the fact in the same frame. Adapter
+normal/quarantine journeys use the production capture gate and retain a single
+record across frame drop.
+
+The same-batch real-receiver regression starts from an actual pressed pointer,
+records removal then presses that same pointer at the exact presented receiver,
+and requires a strictly newer stream incarnation. A disposable-snapshot
+negative control removes only DeviceRemoval's staged-ledger synchronization;
+the regression fails with ButtonAlreadyPressed at the post-removal press. This
+isolates the reset synchronization from the remaining cancellation and
+presentation-authority refresh behavior. Restoring the implementation passes
+that exact regression.
+
+Fresh serialized qualification passes all 1,753 all-feature workspace tests,
+79 external public-host consumer tests, ten workspace doctests, strict rustdoc,
+and core correctness/suspicious Clippy. The local unpublished-fork native
+workspace passes 316 tests normally and 316 with native debug assertions
+disabled, plus its correctness/suspicious Clippy. The final source completes the
+macOS real-window programmatic tear-off, first-live, redock and retirement
+journey with exit 0. Independent core/adapter review reports no confirmed P1/P2
+in this slice. This evidence does not add physical input or remote-pin claims.
+
+This removes DeviceRemoval transport fanout, not the O(N) core cleanup work.
+Destroy-binding and caller-owned atomic groups remain separate capacity work;
+the complete 4 MiB shared allowance, load/latency and soak qualification are
+still open.
+
 ## 2026-10-29 U7 preallocated raw and roster storage
 
 The native raw journal now allocates its 4,096 callback slots at initialization

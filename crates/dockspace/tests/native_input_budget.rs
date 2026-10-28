@@ -4,10 +4,10 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativeInputBudget, NativeMonotonicClock, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativeReceiverAnswer, SurfaceUnavailableReason,
+    DockspaceHostFrame, DockspaceSession, HostFrameReport, HostInputOutcome,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeInputBudget, NativeMonotonicClock,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, SurfaceUnavailableReason,
 };
 use std::time::Duration;
 
@@ -16,6 +16,71 @@ fn commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the input-only frame must settle all surfaces");
     frame.commit().expect("the input prefix must commit")
+}
+
+#[test]
+fn public_device_removal_records_one_retryable_fact_without_ending_the_input_phase() {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SurfaceId::new(1),
+        DockspaceRootLayout::new(
+            RootId::new(1),
+            DockspaceNode::central_tabs([ItemId::new(1)]),
+        ),
+    )])
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .unwrap();
+    commit(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    let input = |id| {
+        NativePointerInput::new(
+            NativePointerId::new(id),
+            NativePointerEvent::Moved,
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::Unknown,
+                None,
+            ),
+            NativePointerOwner::Unknown,
+            NativePointerOwner::Unknown,
+        )
+    };
+    let before = session.native_input_recorded_count();
+    session.record_native_pointer(input(1)).unwrap();
+    session.report_native_input_device_removal().unwrap();
+    session.record_native_pointer(input(2)).unwrap();
+    assert_eq!(session.native_input_recorded_count(), before + 3);
+    drop(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    assert_eq!(session.native_input_recorded_count(), before + 3);
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame.select_item_current(ItemId::new(1)).unwrap();
+    let report = commit(frame);
+    assert_eq!(
+        report
+            .inputs()
+            .iter()
+            .filter(|outcome| **outcome == HostInputOutcome::NativeInputDeviceRemoval)
+            .count(),
+        1,
+    );
+    assert!(
+        report
+            .inputs()
+            .iter()
+            .any(|outcome| matches!(outcome, HostInputOutcome::ProductActionApplied(_)))
+    );
+    assert_eq!(session.native_input_recorded_count(), before + 3);
 }
 
 #[test]

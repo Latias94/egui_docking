@@ -303,6 +303,17 @@ for later complete facts, including after subsequent press/release edges.
 Do not invent an empty roster when the platform cannot observe all pointers.
 The runtime validates the exact current provider, bindings and pointer watermark.
 
+If a raw device-removal notification cannot be correlated with the host's
+delivered pointer and scroll identities, call
+`report_native_input_device_removal()`. It records one ordered provider-wide
+reset fact, regardless of live stream count; it does not synthesize per-stream
+pointer edges or advance their watermark. Core cancels live interaction and
+scroll sessions, preserves pending release/output obligations, and revokes
+button/capture facts to Unknown. Later backend and application input may follow
+in the same frame. A fresh complete pointer roster can recover authority after
+the reset commits. The native reference adapter uses this path and retains late
+device-tail tombstones and monotonic identity counters.
+
 The cancellation API does not itself impose ingress record/byte/age caps or
 reserve a host overload latch. Those adapter responsibilities, release latency,
 and physical OS behavior remain separate qualification work.
