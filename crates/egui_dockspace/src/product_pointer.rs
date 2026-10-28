@@ -4,10 +4,11 @@ use dockspace::geometry::LogicalPoint;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceInteractionError, DockspaceRuntimeError, DockspaceSession, HostFrameReport,
-    HostPointerInput, HostPointerRoute, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
-    SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationArtifact,
-    SurfacePresentationCommit, SurfaceUnavailableReason,
+    HostPointerInput, HostPointerRoute, PointerDeviceKind, PointerEventMetadata,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerReceiverFacts, SurfacePresentationArtifact, SurfacePresentationCommit,
+    SurfaceUnavailableReason,
 };
 use egui::{Event, Key, LayerId, PointerButton, Pos2, Ui};
 
@@ -230,6 +231,13 @@ impl ProductPointer {
                 }
             })
             .collect::<Vec<_>>();
+        // Generic egui pointer events may be synthesized from touch. Preserve
+        // only the batch clock supplied at raw capture; device class stays unknown.
+        let metadata = packet
+            .observed_at()
+            .map_or_else(PointerEventMetadata::unknown, |time| {
+                PointerEventMetadata::new(PointerDeviceKind::Unknown, time)
+            });
         let inputs = edges.iter().map(|edge| {
             let route = edge
                 .surface
@@ -263,6 +271,7 @@ impl ProductPointer {
                 SurfacePointerCapture::None,
                 facts,
             )
+            .with_metadata(metadata)
         });
         // A failed packet must not acquire different facts during an egui rerun.
         // The next run cancels the prior owner before accepting fresh input.

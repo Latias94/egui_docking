@@ -549,6 +549,11 @@ device class per live stream at its normal rollbackable commit boundary. Unknown
 samples grant no device/time facts, overload keeps the provider clock, and only
 a new provider may use a new origin. This is input groundwork; gesture-bound
 continuations and actual timed interactions remain implementation work.
+The official owned-run adapter now forwards explicit RawInput.time from the
+original ordered batch; reruns cannot replace it with egui's predicted time.
+It retains Unknown device for generic pointer events and does not claim
+per-OS-event timestamps. Native metadata capture and explicit local-touch
+routing still need their own source facts and qualification.
 Touch contact identity/loss tests do not prove long-press semantics,
 and geometric target hysteresis does not prove hover selection. Existing
 receiver-current capability flags certify authority, not these timing features.

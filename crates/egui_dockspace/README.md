@@ -52,6 +52,15 @@ presented, or `Dropped` if it is discarded. Receipt drop also retires its output
 Core accepts only the exact emission after a successful later frame commit;
 output production alone grants no presentation or focus authority.
 
+The owned run captures the original ordered input batch once, including an
+explicit, representable `RawInput.time`. That batch observation time reaches
+the core pointer ledger unchanged across egui reruns. Missing time remains
+unknown; the adapter does not substitute egui's predicted frame time. This is
+a batch clock, not individual OS event timestamps. Generic egui pointer events
+retain Unknown device class because they can also be synthesized from touch.
+These facts alone do not enable hover dwell, touch long press or stationary
+drag scrolling; those remain part of the timed core interaction work.
+
 The adapter validates the complete ordered surface span after all output hooks,
 including ordinary geometry, previews, clipping and transforms. Pane drawing must
 be synchronous and append-only on the supplied Ui layer; another-layer write or

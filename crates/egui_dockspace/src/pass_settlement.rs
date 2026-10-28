@@ -101,6 +101,11 @@ impl Drop for DockspaceOutputReceipt {
 /// that pass unavailable for presentation authority. Private markers are removed
 /// before the output is returned. Unwinding retires the exact open pass.
 ///
+/// An explicit, representable [`RawInput::time`] is retained as the observation
+/// time of this entire ordered input batch. Missing or invalid time stays unknown;
+/// egui's predicted frame time is not an input observation. This boundary does
+/// not supply individual OS event timestamps or classify generic pointer events.
+///
 /// # Panics
 ///
 /// Panics on recursive use with the same Context. Catching that panic does not
@@ -110,7 +115,7 @@ pub fn run_ui(
     input: RawInput,
     mut add_contents: impl FnMut(&mut Ui),
 ) -> DockspaceOutput {
-    let run = ProductPassSettlementRun::begin(context, input.viewport_id, input.events.clone());
+    let run = ProductPassSettlementRun::begin(context, &input);
     let mut output = context.run_ui(input, |ui| {
         let scope = run
             .begin_pass(ui)
@@ -347,7 +352,7 @@ struct ProductPassSettlementRun {
 }
 
 impl ProductPassSettlementRun {
-    fn begin(context: &Context, viewport: ViewportId, events: Vec<egui::Event>) -> Self {
+    fn begin(context: &Context, input: &RawInput) -> Self {
         if let Some(active) = active_run_portal(context) {
             active
                 .lock()
@@ -357,8 +362,11 @@ impl ProductPassSettlementRun {
         }
         let portal = Arc::new(Mutex::new(ActiveRunPortal {
             run: Arc::new(RunIdentity),
-            events: Arc::new(events),
-            viewport,
+            events: Arc::new(input.events.clone()),
+            observed_at: input
+                .time
+                .and_then(|time| std::time::Duration::try_from_secs_f64(time).ok()),
+            viewport: input.viewport_id,
             next_pass: 0,
             current_pass: None,
             poisoned: false,
@@ -368,7 +376,7 @@ impl ProductPassSettlementRun {
         Self {
             context: context.clone(),
             context_identity: context_identity(context),
-            viewport,
+            viewport: input.viewport_id,
             portal,
             completed: false,
             discarded: RefCell::new(Vec::new()),
@@ -541,6 +549,7 @@ impl Drop for ProductPassSettlementRun {
 
 struct ActiveRunPortal {
     events: Arc<Vec<egui::Event>>,
+    observed_at: Option<std::time::Duration>,
     run: Arc<RunIdentity>,
     viewport: ViewportId,
     next_pass: u64,
@@ -553,6 +562,7 @@ struct ActiveRunPortal {
 pub(super) struct ProductPointerPacket {
     run: Arc<RunIdentity>,
     events: Arc<Vec<egui::Event>>,
+    observed_at: Option<std::time::Duration>,
 }
 
 impl ProductPointerPacket {
@@ -563,6 +573,10 @@ impl ProductPointerPacket {
     pub(super) fn events(&self) -> &[egui::Event] {
         &self.events
     }
+
+    pub(super) const fn observed_at(&self) -> Option<std::time::Duration> {
+        self.observed_at
+    }
 }
 
 pub(super) fn pointer_packet(ui: &Ui) -> Option<ProductPointerPacket> {
@@ -572,6 +586,7 @@ pub(super) fn pointer_packet(ui: &Ui) -> Option<ProductPointerPacket> {
     (!portal.poisoned && Arc::ptr_eq(&scope.run, &portal.run)).then(|| ProductPointerPacket {
         run: Arc::clone(&portal.run),
         events: Arc::clone(&portal.events),
+        observed_at: portal.observed_at,
     })
 }
 

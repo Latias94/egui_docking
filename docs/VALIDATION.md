@@ -15,6 +15,39 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U3d official-egui batch observation time
+
+The owned `run_ui` boundary captures explicit `RawInput.time` before egui runs,
+and the existing pointer packet keeps that value across reruns. A representable
+value reaches every ordered HostPointerInput through PointerEventMetadata;
+missing or invalid time remains Unknown. Generic pointer events retain Unknown
+device class because egui may synthesize them from touch. This adapter reports
+one batch observation time, not individual OS timestamps. No predicted frame
+time, timer-produced motion or new input owner is introduced.
+
+One regression changes egui InputState.time inside a discarded pass and verifies
+that both reruns keep the original raw Some/None and packet identity. A second
+runs ordinary product input at 10.0, Unknown and 10.1 seconds, then submits a
+10.05-second probe through real core input and receives HostProtocol. The probe
+bypasses egui only because egui itself rejects backwards frame time before the
+application callback; it verifies that the product path actually advanced the
+core clock. Equal event times and device/time rollback remain covered by the
+existing ledger/public-host metadata cases.
+
+Fresh workspace all-feature/all-target gates pass 1,701 cases; the complete
+all-feature product harness passes 114, and both clock cases also pass without
+default features. Correctness/suspicious Clippy and strict adapter docs with and
+without default features pass. The adapter doctest and 260 local-fork native
+compatibility cases also pass. Independent review found no confirmed defect in
+raw capture, Unknown/device handling, rerun/rejection/drop or lane-change clock
+origin. Some invalid-time/lane-change combinations were checked statically;
+the two new tests do not claim exhaustive coverage of those combinations.
+
+This completes explicit batch-time capture for the official adapter only.
+Native device/time capture, explicit touch-source routing, finite gesture-bound
+continuation, actual hover selection, touch long press and stationary edge
+scroll remain open. U3d and the overall refactor are not complete.
+
 ## 2026-10-28 U8 held-close ingress ownership
 
 HostRecords now owns the single NativeCloseControl instance. Callback ingress

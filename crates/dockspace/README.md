@@ -128,6 +128,9 @@ stationary drag scrolling. Hosts must not use a timer to fabricate pointer
 motion or claim current receiver authority.
 `PointerEventMetadata::untimed(device)` preserves an observed device class when
 the event timestamp is unavailable.
+The official egui owned-run adapter forwards explicit `RawInput.time` as one
+batch observation time, preserving Unknown when it is absent. It does not
+claim per-OS-event timestamps or infer device class from generic pointer events.
 
 ## Budgeted Native Input
 

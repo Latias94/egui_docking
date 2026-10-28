@@ -479,6 +479,39 @@ fn an_output_hook_discard_delivers_only_the_terminal_pass() {
 }
 
 #[test]
+fn ordered_input_keeps_raw_batch_time_across_reruns_without_using_predicted_time() {
+    for (raw_time, expected) in [
+        (None, None),
+        (Some(1.25), Some(std::time::Duration::from_millis(1250))),
+    ] {
+        let context = test_context();
+        context.options_mut(|options| {
+            options.max_passes = 2.try_into().unwrap();
+        });
+        context.add_plugin(LateDiscard { remaining: 1 });
+        let mut input = input(ViewportId::ROOT);
+        input.time = raw_time;
+        input.events = vec![egui::Event::PointerMoved(egui::pos2(20.0, 30.0))];
+        let mut packets = Vec::new();
+        let output = run_ui(&context, input, |ui| {
+            // Framework state can change during a pass; the original packet
+            // retains the explicit host observation or its original absence.
+            ui.ctx().input_mut(|state| state.time = 999.0);
+            let packet = super::pointer_packet(ui).unwrap();
+            assert_eq!(packet.observed_at(), expected);
+            assert_eq!(packet.events().len(), 1);
+            packets.push(packet);
+        });
+        let (output, receipt) = output.into_parts();
+        assert_eq!(output.platform_output.num_completed_passes, 2);
+        assert_eq!(packets.len(), 2);
+        assert!(packets[0].same_run(&packets[1]));
+        output.drop_without_applying_deltas();
+        drop(receipt);
+    }
+}
+
+#[test]
 fn removing_ordinary_pane_geometry_in_an_output_hook_denies_delivery() {
     let context = test_context();
     let removed = Arc::new(AtomicUsize::new(0));

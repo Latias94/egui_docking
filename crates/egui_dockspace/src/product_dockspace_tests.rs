@@ -134,6 +134,66 @@ fn run_frame(
     }
 }
 
+#[test]
+fn ordered_pointer_transport_preserves_explicit_batch_clock_and_unknown_samples() {
+    use dockspace::runtime::{
+        DockspaceRuntimeErrorKind, HostPointerInput, HostPointerRoute, PointerDeviceKind,
+        PointerEventMetadata, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+        SurfacePointerReceiverFacts,
+    };
+
+    let context = Context::default();
+    context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+    let mut dockspace = Dockspace::builder("ordered-batch-clock", magnetic_layout())
+        .build()
+        .unwrap();
+    let mut panes = MagneticPanes::new();
+    for _ in 0..2 {
+        run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    }
+    let version = dockspace.version();
+    for time in [Some(10.0), None, Some(10.1)] {
+        let mut raw = input(vec![Event::PointerMoved(egui::pos2(400.0, 300.0))]);
+        raw.time = time;
+        let mut result = None;
+        let output = crate::run_ui(&context, raw, |ui| {
+            result = Some(
+                dockspace
+                    .show_single_surface(SURFACE, ui, &mut panes)
+                    .map(|_| ())
+                    .map_err(|error| error.kind()),
+            );
+        });
+        let (output, receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        receipt.report(crate::SurfacePresentationResult::Presented);
+        assert_eq!(result.unwrap(), Ok(()), "raw time: {time:?}");
+        assert_eq!(dockspace.version(), version);
+    }
+
+    // egui rejects a backwards frame clock before calling application code.
+    // Submit the backwards probe through core instead: it must see the exact
+    // clock retained by the preceding ordinary product runs.
+    let mut frame = dockspace.session.begin_host_frame().unwrap();
+    let error = frame
+        .submit_host_pointer(
+            HostPointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::Moved,
+                HostPointerRoute::Unknown,
+                HostPointerRoute::Unknown,
+                SurfacePointerCapture::None,
+                SurfacePointerReceiverFacts::unknown(),
+            )
+            .with_metadata(PointerEventMetadata::new(
+                PointerDeviceKind::Unknown,
+                std::time::Duration::from_millis(10_050),
+            )),
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::HostProtocol);
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the fixture constrains AccessKit bounds to an 800x600 egui viewport"
