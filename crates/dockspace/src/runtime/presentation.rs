@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
-use crate::backend_ingress::{BackendIngressLease, BackendIngressRecorder};
+use crate::backend_ingress::{BackendIngressError, BackendIngressLease, BackendIngressRecorder};
 use crate::engine::CoreHostFramePrelude;
-use crate::engine::DockEngine;
+use crate::engine::{DockEngine, EngineError};
 use crate::ids::SurfaceId;
 use crate::intent::Authority;
 use crate::presentation_observation::{
@@ -543,6 +543,17 @@ impl RuntimePresentationState {
         report
     }
 
+    pub(super) fn has_unrecorded_backend_report(&mut self) -> bool {
+        self.drain_abandoned();
+        self.pending.keys().any(|stream| {
+            self.compile_report(*stream).is_some_and(|report| {
+                self.backend_recorded
+                    .get(stream)
+                    .is_none_or(|recorded| recorded.report != report)
+            })
+        })
+    }
+
     /// Submits the rendering host's bootstrap observation and records terminal
     /// output reports in the joined backend ingress order.
     ///
@@ -557,7 +568,7 @@ impl RuntimePresentationState {
         prelude: &mut CoreHostFramePrelude,
         engine: &DockEngine,
         recorder: &mut BackendIngressRecorder,
-    ) -> Result<SubmittedPresentationObservation, super::DockspaceRuntimeError> {
+    ) -> Result<(SubmittedPresentationObservation, bool), super::DockspaceRuntimeError> {
         self.drain_abandoned();
         let scope = prelude
             .pending_presentation_streams()
@@ -569,6 +580,7 @@ impl RuntimePresentationState {
 
         let provider = recorder.lease();
         let mut submitted = SubmittedPresentationObservation::default();
+        let mut capacity_blocked = false;
         for stream in scope {
             let generation = self
                 .capture_generations
@@ -592,6 +604,9 @@ impl RuntimePresentationState {
                     let Some(report) = self.compile_report(stream) else {
                         continue;
                     };
+                    if capacity_blocked {
+                        continue;
+                    }
                     let entry = HostPresentationObservationEntry::new(
                         stream,
                         HostPresentationStreamObservation::Captured {
@@ -602,7 +617,18 @@ impl RuntimePresentationState {
                             },
                         },
                     );
-                    engine.record_backend_presentation_observation(recorder, entry)?;
+                    match engine.record_backend_presentation_observation(recorder, entry) {
+                        Ok(_) => {}
+                        Err(EngineError::BackendIngress {
+                            source:
+                                BackendIngressError::NativeTransportCapacityExceeded { .. }
+                                | BackendIngressError::CapacityAllocationFailed,
+                        }) => {
+                            capacity_blocked = true;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                     self.backend_recorded.insert(
                         stream,
                         RecordedPresentationReport {
@@ -616,7 +642,7 @@ impl RuntimePresentationState {
             };
             submitted.captured.insert(stream, (generation, report));
         }
-        Ok(submitted)
+        Ok((submitted, capacity_blocked))
     }
 
     pub(super) fn submit_observation(
@@ -927,6 +953,102 @@ mod tests {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("presentation settlement retains the surface");
         frame.commit().expect("presentation settlement commits")
+    }
+
+    #[test]
+    fn full_native_prelude_keeps_later_recorded_stream_in_exact_commit_settlement() {
+        let mut builder = Workspace::builder();
+        for index in 1..=2 {
+            let root = RootId::new(index);
+            let tabs = builder.insert_node(Node::tabs([ItemId::new(index)]));
+            builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+            builder.set_surface(SurfaceId::new(index), SurfacePresentation::with_main(root));
+        }
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().unwrap(),
+            DockPolicy::default(),
+        )
+        .unwrap();
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .unwrap();
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+            LogicalSize::new(32.0, 24.0).unwrap(),
+            80.0,
+        )
+        .unwrap();
+        let mut measured = session.begin_host_frame().unwrap();
+        for surface in measured.surfaces() {
+            measured.measure_surface(surface, metrics).unwrap();
+        }
+        measured.commit().unwrap();
+        let mut painted = session.begin_host_frame().unwrap();
+        for surface in painted.surfaces() {
+            let receipt = painted
+                .paint_plan(surface)
+                .unwrap()
+                .unwrap()
+                .execute_surface_program(|_| Ok::<(), ()>(()))
+                .unwrap();
+            painted.confirm_surface_painted(receipt).unwrap();
+        }
+        let mut outputs = painted.commit().unwrap().take_painted_outputs();
+        outputs.sort_by_key(|output| output.output.stream());
+        let [earlier, later] = outputs.try_into().unwrap();
+        let earlier_artifact = earlier.presentation_artifact();
+        let later_artifact = later.presentation_artifact();
+        let native = session.native.as_mut().unwrap();
+        native
+            .reclaim_committed_prefix(&mut session.engine)
+            .unwrap();
+        native
+            .recorder_mut()
+            .configure_native_transport_capacity(std::num::NonZeroUsize::new(1).unwrap(), 1 << 20)
+            .unwrap();
+
+        session
+            .report_surface_presentation(later, SurfacePresentationResult::Presented)
+            .unwrap();
+        let before = session.engine.backend_ingress_committed_through();
+        drop(session.begin_host_frame().unwrap());
+        let recorded = session.native_input_recorded_count();
+        assert_eq!(recorded, before.get() + 1);
+        assert_eq!(session.presentation.backend_recorded.len(), 1);
+        assert_eq!(session.engine.backend_ingress_committed_through(), before);
+
+        session
+            .report_surface_presentation(earlier, SurfacePresentationResult::Presented)
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        assert!(frame.native_input_pending());
+        assert!(frame.cancel_native_input_for_overload().is_err());
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        assert!(report.native_input_pending());
+        let [later_commit] = report.surface_presentation_commits() else {
+            panic!("the already recorded later stream must settle despite earlier backpressure");
+        };
+        assert!(later_commit.presents(later_artifact));
+        assert_eq!(session.native_input_recorded_count(), recorded);
+        assert!(session.presentation.backend_recorded.is_empty());
+
+        let report = settle_presentations(&mut session);
+        assert!(!report.native_input_pending());
+        let [earlier_commit] = report.surface_presentation_commits() else {
+            panic!("the deferred earlier stream must settle exactly once after reclamation");
+        };
+        assert!(earlier_commit.presents(earlier_artifact));
+        assert_eq!(session.native_input_recorded_count(), recorded + 1);
+        assert!(session.presentation.pending.is_empty());
+        assert!(session.presentation.results.is_empty());
+        assert!(
+            settle_presentations(&mut session)
+                .surface_presentation_commits()
+                .is_empty()
+        );
     }
 
     #[test]

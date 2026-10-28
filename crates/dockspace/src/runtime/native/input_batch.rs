@@ -16,6 +16,7 @@ use std::num::NonZeroUsize;
 pub(in crate::runtime) struct PendingNativeReplay {
     pub(in crate::runtime) frame: CoreHostFrame,
     pub(in crate::runtime) submitted_presentation: SubmittedPresentationObservation,
+    pub(in crate::runtime) prelude_pending: bool,
 }
 
 impl RuntimeNativeState {

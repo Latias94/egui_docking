@@ -20,7 +20,8 @@ use super::native_effect::{
 };
 use super::{DockspaceRuntimeError, DockspaceSession};
 use crate::backend_ingress::{
-    BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt, BackendIngressRecorder,
+    BackendIngressError, BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt,
+    BackendIngressRecorder,
 };
 use crate::engine::EngineInput;
 use crate::geometry::{PhysicalRect, ScaleFactor};
@@ -38,6 +39,7 @@ use crate::viewport_registry::ViewportAdmission;
 pub use budget::{NativeInputBudget, NativeMonotonicClock};
 use compiler::{
     compile_focus_observation, compile_platform_snapshot, compile_unknown_inventory_snapshot,
+    snapshot_descendant_capacity_bytes,
 };
 pub(super) use input_batch::PendingNativeReplay;
 pub use pointer::{
@@ -49,6 +51,7 @@ pub use pointer::{
     NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
     NativeScrollSequenceId,
 };
+pub use storage::NativeInputStorageLimit;
 
 /// Adapter-owned opaque native-window token.
 ///
@@ -671,6 +674,8 @@ pub enum NativeHostErrorKind {
     InvalidFacts,
     /// The requested operation conflicts with the current host lifecycle.
     OperationConflict,
+    /// Native input transport cannot currently retain the submitted input.
+    InputCapacity,
     /// The enrolled native host cannot perform the requested operation.
     Unsupported,
     /// The host crossed an internal protocol boundary unexpectedly.
@@ -683,7 +688,7 @@ impl NativeHostErrorKind {
     pub const fn runtime_error_kind(self) -> super::DockspaceRuntimeErrorKind {
         match self {
             Self::NotEnabled | Self::Unsupported => super::DockspaceRuntimeErrorKind::Unsupported,
-            Self::AlreadyEnabled | Self::OperationConflict => {
+            Self::AlreadyEnabled | Self::OperationConflict | Self::InputCapacity => {
                 super::DockspaceRuntimeErrorKind::OperationConflict
             }
             Self::StaleBinding | Self::InvalidFacts => {
@@ -730,6 +735,9 @@ pub(super) enum NativePlatformError {
     /// Earlier accepted native facts have not yet reached the publication prefix.
     #[error("earlier native input must commit before application input")]
     InputPending,
+    /// Native input transport could not retain another record or allocate its backing.
+    #[error("native input transport capacity is unavailable")]
+    InputCapacity,
     /// A binding is still live and therefore cannot be declared permanently quiescent.
     #[error("native surface {surface} is still live and cannot be quiesced")]
     BindingStillLive {
@@ -803,10 +811,19 @@ pub(super) enum NativePlatformError {
 }
 
 impl NativePlatformError {
+    pub(super) const fn from_ingress(error: BackendIngressError) -> Self {
+        match error {
+            BackendIngressError::NativeTransportCapacityExceeded { .. }
+            | BackendIngressError::CapacityAllocationFailed => Self::InputCapacity,
+            _ => Self::ProtocolInvariant,
+        }
+    }
+
     pub(super) const fn kind(&self) -> NativeHostErrorKind {
         match self {
             Self::ProviderUnavailable => NativeHostErrorKind::NotEnabled,
             Self::ProviderAlreadyEnabled => NativeHostErrorKind::AlreadyEnabled,
+            Self::InputCapacity => NativeHostErrorKind::InputCapacity,
             Self::ProviderSuperseded | Self::StaleSurface { .. } => {
                 NativeHostErrorKind::StaleBinding
             }
@@ -957,7 +974,7 @@ impl RuntimeNativeState {
     ) -> Result<(), NativePlatformError> {
         self.recorder
             .record_native_close_observation(expected_epoch, observation)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         Ok(())
     }
 
@@ -967,7 +984,7 @@ impl RuntimeNativeState {
     ) -> Result<(), NativePlatformError> {
         self.recorder
             .record_platform_effect_result(result)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         Ok(())
     }
 
@@ -988,13 +1005,9 @@ impl RuntimeNativeState {
                 surface: binding.surface(),
             });
         }
-        if self
-            .recorder
+        self.recorder
             .record_platform_binding_quiescence(binding.binding)
-            .is_err()
-        {
-            return Err(NativePlatformError::ProtocolInvariant);
-        }
+            .map_err(NativePlatformError::from_ingress)?;
         let removed = self.retired_bindings.remove(&binding.binding);
         debug_assert!(removed, "validated retired binding remains present");
         self.close_generations.remove(&binding.binding);
@@ -1153,6 +1166,10 @@ impl RuntimeNativeState {
         }
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
+        let descendants = snapshot_descendant_capacity_bytes(&supplied, &work_areas)?;
+        self.recorder
+            .preflight_native_transport_append(1, descendants)
+            .map_err(NativePlatformError::from_ingress)?;
         let window_observation_generations = self.next_window_observation_generations(&supplied)?;
         let close_generations = self.next_close_generations(supplied.keys().copied())?;
         let (focus, focus_update) =
@@ -1173,7 +1190,7 @@ impl RuntimeNativeState {
         let ordinal = self
             .recorder
             .record_platform_snapshot(expected_epoch, snapshot)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         self.binding_roster_unsettled_through = supplied
             .values()
             .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }))
@@ -1203,7 +1220,7 @@ impl RuntimeNativeState {
         )?;
         self.recorder
             .record_platform_snapshot(expected_epoch, snapshot)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         self.snapshot_generation = generation;
         if let Some((generation, focus)) = focus_update {
             self.focus_generation = generation;
@@ -1237,7 +1254,7 @@ impl RuntimeNativeState {
         let observation = compile_focus_observation(self.provider(), generation, focus)?;
         self.recorder
             .record_global_focus_observation(expected_epoch, observation)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         self.focus_generation = generation;
         self.focus = focus;
         Ok(())
@@ -1252,7 +1269,7 @@ impl RuntimeNativeState {
         let ordinal = self
             .recorder
             .record_viewport_registration(expected, surface, token, ViewportRole::Root, None)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         self.binding_roster_unsettled_through = Some(ordinal);
         Ok(())
     }
@@ -1267,7 +1284,7 @@ impl RuntimeNativeState {
         let ordinal = self
             .recorder
             .record_child_viewport_bootstrap(expected, surface, token, recovery)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         self.binding_roster_unsettled_through = Some(ordinal);
         Ok(())
     }

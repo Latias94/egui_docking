@@ -69,7 +69,7 @@ impl DockspaceSession {
     pub fn enable_observed_native_roots(
         &mut self,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
-        self.enroll_native_host(NativeHostProfile::ObservedRoots, None)
+        self.enroll_native_host(NativeHostProfile::ObservedRoots, None, None)
     }
 
     /// Enrolls the sole desktop-global coordinator for managed native windows.
@@ -91,7 +91,40 @@ impl DockspaceSession {
         initial_pointer_roster: NativePointerRoster,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
         let checkpoint = pointer::compile_initial_pointer_authority(initial_pointer_roster)?;
-        self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint))
+        self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint), None)
+    }
+
+    /// Enrolls a managed coordinator with bounded recorded-input storage.
+    ///
+    /// Uses the same capability and initial-roster contract as
+    /// [`Self::enable_managed_native_host`]. The selected allowance reserves
+    /// recorder and replay transport for the complete admitted record set.
+    /// Full storage rejects new records with [`NativeHostErrorKind::InputCapacity`];
+    /// the host must retain their original owners, drain accepted input, and retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the enrollment errors of [`Self::enable_managed_native_host`], or
+    /// an input-capacity error when the allowance cannot hold the transport and
+    /// initial pointer checkpoint. A failed enrollment publishes no provider.
+    pub fn enable_managed_native_host_with_input_storage_limit(
+        &mut self,
+        initial_pointer_roster: NativePointerRoster,
+        limit: NativeInputStorageLimit,
+    ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
+        crate::backend_ingress::BackendIngressRecorder::preflight_native_transport_configuration(
+            limit.record_slots(),
+            limit.byte_limit(),
+            1,
+            pointer::pointer_authority_descendant_bytes(&initial_pointer_roster)?,
+        )
+        .map_err(NativePlatformError::from_ingress)?;
+        let checkpoint = pointer::compile_initial_pointer_authority(initial_pointer_roster)?;
+        self.enroll_native_host(
+            NativeHostProfile::ManagedDesktop,
+            Some(checkpoint),
+            Some(limit),
+        )
     }
 
     /// Reports a freshly observed complete pointer roster after a managed input reset.
@@ -127,9 +160,10 @@ impl DockspaceSession {
         if self.engine.backend_ingress_committed_through() != native.recorder.recorded_through() {
             return Err(NativePlatformError::InputPending.into());
         }
-        let checkpoint = native.compile_pointer_roster(roster)?;
+        let provider = native.recorder.lease();
+        let checkpoint = self.native_state_mut()?.compile_pointer_roster(roster)?;
         self.engine
-            .validate_native_pointer_roster_resync(native.recorder.lease(), &checkpoint)?;
+            .validate_native_pointer_roster_resync(provider, &checkpoint)?;
         self.native_state_mut()?
             .record_pointer_authority(checkpoint)?;
         Ok(())
@@ -158,6 +192,7 @@ impl DockspaceSession {
         &mut self,
         profile: NativeHostProfile,
         pointer_checkpoint: Option<crate::pointer_journal::PointerAuthorityCheckpoint>,
+        storage_limit: Option<NativeInputStorageLimit>,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
         if self.pointer.is_some() {
             return Err(NativePlatformError::PointerProviderAlreadyEnabled.into());
@@ -165,14 +200,40 @@ impl DockspaceSession {
         if self.native.is_some() {
             return Err(NativePlatformError::ProviderAlreadyEnabled.into());
         }
+        let watermark = PointerEdgeSequence::new(0);
+        let checkpoint_journal = pointer_checkpoint
+            .map(|checkpoint| {
+                crate::pointer_journal::PointerEdgeJournal::new(watermark, watermark, Vec::new())
+                    .and_then(|journal| journal.with_authority_checkpoint(checkpoint))
+                    .map_err(|_| NativePlatformError::InvalidPointerFacts)
+            })
+            .transpose()?;
         let recorder = self
             .engine
-            .create_backend_ingress_provider(self.presentation_host, PointerEdgeSequence::new(0))?;
+            .create_backend_ingress_provider_initialized(
+                self.presentation_host,
+                watermark,
+                |recorder| {
+                    if let Some(limit) = storage_limit {
+                        recorder.configure_native_transport_capacity(
+                            limit.record_slots(),
+                            limit.byte_limit(),
+                        )?;
+                    }
+                    if let Some(journal) = checkpoint_journal {
+                        recorder.record_pointer_segment(journal)?;
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|error| match error {
+                crate::engine::EngineError::BackendIngress { source } => {
+                    DockspaceRuntimeError::from(NativePlatformError::from_ingress(source))
+                }
+                error => error.into(),
+            })?;
         let mut native = RuntimeNativeState::new(recorder, profile);
         let initial_commit = native.commit(&self.engine);
-        if let Some(checkpoint) = pointer_checkpoint {
-            native.record_initial_pointer_authority(checkpoint);
-        }
         self.native = Some(native);
         Ok(initial_commit.bindings)
     }
@@ -353,7 +414,7 @@ impl DockspaceSession {
         self.native_state_mut()?
             .recorder
             .record_native_input_device_removal()
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         Ok(())
     }
 
@@ -565,7 +626,7 @@ impl DockspaceSession {
                 edge: close.edge,
                 request: action.into_request(),
             })
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         Ok(())
     }
 
@@ -588,7 +649,7 @@ impl DockspaceSession {
                 expected,
                 edge: close.edge,
             })
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         Ok(())
     }
 }

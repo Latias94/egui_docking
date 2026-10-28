@@ -20,6 +20,66 @@ fn begin_prefix_fixture() -> (DockEngine, PresentationHostLease, BackendIngressR
 }
 
 #[test]
+fn backend_provider_initializer_failure_does_not_publish_providers_or_checkpoint() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine.create_presentation_host().unwrap();
+    let version = engine.version();
+    let workspace = engine.workspace().clone();
+    let committed = engine.backend_ingress_committed_through();
+    let error = engine
+        .create_backend_ingress_provider_initialized(
+            host,
+            PointerEdgeSequence::new(0),
+            |recorder| {
+                record_empty_backend_checkpoint(recorder);
+                assert_eq!(recorder.recorded_through().get(), 1);
+                // Reject after a real append; this is an initializer failure, not
+                // an allocator fault-injection test.
+                Err(BackendIngressError::CapacityAllocationFailed)
+            },
+        )
+        .expect_err("a failed initializer cannot publish a partial enrollment");
+    assert!(matches!(
+        error,
+        EngineError::BackendIngress {
+            source: BackendIngressError::CapacityAllocationFailed,
+        }
+    ));
+    assert_eq!(engine.backend_ingress_provider(), None);
+    assert_eq!(engine.platform_provider(), None);
+    assert_eq!(engine.pointer_provider(), None);
+    assert_eq!(engine.backend_ingress_committed_through(), committed);
+    assert_eq!(engine.semantic_input_watermark(), None);
+    assert_eq!(engine.version(), version);
+    assert_eq!(engine.workspace(), &workspace);
+
+    let recorder = engine
+        .create_backend_ingress_provider_initialized(
+            host,
+            PointerEdgeSequence::new(0),
+            |recorder| {
+                record_empty_backend_checkpoint(recorder);
+                Ok(())
+            },
+        )
+        .expect("the same engine must remain available for complete enrollment");
+    assert_eq!(engine.backend_ingress_provider(), Some(recorder.lease()));
+    assert!(engine.platform_provider().is_some());
+    assert!(engine.pointer_provider().is_some());
+    assert_eq!(recorder.recorded_through().get(), 1);
+    assert_eq!(recorder.pointer_through(), PointerEdgeSequence::new(0));
+    assert_eq!(engine.backend_ingress_committed_through(), committed);
+
+    let mut frame = begin_test_host_frame(&engine, host);
+    submit_empty_backend_batch(&mut frame, recorder.pending_batch().unwrap());
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut frame);
+    frame
+        .finish(&mut engine)
+        .expect("only the successful initializer's checkpoint can commit");
+    assert_eq!(engine.backend_ingress_committed_through().get(), 1);
+}
+
+#[test]
 fn sealed_256_record_prefix_excludes_revoked_tail_and_resumes_at_exact_identity() {
     let (mut engine, host, mut recorder) = begin_prefix_fixture();
     let initial_version = engine.version();

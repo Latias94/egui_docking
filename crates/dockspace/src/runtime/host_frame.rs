@@ -78,7 +78,7 @@ impl DockspaceHostFrame<'_> {
         Ok(DockspaceSubmittedAction::new(attempt, sequence))
     }
 
-    /// Returns whether accepted native input remains after this candidate prefix.
+    /// Returns whether native input or report submission remains after this prefix.
     ///
     /// Render and commit this prefix, then poll again before taking an application
     /// action. Application semantic and configuration input is rejected meanwhile.
@@ -571,7 +571,7 @@ impl DockspaceHostFrame<'_> {
             next_source_sequence,
             next_pointer_sequence: _,
             pointer_input_submitted: _,
-            native_input_pending: _,
+            native_input_pending,
             submitted_presentation,
             painted_surfaces,
             painted_native_staging,
@@ -631,10 +631,11 @@ impl DockspaceHostFrame<'_> {
         #[cfg(not(feature = "serde"))]
         let transition = frame.finish(&mut session.engine)?;
         session.committed_source_sequence = next_source_sequence;
-        let native_commit = session
-            .native
-            .as_mut()
-            .map(|native| native.commit(&session.engine));
+        let mut native_commit = session.native.as_mut().map(|native| {
+            let mut committed = native.commit(&session.engine);
+            committed.input_pending |= native_input_pending;
+            committed
+        });
         let surface_presentation_commits = session.presentation.commit_observation(
             &session.engine,
             &transition,
@@ -643,6 +644,10 @@ impl DockspaceHostFrame<'_> {
         let (painted_outputs, painted_native_staging_outputs) = session
             .presentation
             .retain_emissions(transition.presentation_emissions());
+        if let Some(committed) = native_commit.as_mut() {
+            committed.input_pending |= session.abandoned_native_effects.has_pending()
+                || session.presentation.has_unrecorded_backend_report();
+        }
         Ok(HostFrameReport::from_transition(
             frame_attempt,
             &transition,

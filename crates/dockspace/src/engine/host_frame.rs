@@ -1353,6 +1353,11 @@ impl CoreHostFrame {
         self.candidate.backend_ingress.committed_through()
     }
 
+    /// Reserves only inline ingress cursor and commit-guard transport data.
+    pub(crate) const fn backend_ingress_inline_capacity_bytes() -> usize {
+        size_of::<HostBackendIngressCursor>() + size_of::<BackendIngressCommitGuard>()
+    }
+
     /// Counts this frame's ingress buffers, whose payloads remain in its recorder.
     pub(crate) fn backend_ingress_buffer_capacity_bytes(&self) -> usize {
         let cursor = self.pending_backend_ingress.as_ref().map_or(0, |cursor| {

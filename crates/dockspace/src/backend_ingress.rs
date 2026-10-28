@@ -6,6 +6,8 @@
 //! opaque ordinals as facts are captured. Immutable batches can then be retried
 //! until a host-frame commit advances the engine-owned watermark.
 
+mod native_capacity;
+
 use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -376,10 +378,10 @@ impl BackendIngressPrefixRetirementReceipt {
             .ok_or(BackendIngressError::PrefixRetirementReceiptConsumed)
     }
 
-    pub(crate) fn consume(&mut self) -> Result<(), BackendIngressError> {
+    pub(crate) fn consume(&mut self) -> Result<Vec<ViewportBinding>, BackendIngressError> {
         self.authority
             .take()
-            .map(|_| ())
+            .map(|authority| authority.binding_quiescences)
             .ok_or(BackendIngressError::PrefixRetirementReceiptConsumed)
     }
 }
@@ -922,13 +924,15 @@ impl BackendIngressBatch {
     }
 
     pub(crate) fn commit_guard(&self) -> BackendIngressCommitGuard {
+        let mut records = Vec::with_capacity(self.records.len());
+        records.extend(
+            self.records
+                .iter()
+                .map(|record| (record.ordinal, record.liveness.clone())),
+        );
         BackendIngressCommitGuard {
             coordination: self.coordination.clone(),
-            records: self
-                .records
-                .iter()
-                .map(|record| (record.ordinal, record.liveness.clone()))
-                .collect(),
+            records,
         }
     }
 }
@@ -950,6 +954,7 @@ pub struct BackendIngressRecorder {
     last_record_identity: BackendIngressRecordIdentity,
     pointer_through: PointerEdgeSequence,
     records: Vec<BackendIngressRecord>,
+    native_transport_capacity: Option<native_capacity::NativeTransportCapacity>,
 }
 
 /// Affine rollback boundary for one recorder-owned append transaction.
@@ -1002,6 +1007,7 @@ impl BackendIngressRecorder {
             last_record_identity: BackendIngressRecordIdentity::ORIGIN,
             pointer_through: pointer_committed_through,
             records: Vec::new(),
+            native_transport_capacity: None,
         })
     }
 
@@ -1067,10 +1073,15 @@ impl BackendIngressRecorder {
                 }
             }
         }
+        let released_data_bytes =
+            self.native_retained_data_bytes(&self.records[savepoint.record_count..])?;
         for record in &self.records[savepoint.record_count..] {
             record.liveness.revoke_live();
         }
         self.records.truncate(savepoint.record_count);
+        if let Some(capacity) = self.native_transport_capacity.as_mut() {
+            capacity.retained_data_bytes -= released_data_bytes;
+        }
         self.last_ordinal = savepoint.recorded_through;
         self.pointer_through = savepoint.pointer_through;
         Ok(())
@@ -1370,13 +1381,15 @@ impl BackendIngressRecorder {
 
     /// Returns the complete immutable stream captured so far.
     pub fn pending_batch(&self) -> Result<BackendIngressBatch, BackendIngressError> {
+        let mut records = Vec::with_capacity(self.records.len());
+        records.extend_from_slice(&self.records);
         BackendIngressBatch::from_records(
             self.coordination.clone(),
             self.lease,
             self.retired_through,
             self.retired_record_identity,
             self.last_ordinal,
-            self.records.clone(),
+            records,
         )
     }
 
@@ -1454,7 +1467,8 @@ impl BackendIngressRecorder {
                 max_records,
             });
         }
-        let records: Vec<_> = selected[..complete_end].to_vec();
+        let mut records = Vec::with_capacity(complete_end);
+        records.extend_from_slice(&selected[..complete_end]);
         let through = records
             .last()
             .map_or(committed_through, |record| record.ordinal);
@@ -1540,9 +1554,22 @@ impl BackendIngressRecorder {
                 ordinal: committed.through,
             });
         }
-        let mut binding_quiescences = self.records[..retained]
+        let released_data_bytes = self.native_retained_data_bytes(&self.records[..retained])?;
+        let quiescence_count = self.records[..retained]
             .iter()
-            .filter_map(|record| match record.payload() {
+            .filter(|record| {
+                matches!(
+                    record.payload(),
+                    BackendIngressPayload::PlatformBindingQuiesced { .. }
+                )
+            })
+            .count();
+        let mut binding_quiescences = Vec::new();
+        binding_quiescences
+            .try_reserve_exact(quiescence_count)
+            .map_err(|_| BackendIngressError::CapacityAllocationFailed)?;
+        binding_quiescences.extend(self.records[..retained].iter().filter_map(|record| {
+            match record.payload() {
                 BackendIngressPayload::PlatformBindingQuiesced { binding } => Some(*binding),
                 BackendIngressPayload::PlatformSnapshot { .. }
                 | BackendIngressPayload::NativeCloseObservation { .. }
@@ -1552,11 +1579,14 @@ impl BackendIngressRecorder {
                 | BackendIngressPayload::SemanticInput(_)
                 | BackendIngressPayload::PresentationObservation { .. }
                 | BackendIngressPayload::PointerSegment(_) => None,
-            })
-            .collect::<Vec<_>>();
+            }
+        }));
         binding_quiescences.sort_unstable();
         binding_quiescences.dedup();
         self.records.drain(..retained);
+        if let Some(capacity) = self.native_transport_capacity.as_mut() {
+            capacity.retained_data_bytes -= released_data_bytes;
+        }
         self.retired_through = committed.through;
         self.retired_record_identity = committed.record_identity;
         if binding_quiescences.is_empty() {
@@ -1604,6 +1634,7 @@ impl BackendIngressRecorder {
         &mut self,
         payload: BackendIngressPayload,
     ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        let retained_data_bytes = self.check_native_transport_append(&payload)?;
         let ordinal = self
             .last_ordinal
             .checked_next()
@@ -1623,6 +1654,9 @@ impl BackendIngressRecorder {
         });
         self.last_ordinal = ordinal;
         self.last_record_identity = identity;
+        if let Some(capacity) = self.native_transport_capacity.as_mut() {
+            capacity.retained_data_bytes = retained_data_bytes;
+        }
         Ok(ordinal)
     }
 
@@ -1965,6 +1999,20 @@ impl BackendIngressAuthority {
 /// Structural rejection while capturing or validating backend ingress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BackendIngressError {
+    /// A native recorder cannot retain another record within its configured budget.
+    #[error("native transport requires capacity {required}, exceeding limit {limit}")]
+    NativeTransportCapacityExceeded {
+        /// Configured record-slot or byte limit for the rejected resource.
+        limit: usize,
+        /// Required record slots or bytes, saturated when the calculation overflows.
+        required: usize,
+    },
+    /// A payload is outside the native facade's finite transport contract.
+    #[error("backend ingress payload has no supported native capacity accounting")]
+    UnsupportedNativePayloadCapacity,
+    /// A fixed transport buffer could not be allocated.
+    #[error("backend ingress transport capacity allocation failed")]
+    CapacityAllocationFailed,
     /// A proposed prefix would publish only part of an indivisible append group.
     #[error("backend ingress prefix through {through:?} ends inside an atomic group")]
     AtomicGroupIncomplete {

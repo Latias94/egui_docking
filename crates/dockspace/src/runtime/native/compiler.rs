@@ -82,6 +82,35 @@ pub(super) fn compile_unknown_inventory_snapshot(
     .map_err(|_| NativePlatformError::ProtocolInvariant)
 }
 
+fn live_window_count(supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>) -> usize {
+    supplied
+        .values()
+        .filter(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Live))
+        .count()
+}
+
+pub(super) fn snapshot_descendant_capacity_bytes(
+    supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
+    work_areas: &NativeWorkAreaRoster,
+) -> Result<usize, NativePlatformError> {
+    let live = live_window_count(supplied)
+        .checked_mul(size_of::<ViewportBinding>() + size_of::<ObservedWindow>())
+        .ok_or(NativePlatformError::InputCapacity)?;
+    let close = supplied
+        .len()
+        .checked_mul(size_of::<WindowCloseObservation>())
+        .ok_or(NativePlatformError::InputCapacity)?;
+    let work_areas = match work_areas {
+        NativeWorkAreaRoster::Exact(work_areas) => work_areas.len(),
+        NativeWorkAreaRoster::Unknown => 0,
+    }
+    .checked_mul(size_of::<ObservedWorkArea>())
+    .ok_or(NativePlatformError::InputCapacity)?;
+    live.checked_add(close)
+        .and_then(|bytes| bytes.checked_add(work_areas))
+        .ok_or(NativePlatformError::InputCapacity)
+}
+
 pub(super) fn compile_platform_snapshot(
     profile: NativeHostProfile,
     managed_capabilities: Option<NativeHostCapabilities>,
@@ -94,9 +123,10 @@ pub(super) fn compile_platform_snapshot(
     work_areas: &NativeWorkAreaRoster,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
     let reason = AuthorityUnavailableReason::NotReported;
-    let mut live_bindings = Vec::new();
-    let mut windows = Vec::new();
-    let mut close_observations = Vec::new();
+    let live_count = live_window_count(supplied);
+    let mut live_bindings = Vec::with_capacity(live_count);
+    let mut windows = Vec::with_capacity(live_count);
+    let mut close_observations = Vec::with_capacity(supplied.len());
     for (&binding, &facts) in supplied {
         let close_generation = close_generations
             .get(&binding)
@@ -136,23 +166,17 @@ pub(super) fn compile_platform_snapshot(
             NativeWorkAreaRoster::Exact(work_areas) if work_areas.is_empty() => {
                 return Err(NativePlatformError::InvalidWorkAreaRoster);
             }
-            NativeWorkAreaRoster::Exact(work_areas) => WorkAreaRosterObservation::new(
-                WorkAreaObservationGeneration::new(generation),
-                Authority::Known(
-                    work_areas
-                        .iter()
-                        .copied()
-                        .map(|facts| {
-                            ObservedWorkArea::new(
-                                facts.token(),
-                                facts.bounds(),
-                                facts.scale_factor(),
-                            )
-                        })
-                        .collect(),
-                ),
-            )
-            .map_err(|_| NativePlatformError::InvalidWorkAreaRoster)?,
+            NativeWorkAreaRoster::Exact(work_areas) => {
+                let mut observations = Vec::with_capacity(work_areas.len());
+                observations.extend(work_areas.iter().copied().map(|facts| {
+                    ObservedWorkArea::new(facts.token(), facts.bounds(), facts.scale_factor())
+                }));
+                WorkAreaRosterObservation::new(
+                    WorkAreaObservationGeneration::new(generation),
+                    Authority::Known(observations),
+                )
+                .map_err(|_| NativePlatformError::InvalidWorkAreaRoster)?
+            }
             NativeWorkAreaRoster::Unknown => WorkAreaRosterObservation::unknown(
                 WorkAreaObservationGeneration::new(generation),
                 reason,

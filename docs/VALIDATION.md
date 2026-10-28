@@ -15,6 +15,63 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 optional recorded-transport admission
+
+`NativeInputStorageLimit` lets a managed host select a retained record limit
+and a byte allowance through
+`enable_managed_native_host_with_input_storage_limit`. Generic recording and
+the existing default enrollment remain unlimited. The configured allowance
+reserves actual recorder backing, one full N-record replay batch, its overlapping
+commit guard, and prefix-retirement receipt storage. This includes whole atomic
+groups larger than the 256-record scheduling boundary. Payload and descendant
+capacities are charged once through the recorder; rollback and retirement return
+only their corresponding data charge, without releasing backing credit.
+
+Append rejection precedes payload/liveness Arc construction and record identity
+allocation. Snapshot and pointer-roster construction use prospective finite
+capacity checks and explicit vector capacities; final append checks the actual
+capacity. Recorder configuration and the initial checkpoint complete inside the
+existing engine enrollment candidate, before either provider is published.
+Insufficient storage returns `InputCapacity` without panic or partial enrollment.
+Prefix settlement transfers the original receipt binding buffer into its result
+instead of creating a second transport copy.
+
+Polling reclaims committed input before recording abandoned effects. A full
+effect or presentation prelude keeps its failed item and remaining suffix under
+the existing owner while accepted input drains. Capacity failure does not
+discard already collected presentation settlement entries, including a later
+stream whose report was recorded before an earlier stream became reportable.
+Pending report submission survives suspended atomic replay, candidate drop, and
+commit, and continues to block application input and overload cancellation.
+An empty recorder which cannot admit its next report returns a capacity error
+instead of returning an empty pending frame indefinitely. The native coordinator
+retains affine effect results rejected for input capacity for exact retry.
+
+Boundary regressions exercise insufficient fixed/checkpoint storage, exact and
+one-byte-short snapshot budgets, full slots, whole-batch rejection, 257-record
+atomic replay, prefix retirement, affine effect retry, abandoned effects before
+and during replay, an effect abandoned after poll, and exact partial-stream
+presentation settlement. A separate external consumer uses only the public
+limit/enrollment/input/frame APIs and verifies failed enrollment, full admission,
+drop/retry, actual capacity, and subsequent successful input.
+
+Fresh serialized qualification passes all 1,772 all-feature workspace tests,
+80 external public-host tests, ten doctests, strict rustdoc, and
+correctness/suspicious Clippy. The local unpublished-fork native workspace
+passes 316 tests normally and 316 with native debug assertions disabled, plus
+its correctness/suspicious Clippy. The final source completes macOS
+programmatic tear-off, first-live, redock and retirement with exit 0.
+The command results are recorded in
+`/tmp/dockspace-native-bounded-recorder-qualification.json`; the workspace test
+log is `/tmp/dockspace-native-bounded-recorder-core.log`.
+
+This primitive bounds recorded and replay transport. Temporary public iterator
+collection, producer maps and host-side callback/resource/report storage remain
+outside its measurement boundary. Prepared journal transfer must close the
+iterator peak before the final shared 4 MiB allowance is enabled. This evidence
+does not complete U7, load/latency/soak, native scoped input, or physical-platform
+qualification, and does not change the unpublished-fork pin limitation.
+
 ## 2026-10-29 U7 single-record native device removal
 
 An uncorrelated raw DeviceRemoval now records one provider-bound fact in joined

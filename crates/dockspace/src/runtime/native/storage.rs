@@ -1,10 +1,49 @@
 //! Capacity of the native facade's retained input transport.
 
 use super::{NativePlatformError, RuntimeNativeState};
-use crate::backend_ingress::{BackendIngressPayload, BackendIngressRecorder};
-use crate::close_plan::SurfaceCloseRequest;
-use crate::engine::EngineInput;
+use crate::backend_ingress::BackendIngressRecorder;
 use crate::runtime::{DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession};
+use std::num::NonZeroUsize;
+
+/// Optional admission limit for a managed host's recorded input transport.
+///
+/// The allowance includes recorder backing, retained payload capacity, and
+/// reserved space for one replay batch, its commit guard, and prefix retirement.
+/// It excludes host callback buffers, temporary producer/iterator buffers,
+/// pending reports, renderer state, reducer state, allocator overhead and Arc
+/// control blocks. Hosts must account for
+/// those owners separately when enforcing a total native-input budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeInputStorageLimit {
+    record_slots: NonZeroUsize,
+    byte_limit: usize,
+}
+
+impl NativeInputStorageLimit {
+    /// Selects a record bound and a byte allowance for their complete transport.
+    ///
+    /// Enrollment rejects an allowance which cannot hold the fixed transport
+    /// reservation and the initial pointer-authority record.
+    #[must_use]
+    pub const fn new(record_slots: NonZeroUsize, byte_limit: usize) -> Self {
+        Self {
+            record_slots,
+            byte_limit,
+        }
+    }
+
+    /// Returns the maximum number of retained input records.
+    #[must_use]
+    pub const fn record_slots(self) -> NonZeroUsize {
+        self.record_slots
+    }
+
+    /// Returns the recorder and replay allowance in bytes.
+    #[must_use]
+    pub const fn byte_limit(self) -> usize {
+        self.byte_limit
+    }
+}
 
 impl RuntimeNativeState {
     fn input_owned_capacity_bytes(&self) -> Result<usize, NativePlatformError> {
@@ -12,35 +51,10 @@ impl RuntimeNativeState {
             .saturating_add(self.recorder.record_buffer_capacity_bytes())
             .saturating_add(self.recorder.shared_fixed_data_bytes());
         for record in self.recorder.retained_records() {
-            let descendants = match record.payload() {
-                BackendIngressPayload::PlatformSnapshot { snapshot, .. } => {
-                    snapshot.owned_payload_capacity_bytes()
-                }
-                BackendIngressPayload::PointerSegment(journal) => {
-                    // The native facade creates new contents for every append.
-                    // Its replay batches share the recorder's payload allocations.
-                    journal.owned_contents_capacity_bytes()
-                }
-                BackendIngressPayload::SemanticInput(input) => match input.as_ref() {
-                    EngineInput::RegisterViewport { .. }
-                    | EngineInput::BootstrapChildViewport { .. }
-                    | EngineInput::RequestSurfaceClose {
-                        request:
-                            SurfaceCloseRequest::RetainLayout
-                            | SurfaceCloseRequest::RecoverPresentation
-                            | SurfaceCloseRequest::CloseContent,
-                        ..
-                    }
-                    | EngineInput::CancelSurfaceClose { .. } => size_of::<EngineInput>(),
-                    _ => return Err(NativePlatformError::ProtocolInvariant),
-                },
-                BackendIngressPayload::NativeInputDeviceRemoval
-                | BackendIngressPayload::PlatformBindingQuiesced { .. }
-                | BackendIngressPayload::NativeCloseObservation { .. }
-                | BackendIngressPayload::GlobalFocusObservation { .. }
-                | BackendIngressPayload::PlatformEffectResult(_)
-                | BackendIngressPayload::PresentationObservation { .. } => 0,
-            };
+            let descendants = record
+                .payload()
+                .native_owned_descendant_capacity_bytes()
+                .map_err(NativePlatformError::from_ingress)?;
             bytes = bytes.saturating_add(descendants);
         }
         if let Some(pending) = self.pending_replay.as_ref() {

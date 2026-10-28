@@ -425,42 +425,67 @@ impl DockspaceSession {
         } else {
             pending
         };
-        let (mut frame, submitted_presentation, ingress_pending) = if let Some(pending) = pending {
-            (pending.frame, pending.submitted_presentation, true)
-        } else {
-            self.reconcile_pointer_provider()?;
-            self.presentation
-                .reclaim_quiescent_streams(&mut self.engine, self.presentation_host)?;
-            if let Some(native) = self.native.as_mut() {
-                native.record_abandoned_effects(&self.abandoned_native_effects)?;
-                let prefix_retirement = native.reclaim_committed_prefix(&mut self.engine);
-                self.presentation.reclaim_compacted_streams(&self.engine);
-                prefix_retirement?;
-            }
-            let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
-            #[cfg(feature = "serde")]
-            if let Some(HostFrameReplacement::DocumentRestore(restore)) = replacement.as_ref() {
-                prelude.restrict_item_identity_scope(restore.item_identity_scope());
-            } else if let Some(document) = self.document.as_ref() {
-                prelude.restrict_item_identity_scope(document.item_identity_scope());
-            }
-            let submitted_presentation = if let Some(native) = self.native.as_mut() {
-                self.presentation.submit_backend_observation(
-                    &mut prelude,
-                    &self.engine,
-                    native.recorder_mut(),
-                )?
+        let (mut frame, submitted_presentation, ingress_pending, prelude_pending) =
+            if let Some(pending) = pending {
+                (
+                    pending.frame,
+                    pending.submitted_presentation,
+                    true,
+                    pending.prelude_pending,
+                )
             } else {
-                self.presentation.submit_observation(&mut prelude)?
+                self.reconcile_pointer_provider()?;
+                self.presentation
+                    .reclaim_quiescent_streams(&mut self.engine, self.presentation_host)?;
+                let mut prelude_pending = false;
+                if let Some(native) = self.native.as_mut() {
+                    let prefix_retirement = native.reclaim_committed_prefix(&mut self.engine);
+                    self.presentation.reclaim_compacted_streams(&self.engine);
+                    prefix_retirement?;
+                    match native.record_abandoned_effects(&self.abandoned_native_effects) {
+                        Ok(()) => {}
+                        Err(NativePlatformError::InputCapacity) => prelude_pending = true,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
+                #[cfg(feature = "serde")]
+                if let Some(HostFrameReplacement::DocumentRestore(restore)) = replacement.as_ref() {
+                    prelude.restrict_item_identity_scope(restore.item_identity_scope());
+                } else if let Some(document) = self.document.as_ref() {
+                    prelude.restrict_item_identity_scope(document.item_identity_scope());
+                }
+                let submitted_presentation = if let Some(native) = self.native.as_mut() {
+                    let (submitted, capacity_blocked) =
+                        self.presentation.submit_backend_observation(
+                            &mut prelude,
+                            &self.engine,
+                            native.recorder_mut(),
+                        )?;
+                    prelude_pending |= capacity_blocked;
+                    if prelude_pending
+                        && native.recorder_mut().recorded_through()
+                            == self.engine.backend_ingress_committed_through()
+                    {
+                        return Err(NativePlatformError::InputCapacity.into());
+                    }
+                    submitted
+                } else {
+                    self.presentation.submit_observation(&mut prelude)?
+                };
+                let mut frame = prelude.seal(&self.engine)?;
+                let ingress_pending = if let Some(native) = self.native.as_ref() {
+                    native.prepare_pending_input(&self.engine, &mut frame, budget.is_some())?
+                } else {
+                    false
+                };
+                (
+                    frame,
+                    submitted_presentation,
+                    ingress_pending,
+                    prelude_pending,
+                )
             };
-            let mut frame = prelude.seal(&self.engine)?;
-            let ingress_pending = if let Some(native) = self.native.as_ref() {
-                native.prepare_pending_input(&self.engine, &mut frame, budget.is_some())?
-            } else {
-                false
-            };
-            (frame, submitted_presentation, ingress_pending)
-        };
         if ingress_pending {
             let native = self
                 .native
@@ -470,14 +495,17 @@ impl DockspaceSession {
                 native.retain_pending_replay(native::PendingNativeReplay {
                     frame,
                     submitted_presentation,
+                    prelude_pending,
                 });
                 return Ok(None);
             }
         }
-        let native_input_pending = self
-            .native
-            .as_ref()
-            .is_some_and(|native| native.input_pending_after(&frame));
+        let native_input_pending = self.native.as_ref().is_some_and(|native| {
+            prelude_pending
+                || native.input_pending_after(&frame)
+                || self.abandoned_native_effects.has_pending()
+                || self.presentation.has_unrecorded_backend_report()
+        });
         let next_source_sequence = self.committed_source_sequence;
         let next_pointer_sequence = self
             .pointer

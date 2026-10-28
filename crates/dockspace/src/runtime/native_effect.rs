@@ -428,6 +428,10 @@ impl NativeEffectDropQueue {
         self.lock().push(result);
     }
 
+    pub(super) fn has_pending(&self) -> bool {
+        !self.lock().is_empty()
+    }
+
     pub(super) fn take_for(
         &self,
         provider: PlatformObservationLease,

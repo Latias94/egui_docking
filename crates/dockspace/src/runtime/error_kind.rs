@@ -84,7 +84,10 @@ const fn backend_ingress_error_kind(error: &BackendIngressError) -> DockspaceRun
         BackendIngressError::ReplacementIdentityExhausted
         | BackendIngressError::ReplacementTicketGenerationExhausted
         | BackendIngressError::OrdinalExhausted
-        | BackendIngressError::RecordIdentityExhausted => DockspaceRuntimeErrorKind::Internal,
+        | BackendIngressError::RecordIdentityExhausted
+        | BackendIngressError::UnsupportedNativePayloadCapacity => {
+            DockspaceRuntimeErrorKind::Internal
+        }
         BackendIngressError::ProviderUnavailable
         | BackendIngressError::PointerProviderNotDesktopGlobal { .. } => {
             DockspaceRuntimeErrorKind::Unsupported
@@ -98,7 +101,9 @@ const fn backend_ingress_error_kind(error: &BackendIngressError) -> DockspaceRun
         | BackendIngressError::RecordPublicationInProgress { .. }
         | BackendIngressError::RecordAlreadyCommitted { .. }
         | BackendIngressError::AtomicAppendNotLive { .. }
-        | BackendIngressError::RollbackCrossesPublishedRecord { .. } => {
+        | BackendIngressError::RollbackCrossesPublishedRecord { .. }
+        | BackendIngressError::NativeTransportCapacityExceeded { .. }
+        | BackendIngressError::CapacityAllocationFailed => {
             DockspaceRuntimeErrorKind::OperationConflict
         }
         BackendIngressError::UnknownReplacementTicket

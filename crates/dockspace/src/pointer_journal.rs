@@ -1140,6 +1140,11 @@ struct PointerEdgeJournalContents {
 }
 
 impl PointerEdgeJournal {
+    /// Returns the fixed contents data shared by an empty journal's clones.
+    pub(crate) const fn empty_owned_contents_capacity_bytes() -> usize {
+        size_of::<PointerEdgeJournalContents>()
+    }
+
     /// Returns shared contents storage and its owned vector capacities.
     ///
     /// Excludes this journal handle and the Arc control block. The caller is

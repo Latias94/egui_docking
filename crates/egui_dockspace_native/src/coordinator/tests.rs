@@ -218,12 +218,15 @@ fn shutdown_commits_terminal_no_frame_invalidation_before_clearing_it() {
 }
 
 #[test]
-fn native_effect_rejection_policy_retries_only_state_races() {
+fn native_effect_rejection_policy_retains_state_races_and_capacity_backpressure() {
     assert!(native_effect_submission_rejection_is_recoverable(
         NativeHostErrorKind::StaleBinding
     ));
     assert!(native_effect_submission_rejection_is_recoverable(
         NativeHostErrorKind::OperationConflict
+    ));
+    assert!(native_effect_submission_rejection_is_recoverable(
+        NativeHostErrorKind::InputCapacity
     ));
 
     for fatal in [

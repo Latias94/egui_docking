@@ -1,6 +1,7 @@
 use super::*;
 
 mod budget;
+mod capacity;
 mod overload;
 
 use crate::engine::EngineInput;

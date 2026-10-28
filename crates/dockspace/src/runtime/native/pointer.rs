@@ -645,21 +645,13 @@ pub enum NativeReceiverAnswer {
 }
 
 impl RuntimeNativeState {
-    pub(super) fn record_initial_pointer_authority(
-        &mut self,
-        checkpoint: PointerAuthorityCheckpoint,
-    ) {
-        debug_assert_eq!(self.profile, NativeHostProfile::ManagedDesktop);
-        let watermark = self.recorder.pointer_through();
-        debug_assert_eq!(checkpoint.observed_through(), watermark);
-        self.record_pointer_authority(checkpoint)
-            .expect("a fresh managed recorder accepts its enrollment checkpoint");
-    }
-
     pub(super) fn compile_pointer_roster(
         &self,
         roster: NativePointerRoster,
     ) -> Result<PointerAuthorityCheckpoint, NativePlatformError> {
+        self.recorder
+            .preflight_native_transport_append(1, pointer_authority_descendant_bytes(&roster)?)
+            .map_err(NativePlatformError::from_ingress)?;
         compile_pointer_authority(roster, self.recorder.pointer_through(), |owner| {
             self.capture_owner(owner)
         })
@@ -675,7 +667,7 @@ impl RuntimeNativeState {
             .map_err(|_| NativePlatformError::InvalidPointerFacts)?;
         self.recorder
             .record_pointer_segment(journal)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .map_err(NativePlatformError::from_ingress)?;
         Ok(())
     }
 
@@ -701,7 +693,25 @@ impl RuntimeNativeState {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
         }
+        let count = inputs.len();
+        let mut inputs = inputs.into_iter();
+        let Some(first) = inputs.next() else {
+            return Ok(());
+        };
+        let first = self.compile_pointer_journal(first)?;
+        // Every native edge owns one identically sized, checkpoint-free journal.
+        // Reuse the first real payload to preflight the call before minting records.
+        let descendants = first
+            .owned_contents_capacity_bytes()
+            .checked_mul(count)
+            .ok_or(NativePlatformError::InputCapacity)?;
+        self.recorder
+            .preflight_native_transport_append(count, descendants)
+            .map_err(NativePlatformError::from_ingress)?;
         let savepoint = self.recorder.savepoint();
+        self.recorder
+            .record_pointer_segment(first)
+            .map_err(NativePlatformError::from_ingress)?;
         for input in inputs {
             if let Err(error) = self.record_pointer(input) {
                 self.recorder
@@ -722,6 +732,17 @@ impl RuntimeNativeState {
         &mut self,
         input: NativePointerInput,
     ) -> Result<(), NativePlatformError> {
+        let journal = self.compile_pointer_journal(input)?;
+        self.recorder
+            .record_pointer_segment(journal)
+            .map_err(NativePlatformError::from_ingress)?;
+        Ok(())
+    }
+
+    fn compile_pointer_journal(
+        &self,
+        input: NativePointerInput,
+    ) -> Result<PointerEdgeJournal, NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
         }
@@ -762,12 +783,8 @@ impl RuntimeNativeState {
             capture,
         )
         .with_metadata(input.metadata);
-        let journal = PointerEdgeJournal::new(previous, sequence, vec![edge])
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-        self.recorder
-            .record_pointer_segment(journal)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-        Ok(())
+        PointerEdgeJournal::new(previous, sequence, vec![edge])
+            .map_err(|_| NativePlatformError::ProtocolInvariant)
     }
 
     fn scroll_edge(event: NativeScrollEvent) -> Result<ScrollEdge, NativePlatformError> {
@@ -969,6 +986,28 @@ pub(super) fn compile_initial_pointer_authority(
     })
 }
 
+pub(super) fn pointer_authority_descendant_bytes(
+    roster: &NativePointerRoster,
+) -> Result<usize, NativePlatformError> {
+    let fixed = PointerEdgeJournal::empty_owned_contents_capacity_bytes();
+    let NativePointerRoster::Exact(states) = roster else {
+        return Ok(fixed);
+    };
+    let bytes = states
+        .len()
+        .checked_mul(size_of::<PointerStateObservation>())
+        .and_then(|bytes| fixed.checked_add(bytes))
+        .ok_or(NativePlatformError::InputCapacity)?;
+    states.iter().try_fold(bytes, |bytes, state| {
+        state
+            .pressed_buttons()
+            .len()
+            .checked_mul(size_of::<PointerButton>())
+            .and_then(|buttons| bytes.checked_add(buttons))
+            .ok_or(NativePlatformError::InputCapacity)
+    })
+}
+
 fn compile_pointer_authority(
     roster: NativePointerRoster,
     watermark: crate::pointer_journal::PointerEdgeSequence,
@@ -978,21 +1017,23 @@ fn compile_pointer_authority(
 ) -> Result<PointerAuthorityCheckpoint, NativePlatformError> {
     match roster {
         NativePointerRoster::Exact(states) => {
-            let states = states
-                .into_iter()
-                .map(|state| {
-                    let buttons = state
+            let mut observations = Vec::with_capacity(states.len());
+            for state in states {
+                let mut buttons = Vec::with_capacity(state.pressed_buttons().len());
+                buttons.extend(
+                    state
                         .pressed_buttons()
                         .iter()
                         .copied()
-                        .map(NativePointerButton::into_core)
-                        .collect();
-                    let capture = resolve_capture(state.capture())?;
+                        .map(NativePointerButton::into_core),
+                );
+                let capture = resolve_capture(state.capture())?;
+                observations.push(
                     PointerStateObservation::new(state.pointer().into_core(), buttons, capture)
-                        .map_err(|_| NativePlatformError::InvalidPointerFacts)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            PointerAuthorityCheckpoint::known(watermark, states)
+                        .map_err(|_| NativePlatformError::InvalidPointerFacts)?,
+                );
+            }
+            PointerAuthorityCheckpoint::known(watermark, observations)
                 .map_err(|_| NativePlatformError::InvalidPointerFacts)
         }
         NativePointerRoster::Unknown => Ok(PointerAuthorityCheckpoint::unknown(
@@ -1046,4 +1087,47 @@ fn native_scroll_delta(
         NativeScrollDelta::Lines { .. } => ScrollDelta::Lines(vector),
         NativeScrollDelta::Pages { .. } => ScrollDelta::Pages(vector),
     })
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn prospective_checkpoint_bytes_match_compiled_odd_sized_rosters() {
+        for count in [0, 1, 3, 5, 17] {
+            let roster = NativePointerRoster::Exact(
+                (0..count)
+                    .map(|index| {
+                        NativePointerState::new(
+                            NativePointerId::new(index),
+                            [
+                                NativePointerButton::Primary,
+                                NativePointerButton::Secondary,
+                                NativePointerButton::Other(7),
+                            ],
+                            NativePointerOwner::None,
+                        )
+                    })
+                    .collect(),
+            );
+            let expected = pointer_authority_descendant_bytes(&roster).unwrap();
+            let checkpoint = compile_initial_pointer_authority(roster).unwrap();
+            let watermark = crate::pointer_journal::PointerEdgeSequence::new(0);
+            let journal = PointerEdgeJournal::new(watermark, watermark, Vec::new())
+                .unwrap()
+                .with_authority_checkpoint(checkpoint)
+                .unwrap();
+            assert_eq!(journal.owned_contents_capacity_bytes(), expected);
+        }
+        let roster = NativePointerRoster::Unknown;
+        let expected = pointer_authority_descendant_bytes(&roster).unwrap();
+        let checkpoint = compile_initial_pointer_authority(roster).unwrap();
+        let watermark = crate::pointer_journal::PointerEdgeSequence::new(0);
+        let journal = PointerEdgeJournal::new(watermark, watermark, Vec::new())
+            .unwrap()
+            .with_authority_checkpoint(checkpoint)
+            .unwrap();
+        assert_eq!(journal.owned_contents_capacity_bytes(), expected);
+    }
 }

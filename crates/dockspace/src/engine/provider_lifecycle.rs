@@ -31,6 +31,21 @@ impl DockEngine {
         presentation_host: PresentationHostLease,
         pointer_committed_through: PointerEdgeSequence,
     ) -> Result<BackendIngressRecorder, EngineError> {
+        self.create_backend_ingress_provider_initialized(
+            presentation_host,
+            pointer_committed_through,
+            |_| Ok(()),
+        )
+    }
+
+    /// Initializes recorder storage and initial facts before publishing either provider.
+    /// An initializer error discards the entire enrollment candidate.
+    pub(crate) fn create_backend_ingress_provider_initialized(
+        &mut self,
+        presentation_host: PresentationHostLease,
+        pointer_committed_through: PointerEdgeSequence,
+        initialize: impl FnOnce(&mut BackendIngressRecorder) -> Result<(), BackendIngressError>,
+    ) -> Result<BackendIngressRecorder, EngineError> {
         if let Some(provider) = self.pointer_journal.abandoned_surface_local_provider() {
             return Err(EngineError::SurfaceLocalPointerProviderAbandoned { provider });
         }
@@ -51,7 +66,7 @@ impl DockEngine {
                 pointer_committed_through,
             )
             .map_err(|source| EngineError::PointerJournal { source })?;
-        let recorder = candidate
+        let mut recorder = candidate
             .backend_ingress
             .enroll(
                 platform,
@@ -60,6 +75,7 @@ impl DockEngine {
                 pointer_committed_through,
             )
             .map_err(|source| EngineError::BackendIngress { source })?;
+        initialize(&mut recorder).map_err(|source| EngineError::BackendIngress { source })?;
         self.publish_candidate(candidate);
         Ok(recorder)
     }
@@ -111,9 +127,8 @@ impl DockEngine {
         })?;
         let provider = lease.platform_provider();
         let presentation_host = lease.presentation_host();
-        let bindings = receipt.binding_quiescences().to_vec();
         let retained_streams = candidate.retained_presentation_streams();
-        for binding in &bindings {
+        for binding in receipt.binding_quiescences() {
             candidate
                 .viewport
                 .compact_quiesced_destroyed_binding_guard(*binding, provider)
@@ -140,7 +155,7 @@ impl DockEngine {
             }
         }
         candidate.advance_runtime_retention_revision()?;
-        receipt
+        let bindings = receipt
             .consume()
             .map_err(|source| EngineError::BackendIngress { source })?;
         self.publish_candidate(candidate);

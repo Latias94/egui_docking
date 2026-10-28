@@ -254,11 +254,13 @@ impl PendingNativeEffectResult {
 }
 
 const fn native_effect_submission_rejection_is_recoverable(kind: NativeHostErrorKind) -> bool {
-    // These failures describe a causal state race. The affine result remains
-    // owned by this coordinator until the exact retry or retirement boundary.
+    // The affine result remains owned here until the exact retry or retirement
+    // boundary, including while accepted input drains to release capacity.
     matches!(
         kind,
-        NativeHostErrorKind::StaleBinding | NativeHostErrorKind::OperationConflict
+        NativeHostErrorKind::StaleBinding
+            | NativeHostErrorKind::OperationConflict
+            | NativeHostErrorKind::InputCapacity
     )
 }
 
