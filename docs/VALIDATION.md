@@ -15,6 +15,47 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U8 deferred-window resource ownership prerequisite (partial)
+
+The mailbox's separate create-reservation, hidden-render-binding and staging
+maps have been replaced by one `NativeWindowResources` record per viewport.
+That record has one exact binding and owns the create rectangle, hidden-render
+lease and pending staging request together. Foreign reserve, clear and retire
+operations leave the current owner intact. Clearing one obligation preserves
+the other two; the entry disappears only when its last obligation is gone.
+Fatal quarantine still clears staging while retaining create/hidden cleanup.
+This record is adapter resource ownership, not another core lifecycle machine.
+
+Staging publication validates the complete binding set before changing any
+slot. The host frame validates route/owner compatibility before core commit,
+and publication rechecks the batch under the mailbox lock. Empty control
+frames retain pending staging; same-binding updates replace their observation
+basis, and an exact request already in the raw journal stays in flight. A
+claimed staging request transfers to that existing ordered journal without
+clearing its create or hidden-render owner.
+
+The former generic map-only staging test has been replaced by exact-owner
+coverage and a coordinator regression using a real core hidden-create staging
+request. It proves atomic foreign-batch rejection, pending staging across
+empty frames, retention after create/hidden completion, and stale cleanup
+isolation. A scratch variant that clears staging on an empty publication fails
+the explicit retention assertion. Independent review found no confirmed new
+owner, staging, lock-order or commit/publication race in the production paths.
+
+The refreshed local-fork native workspace passes 231 all-target tests normally
+and 231 with native debug assertions disabled. Correctness/suspicious Clippy,
+strict rustdoc, formatting and diff whitespace pass. Three clean macOS Glow
+redock processes finish in 1.427, 0.568, and 0.563 seconds through first-live,
+retirement and runtime quiescence. This remains programmatic window/renderer
+lifecycle evidence, without physical input, WM-close or mixed-DPI claims.
+
+This is the deferred-window portion of the prerequisite, not completed U8 or
+U7. Exact output/command/window-terminal reservations, protected once-only
+terminal slots, full record/byte/age admission, the overload latch, and committed
+translator recovery remain to be integrated. The working native adapter still
+needs the unpublished local egui fork; tracked dependency and CI pins have not
+been advanced and do not reproduce these source changes remotely.
+
 ## 2026-10-28 U7 shared-ingress storage and source-age groundwork
 
 Backend records now share an immutable payload allocation between the recorder,
