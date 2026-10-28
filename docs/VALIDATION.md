@@ -15,6 +15,59 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 output, staging and close terminal storage prerequisite
+
+Exact output results now retain their callback envelope inside the output
+resource reserved at output begin. Staging paint and close cancellation use
+their existing inline receipt slots. None of these accepted terminal paths
+pushes into the ordinary raw queue. The mailbox merges raw records and ready
+resource slots by their original capture ordinal; it does not register a
+second terminal queue or cache another head. A submitted output keeps its
+envelope until its complete core boundary commits. Callback transfer keeps
+the journal's count and original age until that same boundary.
+
+A close successor parked behind Clear now becomes ready in its existing close
+owner. Promotion neither allocates ordinary queue capacity nor changes its
+capture identity or age. The old sorted reinsertion and raw retain interfaces
+are deleted. Staging Received/Transferred slots survive clear and retirement;
+only Awaiting work may be revoked there. A newer staging basis waits for full
+commit and is reissued from core's existing per-frame lifecycle requests.
+
+Independent review found a fatal-drain boundary: a captured staging callback
+could try to bind paint after quarantine abandoned or retired its output.
+The reducer now checks output eligibility after predecessor replay and budget
+checks, drops the candidate and transfers that exact staging ingress without
+producing paint. Discard is idempotent when the output terminal has already
+removed its owner. This preserves the complete-commit requirement without
+reopening a retired output.
+
+The new regressions exercise capture order across reversed resource-map keys,
+first/exact-basis staging capture, duplicate and wrong-ordinal rejection,
+Received/Transferred retention through retirement, reissue after commit, and
+close promotion with unchanged identity and capture time. Staging requests and
+close capabilities come from public core lifecycle operations; the private
+receipt models deliberately do not fabricate opaque eframe output/close tokens.
+The actual quarantine staging-reducer branch and a complete
+Output1/Callback/Output2 partial/full-commit matrix still require a genuine
+native runner fixture. Static review and programmatic native compatibility do
+not replace that missing focused coverage.
+
+Serialized local-fork qualification passes all 276 native workspace cases
+normally and all 276 with native debug assertions disabled. The five new cases
+pass in that same matrix. Correctness/suspicious Clippy, formatting and diff
+checks pass. A real-window macOS programmatic redock again reaches tear-off,
+first-live, redock and retirement with exit 0. In a disposable snapshot, changing
+staging clear to remove Received as well as Awaiting makes the retirement
+regression fail at retained binding ownership; restoring the implementation
+passes the same test. No production-tree mutation is used for that control.
+
+This prerequisite does not complete protected overload admission. Create and
+Destroyed envelopes still need their own pre-reserved storage joined with the
+same ordered head. Fixed-boundary freeze, ordinary record/byte/age caps, load,
+release latency and soak remain open. The local fork revision is unchanged at
+`1f7c541fde99fd69192622a1a36cb642de58ed29`; no dependency publication or platform
+physical certification is implied.
+
 ## 2026-10-29 U8 resource and command terminal ownership checkpoint
 
 Native output, deferred-window, create-attempt, physical-window and held-close

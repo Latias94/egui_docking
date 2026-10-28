@@ -101,6 +101,99 @@ fn pointer_callback(
 }
 
 #[test]
+fn owner_slots_merge_with_raw_input_in_capture_order_across_resource_keys() {
+    let (first_binding, second_binding) = bindings();
+    let first_viewport = ViewportId::ROOT;
+    let second_viewport = ViewportId::from_hash_of("ordered-second-command-owner");
+    let context = egui::Context::default();
+    let first_token =
+        eframe::queue_native_viewport_pointer_passthrough(&context, first_viewport, true);
+    let second_token =
+        eframe::queue_native_viewport_pointer_passthrough(&context, second_viewport, false);
+    let first = pointer_callback(
+        first_token,
+        first_viewport,
+        WindowId::from(31),
+        Some(first_binding),
+        true,
+    );
+    let second = pointer_callback(
+        second_token,
+        second_viewport,
+        WindowId::from(32),
+        Some(second_binding),
+        false,
+    );
+    let (bridge, now) = bridge_with_clock();
+    {
+        let mut records = bridge.lock();
+        assert!(records.window_resources.reserve_pointer_callback(
+            first_viewport,
+            first_binding,
+            first.window(),
+            first_token,
+            true,
+        ));
+        assert!(records.window_resources.reserve_pointer_callback(
+            second_viewport,
+            second_binding,
+            second.window(),
+            second_token,
+            false,
+        ));
+        // Capture in reverse resource order so map traversal cannot be the clock.
+        let (early, late) = if first_viewport < second_viewport {
+            (second, first)
+        } else {
+            (first, second)
+        };
+        assert!(records.record_viewport_pointer_passthrough(early));
+        now.store(10, Ordering::SeqCst);
+        records.record_device_removal(NativeDeviceRemovalRecord::for_test(71));
+        now.store(20, Ordering::SeqCst);
+        assert!(records.record_viewport_pointer_passthrough(late));
+        assert_eq!(records.journal.len(), 1);
+        assert_eq!(records.retained_record_count(), 3);
+        let ordered: Vec<_> = records
+            .ordered_ingress()
+            .map(|ingress| ingress.ordinal())
+            .collect();
+        assert_eq!(ordered, [1, 2, 3]);
+        assert!(matches!(
+            records.ordered_ingress().nth(1).unwrap().record(),
+            HostRecord::DeviceRemoval(removal) if *removal == NativeDeviceRemovalRecord::for_test(71)
+        ));
+        assert!(records.raw_prefix().next().is_none());
+        assert!(
+            matches!(records.front_record(), Some(HostRecord::ViewportPointerPassthrough(record)) if *record == early)
+        );
+        records.transfer_front_record();
+        assert_eq!(records.retained_record_count(), 3);
+        assert!(matches!(
+            records.front_record(),
+            Some(HostRecord::DeviceRemoval(_))
+        ));
+        records.transfer_front_record();
+        assert!(
+            matches!(records.front_record(), Some(HostRecord::ViewportPointerPassthrough(record)) if *record == late)
+        );
+    }
+    now.store(50, Ordering::SeqCst);
+    bridge.commit_frame_boundary(true);
+    assert_eq!(bridge.lock().retained_record_count(), 3);
+    assert_eq!(
+        bridge.lock().oldest_record_age(),
+        Some(Duration::from_millis(50))
+    );
+    bridge.commit_frame_boundary(false);
+    assert_eq!(bridge.lock().retained_record_count(), 1);
+    assert_eq!(
+        bridge.lock().oldest_record_age(),
+        Some(Duration::from_millis(30))
+    );
+}
+
+#[test]
 fn reserved_callback_blocks_cursor_front_coalescing_and_claim_until_exact_handoff() {
     let (binding, foreign) = bindings();
     let viewport = ViewportId::ROOT;

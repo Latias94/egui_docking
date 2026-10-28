@@ -3,6 +3,8 @@
 //! No opaque fork token is fabricated here. These tests do not qualify canonical
 //! token routing or real HoldClose/Veto callbacks; those need the fork fixture.
 
+use std::sync::{Arc, Mutex};
+
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
     SurfaceId,
@@ -16,6 +18,8 @@ use dockspace::runtime::{
 use winit::event::WindowEvent;
 
 use super::*;
+use crate::mailbox::{HostRecord, NativeHostBridge};
+use crate::viewport_map::NativeViewportMap;
 
 fn commit(session: &mut DockspaceSession) -> HostFrameReport {
     let mut frame = session.begin_host_frame().unwrap();
@@ -109,6 +113,40 @@ fn cancellation(
     acknowledgement
 }
 
+fn parked_successor() -> (
+    NativeHostBridge,
+    NativeSurfaceBinding,
+    NativeWindowEventRecord,
+) {
+    let (mut session, binding) = fixture();
+    let first = event(binding, 71, 11);
+    let successor = event(binding, 72, 11);
+    let request = core_request(&mut session, binding);
+    let acknowledgement = cancellation(&mut session, request);
+    let bridge = NativeHostBridge::new(Arc::new(Mutex::new(NativeViewportMap::default())));
+    bridge.with_close_control(|control| {
+        assert!(control.observe_request(&first, binding));
+        assert_eq!(control.bind_request(request), Ok(true));
+        assert_eq!(
+            control.begin_cancellation(request, acknowledgement),
+            Some(ViewportId::ROOT),
+        );
+    });
+    bridge.push_record(HostRecord::WindowEvent(successor.clone()));
+    (bridge, binding, successor)
+}
+
+fn reserved_close_ingress() -> ReservedHostRecord {
+    // Receipt-state models use a real journal reservation without fabricating a fork token.
+    let (bridge, binding, _) = parked_successor();
+    bridge.with_close_control(|control| {
+        let ordinal = control.parked_ingress().next().unwrap().ordinal();
+        assert!(control.mark_clear_recorded(binding));
+        assert_eq!(control.settle_clear(true), 1);
+        control.take_callback_ingress(ordinal).unwrap()
+    })
+}
+
 #[test]
 fn capture_is_exact_and_cannot_bind_core_before_requested_was_recorded() {
     let (mut session, binding) = fixture();
@@ -172,7 +210,10 @@ fn one_successor_waits_for_received_transferred_and_committed_clear() {
         // production reserve/receive methods additionally require that token.
         let mut receipt = CancellationReceipt::new();
         if callback_already_received {
-            assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::First);
+            assert_eq!(
+                receipt.receive(reserved_close_ingress),
+                NativeCloseCallbackAdmission::First,
+            );
         }
         control
             .pending
@@ -210,9 +251,16 @@ fn one_successor_waits_for_received_transferred_and_committed_clear() {
             .as_mut()
             .unwrap();
         if !callback_already_received {
-            assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::First);
+            assert_eq!(
+                receipt.receive(reserved_close_ingress),
+                NativeCloseCallbackAdmission::First,
+            );
         }
-        assert!(receipt.transfer());
+        let ordinal = control.callback_ingress().next().unwrap().ordinal();
+        assert!(control.take_callback_ingress(ordinal + 1).is_none());
+        assert!(control.take_callback_ingress(ordinal).is_some());
+        assert!(control.take_callback_ingress(ordinal).is_none());
+        assert_eq!(control.callback_ingress().count(), 0);
         assert!(control.mark_clear_recorded(binding));
         assert_eq!(control.settle_clear(false), 1);
         assert_eq!(control.settle_clear(true), 0);
@@ -243,21 +291,92 @@ fn one_successor_waits_for_received_transferred_and_committed_clear() {
 
 #[test]
 fn cancellation_receipt_is_once_only_and_neither_receive_nor_transfer_is_commit() {
+    let ingress = reserved_close_ingress();
+    let ordinal = ingress.ordinal();
+    let captured_at = ingress.captured_at();
     let mut receipt = CancellationReceipt::new();
-    assert!(!receipt.transfer());
+    assert!(receipt.take_ingress(ordinal).is_none());
     receipt.commit_transferred();
     assert_eq!(receipt.state, CancellationReceiptState::Awaiting);
-    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::First);
+    assert_eq!(
+        receipt.receive(|| ingress),
+        NativeCloseCallbackAdmission::First,
+    );
     receipt.commit_transferred();
     assert_eq!(receipt.state, CancellationReceiptState::Received);
-    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::Duplicate);
-    assert!(receipt.transfer());
+    assert_eq!(
+        receipt.receive(|| panic!("a received duplicate cannot reserve ingress")),
+        NativeCloseCallbackAdmission::Duplicate,
+    );
+    assert!(receipt.take_ingress(ordinal + 1).is_none());
+    assert_eq!(receipt.state, CancellationReceiptState::Received);
+    assert_eq!(receipt.ingress.as_ref().unwrap().captured_at(), captured_at);
+    let transferred = receipt.take_ingress(ordinal).unwrap();
+    assert_eq!(transferred.ordinal(), ordinal);
+    assert_eq!(transferred.captured_at(), captured_at);
+    assert!(receipt.ingress.is_none());
     assert_eq!(receipt.state, CancellationReceiptState::Transferred);
-    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::Duplicate);
-    assert!(!receipt.transfer());
+    assert_eq!(
+        receipt.receive(|| panic!("a transferred duplicate cannot reserve ingress")),
+        NativeCloseCallbackAdmission::Duplicate,
+    );
+    assert!(receipt.take_ingress(ordinal).is_none());
     receipt.commit_transferred();
     assert_eq!(receipt.state, CancellationReceiptState::Committed);
-    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::Duplicate);
+    assert_eq!(
+        receipt.receive(|| panic!("a committed duplicate cannot reserve ingress")),
+        NativeCloseCallbackAdmission::Duplicate,
+    );
+}
+
+#[test]
+fn promoted_successor_keeps_its_owner_and_capture_until_exact_take() {
+    let (bridge, binding, successor) = parked_successor();
+    bridge.with_close_control(|control| {
+        let parked = control.parked_ingress().next().unwrap();
+        let ordinal = parked.ordinal();
+        let captured_at = parked.captured_at();
+        assert_eq!(parked.window_event(), Some(&successor));
+        assert_eq!(control.parked_ingress().count(), 1);
+        assert_eq!(control.deferred_ingress().count(), 1);
+        assert_eq!(control.callback_ingress().count(), 0);
+        assert!(control.take_callback_ingress(ordinal).is_none());
+        assert_eq!(control.settle_clear(true), 0);
+
+        assert!(control.mark_clear_recorded(binding));
+        assert_eq!(control.settle_clear(false), 1);
+        assert_eq!(control.parked_ingress().count(), 1);
+        assert_eq!(control.callback_ingress().count(), 0);
+        assert_eq!(control.settle_clear(true), 1);
+        assert_eq!(control.parked_ingress().count(), 0);
+        assert_eq!(control.deferred_ingress().count(), 1);
+        let promoted = control.callback_ingress().next().unwrap();
+        assert_eq!(promoted.ordinal(), ordinal);
+        assert_eq!(promoted.captured_at(), captured_at);
+        assert_eq!(promoted.window_event(), Some(&successor));
+
+        assert!(control.take_callback_ingress(ordinal + 1).is_none());
+        control.commit_transferred_callbacks();
+        assert_eq!(control.callback_ingress().count(), 1);
+        assert!(control.needs_request_recording(&successor, binding));
+        let taken = control.take_callback_ingress(ordinal).unwrap();
+        assert_eq!(taken.ordinal(), ordinal);
+        assert_eq!(taken.captured_at(), captured_at);
+        assert_eq!(taken.window_event(), Some(&successor));
+        assert!(control.take_callback_ingress(ordinal).is_none());
+        assert_eq!(control.callback_ingress().count(), 0);
+        assert_eq!(control.deferred_ingress().count(), 0);
+        assert!(
+            control
+                .pending
+                .get(&binding)
+                .unwrap()
+                .cancellation_receipt
+                .is_none()
+        );
+        assert!(control.needs_request_recording(&successor, binding));
+        assert!(control.references_binding(binding));
+    });
 }
 
 #[test]

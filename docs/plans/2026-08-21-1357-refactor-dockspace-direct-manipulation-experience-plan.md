@@ -722,6 +722,14 @@ commit `1f7c541fde99fd69192622a1a36cb642de58ed29` remains unpublished and tracke
 dependency pins unchanged. Protected overload admission and the U7/U8 exit
 criteria remain open; these checkpoints do not establish native readiness.
 
+The next local U7 storage prerequisite moves output, staging and close
+cancellation envelopes into their existing inline resource slots. Close
+successors become ready inside their original owner rather than re-entering the
+ordinary queue. Output submission and partial replay retain the same ordered
+head until full commit. Create/Destroyed storage and unified route/resource
+observation still precede final protected admission; these changes do not
+establish the record/byte/age caps or fixed-boundary cancellation.
+
 ### U10. Complete layout management and a bounded editor showcase
 
 - **Goal:** Validate realistic editor use without building the user's engine.

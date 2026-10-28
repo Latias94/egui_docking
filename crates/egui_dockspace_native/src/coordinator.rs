@@ -1845,6 +1845,12 @@ impl NativeCoordinator {
             self.finish_internal_report(context, report)?;
             return Ok(false);
         }
+        if !self.bridge.accepts_staging_paint(staging.token()) {
+            drop(frame);
+            self.discard_obsolete_staging_paint(staging)?;
+            budget.complete_unsequenced_records(1);
+            return Ok(true);
+        }
         if let Err(error) = frame.confirm_native_staging_painted(staging.request()) {
             if staging_paint_failure_disposition(error.native_kind())
                 == StagingPaintFailureDisposition::Fatal
@@ -1907,10 +1913,9 @@ impl NativeCoordinator {
         if !self.bridge.acknowledge_staging_painted(staging) {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
         }
-        let wake = self.abandon_output_token(staging.token());
-        if !matches!(wake, NativeHostWake::RepaintRoot) {
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
+        // The terminal may have already retired an abandoned output. Its exact
+        // staging ingress still transfers and commits without reopening paint.
+        let _ = self.abandon_output_token(staging.token());
         Ok(())
     }
 

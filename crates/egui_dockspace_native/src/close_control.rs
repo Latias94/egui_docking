@@ -94,29 +94,39 @@ enum CancellationReceiptState {
 #[derive(Debug)]
 struct CancellationReceipt {
     state: CancellationReceiptState,
+    ingress: Option<ReservedHostRecord>,
 }
 
 impl CancellationReceipt {
     const fn new() -> Self {
         Self {
             state: CancellationReceiptState::Awaiting,
+            ingress: None,
         }
     }
 
-    fn receive(&mut self) -> NativeCloseCallbackAdmission {
+    fn receive(
+        &mut self,
+        reserve: impl FnOnce() -> ReservedHostRecord,
+    ) -> NativeCloseCallbackAdmission {
         if self.state != CancellationReceiptState::Awaiting {
             return NativeCloseCallbackAdmission::Duplicate;
         }
+        let ingress = reserve();
+        self.ingress = Some(ingress);
         self.state = CancellationReceiptState::Received;
         NativeCloseCallbackAdmission::First
     }
 
-    fn transfer(&mut self) -> bool {
-        if self.state != CancellationReceiptState::Received {
-            return false;
+    fn take_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
+        if self.state != CancellationReceiptState::Received
+            || self.ingress.as_ref()?.ordinal() != ordinal
+        {
+            return None;
         }
+        let ingress = self.ingress.take()?;
         self.state = CancellationReceiptState::Transferred;
-        true
+        Some(ingress)
     }
 
     fn commit_transferred(&mut self) {
@@ -316,11 +326,41 @@ impl NativeCloseControl {
         Ok(())
     }
 
-    pub(crate) fn take_promoted_ingress(&mut self) -> Vec<ReservedHostRecord> {
+    pub(crate) fn parked_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
         self.pending
-            .values_mut()
-            .filter_map(|pending| pending.promoted_ingress.take())
-            .collect()
+            .values()
+            .filter_map(|pending| pending.successor_ingress.as_ref())
+    }
+
+    pub(crate) fn callback_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+        self.pending.values().flat_map(|pending| {
+            pending
+                .cancellation_receipt
+                .as_ref()
+                .and_then(|receipt| receipt.ingress.as_ref())
+                .into_iter()
+                .chain(pending.promoted_ingress.iter())
+        })
+    }
+
+    pub(crate) fn take_callback_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
+        self.pending.values_mut().find_map(|pending| {
+            if let Some(ingress) = pending
+                .cancellation_receipt
+                .as_mut()
+                .and_then(|receipt| receipt.take_ingress(ordinal))
+            {
+                return Some(ingress);
+            }
+            if pending
+                .promoted_ingress
+                .as_ref()
+                .is_some_and(|ingress| ingress.ordinal() == ordinal)
+            {
+                return pending.promoted_ingress.take();
+            }
+            None
+        })
     }
 
     pub(crate) fn deferred_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
@@ -527,26 +567,15 @@ impl NativeCloseControl {
     pub(crate) fn receive_cancellation_callback(
         &mut self,
         record: NativeViewportCloseCancellationRecord,
+        reserve: impl FnOnce() -> ReservedHostRecord,
     ) -> NativeCloseCallbackAdmission {
         self.pending
             .values_mut()
             .find(|pending| pending.matches_cancellation(record))
             .and_then(|pending| pending.cancellation_receipt.as_mut())
-            .map_or(
-                NativeCloseCallbackAdmission::Unreserved,
-                CancellationReceipt::receive,
-            )
-    }
-
-    pub(crate) fn transfer_cancellation_callback(
-        &mut self,
-        record: NativeViewportCloseCancellationRecord,
-    ) -> bool {
-        self.pending
-            .values_mut()
-            .find(|pending| pending.matches_cancellation(record))
-            .and_then(|pending| pending.cancellation_receipt.as_mut())
-            .is_some_and(CancellationReceipt::transfer)
+            .map_or(NativeCloseCallbackAdmission::Unreserved, |receipt| {
+                receipt.receive(reserve)
+            })
     }
 
     /// Full frame boundaries alone commit a transferred cancellation callback.

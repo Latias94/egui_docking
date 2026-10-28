@@ -6,7 +6,8 @@ use dockspace::runtime::{
 };
 use eframe::NativeOutputResult;
 
-use super::OutputReservation;
+use super::journal::ReservedHostRecord;
+use super::{HostRecord, OutputReservation};
 
 pub(crate) enum PendingNativeOutput {
     Surface(PaintedSurfaceOutput),
@@ -50,6 +51,8 @@ pub(super) struct NativeOutputResource {
     pub(super) reservation: OutputReservation,
     pub(super) paint: Option<PendingNativeOutput>,
     pub(super) terminal: Option<NativeOutputResult>,
+    // Keep the exact callback order and age through submission until full commit.
+    terminal_ingress: Option<ReservedHostRecord>,
     pub(super) submitted: bool,
     budget: Option<NativeInputBudget>,
 }
@@ -60,6 +63,7 @@ impl NativeOutputResource {
             reservation,
             paint: None,
             terminal: None,
+            terminal_ingress: None,
             submitted: false,
             budget: Some(budget),
         }
@@ -83,6 +87,30 @@ impl NativeOutputResource {
         self.reservation.terminal_recorded = true;
         self.terminal = Some(result);
         self.budget = None;
+    }
+
+    pub(super) fn terminal_ingress(&self) -> Option<&ReservedHostRecord> {
+        self.terminal_ingress.as_ref()
+    }
+
+    /// Retains one exact terminal envelope after its metadata has been recorded.
+    /// Submission leaves this envelope in place until the full commit removes its owner.
+    pub(super) fn retain_terminal_ingress(&mut self, ingress: ReservedHostRecord) -> bool {
+        if self.reservation.abandoned
+            || !self.reservation.terminal_recorded
+            || self.submitted
+            || self.terminal_ingress.is_some()
+        {
+            return false;
+        }
+        if !matches!(
+            (self.terminal, ingress.record()),
+            (Some(result), HostRecord::Output { token }) if result.token() == *token
+        ) {
+            return false;
+        }
+        self.terminal_ingress = Some(ingress);
+        true
     }
 
     pub(super) fn bind_paint(

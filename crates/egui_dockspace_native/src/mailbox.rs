@@ -1857,19 +1857,18 @@ impl HostRecords {
     fn retained_record_count(&self) -> usize {
         self.journal
             .retained_record_count()
-            .saturating_add(self.close_control.deferred_ingress().count())
-            .saturating_add(self.window_resources.callback_ingress().count())
+            .saturating_add(self.close_control.parked_ingress().count())
+            .saturating_add(self.owner_ingress().count())
     }
 
     fn oldest_record_age(&self) -> Option<std::time::Duration> {
         let deferred = self
             .close_control
-            .deferred_ingress()
+            .parked_ingress()
             .map(|record| self.journal.age_since(record.captured_at()))
             .max();
         let callback = self
-            .window_resources
-            .callback_ingress()
+            .owner_ingress()
             .map(|record| self.journal.age_since(record.captured_at()))
             .max();
         self.journal
@@ -1880,14 +1879,23 @@ impl HostRecords {
             .max()
     }
 
-    fn first_callback_ingress(&self) -> Option<&ReservedHostRecord> {
+    fn owner_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
         self.window_resources
             .callback_ingress()
-            .min_by_key(|record| record.ordinal())
+            .chain(self.close_control.callback_ingress())
+            .chain(
+                self.output_resources
+                    .values()
+                    .filter_map(NativeOutputResource::terminal_ingress),
+            )
+    }
+
+    fn first_owner_ingress(&self) -> Option<&ReservedHostRecord> {
+        self.owner_ingress().min_by_key(|record| record.ordinal())
     }
 
     fn front_ingress(&self) -> Option<&ReservedHostRecord> {
-        match (self.journal.front_reserved(), self.first_callback_ingress()) {
+        match (self.journal.front_reserved(), self.first_owner_ingress()) {
             (Some(raw), Some(callback)) if callback.ordinal() < raw.ordinal() => Some(callback),
             (Some(raw), _) => Some(raw),
             (None, callback) => callback,
@@ -1899,13 +1907,31 @@ impl HostRecords {
     }
 
     fn raw_prefix(&self) -> impl Iterator<Item = &HostRecord> {
-        let cutoff = self
-            .first_callback_ingress()
-            .map(ReservedHostRecord::ordinal);
+        let cutoff = self.first_owner_ingress().map(ReservedHostRecord::ordinal);
         self.journal
             .reserved_iter()
             .take_while(move |record| cutoff.is_none_or(|cutoff| record.ordinal() < cutoff))
             .map(ReservedHostRecord::record)
+    }
+
+    /// Resource slots share the journal clock without allocating another queue.
+    fn ordered_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+        let mut raw = self.journal.reserved_iter().peekable();
+        let mut after = 0;
+        std::iter::from_fn(move || {
+            let owned = self
+                .owner_ingress()
+                .filter(|record| record.ordinal() > after)
+                .min_by_key(|record| record.ordinal());
+            let next = match (raw.peek().copied(), owned) {
+                (Some(raw), Some(owned)) if owned.ordinal() < raw.ordinal() => owned,
+                (Some(_), _) => raw.next().expect("the peeked raw ingress remains present"),
+                (None, Some(owned)) => owned,
+                (None, None) => return None,
+            };
+            after = next.ordinal();
+            Some(next)
+        })
     }
 
     fn transfer_front_record(&mut self) {
@@ -1913,9 +1939,18 @@ impl HostRecords {
             .front_ingress()
             .expect("the exact front record was checked before transfer")
             .ordinal();
-        if let Some(record) = self.window_resources.take_callback_ingress(ordinal) {
+        if let Some(record) = self
+            .window_resources
+            .take_callback_ingress(ordinal)
+            .or_else(|| self.close_control.take_callback_ingress(ordinal))
+        {
             self.journal.transfer_reserved(record);
         } else {
+            assert_eq!(
+                self.journal.front_ordinal(),
+                Some(ordinal),
+                "only the exact raw or resource-owned head can transfer"
+            );
             self.journal.transfer_front(1);
         }
     }
@@ -2025,9 +2060,13 @@ impl HostRecords {
             };
         }
         let wake_after_current = metadata.wakes_after_current();
-        self.journal.push_back(HostRecord::Output {
+        let ingress = self.journal.reserve(HostRecord::Output {
             token: result.token(),
         });
+        assert!(
+            reservation.retain_terminal_ingress(ingress),
+            "the validated output retains its exact terminal reservation"
+        );
         if wake_after_current {
             OutputRecordDisposition::RecordedAfterCurrent
         } else {
@@ -2206,12 +2245,7 @@ impl HostRecords {
     }
 
     fn record_staging_painted(&mut self, record: NativeStagingPaintRecord) -> bool {
-        if !self.mode.accepts_new_work()
-            || self.window_resources.staging(record.token.viewport_id()) != Some(record.request)
-            || self.journal.iter().any(|queued| {
-                matches!(queued, HostRecord::StagingPainted(existing) if existing.request == record.request)
-            })
-        {
+        if !self.mode.accepts_terminal_callbacks() {
             return false;
         }
         let Some(reservation) = self.output_resources.get(&record.token) else {
@@ -2220,15 +2254,9 @@ impl HostRecords {
         if reservation.reservation.binding() != Some(record.request.binding()) {
             return false;
         }
-        let removed = self
-            .window_resources
-            .take_staging(record.token.viewport_id(), record.request);
-        debug_assert!(
-            removed,
-            "the exact staging slot was checked before taking it"
-        );
-        self.journal.push_back(HostRecord::StagingPainted(record));
-        true
+        self.window_resources.receive_staging(record, || {
+            self.journal.reserve(HostRecord::StagingPainted(record))
+        })
     }
 
     fn semantic_prelude_ready(&self) -> bool {
@@ -2252,11 +2280,11 @@ impl HostRecords {
         {
             return false;
         }
-        let previous_len = self.journal.len();
-        self.journal.retain(
-            |record| !matches!(record, HostRecord::Output { token: current } if *current == token),
-        );
-        if self.journal.len() != previous_len {
+        if self
+            .output_resources
+            .get(&token)
+            .is_some_and(|resource| resource.terminal_ingress().is_some())
+        {
             self.output_resources.remove(&token);
             return true;
         }
@@ -2302,11 +2330,7 @@ impl HostRecords {
         if self
             .journal
             .iter()
-            .chain(
-                self.window_resources
-                    .callback_ingress()
-                    .map(ReservedHostRecord::record),
-            )
+            .chain(self.owner_ingress().map(ReservedHostRecord::record))
             .any(HostRecord::requires_terminal_roster)
         {
             self.terminal_roster.require();
@@ -2568,13 +2592,16 @@ impl HostRecords {
         if !self.mode.accepts_terminal_callbacks() {
             return false;
         }
-        if self.close_control.receive_cancellation_callback(record)
+        if self
+            .close_control
+            .receive_cancellation_callback(record, || {
+                self.journal
+                    .reserve(HostRecord::ViewportCloseCancelled(record))
+            })
             != NativeCloseCallbackAdmission::First
         {
             return false;
         }
-        self.journal
-            .push_back(HostRecord::ViewportCloseCancelled(record));
         true
     }
 
@@ -2895,12 +2922,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn settle_close_requests(&self, applied: bool) -> usize {
-        let mut records = self.lock();
-        let count = records.close_control.settle_clear(applied);
-        for ingress in records.close_control.take_promoted_ingress() {
-            records.journal.push_reserved(ingress);
-        }
-        count
+        self.lock().close_control.settle_clear(applied)
     }
 
     fn lock(&self) -> MutexGuard<'_, HostRecords> {
@@ -3236,12 +3258,6 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportCloseCancelled(record)) if *record == expected
         );
         if matches {
-            if !records
-                .close_control
-                .transfer_cancellation_callback(expected)
-            {
-                return false;
-            }
             records.transfer_front_record();
             records.event_boundary_pending = true;
         }
@@ -3386,7 +3402,8 @@ impl NativeHostBridge {
             return Vec::new();
         }
         let outputs: Vec<_> = records
-            .raw_prefix()
+            .ordered_ingress()
+            .map(ReservedHostRecord::record)
             .skip(records.submitted_output_prefix)
             .take(limit)
             .map_while(|record| match record {
@@ -3424,7 +3441,11 @@ impl NativeHostBridge {
 
     pub(crate) fn has_unsubmitted_output_prefix(&self) -> bool {
         let records = self.lock();
-        match records.raw_prefix().nth(records.submitted_output_prefix) {
+        match records
+            .ordered_ingress()
+            .map(ReservedHostRecord::record)
+            .nth(records.submitted_output_prefix)
+        {
             Some(HostRecord::Output { token }) => records
                 .output_resources
                 .get(token)
@@ -3611,20 +3632,12 @@ impl NativeHostBridge {
         requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
     ) -> Result<Vec<ViewportId>, NativeHostProtocolError> {
         let mut records = self.lock();
-        let in_flight = records
-            .journal
-            .iter()
-            .filter_map(|record| match record {
-                HostRecord::StagingPainted(record) => Some(record.request()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         // Empty control frames do not revoke a pending callback. A later
         // request for the same viewport does replace its basis, because core
         // reissues staging after newer exact window observations.
         records
             .window_resources
-            .publish_staging(requests, &in_flight)
+            .publish_staging(requests)
             .ok_or(NativeHostProtocolError::OutputRouteAttachmentFailed)
     }
 
@@ -3766,6 +3779,15 @@ impl NativeHostBridge {
             .is_some_and(|resource| resource.paint.is_some())
     }
 
+    pub(crate) fn accepts_staging_paint(&self, token: NativeOutputToken) -> bool {
+        let records = self.lock();
+        records.mode.accepts_new_work()
+            && records
+                .output_resources
+                .get(&token)
+                .is_some_and(|resource| !resource.reservation.abandoned && !resource.submitted)
+    }
+
     pub(crate) fn pending_output_count(&self) -> usize {
         self.lock()
             .output_resources
@@ -3844,7 +3866,7 @@ impl NativeHostBridge {
     pub(crate) fn mark_output_submitted(&self, token: NativeOutputToken) -> bool {
         let mut records = self.lock();
         let index = records.submitted_output_prefix;
-        if !matches!(records.raw_prefix().nth(index), Some(HostRecord::Output { token: current }) if *current == token)
+        if !matches!(records.ordered_ingress().nth(index).map(ReservedHostRecord::record), Some(HostRecord::Output { token: current }) if *current == token)
         {
             return false;
         }
@@ -3902,7 +3924,6 @@ impl NativeHostBridge {
             {
                 break;
             }
-            records.journal.pop_front();
             records.output_resources.remove(&token);
             records.submitted_output_prefix -= 1;
         }

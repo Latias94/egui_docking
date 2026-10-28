@@ -32,7 +32,7 @@ fn close_event(
 fn deferred_events(native: &NativeCoordinator) -> Vec<NativeWindowEventRecord> {
     native.bridge.with_close_control(|control| {
         control
-            .deferred_ingress()
+            .parked_ingress()
             .map(|ingress| {
                 ingress
                     .window_event()

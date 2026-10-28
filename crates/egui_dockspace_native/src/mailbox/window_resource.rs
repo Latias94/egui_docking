@@ -12,10 +12,52 @@ use winit::window::WindowId;
 
 use super::command_callback::{CommandCallbackAdmission, NativeCommandCallbacks};
 use super::journal::ReservedHostRecord;
-use super::{HostRecord, NativeCreateReservation};
+use super::{HostRecord, NativeCreateReservation, NativeStagingPaintRecord};
 use crate::focus_control::NativeViewportFocusRecord;
 use crate::input_control::NativePointerPassthroughRecord;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
+
+#[derive(Debug)]
+struct StagingReceipt {
+    request: NativeStagingPaintRequest,
+    ingress: Option<ReservedHostRecord>,
+    transferred: bool,
+}
+
+impl StagingReceipt {
+    const fn new(request: NativeStagingPaintRequest) -> Self {
+        Self {
+            request,
+            ingress: None,
+            transferred: false,
+        }
+    }
+
+    fn is_awaiting(&self) -> bool {
+        self.ingress.is_none() && !self.transferred
+    }
+
+    fn receive(
+        &mut self,
+        expected: NativeStagingPaintRequest,
+        reserve: impl FnOnce() -> ReservedHostRecord,
+    ) -> bool {
+        if self.request != expected || !self.is_awaiting() {
+            return false;
+        }
+        self.ingress = Some(reserve());
+        true
+    }
+
+    fn take_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
+        if self.transferred || self.ingress.as_ref()?.ordinal() != ordinal {
+            return None;
+        }
+        let ingress = self.ingress.take()?;
+        self.transferred = true;
+        Some(ingress)
+    }
+}
 
 #[derive(Debug)]
 struct NativeWindowResource {
@@ -23,7 +65,7 @@ struct NativeWindowResource {
     retired: bool,
     create_rect: Option<NativePhysicalRect>,
     hidden_render: bool,
-    staging: Option<NativeStagingPaintRequest>,
+    staging: Option<StagingReceipt>,
     callbacks: NativeCommandCallbacks,
 }
 
@@ -105,7 +147,8 @@ impl NativeWindowResources {
     }
 
     pub(super) fn staging(&self, viewport: ViewportId) -> Option<NativeStagingPaintRequest> {
-        self.active_resource(viewport)?.staging
+        let staging = self.active_resource(viewport)?.staging.as_ref()?;
+        staging.is_awaiting().then_some(staging.request)
     }
 
     pub(super) fn reserve_create(
@@ -166,48 +209,62 @@ impl NativeWindowResources {
     }
 
     /// Validates every binding before mutating any slot.
+    ///
+    /// A captured terminal retains its slot through full commit. Core derives
+    /// current staging requests on every frame, so a newer basis can be retried
+    /// after that commit without buffering a second request here.
     pub(super) fn publish_staging(
         &mut self,
         requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
-        in_flight: &[NativeStagingPaintRequest],
     ) -> Option<Vec<ViewportId>> {
         if !self.can_publish_staging(&requests) {
             return None;
         }
         let mut wake = Vec::new();
         for (viewport, request) in requests {
-            if in_flight.contains(&request) {
-                continue;
-            }
             let resource = self
                 .command_owner(viewport, request.binding())
                 .expect("all staging owners were validated before mutation");
-            if resource.staging.replace(request).is_none() {
-                wake.push(viewport);
+            match &mut resource.staging {
+                Some(staging) if staging.request == request || !staging.is_awaiting() => {}
+                Some(staging) => *staging = StagingReceipt::new(request),
+                None => {
+                    resource.staging = Some(StagingReceipt::new(request));
+                    wake.push(viewport);
+                }
             }
         }
         Some(wake)
     }
 
-    pub(super) fn take_staging(
+    /// Only the first exact paint captures ingress into the existing staging owner.
+    pub(super) fn receive_staging(
         &mut self,
-        viewport: ViewportId,
-        expected: NativeStagingPaintRequest,
+        record: NativeStagingPaintRecord,
+        reserve: impl FnOnce() -> ReservedHostRecord,
     ) -> bool {
-        let Some(resource) = self.entries.get_mut(&(viewport, expected.binding())) else {
+        let key = (record.token().viewport_id(), record.request().binding());
+        let Some(resource) = self.entries.get_mut(&key) else {
             return false;
         };
-        if resource.staging != Some(expected) {
+        if resource.retired {
             return false;
         }
-        resource.staging = None;
-        self.prune(viewport, expected.binding());
-        true
+        let Some(staging) = &mut resource.staging else {
+            return false;
+        };
+        staging.receive(record.request(), reserve)
     }
 
     pub(super) fn clear_staging(&mut self) {
         self.entries.retain(|_, resource| {
-            resource.staging = None;
+            if resource
+                .staging
+                .as_ref()
+                .is_some_and(StagingReceipt::is_awaiting)
+            {
+                resource.staging = None;
+            }
             !resource.is_empty()
         });
     }
@@ -219,7 +276,13 @@ impl NativeWindowResources {
         resource.retired = true;
         resource.create_rect = None;
         resource.hidden_render = false;
-        resource.staging = None;
+        if resource
+            .staging
+            .as_ref()
+            .is_some_and(StagingReceipt::is_awaiting)
+        {
+            resource.staging = None;
+        }
         // An already dispatched terminal keeps its original owner through full commit.
         self.prune(viewport, binding);
     }
@@ -388,20 +451,37 @@ impl NativeWindowResources {
     }
 
     pub(super) fn callback_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.entries
-            .values()
-            .flat_map(|owner| owner.callbacks.callback_ingress())
+        self.entries.values().flat_map(|owner| {
+            owner.callbacks.callback_ingress().chain(
+                owner
+                    .staging
+                    .iter()
+                    .filter_map(|staging| staging.ingress.as_ref()),
+            )
+        })
     }
 
     pub(super) fn take_callback_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
-        self.entries
-            .values_mut()
-            .find_map(|owner| owner.callbacks.take_callback_ingress(ordinal))
+        self.entries.values_mut().find_map(|owner| {
+            owner.callbacks.take_callback_ingress(ordinal).or_else(|| {
+                owner
+                    .staging
+                    .as_mut()
+                    .and_then(|staging| staging.take_ingress(ordinal))
+            })
+        })
     }
 
     pub(super) fn commit_transferred_callbacks(&mut self) {
         for owner in self.entries.values_mut() {
             owner.callbacks.commit_transferred();
+            if owner
+                .staging
+                .as_ref()
+                .is_some_and(|staging| staging.transferred)
+            {
+                owner.staging = None;
+            }
         }
         self.entries.retain(|_, resource| !resource.is_empty());
     }
@@ -419,14 +499,18 @@ impl NativeWindowResources {
 
 #[cfg(test)]
 mod tests {
+    use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
     use dockspace::model::{
-        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
-        RootId, SurfaceId,
+        DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+        DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
-        DockspaceSession, HostInputOutcome, HostWindowToken, NativeMonotonicClock,
-        NativePointerRoster, SurfaceUnavailableReason,
+        DockspaceSession, HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState,
+        NativeEffectAcknowledgement, NativeEffectOperation, NativeMonotonicClock,
+        NativePointerRoster, NativeReceiverAnswer, NativeWindowFacts, NativeWindowInputState,
+        NativeWindowPlacement, NativeWindowPresentationState, NativeWorkAreaRoster,
+        SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
     };
     use eframe::{
         NativeViewportFocusStatus, NativeViewportPointerPassthroughStatus,
@@ -435,6 +519,305 @@ mod tests {
 
     use super::super::{HostRecord, journal::HostIngressJournal};
     use super::*;
+
+    fn commit_deferred(session: &mut DockspaceSession) -> HostFrameReport {
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap()
+    }
+
+    // Obtain two real bases from the public create lifecycle, without constructing
+    // opaque staging requests or eframe output tokens in the adapter tests.
+    fn reissued_staging_requests() -> [NativeStagingPaintRequest; 2] {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(2);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            surface,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )
+        .with_contained(DockspaceContainedLayout::new(
+            FloatingPresentationId::new(1),
+            DockspaceRootLayout::new(root, DockspaceNode::central_tabs([ItemId::new(2)])),
+            LogicalRect::new(40.0, 50.0, 360.0, 280.0).unwrap(),
+        ))])
+        .unwrap();
+        let mut policy = DockPolicy::default();
+        policy.set_allow_native_surfaces(true);
+        let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .unwrap();
+        session
+            .register_native_root(surface, HostWindowToken::new(1))
+            .unwrap();
+        let registration = commit_deferred(&mut session);
+        let binding = registration
+            .inputs()
+            .iter()
+            .find_map(|input| match input {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .unwrap();
+        let bounds = PhysicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap();
+        let scale = ScaleFactor::new(1.0).unwrap();
+        let facts = NativeWindowFacts::live()
+            .with_content_bounds(bounds)
+            .with_outer_bounds(bounds)
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_close(NativeCloseState::Clear, None);
+        session
+            .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
+            .unwrap();
+        commit_deferred(&mut session);
+        let mut measurement = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        measurement
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    80.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        measurement.commit().unwrap();
+        let mut paint = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let receipt = paint
+            .paint_plan(surface)
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        paint.confirm_surface_painted(receipt).unwrap();
+        let mut report = paint.commit().unwrap();
+        let output = report.take_painted_outputs().pop().unwrap();
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        commit_deferred(&mut session);
+        let placement = PhysicalRect::new(920.0, 120.0, 420.0, 320.0).unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .move_root_to_new_window_current(root, NativeWindowPlacement::new(placement))
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = frame.commit().unwrap();
+        let create = report.take_native_effects().pop().unwrap();
+        let child = match create.operation() {
+            NativeEffectOperation::CreateWindow { binding, .. } => *binding,
+            operation => panic!("unexpected native create effect: {operation:?}"),
+        };
+        let Some(NativeEffectAcknowledgement::Presentation(created)) = create.accepted() else {
+            panic!("the create request must provide its presentation acknowledgement")
+        };
+        let mut acknowledgement = Some(created);
+        let requests = std::array::from_fn(|_| {
+            let child_facts = NativeWindowFacts::live()
+                .with_content_bounds(placement)
+                .with_outer_bounds(placement)
+                .with_native_scale_factor(scale)
+                .with_presentation_scale_factor(scale)
+                .with_input(NativeWindowInputState::ReceivesInput, None)
+                .with_presentation(
+                    NativeWindowPresentationState::Hidden,
+                    acknowledgement.take(),
+                )
+                .with_close(NativeCloseState::Clear, None);
+            session
+                .report_managed_native_snapshot(
+                    [(binding, facts), (child, child_facts)],
+                    NativeWorkAreaRoster::Unknown,
+                )
+                .unwrap();
+            let mut frame = session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            let request = frame
+                .native_staging_paints()
+                .into_iter()
+                .find(|request| request.binding() == child)
+                .expect("the hidden child must request an exact staging paint");
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            frame.commit().unwrap();
+            request
+        });
+        assert_ne!(requests[0], requests[1]);
+        requests
+    }
+
+    // The private receipt protocol only needs the journal envelope. Callback
+    // target/token qualification remains in receive_staging and mailbox tests.
+    fn staging_ingress(journal: &mut HostIngressJournal) -> ReservedHostRecord {
+        journal.reserve(HostRecord::DeviceRemoval(
+            crate::event::NativeDeviceRemovalRecord::for_test(1),
+        ))
+    }
+
+    #[test]
+    fn staging_receipt_only_mints_ingress_for_the_first_exact_basis() {
+        let [first, newer] = reissued_staging_requests();
+        let mut receipt = StagingReceipt::new(first);
+        let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
+        assert!(!receipt.receive(newer, || panic!("a different basis cannot reserve ingress")));
+        assert_eq!(journal.captured_through(), 0);
+        assert!(receipt.receive(first, || staging_ingress(&mut journal)));
+        let ordinal = receipt.ingress.as_ref().unwrap().ordinal();
+        assert!(!receipt.is_awaiting());
+        assert!(!receipt.receive(first, || panic!("a duplicate cannot reserve ingress")));
+        assert!(!receipt.receive(newer, || panic!(
+            "a different basis cannot overwrite ingress"
+        )));
+        assert!(receipt.take_ingress(ordinal + 1).is_none());
+        let ingress = receipt.take_ingress(ordinal).unwrap();
+        assert_eq!(ingress.ordinal(), ordinal);
+        journal.transfer_reserved(ingress);
+        assert_eq!(journal.captured_through(), ordinal);
+        assert_eq!(journal.retained_record_count(), 1);
+        assert!(receipt.transferred);
+        assert!(!receipt.is_awaiting());
+        assert!(receipt.take_ingress(ordinal).is_none());
+        assert!(!receipt.receive(first, || panic!("handoff cannot reopen the receipt")));
+    }
+
+    #[test]
+    fn staging_received_and_transferred_survive_clear_and_retirement_until_full_commit() {
+        let [request, _] = reissued_staging_requests();
+        let viewport = ViewportId::from_hash_of("staging-retirement");
+        let binding = request.binding();
+        for retire_before_transfer in [false, true] {
+            let mut resources = NativeWindowResources::default();
+            let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
+            resources
+                .publish_staging(BTreeMap::from([(viewport, request)]))
+                .unwrap();
+            resources.clear_staging();
+            assert!(!resources.references_binding(binding));
+            resources
+                .publish_staging(BTreeMap::from([(viewport, request)]))
+                .unwrap();
+            let receipt = resources
+                .entries
+                .get_mut(&(viewport, binding))
+                .unwrap()
+                .staging
+                .as_mut()
+                .unwrap();
+            assert!(receipt.receive(request, || staging_ingress(&mut journal)));
+            let ordinal = resources.callback_ingress().next().unwrap().ordinal();
+            resources.clear_staging();
+            if retire_before_transfer {
+                resources.retire(viewport, binding);
+            }
+            resources.commit_transferred_callbacks();
+            assert!(resources.references_binding(binding));
+            assert!(resources.has_pending_work());
+            assert!(resources.staging(viewport).is_none());
+            assert_eq!(resources.callback_ingress().count(), 1);
+            let ingress = resources.take_callback_ingress(ordinal).unwrap();
+            journal.transfer_reserved(ingress);
+            resources.clear_staging();
+            resources.retire(viewport, binding);
+            assert!(resources.references_binding(binding));
+            assert!(resources.has_pending_work());
+            assert!(resources.callback_ingress().next().is_none());
+            assert!(resources.take_callback_ingress(ordinal).is_none());
+            assert_eq!(journal.retained_record_count(), 1);
+            resources.commit_transferred_callbacks();
+            journal.commit_transferred();
+            assert!(!resources.references_binding(binding));
+            assert!(!resources.has_pending_work());
+            assert_eq!(journal.retained_record_count(), 0);
+        }
+    }
+
+    #[test]
+    fn staging_new_basis_waits_for_full_commit_then_reissues_without_a_second_slot() {
+        let [first, newer] = reissued_staging_requests();
+        let viewport = ViewportId::from_hash_of("staging-reissued-basis");
+        let binding = first.binding();
+        let mut resources = NativeWindowResources::default();
+        let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
+        assert_eq!(
+            resources.publish_staging(BTreeMap::from([(viewport, first)])),
+            Some(vec![viewport]),
+        );
+        let receipt = resources
+            .entries
+            .get_mut(&(viewport, binding))
+            .unwrap()
+            .staging
+            .as_mut()
+            .unwrap();
+        assert!(receipt.receive(first, || staging_ingress(&mut journal)));
+        let ordinal = resources.callback_ingress().next().unwrap().ordinal();
+        for request in [first, newer] {
+            assert_eq!(
+                resources.publish_staging(BTreeMap::from([(viewport, request)])),
+                Some(Vec::new()),
+            );
+        }
+        resources.commit_transferred_callbacks();
+        assert_eq!(resources.callback_ingress().count(), 1);
+        assert_eq!(
+            resources.callback_ingress().next().unwrap().ordinal(),
+            ordinal
+        );
+        assert!(resources.staging(viewport).is_none());
+        let ingress = resources.take_callback_ingress(ordinal).unwrap();
+        journal.transfer_reserved(ingress);
+        assert_eq!(
+            resources.publish_staging(BTreeMap::from([(viewport, newer)])),
+            Some(Vec::new()),
+        );
+        assert!(resources.staging(viewport).is_none());
+        assert_eq!(journal.captured_through(), ordinal);
+        resources.commit_transferred_callbacks();
+        journal.commit_transferred();
+        assert_eq!(
+            resources.publish_staging(BTreeMap::from([(viewport, newer)])),
+            Some(vec![viewport]),
+        );
+        assert_eq!(resources.staging(viewport), Some(newer));
+        let receipt = resources
+            .entries
+            .get_mut(&(viewport, binding))
+            .unwrap()
+            .staging
+            .as_mut()
+            .unwrap();
+        assert!(!receipt.receive(first, || panic!("the old basis cannot claim its successor")));
+        assert!(receipt.receive(newer, || staging_ingress(&mut journal)));
+        assert_eq!(journal.captured_through(), ordinal + 1);
+        assert_eq!(resources.callback_ingress().count(), 1);
+        assert!(resources.staging(viewport).is_none());
+    }
 
     fn bindings() -> (NativeSurfaceBinding, NativeSurfaceBinding) {
         let layout = DockspaceLayout::new([1, 2].map(|id| {

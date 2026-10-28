@@ -107,13 +107,6 @@ impl HostIngressJournal {
         }
     }
 
-    pub(super) fn push_reserved(&mut self, record: ReservedHostRecord) {
-        let index = self
-            .queue
-            .partition_point(|entry| entry.ordinal < record.ordinal);
-        self.queue.insert(index, record);
-    }
-
     pub(super) fn push_back(&mut self, record: HostRecord) {
         let record = self.reserve(record);
         self.queue.push_back(record);
@@ -138,10 +131,6 @@ impl HostIngressJournal {
     /// Removes a superseded or already committed raw record.
     pub(super) fn pop_front(&mut self) -> Option<HostRecord> {
         self.queue.pop_front().map(|entry| entry.record)
-    }
-
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&HostRecord) -> bool) {
-        self.queue.retain(|entry| keep(&entry.record));
     }
 
     /// Moves the exact raw prefix into the still-uncommitted core boundary.
@@ -233,14 +222,14 @@ mod tests {
         journal.pop_front().unwrap();
         assert_eq!(journal.front_ordinal(), Some(2));
         assert_eq!(journal.oldest_age(), Some(Duration::from_millis(75)));
-        journal.retain(|_| false);
+        journal.pop_front().unwrap();
         assert_eq!(journal.oldest_age(), None);
         journal.push_back(record(3));
         assert_eq!(journal.front_ordinal(), Some(3));
     }
 
     #[test]
-    fn lifecycle_reservation_rejoins_without_renewing_identity_or_age() {
+    fn lifecycle_reservation_transfers_without_requeueing_or_renewing_identity_or_age() {
         let (mut journal, now) = journal();
         journal.push_back(record(1));
         now.store(10, Ordering::SeqCst);
@@ -252,14 +241,16 @@ mod tests {
         journal.commit_transferred();
         assert_eq!(journal.front_ordinal(), Some(3));
 
-        // An existing lifecycle owner releases this reservation only after
-        // its predecessor commits. Later raw callbacks retain their order.
+        // An existing lifecycle owner transfers its reservation directly after
+        // its predecessor commits. The later raw callback remains queued.
         now.store(250, Ordering::SeqCst);
-        journal.push_reserved(waiting);
-        assert_eq!(journal.front_ordinal(), Some(2));
-        assert_eq!(journal.oldest_age(), Some(Duration::from_millis(240)));
+        assert_eq!(waiting.ordinal(), 2);
+        assert_eq!(
+            journal.age_since(waiting.captured_at()),
+            Duration::from_millis(240)
+        );
+        journal.transfer_reserved(waiting);
         assert_eq!(journal.captured_through(), 3);
-        journal.transfer_front(1);
         assert_eq!(journal.front_ordinal(), Some(3));
         assert_eq!(journal.oldest_age(), Some(Duration::from_millis(240)));
         journal.commit_transferred();
