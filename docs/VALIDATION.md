@@ -15,6 +15,67 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U8 exact command callbacks and retirement-safe property dispatch
+
+The local eframe fork now provides opaque tokens for host-owned focus and
+visibility commands, alongside pointer pass-through. Each typed command owns
+its native operation and echoes its token. Ordinary Focus/Visible commands and
+builder deltas cannot consume a typed token or produce a typed callback.
+The property queue belongs to the native-host attachment and preserves enqueue
+order per viewport, including cross-property order. Missing attachments schedule
+no operation; viewport/window retirement removes their pending typed commands.
+
+Inspection found two concrete identity defects in the previous adapter: an
+ordinary Focus result could claim a newer focus request on the same window,
+and a same-value visibility result captured before Show ownership could consume
+the later Show request. The adapter now matches token, viewport, window and
+binding before consuming either request. Requested focus still requires a
+subsequent real focus observation. Show dispatch still requires later window
+and first-live presentation evidence. Removing these token checks in a local
+scratch mutation fails both new delayed-result regressions.
+
+The window resource also owns fixed callback receipts for pointer pass-through,
+focus, visibility and held-close cancellation. A callback moves its existing
+receipt through received and transferred states; only a complete committed
+causal boundary settles it. Partial commit and raw-to-core handoff cannot permit
+a successor to overwrite the receipt. Committed identity remains a deduplication
+tombstone without keeping the runtime pending. This is command reservation
+groundwork, not yet protected overload admission or complete resource accounting.
+
+Independent review found an additional retirement defect: ordinary companion
+property commands used to wake hidden logic could remain in Context or renderer
+deferred commands after the typed queue was cleared, then affect a successor
+window. The fork now requests repaint without emitting property companions.
+Glow and WGPU logic-only dispatch include pending typed targets explicitly,
+without forcing hidden UI execution. The regression replays both pre-retirement
+FullOutput/LogicOutput commands and residual Context commands against a
+successor, preserving application-owned ordinary commands. Restoring companions
+fails with the three stale ordinary property operations. FullOutput fixtures
+first settle the upstream initial theme/font output and explicitly clear unused
+texture deltas; these are command models, not renderer submission evidence.
+
+The final combined Glow/WGPU fork library passes 75 tests normally and 75 with
+eframe debug assertions disabled. The refreshed native workspace passes all
+244 all-target tests normally and 244 with native debug assertions disabled.
+Correctness/suspicious Clippy, strict rustdoc, formatting and diff whitespace
+pass. Fork rustdoc enables inspection and persistence to resolve upstream's
+feature-specific links; the minimal-feature documentation attempt failed on
+those existing links and is not counted as a pass. Independent follow-up review
+found both identity defects and the companion retirement defect closed.
+
+Three clean macOS Glow redock processes complete in 2.039, 0.612 and 0.619 seconds
+through tear-off, first-live, redock, retirement and runtime quiescence. This
+qualifies programmatic native window/renderer lifecycle, not physical pointer
+input, WM-close, mixed DPI or overload triggering. The local fork commit is
+`7c7b3233541ec724bee561454ba8e9fca384f32e`; it is not pushed. Tracked native and
+CI pins remain at the published baseline, so local overrides are still required.
+
+U7/U8 remain incomplete. Exact create-attempt, held-close ingress and physical
+window-terminal reservations must survive logical route retirement before
+finite protected admission can be integrated. The planned 4,096-record/4 MiB/
+250 ms limits, fixed overload boundary, committed translator recovery and
+load/latency/soak gates remain open, as do later plan units.
+
 ## 2026-10-28 U8 output resource ownership and U7 translator recovery groundwork
 
 The native output token now has one resource owner for its reservation,
