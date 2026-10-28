@@ -15,6 +15,7 @@ use crate::deferred_viewport::{
     DeferredViewportSpec, declare_deferred_viewports, paint_placeholder,
 };
 use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErrorKind};
+use crate::lifecycle_progress::NativeCloseProgress;
 use crate::mailbox::DeferredViewportPaint;
 use crate::surface_driver::{NativeErrorPresentation, NativeRuntimeState, NativeSurfaceUpdate};
 use crate::{NativeActionFailure, NativeActionRequestError};
@@ -65,7 +66,10 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         )
     }
 
-    /// Creates one native application with an explicit synchronous window-close policy.
+    /// Creates one native application with an explicit window-close policy.
+    ///
+    /// The original OS request remains held while ordered input or its close
+    /// decision yields to the next native dispatch budget.
     ///
     /// # Errors
     ///
@@ -153,6 +157,12 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     #[must_use]
     pub fn is_quiescent(&self) -> bool {
         lock_state(&self.state).is_quiescent()
+    }
+
+    /// Returns bounded retained-request and committed-cancellation close counters.
+    #[must_use]
+    pub fn close_progress(&self) -> NativeCloseProgress {
+        lock_state(&self.state).close_progress()
     }
 
     /// Queues one complete-root dock action for the next final root pass.

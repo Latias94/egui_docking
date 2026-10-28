@@ -127,6 +127,7 @@ pub(crate) struct NativeWindowEventRecord {
     viewport_id: Option<ViewportId>,
     binding: Option<NativeSurfaceBinding>,
     pointer_routes: Option<NativePointerRoutes>,
+    close_request: Option<eframe::NativeViewportCloseRequest>,
     event: WindowEvent,
 }
 
@@ -135,13 +136,16 @@ impl NativeWindowEventRecord {
         event: eframe::NativeWindowEvent<'_>,
         viewports: &mut NativeViewportMap,
     ) -> Self {
-        Self::from_ingress_parts(
-            event.ordinal().get(),
-            event.window_id(),
-            event.viewport_id(),
-            event.event().clone(),
-            viewports,
-        )
+        Self {
+            close_request: event.close_request(),
+            ..Self::from_ingress_parts(
+                event.ordinal().get(),
+                event.window_id(),
+                event.viewport_id(),
+                event.event().clone(),
+                viewports,
+            )
+        }
     }
 
     /// Returns the exact eframe event ordinal.
@@ -169,6 +173,12 @@ impl NativeWindowEventRecord {
     #[must_use]
     pub(crate) const fn binding(&self) -> Option<NativeSurfaceBinding> {
         self.binding
+    }
+
+    /// Returns only the close request retained from the original eframe callback.
+    #[must_use]
+    pub(crate) const fn close_request(&self) -> Option<eframe::NativeViewportCloseRequest> {
+        self.close_request
     }
 
     pub(crate) const fn pointer_routes(&self) -> Option<NativePointerRoutes> {
@@ -209,6 +219,17 @@ impl NativeWindowEventRecord {
         &self.event
     }
 
+    /// Freezes the sole attached-window owner claimed by the mailbox ingress.
+    pub(crate) fn qualify_destroyed(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        debug_assert!(matches!(self.event, WindowEvent::Destroyed));
+        self.viewport_id = Some(viewport);
+        self.binding = Some(binding);
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(
         ordinal: u64,
@@ -223,6 +244,7 @@ impl NativeWindowEventRecord {
             viewport_id,
             binding,
             pointer_routes: None,
+            close_request: None,
             event,
         }
     }
@@ -310,6 +332,7 @@ impl NativeWindowEventRecord {
             viewport_id,
             binding,
             pointer_routes,
+            close_request: None,
             event,
         }
     }
@@ -320,6 +343,45 @@ mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
     use winit::event::{DeviceId, ElementState, MouseButton, PointerEventFacts};
+
+    #[test]
+    fn synthetic_close_requests_do_not_carry_close_authority() {
+        let window = WindowId::from(40);
+        let viewport = Some(ViewportId::ROOT);
+        let mut viewports = NativeViewportMap::default();
+        let records = [
+            NativeWindowEventRecord::for_test(
+                1,
+                window,
+                viewport,
+                None,
+                WindowEvent::CloseRequested,
+            ),
+            NativeWindowEventRecord::for_test_snapshot(
+                1,
+                window,
+                viewport,
+                WindowEvent::CloseRequested,
+                &viewports,
+            ),
+            NativeWindowEventRecord::for_test_ingress(
+                1,
+                window,
+                viewport,
+                WindowEvent::CloseRequested,
+                &mut viewports,
+            ),
+        ];
+
+        for record in records {
+            assert!(record.close_request().is_none());
+            assert_eq!(record.ordinal(), 1);
+            assert_eq!(record.window_id(), window);
+            assert_eq!(record.viewport_id(), viewport);
+            assert_eq!(record.binding(), None);
+            assert_eq!(record.event(), &WindowEvent::CloseRequested);
+        }
+    }
 
     #[test]
     fn unmapped_callback_window_is_not_promoted_to_foreign_delivery() {

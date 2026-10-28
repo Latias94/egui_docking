@@ -128,6 +128,24 @@ adapter's exact receipt tests and three real macOS redock runs are recorded in
 `docs/VALIDATION.md`. This commit is local and unpublished; it does not change
 the dependency baseline or complete U7/U8 qualification.
 
+Local follow-up `1f7c541fde99fd69192622a1a36cb642de58ed29` reports exact
+pre-dispatch retirement for queued focus, visibility and pointer pass-through
+commands. Window/viewport forgetting removes only the matching old queue and
+notifies the handler in its original order after releasing the host locks.
+Reentrant callbacks may enqueue successor work without having it removed by
+the earlier cleanup. The receipt carries the original opaque token and requested
+value; it does not claim an OS operation, focus observation or presentation.
+The adapter settles this outcome through the same command owner as a dispatched
+result, so retirement cannot leave an Awaiting reservation permanently live.
+
+The follow-up passes 63 host-seam tests and a WGPU build. The adapter passes 271
+all-target cases normally and 271 with native debug assertions disabled, plus
+programmatic macOS redock. It remains local and unpublished; tracked pins are
+unchanged. Remove the retirement callback together with the typed property queue
+when upstream supplies equivalent exact execution-or-retirement results. No
+docking identity, cancellation policy or second lifecycle owner belongs in this
+seam.
+
 ## Admitted seams
 
 | Seam | Missing upstream fact | Affected platforms | Minimal patch boundary | Checked evidence | Removal or upstream condition |

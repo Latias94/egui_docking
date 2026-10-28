@@ -88,7 +88,7 @@ fn request_replacement_on_existing_viewport() -> (
     native.bridge.push_viewport_roster(live_roster([root]));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the destroyed callback reduces")
             .is_some()
     );
@@ -104,7 +104,7 @@ fn request_replacement_on_existing_viewport() -> (
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the complete roster publishes the destroyed tombstone")
             .is_some()
     );
@@ -136,7 +136,7 @@ fn request_replacement_on_existing_viewport() -> (
     assert_eq!(successor.surface(), predecessor.surface());
 
     native
-        .accept_native_effects(effects)
+        .accept_native_effects(&egui::Context::default(), effects)
         .expect("the replacement request is retained by the native coordinator");
 
     (native, child_viewport, predecessor, successor)
@@ -199,7 +199,7 @@ fn shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor() {
     );
     assert!(!native.session.recognizes_native_binding(predecessor));
 
-    let advance = native.advance_shutdown_boundary();
+    let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
     assert!(advance.commands.is_empty());
     assert!(advance.abandoned_outputs.is_empty());
     assert!(!native.session.is_current_native_binding(successor));

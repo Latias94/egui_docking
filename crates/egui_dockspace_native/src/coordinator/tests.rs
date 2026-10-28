@@ -16,9 +16,11 @@ use winit::event::WindowEvent;
 use super::*;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
+mod budget;
 mod callback_prefix;
 mod close;
 mod focus;
+mod held_close;
 mod ingress_create;
 mod input_control;
 mod replacement;
@@ -29,6 +31,12 @@ mod work_area;
 
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);
+
+fn test_budget() -> NativeInputBudget {
+    NativeInputBudget::new(&dockspace::runtime::NativeMonotonicClock::new(|| {
+        std::time::Duration::ZERO
+    }))
+}
 
 fn test_managed_capabilities() -> NativeHostCapabilities {
     crate::capabilities::capabilities_for_backend(eframe::NativeWindowingBackend::Windows)
@@ -195,7 +203,7 @@ fn shutdown_commits_terminal_no_frame_invalidation_before_clearing_it() {
         .insert(child_binding, invalidation);
     let _ = native.quarantine_after_fatal();
 
-    let advance = native.advance_shutdown_boundary();
+    let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
 
     assert!(advance.errors.is_empty());
     assert!(
@@ -611,7 +619,7 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
 
     assert_eq!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the active cursor prefix reduces")
             .expect("both retained records report progress")
             .get(),
@@ -639,7 +647,7 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
 
     assert!(
         !native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the retained cursor prefix is complete")
             .is_some()
     );
@@ -818,10 +826,13 @@ fn reserved_replacement_revokes_the_predecessor_window_route() {
     let mut successor_source = coordinator();
     let (_, successor) = register_roots(&mut successor_source);
     native
-        .viewports
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .reserve_replacement(child, predecessor, successor)
+        .bridge
+        .replace_viewport_route(
+            child,
+            predecessor,
+            successor,
+            crate::mailbox::NativeViewportReplacement::Reserve,
+        )
         .expect("successor reservation replaces the exact predecessor");
 
     let viewports = native
@@ -854,7 +865,7 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
     );
     assert_eq!(
         native.bridge.record_viewport_create_failure_for_test(child),
-        NativeHostWake::RepaintRoot,
+        NativeHostWake::Wait,
         "duplicate backend retries retain one terminal callback record"
     );
 
@@ -874,23 +885,27 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
 
     let mut successor_source = coordinator();
     let (_, successor) = register_roots(&mut successor_source);
-    native
-        .viewports
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .reserve_replacement(child, failed_binding, successor)
-        .expect("test replaces the viewport after the callback");
+    assert!(matches!(
+        native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reserve_replacement(child, failed_binding, successor),
+        Err(NativeViewportBindingError::BindingNotCurrent { viewport, .. })
+            if viewport == child
+    ));
     assert_eq!(failure.binding(), failed_binding);
+    assert_eq!(native.viewport_binding(child), Some(failed_binding));
 
     native
-        .acknowledge_viewport_create_failure(failure)
+        .acknowledge_viewport_create_failure(failure, true)
         .expect("exact frozen failure is acknowledged");
     assert_eq!(
         native.bridge.create_binding(child),
         None,
         "acknowledgement clears the exact failed create reservation"
     );
-    assert_eq!(native.viewport_binding(child), Some(successor));
+    assert_eq!(native.viewport_binding(child), None);
     assert!(
         native
             .next_viewport_create_failure()
@@ -928,7 +943,7 @@ fn shutdown_preserves_callback_error_when_reduction_fails() {
     );
     assert!(native.quarantine_after_fatal().is_empty());
 
-    let advance = native.advance_shutdown_boundary();
+    let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
     assert!(!advance.progress);
     assert!(advance.commands.is_empty());
     assert!(advance.errors.iter().any(|error| {
@@ -948,6 +963,7 @@ fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
         .expect("child viewport binds");
 
     let shown = NativeViewportVisibilityRecord::for_test(
+        eframe::queue_native_viewport_visibility(&eframe::egui::Context::default(), child, true),
         child,
         window,
         second,
@@ -955,6 +971,7 @@ fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
         NativeViewportVisibilityStatus::Dispatched,
     );
     let hidden = NativeViewportVisibilityRecord::for_test(
+        eframe::queue_native_viewport_visibility(&eframe::egui::Context::default(), child, false),
         child,
         window,
         second,
@@ -971,7 +988,7 @@ fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
     for _ in 0..3 {
         assert!(
             native
-                .reduce_callback_prefix()
+                .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
                 .expect("unowned visibility dispatch remains an inert exact callback")
                 .is_some()
         );
@@ -1026,6 +1043,11 @@ fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
 
     native.bridge.push_record(HostRecord::ViewportVisibility(
         NativeViewportVisibilityRecord::for_test(
+            eframe::queue_native_viewport_visibility(
+                &eframe::egui::Context::default(),
+                child,
+                false,
+            ),
             child,
             window,
             second,
@@ -1035,7 +1057,7 @@ fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
     ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the visibility callback is reduced before the fatal boundary")
             .is_some()
     );
@@ -1208,28 +1230,35 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
 
     let mut successor_source = coordinator();
     let (_, successor) = register_roots(&mut successor_source);
-    native
-        .viewports
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .reserve_replacement(child, failed_binding, successor)
-        .expect("successor replaces the failed route");
     assert!(
-        !native
-            .bridge
-            .reserve_create(child, successor, native_rect()),
-        "the predecessor hidden-render lease prevents an overlapping incarnation"
+        native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reserve_replacement(child, failed_binding, successor)
+            .is_err(),
+        "an uncommitted create receipt cannot be overwritten by a successor"
     );
-
     native
-        .acknowledge_viewport_create_failure(failure)
-        .expect("stale failure is acknowledged without touching the successor");
-
+        .acknowledge_viewport_create_failure(failure, true)
+        .unwrap();
+    // The replacement session is the provider handoff which makes this
+    // successor current to the coordinator. A binding minted by an unrelated
+    // session must remain rejected by the public reservation API.
+    std::mem::swap(&mut native.session, &mut successor_source.session);
+    native.reserve_viewport(child, successor).unwrap();
     assert!(
         native
             .bridge
             .reserve_create(child, successor, native_rect()),
         "the successor may start only after the predecessor callback is retired"
+    );
+    assert_eq!(native.bridge.create_binding(child), Some(successor));
+    assert_eq!(native.viewport_binding(child), Some(successor));
+    assert!(
+        native
+            .acknowledge_viewport_create_failure(failure, true)
+            .is_err()
     );
     assert_eq!(native.bridge.create_binding(child), Some(successor));
     assert_eq!(native.viewport_binding(child), Some(successor));
@@ -1370,14 +1399,14 @@ fn focus_callbacks_require_distinct_committed_barriers() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the first inert event is acknowledged")
             .is_some()
     );
     assert!(native.bridge.callback_boundary_pending());
     assert!(
         !native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("a second callback cannot join the pending boundary")
             .is_some()
     );
@@ -1399,7 +1428,7 @@ fn focus_callbacks_require_distinct_committed_barriers() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the later event becomes the next boundary")
             .is_some()
     );
@@ -1437,7 +1466,7 @@ fn destroyed_event_is_published_only_with_the_next_complete_roster() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact destruction callback is retained")
             .is_some()
     );
@@ -1455,7 +1484,7 @@ fn destroyed_event_is_published_only_with_the_next_complete_roster() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the next complete roster publishes the tombstone")
             .is_some()
     );
@@ -1496,7 +1525,7 @@ fn close_requested_event_publishes_one_exact_close_edge() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact close request is retained")
             .is_some()
     );
@@ -1647,10 +1676,13 @@ fn pointer_routes_are_frozen_before_viewport_replacement() {
     let mut successor_source = coordinator();
     let (successor, _) = register_roots(&mut successor_source);
     native
-        .viewports
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .replace(ViewportId::ROOT, first, WindowId::from(33), successor)
+        .bridge
+        .replace_viewport_route(
+            ViewportId::ROOT,
+            first,
+            successor,
+            crate::mailbox::NativeViewportReplacement::Attach(WindowId::from(33)),
+        )
         .expect("test viewport replacement succeeds");
 
     let routes = record.pointer_routes().expect("pointer routes are frozen");
@@ -1775,7 +1807,7 @@ fn pointer_reduction_acknowledges_only_after_core_acceptance() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("core accepts the current pointer binding")
             .is_some()
     );

@@ -1,5 +1,38 @@
 //! Fixed-size internal projection of exact native lifecycle progress.
 
+/// Bounded, read-only native close progress without window identities or history.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct NativeCloseProgress {
+    requests_retained: u64,
+    cancellations_committed: u64,
+}
+
+impl NativeCloseProgress {
+    pub(crate) fn record_request(&mut self) {
+        self.requests_retained = self.requests_retained.saturating_add(1);
+    }
+
+    pub(crate) fn record_cancellations(&mut self, count: usize) {
+        self.cancellations_committed = self
+            .cancellations_committed
+            .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+    }
+
+    /// Returns how many native close requests were successfully retained at ingress.
+    ///
+    /// Retention does not imply a committed close-policy transition.
+    #[must_use]
+    pub const fn requests_retained(self) -> u64 {
+        self.requests_retained
+    }
+
+    /// Returns how many pending close bindings were cleared by committed core transitions.
+    #[must_use]
+    pub const fn cancellations_committed(self) -> u64 {
+        self.cancellations_committed
+    }
+}
+
 /// Monotonic lifecycle milestones observed by the native coordinator.
 ///
 /// The counters expose only committed product facts. They are not an event log,
@@ -59,4 +92,42 @@ fn increment_exact(counter: &mut u64, exhausted: &str) {
     *counter = counter
         .checked_add(1)
         .unwrap_or_else(|| panic!("{exhausted}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_progress_distinguishes_retained_requests_from_committed_cancellations() {
+        let mut progress = NativeCloseProgress::default();
+        let baseline = progress;
+        assert_eq!(baseline.requests_retained(), 0);
+        assert_eq!(baseline.cancellations_committed(), 0);
+
+        progress.record_request();
+        assert_eq!(progress.requests_retained(), 1);
+        assert_eq!(progress.cancellations_committed(), 0);
+        progress.record_cancellations(0);
+        assert_eq!(progress.cancellations_committed(), 0);
+        progress.record_cancellations(2);
+        assert_eq!(progress.requests_retained(), 1);
+        assert_eq!(progress.cancellations_committed(), 2);
+        assert_eq!(baseline, NativeCloseProgress::default());
+    }
+
+    #[test]
+    fn close_progress_saturates_without_wrapping() {
+        let mut progress = NativeCloseProgress {
+            requests_retained: u64::MAX - 1,
+            cancellations_committed: u64::MAX - 1,
+        };
+        progress.record_request();
+        progress.record_request();
+        progress.record_cancellations(2);
+        progress.record_cancellations(usize::MAX);
+        assert_eq!(progress.requests_retained(), u64::MAX);
+        assert_eq!(progress.cancellations_committed(), u64::MAX);
+        assert_eq!(std::mem::size_of::<NativeCloseProgress>(), 16);
+    }
 }

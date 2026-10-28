@@ -27,6 +27,28 @@ pub(crate) struct NativePointerPassthroughRecord {
 }
 
 impl NativePointerPassthroughRecord {
+    pub(crate) const fn retired_before_dispatch(
+        token: NativeViewportPointerPassthroughCommandToken,
+        viewport: ViewportId,
+        window: WindowId,
+        binding: NativeSurfaceBinding,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            token,
+            viewport,
+            window,
+            binding: Some(binding),
+            enabled,
+            status: NativeViewportPointerPassthroughStatus::Retired,
+        }
+    }
+
+    pub(crate) fn qualified_for_binding(mut self, binding: NativeSurfaceBinding) -> Self {
+        self.binding = Some(binding);
+        self
+    }
+
     pub(crate) fn capture(
         result: NativeViewportPointerPassthroughResult,
         viewports: &NativeViewportMap,
@@ -68,6 +90,14 @@ impl NativePointerPassthroughRecord {
         self.window
     }
 
+    pub(crate) const fn token(self) -> NativeViewportPointerPassthroughCommandToken {
+        self.token
+    }
+
+    pub(crate) const fn enabled(self) -> bool {
+        self.enabled
+    }
+
     pub(crate) const fn binding(self) -> Option<NativeSurfaceBinding> {
         self.binding
     }
@@ -104,6 +134,10 @@ impl NativePointerPassthroughCommand {
 
     pub(crate) const fn enabled(self) -> bool {
         self.enabled
+    }
+
+    pub(crate) const fn binding(self) -> NativeSurfaceBinding {
+        self.binding
     }
 }
 

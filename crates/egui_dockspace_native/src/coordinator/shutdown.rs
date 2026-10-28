@@ -62,14 +62,21 @@ impl NativeShutdownAdvance {
 impl NativeCoordinator {
     pub(crate) fn advance_shutdown_boundary_with_close_policy(
         &mut self,
+        context: &eframe::egui::Context,
         policy: NativeWindowClosePolicy,
         external_root: SurfaceId,
+        budget: &mut NativeInputBudget,
     ) -> NativeShutdownAdvance {
-        let mut advance = self.advance_shutdown_boundary();
-        match self.drive_close_policy(policy, external_root) {
+        let mut advance = self.advance_shutdown_boundary(context, budget);
+        match self.drive_close_policy(context, policy, external_root, budget) {
             Ok(close_progress) => {
                 let presentation_transitions = self.take_internal_presentation_transitions();
-                let commands = self.take_viewport_commands();
+                let commands = self
+                    .take_viewport_commands(context)
+                    .unwrap_or_else(|error| {
+                        advance.errors.push(error);
+                        Vec::new()
+                    });
                 let progressed =
                     close_progress || !presentation_transitions.is_empty() || !commands.is_empty();
                 advance.progress |= progressed;
@@ -86,23 +93,37 @@ impl NativeCoordinator {
                 advance.errors.push(error);
             }
         }
+        if budget.is_exhausted()
+            && self
+                .bridge
+                .with_close_control(|control| control.has_runnable_policy_work())
+        {
+            advance.transition_source_exhausted = false;
+            if !advance.repaint_viewports.contains(&ViewportId::ROOT) {
+                advance.repaint_viewports.push(ViewportId::ROOT);
+            }
+        }
         advance
     }
 
-    pub(crate) fn advance_shutdown_boundary(&mut self) -> NativeShutdownAdvance {
+    pub(crate) fn advance_shutdown_boundary(
+        &mut self,
+        context: &eframe::egui::Context,
+        budget: &mut NativeInputBudget,
+    ) -> NativeShutdownAdvance {
         let mut presentation_transitions = self.take_internal_presentation_transitions();
         let input_enable_cancelled = self.cancel_quarantined_input_results();
         let (pending_effect_reported, pending_effect_error) =
             self.report_pending_effect_results_until_blocked();
         let mut errors = pending_effect_error.into_iter().collect::<Vec<_>>();
-        let output_prefix_pending = !self.bridge.output_prefix().is_empty();
+        let output_prefix_pending = self.bridge.has_pending_output_prefix();
         let (quiescence_recorded, quiescence_errors) = self.try_report_retirement_quiescence_all();
         errors.extend(quiescence_errors);
         let mut progress = pending_effect_reported
             || input_enable_cancelled
             || output_prefix_pending
             || quiescence_recorded;
-        let reduced_callback = match self.reduce_callback_prefix() {
+        let reduced_callback = match self.reduce_callback_prefix(context, budget) {
             Ok(reduced) => reduced.is_some(),
             Err(error) => {
                 errors.extend(self.take_callback_errors());
@@ -127,8 +148,16 @@ impl NativeCoordinator {
             |invalidation| invalidation.viewport(),
         );
 
-        let mut host_frame = match self.begin_host_frame(|_| NativeReceiverAnswer::Unknown) {
-            Ok(frame) => frame,
+        let mut host_frame = match self.poll_host_frame(budget, |_| NativeReceiverAnswer::Unknown) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => {
+                return NativeShutdownAdvance::partial_with_repaints(
+                    progress,
+                    presentation_transitions,
+                    errors,
+                    vec![ViewportId::ROOT],
+                );
+            }
             Err(error) => {
                 errors.push(error);
                 return NativeShutdownAdvance::partial_with_repaints(
@@ -139,11 +168,19 @@ impl NativeCoordinator {
                 );
             }
         };
+        let native_input_pending = host_frame.native_input_pending();
+        let prepared_retirements = if native_input_pending {
+            None
+        } else {
+            prepared_retirements
+        };
         let frame_surfaces = host_frame.frame.surfaces();
         let (accepted_no_frame_invalidations, repaint_viewports) =
             split_no_frame_invalidations_for_frame(
                 &frame_surfaces,
-                ready_no_frame_invalidations,
+                ready_no_frame_invalidations
+                    .into_iter()
+                    .filter(|_| !native_input_pending),
                 |invalidation| invalidation.surface(),
                 |invalidation| invalidation.viewport(),
             );
@@ -201,7 +238,7 @@ impl NativeCoordinator {
             })
             .collect();
         let had_inputs = !report.inputs().is_empty();
-        let native_snapshot_applied = match self.settle_host_frame_inputs(report.inputs()) {
+        let native_snapshot_applied = match self.settle_host_frame_report(&report) {
             Ok(applied) => applied,
             Err(error) => {
                 errors.push(error);
@@ -209,7 +246,7 @@ impl NativeCoordinator {
             }
         };
         let (native_close_settled, close_errors) =
-            self.settle_close_control_inputs_all(report.inputs());
+            self.settle_close_control_inputs_all(report.inputs(), report.native_input_pending());
         errors.extend(close_errors);
         let (native_admission_settled, admission_errors) =
             self.settle_native_admissions_all(report.native_admissions());
@@ -220,8 +257,13 @@ impl NativeCoordinator {
         let repaint_requested = !report.repaint_surfaces().is_empty();
         let effects = report.take_native_effects();
         let effects_emitted = !effects.is_empty();
-        self.fail_shutdown_effects(effects, &mut errors);
-        let commands = self.take_viewport_commands();
+        self.fail_shutdown_effects(context, effects, &mut errors);
+        let commands = self
+            .take_viewport_commands(context)
+            .unwrap_or_else(|error| {
+                errors.push(error);
+                Vec::new()
+            });
         let input_enable_cancelled_after_commit = self.cancel_quarantined_input_results();
         let pointer_passthrough = self.pointer_passthrough_command();
         let commands_pending = !commands.is_empty();
@@ -240,10 +282,15 @@ impl NativeCoordinator {
             || commands_pending
             || pointer_passthrough_pending;
         let progress = transition_progress || repaint_requested;
-        let transition_source_exhausted = !transition_progress
+        let transition_source_exhausted = !native_input_pending
+            && !transition_progress
             && errors.is_empty()
             && presentation_transitions.is_empty()
             && self.is_quiescent();
+        let mut repaint_viewports = repaint_viewports;
+        if native_input_pending {
+            repaint_viewports.push(ViewportId::ROOT);
+        }
         NativeShutdownAdvance {
             progress,
             transition_source_exhausted,
@@ -268,10 +315,21 @@ impl NativeCoordinator {
 
     fn fail_shutdown_effects(
         &mut self,
+        context: &eframe::egui::Context,
         requests: Vec<NativeEffectRequest>,
         errors: &mut Vec<NativeRuntimeError>,
     ) {
         for request in requests {
+            if matches!(
+                request.operation(),
+                NativeEffectOperation::ResolveNativeClose { .. }
+                    | NativeEffectOperation::CancelRootClose { .. }
+            ) {
+                if let Err(error) = self.accept_native_effects(context, vec![request]) {
+                    errors.push(error);
+                }
+                continue;
+            }
             let binding = request.operation().binding();
             let result = request.dispatch_failed(NativeDispatchFailure::ProviderStopped);
             if let Err(error) = self.session.report_native_effect_result(result)

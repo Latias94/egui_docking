@@ -1,0 +1,282 @@
+//! Tokenless capture and receipt-state models, using real core close capabilities.
+//!
+//! No opaque fork token is fabricated here. These tests do not qualify canonical
+//! token routing or real HoldClose/Veto callbacks; those need the fork fixture.
+
+use dockspace::model::{
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
+    SurfaceId,
+};
+use dockspace::policy::DockPolicy;
+use dockspace::runtime::{
+    DockspaceSession, HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState,
+    NativeEffectAcknowledgement, NativePointerRoster, NativeWindowFacts, NativeWorkAreaRoster,
+    SurfaceUnavailableReason,
+};
+use winit::event::WindowEvent;
+
+use super::*;
+
+fn commit(session: &mut DockspaceSession) -> HostFrameReport {
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap()
+}
+
+fn fixture() -> (DockspaceSession, NativeSurfaceBinding) {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SurfaceId::new(1),
+        DockspaceRootLayout::new(
+            RootId::new(1),
+            DockspaceNode::central_tabs([ItemId::new(1)]),
+        ),
+    )])
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .unwrap();
+    session
+        .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+            eframe::NativeWindowingBackend::Windows,
+        ))
+        .unwrap();
+    session
+        .register_native_root(SurfaceId::new(1), HostWindowToken::new(11))
+        .unwrap();
+    let report = commit(&mut session);
+    let binding = report
+        .inputs()
+        .iter()
+        .find_map(|input| match input {
+            HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+            _ => None,
+        })
+        .unwrap();
+    session
+        .report_managed_native_snapshot(
+            [(binding, NativeWindowFacts::live())],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    commit(&mut session);
+    (session, binding)
+}
+
+fn event(binding: NativeSurfaceBinding, ordinal: u64, window: u64) -> NativeWindowEventRecord {
+    NativeWindowEventRecord::for_test(
+        ordinal,
+        WindowId::from(window),
+        Some(ViewportId::ROOT),
+        Some(binding),
+        WindowEvent::CloseRequested,
+    )
+}
+
+fn core_request(
+    session: &mut DockspaceSession,
+    binding: NativeSurfaceBinding,
+) -> NativeSurfaceCloseRequest {
+    session
+        .publish_native_close(binding, NativeCloseState::Requested, None)
+        .unwrap();
+    commit(session)
+        .inputs()
+        .iter()
+        .find_map(|input| match input {
+            HostInputOutcome::NativeCloseObservationApplied { close_requests } => {
+                close_requests.first().copied()
+            }
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn cancellation(
+    session: &mut DockspaceSession,
+    request: NativeSurfaceCloseRequest,
+) -> NativeCloseEffectAcknowledgement {
+    session.cancel_native_surface_close(request).unwrap();
+    let mut report = commit(session);
+    let mut effects = report.take_native_effects().into_iter();
+    let effect = effects.next().unwrap();
+    assert!(effects.next().is_none());
+    let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = effect.accepted() else {
+        panic!("core cancellation must emit its exact close acknowledgement")
+    };
+    acknowledgement
+}
+
+#[test]
+fn capture_is_exact_and_cannot_bind_core_before_requested_was_recorded() {
+    let (mut session, binding) = fixture();
+    let (_, foreign) = fixture();
+    let first = event(binding, 11, 11);
+    let newer = event(binding, 12, 11);
+    let mut control = NativeCloseControl::default();
+    assert_eq!(
+        control.capture_request(&first, foreign),
+        NativeCloseCaptureAdmission::Conflict
+    );
+    assert!(!control.has_pending_work());
+    assert_eq!(
+        control.capture_request(&first, binding),
+        NativeCloseCaptureAdmission::First
+    );
+    assert_eq!(
+        control.capture_request(&first, binding),
+        NativeCloseCaptureAdmission::Duplicate
+    );
+    assert_eq!(
+        control.capture_request(&newer, binding),
+        NativeCloseCaptureAdmission::Conflict
+    );
+    assert!(control.references_binding(binding));
+    assert!(!control.has_runnable_policy_work());
+    assert!(control.needs_request_recording(&first, binding));
+    let request = core_request(&mut session, binding);
+    assert_eq!(control.bind_request(request), Ok(false));
+    assert!(!control.mark_request_recorded(&newer, binding));
+    assert!(!control.mark_request_recorded(&first, foreign));
+    assert!(control.needs_request_recording(&first, binding));
+    assert!(control.mark_request_recorded(&first, binding));
+    assert!(!control.mark_request_recorded(&first, binding));
+    assert_eq!(control.bind_request(request), Ok(true));
+    assert_eq!(control.bind_request(request), Ok(true));
+    assert_eq!(
+        control.unsubmitted_requests().collect::<Vec<_>>(),
+        [request]
+    );
+}
+
+#[test]
+fn one_successor_waits_for_received_transferred_and_committed_clear() {
+    for callback_already_received in [false, true] {
+        let (mut session, binding) = fixture();
+        let first = event(binding, 21, 11);
+        let successor = event(binding, 22, 11);
+        let third = event(binding, 23, 11);
+        let wrong_window = event(binding, 22, 12);
+        let mut control = NativeCloseControl::default();
+        assert!(control.observe_request(&first, binding));
+        let request = core_request(&mut session, binding);
+        assert_eq!(control.bind_request(request), Ok(true));
+        assert_eq!(
+            control.begin_cancellation(request, cancellation(&mut session, request)),
+            Some(ViewportId::ROOT)
+        );
+
+        // Exercise the receipt state model without minting a fork token. The
+        // production reserve/receive methods additionally require that token.
+        let mut receipt = CancellationReceipt::new();
+        if callback_already_received {
+            assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::First);
+        }
+        control
+            .pending
+            .get_mut(&binding)
+            .unwrap()
+            .cancellation_receipt = Some(receipt);
+        assert_eq!(
+            control.capture_request(&wrong_window, binding),
+            NativeCloseCaptureAdmission::Conflict
+        );
+        assert_eq!(
+            control.capture_request(&successor, binding),
+            NativeCloseCaptureAdmission::First
+        );
+        assert_eq!(
+            control.capture_request(&successor, binding),
+            NativeCloseCaptureAdmission::Duplicate
+        );
+        assert_eq!(
+            control.capture_request(&third, binding),
+            NativeCloseCaptureAdmission::Conflict
+        );
+        assert!(!control.needs_request_recording(&successor, binding));
+        assert!(!control.mark_request_recorded(&successor, binding));
+        assert_eq!(control.request_for_binding(binding), Some(request));
+        assert!(!control.mark_clear_recorded(binding));
+        control.commit_transferred_callbacks();
+        assert_eq!(control.settle_clear(true), 0);
+
+        let receipt = control
+            .pending
+            .get_mut(&binding)
+            .unwrap()
+            .cancellation_receipt
+            .as_mut()
+            .unwrap();
+        if !callback_already_received {
+            assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::First);
+        }
+        assert!(receipt.transfer());
+        assert!(control.mark_clear_recorded(binding));
+        assert_eq!(control.settle_clear(false), 1);
+        assert_eq!(control.settle_clear(true), 0);
+        assert!(!control.needs_request_recording(&successor, binding));
+        control.commit_transferred_callbacks();
+        assert_eq!(control.settle_clear(false), 1);
+        assert_eq!(control.settle_clear(true), 1);
+
+        assert!(control.references_binding(binding));
+        assert_eq!(control.request_for_binding(binding), None);
+        assert_eq!(control.bind_request(request), Ok(false));
+        assert!(!control.needs_request_recording(&first, binding));
+        assert!(control.needs_request_recording(&successor, binding));
+        assert_eq!(control.settle_clear(true), 0);
+        assert_eq!(
+            control.capture_request(&first, binding),
+            NativeCloseCaptureAdmission::Conflict
+        );
+        assert_eq!(
+            control.capture_request(&successor, binding),
+            NativeCloseCaptureAdmission::Duplicate
+        );
+        assert!(control.mark_request_recorded(&successor, binding));
+        control.retire_binding(binding);
+        assert!(!control.has_pending_work());
+    }
+}
+
+#[test]
+fn cancellation_receipt_is_once_only_and_neither_receive_nor_transfer_is_commit() {
+    let mut receipt = CancellationReceipt::new();
+    assert!(!receipt.transfer());
+    receipt.commit_transferred();
+    assert_eq!(receipt.state, CancellationReceiptState::Awaiting);
+    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::First);
+    receipt.commit_transferred();
+    assert_eq!(receipt.state, CancellationReceiptState::Received);
+    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::Duplicate);
+    assert!(receipt.transfer());
+    assert_eq!(receipt.state, CancellationReceiptState::Transferred);
+    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::Duplicate);
+    assert!(!receipt.transfer());
+    receipt.commit_transferred();
+    assert_eq!(receipt.state, CancellationReceiptState::Committed);
+    assert_eq!(receipt.receive(), NativeCloseCallbackAdmission::Duplicate);
+}
+
+#[test]
+fn legacy_observe_uses_the_same_owner_and_accepted_close_cannot_capture_a_successor() {
+    let (mut session, binding) = fixture();
+    let first = event(binding, 31, 11);
+    let mut control = NativeCloseControl::default();
+    let request = core_request(&mut session, binding);
+    assert!(control.observe_request(&first, binding));
+    assert!(!control.observe_request(&first, binding));
+    assert!(!control.needs_request_recording(&first, binding));
+    assert_eq!(control.bind_request(request), Ok(true));
+    assert!(control.accept_close(request));
+    assert!(!control.accept_close(request));
+    assert_eq!(
+        control.capture_request(&event(binding, 32, 11), binding),
+        NativeCloseCaptureAdmission::Conflict
+    );
+    assert_eq!(control.request_for_binding(binding), Some(request));
+    control.retire_binding(binding);
+    assert!(!control.references_binding(binding));
+}

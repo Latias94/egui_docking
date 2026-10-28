@@ -23,6 +23,7 @@ use crate::event::{
 pub(crate) struct NativePointerTranslator {
     devices: BTreeMap<NativeInputDeviceKey, NativePointerDeviceState>,
     removed_inputs: BTreeSet<NativeInputDeviceKey>,
+    overload_scroll_tails: BTreeSet<NativeInputDeviceKey>,
     next_device_identity: u64,
     next_scroll_sequence: u64,
 }
@@ -89,6 +90,20 @@ pub(crate) enum NativePointerTranslation {
 impl NativePointerTranslator {
     pub(crate) fn can_coalesce_idle_cursor_moves(&self) -> bool {
         self.devices.values().all(NativePointerDeviceState::is_idle)
+    }
+
+    /// Forgets adapter state after core overload cancellation commits.
+    ///
+    /// Core already terminated the semantic streams. Discard their identities
+    /// without emitting terminals or claiming an exact empty pointer roster.
+    /// Only phaseful scroll lanes need a tombstone until the next explicit
+    /// start; idle wheel lanes must still accept Moved-only discrete samples.
+    pub(crate) fn finish_overload_cancellation(&mut self) {
+        self.overload_scroll_tails
+            .extend(self.devices.iter().filter_map(|(key, device)| {
+                (!matches!(device.scroll, NativeScrollState::Idle)).then_some(*key)
+            }));
+        self.devices.clear();
     }
 
     /// Terminates the semantic owner while preserving provider-tail correlation.
@@ -374,6 +389,12 @@ impl NativePointerTranslator {
         routes: NativePointerRoutes,
         resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
+        if self.overload_scroll_tails.contains(&device) {
+            if !matches!(phase, TouchPhase::Started) {
+                return NativePointerTranslation::Ignored;
+            }
+            let _ = self.overload_scroll_tails.remove(&device);
+        }
         if self.device_mut(device).is_none() {
             return NativePointerTranslation::Ignored;
         }
@@ -969,6 +990,9 @@ fn native_modifiers(facts: &winit::event::PointerEventFacts) -> NativeScrollModi
             }
         })
 }
+
+#[cfg(test)]
+mod overload;
 
 #[cfg(test)]
 mod tests {

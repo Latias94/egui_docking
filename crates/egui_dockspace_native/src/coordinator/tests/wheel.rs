@@ -6,7 +6,7 @@ use dockspace::runtime::{
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
     NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding, SurfaceUnavailableReason,
 };
-use eframe::egui::ViewportId;
+use eframe::egui::{self, ViewportId};
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     DeviceId, MouseScrollDelta, PointerEventFacts, PointerWindowRoute, TouchPhase, WindowEvent,
@@ -14,8 +14,7 @@ use winit::event::{
 use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
 
-use super::{coordinator, register_roots};
-use crate::close_control::NativeWindowClosePolicy;
+use super::{coordinator, register_roots, test_budget};
 use crate::event::NativeWindowEventRecord;
 use crate::mailbox::HostRecord;
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
@@ -535,7 +534,7 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
     let (binding, survivor) = register_roots(&mut native);
     let viewport = ViewportId::ROOT;
     let window = WindowId::from(81);
-    super::close::observe_close(
+    let core_request = super::close::observe_model_close(
         &mut native,
         binding,
         [binding, survivor],
@@ -543,10 +542,11 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
         window,
         20,
     );
+    // This independent model precondition is not a successful host Allow.
     assert!(
         native
-            .drive_close_policy(NativeWindowClosePolicy::RetainLayout, binding.surface())
-            .expect("the close request is accepted")
+            .bridge
+            .with_close_control(|control| control.accept_close(core_request))
     );
 
     native
@@ -560,13 +560,41 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
         )));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the scroll begin records")
             .is_some()
     );
     commit_unpainted_frame(&mut native);
 
-    let wrong_window = WindowId::from(82);
+    let wrong_window = window;
+    // Inject a later core-correlation failure without assigning an unrelated
+    // OS window this binding's Destroyed receipt.
+    let wrong_close_event = NativeWindowEventRecord::for_test(
+        20,
+        WindowId::from(82),
+        Some(viewport),
+        Some(binding),
+        WindowEvent::CloseRequested,
+    );
+    native
+        .bridge
+        .with_close_control(|control| control.retire_binding(binding));
+    assert!(
+        native
+            .bridge
+            .with_close_control(|control| control.observe_request(&wrong_close_event, binding))
+    );
+    assert_eq!(
+        native
+            .bridge
+            .with_close_control(|control| control.bind_request(core_request)),
+        Ok(true)
+    );
+    assert!(
+        native
+            .bridge
+            .with_close_control(|control| control.accept_close(core_request))
+    );
     native
         .bridge
         .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
@@ -578,7 +606,7 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
         )));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the binding-retired boundary records first")
             .is_some()
     );
@@ -586,7 +614,7 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
     commit_unpainted_frame(&mut native);
 
     native
-        .reduce_callback_prefix()
+        .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
         .expect_err("the unrelated window cannot settle the accepted close");
     assert!(
         !native.pointer_translator.has_pending_provider_tail(),
@@ -595,20 +623,20 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
 
     let matching_destroyed = NativeWindowEventRecord::for_test(
         22,
-        window,
+        WindowId::from(82),
         Some(viewport),
         Some(binding),
         WindowEvent::Destroyed,
     );
     assert!(
-        native
-            .close_control
-            .settle_accepted_destroyed(&matching_destroyed, binding),
+        native.bridge.with_close_control(
+            |control| control.settle_accepted_destroyed(&matching_destroyed, binding)
+        ),
         "the test clears the independent close correlation before retrying the raw event"
     );
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the same raw destroyed callback retries without another cancel")
             .is_some()
     );

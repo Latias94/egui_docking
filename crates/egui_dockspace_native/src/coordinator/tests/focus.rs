@@ -5,7 +5,8 @@ use eframe::{NativeGlobalFocus as EframeGlobalFocus, NativeViewportFocusStatus};
 
 use super::*;
 use crate::focus_control::{
-    NativeFocusControl, NativeFocusTermination, NativeGlobalFocusRecord, NativeViewportFocusRecord,
+    NativeFocusControl, NativeFocusResultDisposition, NativeFocusTermination,
+    NativeGlobalFocusRecord, NativeViewportFocusRecord,
 };
 
 #[test]
@@ -20,7 +21,7 @@ fn global_focus_before_the_first_roster_uses_the_initial_capability_snapshot() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact focus callback records")
             .is_some()
     );
@@ -87,7 +88,7 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
         ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the complete visible roster records")
             .is_some()
     );
@@ -122,7 +123,7 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
         .push_viewport_roster(NativeViewportRosterRecord::for_test([visible(first)], true));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the incomplete roster records an unknown inventory")
             .is_some()
     );
@@ -156,8 +157,12 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
 #[test]
 fn unrelated_viewport_focus_result_is_acknowledged_without_inventing_focus() {
     let mut native = coordinator();
+    let context = egui::Context::default();
+    let viewport = ViewportId::ROOT;
+    let token = eframe::queue_native_viewport_focus(&context, viewport);
     let record = NativeViewportFocusRecord::for_test(
-        ViewportId::ROOT,
+        token,
+        viewport,
         WindowId::from(11),
         None,
         NativeViewportFocusStatus::Requested,
@@ -166,7 +171,7 @@ fn unrelated_viewport_focus_result_is_acknowledged_without_inventing_focus() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&context, &mut test_budget())
             .expect("the unrelated command result is consumed")
             .is_some()
     );
@@ -190,14 +195,16 @@ fn unrelated_viewport_focus_result_is_acknowledged_without_inventing_focus() {
 #[test]
 fn global_focus_completes_only_after_the_requested_callback() {
     let mut native = coordinator();
-    let (binding, _) = register_roots(&mut native);
+    let (binding, other_binding) = register_roots(&mut native);
+    let context = egui::Context::default();
     let viewport = ViewportId::ROOT;
     let window = WindowId::from(11);
     let mut focus = NativeFocusControl::<u8>::default();
     focus
         .retain(viewport, window, binding, 7)
         .expect("the test focus request is retained");
-    assert!(focus.mark_dispatched(viewport));
+    let token = eframe::queue_native_viewport_focus(&context, viewport);
+    assert!(focus.mark_dispatched(viewport, token));
 
     assert_eq!(
         focus.take_observed(binding),
@@ -206,19 +213,129 @@ fn global_focus_completes_only_after_the_requested_callback() {
     );
 
     let requested = NativeViewportFocusRecord::for_test(
+        token,
         viewport,
         window,
         Some(binding),
         NativeViewportFocusStatus::Requested,
     );
     assert!(focus.mark_requested(requested));
+    assert!(focus.has_pending_work());
+    assert_eq!(focus.take_observed(other_binding), None);
     assert_eq!(focus.take_observed(binding), Some(7));
+    assert!(!focus.has_pending_work());
+    assert_eq!(focus.take_observed(binding), None);
+}
+
+#[test]
+fn delayed_foreign_focus_tokens_cannot_claim_the_current_owner() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let context = egui::Context::default();
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(11);
+
+    for awaiting_global_focus in [false, true] {
+        for status in [
+            NativeViewportFocusStatus::Requested,
+            NativeViewportFocusStatus::AlreadyFocused,
+        ] {
+            let foreign_token = eframe::queue_native_viewport_focus(&context, viewport);
+            let mut focus = NativeFocusControl::<u8>::default();
+            focus
+                .retain(viewport, window, binding, 7)
+                .expect("the current focus request is retained");
+            let token = eframe::queue_native_viewport_focus(&context, viewport);
+            assert_ne!(foreign_token, token);
+            assert!(focus.mark_dispatched(viewport, token));
+            let requested = NativeViewportFocusRecord::for_test(
+                token,
+                viewport,
+                window,
+                Some(binding),
+                NativeViewportFocusStatus::Requested,
+            );
+            if awaiting_global_focus {
+                assert!(focus.mark_requested(requested));
+            }
+
+            let foreign = NativeViewportFocusRecord::for_test(
+                foreign_token,
+                viewport,
+                window,
+                Some(binding),
+                status,
+            );
+            assert_eq!(
+                focus.classify(foreign),
+                NativeFocusResultDisposition::Unrelated,
+                "a delayed same-window callback with {status:?} has no command authority"
+            );
+            assert_eq!(focus.take_callback(foreign), None);
+            assert!(!focus.mark_requested(foreign));
+            assert!(focus.has_pending_work());
+            assert_eq!(
+                focus.classify(requested),
+                NativeFocusResultDisposition::Current {
+                    binding,
+                    status: NativeViewportFocusStatus::Requested,
+                }
+            );
+
+            if !awaiting_global_focus {
+                assert_eq!(
+                    focus.take_observed(binding),
+                    None,
+                    "a foreign callback cannot authorize completion by a global focus fact"
+                );
+                assert!(focus.mark_requested(requested));
+            }
+            assert!(focus.has_pending_work());
+            assert_eq!(focus.take_observed(binding), Some(7));
+            assert!(!focus.has_pending_work());
+        }
+    }
+}
+
+#[test]
+fn already_focused_callback_completes_only_its_exact_command_token() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let context = egui::Context::default();
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(11);
+    let mut focus = NativeFocusControl::<u8>::default();
+    focus
+        .retain(viewport, window, binding, 7)
+        .expect("the current focus request is retained");
+    let token = eframe::queue_native_viewport_focus(&context, viewport);
+    assert!(focus.mark_dispatched(viewport, token));
+    let record = NativeViewportFocusRecord::for_test(
+        token,
+        viewport,
+        window,
+        Some(binding),
+        NativeViewportFocusStatus::AlreadyFocused,
+    );
+
+    assert_eq!(
+        focus.classify(record),
+        NativeFocusResultDisposition::Current {
+            binding,
+            status: NativeViewportFocusStatus::AlreadyFocused,
+        }
+    );
+    assert!(!focus.mark_requested(record));
+    assert_eq!(focus.take_callback(record), Some(7));
+    assert!(!focus.has_pending_work());
+    assert_eq!(focus.take_callback(record), None);
 }
 
 #[test]
 fn quarantine_cancels_only_an_undispatched_focus_request() {
     let mut native = coordinator();
     let (binding, _) = register_roots(&mut native);
+    let context = egui::Context::default();
     let viewport = ViewportId::ROOT;
     let window = WindowId::from(11);
     let mut focus = NativeFocusControl::<u8>::default();
@@ -236,7 +353,8 @@ fn quarantine_cancels_only_an_undispatched_focus_request() {
     focus
         .retain(viewport, window, binding, 9)
         .expect("the dispatched test focus request is retained");
-    assert!(focus.mark_dispatched(viewport));
+    let token = eframe::queue_native_viewport_focus(&context, viewport);
+    assert!(focus.mark_dispatched(viewport, token));
     assert!(focus.take_queued_terminal(binding).is_none());
     assert!(focus.references_binding(binding));
     assert!(matches!(

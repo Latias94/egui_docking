@@ -10,11 +10,42 @@ use winit::window::WindowId;
 use crate::error::NativeViewportBindingError;
 use crate::retirement::CommittedRetirement;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+mod create_receipt;
+pub(crate) use create_receipt::{CreateAdmission, CreateTerminal, NativeCreateReceipt};
+mod window_receipt;
+pub(crate) use window_receipt::NativeWindowReceipt;
+
+#[derive(Debug)]
 struct NativeViewportRoute {
     window: Option<WindowId>,
     binding: NativeSurfaceBinding,
+    create: Option<NativeCreateReceipt>,
+    terminal: Option<NativeWindowReceipt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RouteSnapshot {
+    window: Option<WindowId>,
+    binding: NativeSurfaceBinding,
     create_attempt: Option<NativeViewportCreateAttempt>,
+}
+
+impl NativeViewportRoute {
+    fn snapshot(&self) -> RouteSnapshot {
+        RouteSnapshot {
+            window: self.window,
+            binding: self.binding,
+            create_attempt: self
+                .create
+                .as_ref()
+                .and_then(NativeCreateReceipt::attempt)
+                .or_else(|| {
+                    self.terminal
+                        .as_ref()
+                        .and_then(NativeWindowReceipt::attempt)
+                }),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -33,7 +64,11 @@ impl NativeViewportMap {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
-        if let Some(existing) = self.viewports.get(&viewport).copied() {
+        if let Some(existing) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        {
             self.validate_not_retiring(viewport, existing.binding)?;
             if existing.binding == binding {
                 return Ok(());
@@ -54,10 +89,13 @@ impl NativeViewportMap {
         expected: NativeSurfaceBinding,
         window: WindowId,
     ) -> Result<(), NativeViewportBindingError> {
-        let Some(current) = self.viewports.get(&viewport).copied() else {
+        let Some(current) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
-        self.validate_not_retiring(viewport, current.binding)?;
         Self::validate_binding(viewport, expected, current)?;
         if let Some(existing) = current.window {
             if existing == window {
@@ -68,15 +106,19 @@ impl NativeViewportMap {
                 existing,
             });
         }
+        self.validate_not_retiring(viewport, current.binding)?;
         self.validate_window_unclaimed(viewport, window)?;
-        self.viewports.insert(
+        let route = self
+            .viewports
+            .get_mut(&viewport)
+            .expect("validated viewport route remains present");
+        route.window = Some(window);
+        route.terminal = Some(NativeWindowReceipt::attached(
             viewport,
-            NativeViewportRoute {
-                window: Some(window),
-                binding: current.binding,
-                create_attempt: current.create_attempt,
-            },
-        );
+            window,
+            expected,
+            current.create_attempt,
+        ));
         self.windows.insert(window, viewport);
         Ok(())
     }
@@ -88,7 +130,11 @@ impl NativeViewportMap {
         window: WindowId,
         create_attempt: Option<NativeViewportCreateAttempt>,
     ) -> Result<(), NativeViewportBindingError> {
-        let Some(current) = self.viewports.get(&viewport).copied() else {
+        let Some(current) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
         if current.create_attempt != create_attempt {
@@ -113,7 +159,11 @@ impl NativeViewportMap {
         window: WindowId,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
-        if let Some(existing) = self.viewports.get(&viewport).copied() {
+        if let Some(existing) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        {
             self.validate_not_retiring(viewport, existing.binding)?;
             if existing.window == Some(window) && existing.binding == binding {
                 return Ok(());
@@ -133,16 +183,18 @@ impl NativeViewportMap {
         viewport: ViewportId,
         expected: NativeSurfaceBinding,
         successor: NativeSurfaceBinding,
-    ) -> Result<(), NativeViewportBindingError> {
+    ) -> Result<Option<NativeWindowReceipt>, NativeViewportBindingError> {
         let current = self.validate_replacement(viewport, expected, successor)?;
         if current.binding == successor {
-            return Ok(());
+            return Ok(None);
         }
+        let terminal = self.take_window_receipt(viewport, expected);
         if let Some(window) = current.window {
             self.windows.remove(&window);
         }
+        self.pointer_suppressed.remove(&expected);
         self.insert(viewport, None, successor);
-        Ok(())
+        Ok(terminal)
     }
 
     pub(crate) fn reserve_retired_replacement(
@@ -150,11 +202,16 @@ impl NativeViewportMap {
         viewport: ViewportId,
         expected: NativeSurfaceBinding,
         successor: NativeSurfaceBinding,
-    ) -> Result<(), NativeViewportBindingError> {
-        let Some(current) = self.viewports.get(&viewport).copied() else {
+    ) -> Result<Option<NativeWindowReceipt>, NativeViewportBindingError> {
+        let Some(current) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
         Self::validate_binding(viewport, expected, current)?;
+        self.validate_create_settled(viewport, expected)?;
         if !self.pointer_suppressed.contains(&expected)
             || self.prepared_retirements.contains(&expected)
         {
@@ -173,9 +230,10 @@ impl NativeViewportMap {
         if let Some(window) = current.window {
             self.windows.remove(&window);
         }
+        let terminal = self.take_window_receipt(viewport, expected);
         self.pointer_suppressed.remove(&expected);
         self.insert(viewport, None, successor);
-        Ok(())
+        Ok(terminal)
     }
 
     pub(crate) fn replace(
@@ -184,25 +242,84 @@ impl NativeViewportMap {
         expected: NativeSurfaceBinding,
         successor_window: WindowId,
         successor: NativeSurfaceBinding,
-    ) -> Result<(), NativeViewportBindingError> {
-        let current = self.validate_replacement(viewport, expected, successor)?;
+    ) -> Result<Option<NativeWindowReceipt>, NativeViewportBindingError> {
+        let same_window = self.window(viewport) == Some(successor_window);
+        let current = if same_window {
+            let current = self
+                .viewports
+                .get(&viewport)
+                .map(NativeViewportRoute::snapshot)
+                .ok_or(NativeViewportBindingError::ViewportUnbound { viewport })?;
+            Self::validate_binding(viewport, expected, current)?;
+            self.validate_create_settled(viewport, expected)?;
+            if successor.surface() != expected.surface()
+                || self.prepared_retirements.contains(&expected)
+                || !self.viewports.get(&viewport).is_some_and(|route| {
+                    route
+                        .terminal
+                        .as_ref()
+                        .is_some_and(NativeWindowReceipt::is_awaiting)
+                })
+            {
+                return Err(NativeViewportBindingError::BindingNotCurrent {
+                    viewport,
+                    surface: expected.surface(),
+                });
+            }
+            current
+        } else {
+            self.validate_replacement(viewport, expected, successor)?
+        };
         self.validate_window_unclaimed(viewport, successor_window)?;
+        if current.window == Some(successor_window) {
+            let route = self
+                .viewports
+                .get_mut(&viewport)
+                .expect("validated replacement retains its route");
+            route.binding = successor;
+            if let Some(receipt) = route.terminal.as_mut() {
+                receipt.rebind(successor);
+            }
+            self.focus_reportable.remove(&expected);
+            if self.pointer_suppressed.remove(&expected) {
+                self.pointer_suppressed.insert(successor);
+            }
+            return Ok(None);
+        }
+        if expected == successor {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: expected.surface(),
+            });
+        }
+        let terminal = self.take_window_receipt(viewport, expected);
         if let Some(window) = current.window {
             self.windows.remove(&window);
         }
         self.insert(viewport, Some(successor_window), successor);
-        Ok(())
+        Ok(terminal)
     }
 
     pub(crate) fn remove_viewport(
         &mut self,
         viewport: ViewportId,
         expected: NativeSurfaceBinding,
-    ) -> Result<NativeSurfaceBinding, NativeViewportBindingError> {
-        let Some(current) = self.viewports.get(&viewport).copied() else {
+    ) -> Result<(NativeSurfaceBinding, Option<NativeWindowReceipt>), NativeViewportBindingError>
+    {
+        let Some(current) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
-        self.validate_not_retiring(viewport, current.binding)?;
+        if self.prepared_retirements.contains(&current.binding) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: current.binding.surface(),
+            });
+        }
+        self.validate_create_settled(viewport, current.binding)?;
         if current.binding != expected {
             return Err(NativeViewportBindingError::BindingMismatch {
                 viewport,
@@ -210,8 +327,9 @@ impl NativeViewportMap {
                 current: current.binding.surface(),
             });
         }
+        let receipt = self.take_window_receipt(viewport, expected);
         self.remove_route_unchecked(viewport, current);
-        Ok(current.binding)
+        Ok((current.binding, receipt))
     }
 
     pub(crate) fn prepare_retirements(
@@ -221,10 +339,13 @@ impl NativeViewportMap {
         for retirement in retirements {
             let viewport = retirement.viewport();
             let binding = retirement.binding();
-            let Some(current) = self.viewports.get(&viewport).copied() else {
-                return Err(binding);
-            };
-            if Self::validate_binding(viewport, binding, current).is_err()
+            let current = self
+                .viewports
+                .get(&viewport)
+                .filter(|route| route.binding == binding)
+                .map(NativeViewportRoute::snapshot);
+            // A successor route is independent of the predecessor's retirement.
+            if current.is_some() && self.validate_create_settled(viewport, binding).is_err()
                 || self.prepared_retirements.contains(&binding)
             {
                 return Err(binding);
@@ -248,10 +369,11 @@ impl NativeViewportMap {
             let current = self
                 .viewports
                 .get(&viewport)
-                .copied()
-                .expect("prepared retirement retains its exact viewport route");
-            debug_assert_eq!(current.binding, binding);
-            self.remove_route_unchecked(viewport, current);
+                .filter(|route| route.binding == binding)
+                .map(NativeViewportRoute::snapshot);
+            if let Some(current) = current {
+                self.remove_route_unchecked(viewport, current);
+            }
             self.pointer_suppressed.remove(&binding);
             self.prepared_retirements.remove(&binding);
         }
@@ -262,7 +384,11 @@ impl NativeViewportMap {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        let Some(current) = self.viewports.get(&viewport).copied() else {
+        let Some(current) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        else {
             return false;
         };
         if current.binding != binding {
@@ -382,8 +508,13 @@ impl NativeViewportMap {
         window: WindowId,
         create_attempt: Option<NativeViewportCreateAttempt>,
     ) -> Option<NativeSurfaceBinding> {
-        let route = self.viewports.get(&viewport).copied()?;
-        if route.create_attempt != create_attempt {
+        let route = self.viewports.get(&viewport)?;
+        if route.create.as_ref().and_then(NativeCreateReceipt::attempt) != create_attempt
+            || route
+                .create
+                .as_ref()
+                .is_some_and(|receipt| !receipt.permits_output(window))
+        {
             return None;
         }
         if route.window.is_none() && create_attempt.is_none() {
@@ -417,12 +548,15 @@ impl NativeViewportMap {
             || self.pointer_suppressed.contains(&expected)
             || self.prepared_retirements.contains(&expected)
             || route
-                .create_attempt
-                .is_some_and(|current| current != attempt)
+                .create
+                .as_ref()
+                .is_some_and(|current| current.attempt() != Some(attempt) || !current.is_awaiting())
         {
             return false;
         }
-        route.create_attempt = Some(attempt);
+        route
+            .create
+            .get_or_insert_with(|| NativeCreateReceipt::new(Some(attempt)));
         true
     }
 
@@ -432,7 +566,7 @@ impl NativeViewportMap {
     ) -> Option<NativeSurfaceBinding> {
         let route = self.viewports.get(&attempt.viewport_id())?;
         (route.window.is_none()
-            && route.create_attempt == Some(attempt)
+            && route.create.as_ref().and_then(NativeCreateReceipt::attempt) == Some(attempt)
             && !self.pointer_suppressed.contains(&route.binding)
             && !self.prepared_retirements.contains(&route.binding))
         .then_some(route.binding)
@@ -446,7 +580,7 @@ impl NativeViewportMap {
         self.viewports.get(&viewport).is_some_and(|route| {
             route.binding == binding
                 && route.window.is_none()
-                && route.create_attempt.is_some()
+                && route.create.is_some()
                 && !self.pointer_suppressed.contains(&binding)
                 && !self.prepared_retirements.contains(&binding)
         })
@@ -454,6 +588,98 @@ impl NativeViewportMap {
 
     pub(crate) fn viewport(&self, surface: SurfaceId) -> Option<ViewportId> {
         self.surfaces.get(&surface).copied()
+    }
+
+    pub(crate) fn receive_create_terminal(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        attempt: Option<NativeViewportCreateAttempt>,
+        terminal: CreateTerminal,
+    ) -> CreateAdmission {
+        let Some(route) = self.viewports.get_mut(&viewport) else {
+            return CreateAdmission::Conflict;
+        };
+        if route.binding != binding {
+            return CreateAdmission::Conflict;
+        }
+        route
+            .create
+            .as_mut()
+            .map_or(CreateAdmission::Conflict, |receipt| {
+                receipt.receive(attempt, terminal)
+            })
+    }
+
+    pub(crate) fn transfer_create_terminal(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        attempt: Option<NativeViewportCreateAttempt>,
+        terminal: CreateTerminal,
+    ) -> bool {
+        self.viewports
+            .get_mut(&viewport)
+            .filter(|route| route.binding == binding)
+            .and_then(|route| route.create.as_mut())
+            .is_some_and(|receipt| receipt.transfer(attempt, terminal))
+    }
+
+    /// Removes only the failed route whose already received receipt is transferred.
+    pub(crate) fn take_failed_create(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeCreateReceipt> {
+        let route = self.viewports.get(&viewport)?;
+        if route.binding != binding
+            || route.window.is_some()
+            || !route
+                .create
+                .as_ref()
+                .is_some_and(NativeCreateReceipt::is_transferred_failure)
+        {
+            return None;
+        }
+        let receipt = self.viewports.get_mut(&viewport)?.create.take()?;
+        let snapshot = self.viewports.get(&viewport)?.snapshot();
+        self.remove_route_unchecked(viewport, snapshot);
+        Some(receipt)
+    }
+
+    pub(crate) fn commit_create_boundary(&mut self) {
+        for route in self.viewports.values_mut() {
+            if let Some(receipt) = route.create.as_mut() {
+                receipt.commit_created_boundary();
+            }
+        }
+    }
+
+    pub(crate) fn has_pending_create_receipts(&self) -> bool {
+        self.viewports.values().any(|route| {
+            route
+                .create
+                .as_ref()
+                .is_some_and(|receipt| !receipt.is_committed())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admit_test_create(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let Some(route) = self.viewports.get_mut(&viewport) else {
+            return false;
+        };
+        if route.binding != binding || route.window.is_some() {
+            return false;
+        }
+        route
+            .create
+            .get_or_insert_with(|| NativeCreateReceipt::new(None));
+        true
     }
 
     fn validate_unclaimed_peers(
@@ -498,7 +724,7 @@ impl NativeViewportMap {
     fn validate_binding(
         viewport: ViewportId,
         expected: NativeSurfaceBinding,
-        current: NativeViewportRoute,
+        current: RouteSnapshot,
     ) -> Result<(), NativeViewportBindingError> {
         if current.binding != expected {
             return Err(NativeViewportBindingError::BindingMismatch {
@@ -515,11 +741,21 @@ impl NativeViewportMap {
         viewport: ViewportId,
         expected: NativeSurfaceBinding,
         successor: NativeSurfaceBinding,
-    ) -> Result<NativeViewportRoute, NativeViewportBindingError> {
-        let Some(current) = self.viewports.get(&viewport).copied() else {
+    ) -> Result<RouteSnapshot, NativeViewportBindingError> {
+        let Some(current) = self
+            .viewports
+            .get(&viewport)
+            .map(NativeViewportRoute::snapshot)
+        else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
-        self.validate_not_retiring(viewport, current.binding)?;
+        if self.prepared_retirements.contains(&current.binding) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: current.binding.surface(),
+            });
+        }
+        self.validate_create_settled(viewport, current.binding)?;
         Self::validate_binding(viewport, expected, current)?;
         if successor.surface() != expected.surface() {
             return Err(NativeViewportBindingError::ReplacementSurfaceMismatch {
@@ -534,6 +770,25 @@ impl NativeViewportMap {
             "viewport and surface indexes must remain symmetric",
         );
         Ok(current)
+    }
+
+    fn validate_create_settled(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        if self.viewports.get(&viewport).is_some_and(|route| {
+            route
+                .create
+                .as_ref()
+                .is_some_and(|receipt| !receipt.is_committed())
+        }) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: binding.surface(),
+            });
+        }
+        Ok(())
     }
 
     fn validate_not_retiring(
@@ -563,7 +818,9 @@ impl NativeViewportMap {
             NativeViewportRoute {
                 window,
                 binding,
-                create_attempt: None,
+                create: None,
+                terminal: window
+                    .map(|window| NativeWindowReceipt::attached(viewport, window, binding, None)),
             },
         );
         if let Some(previous) = previous {
@@ -575,13 +832,47 @@ impl NativeViewportMap {
         self.surfaces.insert(binding.surface(), viewport);
     }
 
-    fn remove_route_unchecked(&mut self, viewport: ViewportId, route: NativeViewportRoute) {
+    fn remove_route_unchecked(&mut self, viewport: ViewportId, route: RouteSnapshot) {
         let removed = self.viewports.remove(&viewport);
-        debug_assert_eq!(removed, Some(route));
+        debug_assert_eq!(
+            removed.as_ref().map(NativeViewportRoute::snapshot),
+            Some(route)
+        );
         if let Some(window) = route.window {
             self.windows.remove(&window);
         }
         self.surfaces.remove(&route.binding.surface());
         self.focus_reportable.remove(&route.binding);
+    }
+
+    pub(crate) fn take_window_receipt(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeWindowReceipt> {
+        self.viewports
+            .get_mut(&viewport)
+            .filter(|route| route.binding == binding)?
+            .terminal
+            .take()
+    }
+
+    pub(crate) fn has_window_receipt(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.viewports
+            .get(&viewport)
+            .is_some_and(|route| route.binding == binding && route.terminal.is_some())
+    }
+
+    pub(crate) fn take_window_receipt_for_event(
+        &mut self,
+        window: WindowId,
+        viewport: Option<ViewportId>,
+    ) -> Option<NativeWindowReceipt> {
+        let (viewport, binding) = self.route_for_event(window, viewport)?;
+        self.take_window_receipt(viewport, binding)
     }
 }

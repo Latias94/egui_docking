@@ -459,7 +459,7 @@ fn device_removal_callback_commits_the_complete_input_roster_in_one_boundary() {
         native.bridge.push_record(HostRecord::WindowEvent(callback));
         assert!(
             native
-                .reduce_callback_prefix()
+                .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
                 .expect("the pointer callback records")
                 .is_some()
         );
@@ -471,7 +471,7 @@ fn device_removal_callback_commits_the_complete_input_roster_in_one_boundary() {
     ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("one removal callback records the complete adapter roster atomically")
             .is_some()
     );

@@ -32,7 +32,7 @@ fn applied_pointer_passthrough_callback_becomes_an_exact_snapshot_fact() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact input callback records")
             .is_some()
     );
@@ -55,7 +55,7 @@ fn applied_pointer_passthrough_callback_becomes_an_exact_snapshot_fact() {
         .push_viewport_roster(live_roster([first, second]));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the complete roster records the input fact")
             .is_some()
     );
@@ -103,7 +103,7 @@ fn failed_pointer_passthrough_callback_does_not_invent_input_authority() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the failed callback is consumed")
             .is_some()
     );

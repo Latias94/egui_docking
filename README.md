@@ -104,9 +104,12 @@ restore candidates are not product interfaces.
 ## egui and native references
 
 The publishable crates use official egui and eframe `0.37.0`. The excluded
-native workspace uses the reviewed egui/eframe fork revision
-`0716beee5b7284389f2e80ffb6b24b5af6ae2910`, which contains every admitted native
-seam. The event-time Winit fork is pinned at
+native workspace still pins the last published egui/eframe fork baseline,
+`0716beee5b7284389f2e80ffb6b24b5af6ae2910`. Native resource-ownership work now
+also requires the local, unpublished fork commit
+`1f7c541fde99fd69192622a1a36cb642de58ed29`, qualified through explicit local
+Cargo overrides. The tracked native manifests and CI cannot yet reproduce that
+new work from their remote pins alone. The event-time Winit fork is pinned at
 `f378b50f29cafafec31cd8675c17646b4ef57d70`. The manifest, lockfile, CI, and
 this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in

@@ -4,13 +4,15 @@
 //! acknowledgement and the exact eframe route until the operating system
 //! reports destruction and the corresponding core frame commits.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
+use crate::viewport_map::{NativeCreateReceipt, NativeWindowReceipt};
 use dockspace::runtime::{
     NativeCleanupObservation, NativeCloseEffectAcknowledgement, NativeEffectResult,
     NativeSurfaceBinding, NativeWindowFacts,
 };
 use eframe::egui::ViewportId;
+use winit::window::WindowId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetirementPhase {
@@ -104,6 +106,7 @@ impl CleanupRelay {
 #[derive(Debug)]
 struct PendingRetirement {
     viewport: ViewportId,
+    window: NativeWindowReceipt,
     acknowledgement: Option<NativeCloseEffectAcknowledgement>,
     phase: RetirementPhase,
     cleanup: CleanupRelay,
@@ -128,7 +131,7 @@ impl CommittedRetirement {
 #[derive(Debug, Default)]
 pub(crate) struct NativeRetirementState {
     pending: BTreeMap<NativeSurfaceBinding, PendingRetirement>,
-    unmaterialized: BTreeSet<NativeSurfaceBinding>,
+    unmaterialized: BTreeMap<NativeSurfaceBinding, NativeCreateReceipt>,
 }
 
 impl NativeRetirementState {
@@ -142,38 +145,54 @@ impl NativeRetirementState {
     pub(crate) fn begin_unmaterialized_quiescence(
         &mut self,
         binding: NativeSurfaceBinding,
+        receipt: NativeCreateReceipt,
     ) -> bool {
         if self.pending_for_lifetime(binding).is_some()
             || self
                 .unmaterialized
-                .iter()
+                .keys()
                 .any(|candidate| candidate.same_window_lifetime(binding))
         {
             return false;
         }
-        self.unmaterialized.insert(binding)
+        self.unmaterialized.insert(binding, receipt).is_none()
     }
 
     pub(crate) fn has_quiescence_owner(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending_for_lifetime(binding).is_some()
             || self
                 .unmaterialized
-                .iter()
+                .keys()
                 .any(|candidate| candidate.same_window_lifetime(binding))
     }
 
     pub(crate) fn is_quiescence_candidate(&self, binding: NativeSurfaceBinding) -> bool {
-        self.unmaterialized.contains(&binding)
-            || self
-                .pending
-                .get(&binding)
-                .is_some_and(|pending| pending.phase == RetirementPhase::RouteRetired)
+        self.unmaterialized
+            .get(&binding)
+            .is_some_and(NativeCreateReceipt::is_committed)
+            || self.pending.get(&binding).is_some_and(|pending| {
+                pending.phase == RetirementPhase::RouteRetired
+                    && pending.window.destroyed_committed()
+            })
+    }
+
+    pub(crate) fn mark_create_failure_recorded(&mut self, binding: NativeSurfaceBinding) {
+        if let Some(receipt) = self.unmaterialized.get_mut(&binding) {
+            receipt.mark_failure_recorded();
+        }
+    }
+
+    pub(crate) fn commit_create_failures(&mut self) {
+        for receipt in self.unmaterialized.values_mut() {
+            receipt.commit_failure();
+        }
     }
 
     pub(crate) fn requires_snapshot(&self) -> bool {
-        self.pending
-            .values()
-            .any(|pending| matches!(pending.phase, RetirementPhase::DestroyedObserved))
+        self.pending.values().any(|pending| {
+            pending.phase == RetirementPhase::DestroyedObserved
+                && pending.window.destroyed_committed()
+        })
     }
 
     pub(crate) fn can_begin_release(
@@ -181,11 +200,12 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        self.pending_for_lifetime(binding).is_none()
-            && !self
-                .pending
-                .values()
-                .any(|pending| pending.viewport == viewport)
+        !self.unmaterialized.contains_key(&binding)
+            && self.pending_for_lifetime(binding).is_none_or(|pending| {
+                pending.viewport == viewport
+                    && pending.phase == RetirementPhase::AwaitingDestroyed
+                    && pending.acknowledgement.is_none()
+            })
     }
 
     pub(crate) fn begin_release(
@@ -193,14 +213,28 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
         acknowledgement: NativeCloseEffectAcknowledgement,
+        window: Option<NativeWindowReceipt>,
     ) -> bool {
         if !self.can_begin_release(viewport, binding) {
             return false;
         }
+        if let Some(pending) = self.pending.get_mut(&binding) {
+            if pending.viewport != viewport || window.is_some() {
+                return false;
+            }
+            pending.acknowledgement = Some(acknowledgement);
+            return true;
+        }
+        let Some(window) = window else {
+            return false;
+        };
+        debug_assert_eq!(window.viewport(), viewport);
+        debug_assert_eq!(window.binding(), binding);
         self.pending.insert(
             binding,
             PendingRetirement {
                 viewport,
+                window,
                 acknowledgement: Some(acknowledgement),
                 phase: RetirementPhase::AwaitingDestroyed,
                 cleanup: CleanupRelay::default(),
@@ -213,29 +247,14 @@ impl NativeRetirementState {
         &mut self,
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
+        window: WindowId,
+        ordinal: u64,
     ) -> DestroyedObservation {
-        if let Some(existing) = self.pending_lifetime_key(binding) {
-            if existing != binding && self.pending.contains_key(&binding) {
-                return DestroyedObservation::Rejected;
-            }
-            // Validate the callback route before moving the exact binding key.
-            // A rejected successor observation must not clear the predecessor's
-            // close acknowledgement or otherwise mutate the retirement lane.
-            if !self
-                .pending
-                .get(&existing)
-                .is_some_and(|pending| pending.viewport == viewport)
-            {
-                return DestroyedObservation::Rejected;
-            }
-            if existing != binding {
-                if !self.adopt_successor_binding(existing, binding) {
-                    return DestroyedObservation::Rejected;
-                }
-            }
-        }
         if let Some(pending) = self.pending.get_mut(&binding) {
-            if pending.viewport != viewport {
+            if pending.viewport != viewport
+                || pending.window.window() != window
+                || !pending.window.received_destroyed(ordinal)
+            {
                 return DestroyedObservation::Rejected;
             }
             if pending.phase == RetirementPhase::AwaitingDestroyed {
@@ -244,23 +263,95 @@ impl NativeRetirementState {
             }
             return DestroyedObservation::Duplicate;
         }
-        if self
-            .pending
-            .values()
-            .any(|pending| pending.viewport == viewport)
-        {
-            return DestroyedObservation::Rejected;
+        DestroyedObservation::Rejected
+    }
+
+    /// Moves the attached route's sole receipt into the existing retirement owner.
+    pub(crate) fn can_retain_window(
+        &self,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+    ) -> bool {
+        !self.has_quiescence_owner(binding) && !self.owns_window(window, None)
+    }
+
+    pub(crate) fn retain_window(
+        &mut self,
+        window: NativeWindowReceipt,
+    ) -> Result<(), NativeWindowReceipt> {
+        let binding = window.binding();
+        if !self.can_retain_window(binding, window.window()) {
+            return Err(window);
         }
         self.pending.insert(
             binding,
             PendingRetirement {
-                viewport,
+                viewport: window.viewport(),
+                window,
                 acknowledgement: None,
-                phase: RetirementPhase::DestroyedObserved,
+                phase: RetirementPhase::AwaitingDestroyed,
                 cleanup: CleanupRelay::default(),
             },
         );
-        DestroyedObservation::Recorded
+        Ok(())
+    }
+
+    pub(crate) fn receive_destroyed(
+        &mut self,
+        window: WindowId,
+        viewport: Option<ViewportId>,
+        ordinal: u64,
+    ) -> Option<(ViewportId, NativeSurfaceBinding)> {
+        let (binding, pending) = self
+            .pending
+            .iter_mut()
+            .find(|(_, pending)| pending.window.matches_window(window, viewport))?;
+        pending
+            .window
+            .receive_destroyed(ordinal)
+            .then_some((pending.viewport, *binding))
+    }
+
+    pub(crate) fn owns_window(&self, window: WindowId, viewport: Option<ViewportId>) -> bool {
+        self.pending
+            .values()
+            .any(|pending| pending.window.matches_window(window, viewport))
+    }
+
+    pub(crate) fn has_window(&self, viewport: ViewportId, binding: NativeSurfaceBinding) -> bool {
+        self.pending
+            .get(&binding)
+            .is_some_and(|pending| pending.viewport == viewport)
+    }
+
+    pub(crate) fn transfer_destroyed(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+        ordinal: u64,
+    ) -> bool {
+        self.pending
+            .get_mut(&binding)
+            .filter(|pending| pending.window.window() == window)
+            .is_some_and(|pending| pending.window.transfer_destroyed(ordinal))
+    }
+
+    pub(crate) fn commit_destroyed_callbacks(&mut self) {
+        for pending in self.pending.values_mut() {
+            pending.window.commit_destroyed();
+        }
+    }
+
+    pub(crate) fn retire_unrecognized_destroyed(&mut self, binding: NativeSurfaceBinding) {
+        if let Some(pending) = self.pending.get_mut(&binding)
+            && pending.phase == RetirementPhase::DestroyedObserved
+        {
+            pending.cleanup.finish_destroyed_snapshot();
+            pending.acknowledgement = None;
+            // This provider no longer has a core tombstone to publish. Exact
+            // route retirement still waits for the transferred callback commit.
+            pending.phase = RetirementPhase::TombstoneCommitted;
+        }
     }
 
     fn pending_for_lifetime(&self, binding: NativeSurfaceBinding) -> Option<&PendingRetirement> {
@@ -301,6 +392,7 @@ impl NativeRetirementState {
         // successor may only publish a plain Destroyed tombstone until it
         // obtains a new exact acknowledgement from core.
         pending.acknowledgement = None;
+        pending.window.rebind(successor);
         self.pending.insert(successor, pending);
         true
     }
@@ -384,7 +476,9 @@ impl NativeRetirementState {
         &self,
     ) -> impl Iterator<Item = (NativeSurfaceBinding, NativeWindowFacts)> + '_ {
         self.pending.iter().filter_map(|(binding, pending)| {
-            (pending.phase == RetirementPhase::DestroyedObserved).then(|| {
+            (pending.phase == RetirementPhase::DestroyedObserved
+                && pending.window.destroyed_committed())
+            .then(|| {
                 let facts = pending.acknowledgement.map_or_else(
                     NativeWindowFacts::destroyed,
                     NativeWindowFacts::destroyed_after,
@@ -396,7 +490,9 @@ impl NativeRetirementState {
 
     pub(crate) fn mark_snapshot_queued(&mut self) {
         for pending in self.pending.values_mut() {
-            if pending.phase == RetirementPhase::DestroyedObserved {
+            if pending.phase == RetirementPhase::DestroyedObserved
+                && pending.window.destroyed_committed()
+            {
                 pending.phase = RetirementPhase::SnapshotQueued;
             }
         }
@@ -418,7 +514,10 @@ impl NativeRetirementState {
     pub(crate) fn committed_routes(&self) -> Vec<CommittedRetirement> {
         self.pending
             .iter()
-            .filter(|(_, pending)| pending.phase == RetirementPhase::TombstoneCommitted)
+            .filter(|(_, pending)| {
+                pending.phase == RetirementPhase::TombstoneCommitted
+                    && pending.window.destroyed_committed()
+            })
             .map(|(binding, pending)| CommittedRetirement {
                 viewport: pending.viewport,
                 binding: *binding,
@@ -432,7 +531,9 @@ impl NativeRetirementState {
         binding: NativeSurfaceBinding,
     ) -> bool {
         self.pending.get(&binding).is_some_and(|pending| {
-            pending.viewport == viewport && pending.phase == RetirementPhase::TombstoneCommitted
+            pending.viewport == viewport
+                && pending.phase == RetirementPhase::TombstoneCommitted
+                && pending.window.destroyed_committed()
         })
     }
 
@@ -467,20 +568,29 @@ impl NativeRetirementState {
         self.pending
             .iter()
             .filter_map(|(binding, pending)| {
-                (pending.phase == RetirementPhase::RouteRetired).then_some(*binding)
+                (pending.phase == RetirementPhase::RouteRetired
+                    && pending.window.destroyed_committed())
+                .then_some(*binding)
             })
-            .chain(self.unmaterialized.iter().copied())
+            .chain(
+                self.unmaterialized
+                    .iter()
+                    .filter_map(|(binding, receipt)| receipt.is_committed().then_some(*binding)),
+            )
     }
 
     pub(crate) fn finish_quiescence(&mut self, binding: NativeSurfaceBinding) -> bool {
-        if self.unmaterialized.remove(&binding) {
+        if self
+            .unmaterialized
+            .get(&binding)
+            .is_some_and(NativeCreateReceipt::is_committed)
+        {
+            self.unmaterialized.remove(&binding);
             return true;
         }
-        if !self
-            .pending
-            .get(&binding)
-            .is_some_and(|pending| pending.phase == RetirementPhase::RouteRetired)
-        {
+        if !self.pending.get(&binding).is_some_and(|pending| {
+            pending.phase == RetirementPhase::RouteRetired && pending.window.destroyed_committed()
+        }) {
             return false;
         }
         self.pending.remove(&binding);
@@ -543,14 +653,31 @@ mod tests {
         let binding = binding();
         let viewport = ViewportId::from_hash_of("retired-child");
         let mut state = NativeRetirementState::default();
+        let window = WindowId::from(22);
+        let mut routes = crate::viewport_map::NativeViewportMap::default();
+        routes.bind(viewport, window, binding).unwrap();
+        state
+            .retain_window(routes.take_window_receipt(viewport, binding).unwrap())
+            .unwrap();
         assert_eq!(
-            state.observe_destroyed(viewport, binding),
+            state.receive_destroyed(window, Some(viewport), 1),
+            Some((viewport, binding))
+        );
+        assert_eq!(
+            state.observe_destroyed(viewport, binding, window, 1),
             DestroyedObservation::Recorded
         );
         assert_eq!(
-            state.observe_destroyed(viewport, binding),
+            state.observe_destroyed(viewport, binding, window, 1),
             DestroyedObservation::Duplicate
         );
+        assert!(
+            !state.requires_snapshot(),
+            "raw admission is not a committed boundary"
+        );
+        assert!(state.transfer_destroyed(binding, window, 1));
+        assert!(!state.requires_snapshot());
+        state.commit_destroyed_callbacks();
         assert!(state.requires_snapshot());
         assert_eq!(state.destroyed_observations().count(), 1);
         assert!(state.committed_routes().is_empty());

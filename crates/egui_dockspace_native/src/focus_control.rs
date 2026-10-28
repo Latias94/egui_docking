@@ -3,7 +3,8 @@
 use dockspace::runtime::{NativeEffectRequest, NativeGlobalFocus, NativeSurfaceBinding};
 use eframe::{
     NativeGlobalFocus as EframeGlobalFocus, NativeGlobalFocusObservation,
-    NativeViewportFocusResult, NativeViewportFocusStatus, egui::ViewportId,
+    NativeViewportFocusCommandToken, NativeViewportFocusResult, NativeViewportFocusStatus,
+    egui::ViewportId,
 };
 use winit::window::WindowId;
 
@@ -67,6 +68,7 @@ impl NativeGlobalFocusRecord {
 /// One exact result of consuming an eframe viewport-focus command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeViewportFocusRecord {
+    token: NativeViewportFocusCommandToken,
     viewport: ViewportId,
     window: WindowId,
     binding: Option<NativeSurfaceBinding>,
@@ -74,11 +76,32 @@ pub(crate) struct NativeViewportFocusRecord {
 }
 
 impl NativeViewportFocusRecord {
+    pub(crate) const fn retired_before_dispatch(
+        token: NativeViewportFocusCommandToken,
+        viewport: ViewportId,
+        window: WindowId,
+        binding: NativeSurfaceBinding,
+    ) -> Self {
+        Self {
+            token,
+            viewport,
+            window,
+            binding: Some(binding),
+            status: NativeViewportFocusStatus::Retired,
+        }
+    }
+
+    pub(crate) fn qualified_for_binding(mut self, binding: NativeSurfaceBinding) -> Self {
+        self.binding = Some(binding);
+        self
+    }
+
     pub(crate) fn capture(
         result: NativeViewportFocusResult,
         viewports: &NativeViewportMap,
     ) -> Self {
         Self {
+            token: result.token(),
             viewport: result.viewport_id(),
             window: result.window_id(),
             binding: viewports
@@ -89,12 +112,14 @@ impl NativeViewportFocusRecord {
 
     #[cfg(test)]
     pub(crate) const fn for_test(
+        token: NativeViewportFocusCommandToken,
         viewport: ViewportId,
         window: WindowId,
         binding: Option<NativeSurfaceBinding>,
         status: NativeViewportFocusStatus,
     ) -> Self {
         Self {
+            token,
             viewport,
             window,
             binding,
@@ -110,6 +135,10 @@ impl NativeViewportFocusRecord {
         self.window
     }
 
+    pub(crate) const fn token(self) -> NativeViewportFocusCommandToken {
+        self.token
+    }
+
     pub(crate) fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
         matches!(self.binding, Some(current) if current == binding)
     }
@@ -120,6 +149,7 @@ struct PendingNativeFocus<Request> {
     viewport: ViewportId,
     window: WindowId,
     binding: NativeSurfaceBinding,
+    token: Option<NativeViewportFocusCommandToken>,
     state: PendingNativeFocusState<Request>,
 }
 
@@ -183,12 +213,17 @@ impl<Request> NativeFocusControl<Request> {
             viewport,
             window,
             binding,
+            token: None,
             state: PendingNativeFocusState::Queued(request),
         });
         Ok(())
     }
 
-    pub(crate) fn mark_dispatched(&mut self, viewport: ViewportId) -> bool {
+    pub(crate) fn mark_dispatched(
+        &mut self,
+        viewport: ViewportId,
+        token: NativeViewportFocusCommandToken,
+    ) -> bool {
         let Some(mut pending) = self.pending.take() else {
             return false;
         };
@@ -198,6 +233,7 @@ impl<Request> NativeFocusControl<Request> {
         }
         let changed = match pending.state {
             PendingNativeFocusState::Queued(request) => {
+                pending.token = Some(token);
                 pending.state = PendingNativeFocusState::AwaitingCallback(request);
                 true
             }
@@ -219,6 +255,7 @@ impl<Request> NativeFocusControl<Request> {
         };
         if pending.viewport != record.viewport
             || pending.window != record.window
+            || pending.token != Some(record.token)
             || matches!(pending.state, PendingNativeFocusState::Queued(_))
         {
             return NativeFocusResultDisposition::Unrelated;
@@ -265,7 +302,11 @@ impl<Request> NativeFocusControl<Request> {
 
     pub(crate) fn take_callback(&mut self, record: NativeViewportFocusRecord) -> Option<Request> {
         self.take_dispatched_if(
-            |pending| pending.viewport == record.viewport && pending.window == record.window,
+            |pending| {
+                pending.viewport == record.viewport
+                    && pending.window == record.window
+                    && pending.token == Some(record.token)
+            },
             |state| !matches!(state, PendingNativeFocusState::Queued(_)),
         )
     }
@@ -345,6 +386,15 @@ impl<Request> NativeFocusControl<Request> {
 
     pub(crate) fn pending_binding(&self) -> Option<NativeSurfaceBinding> {
         self.pending.as_ref().map(|pending| pending.binding)
+    }
+
+    pub(crate) fn queued_route(&self) -> Option<(ViewportId, NativeSurfaceBinding, WindowId)> {
+        let pending = self.pending.as_ref()?;
+        matches!(pending.state, PendingNativeFocusState::Queued(_)).then_some((
+            pending.viewport,
+            pending.binding,
+            pending.window,
+        ))
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {

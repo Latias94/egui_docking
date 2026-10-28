@@ -4,7 +4,7 @@
 //! ledger, or presentation state machine. The callback coordinator is an
 //! implementation detail while the native product driver is being completed.
 //! It bridges the renderer-neutral [`dockspace::runtime::DockspaceSession`] and
-//! the pinned eframe 0.36 native host seam.
+//! the pinned eframe 0.37 native host seam.
 
 #![forbid(unsafe_code)]
 
@@ -38,3 +38,4 @@ pub use application_action::{
 };
 pub use close_control::NativeWindowClosePolicy;
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
+pub use lifecycle_progress::NativeCloseProgress;

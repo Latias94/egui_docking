@@ -18,7 +18,7 @@ use dockspace::runtime::DockspaceSession;
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::{
-    NativeActionRequestError, NativeDockspaceApp, NativeWindowClosePolicy,
+    NativeActionRequestError, NativeCloseProgress, NativeDockspaceApp, NativeWindowClosePolicy,
 };
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
@@ -79,6 +79,7 @@ enum SmokeScenario {
     Redock,
     RecoverClose,
     RetainClose,
+    CancelClose,
 }
 
 impl SmokeScenario {
@@ -87,8 +88,9 @@ impl SmokeScenario {
             "redock" => Ok(Self::Redock),
             "recover-close" => Ok(Self::RecoverClose),
             "retain-close" => Ok(Self::RetainClose),
+            "cancel-close" => Ok(Self::CancelClose),
             value => Err(format!(
-                "unknown native smoke scenario {value:?}; expected redock, recover-close, or retain-close"
+                "unknown native smoke scenario {value:?}; expected redock, recover-close, retain-close, or cancel-close"
             )),
         }
     }
@@ -96,6 +98,7 @@ impl SmokeScenario {
     const fn explicit_close_policy(self) -> Option<NativeWindowClosePolicy> {
         match self {
             Self::RecoverClose => None,
+            Self::CancelClose => Some(NativeWindowClosePolicy::Cancel),
             Self::Redock | Self::RetainClose => Some(NativeWindowClosePolicy::RetainLayout),
         }
     }
@@ -176,6 +179,7 @@ enum SmokePhase {
     AwaitCloseSettlement {
         target_surface: SurfaceId,
         child_viewport: ViewportId,
+        close_baseline: NativeCloseProgress,
     },
     AwaitRedock {
         target_surface: SurfaceId,
@@ -242,7 +246,10 @@ impl SmokeApp {
             SmokePhase::AwaitCloseSettlement {
                 target_surface,
                 child_viewport,
-            } => self.await_close_settlement(context, target_surface, child_viewport),
+                close_baseline,
+            } => {
+                self.await_close_settlement(context, target_surface, child_viewport, close_baseline)
+            }
             SmokePhase::AwaitRedock { target_surface } => {
                 self.await_redock(context, target_surface)
             }
@@ -322,7 +329,9 @@ impl SmokeApp {
         if transferred == Some(true) {
             match self.scenario {
                 SmokeScenario::Redock => self.queue_redock(context, target_surface),
-                SmokeScenario::RecoverClose | SmokeScenario::RetainClose => {
+                SmokeScenario::RecoverClose
+                | SmokeScenario::RetainClose
+                | SmokeScenario::CancelClose => {
                     self.transition(SmokePhase::AwaitChildClose { target_surface });
                     self.queue_child_close(context, target_surface);
                 }
@@ -343,6 +352,7 @@ impl SmokeApp {
                 return;
             }
         };
+        let close_baseline = self.dockspace.close_progress();
         // The X11 smoke driver waits for this exact title before sending a real
         // WM close request. `ViewportCommand::Close` would bypass Winit's
         // `CloseRequested` event and therefore could not prove close policy.
@@ -354,6 +364,7 @@ impl SmokeApp {
         self.transition(SmokePhase::AwaitCloseSettlement {
             target_surface,
             child_viewport,
+            close_baseline,
         });
     }
 
@@ -362,7 +373,38 @@ impl SmokeApp {
         context: &egui::Context,
         target_surface: SurfaceId,
         child_viewport: ViewportId,
+        close_baseline: NativeCloseProgress,
     ) {
+        if self.scenario == SmokeScenario::CancelClose {
+            let child_window_exists =
+                context.input(|input| input.raw.viewports.contains_key(&child_viewport));
+            let layout_matches = self.dockspace.with_view(|view| {
+                view.surface(ROOT_SURFACE)
+                    .and_then(|surface| surface.main_root())
+                    .is_some_and(|root| root.id() == MAIN_ROOT)
+                    && view
+                        .surface(target_surface)
+                        .and_then(|surface| surface.main_root())
+                        .is_some_and(|root| root.id() == CHILD_ROOT)
+                    && [CHILD_ITEM, CHILD_DETAIL].into_iter().all(|item| {
+                        view.item(item).is_some_and(|pane| {
+                            pane.surface() == target_surface && pane.root() == CHILD_ROOT
+                        })
+                    })
+            });
+            if cancel_close_settled(
+                close_baseline.cancellations_committed(),
+                self.dockspace.close_progress().cancellations_committed(),
+                child_window_exists,
+                self.dockspace.is_surface_presented(ROOT_SURFACE),
+                self.dockspace.is_surface_presented(target_surface),
+                layout_matches == Some(true),
+                self.dockspace.is_quiescent(),
+            ) {
+                self.finish(context, Ok(()));
+            }
+            return;
+        }
         let child_window_destroyed =
             context.input(|input| !input.raw.viewports.contains_key(&child_viewport));
         if !child_window_destroyed
@@ -399,7 +441,7 @@ impl SmokeApp {
                         .and_then(|surface| surface.main_root())
                         .is_some_and(|root| root.id() == CHILD_ROOT)
                 }
-                SmokeScenario::Redock => false,
+                SmokeScenario::Redock | SmokeScenario::CancelClose => false,
             }
         });
         match layout_matches {
@@ -528,6 +570,23 @@ impl SmokeApp {
         self.phase = SmokePhase::Done;
         context.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
     }
+}
+
+fn cancel_close_settled(
+    cancellations_before: u64,
+    cancellations_now: u64,
+    child_window_exists: bool,
+    root_presented: bool,
+    child_presented: bool,
+    layout_matches: bool,
+    quiescent: bool,
+) -> bool {
+    cancellations_before.checked_add(1) == Some(cancellations_now)
+        && child_window_exists
+        && root_presented
+        && child_presented
+        && layout_matches
+        && quiescent
 }
 
 /// Selects the one non-root viewport owned by this bounded smoke.
@@ -659,6 +718,51 @@ mod tests {
             SmokeScenario::RetainClose.explicit_close_policy(),
             Some(NativeWindowClosePolicy::RetainLayout)
         );
+    }
+
+    #[test]
+    fn cancel_close_selects_cancel_policy_from_environment_or_cli() {
+        assert_eq!(
+            SmokeScenario::CancelClose.explicit_close_policy(),
+            Some(NativeWindowClosePolicy::Cancel)
+        );
+        assert_eq!(
+            select_scenario(&[], Some("cancel-close")).expect("cancel-close is valid"),
+            SmokeScenario::CancelClose
+        );
+        for args in [
+            vec!["--scenario=cancel-close".to_owned()],
+            vec!["--scenario".to_owned(), "cancel-close".to_owned()],
+        ] {
+            assert_eq!(
+                select_scenario(&args, Some("recover-close"))
+                    .expect("the CLI overrides the environment"),
+                SmokeScenario::CancelClose
+            );
+        }
+        assert!(SmokeScenario::parse("cancel").is_err());
+    }
+
+    #[test]
+    fn cancel_close_requires_exactly_one_new_committed_cancellation() {
+        assert!(cancel_close_settled(7, 8, true, true, true, true, true));
+        for (before, now) in [(7, 7), (7, 9), (7, 6), (u64::MAX, u64::MAX)] {
+            assert!(!cancel_close_settled(
+                before, now, true, true, true, true, true
+            ));
+        }
+    }
+
+    #[test]
+    fn cancel_close_requires_live_windows_original_layout_and_quiescence() {
+        for missing in 0..5 {
+            let mut facts = [true; 5];
+            facts[missing] = false;
+            assert!(!cancel_close_settled(
+                7, 8, facts[0], facts[1], facts[2], facts[3], facts[4]
+            ));
+        }
+        assert!(!cancel_close_settled(7, 8, false, true, false, true, true));
     }
 
     #[test]

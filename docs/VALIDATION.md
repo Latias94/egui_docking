@@ -15,6 +15,72 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U8 resource and command terminal ownership checkpoint
+
+Native output, deferred-window, create-attempt, physical-window and held-close
+reservations now retain their existing resource owner through raw handoff,
+partial replay, route suppression and complete core commit. An admitted create
+keeps one non-Clone terminal receipt and moves it into the existing retirement
+entry on failure. A physical window reserves its Destroyed receipt on attach;
+displacement and release move the same receipt into retirement. Uncommitted
+receipts prevent tombstones and quiescence. Active and retired ownership is
+checked before rebinding a window or binding.
+
+Held close captures its original journal reservation in the sole close owner
+before returning Hold. Cancellation requires both semantic Clear and a complete
+core boundary commit before its fixed successor can publish. Dropped frames and
+partial replay retain the source identity and age. The duplicate window-resource
+close slot and lifecycle close counter are removed. Existing tests use exact
+adapter model identities; the programmatic redock run does not exercise a real
+canonical WM Hold/Veto request.
+
+The three property-command receipts now contain an inline terminal envelope.
+Only the first exact token/window/value result captures an ordinal; duplicates
+cannot recapture. The unified mailbox head compares raw and owner-held records
+in capture order. Cursor claims and output-prefix barriers stop at either kind
+of head. Transfer preserves count and oldest age until complete commit, while
+retired A1 command receipts can coexist with an active A2 resource. This slice
+does not yet move every other lifecycle terminal payload out of the raw queue.
+
+Independent review found that fatal-quarantine roster rearming scanned only the
+raw queue and could miss an owner-held pointer or visibility result. It now
+scans both. A second issue left a command Awaiting forever when eframe forgot
+its queued operation before execution. Local fork commit
+`1f7c541fde99fd69192622a1a36cb642de58ed29` reports an exact Retired result after
+releasing host locks, without performing or claiming an OS operation. The
+adapter consumes it through the original command receipt and acknowledges the
+associated input effect as rejected. Focus and presentation remain ungranted.
+Reentrant callbacks and replacement-window queue ownership are covered in the
+fork.
+
+Fresh serialized qualification on the frozen source:
+
+| Gate | Result | Scope |
+| --- | --- | --- |
+| Local-fork native workspace, all targets | 271 passed | Resource/close ownership, exact command ingress, dispatch retirement and existing native compatibility |
+| Same workspace, native debug assertions disabled | 271 passed | Includes both fatal-roster rearming cases |
+| Fork host-seam tests | 63 passed | Includes ordered retirement, replacement guard and callback reentrancy |
+| Fork WGPU build | Passed | Native-host seam enabled |
+| Correctness/suspicious Clippy and formatting | Passed | Native workspace; fork formatting also passes |
+| Real-window macOS programmatic redock | Exit 0 | Tear-off, first-live, redock and retirement reach completion |
+
+A disposable-snapshot negative control removes the owner-held callback scan
+from fatal quarantine. The rearming regression fails at the expected missing
+capture assertion; restoring production source passes. The main working tree
+is unchanged by that mutation. Independent final reviews found no additional
+confirmed P1/P2 in the command-terminal slice. There is no dedicated native
+output-token/callback interleaving fixture in these new tests; the shared
+output-prefix path is reviewed and exercised by native compatibility and the
+programmatic smoke, without claiming a complete output interleaving matrix.
+
+The fork remains local and unpublished. Tracked native manifests and CI still
+pin `0716beee5b7284389f2e80ffb6b24b5af6ae2910`; verification uses explicit local
+overrides in a refreshed disposable snapshot. This checkpoint is a local
+resource-ownership prerequisite, not a remotely reproducible native baseline.
+Protected terminal slots for the remaining resource kinds, fixed-boundary
+ordinary admission freeze, record/byte/age caps, sustained-load/release latency,
+soak and physical-platform qualification remain open U7/U8/U11 work.
+
 ## 2026-10-29 Disjoint touch-cut buffer reuse
 
 Touch fragment subtraction now checks for a positive intersection before

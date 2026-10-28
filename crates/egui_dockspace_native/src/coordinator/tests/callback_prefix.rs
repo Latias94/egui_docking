@@ -78,7 +78,14 @@ fn active_motion_prefix_preserves_256_records_and_retries_before_its_successor()
         .push_record(HostRecord::WindowEvent(pointer_record(
             &native, binding, 1, true,
         )));
-    assert_eq!(native.reduce_callback_prefix().unwrap().unwrap().get(), 1);
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .unwrap()
+            .get(),
+        1
+    );
     commit_boundary(&mut native);
     assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
 
@@ -89,7 +96,14 @@ fn active_motion_prefix_preserves_256_records_and_retries_before_its_successor()
                 &native, binding, ordinal, false,
             )));
     }
-    assert_eq!(native.reduce_callback_prefix().unwrap().unwrap().get(), 256);
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .unwrap()
+            .get(),
+        256
+    );
     assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 258);
     assert!(native.bridge.callback_boundary_pending());
 
@@ -99,10 +113,20 @@ fn active_motion_prefix_preserves_256_records_and_retries_before_its_successor()
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
     drop(frame);
-    assert!(!native.reduce_callback_prefix().unwrap().is_some());
+    assert!(
+        !native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 258);
     commit_boundary(&mut native);
-    assert!(native.reduce_callback_prefix().unwrap().is_some());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
     assert!(native.next_window_event().unwrap().is_none());
     commit_boundary(&mut native);
     assert!(!native.bridge.callback_boundary_pending());
@@ -120,7 +144,12 @@ fn active_motion_prefix_stops_before_a_focus_barrier_and_keeps_the_tail() {
         .push_record(HostRecord::WindowEvent(pointer_record(
             &native, binding, 1, true,
         )));
-    assert!(native.reduce_callback_prefix().unwrap().is_some());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
     commit_boundary(&mut native);
     for ordinal in 2..=5 {
         native
@@ -143,13 +172,28 @@ fn active_motion_prefix_stops_before_a_focus_barrier_and_keeps_the_tail() {
         .push_record(HostRecord::WindowEvent(pointer_record(
             &native, binding, 7, false,
         )));
-    assert!(native.reduce_callback_prefix().unwrap().is_some());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 6);
     commit_boundary(&mut native);
-    assert!(native.reduce_callback_prefix().unwrap().is_some());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 7);
     commit_boundary(&mut native);
-    assert!(native.reduce_callback_prefix().unwrap().is_some());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
     assert!(native.next_window_event().unwrap().is_none());
     commit_boundary(&mut native);
 }
@@ -186,10 +230,78 @@ fn dropping_an_unretained_cursor_claim_leaves_its_exact_records_available() {
             .collect::<Vec<_>>(),
         [1, 2]
     );
-    retry.retain();
+    let count = retry.record_count();
+    assert!(retry.retain_prefix(count));
     assert!(native.bridge.callback_boundary_pending());
     assert!(native.bridge.claim_cursor_prefix(2).is_none());
     assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 3);
+}
+
+#[test]
+fn translation_deadline_retains_only_the_translated_part_of_a_cursor_claim() {
+    use dockspace::runtime::NativeMonotonicClock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), binding)
+        .unwrap();
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(pointer_record(
+            &native, binding, 1, true,
+        )));
+    native
+        .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+        .unwrap();
+    commit_boundary(&mut native);
+    for ordinal in 2..=4 {
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(pointer_record(
+                &native, binding, ordinal, false,
+            )));
+    }
+    let calls = Arc::new(AtomicU64::new(0));
+    let source = Arc::clone(&calls);
+    let clock = NativeMonotonicClock::new(move || {
+        if source.fetch_add(1, Ordering::SeqCst) < 4 {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(2)
+        }
+    });
+    let mut budget = NativeInputBudget::new(&clock);
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut budget)
+            .unwrap()
+            .unwrap()
+            .get(),
+        1
+    );
+    assert!(budget.is_exhausted());
+    assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 3);
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut budget)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 3);
+    commit_boundary(&mut native);
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .unwrap()
+            .get(),
+        2
+    );
+    assert!(native.next_window_event().unwrap().is_none());
+    commit_boundary(&mut native);
 }
 
 #[test]
@@ -204,7 +316,12 @@ fn foreign_cursor_prefix_rejection_keeps_raw_input_and_translator_unpublished() 
         .push_record(HostRecord::WindowEvent(pointer_record(
             &native, current, 1, true,
         )));
-    assert!(native.reduce_callback_prefix().unwrap().is_some());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
     commit_boundary(&mut native);
     let mut foreign = coordinator();
     let (binding, _) = register_roots(&mut foreign);
@@ -224,7 +341,9 @@ fn foreign_cursor_prefix_rejection_keeps_raw_input_and_translator_unpublished() 
             )));
     }
     for _ in 0..2 {
-        let error = native.reduce_callback_prefix().unwrap_err();
+        let error = native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap_err();
         assert_eq!(error.kind(), crate::NativeRuntimeErrorKind::HostProtocol);
         assert!(!native.bridge.callback_boundary_pending());
         assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
@@ -278,7 +397,14 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
             true,
             PhysicalPosition::new(start.x(), start.y()),
         )));
-    assert_eq!(native.reduce_callback_prefix().unwrap().unwrap().get(), 1);
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .unwrap()
+            .get(),
+        1
+    );
     let mut press = native
         .begin_host_frame(|query| {
             query
@@ -306,7 +432,14 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
                 PhysicalPosition::new(point.x(), point.y()),
             )));
     }
-    assert_eq!(native.reduce_callback_prefix().unwrap().unwrap().get(), 256);
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .unwrap()
+            .get(),
+        256
+    );
     assert!(native.next_window_event().unwrap().is_none());
     for should_commit in [false, true] {
         let mut observed = Vec::new();
@@ -334,5 +467,10 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
         assert!(native.session.has_active_gesture());
     }
     assert!(!native.bridge.callback_boundary_pending());
-    assert!(native.reduce_callback_prefix().unwrap().is_none());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_none()
+    );
 }

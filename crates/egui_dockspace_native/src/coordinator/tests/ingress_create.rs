@@ -135,7 +135,7 @@ fn publish_desktop_authority_with_input(
     native.bridge.push_viewport_roster(roster);
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("complete native roster reduces")
             .is_some()
     );
@@ -233,7 +233,7 @@ fn push_window_event(native: &mut NativeCoordinator, ordinal: u64, event: Window
     native.bridge.push_record(HostRecord::WindowEvent(record));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("native event reduces into one callback boundary")
             .is_some()
     );
@@ -293,7 +293,10 @@ fn begin_outside_native_drag(
     );
     let mut press_report = pointer_frame(native, receiver);
     native
-        .accept_native_effects(press_report.take_native_effects())
+        .accept_native_effects(
+            &egui::Context::default(),
+            press_report.take_native_effects(),
+        )
         .expect("press effects settle through the production coordinator");
 
     let outside = PhysicalPoint::new(1000.0, 700.0).expect("outside point validates");
@@ -312,7 +315,7 @@ fn begin_outside_native_drag(
     );
     let mut move_report = pointer_frame(native, receiver);
     native
-        .accept_native_effects(move_report.take_native_effects())
+        .accept_native_effects(&egui::Context::default(), move_report.take_native_effects())
         .expect("move effects settle through the production coordinator");
 
     assert!(
@@ -343,7 +346,7 @@ fn observe_enabled_pointer_passthrough(
         ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact enable callback records")
             .is_some()
     );
@@ -395,7 +398,7 @@ fn observe_restored_pointer_input(native: &mut NativeCoordinator, source: Native
         ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact restore callback records")
             .is_some()
     );
@@ -447,7 +450,10 @@ fn request_native_child(
     );
     let mut routed_move_report = pointer_frame(native, receiver);
     native
-        .accept_native_effects(routed_move_report.take_native_effects())
+        .accept_native_effects(
+            &egui::Context::default(),
+            routed_move_report.take_native_effects(),
+        )
         .expect("routed outside move effects settle through the production coordinator");
 
     let mut preview = native
@@ -496,7 +502,10 @@ fn request_native_child(
         .commit()
         .expect("preview presentation frame commits");
     native
-        .accept_native_effects(preview_presentation_report.take_native_effects())
+        .accept_native_effects(
+            &egui::Context::default(),
+            preview_presentation_report.take_native_effects(),
+        )
         .expect("preview effects settle through the production coordinator");
 
     push_window_event(
@@ -521,7 +530,7 @@ fn request_native_child(
     assert_eq!(create_bindings.len(), 1, "one native child is requested");
     assert_ne!(create_bindings[0].surface(), SOURCE_SURFACE);
     native
-        .accept_native_effects(effects)
+        .accept_native_effects(&egui::Context::default(), effects)
         .expect("create effect enters the production deferred-viewport driver");
     observe_restored_pointer_input(native, source);
     assert_eq!(
@@ -565,7 +574,7 @@ fn destroyed_scroll_resets_without_a_future_pointer_event() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the provider reset and destroyed facts record")
             .is_some()
     );
@@ -607,6 +616,233 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
 }
 
 #[test]
+fn staging_resource_owner_retains_empty_frames_and_rejects_foreign_batches_atomically() {
+    let mut native = tear_off_coordinator();
+    let source = register_source(&mut native);
+    publish_desktop_authority(&mut native, source);
+    let receiver = measure_and_present_source(&mut native);
+    let child = request_native_child(&mut native, receiver);
+    let viewport = viewport_id_for(child);
+    let placement = native.deferred_viewport_specs()[0].placement();
+    let create = native.effects.take_for_output(viewport, child).unwrap();
+    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted() else {
+        panic!("a create effect supplies its exact presentation acknowledgement");
+    };
+    let scale = ScaleFactor::new(1.0).unwrap();
+    native
+        .session
+        .report_managed_native_snapshot(
+            [
+                (source, ready_window_facts(0.0)),
+                (
+                    child,
+                    NativeWindowFacts::live()
+                        .with_content_bounds(placement)
+                        .with_outer_bounds(placement)
+                        .with_native_scale_factor(scale)
+                        .with_presentation_scale_factor(scale)
+                        .with_input(NativeWindowInputState::ReceivesInput, None)
+                        .with_presentation(
+                            NativeWindowPresentationState::Hidden,
+                            Some(acknowledgement),
+                        )
+                        .with_close(NativeCloseState::Clear, None),
+                ),
+            ],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    let mut frame = native
+        .session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    let request = frame
+        .native_staging_paints()
+        .into_iter()
+        .find(|request| request.binding() == child)
+        .expect("the exact hidden-create observation requests staging");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+
+    let conflict = ViewportId::from_hash_of("staging-conflicting-owner");
+    assert!(
+        native
+            .bridge
+            .reserve_create(conflict, source, native_rect())
+    );
+    let requests = BTreeMap::from([(viewport, request), (conflict, request)]);
+    assert!(!native.bridge.can_publish_staging_requests(&requests));
+    assert!(native.bridge.publish_staging_requests(requests).is_err());
+    assert_eq!(
+        native
+            .bridge
+            .publish_staging_requests(BTreeMap::from([(viewport, request)]))
+            .unwrap(),
+        vec![viewport],
+        "the rejected batch must not partly install the otherwise valid slot"
+    );
+    assert!(
+        native
+            .bridge
+            .publish_staging_requests(BTreeMap::new())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        native
+            .bridge
+            .publish_staging_requests(BTreeMap::from([(viewport, request)]))
+            .unwrap()
+            .is_empty(),
+        "an empty control frame must not revoke the pending staging slot"
+    );
+    assert!(native.bridge.clear_create(viewport, child));
+    assert!(native.bridge.references_binding(child));
+    assert!(native.bridge.clear_hidden_render(viewport, child));
+    assert!(
+        native.bridge.references_binding(child),
+        "staging still retains its binding"
+    );
+    native.bridge.retire_deferred_binding(viewport, source);
+    assert!(native.bridge.references_binding(child));
+    native.bridge.retire_deferred_binding(viewport, child);
+    assert!(!native.bridge.references_binding(child));
+}
+
+#[test]
+fn delayed_same_value_visibility_callback_cannot_claim_a_later_show_request() {
+    let mut native = tear_off_coordinator();
+    let source = register_source(&mut native);
+    publish_desktop_authority(&mut native, source);
+    let receiver = measure_and_present_source(&mut native);
+    let child = request_native_child(&mut native, receiver);
+    let viewport = viewport_id_for(child);
+    let window = WindowId::from(72);
+    native
+        .attach_viewport_window(viewport, child, window)
+        .unwrap();
+    let context = egui::Context::default();
+    let older_token = eframe::queue_native_viewport_visibility(&context, viewport, true);
+    let placement = native.deferred_viewport_specs()[0].placement();
+    let create = native.effects.take_for_output(viewport, child).unwrap();
+    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted() else {
+        panic!("the exact create request owns its presentation acknowledgement");
+    };
+    let scale = ScaleFactor::new(1.0).unwrap();
+    native
+        .session
+        .report_managed_native_snapshot(
+            [
+                (source, ready_window_facts(0.0)),
+                (
+                    child,
+                    NativeWindowFacts::live()
+                        .with_content_bounds(placement)
+                        .with_outer_bounds(placement)
+                        .with_native_scale_factor(scale)
+                        .with_presentation_scale_factor(scale)
+                        .with_input(NativeWindowInputState::ReceivesInput, None)
+                        .with_presentation(
+                            NativeWindowPresentationState::Hidden,
+                            Some(acknowledgement),
+                        )
+                        .with_close(NativeCloseState::Clear, None),
+                ),
+            ],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    let mut staging = native
+        .session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    let request = staging
+        .native_staging_paints()
+        .into_iter()
+        .find(|request| request.binding() == child)
+        .unwrap();
+    staging.confirm_native_staging_painted(request).unwrap();
+    staging
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = staging.commit().unwrap();
+    let output = report.take_painted_native_staging_outputs().pop().unwrap();
+    native
+        .session
+        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut presented = native
+        .session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    presented
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = presented.commit().unwrap();
+    let effects = report.take_native_effects();
+    assert!(
+        matches!(effects.as_slice(), [request] if matches!(request.operation(), NativeEffectOperation::ShowWindow { binding } if *binding == child))
+    );
+
+    // This result was captured before the new show request acquired an owner.
+    // It has the same route and value, so only the command identity separates it.
+    native.bridge.push_record(HostRecord::ViewportVisibility(
+        NativeViewportVisibilityRecord::for_test(
+            older_token,
+            viewport,
+            window,
+            child,
+            true,
+            NativeViewportVisibilityStatus::Dispatched,
+        ),
+    ));
+    native.accept_native_effects(&context, effects).unwrap();
+    let token = native.effects.show_token(child).unwrap();
+    assert_ne!(older_token, token);
+    assert!(native.reduce_next_viewport_visibility().unwrap());
+    assert!(native.effects.has_pending_show(child));
+    assert!(
+        !native
+            .pending_presentation_acknowledgements
+            .contains_key(&child)
+    );
+    assert!(native.bridge.front_viewport_visibility().is_none());
+
+    let exact = NativeViewportVisibilityRecord::for_test(
+        token,
+        viewport,
+        window,
+        child,
+        true,
+        NativeViewportVisibilityStatus::Dispatched,
+    );
+    native
+        .bridge
+        .push_record(HostRecord::ViewportVisibility(exact));
+    assert!(native.reduce_next_viewport_visibility().unwrap());
+    assert!(!native.effects.has_pending_show(child));
+    assert!(
+        native
+            .pending_presentation_acknowledgements
+            .contains_key(&child)
+    );
+    assert_eq!(
+        native.lifecycle_progress().first_live_admissions(),
+        0,
+        "a dispatch result cannot replace first-live presentation"
+    );
+    native
+        .bridge
+        .push_record(HostRecord::ViewportVisibility(exact));
+    assert!(
+        native.bridge.front_viewport_visibility().is_none(),
+        "the reserved terminal callback is admitted once"
+    );
+}
+
+#[test]
 fn failed_native_create_retires_the_unmaterialized_binding_after_callback() {
     let mut native = tear_off_coordinator();
     let source = register_source(&mut native);
@@ -623,9 +859,27 @@ fn failed_native_create_retires_the_unmaterialized_binding_after_callback() {
     );
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact failed create callback records its terminal result")
             .is_some()
+    );
+
+    assert!(
+        !native.try_report_retirement_quiescence().unwrap(),
+        "raw transfer cannot release an uncommitted failed-create receipt"
+    );
+    {
+        let mut dropped = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        dropped
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+    }
+    assert!(native.session.is_current_native_binding(child));
+    assert!(
+        !native.try_report_retirement_quiescence().unwrap(),
+        "dropping the result frame leaves the same unmaterialized receipt pending"
     );
 
     let mut failure = native
@@ -638,7 +892,10 @@ fn failed_native_create_retires_the_unmaterialized_binding_after_callback() {
         .commit()
         .expect("the failed create boundary commits");
     native
-        .accept_native_effects(failure_report.take_native_effects())
+        .accept_native_effects(
+            &egui::Context::default(),
+            failure_report.take_native_effects(),
+        )
         .expect("follow-up native effects retain their exact owner");
 
     assert!(!native.session.is_current_native_binding(child));
@@ -689,7 +946,7 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("an unrelated same-value host command is consumed")
             .is_some()
     );
@@ -722,7 +979,7 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the enable callback records")
             .is_some()
     );
@@ -758,7 +1015,7 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("a late unrelated same-value command is consumed")
             .is_some()
     );
@@ -797,7 +1054,10 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     );
     let mut release_report = pointer_frame(&mut native, receiver);
     native
-        .accept_native_effects(release_report.take_native_effects())
+        .accept_native_effects(
+            &egui::Context::default(),
+            release_report.take_native_effects(),
+        )
         .expect("release effects settle while the enable snapshot remains pending");
     assert!(
         native.pointer_passthrough_command().is_none(),
@@ -831,7 +1091,7 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     );
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the enabling snapshot records")
             .is_some()
     );
@@ -871,7 +1131,7 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         ));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the restore callback records")
             .is_some()
     );
@@ -910,7 +1170,7 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     );
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the restoring snapshot records")
             .is_some()
     );
@@ -937,38 +1197,71 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
 
 #[test]
 fn failed_owned_pointer_callback_releases_input_correlation() {
-    let mut native = tear_off_coordinator();
-    let source = register_source(&mut native);
-    publish_desktop_authority(&mut native, source);
-    let receiver = measure_and_present_source(&mut native);
-    begin_outside_native_drag(&mut native, receiver);
-    let token = dispatch_pointer_passthrough(&mut native);
-    let record = NativePointerPassthroughRecord::for_test(
-        token,
-        ViewportId::ROOT,
-        source_window(),
-        Some(source),
-        true,
+    for status in [
         NativeViewportPointerPassthroughStatus::Failed,
-    );
+        NativeViewportPointerPassthroughStatus::Retired,
+    ] {
+        let mut native = tear_off_coordinator();
+        let source = register_source(&mut native);
+        publish_desktop_authority(&mut native, source);
+        let receiver = measure_and_present_source(&mut native);
+        begin_outside_native_drag(&mut native, receiver);
+        let token = dispatch_pointer_passthrough(&mut native);
+        let record = NativePointerPassthroughRecord::for_test(
+            token,
+            ViewportId::ROOT,
+            source_window(),
+            Some(source),
+            true,
+            status,
+        );
 
-    native
-        .bridge
-        .push_record(HostRecord::ViewportPointerPassthrough(record));
-    assert!(
-        native
-            .reduce_callback_prefix()
-            .expect("the failed owned callback records its terminal result")
-            .is_some()
-    );
-    assert_eq!(
-        native.input_control.classify(record),
-        NativeInputResultDisposition::Unrelated,
-        "the terminal callback no longer owns an input correlation"
-    );
-    assert!(native.pending_effect_results.is_empty());
-    assert!(native.take_callback_error().is_none());
-    assert!(native.bridge.front_viewport_pointer_passthrough().is_none());
+        if status == NativeViewportPointerPassthroughStatus::Failed {
+            native
+                .bridge
+                .push_record(HostRecord::ViewportPointerPassthrough(record));
+        } else {
+            let retirement = eframe::NativeViewportPropertyCommandRetirement::PointerPassthrough {
+                viewport_id: ViewportId::ROOT,
+                token,
+                enabled: true,
+            };
+            assert_eq!(
+                eframe::NativeHostHandler::on_viewport_property_command_retired(
+                    native.bridge.as_ref(),
+                    retirement,
+                ),
+                NativeHostWake::RepaintRootAfterCurrent,
+                "the first exact retirement wakes the root after the current output",
+            );
+            assert_eq!(
+                eframe::NativeHostHandler::on_viewport_property_command_retired(
+                    native.bridge.as_ref(),
+                    retirement,
+                ),
+                NativeHostWake::Wait,
+                "a duplicate retirement does not wake or append another terminal",
+            );
+            assert_eq!(
+                native.bridge.front_viewport_pointer_passthrough(),
+                Some(record)
+            );
+        }
+        assert!(
+            native
+                .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+                .expect("the failed or retired owned callback records its terminal result")
+                .is_some()
+        );
+        assert_eq!(
+            native.input_control.classify(record),
+            NativeInputResultDisposition::Unrelated,
+            "the terminal callback no longer owns an input correlation"
+        );
+        assert!(native.pending_effect_results.is_empty());
+        assert!(native.take_callback_error().is_none());
+        assert!(native.bridge.front_viewport_pointer_passthrough().is_none());
+    }
 }
 
 #[test]
@@ -1000,7 +1293,7 @@ fn stale_pointer_callback_retires_only_the_predecessor_without_a_session_fatal()
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the stale callback remains a binding-local terminal")
             .is_some()
     );
@@ -1099,7 +1392,10 @@ fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
     );
     let mut release_report = pointer_frame(&mut native, receiver);
     native
-        .accept_native_effects(release_report.take_native_effects())
+        .accept_native_effects(
+            &egui::Context::default(),
+            release_report.take_native_effects(),
+        )
         .expect("shutdown release retains the causal restore obligation");
 
     assert!(native.quarantine_after_fatal().is_empty());
@@ -1115,7 +1411,8 @@ fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
                 NativeViewportPointerPassthroughStatus::Applied,
             ),
         ));
-    let enable_boundary = native.advance_shutdown_boundary();
+    let enable_boundary =
+        native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
     assert!(enable_boundary.pointer_passthrough.is_none());
 
     let Some((NativeWindowInputState::PassThrough, Some(enable_acknowledgement))) =
@@ -1143,7 +1440,8 @@ fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
             eframe::NativeWindowingBackend::X11,
         ),
     );
-    let snapshot_boundary = native.advance_shutdown_boundary();
+    let snapshot_boundary =
+        native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
     let restore = snapshot_boundary
         .pointer_passthrough
         .expect("the causal restore becomes dispatchable after the snapshot");
@@ -1198,7 +1496,7 @@ fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
     assert!(!native.effects.references_binding(child));
     assert!(!native.bridge.references_binding(child));
 
-    let advance = native.advance_shutdown_boundary();
+    let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
     assert!(advance.commands.is_empty());
     assert!(advance.abandoned_outputs.is_empty());
     assert!(
@@ -1212,14 +1510,14 @@ fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
     // A later callback captures the same platform facts against the retired
     // child lifetime and can settle the exact input restore.
     native.bridge.push_terminal_viewport_roster(terminal_roster);
-    let reduced = native.advance_shutdown_boundary();
+    let reduced = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
     assert!(
         !reduced.transition_source_exhausted,
         "the joined frame which reduces the cancelled effect result is still progress"
     );
     let exhausted_after = (0..8).find(|_| {
         native
-            .advance_shutdown_boundary()
+            .advance_shutdown_boundary(&egui::Context::default(), &mut test_budget())
             .transition_source_exhausted
     });
     assert!(
@@ -1235,6 +1533,9 @@ fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_out
     publish_desktop_authority(&mut native, source_binding);
     let receiver = measure_and_present_source(&mut native);
     let child = request_native_child(&mut native, receiver);
+    native
+        .attach_viewport_window(viewport_id_for(child), child, WindowId::from(95))
+        .expect("the host observes the real child before any output is admitted");
 
     native
         .report_snapshot(
@@ -1285,7 +1586,7 @@ fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_out
     );
 
     native
-        .accept_native_effects(effects)
+        .accept_native_effects(&egui::Context::default(), effects)
         .expect("the compensating close enters the exact retirement path");
     let viewport = viewport_id_for(child);
     assert_eq!(native.viewport_binding(viewport), Some(child));
@@ -1297,7 +1598,7 @@ fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_out
         "the compensating close stops re-declaring the unadmitted child"
     );
     assert!(
-        !native.retirements.can_begin_release(viewport, child),
+        !native.bridge.retirement_can_begin_release(viewport, child),
         "the close acknowledgement is retained until an exact Destroyed callback"
     );
 }

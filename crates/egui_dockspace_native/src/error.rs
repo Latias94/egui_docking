@@ -30,6 +30,8 @@ enum NativeRuntimeErrorSource {
 pub(crate) enum NativeHostProtocolError {
     #[error("the native app update is not running inside an eframe output callback")]
     OutputTokenUnavailable,
+    #[error("the current native output has no available dispatch budget")]
+    OutputBudgetUnavailable,
     #[error("native root surface {0} is absent from the product session")]
     RootSurfaceUnavailable(SurfaceId),
     #[error("core rejected native registration of root surface {0}")]
@@ -122,7 +124,8 @@ impl NativeHostProtocolError {
             }
             Self::MultipassLocalActionConflict => NativeRuntimeErrorKind::OperationConflict,
             Self::NativeEffectResultRejected(kind) => kind.runtime_error_kind(),
-            Self::CallbackRecordPending
+            Self::OutputBudgetUnavailable
+            | Self::CallbackRecordPending
             | Self::WindowEventAcknowledgementMismatch
             | Self::DeviceRemovalAcknowledgementMismatch
             | Self::GlobalFocusAcknowledgementMismatch

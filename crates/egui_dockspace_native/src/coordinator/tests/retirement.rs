@@ -78,7 +78,7 @@ fn ingress_ignores_target_cursor_notification_before_captured_source_delivery() 
         native.bridge.push_record(HostRecord::WindowEvent(record));
         assert!(
             native
-                .reduce_callback_prefix()
+                .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
                 .expect(expectation)
                 .is_some()
         );
@@ -202,7 +202,7 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(first_press));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the first press enters the native pointer journal")
             .is_some()
     );
@@ -226,7 +226,7 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(destroyed));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the binding-retired pointer terminal records first")
             .is_some()
     );
@@ -234,7 +234,7 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
     commit_pending_pointer_frame(&mut native);
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the retained destroyed callback completes on the next boundary")
             .is_some()
     );
@@ -258,7 +258,7 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(late_release));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the late physical release consumes the cancelled-button tombstone")
             .is_some()
     );
@@ -281,7 +281,7 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
         .push_record(HostRecord::WindowEvent(successor_press));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the successor press opens a fresh pointer incarnation")
             .is_some()
     );
@@ -588,7 +588,7 @@ fn destroyed_callback_records_all_device_terminals_in_one_boundary() {
         )));
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the ordered device terminal batch records")
             .is_some()
     );
@@ -706,7 +706,7 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
             )
     ));
     native
-        .accept_native_effects(effects)
+        .accept_native_effects(&egui::Context::default(), effects)
         .expect("the child release is accepted");
 
     assert!(
@@ -783,7 +783,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         NativeEffectOperation::ReleaseChild { binding } if *binding == second
     ));
     native
-        .accept_native_effects(effects)
+        .accept_native_effects(&egui::Context::default(), effects)
         .expect("the exact child release acknowledgement is retained");
 
     let destroyed = {
@@ -839,11 +839,21 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the exact destruction callback is retained")
             .is_some()
     );
     assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
+    {
+        let mut dropped = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the raw transfer can be retried after a dropped frame");
+        dropped
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+    }
+    assert!(native.bridge.retirement_destroyed_observations().is_empty());
+    assert!(native.bridge.retirement_quiescence_candidates().is_empty());
     let mut event_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the destruction callback boundary begins");
@@ -853,23 +863,6 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     event_frame
         .commit()
         .expect("the destruction callback boundary commits");
-
-    assert!(
-        native
-            .reduce_callback_prefix()
-            .expect("the duplicate destruction callback is retained idempotently")
-            .is_some()
-    );
-    assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
-    let mut duplicate_event_frame = native
-        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the duplicate destruction callback boundary begins");
-    duplicate_event_frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the duplicate callback boundary settles every surface");
-    duplicate_event_frame
-        .commit()
-        .expect("the duplicate destruction callback boundary commits");
 
     assert_eq!(native.viewport_binding(child), Some(second));
     assert!(!native.session.is_current_native_binding(second));
@@ -882,8 +875,9 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         "the destruction callback stops re-declaring the retired child"
     );
     let (_, destroyed_facts) = native
-        .retirements
-        .destroyed_observations()
+        .bridge
+        .retirement_destroyed_observations()
+        .into_iter()
         .next()
         .expect("the exact destroyed child is awaiting snapshot publication");
     assert_ne!(
@@ -894,7 +888,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the complete roster publishes the tombstone")
             .is_some()
     );
@@ -919,7 +913,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 
     assert!(
         native
-            .reduce_callback_prefix()
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
             .expect("the post-tombstone pointer edge remains reducible")
             .is_some()
     );
@@ -1026,7 +1020,7 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
     );
     let mut report = paint_and_present_all_surfaces(&mut native);
     native
-        .accept_native_effects(report.take_native_effects())
+        .accept_native_effects(&egui::Context::default(), report.take_native_effects())
         .expect("the child release is accepted before shutdown");
     assert!(native.quarantine_after_fatal().is_empty());
 
@@ -1049,7 +1043,8 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
     native.bridge.push_viewport_roster(live_roster([root]));
 
     for phase in ["destroyed", "roster", "route", "quiescence"] {
-        let advance = native.advance_shutdown_boundary();
+        let advance =
+            native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
         assert!(
             advance.progress,
             "shutdown {phase} boundary made no progress"
@@ -1110,7 +1105,12 @@ fn redocked_external_root_does_not_request_platform_close() {
         report.take_native_effects().is_empty(),
         "an externally owned root unbinds without a platform close effect"
     );
-    assert!(native.take_viewport_commands().is_empty());
+    assert!(
+        native
+            .take_viewport_commands(&egui::Context::default())
+            .expect("queued native commands dispatch")
+            .is_empty()
+    );
     assert!(!native.session().is_current_native_binding(second));
 }
 
@@ -1125,7 +1125,9 @@ fn queued_viewport_close_retains_its_exact_binding_until_dispatch() {
         .queue_command(viewport, binding, ViewportCommand::Close);
     assert!(native.effects.references_binding(binding));
     assert_eq!(
-        native.take_viewport_commands(),
+        native
+            .take_viewport_commands(&egui::Context::default())
+            .expect("queued native commands dispatch"),
         [(viewport, ViewportCommand::Close)]
     );
     assert!(!native.effects.references_binding(binding));

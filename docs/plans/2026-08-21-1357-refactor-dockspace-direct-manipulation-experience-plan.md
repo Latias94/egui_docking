@@ -676,7 +676,7 @@ updates/cancellation without self-invalidation or redundant compilation.
 - **Dependencies:** U3, U5, U14, U15's native slice, and U8's resource-ownership prerequisite for final bounded terminal admission.
 - **Files:** `crates/egui_dockspace_native/src/{mailbox,coordinator,pointer_event,input_control,surface_driver}.rs`, core ingress/pointer modules, native coordinator tests, public-host scoped-input tests.
 - **Approach:** Replace one-callback-per-cycle front/ACK families with bounded immutable prefix claims. Establish surface-local routing and validated desktop handoff through the same core kernel; preserve exact output and lifecycle barriers.
-- **Capacity integration:** Keep capture identity and original age through raw-to-core handoff until the committed boundary releases its source reservation. Share immutable recorded payloads across retry batches. On overload, freeze ordinary admission at one fixed accepted prefix; drain it before an independent terminal cancellation frame. Post-boundary callbacks that settle existing affine output/create/command/close/window obligations use already reserved, once-only owner slots with original capture order; they do not extend the cancellation boundary or create a second unbounded journal. A new ordinary pointer callback rejected after freeze is not an accepted edge; the platform still processes it, and overload cancellation ends the surviving core input. Only successful cancellation commit resets translator state, preserving identity counters and without emitting synthetic releases or claiming an empty physical roster.
+- **Capacity integration:** Keep capture identity and original age through raw-to-core handoff until the committed boundary releases its source reservation. Share immutable recorded payloads across retry batches. On overload, freeze ordinary admission at one fixed capture boundary B; commit all currently replayable accepted input through B before an independent terminal cancellation frame. Accepted lifecycle records parked behind unresolved external dependencies retain their existing owner, capture identity, age and reservation across cancellation; they publish only after their original dependency and commit barriers settle. Post-boundary callbacks that settle existing affine output/create/command/close/window obligations use already reserved, once-only owner slots with original capture order; they do not move B or create a second unbounded journal. Neither an unresolved held-close successor nor an unrelated post-B terminal delays live-input cancellation; source reservations already transferred to core still require their complete original boundary commit. A new ordinary pointer callback rejected after freeze is not an accepted edge; the platform still processes it, and overload cancellation ends the surviving core input. Only successful cancellation commit resets translator state, preserving identity counters and without emitting synthetic releases or claiming an empty physical roster. Pending releases retain their separate exact-output obligations.
 - **Test scenarios:** Covers AE7/AE11/AE14. Retry after a rejected batch, 10,000 interleaved records, sustained 1,000 Hz drag, overload, local touch coordinates, and scope/provider changes preserve one terminal release.
 - **Verification:** Resource budgets hold and no unbounded journal or forced desktop-only local route remains.
 
@@ -692,14 +692,14 @@ updates/cancellation without self-invalidation or redundant compilation.
 - **Test scenarios:** Covers AE6. Hidden or directly prepared backends, delayed first valid output, A1/A2 replacement, no-frame, pass-through, close/veto/defer, failure recovery, redock, retirement and quiescence preserve one owner. Qualified X11 physical input docks at non-guide points and retires the child.
 - **Verification:** Public host lifecycle traces, programmatic real-window tests, and qualified X11 physical journeys pass; old distributed maps and obsolete staging contracts are removed.
 
-Local resource-ownership checkpoint (2026-10-28): command/output reservations
+Local resource-ownership checkpoint (2026-10-29): command/output reservations
 and deferred-window sidecars now have joined owners. An admitted create attempt
 also retains one non-Clone success/failure receipt; failure moves it from the
 route into the existing unmaterialized retirement entry. Raw handoff and partial
 commit do not release it, and an unrecorded failure result cannot reach
 quiescence. HostRecords owns the sole retirement state and the complete frame
 commit hook. This native work is locally qualified against the unpublished fork
-and remains uncommitted with that adapter. The physical-window follow-up reserves
+and committed locally with the adapter. The physical-window follow-up reserves
 one non-Clone Destroyed receipt on attach and moves it to the same retirement
 owner across route displacement, unbind and release. Admission checks both live
 and retired binding/WindowId ownership, and terminal receipt commit gates
@@ -709,12 +709,18 @@ afterwards. Held-close ingress now captures into the sole HostRecords close
 owner before Hold. Its cancellation receipt commits only at a complete frame
 boundary plus successful semantic Clear; one fixed successor retains the original
 journal reservation until then. The duplicate window-resource close slot and
-lifecycle close counter are removed. Fresh native gates pass 260 cases normally
-and 260 without native debug assertions; tokenless adapter models, independent
-production review and programmatic macOS redock qualify this local ownership
-slice, not a real canonical Hold/Veto input journey. Protected overload admission
-and the U7/U8 exit criteria remain open; these checkpoints do not establish
-native readiness.
+lifecycle close counter are removed. Exact command receipts now hold their
+callback envelopes inline, preserving capture order and age across route
+retirement and A1/A2 replacement without another terminal queue. Queued property
+commands retired before execution settle those same owners through the local
+fork's exact Retired result. Fatal-quarantine roster rearming inspects both raw
+and owner-held callbacks. Fresh native gates pass 271 cases normally and 271
+without native debug assertions; 63 fork host-seam tests, WGPU compilation,
+independent production review and programmatic macOS redock qualify this local
+ownership slice, not a real canonical Hold/Veto input journey. The required fork
+commit `1f7c541fde99fd69192622a1a36cb642de58ed29` remains unpublished and tracked
+dependency pins unchanged. Protected overload admission and the U7/U8 exit
+criteria remain open; these checkpoints do not establish native readiness.
 
 ### U10. Complete layout management and a bounded editor showcase
 

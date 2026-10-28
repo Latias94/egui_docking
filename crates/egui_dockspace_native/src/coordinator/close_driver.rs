@@ -1,110 +1,144 @@
-//! Synchronous native-close product policy over ordinary core host frames.
+//! Budgeted native-close policy using the existing exact close owner.
 
 use dockspace::close::{CloseDecision, CloseItemDecisionState};
 use dockspace::runtime::{
-    DockspaceClosePlan, HostFrameReport, HostInputOutcome, NativeReceiverAnswer,
-    NativeSurfaceCloseRequest, SurfaceUnavailableReason,
+    HostFrameReport, NativeInputBudget, NativeReceiverAnswer, SurfaceUnavailableReason,
 };
 
 use super::*;
 use crate::close_control::NativeWindowClosePolicy;
 
 impl NativeCoordinator {
+    fn rearm_close_continuation(
+        &self,
+        context: &eframe::egui::Context,
+    ) -> Result<(), NativeRuntimeError> {
+        context.request_repaint_once_of(ViewportId::ROOT);
+        if let Some(token) = eframe::current_native_output_token()
+            && !self.bridge.require_output_wake_after_current(token)
+        {
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+        }
+        Ok(())
+    }
+
+    fn rearm_budget_deferred_close_policy(
+        &self,
+        context: &eframe::egui::Context,
+    ) -> Result<(), NativeRuntimeError> {
+        if self
+            .bridge
+            .with_close_control(|control| control.has_runnable_policy_work())
+        {
+            self.rearm_close_continuation(context)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn drive_close_policy(
         &mut self,
+        context: &eframe::egui::Context,
         policy: NativeWindowClosePolicy,
         external_root: SurfaceId,
+        budget: &mut NativeInputBudget,
     ) -> Result<bool, NativeRuntimeError> {
-        if self.close_control.unresolved_requests().next().is_none() {
+        if budget.is_exhausted() {
+            self.rearm_budget_deferred_close_policy(context)?;
             return Ok(false);
         }
-        // The request is minted only after its CloseRequested record reaches
-        // the FIFO head and that exact host frame commits. Every callback
-        // older than the close edge is therefore already settled; callbacks
-        // now in the mailbox are later and must not delay the synchronous
-        // close decision for this eframe update.
-        let requests = self.close_control.unresolved_requests().collect::<Vec<_>>();
-
-        for close in &requests {
+        if self.bridge.callback_boundary_pending() || self.bridge.has_unsubmitted_output_prefix() {
+            return Ok(false);
+        }
+        let requests = self.bridge.with_close_control(|control| {
+            control
+                .unsubmitted_requests()
+                .take(budget.remaining_records())
+                .collect::<Vec<_>>()
+        });
+        let plans = self.bridge.with_close_control(|control| {
+            control
+                .decision_plans()
+                .into_iter()
+                .filter(|plan| {
+                    plan.items()
+                        .iter()
+                        .any(|item| item.state() == CloseItemDecisionState::Pending)
+                })
+                .collect::<Vec<_>>()
+        });
+        let mut recorded = false;
+        for close in requests {
+            if budget.is_exhausted() {
+                self.rearm_budget_deferred_close_policy(context)?;
+                break;
+            }
             match policy.request(close.surface() == external_root) {
-                Some(request) => self.session.request_native_surface_close(*close, request)?,
-                None => self.session.cancel_native_surface_close(*close)?,
+                Some(action) => self.session.request_native_surface_close(close, action)?,
+                None => self.session.cancel_native_surface_close(close)?,
             }
+            self.bridge
+                .with_close_control(|control| control.mark_policy_recorded(close));
+            self.bridge.hold_native_boundary();
+            recorded = true;
+        }
+        if !recorded && plans.is_empty() {
+            return Ok(false);
         }
 
-        let first = self.commit_close_control_frame(&requests, &[])?;
-        let plans = first
-            .inputs()
-            .iter()
-            .filter_map(|input| match input {
-                HostInputOutcome::NativeSurfaceCloseRequested { plan, .. } => Some(plan.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        self.finish_close_control_report(first)?;
-
-        if plans.iter().any(plan_has_pending_decisions) {
-            let second = self.commit_close_control_frame(&requests, &plans)?;
-            self.finish_close_control_report(second)?;
-        }
-        Ok(true)
-    }
-
-    fn commit_close_control_frame(
-        &mut self,
-        requests: &[NativeSurfaceCloseRequest],
-        plans: &[DockspaceClosePlan],
-    ) -> Result<HostFrameReport, NativeRuntimeError> {
-        let mut frame = self.begin_close_control_frame(requests)?;
-        for plan in plans {
-            for item in plan.items() {
-                if item.state() == CloseItemDecisionState::Pending {
-                    frame.frame.resolve_close(
-                        plan.request(),
-                        item.token(),
-                        CloseDecision::Allow,
-                    )?;
-                }
-            }
-        }
-        frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-        frame.commit()
-    }
-
-    fn begin_close_control_frame(
-        &mut self,
-        requests: &[NativeSurfaceCloseRequest],
-    ) -> Result<crate::host_frame::NativeHostFrame<'_>, NativeRuntimeError> {
-        if requests.is_empty()
-            || self.bridge.callback_boundary_pending()
-            || !requests
-                .iter()
-                .all(|request| self.close_control.recognizes_request(*request))
-        {
-            return Err(NativeHostProtocolError::NativeCloseCorrelationChanged.into());
-        }
-
-        // The exact CloseRequested callback already committed before the core
-        // minted these requests. Later callback records remain in the mailbox,
-        // but they cannot causally overtake the synchronous close response
-        // which eframe must observe in this same output.
-        Ok(crate::host_frame::NativeHostFrame::new(
-            self.session
-                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)?,
+        // Later raw callbacks must not overtake a policy already retained by
+        // the joined recorder. A general prefix poll can resume it next token;
+        // report settlement stores any decision plan on its exact close owner.
+        let Some(frame) = self
+            .session
+            .poll_native_host_frame(budget, |_| NativeReceiverAnswer::Unknown)?
+        else {
+            self.bridge.hold_native_boundary();
+            self.rearm_close_continuation(context)?;
+            return Ok(recorded);
+        };
+        let mut frame = crate::host_frame::NativeHostFrame::new(
+            frame,
             self.bridge.clone(),
             self.viewports.clone(),
             &mut self.receivers,
             None,
-        ))
+        );
+        let input_pending = frame.frame.native_input_pending();
+        let decisions_ready = !input_pending && !budget.is_exhausted();
+        if decisions_ready {
+            for plan in &plans {
+                for item in plan.items() {
+                    if item.state() == CloseItemDecisionState::Pending {
+                        frame.frame.resolve_close(
+                            plan.request(),
+                            item.token(),
+                            CloseDecision::Allow,
+                        )?;
+                    }
+                }
+            }
+        }
+        frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+        let report = frame.commit()?;
+        if decisions_ready {
+            self.bridge
+                .with_close_control(|control| control.settle_decision_plans(&plans));
+        }
+        self.finish_internal_report(context, report)?;
+        if budget.is_exhausted() {
+            self.rearm_budget_deferred_close_policy(context)?;
+        }
+        Ok(true)
     }
 
-    fn finish_close_control_report(
+    pub(super) fn finish_internal_report(
         &mut self,
+        context: &eframe::egui::Context,
         mut report: HostFrameReport,
     ) -> Result<(), NativeRuntimeError> {
         self.retain_internal_presentation_transitions(&report);
-        self.settle_host_frame_inputs(report.inputs())?;
-        self.settle_close_control_inputs(report.inputs())?;
+        self.settle_host_frame_report(&report)?;
+        self.settle_close_control_report(&report)?;
         self.settle_native_admissions(report.native_admissions())?;
         let outputs = report.take_painted_outputs();
         if !outputs.is_empty() {
@@ -116,12 +150,6 @@ impl NativeCoordinator {
             }
             .into());
         }
-        self.accept_native_effects(report.take_native_effects())
+        self.accept_native_effects(context, report.take_native_effects())
     }
-}
-
-fn plan_has_pending_decisions(plan: &DockspaceClosePlan) -> bool {
-    plan.items()
-        .iter()
-        .any(|item| item.state() == CloseItemDecisionState::Pending)
 }

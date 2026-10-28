@@ -13,11 +13,12 @@ use dockspace::runtime::{
     NativeSurfaceBinding, NativeSurfaceRole, NativeUnsupportedReason,
 };
 use eframe::{
-    NativeViewportCreateFailureKind,
+    NativeViewportCreateFailureKind, NativeViewportVisibilityCommandToken,
     egui::{ViewportCommand, ViewportId},
 };
 
-use crate::viewport_callback::NativeViewportCreateFailureRecord;
+use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
+use winit::window::WindowId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeViewportEffectKind {
@@ -62,10 +63,18 @@ struct PendingViewportEffect {
     request: NativeEffectRequest,
 }
 
+#[derive(Debug)]
+struct PendingNativeShow {
+    viewport: ViewportId,
+    window: WindowId,
+    token: NativeViewportVisibilityCommandToken,
+    request: NativeEffectRequest,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct NativeEffectCoordinator {
     pending_viewports: BTreeMap<ViewportId, PendingViewportEffect>,
-    pending_shows: BTreeMap<NativeSurfaceBinding, NativeEffectRequest>,
+    pending_shows: BTreeMap<NativeSurfaceBinding, PendingNativeShow>,
     pending_commands: Vec<PendingViewportCommand>,
 }
 
@@ -149,20 +158,51 @@ impl NativeEffectCoordinator {
     pub(crate) fn retain_show(
         &mut self,
         binding: NativeSurfaceBinding,
+        viewport: ViewportId,
+        window: WindowId,
+        token: NativeViewportVisibilityCommandToken,
         request: NativeEffectRequest,
     ) -> Result<(), NativeEffectRequest> {
         if self.pending_shows.contains_key(&binding) {
             return Err(request);
         }
-        self.pending_shows.insert(binding, request);
+        self.pending_shows.insert(
+            binding,
+            PendingNativeShow {
+                viewport,
+                window,
+                token,
+                request,
+            },
+        );
         Ok(())
     }
 
     pub(crate) fn take_show(
         &mut self,
-        binding: NativeSurfaceBinding,
+        record: NativeViewportVisibilityRecord,
     ) -> Option<NativeEffectRequest> {
-        self.pending_shows.remove(&binding)
+        let pending = self.pending_shows.get(&record.binding())?;
+        if pending.viewport != record.viewport()
+            || pending.window != record.window()
+            || pending.token != record.token()
+            || !record.visible()
+        {
+            return None;
+        }
+        self.pending_shows
+            .remove(&record.binding())
+            .map(|pending| pending.request)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn show_token(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeViewportVisibilityCommandToken> {
+        self.pending_shows
+            .get(&binding)
+            .map(|pending| pending.token)
     }
 
     pub(crate) fn remove_show(&mut self, binding: NativeSurfaceBinding) {
