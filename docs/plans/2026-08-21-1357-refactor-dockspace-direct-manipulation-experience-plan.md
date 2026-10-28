@@ -300,10 +300,14 @@ Native window focus and pane-content focus still require actual host facts and a
 
 ### Dependency and Fork Adaptation
 
-As checked on 2026-10-27, the implementation pins egui/eframe 0.36.1 and Winit 0.30.13.
-The selected stable egui target is 0.37.0, released 2026-10-15, with Rust 1.95 still matching this workspace.
-Winit stable is still 0.30.13; prerelease 0.31 work is not a prerequisite.
-The updated local egui_tiles checkout is reference material; it is not a runtime dependency.
+The 2026-10-27 selection audit chose egui/eframe 0.37.0, released 2026-10-15,
+with Rust 1.95 still matching this workspace. The current workspace and official
+harness now pin the matched 0.37.0 family. The optional native adapter is locally
+qualified against the rebased, unpublished 0.37 fork; its tracked pins still name
+the earlier fork and are not evidence that a clean checkout can reproduce the
+new native seams. Winit remains on the reviewed 0.30.13 fork; prerelease 0.31 work
+is not a prerequisite. The updated local egui_tiles checkout is reference
+material; it is not a runtime dependency.
 
 | Change or boundary | Adaptation work | Owner |
 | --- | --- | --- |
@@ -389,6 +393,12 @@ its lifecycle and platform readiness verification still follows U7. Inspection
 of the native callback path found that exact terminal admission otherwise needs
 duplicate reservation maps for sidecars that U8 already requires joining.
 This sequencing change preserves every U7/U8 exit criterion.
+After the 2026-10-28 held-close ownership checkpoint, resume U3d's finite timed
+continuation and U10's shared stationary overflow owner in core and official egui
+before expanding the optional native overload/platform work. Metadata capture,
+hover dwell and touch arming remain separate implementation/qualification steps;
+the existing native resource checkpoint is retained. This priority change keeps
+the custom-engine host central and does not remove U7/U8/U11 acceptance gates.
 U11 gates Windows/macOS capability claims separately; unsupported backends remain explicit rather than blocking the generic crate.
 These are packaging/readiness gates, not instructions to publish crates or upstream patches automatically.
 
@@ -651,7 +661,14 @@ owner across route displacement, unbind and release. Admission checks both live
 and retired binding/WindowId ownership, and terminal receipt commit gates
 tombstones and quiescence. A same-window rebind is allowed only before Destroyed
 capture; old pointer-reset and semantic tombstone ownership cannot be reassigned
-afterwards. Exact held-close ingress integration, protected overload admission
+afterwards. Held-close ingress now captures into the sole HostRecords close
+owner before Hold. Its cancellation receipt commits only at a complete frame
+boundary plus successful semantic Clear; one fixed successor retains the original
+journal reservation until then. The duplicate window-resource close slot and
+lifecycle close counter are removed. Fresh native gates pass 260 cases normally
+and 260 without native debug assertions; tokenless adapter models, independent
+production review and programmatic macOS redock qualify this local ownership
+slice, not a real canonical Hold/Veto input journey. Protected overload admission
 and the U7/U8 exit criteria remain open; these checkpoints do not establish
 native readiness.
 

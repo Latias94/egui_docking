@@ -15,6 +15,61 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U8 held-close ingress ownership
+
+HostRecords now owns the single NativeCloseControl instance. Callback ingress
+captures the original request before returning HoldClose. Duplicate canonical
+requests retain that owner without appending another raw record. Requested is
+marked recorded only after the core recorder accepts it; synchronous rejection
+and dropped core frames preserve the same ingress owner and retry boundary.
+The coordinator, close driver, effects, shutdown, binding references, quiescence
+and read-only close progress all use this owner through short mailbox borrows.
+The parallel close callback slot in window resources and the duplicate lifecycle
+progress counters are deleted.
+
+Cancellation reserves its once-only receipt in that same close owner before
+Veto dispatch. Only the exact first callback enters the existing journal.
+Received and Transferred are not Committed: a complete successful native frame
+commits the receipt, and successful semantic Clear settlement is also required
+before release. Late unreserved callbacks cannot recreate a close. Canonical
+captures cannot settle Clear without their reserved receipt. The tokenless unit
+model shortcut is test-only; production does not use a post-Requested capture
+wrapper.
+
+A newer close during cancellation uses one fixed successor slot on the existing
+owner. It retains the original immutable event and non-Clone journal reservation,
+including its capture ordinal and timestamp. It cannot bind the old core close,
+occupy the raw FIFO head or delay the predecessor's cancellation callback. Only
+full Clear settlement promotes it and returns the original reservation to the
+same journal, ordered against remaining records without refreshing its age.
+Deferred reservations remain included in retained-count/oldest-age accounting;
+this groundwork does not claim U7 capacity or overload qualification.
+
+Two new adapter-model regressions cover pre-reducer ownership, duplicate capture,
+Requested frame drop/retry, wrong-window successor rejection, one successor,
+unrelated raw progress, partial/dropped Clear intervals, duplicate report
+settlement and exactly one new core request after promotion. A journal regression
+checks original ordinal, original age and ordering across reservation handoff.
+These models deliberately use no fabricated opaque fork close token. Independent
+production-path review found no confirmed blocker in canonical routing, recorder
+failure, transfer/commit separation, successor promotion, lock order or quiescence.
+
+Fresh local-fork gates pass 260 all-target cases normally and 260 with native
+debug assertions disabled. Correctness/suspicious Clippy, strict native rustdoc,
+smoke build, formatting and diff checks pass. Two scratch negative controls remove
+pre-Hold capture and renew a deferred reservation respectively; both fail the
+corresponding regression, and restoring production code passes both cases.
+Three rebuilt macOS Glow redock runs complete in 1.463, 0.617 and 0.617 seconds.
+
+This qualifies the local ownership implementation and its model boundaries.
+It does not certify real WM-close input, mixed DPI, physical docking input or the
+canonical adapter Hold/Veto journey. macOS Accessibility trust is unavailable in
+this environment, so the real close-button journey was not executed. Native
+sources remain dirty against the unpublished local egui fork; tracked dependency
+pins have not changed. Protected overload admission, load/latency/soak and the
+remaining U7/U8 exit criteria remain open. The next core priority is U3d timed
+continuation and U10 stationary active-drag overflow through the same journal.
+
 ## 2026-10-28 U8 physical-window Destroyed reservations
 
 An attached physical window now owns one non-Clone terminal receipt in its
