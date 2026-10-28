@@ -632,6 +632,17 @@ updates/cancellation without self-invalidation or redundant compilation.
 - **Test scenarios:** Covers AE6. Hidden or directly prepared backends, delayed first valid output, A1/A2 replacement, no-frame, pass-through, close/veto/defer, failure recovery, redock, retirement and quiescence preserve one owner. Qualified X11 physical input docks at non-guide points and retires the child.
 - **Verification:** Public host lifecycle traces, programmatic real-window tests, and qualified X11 physical journeys pass; old distributed maps and obsolete staging contracts are removed.
 
+Local resource-ownership checkpoint (2026-10-28): command/output reservations
+and deferred-window sidecars now have joined owners. An admitted create attempt
+also retains one non-Clone success/failure receipt; failure moves it from the
+route into the existing unmaterialized retirement entry. Raw handoff and partial
+commit do not release it, and an unrecorded failure result cannot reach
+quiescence. HostRecords owns the sole retirement state and the complete frame
+commit hook. This native work is locally qualified against the unpublished fork
+and remains uncommitted with that adapter. Exact physical Destroyed/held-close
+ingress reservations, protected overload admission and the U7/U8 exit criteria
+remain open; the checkpoint does not establish native readiness.
+
 ### U10. Complete layout management and a bounded editor showcase
 
 - **Goal:** Validate realistic editor use without building the user's engine.

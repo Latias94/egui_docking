@@ -15,6 +15,52 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U8 create-attempt terminal ownership
+
+One admitted deferred-create attempt now owns a non-Clone receipt in its
+existing viewport route. Success and failure share its once-only terminal
+choice; success uses the exact attempt/window rather than a particular output
+token, so later outputs from the same window cannot consume the create effect
+again. Failure callback records retain the real fork attempt. Duplicate or
+conflicting callbacks cannot grow the journal or reopen a transferred receipt.
+No additional registry or callback queue is introduced.
+
+Failure ACK atomically takes the original receipt from the route and moves it
+into the existing unmaterialized retirement entry under route-to-records lock
+order. The single `NativeRetirementState` instance now resides in HostRecords,
+and coordinator/effect paths access it through short bridge methods. Raw
+handoff is not publication: partial commits and dropped core frames preserve
+the obligation. Only a complete successful frame boundary commits a transferred
+create receipt. A failure whose affine result has not entered the recorder
+survives unrelated full boundaries and cannot become a quiescence candidate.
+The existing first-live/presentation acknowledgements retain their own meaning.
+
+Four new receipt/bridge cases cover terminal conflict, duplicate handoff,
+partial/full commit, result retry, quiescence and successor isolation. The
+existing real core create-failure fixture additionally drops its result frame
+and proves the same obligation survives. Initial compilation found three
+fixture failures: duplicate wake expectation, replacement before receipt
+handoff, and a cross-surface replacement fixture. They now reflect once-only
+admission and legal current-binding handoff without relaxing production binding
+checks. Helper cases use a permitted None attempt; they do not pretend to mint
+real fork authority.
+
+Refreshed local-fork sources pass 248 all-target native tests normally and 248
+without native debug assertions. Correctness/suspicious Clippy and strict native
+rustdoc pass. Independent static review found no confirmed P1/P2 in receipt
+transfer, commit-hook reachability, lock order or quiescence. Removing the
+recorded-result prerequisite in scratch makes the two failure-receipt tests
+fail. Three rebuilt macOS Glow redock processes complete in 1.643, 0.565 and
+0.515 seconds through the existing lifecycle checks.
+
+This is only the create-owner prerequisite. Physical Destroyed and first
+held-close ingress reservations, overload protected admission, capacity/load/
+latency/soak and complete U8 readiness remain open. Programmatic macOS redock
+does not certify physical input, WM-close, mixed-DPI or create-failure OS
+behavior. The native adapter remains dirty against unpublished local fork
+`7c7b32335`; tracked pins are unchanged. The main workspace and official product
+qualification is recorded in the overflow checkpoint below.
+
 ## 2026-10-28 follow-up overflow and timed-input audit
 
 The new public product transition exercises explicit forward scroll while the
