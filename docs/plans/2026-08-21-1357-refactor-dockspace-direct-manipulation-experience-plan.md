@@ -680,6 +680,17 @@ updates/cancellation without self-invalidation or redundant compilation.
 - **Test scenarios:** Covers AE7/AE11/AE14. Retry after a rejected batch, 10,000 interleaved records, sustained 1,000 Hz drag, overload, local touch coordinates, and scope/provider changes preserve one terminal release.
 - **Verification:** Resource budgets hold and no unbounded journal or forced desktop-only local route remains.
 
+Local fixed-boundary checkpoint (2026-10-29): ordinary source admission freezes
+at 4,096 retained records or 250ms oldest age, retaining the first B. Existing
+core boundaries and currently replayable input through B commit before one
+exact overload cancellation; parked lifecycle dependencies and post-B terminals
+retain their owner without delaying cancellation. Only its matching successful
+commit resets translator state. Control/prelude frames remain inert, and the
+terminal roster has one inline slot gated by full commit plus exact snapshot
+settlement. Recovering and fatal modes are independent. The 4 MiB owned-capacity
+measurement/preallocation, native scoped input, load/release latency and soak
+remain unfinished; this checkpoint does not qualify the complete U7 budget.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

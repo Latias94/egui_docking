@@ -928,6 +928,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
         application_action_ready: bool,
         budget: &mut NativeInputBudget,
     ) -> Result<bool, NativeRuntimeError> {
+        if self.coordinator.has_pending_callback_records()
+            && !self
+                .coordinator
+                .dispatch_bridge()
+                .callback_boundary_pending()
+        {
+            // The output finalizer cannot translate a later callback prefix.
+            // Keep queued actions owned until the next root prelude drains it.
+            require_durable_root_cycle(&self.coordinator, token, true)?;
+            context.request_repaint_once_of(ViewportId::ROOT);
+            context.request_repaint_once_of(token.viewport_id());
+            return Ok(false);
+        }
         let Some(mut host_frame) = self.coordinator.poll_resolved_host_frame(context, budget)?
         else {
             require_durable_root_cycle(&self.coordinator, token, true)?;

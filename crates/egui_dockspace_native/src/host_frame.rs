@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceSubmittedAction, HostFrameReport, NativeStagingPaintRequest,
-    PreparedDockAction, PreparedPaneFocusObservation, PreparedSurfaceAction,
-    SurfaceUnavailableReason,
+    DockspaceHostFrame, DockspaceSubmittedAction, HostFrameReport, HostInputOutcome,
+    NativeStagingPaintRequest, PreparedDockAction, PreparedPaneFocusObservation,
+    PreparedSurfaceAction, SurfaceUnavailableReason,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, PaneView};
@@ -15,6 +15,7 @@ use egui_dockspace::{DockStyle, PaneView};
 use crate::error::NativeHostProtocolError;
 use crate::error::NativeRuntimeError;
 use crate::mailbox::NativeHostBridge;
+use crate::pointer_event::NativePointerTranslator;
 use crate::receiver::NativeReceiverStore;
 
 /// Final-pass paint metadata plus fork-owned scroll identities from that same pass.
@@ -50,6 +51,13 @@ pub(crate) struct NativeHostFrame<'session> {
     bridge: Arc<NativeHostBridge>,
     receivers: &'session mut NativeReceiverStore,
     repaint_context: Option<egui::Context>,
+    overload: Option<OverloadCancellation<'session>>,
+}
+
+struct OverloadCancellation<'session> {
+    boundary: u64,
+    submitted: DockspaceSubmittedAction,
+    translator: &'session mut NativePointerTranslator,
 }
 
 impl std::fmt::Debug for NativeHostFrame<'_> {
@@ -62,7 +70,10 @@ impl std::fmt::Debug for NativeHostFrame<'_> {
 
 impl<'session> NativeHostFrame<'session> {
     pub(crate) fn native_input_pending(&self) -> bool {
-        self.frame.native_input_pending() || self.bridge.has_unsubmitted_output_prefix()
+        self.overload.is_some()
+            || !self.bridge.permits_unscheduled_input()
+            || self.frame.native_input_pending()
+            || self.bridge.has_unsubmitted_output_prefix()
     }
 
     pub(crate) fn new(
@@ -76,7 +87,22 @@ impl<'session> NativeHostFrame<'session> {
             bridge,
             receivers,
             repaint_context,
+            overload: None,
         }
+    }
+
+    pub(crate) fn cancel_for_overload(
+        &mut self,
+        boundary: u64,
+        translator: &'session mut NativePointerTranslator,
+    ) -> Result<(), NativeRuntimeError> {
+        let submitted = self.frame.cancel_native_input_for_overload()?;
+        self.overload = Some(OverloadCancellation {
+            boundary,
+            submitted,
+            translator,
+        });
+        Ok(())
     }
 
     pub(crate) fn complete_unpainted_surfaces(
@@ -201,8 +227,19 @@ impl<'session> NativeHostFrame<'session> {
             bridge,
             receivers,
             repaint_context,
+            overload,
         } = self;
         let report = frame.commit()?;
+        if let Some(cancellation) = overload {
+            if !matches!(
+                report.submitted_action_outcome(cancellation.submitted),
+                Some(&HostInputOutcome::NativeInputCancelledForOverload)
+            ) || !bridge.finish_overload_cancellation(cancellation.boundary)
+            {
+                return Err(NativeHostProtocolError::NativeOverloadCancellationChanged.into());
+            }
+            cancellation.translator.finish_overload_cancellation();
+        }
         receivers.commit_presentations(report.surface_presentation_commits());
         let staging_viewports = bridge.publish_staging_requests(staging_requests)?;
         bridge.commit_frame_boundary(report.native_input_pending());
@@ -220,6 +257,9 @@ impl<'session> NativeHostFrame<'session> {
     fn compile_staging_requests(
         &self,
     ) -> Result<BTreeMap<egui::ViewportId, NativeStagingPaintRequest>, NativeRuntimeError> {
+        if self.overload.is_some() {
+            return Ok(BTreeMap::new());
+        }
         self.bridge
             .compile_staging_requests(self.frame.native_staging_paints())
             .map_err(Into::into)

@@ -112,6 +112,8 @@ pub(crate) enum NativeHostProtocolError {
     NativeInputDispatchChanged,
     #[error("an exact native close cancellation was not accepted by the core")]
     NativeCloseCancellationRejected,
+    #[error("the committed overload cancellation does not match its frozen input boundary")]
+    NativeOverloadCancellationChanged,
     #[error("a queued application action committed without one exact product outcome")]
     ApplicationActionOutcomeMissing,
 }
@@ -148,6 +150,7 @@ impl NativeHostProtocolError {
             | Self::NativeInputCorrelationChanged => NativeRuntimeErrorKind::HostProtocol,
             Self::RootRegistrationRejected(_)
             | Self::RootViewportBindingFailed
+            | Self::NativeOverloadCancellationChanged
             | Self::PaintedOutputCountMismatch { .. }
             | Self::PaintedStagingOutputCountMismatch { .. }
             | Self::OutputBindingFailed(_)

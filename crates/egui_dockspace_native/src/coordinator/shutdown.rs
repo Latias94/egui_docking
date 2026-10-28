@@ -332,9 +332,7 @@ impl NativeCoordinator {
             }
             let binding = request.operation().binding();
             let result = request.dispatch_failed(NativeDispatchFailure::ProviderStopped);
-            if let Err(error) = self.session.report_native_effect_result(result)
-                && let Err(error) = self.retain_or_return_effect_result(binding, error)
-            {
+            if let Err(error) = self.report_derived_effect_result(binding, result) {
                 errors.push(error);
             }
         }

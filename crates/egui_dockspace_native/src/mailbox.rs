@@ -38,6 +38,11 @@ use crate::viewport_map::{CreateAdmission, CreateTerminal, NativeViewportMap};
 use crate::window_snapshot::CompiledWindowObservation;
 use crate::work_area::FrozenWorkAreaRoster;
 
+mod admission;
+#[cfg(test)]
+mod admission_tests;
+use admission::NativeAdmission;
+pub(crate) use admission::NativeDispatch;
 mod command_callback;
 #[cfg(test)]
 mod command_ingress_tests;
@@ -45,11 +50,13 @@ pub(crate) mod journal;
 #[cfg(test)]
 mod lifecycle_ingress_tests;
 mod output_resource;
+mod terminal_roster;
 mod window_resource;
 use command_callback::CommandCallbackAdmission;
 use journal::{HostIngressJournal, ReservedHostRecord};
 use output_resource::NativeOutputResource;
 pub(crate) use output_resource::PendingNativeOutput;
+use terminal_roster::TerminalRosterState;
 use window_resource::NativeWindowResources;
 
 #[derive(Debug, Clone)]
@@ -323,56 +330,6 @@ impl NativeViewportRosterEnvelope {
 
     pub(crate) const fn is_terminal(&self) -> bool {
         self.terminal_generation.is_some()
-    }
-}
-
-#[derive(Debug, Default)]
-struct TerminalRosterState {
-    required_generation: u64,
-    captured_generation: u64,
-    settled_generation: u64,
-}
-
-impl TerminalRosterState {
-    fn require(&mut self) {
-        self.required_generation = self
-            .required_generation
-            .checked_add(1)
-            .expect("terminal native viewport roster generation exhausted");
-    }
-
-    const fn has_pending(&self) -> bool {
-        self.settled_generation < self.required_generation
-    }
-
-    const fn needs_capture(&self) -> bool {
-        self.captured_generation < self.required_generation
-    }
-
-    fn capture(&mut self) -> Option<u64> {
-        if !self.needs_capture() {
-            return None;
-        }
-        self.captured_generation = self.required_generation;
-        Some(self.captured_generation)
-    }
-
-    const fn can_settle(&self, generation: u64) -> bool {
-        generation != 0
-            && generation > self.settled_generation
-            && generation <= self.captured_generation
-    }
-
-    fn settle(&mut self, generation: u64, applied: bool) -> bool {
-        if !self.can_settle(generation) {
-            return false;
-        }
-        if applied {
-            self.settled_generation = generation;
-        } else if self.captured_generation == generation {
-            self.captured_generation = self.settled_generation;
-        }
-        true
     }
 }
 
@@ -1582,27 +1539,42 @@ mod tests {
 
     #[test]
     fn rejected_terminal_roster_is_rearmed_until_applied() {
-        let mut records = NativeHostState::active();
-        records.quarantine_after_fatal();
-        records.require_terminal_roster();
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        bridge.quarantine_after_fatal();
+        bridge.require_terminal_roster();
         let roster = NativeViewportRosterRecord::for_test([], true);
 
-        assert!(records.record_terminal_viewport_roster(roster.clone()));
-        assert!(records.terminal_roster.has_pending());
-        let rejected = records
+        bridge.push_terminal_viewport_roster(roster.clone());
+        assert_eq!(bridge.lock().journal.len(), 0);
+        assert!(bridge.lock().terminal_roster.has_pending());
+        let rejected = bridge
             .front_viewport_roster()
-            .expect("the terminal roster enters the ordered journal");
-        assert!(records.acknowledge_viewport_roster(&rejected));
-        assert!(records.settle_viewport_roster(&rejected, false));
-        assert!(records.terminal_roster.has_pending());
+            .expect("the terminal roster enters its reserved slot");
+        assert!(bridge.acknowledge_viewport_roster(&rejected));
+        assert!(bridge.settle_viewport_roster(&rejected, false));
+        assert!(bridge.lock().terminal_roster.has_pending());
+        assert!(
+            !bridge
+                .lock()
+                .record_terminal_viewport_roster(roster.clone())
+        );
+        bridge.commit_frame_boundary(true);
+        assert!(
+            !bridge
+                .lock()
+                .record_terminal_viewport_roster(roster.clone())
+        );
+        bridge.commit_frame_boundary(false);
 
-        assert!(records.record_terminal_viewport_roster(roster));
-        let applied = records
+        bridge.push_terminal_viewport_roster(roster);
+        let applied = bridge
             .front_viewport_roster()
             .expect("the rejected terminal roster remains retryable");
-        assert!(records.acknowledge_viewport_roster(&applied));
-        assert!(records.settle_viewport_roster(&applied, true));
-        assert!(!records.terminal_roster.has_pending());
+        assert!(bridge.acknowledge_viewport_roster(&applied));
+        bridge.commit_frame_boundary(false);
+        assert!(bridge.lock().terminal_roster.has_pending());
+        assert!(bridge.settle_viewport_roster(&applied, true));
+        assert!(!bridge.lock().terminal_roster.has_pending());
     }
 
     #[test]
@@ -1616,28 +1588,42 @@ mod tests {
 
     #[test]
     fn newer_terminal_roster_obligation_survives_an_older_settlement() {
-        let mut records = NativeHostState::active();
-        records.quarantine_after_fatal();
-        records.require_terminal_roster();
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        bridge.quarantine_after_fatal();
+        bridge.require_terminal_roster();
         let roster = NativeViewportRosterRecord::for_test([], true);
 
-        assert!(records.record_terminal_viewport_roster(roster.clone()));
-        let first = records
+        bridge.push_terminal_viewport_roster(roster.clone());
+        let first = bridge
             .front_viewport_roster()
-            .expect("the first terminal roster enters the ordered journal");
-        assert!(records.acknowledge_viewport_roster(&first));
+            .expect("the first terminal roster enters its reserved slot");
+        assert!(bridge.acknowledge_viewport_roster(&first));
 
-        records.require_terminal_roster();
-        assert!(records.record_terminal_viewport_roster(roster));
-        assert!(records.settle_viewport_roster(&first, true));
-        assert!(records.terminal_roster.has_pending());
+        bridge.require_terminal_roster();
+        for _ in 0..32 {
+            assert!(
+                !bridge
+                    .lock()
+                    .record_terminal_viewport_roster(roster.clone())
+            );
+        }
+        assert_eq!(bridge.lock().journal.captured_through(), 1);
+        assert!(bridge.settle_viewport_roster(&first, true));
+        assert!(bridge.lock().terminal_roster.has_pending());
+        bridge.commit_frame_boundary(true);
+        assert!(!bridge.lock().terminal_roster.needs_capture());
+        bridge.commit_frame_boundary(false);
+        assert!(bridge.lock().terminal_roster.needs_capture());
 
-        let second = records
+        bridge.push_terminal_viewport_roster(roster);
+        let second = bridge
             .front_viewport_roster()
-            .expect("the newer obligation retains its own roster");
-        assert!(records.acknowledge_viewport_roster(&second));
-        assert!(records.settle_viewport_roster(&second, true));
-        assert!(!records.terminal_roster.has_pending());
+            .expect("the newer obligation reuses the released slot");
+        assert!(bridge.acknowledge_viewport_roster(&second));
+        assert!(bridge.settle_viewport_roster(&second, true));
+        assert!(bridge.lock().terminal_roster.has_pending());
+        bridge.commit_frame_boundary(false);
+        assert!(!bridge.lock().terminal_roster.has_pending());
     }
 
     #[test]
@@ -1702,6 +1688,24 @@ mod tests {
         records.viewports = viewports;
         records.blocked_semantic_viewports.insert(viewport);
         records.ready_semantic_viewports.insert(viewport);
+        let context = eframe::egui::Context::default();
+        let visibility_token = eframe::queue_native_viewport_visibility(&context, viewport, false);
+        let input_token =
+            eframe::queue_native_viewport_pointer_passthrough(&context, viewport, false);
+        assert!(records.window_resources.reserve_visibility_callback(
+            viewport,
+            binding,
+            window,
+            visibility_token,
+            false,
+        ));
+        assert!(records.window_resources.reserve_pointer_callback(
+            viewport,
+            binding,
+            window,
+            input_token,
+            false,
+        ));
 
         assert!(records.quarantine_after_fatal().is_empty());
 
@@ -1721,22 +1725,13 @@ mod tests {
         );
         assert!(
             records.record_viewport_visibility(NativeViewportVisibilityRecord::for_test(
-                eframe::queue_native_viewport_visibility(
-                    &eframe::egui::Context::default(),
-                    viewport,
-                    false
-                ),
+                visibility_token,
                 viewport,
                 window,
                 binding,
                 false,
                 eframe::NativeViewportVisibilityStatus::Dispatched,
             ))
-        );
-        let input_token = eframe::queue_native_viewport_pointer_passthrough(
-            &eframe::egui::Context::default(),
-            viewport,
-            false,
         );
         assert!(records.record_viewport_pointer_passthrough(
             NativePointerPassthroughRecord::for_test(
@@ -1836,6 +1831,7 @@ struct NativeHostState {
     viewports: NativeViewportMap,
     attachment: HostAttachmentState,
     mode: HostIngressMode,
+    admission: NativeAdmission,
     journal: HostIngressJournal,
     output_resources: BTreeMap<NativeOutputToken, NativeOutputResource>,
     window_resources: NativeWindowResources,
@@ -1905,6 +1901,7 @@ impl NativeHostState {
             viewports,
             attachment: HostAttachmentState::Available,
             mode: HostIngressMode::Active,
+            admission: NativeAdmission::default(),
             journal: HostIngressJournal::new(clock),
             output_resources: BTreeMap::new(),
             window_resources: NativeWindowResources::default(),
@@ -1929,6 +1926,56 @@ impl NativeHostState {
             .retained_record_count()
             .saturating_add(self.close_control.parked_ingress().count())
             .saturating_add(self.owner_ingress().count())
+    }
+
+    fn freeze_ordinary(&mut self) -> u64 {
+        let was_running = matches!(self.admission, NativeAdmission::Running);
+        let boundary = self.admission.freeze(self.journal.captured_through());
+        if was_running {
+            // Core may already own effect, presentation or atomic replay input
+            // which is not represented by a ready raw callback.
+            self.event_boundary_pending = true;
+            self.terminal_roster.require();
+        }
+        boundary
+    }
+
+    fn admit_ordinary(&mut self) -> bool {
+        if !self.mode.accepts_new_work() {
+            return false;
+        }
+        if self.retained_record_count() >= admission::RECORD_LIMIT
+            || self
+                .oldest_record_age()
+                .is_some_and(|age| age >= admission::AGE_LIMIT)
+        {
+            self.freeze_ordinary();
+            return false;
+        }
+        matches!(self.admission, NativeAdmission::Running)
+    }
+
+    fn dispatch(&self) -> NativeDispatch {
+        self.admission.dispatch(
+            self.event_boundary_pending
+                || self.in_flight_viewport_roster.is_some()
+                || self.close_control.has_unsettled_clear(),
+            self.front_ingress().map(ReservedHostRecord::ordinal),
+        )
+    }
+
+    fn dispatch_cutoff(&self) -> Option<u64> {
+        match self.admission {
+            NativeAdmission::Draining { boundary } => Some(boundary),
+            NativeAdmission::Running | NativeAdmission::Recovering { .. } => None,
+        }
+    }
+
+    fn front_dispatchable(&self) -> bool {
+        self.front_ingress().is_some_and(|record| {
+            self.dispatch_cutoff()
+                .is_none_or(|cutoff| record.ordinal() <= cutoff)
+        })
     }
 
     fn oldest_record_age(&self) -> Option<std::time::Duration> {
@@ -1957,6 +2004,7 @@ impl NativeHostState {
             .chain(self.viewports.window_ingress())
             .chain(self.retirements.create_ingress())
             .chain(self.retirements.window_ingress())
+            .chain(self.terminal_roster.ingress())
             .chain(
                 self.output_resources
                     .values()
@@ -1980,11 +2028,21 @@ impl NativeHostState {
         self.front_ingress().map(ReservedHostRecord::record)
     }
 
+    fn front_dispatch_record(&self) -> Option<&HostRecord> {
+        self.front_dispatchable()
+            .then(|| self.front_record())
+            .flatten()
+    }
+
     fn raw_prefix(&self) -> impl Iterator<Item = &HostRecord> {
-        let cutoff = self.first_owner_ingress().map(ReservedHostRecord::ordinal);
+        let owner_cutoff = self.first_owner_ingress().map(ReservedHostRecord::ordinal);
+        let admission_cutoff = self.dispatch_cutoff();
         self.journal
             .reserved_iter()
-            .take_while(move |record| cutoff.is_none_or(|cutoff| record.ordinal() < cutoff))
+            .take_while(move |record| {
+                owner_cutoff.is_none_or(|cutoff| record.ordinal() < cutoff)
+                    && admission_cutoff.is_none_or(|cutoff| record.ordinal() <= cutoff)
+            })
             .map(ReservedHostRecord::record)
     }
 
@@ -2008,6 +2066,12 @@ impl NativeHostState {
         })
     }
 
+    fn dispatchable_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+        let cutoff = self.dispatch_cutoff();
+        self.ordered_ingress()
+            .take_while(move |record| cutoff.is_none_or(|cutoff| record.ordinal() <= cutoff))
+    }
+
     fn transfer_front_record(&mut self) {
         let ordinal = self
             .front_ingress()
@@ -2021,6 +2085,7 @@ impl NativeHostState {
             .or_else(|| self.viewports.take_window_ingress(ordinal))
             .or_else(|| self.retirements.take_create_ingress(ordinal))
             .or_else(|| self.retirements.take_window_ingress(ordinal))
+            .or_else(|| self.terminal_roster.take_ingress(ordinal))
         {
             self.journal.transfer_reserved(record);
         } else {
@@ -2034,7 +2099,8 @@ impl NativeHostState {
     }
 
     fn has_pending_coordinator_work(&self) -> bool {
-        self.retained_record_count() != 0
+        !matches!(self.admission, NativeAdmission::Running)
+            || self.retained_record_count() != 0
             || self.close_control.has_pending_work()
             || self.window_resources.has_pending_work()
             || self.retirements.has_pending_work()
@@ -2061,25 +2127,29 @@ impl NativeHostState {
         let wake_after_current = binding.is_some_and(|binding| {
             self.window_resources.hidden_binding(token.viewport_id()) == Some(binding)
         });
-        let mut reservation = match self.mode {
-            HostIngressMode::Active => binding.map_or_else(
-                || OutputReservation::unbound(window),
-                |binding| OutputReservation::bound(binding, window),
-            ),
-            HostIngressMode::Quarantined => {
-                let terminal_create = binding.filter(|binding| {
-                    token.create_attempt().is_some()
-                        && self
-                            .window_resources
-                            .create(token.viewport_id())
-                            .is_some_and(|reservation| reservation.binding == *binding)
-                });
-                terminal_create.map_or_else(
-                    || OutputReservation::diagnostic(binding, window),
-                    |binding| OutputReservation::terminal_create(binding, window),
-                )
+        let mut reservation = if matches!(self.admission, NativeAdmission::Draining { .. }) {
+            OutputReservation::diagnostic(binding, window)
+        } else {
+            match self.mode {
+                HostIngressMode::Active => binding.map_or_else(
+                    || OutputReservation::unbound(window),
+                    |binding| OutputReservation::bound(binding, window),
+                ),
+                HostIngressMode::Quarantined => {
+                    let terminal_create = binding.filter(|binding| {
+                        token.create_attempt().is_some()
+                            && self
+                                .window_resources
+                                .create(token.viewport_id())
+                                .is_some_and(|reservation| reservation.binding == *binding)
+                    });
+                    terminal_create.map_or_else(
+                        || OutputReservation::diagnostic(binding, window),
+                        |binding| OutputReservation::terminal_create(binding, window),
+                    )
+                }
+                HostIngressMode::Frozen => unreachable!("frozen outputs return before reservation"),
             }
-            HostIngressMode::Frozen => unreachable!("frozen outputs return before reservation"),
         };
         if wake_after_current {
             let armed = reservation.require_wake_after_current();
@@ -2203,7 +2273,12 @@ impl NativeHostState {
         if admission == CommandCallbackAdmission::Duplicate {
             return false;
         }
-        if matches!(self.mode, HostIngressMode::Quarantined) {
+        if admission == CommandCallbackAdmission::Unreserved && !self.admit_ordinary() {
+            return false;
+        }
+        if matches!(self.mode, HostIngressMode::Quarantined)
+            || !matches!(self.admission, NativeAdmission::Running)
+        {
             self.terminal_roster.require();
         }
         if admission == CommandCallbackAdmission::Unreserved {
@@ -2214,7 +2289,7 @@ impl NativeHostState {
     }
 
     fn record_global_focus(&mut self, record: NativeGlobalFocusRecord) -> bool {
-        if !self.mode.accepts_new_work() {
+        if !self.admit_ordinary() {
             return false;
         }
         self.journal.push_back(HostRecord::GlobalFocus(record));
@@ -2236,6 +2311,9 @@ impl NativeHostState {
             return false;
         }
         if admission == CommandCallbackAdmission::Unreserved {
+            if !self.admit_ordinary() {
+                return false;
+            }
             self.journal.push_back(HostRecord::ViewportFocus(record));
         }
         true
@@ -2258,7 +2336,12 @@ impl NativeHostState {
         if admission == CommandCallbackAdmission::Duplicate {
             return false;
         }
-        if matches!(self.mode, HostIngressMode::Quarantined) {
+        if admission == CommandCallbackAdmission::Unreserved && !self.admit_ordinary() {
+            return false;
+        }
+        if matches!(self.mode, HostIngressMode::Quarantined)
+            || !matches!(self.admission, NativeAdmission::Running)
+        {
             self.terminal_roster.require();
         }
         if admission == CommandCallbackAdmission::Unreserved {
@@ -2314,7 +2397,9 @@ impl NativeHostState {
         {
             return false;
         }
-        if matches!(self.mode, HostIngressMode::Quarantined) {
+        if matches!(self.mode, HostIngressMode::Quarantined)
+            || !matches!(self.admission, NativeAdmission::Running)
+        {
             self.terminal_roster.require();
         }
         true
@@ -2443,6 +2528,19 @@ impl NativeHostState {
 
     fn capture_window_event(&mut self, mut record: NativeWindowEventRecord) -> bool {
         if matches!(record.event(), winit::event::WindowEvent::CloseRequested)
+            && record
+                .binding()
+                .is_some_and(|binding| self.close_control.retains_request(&record, binding))
+        {
+            return true;
+        }
+        if matches!(self.mode, HostIngressMode::Active)
+            && !matches!(record.event(), winit::event::WindowEvent::Destroyed)
+            && !self.admit_ordinary()
+        {
+            return false;
+        }
+        if matches!(record.event(), winit::event::WindowEvent::CloseRequested)
             && let Some(binding) = record.binding()
         {
             match self.close_control.capture_request(&record, binding) {
@@ -2480,7 +2578,9 @@ impl NativeHostState {
                 return false;
             };
             self.viewports.suppress_pointer_route(viewport, binding);
-            if matches!(self.mode, HostIngressMode::Quarantined) {
+            if matches!(self.mode, HostIngressMode::Quarantined)
+                || !matches!(self.admission, NativeAdmission::Running)
+            {
                 self.terminal_roster.require();
             }
             return true;
@@ -2490,7 +2590,9 @@ impl NativeHostState {
     }
 
     fn record_device_removal(&mut self, record: NativeDeviceRemovalRecord) {
-        self.journal.push_back(HostRecord::DeviceRemoval(record));
+        if matches!(self.mode, HostIngressMode::Quarantined) || self.admit_ordinary() {
+            self.journal.push_back(HostRecord::DeviceRemoval(record));
+        }
     }
 
     fn coalesce_idle_cursor_prefix(&mut self, budget: &mut NativeInputBudget) -> bool {
@@ -2560,6 +2662,9 @@ impl NativeHostState {
     }
 
     fn record_viewport_roster(&mut self, roster: NativeViewportRosterRecord) -> bool {
+        if !self.admit_ordinary() {
+            return false;
+        }
         let envelope = NativeViewportRosterEnvelope::new(
             self.roster_context,
             roster,
@@ -2579,17 +2684,20 @@ impl NativeHostState {
     }
 
     fn record_terminal_viewport_roster(&mut self, roster: NativeViewportRosterRecord) -> bool {
-        let Some(generation) = self.terminal_roster.capture() else {
-            return false;
-        };
-        self.journal.push_back(HostRecord::ViewportRoster(
-            NativeViewportRosterEnvelope::new(self.roster_context, roster, true, Some(generation)),
-        ));
-        true
+        self.terminal_roster.capture(|generation| {
+            self.journal.reserve(HostRecord::ViewportRoster(
+                NativeViewportRosterEnvelope::new(
+                    self.roster_context,
+                    roster,
+                    true,
+                    Some(generation),
+                ),
+            ))
+        })
     }
 
     fn front_viewport_roster(&self) -> Option<NativeViewportRosterEnvelope> {
-        let HostRecord::ViewportRoster(envelope) = self.front_record()? else {
+        let HostRecord::ViewportRoster(envelope) = self.front_dispatch_record()? else {
             return None;
         };
         Some(envelope.clone())
@@ -2993,6 +3101,35 @@ impl NativeHostBridge {
         self.lock().close_control.settle_clear(applied)
     }
 
+    pub(crate) fn admission_dispatch(&self) -> NativeDispatch {
+        let mut records = self.lock();
+        let count = records.retained_record_count();
+        let age = records.oldest_record_age();
+        if records.mode.accepts_new_work() {
+            if matches!(records.admission, NativeAdmission::Running)
+                && (count >= admission::RECORD_LIMIT
+                    || age.is_some_and(|age| age >= admission::AGE_LIMIT))
+            {
+                records.freeze_ordinary();
+            }
+        }
+        records.admission.try_resume(count, age);
+        records.dispatch()
+    }
+
+    pub(crate) fn permits_unscheduled_input(&self) -> bool {
+        !matches!(self.lock().admission, NativeAdmission::Draining { .. })
+    }
+
+    pub(crate) fn finish_overload_cancellation(&self, boundary: u64) -> bool {
+        self.lock().admission.finish_cancellation(boundary)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn freeze_ordinary_for_test(&self) -> u64 {
+        self.lock().freeze_ordinary()
+    }
+
     fn lock(&self) -> MutexGuard<'_, NativeHostState> {
         self.records.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -3057,7 +3194,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::WindowEvent(event)) => Some(event.clone()),
             Some(
                 HostRecord::DeviceRemoval(_)
@@ -3077,7 +3214,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn front_device_removal(&self) -> Option<NativeDeviceRemovalRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::DeviceRemoval(removal)) => Some(*removal),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3097,7 +3234,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn front_global_focus(&self) -> Option<NativeGlobalFocusRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::GlobalFocus(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3117,7 +3254,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn front_viewport_focus(&self) -> Option<NativeViewportFocusRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::ViewportFocus(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3139,7 +3276,7 @@ impl NativeHostBridge {
     pub(crate) fn front_viewport_pointer_passthrough(
         &self,
     ) -> Option<NativePointerPassthroughRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::ViewportPointerPassthrough(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3161,7 +3298,7 @@ impl NativeHostBridge {
     pub(crate) fn front_viewport_close_cancelled(
         &self,
     ) -> Option<NativeViewportCloseCancellationRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::ViewportCloseCancelled(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3185,7 +3322,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn front_viewport_created(&self) -> Option<NativeViewportCreatedRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::ViewportCreated(created)) => Some(*created),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3205,7 +3342,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn front_staging_painted(&self) -> Option<NativeStagingPaintRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::StagingPainted(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3227,7 +3364,7 @@ impl NativeHostBridge {
     pub(crate) fn front_viewport_create_failure(
         &self,
     ) -> Option<NativeViewportCreateFailureRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::ViewportCreateFailed(failure)) => Some(*failure),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3248,7 +3385,7 @@ impl NativeHostBridge {
 
     pub(crate) fn has_pending_input(&self) -> bool {
         matches!(
-            self.lock().front_record(),
+            self.lock().front_dispatch_record(),
             Some(
                 HostRecord::WindowEvent(_)
                     | HostRecord::DeviceRemoval(_)
@@ -3272,11 +3409,11 @@ impl NativeHostBridge {
     pub(crate) fn acknowledge_event(&self, ordinal: u64) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::WindowEvent(event)) if event.ordinal() == ordinal
         );
         if matches {
-            if let Some(HostRecord::WindowEvent(event)) = records.front_record()
+            if let Some(HostRecord::WindowEvent(event)) = records.front_dispatch_record()
                 && matches!(event.event(), winit::event::WindowEvent::Destroyed)
             {
                 let Some(binding) = event.binding() else {
@@ -3299,7 +3436,7 @@ impl NativeHostBridge {
     pub(crate) fn acknowledge_device_removal(&self, expected: NativeDeviceRemovalRecord) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::DeviceRemoval(removal)) if *removal == expected
         );
         if matches {
@@ -3313,7 +3450,7 @@ impl NativeHostBridge {
         let mut records = self.lock();
         let matches = !records.event_boundary_pending
             && matches!(
-                records.front_record(),
+                records.front_dispatch_record(),
                 Some(HostRecord::WindowEvent(event)) if event.ordinal() == ordinal
             );
         if matches {
@@ -3325,7 +3462,7 @@ impl NativeHostBridge {
     pub(crate) fn acknowledge_global_focus(&self, expected: NativeGlobalFocusRecord) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::GlobalFocus(record)) if *record == expected
         );
         if matches {
@@ -3338,7 +3475,7 @@ impl NativeHostBridge {
     pub(crate) fn acknowledge_viewport_focus(&self, expected: NativeViewportFocusRecord) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::ViewportFocus(record)) if *record == expected
         );
         if matches {
@@ -3354,7 +3491,7 @@ impl NativeHostBridge {
     ) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::ViewportPointerPassthrough(record)) if *record == expected
         );
         if matches {
@@ -3370,7 +3507,7 @@ impl NativeHostBridge {
     ) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::ViewportCloseCancelled(record)) if *record == expected
         );
         if matches {
@@ -3387,7 +3524,7 @@ impl NativeHostBridge {
     ) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::ViewportCreateFailed(failure)) if *failure == expected
         );
         if matches {
@@ -3424,7 +3561,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn front_viewport_visibility(&self) -> Option<NativeViewportVisibilityRecord> {
-        match self.lock().front_record() {
+        match self.lock().front_dispatch_record() {
             Some(HostRecord::ViewportVisibility(record)) => Some(*record),
             Some(
                 HostRecord::WindowEvent(_)
@@ -3449,7 +3586,7 @@ impl NativeHostBridge {
     ) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::ViewportVisibility(record)) if *record == expected
         );
         if matches {
@@ -3480,7 +3617,7 @@ impl NativeHostBridge {
     ) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::ViewportCreated(created)) if *created == expected
         );
         if matches {
@@ -3501,7 +3638,7 @@ impl NativeHostBridge {
     pub(crate) fn acknowledge_staging_painted(&self, expected: NativeStagingPaintRecord) -> bool {
         let mut records = self.lock();
         let matches = matches!(
-            records.front_record(),
+            records.front_dispatch_record(),
             Some(HostRecord::StagingPainted(record)) if *record == expected
         );
         if matches {
@@ -3513,11 +3650,11 @@ impl NativeHostBridge {
 
     pub(crate) fn output_prefix(&self, limit: usize) -> Vec<(NativeOutputResult, bool)> {
         let records = self.lock();
-        if records.event_boundary_pending {
+        if !matches!(records.dispatch(), NativeDispatch::Replay { .. }) {
             return Vec::new();
         }
         let outputs: Vec<_> = records
-            .ordered_ingress()
+            .dispatchable_ingress()
             .map(ReservedHostRecord::record)
             .skip(records.submitted_output_prefix)
             .take(limit)
@@ -3550,14 +3687,17 @@ impl NativeHostBridge {
 
     pub(crate) fn has_pending_output_prefix(&self) -> bool {
         let records = self.lock();
-        !records.event_boundary_pending
-            && matches!(records.front_record(), Some(HostRecord::Output { .. }))
+        matches!(records.dispatch(), NativeDispatch::Replay { .. })
+            && matches!(
+                records.front_dispatch_record(),
+                Some(HostRecord::Output { .. })
+            )
     }
 
     pub(crate) fn has_unsubmitted_output_prefix(&self) -> bool {
         let records = self.lock();
         match records
-            .ordered_ingress()
+            .dispatchable_ingress()
             .map(ReservedHostRecord::record)
             .nth(records.submitted_output_prefix)
         {
@@ -3581,7 +3721,7 @@ impl NativeHostBridge {
         rect: NativePhysicalRect,
     ) -> bool {
         let mut records = self.lock();
-        if !records.mode.accepts_new_work() {
+        if !records.admit_ordinary() {
             return false;
         }
         records
@@ -3662,7 +3802,7 @@ impl NativeHostBridge {
         if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
             return false;
         }
-        records.mode.accepts_terminal_callbacks()
+        (matches!(records.mode, HostIngressMode::Quarantined) || records.admit_ordinary())
             && records
                 .window_resources
                 .reserve_pointer_callback(viewport, binding, window, token, enabled)
@@ -3679,7 +3819,7 @@ impl NativeHostBridge {
         if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
             return false;
         }
-        records.mode.accepts_terminal_callbacks()
+        (matches!(records.mode, HostIngressMode::Quarantined) || records.admit_ordinary())
             && records
                 .window_resources
                 .reserve_focus_callback(viewport, binding, window, token)
@@ -3697,7 +3837,7 @@ impl NativeHostBridge {
         if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
             return false;
         }
-        records.mode.accepts_terminal_callbacks()
+        (matches!(records.mode, HostIngressMode::Quarantined) || records.admit_ordinary())
             && records
                 .window_resources
                 .reserve_visibility_callback(viewport, binding, window, token, visible)
@@ -3833,7 +3973,10 @@ impl NativeHostBridge {
             token.window_id(),
             token.create_attempt(),
         );
+        let ordinary_roster = root_roster.is_some() && records.admit_ordinary();
+        let capture_roster = records.terminal_roster.needs_capture() || ordinary_roster;
         let roster = root_roster
+            .filter(|_| capture_roster)
             .map(|roster| NativeViewportRosterRecord::capture(roster, &records.viewports));
         if !records.reserve_output(token, binding, window, budget) {
             return false;
@@ -3850,11 +3993,13 @@ impl NativeHostBridge {
         }
         if let Some(roster) = roster {
             match records.mode {
+                HostIngressMode::Active | HostIngressMode::Quarantined
+                    if records.terminal_roster.needs_capture() =>
+                {
+                    records.record_terminal_viewport_roster(roster);
+                }
                 HostIngressMode::Active => {
                     records.record_viewport_roster(roster);
-                }
-                HostIngressMode::Quarantined if records.terminal_roster.needs_capture() => {
-                    records.record_terminal_viewport_roster(roster);
                 }
                 HostIngressMode::Quarantined | HostIngressMode::Frozen => {}
             }
@@ -3971,7 +4116,7 @@ impl NativeHostBridge {
     pub(crate) fn mark_output_submitted(&self, token: NativeOutputToken) -> bool {
         let mut records = self.lock();
         let index = records.submitted_output_prefix;
-        if !matches!(records.ordered_ingress().nth(index).map(ReservedHostRecord::record), Some(HostRecord::Output { token: current }) if *current == token)
+        if !matches!(records.dispatchable_ingress().nth(index).map(ReservedHostRecord::record), Some(HostRecord::Output { token: current }) if *current == token)
         {
             return false;
         }
@@ -4016,6 +4161,7 @@ impl NativeHostBridge {
         records.close_control.commit_transferred_callbacks();
         records.retirements.commit_create_failures();
         records.retirements.commit_destroyed_callbacks();
+        records.terminal_roster.commit_transferred();
         loop {
             let Some(HostRecord::Output { token }) = records.front_record() else {
                 break;
@@ -4242,7 +4388,7 @@ impl NativeHostBridge {
         let Some(reservation) = records.window_resources.create(viewport) else {
             return NativeViewportCreateAdmission::Defer;
         };
-        if !records.mode.accepts_new_work()
+        if !records.admit_ordinary()
             || records.window_resources.hidden_binding(viewport) != Some(reservation.binding)
             || !records
                 .viewports

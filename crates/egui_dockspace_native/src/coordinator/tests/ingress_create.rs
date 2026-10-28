@@ -1418,7 +1418,7 @@ fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
     };
     let scale = ScaleFactor::new(1.0).expect("test scale validates");
     let source_bounds = PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("source bounds validate");
-    native.bridge.push_viewport_roster(
+    native.bridge.push_terminal_viewport_roster(
         NativeViewportRosterRecord::for_test_with_backend_and_work_areas(
             [ready_window_observation_with_input(
                 source,
@@ -1524,6 +1524,15 @@ fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
 
 #[test]
 fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_output_token() {
+    assert_pre_admission_compensating_close(false);
+}
+
+#[test]
+fn frozen_pre_admission_compensating_failure_waits_for_overload_cancellation() {
+    assert_pre_admission_compensating_close(true);
+}
+
+fn assert_pre_admission_compensating_close(frozen: bool) {
     let mut native = tear_off_coordinator();
     let source_binding = register_source(&mut native);
     publish_desktop_authority(&mut native, source_binding);
@@ -1559,6 +1568,9 @@ fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_out
     native
         .publish_close(child, NativeCloseState::Requested, None)
         .expect("the pre-admission close edge records");
+    if frozen {
+        native.bridge.freeze_ordinary_for_test();
+    }
     let mut close = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the pre-admission close frame begins");
@@ -1581,9 +1593,48 @@ fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_out
         "one exact compensating close is emitted: {effects:#?}"
     );
 
+    let recorded_before_dispatch = native.session.native_input_recorded_count();
     native
         .accept_native_effects(&egui::Context::default(), effects)
         .expect("the compensating close enters the exact retirement path");
+    if frozen {
+        assert_eq!(
+            native.session.native_input_recorded_count(),
+            recorded_before_dispatch
+        );
+        assert_eq!(native.pending_effect_results.len(), 1);
+        assert!(!native.try_report_pending_effect_results().unwrap());
+        let mut cancel = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        assert!(cancel.native_input_pending());
+        cancel
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = cancel.commit().unwrap();
+        assert_eq!(
+            report
+                .inputs()
+                .iter()
+                .filter(|outcome| matches!(
+                    outcome,
+                    HostInputOutcome::NativeInputCancelledForOverload
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            native.session.native_input_recorded_count(),
+            recorded_before_dispatch
+        );
+        assert!(native.try_report_pending_effect_results().unwrap());
+        assert!(native.pending_effect_results.is_empty());
+        assert_eq!(
+            native.session.native_input_recorded_count(),
+            recorded_before_dispatch + 1
+        );
+        assert!(!native.try_report_pending_effect_results().unwrap());
+    }
     let viewport = viewport_id_for(child);
     assert_eq!(native.viewport_binding(viewport), Some(child));
     assert!(

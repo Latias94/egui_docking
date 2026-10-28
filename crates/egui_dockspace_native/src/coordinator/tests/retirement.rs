@@ -1020,7 +1020,9 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
-    native.bridge.push_viewport_roster(live_roster([root]));
+    native
+        .bridge
+        .push_terminal_viewport_roster(live_roster([root]));
 
     for phase in ["destroyed", "roster", "route", "quiescence"] {
         let advance =

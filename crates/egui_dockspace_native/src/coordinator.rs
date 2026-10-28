@@ -45,7 +45,7 @@ use crate::input_control::{
 };
 use crate::lifecycle_progress::{NativeCloseProgress, NativeLifecycleProgress};
 use crate::mailbox::{
-    DeferredViewportPaint, NativeHostBridge, NativeStagingPaintRecord,
+    DeferredViewportPaint, NativeDispatch, NativeHostBridge, NativeStagingPaintRecord,
     NativeViewportRosterEnvelope, NativeViewportRosterRecord, OutputAbandonment,
     PendingNativeOutput, PreparedRouteRetirements,
 };
@@ -61,6 +61,7 @@ use crate::work_area::{FrozenWorkAreaRoster, NativeWorkAreaState, PreparedWorkAr
 
 mod close_driver;
 mod effect_dispatch;
+use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
@@ -962,6 +963,10 @@ impl NativeCoordinator {
     }
 
     fn try_report_retirement_quiescence_all(&mut self) -> (bool, Vec<NativeRuntimeError>) {
+        self.bridge.admission_dispatch();
+        if !self.bridge.permits_unscheduled_input() {
+            return (false, Vec::new());
+        }
         let candidates = self.bridge.retirement_quiescence_candidates();
         let mut recorded = false;
         let mut errors = Vec::new();
@@ -1013,6 +1018,10 @@ impl NativeCoordinator {
     fn report_pending_effect_results_until_blocked(
         &mut self,
     ) -> (bool, Option<NativeRuntimeError>) {
+        self.bridge.admission_dispatch();
+        if !self.bridge.permits_unscheduled_input() {
+            return (false, None);
+        }
         let mut reported = false;
         let mut deferred_stale = VecDeque::new();
         let pending_count = self.pending_effect_results.len();
@@ -1277,6 +1286,7 @@ impl NativeCoordinator {
         context: &eframe::egui::Context,
         budget: &mut NativeInputBudget,
     ) -> Result<Option<std::num::NonZeroUsize>, NativeRuntimeError> {
+        self.bridge.admission_dispatch();
         self.prepare_output_prefix(budget)?;
         let recorded_before = self.session.native_input_recorded_count();
         let allowance_before = budget.remaining_records();
@@ -1296,6 +1306,12 @@ impl NativeCoordinator {
         budget: &mut NativeInputBudget,
     ) -> Result<Option<std::num::NonZeroUsize>, NativeRuntimeError> {
         if budget.is_exhausted() || self.bridge.callback_boundary_pending() {
+            return Ok(None);
+        }
+        if !matches!(
+            self.bridge.admission_dispatch(),
+            NativeDispatch::Replay { .. }
+        ) {
             return Ok(None);
         }
         if self.reduce_next_viewport_close_cancelled()? {
@@ -1906,7 +1922,11 @@ impl NativeCoordinator {
                         .map_err(|()| NativeHostProtocolError::NativeCloseCorrelationChanged)
                 })?;
                 if let Some(viewport) = record.viewport_id() {
-                    self.fail_pending_viewport_effect(viewport, binding)?;
+                    self.fail_pending_viewport_effect(
+                        viewport,
+                        binding,
+                        ViewportFailureOrigin::CapturedCallback,
+                    )?;
                     match self.bridge.retirement_observe_destroyed(
                         viewport,
                         binding,
@@ -2241,18 +2261,24 @@ impl NativeCoordinator {
         &mut self,
         resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
     ) -> Result<NativeHostFrame<'_>, NativeRuntimeError> {
+        self.bridge.admission_dispatch();
         self.prepare_output_prefix(&mut NativeInputBudget::new(
             &dockspace::runtime::NativeMonotonicClock::new(|| std::time::Duration::ZERO),
         ))?;
         if self.bridge.has_pending_input() && !self.bridge.callback_boundary_pending() {
             return Err(NativeHostProtocolError::CallbackRecordPending.into());
         }
-        Ok(NativeHostFrame::new(
+        let dispatch = self.bridge.admission_dispatch();
+        let mut frame = NativeHostFrame::new(
             self.session.begin_native_host_frame(resolve)?,
             self.bridge.clone(),
             &mut self.receivers,
             None,
-        ))
+        );
+        if let NativeDispatch::Cancel { boundary } = dispatch {
+            frame.cancel_for_overload(boundary, &mut self.pointer_translator)?;
+        }
+        Ok(frame)
     }
 
     /// Begins one native frame using only final-pass egui receiver authority.
@@ -2261,6 +2287,7 @@ impl NativeCoordinator {
         context: &eframe::egui::Context,
         budget: &mut NativeInputBudget,
     ) -> Result<Option<NativeHostFrame<'_>>, NativeRuntimeError> {
+        self.bridge.admission_dispatch();
         self.prepare_output_prefix(budget)?;
         if self.bridge.has_pending_input() && !self.bridge.callback_boundary_pending() {
             if budget.is_exhausted() {
@@ -2269,6 +2296,7 @@ impl NativeCoordinator {
             return Err(NativeHostProtocolError::CallbackRecordPending.into());
         }
         let bridge = self.bridge.clone();
+        let dispatch = bridge.admission_dispatch();
         let receivers = &self.receivers;
         let Some(frame) = self
             .session
@@ -2277,12 +2305,12 @@ impl NativeCoordinator {
             bridge.hold_native_boundary();
             return Ok(None);
         };
-        Ok(Some(NativeHostFrame::new(
-            frame,
-            bridge,
-            &mut self.receivers,
-            Some(context.clone()),
-        )))
+        let mut frame =
+            NativeHostFrame::new(frame, bridge, &mut self.receivers, Some(context.clone()));
+        if let NativeDispatch::Cancel { boundary } = dispatch {
+            frame.cancel_for_overload(boundary, &mut self.pointer_translator)?;
+        }
+        Ok(Some(frame))
     }
 
     pub(crate) fn poll_host_frame(
@@ -2290,6 +2318,7 @@ impl NativeCoordinator {
         budget: &mut NativeInputBudget,
         resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
     ) -> Result<Option<NativeHostFrame<'_>>, NativeRuntimeError> {
+        self.bridge.admission_dispatch();
         self.prepare_output_prefix(budget)?;
         if self.bridge.has_pending_input() && !self.bridge.callback_boundary_pending() {
             if budget.is_exhausted() {
@@ -2297,16 +2326,16 @@ impl NativeCoordinator {
             }
             return Err(NativeHostProtocolError::CallbackRecordPending.into());
         }
+        let dispatch = self.bridge.admission_dispatch();
         let Some(frame) = self.session.poll_native_host_frame(budget, resolve)? else {
             self.bridge.hold_native_boundary();
             return Ok(None);
         };
-        Ok(Some(NativeHostFrame::new(
-            frame,
-            self.bridge.clone(),
-            &mut self.receivers,
-            None,
-        )))
+        let mut frame = NativeHostFrame::new(frame, self.bridge.clone(), &mut self.receivers, None);
+        if let NativeDispatch::Cancel { boundary } = dispatch {
+            frame.cancel_for_overload(boundary, &mut self.pointer_translator)?;
+        }
+        Ok(Some(frame))
     }
 
     /// Binds one affine painted output and its final-pass receiver roster to the

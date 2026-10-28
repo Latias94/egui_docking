@@ -255,6 +255,30 @@ impl NativeCloseControl {
         !self.pending.is_empty()
     }
 
+    pub(crate) fn has_unsettled_clear(&self) -> bool {
+        self.pending.values().any(|pending| pending.clear_recorded)
+    }
+
+    pub(crate) fn retains_request(
+        &self,
+        event: &NativeWindowEventRecord,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let Some(capture) = CapturedNativeClose::from_event(event, binding) else {
+            return false;
+        };
+        self.pending.get(&binding).is_some_and(|pending| {
+            let matches = |existing: &CapturedNativeClose| {
+                if capture.held_request.is_some() {
+                    existing.held_request == capture.held_request
+                } else {
+                    *existing == capture
+                }
+            };
+            matches(&pending.capture) || pending.successor.as_ref().is_some_and(matches)
+        })
+    }
+
     /// Reserves one exact close before ingress returns HoldClose.
     ///
     /// Only cancellation permits one newer capture on the same physical window.

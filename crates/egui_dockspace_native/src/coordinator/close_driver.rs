@@ -42,6 +42,10 @@ impl NativeCoordinator {
         external_root: SurfaceId,
         budget: &mut NativeInputBudget,
     ) -> Result<bool, NativeRuntimeError> {
+        self.bridge.admission_dispatch();
+        if !self.bridge.permits_unscheduled_input() {
+            return Ok(false);
+        }
         if budget.is_exhausted() {
             self.rearm_budget_deferred_close_policy(context)?;
             return Ok(false);

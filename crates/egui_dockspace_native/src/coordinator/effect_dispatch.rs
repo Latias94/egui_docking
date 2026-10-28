@@ -8,6 +8,11 @@ enum NativeRetirementDispatch {
     CloseViewport,
 }
 
+pub(super) enum ViewportFailureOrigin {
+    CapturedCallback,
+    RetirementDispatch,
+}
+
 impl NativeCoordinator {
     fn resolve_exact_close(
         &self,
@@ -85,6 +90,7 @@ impl NativeCoordinator {
         &mut self,
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
+        origin: ViewportFailureOrigin,
     ) -> Result<(), NativeRuntimeError> {
         let failure = NativeViewportCreateFailureRecord::new(
             viewport,
@@ -94,6 +100,9 @@ impl NativeCoordinator {
         let Some(result) = self.effects.take_failure_result(failure) else {
             return Ok(());
         };
+        if matches!(origin, ViewportFailureOrigin::RetirementDispatch) {
+            return self.report_derived_effect_result(binding, result);
+        }
         if let Err(error) = self.session.report_native_effect_result(result) {
             return self.retain_or_return_effect_result(binding, error);
         }
@@ -141,7 +150,11 @@ impl NativeCoordinator {
         {
             return self.submit_unsupported_effect(request);
         }
-        self.fail_pending_viewport_effect(viewport, binding)?;
+        self.fail_pending_viewport_effect(
+            viewport,
+            binding,
+            ViewportFailureOrigin::RetirementDispatch,
+        )?;
         let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = request.accepted() else {
             return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
         };
@@ -455,10 +468,7 @@ impl NativeCoordinator {
     ) -> Result<(), NativeRuntimeError> {
         let binding = request.operation().binding();
         let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
-        if let Err(error) = self.session.report_native_effect_result(result) {
-            return self.retain_or_return_effect_result(binding, error);
-        }
-        Ok(())
+        self.report_derived_effect_result(binding, result)
     }
 
     pub(super) fn submit_failed_effect(
@@ -468,6 +478,19 @@ impl NativeCoordinator {
     ) -> Result<(), NativeRuntimeError> {
         let binding = request.operation().binding();
         let result = request.dispatch_failed(reason);
+        self.report_derived_effect_result(binding, result)
+    }
+
+    pub(super) fn report_derived_effect_result(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        result: NativeEffectResult,
+    ) -> Result<(), NativeRuntimeError> {
+        self.bridge.admission_dispatch();
+        if !self.bridge.permits_unscheduled_input() {
+            self.queue_pending_effect_result(result, None);
+            return Ok(());
+        }
         if let Err(error) = self.session.report_native_effect_result(result) {
             return self.retain_or_return_effect_result(binding, error);
         }
@@ -479,10 +502,7 @@ impl NativeCoordinator {
         binding: NativeSurfaceBinding,
         result: NativeEffectResult,
     ) -> Result<(), NativeRuntimeError> {
-        if let Err(error) = self.session.report_native_effect_result(result) {
-            return self.retain_or_return_effect_result(binding, error);
-        }
-        Ok(())
+        self.report_derived_effect_result(binding, result)
     }
 
     pub(super) fn retain_or_return_effect_result(
