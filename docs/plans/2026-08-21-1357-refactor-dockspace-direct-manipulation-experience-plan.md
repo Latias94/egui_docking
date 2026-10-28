@@ -691,6 +691,16 @@ settlement. Recovering and fatal modes are independent. The 4 MiB owned-capacity
 measurement/preallocation, native scoped input, load/release latency and soak
 remain unfinished; this checkpoint does not qualify the complete U7 budget.
 
+Local capacity-measurement prerequisite (2026-10-29): the public session and
+open-frame queries count recorded native transport envelopes, payload/vector
+capacity, shared retry data once, replay buffers, and retirement receipt
+storage. Commit and retirement do not falsely release backing capacity.
+Unsupported semantic shapes fail explicitly instead of returning a partial
+count. Host/pending-report buffers, reducer/candidate state and allocation
+overhead are outside this narrow query. Actual 4 MiB ordinary admission,
+raw-to-core peak reservations and protected variable-payload preallocation
+remain unfinished.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

@@ -266,6 +266,17 @@ group can pause computation across polls but cannot publish a partial roster.
 Later accepted records never join the already frozen candidate. Dropping a
 returned frame or failing an attempt leaves its input retryable.
 
+`native_input_owned_capacity_bytes()` on the session or an open host frame
+reports recorded input transport data: recorder envelopes and buffers, shared
+payload data, replay record buffers, and a pending prefix-retirement receipt.
+It uses vector capacity, including unused slots retained after retirement.
+Replay batches share payload allocations and add only their own record buffers.
+This query does not impose a cap. Host queues, pending effect/presentation
+reports, reducer authority and candidate state, allocator overhead, and Arc
+control blocks are outside its measurement boundary; it is not process memory.
+Use the frame query while a frame is open so its cursor or commit guard is
+included. Sessions without native input report zero.
+
 The synchronous `begin_native_host_frame` convenience remains available for
 hosts deliberately draining a complete interval; it does not enforce a time
 budget. The working egui native coordinator uses the budgeted protocol and

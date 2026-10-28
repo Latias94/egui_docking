@@ -6,6 +6,7 @@
 //! opaque ordinals as facts are captured. Immutable batches can then be retried
 //! until a host-frame commit advances the engine-owned watermark.
 
+use std::mem::size_of;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -361,6 +362,14 @@ impl BackendIngressPrefixRetirementReceipt {
             .map_or(&[], |authority| &authority.binding_quiescences)
     }
 
+    /// Returns the owned binding buffer capacity, excluding inline receipt data.
+    #[must_use]
+    pub(crate) fn owned_capacity_bytes(&self) -> usize {
+        self.authority.as_ref().map_or(0, |authority| {
+            authority.binding_quiescences.capacity() * size_of::<ViewportBinding>()
+        })
+    }
+
     fn authority(&self) -> Result<&BackendIngressPrefixRetirementAuthority, BackendIngressError> {
         self.authority
             .as_ref()
@@ -666,6 +675,12 @@ pub(crate) struct BackendIngressCommitGuard {
 }
 
 impl BackendIngressCommitGuard {
+    /// Returns the owned record buffer capacity without expanding shared liveness.
+    #[must_use]
+    pub(crate) fn owned_capacity_bytes(&self) -> usize {
+        self.records.capacity() * size_of::<(BackendIngressOrdinal, BackendIngressRecordLiveness)>()
+    }
+
     pub(crate) fn validate(&self) -> Result<(), BackendIngressError> {
         let _coordination = self.coordination.lock();
         self.validate_locked()
@@ -775,6 +790,12 @@ impl BackendIngressBatch {
     #[must_use]
     pub fn records(&self) -> &[BackendIngressRecord] {
         &self.records
+    }
+
+    /// Returns the record buffer capacity without expanding shared record data.
+    #[must_use]
+    pub(crate) fn record_buffer_capacity_bytes(&self) -> usize {
+        self.records.capacity() * size_of::<BackendIngressRecord>()
     }
 
     /// Returns the number of captured records in this interval.
@@ -1544,6 +1565,29 @@ impl BackendIngressRecorder {
     #[must_use]
     pub const fn retained_record_count(&self) -> usize {
         self.records.len()
+    }
+
+    /// Returns retained records in backend capture order without cloning them.
+    #[must_use]
+    pub(crate) fn retained_records(&self) -> &[BackendIngressRecord] {
+        &self.records
+    }
+
+    /// Returns the record buffer capacity, including currently unused slots.
+    #[must_use]
+    pub(crate) fn record_buffer_capacity_bytes(&self) -> usize {
+        self.records.capacity() * size_of::<BackendIngressRecord>()
+    }
+
+    /// Returns fixed shared data charged once through this recorder.
+    ///
+    /// Each append owns distinct payload and liveness allocations. This counts
+    /// their data objects and the one coordination mutex, excluding payload
+    /// descendants, Arc control blocks, and allocator overhead.
+    #[must_use]
+    pub(crate) fn shared_fixed_data_bytes(&self) -> usize {
+        size_of::<Mutex<()>>()
+            + self.records.len() * (size_of::<BackendIngressPayload>() + size_of::<AtomicU8>())
     }
 
     fn push(
@@ -2665,6 +2709,61 @@ mod tests {
     }
 
     #[test]
+    fn transport_capacity_includes_spare_slots_and_releases_consumed_receipt_storage() {
+        let mut recorder = recorder(1);
+        assert!(recorder.retained_records().is_empty());
+        assert_eq!(recorder.record_buffer_capacity_bytes(), 0);
+        assert_eq!(recorder.shared_fixed_data_bytes(), size_of::<Mutex<()>>());
+        recorder.records.reserve(8);
+        recorder
+            .record_pointer_segment(pointer_segment(0))
+            .expect("one pointer record must append");
+        assert_eq!(recorder.retained_records().len(), 1);
+        assert_eq!(
+            recorder.retained_records().as_ptr(),
+            recorder.records.as_ptr(),
+        );
+        assert!(recorder.records.capacity() > recorder.retained_records().len());
+        assert_eq!(
+            recorder.record_buffer_capacity_bytes(),
+            recorder.records.capacity() * size_of::<BackendIngressRecord>(),
+        );
+        assert_eq!(
+            recorder.shared_fixed_data_bytes(),
+            size_of::<Mutex<()>>() + size_of::<BackendIngressPayload>() + size_of::<AtomicU8>(),
+        );
+
+        let mut batch = recorder.pending_batch().expect("the record must freeze");
+        batch.records.reserve(8);
+        assert!(batch.records.capacity() > batch.len());
+        assert_eq!(
+            batch.record_buffer_capacity_bytes(),
+            batch.records.capacity() * size_of::<BackendIngressRecord>(),
+        );
+        let mut guard = batch.commit_guard();
+        guard.records.reserve(8);
+        assert!(guard.records.capacity() > guard.records.len());
+        assert_eq!(
+            guard.owned_capacity_bytes(),
+            guard.records.capacity()
+                * size_of::<(BackendIngressOrdinal, BackendIngressRecordLiveness)>(),
+        );
+
+        let mut bindings = Vec::with_capacity(8);
+        bindings.push(binding(1, 7));
+        let bytes = bindings.capacity() * size_of::<ViewportBinding>();
+        let mut receipt = BackendIngressPrefixRetirementReceipt::new(
+            recorder.lease(),
+            recorder.recorded_through(),
+            bindings,
+        );
+        assert!(bytes > size_of::<ViewportBinding>());
+        assert_eq!(receipt.owned_capacity_bytes(), bytes);
+        receipt.consume().expect("the receipt must consume once");
+        assert_eq!(receipt.owned_capacity_bytes(), 0);
+    }
+
+    #[test]
     fn payload_owner_is_shared_by_recorder_frozen_batches_and_retries() {
         let (authority, mut recorder) = authority_and_recorder(1);
         let platform = snapshot_with_close_observations(
@@ -2690,9 +2789,15 @@ mod tests {
             .finish_atomic_append(group)
             .expect("the captured group must finalize before freezing");
 
+        let recorder_buffer = recorder.record_buffer_capacity_bytes();
+        let recorder_shared = recorder.shared_fixed_data_bytes();
         let first = recorder.pending_batch().expect("the group must freeze");
         let second = recorder.pending_batch().expect("another batch must freeze");
         let cloned = first.clone();
+        assert_ne!(first.records.as_ptr(), recorder.retained_records().as_ptr());
+        assert_ne!(first.records.as_ptr(), cloned.records.as_ptr());
+        assert_eq!(recorder.record_buffer_capacity_bytes(), recorder_buffer);
+        assert_eq!(recorder.shared_fixed_data_bytes(), recorder_shared);
         assert_eq!(
             cloned
                 .commit_guard()
@@ -2709,11 +2814,16 @@ mod tests {
 
         for batch in [&first, &second, &cloned, &retry, &prefix] {
             assert_eq!(batch, &first);
+            assert_eq!(
+                batch.record_buffer_capacity_bytes(),
+                batch.records.capacity() * size_of::<BackendIngressRecord>(),
+            );
             authority
                 .validate_batch(batch)
                 .expect("each shared batch must retain live publication authority");
             for (recorded, frozen) in recorder.records.iter().zip(batch.records()) {
                 assert!(Arc::ptr_eq(&recorded.payload, &frozen.payload));
+                assert!(Arc::ptr_eq(&recorded.liveness.0, &frozen.liveness.0));
                 assert!(std::ptr::eq(recorded.payload(), frozen.payload()));
                 assert_eq!(recorded.identity, frozen.identity);
                 assert_eq!(recorded.liveness, frozen.liveness);
@@ -2735,6 +2845,7 @@ mod tests {
             assert_eq!(journal.edges().len(), 1);
             assert_eq!(journal.edges().as_ptr(), edges);
         }
+        assert_eq!(recorder.shared_fixed_data_bytes(), recorder_shared);
     }
 
     #[test]
@@ -2828,6 +2939,8 @@ mod tests {
         recorder
             .record_pointer_segment(pointer_segment(1))
             .expect("the independent suffix must append");
+        let recorder_buffer = recorder.record_buffer_capacity_bytes();
+        let recorder_shared = recorder.shared_fixed_data_bytes();
         let frozen = recorder.pending_batch().expect("both records must freeze");
         let prefix = recorder
             .batch_prefix_after(BackendIngressOrdinal::ORIGIN, NonZeroUsize::MIN)
@@ -2851,6 +2964,11 @@ mod tests {
                 .is_none()
         );
         assert_eq!(recorder.retained_record_count(), 1);
+        assert_eq!(recorder.record_buffer_capacity_bytes(), recorder_buffer);
+        assert_eq!(
+            recorder.shared_fixed_data_bytes(),
+            recorder_shared - size_of::<BackendIngressPayload>() - size_of::<AtomicU8>(),
+        );
         assert!(owner.upgrade().is_some());
         for batch in [&frozen, &prefix, &cloned] {
             assert!(Weak::ptr_eq(
@@ -2875,6 +2993,7 @@ mod tests {
             &recorder.records[0].payload,
             &suffix.records()[0].payload,
         ));
+        assert_eq!(recorder.record_buffer_capacity_bytes(), recorder_buffer);
 
         drop(frozen);
         drop(prefix);

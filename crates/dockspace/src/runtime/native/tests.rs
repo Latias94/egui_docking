@@ -20,6 +20,7 @@ mod budget_replay;
 mod managed_lifecycle;
 mod pointer_metadata;
 mod pointer_sequence;
+mod storage;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);

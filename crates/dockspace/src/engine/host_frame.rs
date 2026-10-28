@@ -1353,6 +1353,21 @@ impl CoreHostFrame {
         self.candidate.backend_ingress.committed_through()
     }
 
+    /// Counts this frame's ingress buffers, whose payloads remain in its recorder.
+    pub(crate) fn backend_ingress_buffer_capacity_bytes(&self) -> usize {
+        let cursor = self.pending_backend_ingress.as_ref().map_or(0, |cursor| {
+            size_of::<HostBackendIngressCursor>()
+                .saturating_add(cursor.record_buffer_capacity_bytes())
+        });
+        let guard = self
+            .backend_ingress_commit_guard
+            .as_ref()
+            .map_or(0, |guard| {
+                size_of::<BackendIngressCommitGuard>().saturating_add(guard.owned_capacity_bytes())
+            });
+        cursor.saturating_add(guard)
+    }
+
     /// Returns the typed reduction failure retained after
     /// [`CoreHostFrameError::InputPrefixReductionFailed`].
     ///

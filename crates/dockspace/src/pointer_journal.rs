@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
@@ -1139,6 +1140,39 @@ struct PointerEdgeJournalContents {
 }
 
 impl PointerEdgeJournal {
+    /// Returns shared contents storage and its owned vector capacities.
+    ///
+    /// Excludes this journal handle and the Arc control block. The caller is
+    /// responsible for counting shared contents only once across clones.
+    pub(crate) fn owned_contents_capacity_bytes(&self) -> usize {
+        let mut bytes = size_of::<PointerEdgeJournalContents>().saturating_add(
+            self.contents
+                .edges
+                .capacity()
+                .saturating_mul(size_of::<PointerEdge>()),
+        );
+        if let Some(PointerAuthorityCheckpoint {
+            pointers: Authority::Known(pointers),
+            ..
+        }) = self.contents.authority_checkpoint.as_ref()
+        {
+            bytes = bytes.saturating_add(
+                pointers
+                    .capacity()
+                    .saturating_mul(size_of::<PointerStateObservation>()),
+            );
+            for pointer in pointers {
+                bytes = bytes.saturating_add(
+                    pointer
+                        .pressed_buttons
+                        .capacity()
+                        .saturating_mul(size_of::<PointerButton>()),
+                );
+            }
+        }
+        bytes
+    }
+
     /// Creates a complete journal for `(previous, through]`.
     ///
     /// # Errors
@@ -2277,4 +2311,77 @@ pub enum PointerJournalLedgerError {
         prepared_committed_through: PointerEdgeSequence,
         active_committed_through: PointerEdgeSequence,
     },
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn contents_capacity_counts_spare_storage_and_is_shared_by_clones() {
+        let previous = PointerEdgeSequence::new(0);
+        let through = PointerEdgeSequence::new(1);
+        let mut edges = Vec::with_capacity(7);
+        edges.push(PointerEdge::new(
+            through,
+            PointerId::new(1),
+            PointerEdgeKind::Moved,
+            PointerEdgeLocation::SurfaceLocal {
+                position: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            },
+            Authority::Known(PointerCaptureOwner::None),
+        ));
+        let mut buttons = Vec::with_capacity(11);
+        buttons.push(PointerButton::Primary);
+        let buttons_ptr = buttons.as_ptr();
+        let buttons_bytes = buttons.capacity() * size_of::<PointerButton>();
+        let mut pointers = Vec::with_capacity(13);
+        pointers.push(
+            PointerStateObservation::new(
+                PointerId::new(1),
+                buttons,
+                Authority::Known(PointerCaptureOwner::None),
+            )
+            .expect("the pointer state validates"),
+        );
+        assert!(edges.capacity() > edges.len());
+        assert!(pointers.capacity() > pointers.len());
+        assert!(pointers[0].pressed_buttons.capacity() > pointers[0].pressed_buttons.len());
+        let expected = size_of::<PointerEdgeJournalContents>()
+            + edges.capacity() * size_of::<PointerEdge>()
+            + pointers.capacity() * size_of::<PointerStateObservation>()
+            + buttons_bytes;
+        let journal = PointerEdgeJournal::new(previous, through, edges)
+            .expect("the complete journal validates")
+            .with_authority_checkpoint(
+                PointerAuthorityCheckpoint::known(previous, pointers)
+                    .expect("the pointer roster validates"),
+            )
+            .expect("the checkpoint matches the journal");
+
+        assert_eq!(journal.owned_contents_capacity_bytes(), expected);
+        let cloned = journal.clone();
+        assert!(Arc::ptr_eq(&journal.contents, &cloned.contents));
+        assert_eq!(cloned.edges().as_ptr(), journal.edges().as_ptr());
+        let Authority::Known(cloned_pointers) = cloned.authority_checkpoint().unwrap().pointers()
+        else {
+            panic!("the clone retains the known pointer roster");
+        };
+        assert_eq!(cloned_pointers[0].pressed_buttons.as_ptr(), buttons_ptr);
+        assert_eq!(cloned.owned_contents_capacity_bytes(), expected);
+        drop(journal);
+        assert_eq!(cloned.owned_contents_capacity_bytes(), expected);
+    }
+
+    #[test]
+    fn empty_journal_counts_only_its_shared_contents_storage() {
+        let through = PointerEdgeSequence::new(0);
+        let journal = PointerEdgeJournal::new(through, through, Vec::new())
+            .expect("an empty journal at one watermark validates");
+
+        assert_eq!(
+            journal.owned_contents_capacity_bytes(),
+            size_of::<PointerEdgeJournalContents>()
+        );
+    }
 }

@@ -15,6 +15,34 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 recorded-input capacity measurement prerequisite
+
+The public session and open host frame now expose
+`native_input_owned_capacity_bytes()`. The query counts the backend recorder's
+fixed envelope, record-buffer capacity, shared payload/liveness data, payload
+vector capacities, replay cursor or commit-guard buffers, and a pending
+prefix-retirement receipt. Replay batches add their own record buffers without
+charging their shared payloads again. Full commit alone does not retire recorded
+payloads, and prefix retirement leaves the recorder's spare capacity charged.
+
+This is recorded input transport capacity, not total runtime or process memory.
+Host buffers, pending effect/presentation reports, reducer authority and
+candidate state, renderer state, allocator overhead, and Arc control blocks are
+excluded. The finite native producer contract is explicit: an unsupported
+semantic shape produces an invariant error rather than a partial byte total.
+In particular, the three fixed native close actions are accepted, while a
+low-level dynamic rehome program cannot silently bypass this boundary.
+
+Fresh serialized qualification passes 1,745 all-feature workspace tests, 79
+external public-host consumer tests, ten workspace doctests, strict rustdoc and
+correctness/suspicious Clippy. Regressions cover spare capacity, shared payload
+identity, suspended atomic replay, open-frame commit guards, payload retirement,
+distinct native pointer contents, and rejection of unaccounted semantic data.
+
+The query does not itself enforce admission. Ordinary 4 MiB accounting, transfer
+peak reservations and preallocated protected variable payloads remain open.
+This prerequisite does not complete U7 or change the existing fork pin limits.
+
 ## 2026-10-29 U7 fixed-boundary source admission and cancellation checkpoint
 
 The optional native adapter now freezes ordinary admission at the first capture

@@ -32,6 +32,7 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("the renderer-neutral session must initialize");
         assert_eq!(session.native_input_recorded_count(), 0);
+        assert_eq!(session.native_input_owned_capacity_bytes().unwrap(), 0);
         session
             .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("the native provider must enroll");
@@ -62,6 +63,8 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
         }
         .expect("the complete input transaction must record");
         assert_eq!(session.native_input_recorded_count(), recorded_before + 257);
+        let recorded_bytes = session.native_input_owned_capacity_bytes().unwrap();
+        assert!(recorded_bytes > 0);
 
         let clock = NativeMonotonicClock::new(|| Duration::ZERO);
         let mut first_budget = NativeInputBudget::new(&clock);
@@ -75,8 +78,12 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
             assert!(first.is_none(), "an atomic interior cannot publish");
         } else {
             let first = first.expect("an independent prefix can publish");
+            assert!(first.native_input_owned_capacity_bytes().unwrap() > recorded_bytes);
             assert!(first.native_input_pending());
             assert!(commit(first).native_input_pending());
+        }
+        if atomic {
+            assert!(session.native_input_owned_capacity_bytes().unwrap() > recorded_bytes);
         }
         assert_eq!(session.version(), version);
         let mut second_budget = NativeInputBudget::new(&clock);

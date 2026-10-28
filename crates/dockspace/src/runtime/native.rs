@@ -6,6 +6,7 @@ mod input_batch;
 mod pointer;
 mod receiver;
 mod session;
+mod storage;
 #[cfg(test)]
 mod tests;
 

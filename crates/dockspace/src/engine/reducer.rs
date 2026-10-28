@@ -119,6 +119,10 @@ pub(super) struct HostBackendIngressCursor {
 }
 
 impl HostBackendIngressCursor {
+    pub(super) fn record_buffer_capacity_bytes(&self) -> usize {
+        self.batch.record_buffer_capacity_bytes()
+    }
+
     pub(super) const fn new(batch: BackendIngressBatch) -> Self {
         Self {
             batch,

@@ -4,6 +4,7 @@
 //! handles or infer a docking target from window geometry.
 
 use std::collections::BTreeSet;
+use std::mem::size_of;
 
 use thiserror::Error;
 
@@ -1561,6 +1562,32 @@ pub struct PlatformSnapshot {
 }
 
 impl PlatformSnapshot {
+    /// Returns the owned vector capacity, excluding inline snapshot storage.
+    pub(crate) fn owned_payload_capacity_bytes(&self) -> usize {
+        let inventory = match self.inventory_observation.roster() {
+            Authority::Known(bindings) => bindings
+                .capacity()
+                .saturating_mul(size_of::<ViewportBinding>()),
+            Authority::Unknown(_) => 0,
+        };
+        let work_areas = match self.work_area_observation.roster() {
+            Authority::Known(work_areas) => work_areas
+                .capacity()
+                .saturating_mul(size_of::<ObservedWorkArea>()),
+            Authority::Unknown(_) => 0,
+        };
+        self.window_observations
+            .capacity()
+            .saturating_mul(size_of::<ObservedWindow>())
+            .saturating_add(
+                self.close_observations
+                    .capacity()
+                    .saturating_mul(size_of::<WindowCloseObservation>()),
+            )
+            .saturating_add(inventory)
+            .saturating_add(work_areas)
+    }
+
     /// Creates a canonical complete snapshot and rejects ambiguous identities.
     ///
     /// # Errors
@@ -1923,6 +1950,86 @@ mod tests {
             CapabilityObservationGeneration::new(generation),
             Authority::Known(roster),
         )
+    }
+
+    #[test]
+    fn snapshot_payload_capacity_counts_spare_vector_storage() {
+        let mut registry = crate::viewport_registry::ViewportRegistry::new(
+            crate::ids::EngineAuthorityDomainId::new_for_test(1),
+        );
+        let binding = registry
+            .register_existing(
+                crate::ids::WorkspaceEpoch::new(1),
+                crate::ids::SurfaceId::new(2),
+                WindowToken::new(3),
+                crate::viewport::ViewportRole::Root,
+            )
+            .expect("the registry mints the observed binding");
+        let mut inventory = Vec::with_capacity(7);
+        inventory.push(binding);
+        let mut windows = Vec::with_capacity(11);
+        windows.push(ObservedWindow::new(binding));
+        let mut closes = Vec::with_capacity(13);
+        closes.push(WindowCloseObservation::new(
+            binding,
+            CloseObservationGeneration::new(1),
+            Authority::Known(WindowCloseState::LiveClear),
+            CloseEffectAcknowledgement::known(None),
+        ));
+        let mut work_areas = Vec::with_capacity(17);
+        work_areas.push(ObservedWorkArea::new(
+            WorkAreaToken::new(1),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("the work-area bounds validate"),
+            ScaleFactor::new(1.0).expect("the scale validates"),
+        ));
+        assert!(inventory.capacity() > inventory.len());
+        assert!(windows.capacity() > windows.len());
+        assert!(closes.capacity() > closes.len());
+        assert!(work_areas.capacity() > work_areas.len());
+        let expected = inventory.capacity() * size_of::<ViewportBinding>()
+            + windows.capacity() * size_of::<ObservedWindow>()
+            + closes.capacity() * size_of::<WindowCloseObservation>()
+            + work_areas.capacity() * size_of::<ObservedWorkArea>();
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_work_area(PlatformCapability::Supported);
+        let snapshot = PlatformSnapshot::new(
+            PlatformSnapshotGeneration::new(1),
+            CapabilityRosterObservation::new(
+                CapabilityObservationGeneration::new(1),
+                Authority::Known(capabilities),
+            ),
+            unknown_focus(1),
+            WindowInventoryObservation::new(
+                InventoryObservationGeneration::new(1),
+                Authority::Known(inventory),
+            )
+            .expect("the inventory validates"),
+            windows,
+            closes,
+            WorkAreaRosterObservation::new(
+                WorkAreaObservationGeneration::new(1),
+                Authority::Known(work_areas),
+            )
+            .expect("the work-area roster validates"),
+        )
+        .expect("the complete snapshot validates");
+
+        assert_eq!(snapshot.owned_payload_capacity_bytes(), expected);
+    }
+
+    #[test]
+    fn unavailable_snapshot_rosters_have_no_owned_payload_capacity() {
+        let snapshot = snapshot_with_unknown_inventory(
+            1,
+            PlatformCapabilities::default(),
+            Vec::new(),
+            Vec::new(),
+            unknown_work_areas(1),
+        )
+        .expect("the unavailable snapshot validates");
+
+        assert_eq!(snapshot.owned_payload_capacity_bytes(), 0);
     }
 
     #[test]
