@@ -15,6 +15,62 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U7 overload kernel checkpoint (adapter admission pending)
+
+`DockspaceHostFrame::cancel_native_input_for_overload` provides a terminal
+managed-host input operation outside ordinary backend/pointer record capacity.
+It requires the exact joined provider and presentation host, with all accepted
+native predecessors reduced. The ordinary recorder rejects this control input.
+Measurement and paint remain available afterward, while later semantic,
+configuration and pointer inputs are rejected. Its submitted-action handle
+correlates the exact committed `NativeInputCancelledForOverload` outcome.
+
+The kernel ends live gestures, routing and all active scrolling, revokes button
+and capture facts to Unknown, and invalidates prepared pointer candidates.
+Provider identity, pointer watermark and monotonic stream/scroll identities
+remain intact. Pending drag/contained releases retain their own previews,
+outputs and final presentation settlement; native create obligations continue.
+Cancelling an unconsumed contained gesture restores its current durable source
+projection without rolling back workspace changes or advancing its version.
+Frame drop and failed publication leave cancellation unpublished and retryable.
+
+Independent review found one recovery defect: clearing authority also closed
+every checkpoint boundary, so ordinary focus restoration would remain gated by
+Unknown after later button releases. A restricted overload-resync boundary now
+follows accepted pointer edges until a complete roster commits. The new
+`DockspaceSession::report_native_pointer_roster` validates the current exact
+provider, native captures and committed pointer watermark, then records a
+normal checkpoint without manufacturing a pointer edge. Unknown preserves the
+opportunity for later complete facts at the same watermark. A held button stays
+KnownDown; only actual complete observations and release can prove all released.
+The initial enrollment rules and ordinary post-enrollment checkpoint rejection
+remain in force outside overload recovery.
+
+Both the cleanup stub and the recovery stub had observed behavioral failures
+before their implementations. Five recovery regressions include late
+press/release, Unknown followed by same-watermark Exact, rollback/retry, and
+stale/foreign rejection. The complete overload filter passes 20 tests,
+including a public consumer which exhausts all 256 ordinary record credits
+before issuing the terminal operation. Main-workspace all-feature/all-target
+tests pass 1,668 cases; the public no-default overload target passes once;
+the independent public host harness passes all 40 cases; 19 overload library
+tests also pass with debug assertions disabled.
+Correctness/suspicious Clippy, strict rustdoc, formatting and diff whitespace
+pass. Independent follow-up review found the recovery defect closed.
+
+After refreshing the local-fork native workspace to core commit `e3cbf32`, its
+226 all-target tests pass both normally and with native debug assertions
+disabled. Three clean macOS Glow redock runs finish in 1.692, 0.567, and 0.558
+seconds through first-live, retirement and runtime quiescence. These establish
+lifecycle compatibility with the new core; the native overload latch is not yet
+wired and is not exercised by that programmatic redock scenario.
+
+This checkpoint implements the renderer-neutral cancellation/recovery kernel.
+It does not implement the adapter's 4,096-record, 4 MiB, 250 ms admission limits,
+its reserved overload latch, or the corresponding end-to-end overload/latency
+qualification. Those remain U7 work rather than guarantees inferred from a
+successful kernel cancellation.
+
 ## 2026-10-28 U7 native paint continuity checkpoint (not remotely pinned)
 
 Real macOS Glow windows exposed two adapter defects which deterministic core
@@ -44,6 +100,20 @@ pointer dragging, mixed-DPI behavior, WM-close Allow/Veto, Windows, or X11.
 Earlier timeouts are retained as failing evidence, not reclassified as passes
 or hidden by increasing the smoke's global 30-second deadline.
 
+Follow-up review found a second way to lose the child's paint obligation:
+raw callbacks could already be claimed while an uncommitted native suffix
+remained, or an admitted semantic child pass could yield a partial frame and
+retain its old framebuffer. The prelude now also requires the claimed boundary
+to commit. Both `None` and retained partial child paths re-register their paint
+obligation before the complete commit can release it. A new mailbox regression
+failed on the former empty-journal-only gate; another exercises two partial
+commits, dropping the final frame, and exact retry before any child wake occurs.
+That test registers the child directly, so entry through the surface driver's
+two registration branches is also covered by static review and real windows,
+not claimed as a fully headless surface-driver execution. After this additional
+fix, all 226 native workspace tests pass and three clean real-window repeats
+complete in 1.532, 0.569, and 0.562 seconds.
+
 The adapter also bounds output-prefix preparation to at most 256 terminals and
 checks the shared deadline between them. A submitted-prefix cursor avoids
 rescanning prior outputs across continuation attempts. Final core input commit
@@ -54,7 +124,7 @@ when the core recorder has drained. Frozen viewport rosters share one immutable
 cloning their owned vectors at each boundary. This is not yet complete resident
 memory accounting.
 
-The local-fork native workspace passes 224 all-target tests. This checkpoint
+The local-fork native workspace passes 226 all-target tests. This checkpoint
 uses the native working-tree source with the previously qualified core
 `fa8870c` snapshot; the concurrent overload kernel is qualified separately.
 Independent read-only review found no confirmed blocker in the output cursor,
