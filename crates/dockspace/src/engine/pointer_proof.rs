@@ -966,10 +966,11 @@ impl DockEngine {
             delivery_action_lane(region.kind()) == Some(PresentationPointerLane::Drag)
         });
         match (click, drag) {
-            (Some(_), Some(_)) => Err(EngineError::PointerInteractionInvariant {
+            (Some((click, _)), Some((drag, _))) => Err(EngineError::PointerInteractionInvariant {
                 cause,
-                detail: "one press resolved to different executable click and drag receivers"
-                    .to_owned(),
+                detail: format!(
+                    "one press resolved to different executable click {click:?} and drag {drag:?} receivers"
+                ),
             }),
             (Some(delivery), None) | (None, Some(delivery)) => Ok(Some(delivery)),
             (None, None) => Self::journal_delivery_region_for_lane(

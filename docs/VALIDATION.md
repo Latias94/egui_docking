@@ -15,6 +15,44 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 follow-up overflow and timed-input audit
+
+The new public product transition exercises explicit forward scroll while the
+selected tab stays unchanged, a clipped old close action, menu selection/reveal,
+and backward scroll through both pointer and AccessKit input. It exposed two
+production defects. Forward/backward alignment searched only operable tab
+records, omitting the clipped members it needed to reveal. The solver now uses
+the exact bar's complete member roster. Overlay strip controls also left the
+underlying tab's drag lane executable, so a valid pointer press could produce
+two different executable owners and roll back the batch. Strip controls now
+occlude both click and drag lanes while their semantic action remains click;
+the independent receiver-proof validation and conflicting-owner invariant are
+unchanged. Both new transition cases pass with the fixes. They do not establish
+stationary active-drag edge scrolling or complete R25 arbitration.
+
+The complete workspace remains green at 1,694 all-feature/all-target cases;
+the public host passes 57 and the product harness now passes 114. The initial
+unfixed test failed to scroll for both AccessKit and pointer activation. After
+the roster correction, the immediate pointer-backward step exposed the exact
+click-control versus tab-drag invariant; preserving that step now proves the
+lane-occlusion correction. These failures were reproduced before the fixes,
+without extending the causal settlement budget or inserting ordinary wait
+frames to hide either issue.
+Both transition cases also pass with serde and core debug assertions disabled.
+Correctness/suspicious Clippy, strict core/adapter rustdoc, formatting and
+whitespace checks pass.
+
+A separate read-only audit confirms that the planned 150 ms hover selection and
+350 ms touch-long-press profile are still missing. Current pointer records have
+no gesture time or device class, and native touch translation enters ordinary
+distance-threshold primary input. Contact identity, loss and cancellation tests
+are lifecycle evidence; geometric target hysteresis is not hover dwell evidence.
+Receiver-current capability flags describe authority rather than these features.
+The canonical plan now explicitly retains the existing timing requirements as
+U3d, sharing a finite gesture-bound continuation with U10 edge scrolling. The
+U3a/U3b/U3c replacement and Burst qualification remains valid; complete timed
+interaction qualification stays open.
+
 ## 2026-10-28 U10 layout-only reset without document lineage
 
 `DockspaceSession::prepare_layout_reset` produces an opaque non-cloneable value

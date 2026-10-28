@@ -618,7 +618,9 @@ fn push_operation_regions(
                         PresentationHitRegionKind::TabStripControl(control.id()),
                     ),
                     control.hit(),
-                    PresentationPointerLanes::CLICK,
+                    // Overlay controls also occlude the tab's drag lane. The
+                    // semantic reducer still treats this as a click action.
+                    PresentationPointerLanes::CLICK_AND_DRAG,
                     PresentationHitStackKey::new(
                         PresentationPlane::Workspace,
                         control.layer(),

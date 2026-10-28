@@ -483,6 +483,15 @@ Implementation is split at the host contract boundary:
 3. **U3c — full product matrix.** Run the original single-batch Burst without
    splitting it into input frames, and prove release/cancel/output/policy loss
    through both adapters. Retire the ignored gate only when this passes.
+4. **U3d — timed input continuation.** Complete the already specified hover
+   selection and local-touch profile through the same journal/gesture owner.
+   Preserve device class and monotonic input time, expose only the finite
+   gesture-bound wake/receiver challenge needed for stationary continuation,
+   and reject stale output, owner, capture, policy and cancelled deadlines.
+   Share that continuation boundary with U10 active-drag edge scrolling. A
+   host schedules wakeups; it cannot mint pointer motion or mutate layout from
+   a timer. Qualify 150 ms hover selection, 350 ms touch arming, 8-point slop,
+   pre-arm pane scrolling, early activation and stationary context release.
 
 The updated ImGui reference preserves event order by trickling queued input
 across frames; this is evidence for retaining edges, not a same-frame Burst
@@ -522,7 +531,15 @@ tests use actual host input and exact output settlement. U3c's unchanged complet
 Burst matrix passes without ignore. Independent proof/continuation review and
 fresh downstream gates are recorded in `docs/VALIDATION.md`.
 
-U3 completion does not establish U4 full live-content projection, U5 broader
+The 2026-10-28 timing audit confirms U3a/U3b/U3c's migration and replacement
+gates, but leaves U3d open. Pointer records currently lack device class and
+gesture time; touch contact identity/loss tests do not prove long-press semantics,
+and geometric target hysteresis does not prove hover selection. Existing
+receiver-current capability flags certify authority, not these timing features.
+The default profile table remains a requirement rather than completed evidence
+for those rows. The full behavior plan cannot close before U3d qualification.
+
+U3's replacement completion does not establish U4 full live-content projection, U5 broader
 blocker qualification, U6's full command/focus contract, or U12 structural-cost
 and engine-readiness certification. These remain separate gates.
 
@@ -669,6 +686,12 @@ painting in a later frame; it does not grant an immediate replacement paint.
 The optional native showcase and complete overflow-owner acceptance remain
 open. These local checkpoints do not complete U10. Qualification for the
 layout-only reset is recorded separately in `docs/VALIDATION.md`.
+The remaining overflow slice must add active-drag edge scrolling through the
+existing ordered pointer kernel and prove transitions among selection reveal,
+explicit strip/menu scrolling and menu selection. Existing reveal, wheel,
+back/forward-control and menu-scrollbar tests do not establish that arbitration
+or authorize an adapter-owned drag timer. Clipped close/drag controls must remain
+unavailable throughout those transitions.
 
 ### U11. Certify Windows and macOS capability claims
 

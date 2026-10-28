@@ -15,24 +15,16 @@ pub(super) fn aligned_tab_strip_scroll_offset(
     let current = bar.scroll_offset();
     let maximum = bar.maximum_scroll_offset();
     match control {
-        TabStripControlId::ScrollBackward(control_bar) if control_bar == key.bar() => plan
-            .tab_records()
+        TabStripControlId::ScrollBackward(control_bar) if control_bar == key.bar() => bar
+            .members()
             .iter()
-            .filter(|record| {
-                record.id().root == key.bar().root
-                    && record.id().tabs == key.bar().tabs
-                    && record.full_bounds().x() < viewport.x()
-            })
+            .filter(|record| record.full_bounds().x() < viewport.x())
             .max_by(|left, right| left.full_bounds().x().total_cmp(&right.full_bounds().x()))
             .map(|record| (current + record.full_bounds().x() - viewport.x()).clamp(0.0, maximum)),
-        TabStripControlId::ScrollForward(control_bar) if control_bar == key.bar() => plan
-            .tab_records()
+        TabStripControlId::ScrollForward(control_bar) if control_bar == key.bar() => bar
+            .members()
             .iter()
-            .filter(|record| {
-                record.id().root == key.bar().root
-                    && record.id().tabs == key.bar().tabs
-                    && record.full_bounds().max().x() > viewport.max().x()
-            })
+            .filter(|record| record.full_bounds().max().x() > viewport.max().x())
             .min_by(|left, right| {
                 left.full_bounds()
                     .max()

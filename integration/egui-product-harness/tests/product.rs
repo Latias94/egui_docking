@@ -2,6 +2,8 @@
 mod arrangement_lock;
 #[path = "product/close_commands.rs"]
 mod close_commands;
+#[path = "product/overflow_ownership.rs"]
+mod overflow_ownership;
 
 use dockspace::policy::DockPolicy;
 use dockspace_host_conformance::scenario::{
