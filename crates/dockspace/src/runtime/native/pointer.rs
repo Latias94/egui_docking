@@ -681,30 +681,26 @@ impl RuntimeNativeState {
 
     pub(super) fn record_pointer_batch(
         &mut self,
-        inputs: impl IntoIterator<Item = NativePointerInput>,
+        inputs: Vec<NativePointerInput>,
     ) -> Result<(), NativePlatformError> {
         self.append_pointer_batch(inputs, true)
     }
 
     pub(super) fn record_pointer_sequence(
         &mut self,
-        inputs: impl IntoIterator<Item = NativePointerInput>,
+        inputs: Vec<NativePointerInput>,
     ) -> Result<(), NativePlatformError> {
         self.append_pointer_batch(inputs, false)
     }
 
     fn append_pointer_batch(
         &mut self,
-        inputs: impl IntoIterator<Item = NativePointerInput>,
+        inputs: Vec<NativePointerInput>,
         atomic_commit: bool,
     ) -> Result<(), NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
         }
-        // Materialize the caller-owned iterator before opening a recorder
-        // transaction. An iterator may unwind while producing a later item;
-        // no runtime watermark may advance before iteration itself completes.
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
         let savepoint = self.recorder.savepoint();
         for input in inputs {
             if let Err(error) = self.record_pointer(input) {

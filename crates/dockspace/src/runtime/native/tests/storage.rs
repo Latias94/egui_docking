@@ -49,6 +49,82 @@ fn native_semantic_box_capacity_is_charged_once_across_batch_clones() {
 }
 
 #[test]
+fn native_input_capacity_reclaims_committed_256_before_the_next_256_append() {
+    let (mut session, _) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    commit_managed_frame(&mut session);
+    session
+        .record_native_pointer_sequence(
+            (0..256).map(|_| unknown_native_pointer_input(11, NativePointerEvent::Moved)),
+        )
+        .unwrap();
+    let first_through = session.native.as_ref().unwrap().recorder.recorded_through();
+    let first_bytes = session.native_input_owned_capacity_bytes().unwrap();
+    let first_buffer = session
+        .native
+        .as_ref()
+        .unwrap()
+        .recorder
+        .record_buffer_capacity_bytes();
+    let clock = NativeMonotonicClock::new(|| Duration::ZERO);
+    let mut frame = session
+        .poll_native_host_frame(&mut NativeInputBudget::new(&clock), |_| {
+            panic!("unknown locations do not query a receiver")
+        })
+        .unwrap()
+        .unwrap();
+    assert!(!frame.native_input_pending());
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    assert_eq!(
+        session.engine.backend_ingress_committed_through(),
+        first_through
+    );
+    assert_eq!(
+        session.native_input_owned_capacity_bytes().unwrap(),
+        first_bytes
+    );
+    assert_eq!(
+        session
+            .native
+            .as_ref()
+            .unwrap()
+            .recorder
+            .retained_records()
+            .len(),
+        256,
+        "commit alone retains the first payloads",
+    );
+
+    session
+        .record_native_pointer_sequence(
+            (0..256).map(|_| unknown_native_pointer_input(11, NativePointerEvent::Moved)),
+        )
+        .unwrap();
+    let recorder = &session.native.as_ref().unwrap().recorder;
+    assert_eq!(recorder.retained_records().len(), 256);
+    assert!(
+        recorder
+            .retained_records()
+            .iter()
+            .all(|record| record.ordinal() > first_through),
+        "the next append retires every committed payload before adding its prefix",
+    );
+    assert_eq!(recorder.recorded_through().get(), first_through.get() + 256);
+    assert_eq!(recorder.record_buffer_capacity_bytes(), first_buffer);
+    assert!(first_buffer >= 256 * size_of::<BackendIngressRecord>());
+    assert_eq!(
+        session.native_input_owned_capacity_bytes().unwrap(),
+        first_bytes
+    );
+    assert_eq!(
+        session.engine.backend_ingress_committed_through(),
+        first_through
+    );
+}
+
+#[test]
 fn native_input_capacity_counts_private_replay_buffers_without_recharging_payloads() {
     let (mut session, _) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
     commit_managed_frame(&mut session);

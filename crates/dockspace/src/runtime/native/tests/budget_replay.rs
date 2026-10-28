@@ -184,9 +184,40 @@ fn atomic_257_retains_256_privately_and_excludes_later_appends() {
     );
     assert_eq!(pending_pointer_sequences(&session).len(), 257);
 
+    let (attempt, candidate_through, replay_buffer) = {
+        let pending = session
+            .native
+            .as_ref()
+            .unwrap()
+            .pending_replay
+            .as_ref()
+            .unwrap();
+        (
+            pending.frame.presentation_attempt(),
+            pending.frame.backend_ingress_through(),
+            pending.frame.backend_ingress_buffer_capacity_bytes(),
+        )
+    };
     session
         .record_native_pointer(unknown_native_pointer_input(12, NativePointerEvent::Moved))
         .expect("a later callback appends outside the frozen candidate");
+    {
+        let native = session.native.as_ref().unwrap();
+        let pending = native.pending_replay.as_ref().unwrap();
+        assert_eq!(pending.frame.presentation_attempt(), attempt);
+        assert_eq!(pending.frame.backend_ingress_through(), candidate_through);
+        assert_eq!(
+            pending.frame.backend_ingress_buffer_capacity_bytes(),
+            replay_buffer
+        );
+        assert_eq!(native.recorder.recorded_through().get(), recorded.get() + 1);
+        assert_eq!(native.recorder.retained_records().len(), 258);
+    }
+    assert_eq!(
+        session.engine.backend_ingress_committed_through(),
+        ingress_before
+    );
+    assert_eq!(pending_pointer_sequences(&session).len(), 258);
     let mut second_budget = NativeInputBudget::new(&clock);
     let second = poll_frame(&mut session, &mut second_budget);
     assert_eq!(

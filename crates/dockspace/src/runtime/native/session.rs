@@ -17,10 +17,18 @@ impl DockspaceSession {
             .map_or(0, |native| native.recorder.recorded_through().get())
     }
 
-    fn native_state_mut(&mut self) -> Result<&mut RuntimeNativeState, NativePlatformError> {
-        self.native
+    fn native_state_mut(&mut self) -> Result<&mut RuntimeNativeState, DockspaceRuntimeError> {
+        let native = self
+            .native
             .as_mut()
-            .ok_or(NativePlatformError::ProviderUnavailable)
+            .ok_or(NativePlatformError::ProviderUnavailable)?;
+        if native.pending_replay.is_none() {
+            // A suspended candidate retains its original retention authority.
+            let retirement = native.reclaim_committed_prefix(&mut self.engine);
+            self.presentation.reclaim_compacted_streams(&self.engine);
+            retirement?;
+        }
+        Ok(native)
     }
 
     /// Returns whether the managed host currently owns this exact binding.
@@ -289,6 +297,9 @@ impl DockspaceSession {
         &mut self,
         inputs: impl IntoIterator<Item = NativePointerInput>,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        // Caller iteration must finish before reclaiming or appending any input.
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.native_state_mut()?.record_pointer_batch(inputs)?;
         Ok(())
     }
@@ -310,6 +321,8 @@ impl DockspaceSession {
         &mut self,
         inputs: impl IntoIterator<Item = NativePointerInput>,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.native_state_mut()?.record_pointer_sequence(inputs)?;
         Ok(())
     }

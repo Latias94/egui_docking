@@ -715,6 +715,13 @@ payload data decreases from 584 to 248 bytes. The native query includes the
 separate semantic box while retry batches share it; this does not impose the
 unfinished byte cap.
 
+The facade also reclaims committed transport payloads before its next recording
+operation, preserving recorder backing capacity. Caller-owned batch iteration
+finishes before maintenance, and suspended atomic candidates skip reclamation.
+The committed-256/next-256 and atomic-257 continuation checks pass with all 1,748
+workspace tests and Clippy. Remaining capacity work must still bound other
+prelude/fanout growth and protected variable payloads.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

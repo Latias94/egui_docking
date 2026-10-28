@@ -15,6 +15,28 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 reclaim before native input append
+
+Native facade recording now retires committed input before appending its next
+prefix, rather than retaining the previous payloads until another frame poll.
+The recorder's backing capacity remains charged and reusable. A suspended
+atomic replay skips this maintenance and keeps its original private candidate,
+presentation attempt, ingress watermark and replay buffer across later appends.
+Retirement preserves the existing presentation-compaction/error ordering.
+
+Public batch/sequence entry points first perform a read-only host check and
+fully collect the caller's iterator, then reclaim and append. The first full
+gate caught retirement occurring before an iterator panic; the corrected order
+passes the existing exact-state panic regression without weakening its checks.
+An invalid appended suffix still rolls back to the savepoint after committed
+maintenance, preserving all previously uncommitted input.
+
+Fresh serialized qualification passes all 1,748 all-feature workspace tests and
+correctness/suspicious Clippy. New coverage checks committed 256 plus next 256
+payload reclamation with unchanged recorder capacity; the retained atomic 257
+test also verifies its unchanged candidate identity and storage. This removes
+one transfer overlap but does not implement the complete 4 MiB admission cap.
+
 ## 2026-10-29 U7 fixed payload footprint reduction
 
 The backend ingress payload now boxes its low-frequency semantic `EngineInput`.
