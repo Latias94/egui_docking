@@ -696,6 +696,10 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
+            #[cfg(feature = "serde")]
+            DockspaceRuntimeErrorSource::ArrangementLocked => {
+                DockspaceRuntimeErrorKind::OperationConflict
+            }
             DockspaceRuntimeErrorSource::PreparedCloseRequestAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
@@ -818,6 +822,13 @@ impl DockspaceRuntimeError {
         }
     }
 
+    #[cfg(feature = "serde")]
+    const fn arrangement_locked() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::ArrangementLocked,
+        }
+    }
+
     const fn prepared_close_request_authority_mismatch(
         error: PreparedCloseRequestAuthorityMismatch,
     ) -> Self {
@@ -865,6 +876,9 @@ impl std::error::Error for DockspaceRuntimeError {
 
 #[derive(Debug, Error)]
 enum DockspaceRuntimeErrorSource {
+    #[cfg(feature = "serde")]
+    #[error("the arrangement is locked; commit an unlocked policy before replacing the layout")]
+    ArrangementLocked,
     #[error(transparent)]
     Engine(Box<EngineError>),
     #[error(transparent)]

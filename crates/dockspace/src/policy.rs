@@ -660,6 +660,8 @@ impl Default for CentralNodePolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct DockPolicyRules {
+    #[cfg_attr(feature = "serde", serde(default))]
+    arrangement_locked: bool,
     allowed_operations: BTreeSet<DockOperation>,
     allowed_presentations: BTreeSet<DockPresentationMode>,
     resize_axes: BTreeSet<Axis>,
@@ -675,6 +677,7 @@ struct DockPolicyRules {
 impl Default for DockPolicyRules {
     fn default() -> Self {
         Self {
+            arrangement_locked: false,
             allowed_operations: BTreeSet::from([
                 DockOperation::TabMerge,
                 DockOperation::EdgeSplit,
@@ -714,6 +717,28 @@ impl DockPolicy {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns whether application-driven arrangement changes are locked.
+    ///
+    /// Selection, scrolling, pane content, focus, and raising an existing contained presentation
+    /// remain available subject to their existing rules. Irreversible platform recovery is retained.
+    #[must_use]
+    pub const fn arrangement_locked(&self) -> bool {
+        self.rules.arrangement_locked
+    }
+
+    /// Locks or unlocks arrangement changes without replacing any configured rules.
+    pub fn set_arrangement_locked(&mut self, locked: bool) {
+        self.rules.arrangement_locked = locked;
+    }
+
+    pub(crate) fn check_arrangement_unlocked(&self) -> Result<(), PolicyRejection> {
+        if self.arrangement_locked() {
+            Err(PolicyRejection::ArrangementLocked)
+        } else {
+            Ok(())
+        }
     }
 
     /// Freezes this complete policy under an engine-owned monotonic revision.
@@ -933,6 +958,7 @@ impl DockPolicy {
         &self,
         presentation: TearOffPresentation,
     ) -> Result<(), PolicyRejection> {
+        self.check_arrangement_unlocked()?;
         match presentation {
             TearOffPresentation::Contained if self.allows_contained_floating() => Ok(()),
             TearOffPresentation::Contained => Err(PolicyRejection::ContainedFloatingDisabled),
@@ -1270,6 +1296,10 @@ pub enum DockPolicyRequest {
     Present(DockPresentationPolicyRequest),
     /// Evaluate an in-place change to an existing contained presentation.
     TransformContained(DockContainedTransformPolicyRequest),
+    /// Evaluate raising an existing contained presentation without changing its rectangle.
+    ///
+    /// Arrangement locking permits this focus operation; existing contained rules still apply.
+    RaiseContained(DockContainedTransformPolicyRequest),
     /// Authorize the durable recovery obligation of one child surface.
     RecoverSurface(DockSurfaceRecoveryPolicyRequest),
     /// Evaluate one split resize.
@@ -1360,6 +1390,7 @@ impl DockPolicySnapshot {
             DockPolicyRequest::TransformContained(request) => {
                 self.evaluate_contained_transform(request)
             }
+            DockPolicyRequest::RaiseContained(request) => self.evaluate_contained_rules(request),
             DockPolicyRequest::RecoverSurface(request) => self.evaluate_surface_recovery(request),
             DockPolicyRequest::Resize(request) => self.evaluate_resize(*request),
             DockPolicyRequest::InteractWithTabBar(request) => self.evaluate_tab_bar(*request),
@@ -1394,7 +1425,10 @@ impl DockPolicySnapshot {
         &self,
         payload: &DockPayloadPolicyFacts,
     ) -> PolicyDecision {
-        PolicyDecision::from_result(self.evaluate_source(payload, None))
+        PolicyDecision::from_result(
+            self.check_arrangement_unlocked()
+                .and_then(|()| self.evaluate_source(payload, None)),
+        )
     }
 
     /// Computes the effective tab-bar policy by intersecting workspace, surface, and target rules.
@@ -1413,9 +1447,14 @@ impl DockPolicySnapshot {
         policy
     }
 
-    /// Returns the effective static pane-close capability.
+    /// Returns the effective static pane-close capability, including arrangement locking.
+    ///
+    /// The configured item rules remain unchanged and become effective again after unlocking.
     #[must_use]
     pub fn pane_close_capability(&self, item: ItemId) -> CloseCapability {
+        if self.arrangement_locked() {
+            return CloseCapability::Disabled;
+        }
         self.policy
             .rules
             .item_rules
@@ -1434,6 +1473,7 @@ impl DockPolicySnapshot {
         payload: &DockPayloadPolicyFacts,
         target: DockDropTargetFacts,
     ) -> Result<(), PolicyRejection> {
+        self.check_arrangement_unlocked()?;
         let operation = request.operation();
         self.check_operation(operation)?;
         if target.central && !self.policy.rules.central_node.allows(request) {
@@ -1444,6 +1484,14 @@ impl DockPolicySnapshot {
     }
 
     fn evaluate_presentation(
+        &self,
+        request: &DockPresentationPolicyRequest,
+    ) -> Result<(), PolicyRejection> {
+        self.check_arrangement_unlocked()?;
+        self.evaluate_presentation_rules(request)
+    }
+
+    fn evaluate_presentation_rules(
         &self,
         request: &DockPresentationPolicyRequest,
     ) -> Result<(), PolicyRejection> {
@@ -1465,6 +1513,14 @@ impl DockPolicySnapshot {
     }
 
     fn evaluate_contained_transform(
+        &self,
+        request: &DockContainedTransformPolicyRequest,
+    ) -> Result<(), PolicyRejection> {
+        self.check_arrangement_unlocked()?;
+        self.evaluate_contained_rules(request)
+    }
+
+    fn evaluate_contained_rules(
         &self,
         request: &DockContainedTransformPolicyRequest,
     ) -> Result<(), PolicyRejection> {
@@ -1502,7 +1558,9 @@ impl DockPolicySnapshot {
                 facts.source_presentation,
                 true,
             );
-            self.evaluate_presentation(&DockPresentationPolicyRequest::new(
+            // Recovery retains the exact existing rules without blocking irreversible cleanup
+            // merely because application-driven arrangement edits have since been locked.
+            self.evaluate_presentation_rules(&DockPresentationPolicyRequest::new(
                 payload,
                 DockPresentationTarget::Contained(request.host_surface),
             ))?;
@@ -1511,6 +1569,7 @@ impl DockPolicySnapshot {
     }
 
     fn evaluate_resize(&self, request: DockResizePolicyRequest) -> Result<(), PolicyRejection> {
+        self.check_arrangement_unlocked()?;
         self.check_operation(DockOperation::SplitterResize)?;
         if !self.policy.rules.resize_axes.contains(&request.axis) {
             return Err(PolicyRejection::ResizeAxisDisabled { axis: request.axis });
@@ -1543,6 +1602,7 @@ impl DockPolicySnapshot {
     }
 
     fn evaluate_pane_close(&self, item: ItemId, deferred: bool) -> Result<(), PolicyRejection> {
+        self.check_arrangement_unlocked()?;
         let capability = self.pane_close_capability(item);
         if !capability.allows_close() {
             return Err(PolicyRejection::PaneCloseDisabled { item });
@@ -1554,6 +1614,7 @@ impl DockPolicySnapshot {
     }
 
     fn evaluate_surface_close(&self, surface: SurfaceId) -> Result<(), PolicyRejection> {
+        self.check_arrangement_unlocked()?;
         if self
             .policy
             .rules
@@ -1782,6 +1843,9 @@ impl PolicyDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum PolicyRejection {
+    /// Application-driven arrangement changes are locked.
+    #[error("arrangement changes are locked by workspace policy")]
+    ArrangementLocked,
     /// Center/tab-gap merge is disabled.
     #[error("tab merging is disabled by workspace policy")]
     TabMergeDisabled,
@@ -2042,7 +2106,10 @@ fn operation_disabled(operation: DockOperation) -> PolicyRejection {
 }
 
 #[cfg(test)]
+#[path = "policy/tests"]
 mod tests {
+    mod arrangement_lock;
+
     use super::*;
 
     #[test]

@@ -432,6 +432,7 @@ impl DockEngine {
 
         let focus_item = match action {
             ProductAction::SelectItem { item }
+            | ProductAction::OpenItem { item, .. }
             | ProductAction::DockItem { item, .. }
             | ProductAction::FloatItem { item, .. } => Some(item),
             ProductAction::DockRoot { root, .. }

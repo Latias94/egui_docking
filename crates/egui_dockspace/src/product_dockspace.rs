@@ -448,6 +448,9 @@ impl Dockspace {
 
     /// Opens one item at a stable placement against the current revision.
     ///
+    /// New content becomes selected and requests pane focus. Existing content
+    /// keeps its location, selection and focus without another request.
+    ///
     /// # Errors
     ///
     /// Returns an error when the placement is invalid or the action cannot be

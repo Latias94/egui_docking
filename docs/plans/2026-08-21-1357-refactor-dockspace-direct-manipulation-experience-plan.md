@@ -625,6 +625,30 @@ updates/cancellation without self-invalidation or redundant compilation.
 - **Test scenarios:** Restore with missing panes or changed surface geometry, close/reopen, preset changes, layout lock, overflow owner transitions, and focus recovery preserve stable identities and expose typed outcomes.
 - **Verification:** Public commands and representative egui workflow agree; native features are labelled by actual backend capability.
 
+Local U10 implementation checkpoint (2026-10-28, remaining acceptance open):
+
+- Reuse `OpenItem` for reopening stable application catalog entries. New content
+  selects and requests the existing pane-focus intent; `Existing` remains inert.
+  Missing anchors reject explicitly, with fallback chosen by the shell from the
+  current public view rather than an engine-owned placement-history sidecar.
+- Arrangement locking is an independent revisioned policy restriction. It blocks
+  content membership and layout geometry edits while preserving navigation,
+  content input, focus and permitted contained raise. Lock/unlock preserves all
+  configured item/source/surface rules. Live replacement requires a committed
+  unlock; irreversible native teardown/recovery retains its existing authority.
+- Pointer tab selection is independent of docking-source eligibility. A
+  policy-denied single tab may select/focus without arming a drag; group/title
+  drags and other errors remain rejected. Required contained raise still obeys
+  its original rules.
+- The persistence example supplies an eight-pane editor shell, application-owned
+  closed inventory, immutable default and eight user preset slots, with text,
+  scroll and drawn content. It resolves restored surface/root identities from
+  the current view and retains application pane data across close/reopen/reset.
+
+Restore-time focus and missing-pane recovery, complete overflow-owner acceptance,
+and the optional native showcase remain to be qualified. This checkpoint does
+not complete U10 or impose serde/document lineage on every engine layout reset.
+
 ### U11. Certify Windows and macOS capability claims
 
 - **Goal:** Add verified native platforms without delaying generic core delivery.

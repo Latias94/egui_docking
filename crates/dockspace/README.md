@@ -185,6 +185,30 @@ Dock Back is an independent prepared root command,
 `DockspaceSession::prepare_dock_root_back`. It preserves application content and
 does not open a close plan.
 
+An application's closed-pane inventory is its stable item catalog minus the
+items currently returned by `session.view().item(id)`. Reopen with
+`prepare_open_item` or `frame.open_item_current`, choosing an explicit current
+`DockPlacement`. Core selects newly opened content and requests its pane focus;
+an already open item returns `Existing` without moving it or stealing focus.
+Missing anchors are rejected. The shell chooses a fallback from the current
+surface/root/item view, including after restore remaps retired presentation IDs.
+
+## Arrangement locking
+
+Set `DockPolicy::set_arrangement_locked(true)` and publish it through
+`DockspaceHostFrame::replace_policy`. This prevents opening/closing content,
+docking/reordering, presentation changes and geometry edits. Selection, tab
+navigation/scrolling, pane content and focus remain available. Bringing an
+existing contained window to the front is part of focus; it does not move or
+resize that window. Irrevocable native teardown/recovery can still finish.
+
+The lock is an independent policy restriction. It preserves operation filters
+and per-item rules, so unlocking restores their original behavior. Replacing
+policy is the frame's terminal configuration step: commit an unlocked policy
+before submitting layout edits or applying a saved layout in a later frame.
+Dropping the unlock frame retains the published lock. Live document restore
+rejects a locked arrangement; constructing an initially locked session is valid.
+
 ## Manipulation feedback and focus
 
 `HostFrameReport::manipulation_feedback()` exposes committed pending and terminal

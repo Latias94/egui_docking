@@ -4,20 +4,36 @@ use std::collections::BTreeMap;
 
 use eframe::egui;
 use egui_dockspace::{
-    CloseDecision, CloseItemDecisionState, Dockspace, DockspaceAxis, DockspaceDocumentBootstrap,
-    DockspaceDocumentId, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, ItemId, PaneView, RootId, SurfaceId,
+    CloseDecision, CloseItemDecisionState, DockAnchor, DockPlacement, Dockspace,
+    DockspaceActionStatus, DockspaceAxis, DockspaceDocumentBootstrap, DockspaceDocumentId,
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView,
+    RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const PERSISTENCE_DOCUMENT_ID: DockspaceDocumentId =
     DockspaceDocumentId::from_bytes(*b"egui-example-doc");
+const DEFAULT_PRESET: &str = "Default";
+const MAX_USER_PRESETS: usize = 8;
+const PANES: [(&str, &str); 8] = [
+    ("pane/document", "Document"),
+    ("pane/console", "Console"),
+    ("pane/scene", "Scene"),
+    ("pane/outline", "Outline"),
+    ("pane/inspector", "Inspector"),
+    ("pane/history", "History"),
+    ("pane/profiler", "Profiler"),
+    ("pane/assets", "Assets"),
+];
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui_dockspace persistence",
-        eframe::NativeOptions::default(),
+        "egui_dockspace editor layouts",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 780.0]),
+            ..Default::default()
+        },
         Box::new(|_| Ok(Box::new(PersistenceApp::new()))),
     )
 }
@@ -25,53 +41,130 @@ fn main() -> eframe::Result {
 struct PersistenceApp {
     dockspace: Dockspace,
     panes: PersistencePanes,
-    saved: Option<Vec<u8>>,
+    // Names, storage and closed-pane data belong to the application, not the layout engine.
+    presets: BTreeMap<String, Vec<u8>>,
+    preset_name: String,
     status: String,
 }
 
 impl PersistenceApp {
     fn new() -> Self {
         let mut bootstrap = DockspaceDocumentBootstrap::new(PERSISTENCE_DOCUMENT_ID);
-        let document = bootstrap
-            .ensure_item("pane/document")
-            .expect("the document identity must fit");
-        let console = bootstrap
-            .ensure_item("pane/console")
-            .expect("the console identity must fit");
-        let dockspace = Dockspace::builder("persistence", example_layout(document, console))
+        let items: Vec<_> = PANES
+            .iter()
+            .map(|(key, _)| {
+                bootstrap
+                    .ensure_item(*key)
+                    .expect("the bounded pane identities fit")
+            })
+            .collect();
+        let mut dockspace = Dockspace::builder("persistence", example_layout(&items))
             .persistence(bootstrap)
             .build()
-            .expect("the static example layout is valid");
+            .expect("the static editor layout is valid");
+        let default = dockspace
+            .save_document_json()
+            .expect("the default layout encodes");
         Self {
             dockspace,
-            panes: PersistencePanes::new(document, console),
-            saved: None,
-            status: "No snapshot".to_owned(),
+            panes: PersistencePanes::new(&items),
+            presets: BTreeMap::from([(DEFAULT_PRESET.to_owned(), default)]),
+            preset_name: "Working".to_owned(),
+            status: "Layouts stay in application memory; pane data survives every layout change"
+                .to_owned(),
         }
     }
 
     fn save(&mut self) {
+        let name = self.preset_name.trim();
+        if name.is_empty() || name == DEFAULT_PRESET {
+            "Choose a non-empty name other than Default".clone_into(&mut self.status);
+            return;
+        }
+        if !self.presets.contains_key(name) && self.presets.len() > MAX_USER_PRESETS {
+            "The eight user layout slots are full; replace or remove one"
+                .clone_into(&mut self.status);
+            return;
+        }
         match self.dockspace.save_document_json() {
             Ok(snapshot) => {
-                self.saved = Some(snapshot);
-                "Snapshot saved".clone_into(&mut self.status);
+                self.presets.insert(name.to_owned(), snapshot);
+                self.status = format!("Saved layout: {name}");
             }
             Err(error) => self.status = error.to_string(),
         }
     }
 
     fn restore(&mut self) {
-        let Some(snapshot) = self.saved.as_deref() else {
-            "No snapshot".clone_into(&mut self.status);
+        let name = self.preset_name.trim().to_owned();
+        self.restore_named(&name);
+    }
+
+    fn restore_named(&mut self, name: &str) {
+        let Some(snapshot) = self.presets.get(name) else {
+            "Choose a saved layout".clone_into(&mut self.status);
             return;
         };
         match self
             .dockspace
             .restore_document_json(snapshot, |document_id, key| {
                 document_id == PERSISTENCE_DOCUMENT_ID
-                    && matches!(key, "pane/document" | "pane/console")
+                    && PANES.iter().any(|(known, _)| *known == key)
             }) {
-            Ok(_) => "Snapshot restored".clone_into(&mut self.status),
+            Ok(_) => self.status = format!("Applied layout: {name}"),
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn reopen(&mut self, item: ItemId) {
+        if !self.panes.items.contains_key(&item) {
+            return;
+        }
+        // Resolve the current presentation: restoring an old preset can remap retired IDs.
+        let view = self.dockspace.view();
+        let Some(surface) = view.surfaces().next() else {
+            "No logical surface is available".clone_into(&mut self.status);
+            return;
+        };
+        let placement = match surface.main_root() {
+            None => DockPlacement::Main(surface.id()),
+            Some(root) if root.central().is_some() => {
+                DockPlacement::Center(DockAnchor::Central(root.id()))
+            }
+            Some(root) => {
+                let anchor = self.panes.items.keys().copied().find(|item| {
+                    view.item(*item)
+                        .is_some_and(|open| open.root() == root.id())
+                });
+                let Some(anchor) = anchor else {
+                    "The current layout has no available docking anchor"
+                        .clone_into(&mut self.status);
+                    return;
+                };
+                DockPlacement::Center(DockAnchor::Item(anchor))
+            }
+        };
+        match self.dockspace.open_item_current(item, placement) {
+            Ok(result) => match result.status() {
+                DockspaceActionStatus::Applied(_) => "Pane reopened".clone_into(&mut self.status),
+                status => self.status = format!("Open pane: {status:?}"),
+            },
+            Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    fn set_locked(&mut self, locked: bool) {
+        let mut policy = self.dockspace.policy().clone();
+        policy.set_arrangement_locked(locked);
+        match self.dockspace.set_policy(policy) {
+            Ok(_) => {
+                self.status = if locked {
+                    "Layout locked"
+                } else {
+                    "Layout unlocked"
+                }
+                .to_owned()
+            }
             Err(error) => self.status = error.to_string(),
         }
     }
@@ -79,30 +172,68 @@ impl PersistenceApp {
 
 impl eframe::App for PersistenceApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("snapshot-controls").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Save snapshot").clicked() {
-                    self.save();
+        egui::Panel::top("layout-controls").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Editor layouts");
+                let mut locked = self.dockspace.policy().arrangement_locked();
+                if ui.checkbox(&mut locked, "Lock layout").changed() {
+                    self.set_locked(locked);
                 }
-                if ui
-                    .add_enabled(self.saved.is_some(), egui::Button::new("Restore snapshot"))
-                    .clicked()
-                {
+                ui.label("Name:");
+                ui.add(egui::TextEdit::singleline(&mut self.preset_name).desired_width(130.0));
+                if ui.button("Save preset").clicked() { self.save(); }
+                if ui.add_enabled(!locked && self.presets.contains_key(self.preset_name.trim()), egui::Button::new("Apply preset")).clicked() {
                     self.restore();
                 }
-                ui.label(&self.status);
-                ui.separator();
-                ui.weak("This unmodified eframe example focuses on persistence; preview-qualified drag is intentionally unavailable.");
+                if ui.add_enabled(!locked, egui::Button::new("Reset to default")).clicked() { self.restore_named(DEFAULT_PRESET); }
+                ui.menu_button("Saved layouts", |ui| {
+                    let names: Vec<_> = self.presets.keys().cloned().collect();
+                    for name in names {
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(!locked, egui::Button::new(&name)).clicked() {
+                                self.preset_name = name.clone();
+                                self.restore_named(&name);
+                                ui.close();
+                            }
+                            if name != DEFAULT_PRESET && ui.small_button("Remove").clicked() {
+                                self.presets.remove(&name);
+                            }
+                        });
+                    }
+                });
+                ui.menu_button("Closed panes", |ui| {
+                    let closed: Vec<_> = self.panes.items.iter().filter_map(|(item, pane)| {
+                        self.dockspace.view().item(*item).is_none().then_some((*item, pane.title))
+                    }).collect();
+                    if closed.is_empty() { ui.weak("Every pane is open"); }
+                    for (item, title) in closed {
+                        if ui.add_enabled(!locked, egui::Button::new(format!("Reopen {title}"))).clicked() {
+                            self.reopen(item);
+                            ui.close();
+                        }
+                    }
+                });
             });
+            ui.label(&self.status);
+            ui.weak("Unmodified eframe: selection, close, menus and keyboard resize are available. Presented-output drag docking requires the caller-owned renderer or native host.");
         });
         egui::CentralPanel::default().show(ui, |ui| {
+            let surface = self
+                .dockspace
+                .view()
+                .surfaces()
+                .next()
+                .map(|surface| surface.id());
+            let Some(surface) = surface else {
+                ui.weak("No logical surface is available");
+                return;
+            };
             match self
                 .dockspace
-                .show_single_surface(SURFACE, ui, &mut self.panes)
+                .show_single_surface(surface, ui, &mut self.panes)
             {
                 Ok(response) => {
                     for request in response.close_request_events() {
-                        // Reused requests already went through the application decision path.
                         if request.reused() {
                             continue;
                         }
@@ -111,7 +242,7 @@ impl eframe::App for PersistenceApp {
                             if item.state() != CloseItemDecisionState::Pending {
                                 continue;
                             }
-                            // Keep application pane data so a snapshot can reopen the item.
+                            // Only layout ownership closes. Application content remains in the catalog.
                             match self.dockspace.resolve_close(
                                 plan.request(),
                                 item.token(),
@@ -133,49 +264,106 @@ impl eframe::App for PersistenceApp {
     }
 }
 
-fn example_layout(document_item: ItemId, console_item: ItemId) -> DockspaceLayout {
-    let root = DockspaceNode::split(
+fn example_layout(items: &[ItemId]) -> DockspaceLayout {
+    let center = DockspaceNode::split(
         DockspaceAxis::Vertical,
         [
-            (DockspaceNode::central_tabs([document_item]), 0.72),
-            (DockspaceNode::tabs([console_item]), 0.28),
+            (
+                DockspaceNode::central_tabs([items[0], items[2], items[5], items[6], items[7]]),
+                0.75,
+            ),
+            (DockspaceNode::tabs([items[1]]), 0.25),
         ],
     )
-    .expect("the static split is valid");
+    .expect("the center split is valid");
+    let root = DockspaceNode::split(
+        DockspaceAxis::Horizontal,
+        [
+            (DockspaceNode::tabs([items[3]]), 0.18),
+            (center, 0.62),
+            (DockspaceNode::tabs([items[4]]), 0.20),
+        ],
+    )
+    .expect("the editor split is valid");
     DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(ROOT, root),
     )])
-    .expect("the example layout is valid")
+    .expect("the editor layout is valid")
+}
+
+struct EditorPane {
+    title: &'static str,
+    text: String,
+    canvas: bool,
 }
 
 struct PersistencePanes {
-    items: BTreeMap<ItemId, (&'static str, String)>,
+    items: BTreeMap<ItemId, EditorPane>,
 }
 
 impl PersistencePanes {
-    fn new(document: ItemId, console: ItemId) -> Self {
+    fn new(items: &[ItemId]) -> Self {
         Self {
-            items: BTreeMap::from([
-                (
-                    document,
-                    ("Document", "Persistent document state".to_owned()),
-                ),
-                (console, ("Console", "Ready".to_owned())),
-            ]),
+            items: items.iter().copied().zip(PANES).map(|(item, (key, title))| {
+                (item, EditorPane { title, text: format!("{title} application data\n{key}\n\nEdits survive closing, reopening and layout presets."), canvas: key == "pane/scene" })
+            }).collect(),
         }
     }
 }
 
 impl PaneView for PersistencePanes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
-        self.items.get(&item).map(|(title, _)| (*title).into())
+        self.items.get(&item).map(|pane| pane.title.into())
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
-        if let Some((_, text)) = self.items.get_mut(&item) {
-            ui.add(egui::TextEdit::multiline(text).desired_width(f32::INFINITY));
+        let Some(pane) = self.items.get_mut(&item) else {
+            return;
+        };
+        if pane.canvas {
+            let (response, painter) =
+                ui.allocate_painter(ui.available_size(), egui::Sense::click());
+            let rect = response.rect;
+            painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+            for index in 1..12 {
+                let x = egui::lerp(rect.x_range(), index as f32 / 12.0);
+                painter.line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    ui.visuals().widgets.noninteractive.bg_stroke,
+                );
+            }
+            painter.circle_filled(rect.center(), 32.0, ui.visuals().selection.bg_fill);
+            painter.text(
+                rect.center() + egui::vec2(0.0, 52.0),
+                egui::Align2::CENTER_CENTER,
+                "Application-drawn scene",
+                egui::FontId::proportional(16.0),
+                ui.visuals().text_color(),
+            );
+        } else {
+            egui::ScrollArea::both()
+                .id_salt(("editor-pane-scroll", item.get()))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut pane.text)
+                            .id(egui::Id::unique(("editor-pane-focus", item.get())))
+                            .desired_width(f32::INFINITY),
+                    );
+                    if pane.title == "Console" {
+                        for line in 0..128 {
+                            ui.monospace(format!("[{line:03}] Application event log"));
+                        }
+                    }
+                });
         }
+    }
+
+    fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
+        self.items
+            .get(&item)
+            .filter(|pane| !pane.canvas)
+            .map(|_| egui::Id::unique(("editor-pane-focus", item.get())))
     }
 }
 
@@ -206,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn close_button_preserves_pane_data_for_snapshot_restore() {
+    fn closed_inventory_reopens_stable_items_and_presets_preserve_application_data() {
         let context = egui::Context::default();
         context.enable_accesskit();
         let mut app = PersistenceApp::new();
@@ -215,9 +403,9 @@ mod tests {
             .item_id_for_external_key("pane/document")
             .expect("the document has a persistent identity");
         let text = "Unsaved application text survives closing and layout restore";
-        text.clone_into(&mut app.panes.items.get_mut(&document).expect("pane data").1);
+        text.clone_into(&mut app.panes.items.get_mut(&document).expect("pane data").text);
         app.save();
-        assert_eq!(app.status, "Snapshot saved");
+        assert_eq!(app.status, "Saved layout: Working");
         let _ = run_frame(&context, &mut app, Vec::new());
         let ready = run_frame(&context, &mut app, Vec::new());
         let close = ready
@@ -249,22 +437,47 @@ mod tests {
 
         assert!(app.dockspace.view().item(document).is_none());
         assert_eq!(
-            app.panes.items.get(&document).expect("closed pane data").1,
+            app.panes
+                .items
+                .get(&document)
+                .expect("closed pane data")
+                .text,
             text
         );
+        "Closed document".clone_into(&mut app.preset_name);
+        app.save();
+        app.reopen(document);
+        assert!(app.dockspace.view().item(document).unwrap().is_selected());
+        assert_eq!(app.panes.items[&document].text, text);
+        let _ = run_frame(&context, &mut app, Vec::new());
+        let reopened = app.dockspace.version();
+        app.reopen(document);
+        assert_eq!(
+            app.dockspace.version(),
+            reopened,
+            "duplicate reopen is a no-op"
+        );
+
         app.restore();
-        assert_eq!(app.status, "Snapshot restored");
+        assert_eq!(app.status, "Applied layout: Closed document");
+        assert!(app.dockspace.view().item(document).is_none());
+        app.restore_named(DEFAULT_PRESET);
+        assert!(app.dockspace.view().item(document).is_some());
+        assert_eq!(app.panes.items[&document].text, text);
+        "Working".clone_into(&mut app.preset_name);
+        app.restore();
+        assert_eq!(app.status, "Applied layout: Working");
         assert!(app.dockspace.view().item(document).is_some());
         assert_eq!(
             app.panes
                 .items
                 .get(&document)
                 .expect("restored pane data")
-                .1,
+                .text,
             text
         );
         let restored = run_frame(&context, &mut app, Vec::new());
-        assert_eq!(app.status, "Snapshot restored");
+        assert_eq!(app.status, "Applied layout: Working");
         assert!(
             restored
                 .platform_output
@@ -275,6 +488,105 @@ mod tests {
                 .iter()
                 .any(|(_, node)| node.role() == Role::Tab && node.label() == Some("Document")),
             "the restored layout renders the retained application pane"
+        );
+    }
+
+    #[test]
+    fn named_layout_storage_is_bounded_and_default_is_immutable() {
+        let mut app = PersistenceApp::new();
+        let default = app.presets[DEFAULT_PRESET].clone();
+        for index in 0..MAX_USER_PRESETS {
+            app.preset_name = format!("Layout {index}");
+            app.save();
+        }
+        assert_eq!(app.presets.len(), MAX_USER_PRESETS + 1);
+        let generation = app.dockspace.next_document_generation();
+        "Extra".clone_into(&mut app.preset_name);
+        app.save();
+        assert_eq!(app.presets.len(), MAX_USER_PRESETS + 1);
+        assert_eq!(app.dockspace.next_document_generation(), generation);
+        "Layout 0".clone_into(&mut app.preset_name);
+        app.save();
+        assert_eq!(app.status, "Saved layout: Layout 0");
+        assert_eq!(app.presets.len(), MAX_USER_PRESETS + 1);
+        DEFAULT_PRESET.clone_into(&mut app.preset_name);
+        app.save();
+        assert_eq!(app.presets[DEFAULT_PRESET], default);
+        app.set_locked(true);
+        let version = app.dockspace.version();
+        app.restore_named(DEFAULT_PRESET);
+        assert!(app.dockspace.policy().arrangement_locked());
+        assert_eq!(app.dockspace.version(), version);
+        app.set_locked(false);
+        app.restore_named(DEFAULT_PRESET);
+        assert_eq!(app.status, "Applied layout: Default");
+    }
+
+    #[test]
+    fn root_retirement_and_default_restore_use_current_presentation_identities() {
+        use egui_dockspace::DockspaceCloseRequestStatus;
+
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = PersistenceApp::new();
+        let _ = run_frame(&context, &mut app, Vec::new());
+        let document = app
+            .dockspace
+            .item_id_for_external_key("pane/document")
+            .unwrap();
+        let close = app.dockspace.request_close_root_current(ROOT).unwrap();
+        let DockspaceCloseRequestStatus::Requested(request) = close.status() else {
+            panic!("the editor root must offer an ordinary application close plan");
+        };
+        let plan = request.plan();
+        for item in plan.items() {
+            app.dockspace
+                .resolve_close(plan.request(), item.token(), CloseDecision::Allow)
+                .unwrap();
+        }
+        assert!(app.dockspace.view().root(ROOT).is_none());
+        assert!(app.dockspace.view().surfaces().next().is_none());
+        app.reopen(document);
+        assert_eq!(app.status, "No logical surface is available");
+
+        app.restore_named(DEFAULT_PRESET);
+        assert_eq!(app.status, "Applied layout: Default");
+        let surface = app.dockspace.view().surfaces().next().unwrap();
+        assert_ne!(
+            surface.id(),
+            SURFACE,
+            "retired surface identity must also be remapped"
+        );
+        let root = surface.main_root().unwrap().id();
+        assert_ne!(
+            root, ROOT,
+            "retired root identity cannot be revived by a preset"
+        );
+        let close = app.dockspace.request_close_item_current(document).unwrap();
+        let DockspaceCloseRequestStatus::Requested(request) = close.status() else {
+            panic!("the restored document must remain closeable");
+        };
+        let plan = request.plan();
+        app.dockspace
+            .resolve_close(
+                plan.request(),
+                plan.items()[0].token(),
+                CloseDecision::Allow,
+            )
+            .unwrap();
+        app.reopen(document);
+        assert_eq!(app.status, "Pane reopened");
+        assert_eq!(app.dockspace.view().item(document).unwrap().root(), root);
+        let output = run_frame(&context, &mut app, Vec::new());
+        assert!(
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::Tab && node.label() == Some("Document"))
         );
     }
 }

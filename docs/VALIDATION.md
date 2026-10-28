@@ -15,6 +15,76 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-28 U10 arrangement lock, reopen focus and bounded editor layouts
+
+`DockPolicy::set_arrangement_locked` adds an independent revisioned restriction
+without replacing operation filters or item/source/surface rules. Ordinary
+membership, docking, reorder, presentation and geometry commands reject while
+locked. Select, tab scrolling/navigation, content, focus and permitted contained
+raise remain available. Raise has a distinct request with the original
+contained-rule checks; it does not authorize a rectangle edit. Irreversible
+native recovery retains its existing separate authority, while copied ordinary
+commands cannot acquire that exception. Effective close capability includes the
+lock, keeping close planning, scene chrome and final close revalidation aligned.
+
+Live document replacement checks the lock both at the public frame entry and in
+the authoritative workspace reducer. Initially locked layout construction is
+valid. An explicit unlock must commit before applying a layout in a later
+frame; dropping the configuration frame preserves the published lock and rules.
+Policy revision already invalidates stale actions and close plans, so no new
+lock revision or gesture owner is introduced.
+
+Inspection found that the shared tab press path authorized drag eligibility
+before selecting. A lock therefore also prevented real pointer tab navigation.
+Single-tab policy denial now continues through existing select/raise/focus and
+returns before creating a drag session. Group/title drags and non-policy errors
+remain rejected; a required raise still obeys its original rules. The public
+test covers same-batch press/move/release and a committed press with no active
+gesture before later motion/release. Restoring the old gate fails the selected
+item assertion. Independent read-only review found no new event, release-routing
+or policy bypass defect.
+
+Reopening uses the existing OpenItem command and application-owned catalog.
+Newly opened content becomes selected and requests the same pane-focus intent;
+Existing preserves topology, selection and pending or settled focus. The public
+consumer closes/reopens a stable item, emits and presents the complete surface
+program, and settles NotFocused then Focused against the actual request. Missing
+anchors reject explicitly. Removing OpenItem from the focus branch fails that
+consumer's exact focus-target assertion.
+
+The persistence example is now an eight-pane editor shell with text, scrolling
+and a small application-drawn scene. It retains pane data, derives closed
+inventory from its own catalog, keeps an immutable default and at most eight
+user presets, and offers explicit lock/unlock, reopen, reset and preset controls.
+Names and storage stay application-owned. Review caught an initial fallback
+which still used the original root/surface after identity retirement. The shell
+now resolves the current public view. Its regression closes the complete root,
+observes that no logical surface remains, resets Default, verifies both root
+and surface were remapped, then closes/reopens and renders Document through the
+actual AccessKit output. It never treats absence of the old root as proof of a
+rootless current surface.
+
+The main workspace passes 1,688 all-feature/all-target tests. The independent
+public host passes 47; the official-egui product harness passes 108 and the
+official compatibility harness passes 15. Twelve arrangement-lock tests also
+pass without core debug assertions, including authoritative replacement
+rollback, ordinary transaction rollback, recovery isolation and legacy policy
+serde defaults. Correctness/suspicious Clippy, strict core/adapter rustdoc,
+formatting and whitespace checks pass. After the scratch mutations, current
+main-source recompilation was observed for the restored green witnesses.
+
+Refreshed local-fork native sources pass 244 all-target tests both normally and
+without native debug assertions. Three rebuilt macOS Glow redock processes
+complete in 1.571, 0.550 and 0.537 seconds through the existing lifecycle and
+quiescence assertions. These are compatibility and programmatic real-window
+results, not physical-input, WM-close, mixed-DPI or overload qualification.
+
+U10 is not complete. Restore-time focus/missing-pane recovery, full overflow
+owner acceptance and the optional native showcase remain open. No generic
+serde-free layout reset API is established by the document-based example.
+U7/U8 capacity, physical-window/create/held-close ingress ownership and overload
+integration remain unchanged; the local fork is unpublished and pins unchanged.
+
 ## 2026-10-28 U8 exact command callbacks and retirement-safe property dispatch
 
 The local eframe fork now provides opaque tokens for host-owned focus and

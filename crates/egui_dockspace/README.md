@@ -90,8 +90,9 @@ plan; the application decides each pending item through `resolve_close` and, for
 deferred decisions, `resolve_deferred_close`. Until all required decisions allow
 closure, the layout keeps every item. Veto preserves the entire group. Replayed
 tokens are inert. Both packaged examples consume these decisions and keep pane
-data owned by the application; the persistence example can restore closed panes
-from its earlier document.
+data owned by the application. The persistence example offers a closed-pane
+inventory and reopens stable items through `open_item_current`; it also applies
+application-owned named layout documents.
 
 Use the distinct `Dock Back` menu item or `dock_root_back_current` to return
 floating content to its docking destination while keeping it open. Closing and
@@ -108,6 +109,8 @@ the core's original manipulation identity and per-publication deduplication ID.
 Motion alone is quiet, and reading feedback never requests focus.
 
 Explicit selection requests pane focus even when the item was already selected.
+Opening new content selects it and requests the same pane focus intent;
+opening an existing item preserves its location, selection and focus.
 Dock and Float commands focus the moved visible pane; closing a focused tab uses
 its next visual sibling, or the previous sibling at the end. A focused group with
 no surviving observed destination focuses the remaining workspace. These requests
@@ -139,6 +142,20 @@ let dockspace = Dockspace::builder("my-dockspace", layout)
 ```
 
 ## Features
+
+Run the bounded editor layout example with:
+
+```sh
+cargo run -p egui_dockspace --example workspace_persistence --features example-app,serde
+```
+
+It has eight application-owned panes, text/scroll content and a small drawn
+scene. Its closed inventory, immutable default and at most eight user presets
+remain in application memory. Layout locking uses `DockPolicy` authority;
+reset/apply/reopen controls require an explicit unlock, while normal pane use
+continues. Saved layouts contain docking state and stable keys, not pane data.
+The example resolves current presentation identities after a preset restore.
+Unmodified eframe still reports presented-output drag docking unavailable.
 
 - `serde`: product document save and restore.
 - `example-app`: builds the eframe examples.

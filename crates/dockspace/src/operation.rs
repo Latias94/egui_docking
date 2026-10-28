@@ -572,6 +572,12 @@ pub(crate) fn authorize_workspace_command(
     policy: &DockPolicySnapshot,
     command: &WorkspaceCommand,
 ) -> Result<(), CommandError> {
+    if !matches!(
+        command,
+        WorkspaceCommand::Select { .. } | WorkspaceCommand::RaiseContained { .. }
+    ) {
+        policy.check_arrangement_unlocked()?;
+    }
     match command {
         // Selection is a programmatic focus semantic, not a docking mutation.
         WorkspaceCommand::Select { .. } => Ok(()),
@@ -726,13 +732,15 @@ pub(crate) fn authorize_workspace_command(
                 });
             }
             validate_contained(workspace, surface, root, *floating)?;
-            authorize_contained_transform(
+            evaluate_policy(
                 policy,
-                root_payload_policy_facts(workspace, root, false)?,
-                surface,
+                &DockPolicyRequest::RaiseContained(DockContainedTransformPolicyRequest::new(
+                    root_payload_policy_facts(workspace, root, false)?,
+                    surface,
+                )),
             )
         }
-        // Removing an already empty root is structural lifecycle cleanup.
+        // Application cleanup is lock-gated above; irreversible recovery uses its own authority.
         WorkspaceCommand::RemoveEmptyRoot { .. } => Ok(()),
     }
 }
@@ -3358,6 +3366,8 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 
 #[cfg(test)]
 mod tests {
+    mod arrangement_lock;
+
     use super::*;
     use crate::command::{ContainedRootSource, DockFraction, SurfaceRosterSource};
     use crate::geometry::LogicalRect;

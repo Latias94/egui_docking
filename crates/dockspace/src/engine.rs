@@ -873,6 +873,14 @@ pub enum EngineError {
         #[source]
         source: CommandError,
     },
+    /// Current policy prevents an application-requested layout replacement.
+    #[error("workspace replacement input {input} rejected by policy: {reason}")]
+    WorkspaceReplacementPolicyDenied {
+        /// Input which attempted the replacement.
+        input: InputSequence,
+        /// Exact policy restriction.
+        reason: crate::policy::PolicyRejection,
+    },
     /// Process-local engine authority identities cannot advance without wrapping.
     #[error("engine authority domain identity is exhausted")]
     EngineAuthorityDomainExhausted,
@@ -3508,6 +3516,12 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
+        if self.policy.policy().arrangement_locked() {
+            return Err(EngineError::WorkspaceReplacementPolicyDenied {
+                input,
+                reason: crate::policy::PolicyRejection::ArrangementLocked,
+            });
+        }
         workspace
             .validate()
             .map_err(EngineError::InvalidWorkspace)?;

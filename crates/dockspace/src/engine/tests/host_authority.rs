@@ -2662,3 +2662,34 @@ fn stale_cleanup_retry_version_is_rejected_without_effects_or_state_change() {
         effect_count
     );
 }
+
+#[test]
+fn arrangement_lock_rejects_private_workspace_replacement_without_advancing_authority() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine.create_presentation_host().unwrap();
+    let replacement = engine.workspace().clone();
+    let mut policy = engine.policy().clone();
+    policy.set_arrangement_locked(true);
+    let expected = engine.version();
+    submit_test_input(
+        &mut engine,
+        host,
+        EngineInput::ReplacePolicy { expected, policy },
+    )
+    .unwrap();
+    let before = engine.candidate();
+    let mut frame = begin_test_host_frame(&engine, host);
+    let mut stream = TestInputStream::resume(&engine, ENGINE_TEST_INPUT_SOURCE);
+    assert_eq!(
+        stream.append(&mut frame, EngineInput::ReplaceWorkspace(replacement)),
+        Err(CoreHostFrameError::InputPrefixReductionFailed),
+    );
+    assert!(matches!(
+        frame.finish(&mut engine),
+        Err(EngineError::WorkspaceReplacementPolicyDenied {
+            reason: crate::policy::PolicyRejection::ArrangementLocked,
+            ..
+        })
+    ));
+    assert_eq!(engine, before);
+}

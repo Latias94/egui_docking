@@ -244,8 +244,8 @@ impl DockspaceSession {
     /// # Errors
     ///
     /// Returns an error without changing published state when the prepared value
-    /// is stale or belongs to another session, or the rollbackable frame cannot
-    /// begin. The caller retains `restore` for an exact retry.
+    /// is stale or belongs to another session, arrangement editing is locked,
+    /// or the rollbackable frame cannot begin. The caller retains `restore` for an exact retry.
     pub fn begin_document_restore_frame(
         &mut self,
         restore: &PreparedDockspaceDocumentRestore,
@@ -274,7 +274,7 @@ impl DockspaceSession {
     ///
     /// Returns an error without changing published state when no managed native
     /// host is active, the prepared value is stale or belongs to another session,
-    /// receiver facts are unavailable, or the rollbackable frame cannot begin.
+    /// arrangement editing is locked, receiver facts are unavailable, or the rollbackable frame cannot begin.
     /// The caller retains `restore` for an exact retry.
     pub fn begin_native_document_restore_frame(
         &mut self,
@@ -290,6 +290,9 @@ impl DockspaceSession {
         &self,
         restore: &PreparedDockspaceDocumentRestore,
     ) -> Result<(), super::DockspaceRuntimeError> {
+        if self.policy().arrangement_locked() {
+            return Err(super::DockspaceRuntimeError::arrangement_locked());
+        }
         let document = self
             .document
             .as_ref()

@@ -207,6 +207,9 @@ impl DockspaceSession {
     }
 
     /// Prepares one revision-bound open action from the published workspace.
+    ///
+    /// A newly opened item becomes selected and requests pane focus. An existing
+    /// item is an inert no-op, preserving its location, selection and focus.
     pub const fn prepare_open_item(
         &self,
         item: crate::ids::ItemId,

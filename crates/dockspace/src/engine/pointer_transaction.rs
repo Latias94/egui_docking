@@ -2983,15 +2983,24 @@ impl DockEngine {
                 ));
             }
         };
-        if let Err(source) =
-            authorize_captured_drag_source(&self.workspace, policy, &source_payload)
+        let can_arm = match authorize_captured_drag_source(&self.workspace, policy, &source_payload)
         {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CommandRejected(source),
-            ));
-        }
+            Ok(()) => true,
+            // Selecting a tab and focusing its content do not require docking permission.
+            Err(CommandError::Policy(_))
+                if matches!(prepared.source, TabGestureSource::Item(_)) =>
+            {
+                false
+            }
+            Err(source) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(source),
+                ));
+            }
+        };
         let mut candidate_events = Vec::new();
         let mut commands = Vec::with_capacity(2);
+        let mut selection_changed = false;
         if let Some(contained) = &prepared.contained
             && contained.expected_roster.contained().last() != Some(&contained.floating)
         {
@@ -3010,6 +3019,7 @@ impl DockEngine {
                 }) if *selected == source.item
             );
             if !already_selected {
+                selection_changed = true;
                 let selection =
                     match self
                         .workspace
@@ -3118,6 +3128,15 @@ impl DockEngine {
                         cause: focus_causal.cause(),
                         source,
                     })?;
+            }
+            if !can_arm {
+                events.extend(candidate_events);
+                return Ok(InteractionOutcome::ProductActionApplied(
+                    crate::model::DockspaceActionOutcome::Selected {
+                        item: source.item,
+                        changed: selection_changed,
+                    },
+                ));
             }
         }
         let payload = match prepared.source {

@@ -139,7 +139,8 @@ impl DockspaceHostFrame<'_> {
 
     /// Opens one item at a stable product placement.
     ///
-    /// Opening an already owned item is a valid no-op and does not reposition it.
+    /// A newly opened item becomes selected and requests pane focus. Opening an
+    /// already owned item is a valid no-op, preserving location, selection and focus.
     ///
     /// # Errors
     ///
