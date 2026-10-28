@@ -96,7 +96,15 @@ tokens, wrong contexts, or changed window routes fail closed without ordinary
 Close/CancelClose fallback. Model fixtures deliberately carry no fork authority.
 The public two-counter close-progress snapshot distinguishes retained input from
 committed cancellation and lets the real WM-close smoke reject initially idle
-false positives. The adapter's synchronous input driver remains to be budgeted.
+false positives.
+
+The working adapter now lends one dispatch budget from output begin through
+Repeat/finalization, staging, close and shutdown, ending it at the physical output
+terminal. Poll yields retain the original held request; they do not synthesize
+CancelClose. Policy submissions and exact close decision plans resume on the
+existing pending close owner. This remains locally qualified work against the
+unpublished fork: tracked dependency pins, real-window journeys, input caps and
+overload/latency qualification are not complete.
 
 ## Admitted seams
 
