@@ -15,7 +15,57 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
-## 2026-10-28 U7 budgeted native adapter checkpoint (not remotely pinned)
+## 2026-10-28 U7 native paint continuity checkpoint (not remotely pinned)
+
+Real macOS Glow windows exposed two adapter defects which deterministic core
+replay alone did not detect. First, a completed preview deferred measurement
+but was also prevented from confirming its paint. Redock then waited forever
+for the exact target presentation. A ready, complete paint without actions now
+confirms its renderer output even when feeding new geometry back into
+measurement is deferred. Incomplete transient paint still fails closed.
+
+Second, repeated runs could stall after post-show transfer and before the
+child's first-live presentation. A timeout-only diagnostic captured a Ready
+child scene, an empty callback journal, no pending output or effect, and no
+remaining blocked/ready child wake. Semantic unblocking used a coalescible
+one-shot repaint, which could disappear into an already queued placeholder or
+retained pass. It now arms the same retained repaint obligation as staging.
+The regression drains egui's initial viewport stabilization first: without
+that step, the default extra repaint could make the assertion pass for the
+wrong reason. The corrected semantic test failed before the fix; both staging
+and semantic queued-child tests pass afterward.
+
+After removing all temporary diagnostic code and rebuilding, three consecutive
+`egui-native-smoke --scenario=redock` processes completed in 1.817, 0.612, and
+0.569 seconds. Each traversed tear-off, first-live, redock, child retirement,
+and the existing runtime-quiescence predicate. These are real-window and
+renderer-lifecycle results on this macOS machine. They do not certify physical
+pointer dragging, mixed-DPI behavior, WM-close Allow/Veto, Windows, or X11.
+Earlier timeouts are retained as failing evidence, not reclassified as passes
+or hidden by increasing the smoke's global 30-second deadline.
+
+The adapter also bounds output-prefix preparation to at most 256 terminals and
+checks the shared deadline between them. A submitted-prefix cursor avoids
+rescanning prior outputs across continuation attempts. Final core input commit
+retires those reservations; partial commit and frame drop retain them. An
+unsubmitted output suffix blocks application actions and close policy even
+when the core recorder has drained. Frozen viewport rosters share one immutable
+`Arc` allocation across queued, in-flight, and committed references rather than
+cloning their owned vectors at each boundary. This is not yet complete resident
+memory accounting.
+
+The local-fork native workspace passes 224 all-target tests. This checkpoint
+uses the native working-tree source with the previously qualified core
+`fa8870c` snapshot; the concurrent overload kernel is qualified separately.
+Independent read-only review found no confirmed blocker in the output cursor,
+shared-roster ownership, or completed-preview receipt change. More-than-256
+output stress with drop/abandon/retry, native ingress record/byte/age limits,
+the reserved overload latch, sustained-load latency, and lifecycle soak remain
+open. The required egui fork is still the unpublished local `b4ec9ff8` commit;
+tracked workspace and CI pins remain `0716beee`. This does not complete U7 or
+the overall refactor.
+
+## 2026-10-28 U7 budgeted native adapter checkpoint (historical, not remotely pinned)
 
 The working adapter now uses the budgeted native poll in ordinary surface
 updates, terminal action submission, staging, close and shutdown. Eframe output
