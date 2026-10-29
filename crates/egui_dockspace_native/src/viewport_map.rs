@@ -790,6 +790,19 @@ impl NativeViewportMap {
         })
     }
 
+    /// A captured or admitted physical create keeps its original effect owner
+    /// through fatal drain, including before the Created callback is reduced.
+    pub(crate) fn has_create_lifetime_owner(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.route(viewport).is_some_and(|route| {
+            route.binding == binding
+                && (route.create.is_some() || route.terminal.is_some() || route.window.is_some())
+        })
+    }
+
     pub(crate) fn viewport(&self, surface: SurfaceId) -> Option<ViewportId> {
         self.viewports
             .iter()

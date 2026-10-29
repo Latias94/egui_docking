@@ -1106,6 +1106,33 @@ combined admission and full-O/configured-cap load still precede product-profile
 enablement. The complete 4 MiB, latency, soak, scoped input and physical gates
 remain open; ordinary prepayment does not by itself qualify saturation.
 
+The output-construction follow-up replaces output-prefix and unfinalized-output
+vectors with one frozen journal-ordinal range. Next copies an entry from its
+original output owner's terminal ingress, advances before callers remove that
+owner, and never reapplies Replay or the submitted-prefix skip. Missing members
+remain a protocol error. Quarantine claims one original output at a time, drops
+paint and notifies pass-action cleanup outside the lock, then cancels unstarted
+effects one at a time. Pass-action cleanup selects the two existing stores'
+minimum key instead of collecting a token set or intermediate error vector.
+
+Independent review found two additional shutdown boundaries: a create with a
+physical capture still retains its original request before Created reduction,
+and an unattached unsubmitted NotPresented terminal behind an earlier callback
+must be abandoned during fatal drain. The existing route/receipt and output
+owners now supply both checks. A core-effect owner regression covers admitted
+and captured create models through repeated quarantine; no fork output or create
+token is fabricated. Real Created terminal ordering and full-output saturation
+remain explicitly separate from this model's strength. Fresh qualification passes
+428 native tests normally and 428 without native debug assertions, correctness/
+suspicious Clippy and the macOS programmatic real-window redock. Final independent
+review closes both findings. Complete initial combined admission, full-output
+saturation, actual batch/release timing and the remaining configured-cap/soak
+and platform gates still precede product-profile enablement.
+A negative control restoring the awaiting-attempt cancellation check fails the
+captured-create regression; exact restoration passes the four selected create/
+replacement/shutdown cases. Initial-constructor primitives are prepared in a
+separate unqualified slice and are excluded from this tested source state.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

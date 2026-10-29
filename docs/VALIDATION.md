@@ -15,6 +15,67 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 output-prefix and fatal-cleanup construction
+
+Output-prefix preparation now freezes the continuous Output segment by capture
+journal ordinal and count, without collecting results. Reading copies one
+terminal from its existing output owner and advances the range before caller
+cleanup can remove that owner. It does not reapply Replay or the submitted-head
+skip after the first submission makes a boundary pending. A new callback cannot
+enter the frozen range; a missing expected member remains `OutputOrderViolation`.
+Normal unfinalized-pass cleanup uses that same range. Selection scans output
+owners' original terminal ingress rather than rebuilding a full ordered journal
+for every item; final submission still performs its existing exact ordering check.
+
+Fatal quarantine enters its existing mode, then claims one exact output at a
+time using the original abandonment transition. Affine paint and cleanup
+notification leave the host lock together. Unstarted create requests are selected
+and removed individually, preserving already admitted or captured physical
+create owners. The plans Vec, aggregate token Vec and extend/sort/dedup are
+deleted from production. Pass-action teardown likewise visits the minimum key
+of its two existing stores instead of collecting a BTreeSet and error Vec;
+errors go directly to the caller's diagnostic sink, while durable local action
+ownership retains its existing semantics.
+
+Independent review exposed two shutdown boundaries which the first version
+missed. A captured Created window already has `route.window`, so the narrower
+"awaiting create attempt" query cannot decide whether its request is cancellable.
+Fatal cancellation now checks the exact route's existing create/window receipt
+ownership. A real core child-effect model covers both admitted and captured
+states through repeated quarantine, preserving the same request, route and
+published/recorded watermarks. It uses the existing private test create receipt;
+no opaque fork attempt or output token is fabricated. The second boundary is
+an already captured, unattached, unsubmitted NotPresented terminal hidden behind
+an earlier non-output callback. Quarantine now abandons that exact owner through
+the existing ingress-removal path, preventing shutdown from waiting forever for
+an affine attachment. Attached or submitted terminal owners remain for ordinary
+settlement. Actual Created/negative-terminal ordering still requires its stated
+real-output qualification; the model is not promoted to physical evidence.
+
+Fresh native qualification passes 428 tests normally and 428 without native
+debug assertions, correctness/suspicious Clippy and the macOS programmatic
+tear-off/first-live/redock/retirement journey. That real-window round trip samples
+2,750,689 owned input-data bytes at root boundaries. Results are recorded in
+`/tmp/dockspace-output-construction-qualification.json`. Its disposable snapshot
+contains the exact 413-file source state for this slice; the separately prepared
+initial-constructor primitives are excluded from these gates and this commit.
+
+A disposable-snapshot control restores only the narrower awaiting-attempt
+cancellation predicate. The captured-create regression fails (exit 100), then
+exact source restoration passes all four selected create/replacement/shutdown
+cases (exit 0). Results are recorded in
+`/tmp/dockspace-output-construction-control.json`; the restored coordinator
+matches the frozen source again.
+
+The independent final review closes both shutdown findings and reports no new
+correctness blocker. Full-output saturation, fatal real-output ordering, batch
+timing, complete initial combined admission and configured-cap/soak qualification
+remain open. In particular, removing collection does not establish the 2 ms
+batch limit, and the complete 4 MiB product profile remains disabled. Diagnostic
+error history and renderer/application action ownership are separate from the
+defined native input-data allowance. The core/local adapter source and local
+unpublished fork remain unchanged from their preceding qualifications.
+
 ## 2026-10-29 U7 inline observations, route wakes and prepaid output backing
 
 The existing exact window-resource entry now owns its presentation ACK and

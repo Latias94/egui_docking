@@ -46,9 +46,9 @@ use crate::input_control::{
 };
 use crate::lifecycle_progress::{NativeCloseProgress, NativeLifecycleProgress};
 use crate::mailbox::{
-    DeferredViewportPaint, NativeDispatch, NativeHostBridge, NativeStagingPaintRecord,
-    NativeViewportRosterEnvelope, NativeViewportRosterRecord, OutputAbandonment,
-    PendingNativeOutput, PreparedRouteRetirements,
+    DeferredViewportPaint, NativeDispatch, NativeHostBridge, NativeOutputPrefix,
+    NativeStagingPaintRecord, NativeViewportRosterEnvelope, NativeViewportRosterRecord,
+    OutputAbandonment, PendingNativeOutput, PreparedRouteRetirements,
 };
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
@@ -1646,19 +1646,24 @@ impl NativeCoordinator {
     /// must retire its staged pass before ordinary output-prefix reduction;
     /// otherwise the coordinator would correctly reject the missing affine
     /// output as `OutputAwaitingAttachment`.
-    pub(crate) fn unfinalized_not_presented_outputs(&self) -> Vec<NativeOutputToken> {
-        self.bridge
-            .output_prefix(256)
-            .into_iter()
-            .filter_map(|(result, submitted)| {
-                output_terminal_requires_adapter_abandonment(
-                    result.status(),
-                    submitted,
-                    self.bridge.has_pending_output(result.token()),
-                )
-                .then_some(result.token())
-            })
-            .collect()
+    pub(crate) fn unfinalized_output_prefix(&self) -> NativeOutputPrefix {
+        self.bridge.output_prefix(256)
+    }
+
+    pub(crate) fn next_unfinalized_not_presented_output(
+        &self,
+        prefix: &mut NativeOutputPrefix,
+    ) -> Result<Option<NativeOutputToken>, NativeRuntimeError> {
+        while let Some(entry) = self.bridge.next_output_prefix(prefix)? {
+            if output_terminal_requires_adapter_abandonment(
+                entry.result.status(),
+                entry.submitted,
+                entry.attached,
+            ) {
+                return Ok(Some(entry.result.token()));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn has_pending_callback_records(&self) -> bool {
@@ -2754,19 +2759,27 @@ impl NativeCoordinator {
         self.bridge.finish_no_frame_invalidations(committed);
     }
 
-    pub(crate) fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
-        let mut abandoned = self.bridge.quarantine_after_fatal();
+    pub(crate) fn quarantine_after_fatal_into(
+        &mut self,
+        mut notify: impl FnMut(NativeOutputToken),
+    ) {
+        self.bridge.enter_quarantine();
         if self.requires_terminal_snapshot() {
             self.bridge.require_terminal_roster();
         }
-        for &token in &abandoned {
+        while let Some((token, paint)) = self.bridge.claim_quarantine_output() {
             self.receivers.abandon(token);
-            self.bridge.take_pending_output(token);
+            drop(paint);
+            notify(token);
         }
         self.cancel_undispatched_control_commands();
-        abandoned.extend(self.cancel_unadmitted_viewport_effects());
-        abandoned.sort_unstable();
-        abandoned.dedup();
+        self.cancel_unadmitted_viewport_effects();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
+        let mut abandoned = Vec::new();
+        self.quarantine_after_fatal_into(|token| abandoned.push(token));
         abandoned
     }
 
@@ -2784,24 +2797,21 @@ impl NativeCoordinator {
         }
     }
 
-    fn cancel_unadmitted_viewport_effects(&mut self) -> Vec<NativeOutputToken> {
-        let plans = self.bridge.with_viewports(|viewports| {
-            self.effects
-                .awaiting_viewport_callbacks()
-                .filter(|plan| {
-                    !viewports.has_admitted_create_attempt(plan.viewport(), plan.binding())
+    fn cancel_unadmitted_viewport_effects(&mut self) {
+        loop {
+            let plan = self.bridge.with_viewports(|viewports| {
+                self.effects.awaiting_viewport_callbacks().find(|plan| {
+                    !viewports.has_create_lifetime_owner(plan.viewport(), plan.binding())
                 })
-                .collect::<Vec<_>>()
-        });
-        let mut abandoned = Vec::new();
-        for plan in plans {
-            let Some(request) = self.effects.remove_unstarted(plan) else {
-                continue;
+            });
+            let Some(plan) = plan else {
+                break;
             };
-            abandoned.extend(
-                self.bridge
-                    .retire_deferred_binding(plan.viewport(), plan.binding()),
-            );
+            let Some(request) = self.effects.remove_unstarted(plan) else {
+                unreachable!("the selected unadmitted request remains owned");
+            };
+            self.bridge
+                .retire_deferred_binding_paints(plan.viewport(), plan.binding());
             self.deferred_viewports.remove(plan.binding());
             self.receivers.retire_binding(plan.binding());
             let removed = self.bridge.with_viewports_mut(|viewports| {
@@ -2813,7 +2823,6 @@ impl NativeCoordinator {
             );
             drop(request);
         }
-        abandoned
     }
 
     fn prepare_output_prefix(
@@ -2823,23 +2832,24 @@ impl NativeCoordinator {
         if !self.bridge.output_order_is_valid() {
             return Err(NativeHostProtocolError::OutputOrderViolation.into());
         }
-        for (result, submitted) in self
+        let mut prefix = self
             .bridge
-            .output_prefix(budget.remaining_records().min(256))
-        {
+            .output_prefix(budget.remaining_records().min(256));
+        loop {
+            let Some(entry) = self.bridge.next_output_prefix(&mut prefix)? else {
+                break;
+            };
+            let result = entry.result;
             if budget.is_exhausted() {
                 break;
             }
-            if submitted {
+            if entry.submitted {
                 continue;
             }
             let Some(output) = self.bridge.take_pending_output(result.token()) else {
                 return Err(NativeHostProtocolError::OutputAwaitingAttachment.into());
             };
-            let binding = self
-                .bridge
-                .output_reservation(result.token())
-                .and_then(|reservation| reservation.binding());
+            let binding = entry.binding;
             let presentation = match result.status() {
                 NativeOutputStatus::Presented => SurfacePresentationResult::Presented,
                 NativeOutputStatus::NotPresented => SurfacePresentationResult::Dropped,
@@ -2902,7 +2912,7 @@ fn exact_non_zero_u32(value: f64) -> Option<u32> {
     (value.fract() == 0.0 && value >= 1.0 && value <= f64::from(u32::MAX)).then_some(value as u32)
 }
 
-const fn output_terminal_requires_adapter_abandonment(
+pub(crate) const fn output_terminal_requires_adapter_abandonment(
     status: NativeOutputStatus,
     submitted: bool,
     attached: bool,

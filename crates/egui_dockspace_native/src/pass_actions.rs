@@ -434,17 +434,29 @@ impl NativePassActions {
         self.local_actions.retain(draft.surface, draft.local)
     }
 
-    pub(crate) fn abandon_all_outputs(&mut self) -> Vec<NativePassActionError> {
-        let tokens = self
-            .staged
-            .keys()
-            .chain(self.output_surfaces.keys())
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        tokens
-            .into_iter()
-            .filter_map(|token| self.abandon(token).err())
-            .collect()
+    pub(crate) fn abandon_all_outputs_into(
+        &mut self,
+        mut on_error: impl FnMut(NativePassActionError),
+    ) {
+        loop {
+            let token = self
+                .staged
+                .first_key_value()
+                .map(|(token, _)| *token)
+                .into_iter()
+                .chain(
+                    self.output_surfaces
+                        .first_key_value()
+                        .map(|(token, _)| *token),
+                )
+                .min();
+            let Some(token) = token else {
+                break;
+            };
+            if let Err(error) = self.abandon(token) {
+                on_error(error);
+            }
+        }
     }
 
     pub(crate) fn retain_local_actions(

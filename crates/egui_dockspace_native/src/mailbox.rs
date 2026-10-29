@@ -8,6 +8,7 @@ use winit::window::WindowId;
 use crate::coordinator::{
     NoFrameInvalidationReadiness, NoFrameTerminal, PendingNoFrameInvalidation,
     PreparedNoFrameInvalidations, no_frame_invalidation_readiness,
+    output_terminal_requires_adapter_abandonment,
 };
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeCleanupObservation,
@@ -2406,7 +2407,7 @@ impl NativeHostState {
         self.mode = HostIngressMode::Frozen;
     }
 
-    fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
+    fn enter_quarantine(&mut self) {
         if !matches!(self.mode, HostIngressMode::Frozen) {
             self.mode = HostIngressMode::Quarantined;
         }
@@ -2423,13 +2424,55 @@ impl NativeHostState {
         {
             self.terminal_roster.require();
         }
-        self.output_resources
-            .iter_mut()
-            .filter_map(|(token, reservation)| {
-                (!reservation.reservation.terminal_recorded && reservation.reservation.abandon())
-                    .then_some(*token)
+    }
+
+    fn claim_quarantine_output(
+        &mut self,
+    ) -> Option<(NativeOutputToken, Option<PendingNativeOutput>)> {
+        let token = self
+            .output_resources
+            .iter()
+            .filter(|(_, resource)| {
+                (!resource.reservation.terminal_recorded && !resource.reservation.abandoned)
+                    || resource.terminal.is_some_and(|terminal| {
+                        output_terminal_requires_adapter_abandonment(
+                            terminal.status(),
+                            resource.submitted,
+                            resource.paint.is_some(),
+                        )
+                    })
             })
-            .collect()
+            .map(|(token, _)| *token)
+            .min()?;
+        let terminal = self
+            .output_resources
+            .get(&token)
+            .expect("the selected exact output remains present")
+            .reservation
+            .terminal_recorded;
+        if terminal {
+            assert!(
+                self.abandon_output(token),
+                "an unattached negative terminal retains its original ingress owner"
+            );
+            return Some((token, None));
+        }
+        let resource = self
+            .output_resources
+            .get_mut(&token)
+            .expect("the selected exact output remains present");
+        let abandoned = resource.reservation.abandon();
+        assert!(
+            abandoned,
+            "one quarantine claim owns the output abandonment"
+        );
+        Some((token, resource.paint.take()))
+    }
+
+    #[cfg(test)]
+    fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
+        self.enter_quarantine();
+        std::iter::from_fn(|| self.claim_quarantine_output().map(|(token, _)| token)).collect()
     }
 
     fn require_terminal_roster(&mut self) {
@@ -2749,6 +2792,7 @@ impl NativeHostState {
         true
     }
 
+    #[cfg(test)]
     fn retire_deferred_binding(
         &mut self,
         viewport: ViewportId,
@@ -2850,6 +2894,21 @@ pub(crate) struct NativeHostBridge {
     records: Mutex<NativeHostState>,
     output_pass_finalizer: OnceLock<Arc<dyn NativeOutputPassFinalizer>>,
     clock: NativeMonotonicClock,
+}
+
+/// A fixed range of the existing capture journal, without owning its records.
+/// Reading advances before callers mutate or remove an exact output owner.
+pub(crate) struct NativeOutputPrefix {
+    after: u64,
+    through: u64,
+    remaining: usize,
+}
+
+pub(crate) struct NativeOutputPrefixEntry {
+    pub(crate) result: NativeOutputResult,
+    pub(crate) submitted: bool,
+    pub(crate) attached: bool,
+    pub(crate) binding: Option<NativeSurfaceBinding>,
 }
 
 pub(crate) struct NativeDispatchBudget<'bridge> {
@@ -3890,41 +3949,75 @@ impl NativeHostBridge {
         matches
     }
 
-    pub(crate) fn output_prefix(&self, limit: usize) -> Vec<(NativeOutputResult, bool)> {
+    pub(crate) fn output_prefix(&self, limit: usize) -> NativeOutputPrefix {
         let records = self.lock();
+        let mut prefix = NativeOutputPrefix {
+            after: 0,
+            through: 0,
+            remaining: 0,
+        };
         if !matches!(records.dispatch(), NativeDispatch::Replay { .. }) {
-            return Vec::new();
+            return prefix;
         }
-        let outputs: Vec<_> = records
+        for ingress in records
             .dispatchable_ingress()
-            .map(ReservedHostRecord::record)
             .skip(records.submitted_output_prefix)
             .take(limit)
-            .map_while(|record| match record {
-                HostRecord::Output { token } => {
-                    records.output_resources.get(token).and_then(|resource| {
-                        resource.terminal.map(|result| (result, resource.submitted))
-                    })
-                }
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_) => None,
-            })
-            .collect();
+        {
+            let HostRecord::Output { token } = ingress.record() else {
+                break;
+            };
+            if !records
+                .output_resources
+                .get(token)
+                .is_some_and(|resource| resource.terminal.is_some())
+            {
+                break;
+            }
+            if prefix.remaining == 0 {
+                prefix.after = ingress.ordinal() - 1;
+            }
+            prefix.through = ingress.ordinal();
+            prefix.remaining += 1;
+        }
+        prefix
+    }
 
-        // Preserve the single callback journal order. Output ordinals are
-        // context-local generation identities, not a cross-viewport clock;
-        // comparing them here would let one viewport's result overtake an
-        // older event or another context's output.
-        outputs
+    pub(crate) fn next_output_prefix(
+        &self,
+        prefix: &mut NativeOutputPrefix,
+    ) -> Result<Option<NativeOutputPrefixEntry>, NativeHostProtocolError> {
+        if prefix.remaining == 0 {
+            return Ok(None);
+        }
+        let records = self.lock();
+        // Submitted heads change dispatch to ContinueBoundary. Membership is
+        // already frozen by capture ordinal; never reapply Replay or its skip.
+        let ingress = records
+            .output_resources
+            .values()
+            .filter_map(NativeOutputResource::terminal_ingress)
+            .filter(|record| record.ordinal() > prefix.after && record.ordinal() <= prefix.through)
+            .min_by_key(|record| record.ordinal())
+            .ok_or(NativeHostProtocolError::OutputOrderViolation)?;
+        let HostRecord::Output { token } = ingress.record() else {
+            return Err(NativeHostProtocolError::OutputOrderViolation);
+        };
+        let resource = records
+            .output_resources
+            .get(token)
+            .ok_or(NativeHostProtocolError::OutputOrderViolation)?;
+        let entry = NativeOutputPrefixEntry {
+            result: resource
+                .terminal
+                .ok_or(NativeHostProtocolError::OutputOrderViolation)?,
+            submitted: resource.submitted,
+            attached: resource.paint.is_some(),
+            binding: resource.reservation.binding(),
+        };
+        prefix.after = ingress.ordinal();
+        prefix.remaining -= 1;
+        Ok(Some(entry))
     }
 
     pub(crate) fn has_pending_output_prefix(&self) -> bool {
@@ -3983,6 +4076,7 @@ impl NativeHostBridge {
         self.lock().window_resources.clear_hidden(viewport, binding)
     }
 
+    #[cfg(test)]
     pub(crate) fn retire_deferred_binding(
         &self,
         viewport: ViewportId,
@@ -4584,8 +4678,20 @@ impl NativeHostBridge {
         self.lock().freeze();
     }
 
+    pub(crate) fn enter_quarantine(&self) {
+        self.lock().enter_quarantine();
+    }
+
+    pub(crate) fn claim_quarantine_output(
+        &self,
+    ) -> Option<(NativeOutputToken, Option<PendingNativeOutput>)> {
+        self.lock().claim_quarantine_output()
+    }
+
+    #[cfg(test)]
     pub(crate) fn quarantine_after_fatal(&self) -> Vec<NativeOutputToken> {
-        self.lock().quarantine_after_fatal()
+        self.enter_quarantine();
+        std::iter::from_fn(|| self.claim_quarantine_output().map(|(token, _)| token)).collect()
     }
 
     pub(crate) fn retirement_has_pending_work(&self) -> bool {

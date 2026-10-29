@@ -1515,6 +1515,63 @@ fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
 }
 
 #[test]
+fn quarantine_keeps_the_create_request_after_physical_capture_before_created_reduction() {
+    for captured in [false, true] {
+        let mut native = tear_off_coordinator();
+        let source = register_source(&mut native);
+        publish_desktop_authority(&mut native, source);
+        let receiver = measure_and_present_source(&mut native);
+        let child = request_native_child(&mut native, receiver);
+        let viewport = viewport_id_for(child);
+        let window = WindowId::from(91);
+        native.bridge.with_viewports_mut(|routes| {
+            assert!(routes.admit_test_create(viewport, child));
+            if captured {
+                routes
+                    .capture_output_window(viewport, child, window, None)
+                    .unwrap();
+                assert!(!routes.has_admitted_create_attempt(viewport, child));
+                assert!(routes.has_window_receipt(viewport, child));
+            }
+            assert!(routes.has_create_lifetime_owner(viewport, child));
+        });
+        let effect = native
+            .effects
+            .awaiting_viewport_callbacks()
+            .find(|plan| plan.binding() == child)
+            .unwrap();
+        let recorded = native.session.native_input_recorded_count();
+        let version = native.session.version();
+        for _ in 0..2 {
+            assert!(native.quarantine_after_fatal().is_empty());
+            assert_eq!(native.viewport_binding(viewport), Some(child));
+            assert!(native.effects.references_binding(child));
+            assert!(
+                native
+                    .effects
+                    .awaiting_viewport_callbacks()
+                    .any(|plan| plan == effect)
+            );
+            assert!(
+                native
+                    .deferred_viewport_specs()
+                    .iter()
+                    .any(|spec| spec.binding() == child)
+            );
+            assert_eq!(native.session.version(), version);
+            assert_eq!(native.session.native_input_recorded_count(), recorded);
+        }
+        // This owner model uses the existing test create receipt, not a fabricated
+        // fork attempt/output token. Actual Created ingress remains a real-window gate.
+        let request = native.effects.take_for_output(viewport, child).unwrap();
+        assert!(
+            matches!(request.operation(), NativeEffectOperation::CreateWindow { binding, .. } if *binding == child)
+        );
+        native.effects.insert(effect, request).unwrap();
+    }
+}
+
+#[test]
 fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_output_token() {
     assert_pre_admission_compensating_close(false);
 }

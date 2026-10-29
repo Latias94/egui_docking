@@ -752,7 +752,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
         &mut self,
         context: &egui::Context,
     ) -> Result<(), NativeRuntimeError> {
-        for token in self.coordinator.unfinalized_not_presented_outputs() {
+        let mut prefix = self.coordinator.unfinalized_output_prefix();
+        while let Some(token) = self
+            .coordinator
+            .next_unfinalized_not_presented_output(&mut prefix)?
+        {
             self.pass_actions
                 .abandon(token)
                 .map_err(map_pass_action_error)?;
@@ -1156,17 +1160,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let kind = error.kind();
         let internal_transition_error = self.settle_internal_application_transitions().err();
         let mut cleanup_errors = internal_transition_error.into_iter().collect::<Vec<_>>();
-        for token in self.coordinator.quarantine_after_fatal() {
+        self.coordinator.quarantine_after_fatal_into(|token| {
             if let Err(error) = self.pass_actions.abandon(token) {
                 cleanup_errors.push(map_pass_action_error(error));
             }
-        }
-        cleanup_errors.extend(
-            self.pass_actions
-                .abandon_all_outputs()
-                .into_iter()
-                .map(map_pass_action_error),
-        );
+        });
+        self.pass_actions
+            .abandon_all_outputs_into(|error| cleanup_errors.push(map_pass_action_error(error)));
         // Durable local actions stay visible as unresolved work. A fatal
         // output teardown is not a core action terminal.
         let _ = self.application_actions.begin_shutdown(kind);
