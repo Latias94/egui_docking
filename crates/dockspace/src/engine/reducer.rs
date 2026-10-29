@@ -909,6 +909,11 @@ impl DockEngine {
             &observed_focus_effects,
         );
         candidate.viewport_focus.mark_boundary_published();
+        // The runtime's allocation allowance belongs to this attempt. It must
+        // neither become published authority nor make an idle frame look changed.
+        candidate
+            .viewport
+            .set_native_binding_allocation_budget(None);
         let published_state_changed = before != candidate.version
             || before_presentation_identity != candidate.presentation_identity
             || before_scene != candidate.presentation_authority.scene

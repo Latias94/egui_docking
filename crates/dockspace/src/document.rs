@@ -626,6 +626,10 @@ pub(crate) struct PreparedRuntimeDocumentPublication {
 }
 
 impl PreparedRuntimeDocumentPublication {
+    pub(crate) const fn candidate_engine(&self) -> &DockEngine {
+        self.core.candidate_engine()
+    }
+
     pub(crate) fn has_new_undelivered_platform_effects(&self, engine: &DockEngine) -> bool {
         self.core.has_new_undelivered_platform_effects(engine)
     }

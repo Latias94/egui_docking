@@ -484,8 +484,7 @@ fn snapshot_byte_rejection_preserves_generations_and_exact_capacity_retries() {
         .unwrap();
     let before = (
         native.snapshot_generation,
-        native.window_observation_generations.clone(),
-        native.close_generations.clone(),
+        native.producer.bindings.clone(),
         native.focus_generation,
         native.focus,
         native.binding_roster_unsettled_through,
@@ -512,8 +511,7 @@ fn snapshot_byte_rejection_preserves_generations_and_exact_capacity_retries() {
     assert_eq!(
         (
             native.snapshot_generation,
-            native.window_observation_generations.clone(),
-            native.close_generations.clone(),
+            native.producer.bindings.clone(),
             native.focus_generation,
             native.focus,
             native.binding_roster_unsettled_through,

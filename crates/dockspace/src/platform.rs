@@ -3,7 +3,6 @@
 //! Adapters submit facts and execute effects. They never submit operating-system
 //! handles or infer a docking target from window geometry.
 
-use std::collections::BTreeSet;
 use std::mem::size_of;
 
 use thiserror::Error;
@@ -1448,7 +1447,7 @@ impl WorkAreaRosterObservation {
         mut roster: Authority<Vec<ObservedWorkArea>>,
     ) -> Result<Self, PlatformSnapshotError> {
         if let Authority::Known(work_areas) = &mut roster {
-            work_areas.sort_by_key(|work_area| work_area.token);
+            work_areas.sort_unstable_by_key(|work_area| work_area.token);
             validate_work_areas(work_areas)?;
         }
         Ok(Self { generation, roster })
@@ -1603,7 +1602,7 @@ impl PlatformSnapshot {
         mut close_observations: Vec<WindowCloseObservation>,
         work_area_observation: WorkAreaRosterObservation,
     ) -> Result<Self, PlatformSnapshotError> {
-        window_observations.sort_by_key(ObservedWindow::binding);
+        window_observations.sort_unstable_by_key(ObservedWindow::binding);
         reject_duplicate_windows(&window_observations)?;
         validate_focus_window(focus, &window_observations)?;
         validate_input_observations(&window_observations)?;
@@ -1612,7 +1611,7 @@ impl PlatformSnapshot {
             &inventory_observation,
             &window_observations,
         )?;
-        close_observations.sort_by_key(|observation| observation.binding());
+        close_observations.sort_unstable_by_key(|observation| observation.binding());
         validate_close_observations(&window_observations, &close_observations)?;
         match work_area_observation.roster() {
             Authority::Known(_)
@@ -1693,12 +1692,12 @@ fn validate_inventory_observation(
     if !capabilities.authoritative_inventory().is_supported() {
         return Err(PlatformSnapshotError::InventoryRosterWithoutCapability);
     }
-    let observed = windows
+    // Both constructors sort by exact binding and reject duplicates first.
+    if !windows
         .iter()
         .map(ObservedWindow::binding)
-        .collect::<BTreeSet<_>>();
-    let reported = inventory.iter().copied().collect::<BTreeSet<_>>();
-    if observed != reported {
+        .eq(inventory.iter().copied())
+    {
         return Err(PlatformSnapshotError::InventoryRosterMismatch);
     }
     Ok(())
@@ -1721,9 +1720,8 @@ fn validate_focus_window(
 }
 
 fn validate_work_areas(work_areas: &[ObservedWorkArea]) -> Result<(), PlatformSnapshotError> {
-    let mut tokens = BTreeSet::new();
-    for work_area in work_areas {
-        if !tokens.insert(work_area.token) {
+    for (index, work_area) in work_areas.iter().enumerate() {
+        if index != 0 && work_areas[index - 1].token == work_area.token {
             return Err(PlatformSnapshotError::DuplicateWorkArea {
                 token: work_area.token,
             });
@@ -1738,14 +1736,17 @@ fn validate_work_areas(work_areas: &[ObservedWorkArea]) -> Result<(), PlatformSn
 }
 
 fn reject_duplicate_windows(windows: &[ObservedWindow]) -> Result<(), PlatformSnapshotError> {
-    let mut bindings = BTreeSet::new();
-    let mut tokens = BTreeSet::new();
-    for window in windows {
+    for (index, window) in windows.iter().enumerate() {
         let binding = window.binding();
-        if !bindings.insert(binding) {
+        if index != 0 && windows[index - 1].binding() == binding {
             return Err(PlatformSnapshotError::DuplicateWindowBinding { binding });
         }
-        if !tokens.insert(binding.token()) {
+        // Window tokens are not the primary sort key. This infrequent complete
+        // roster check avoids allocating another identity index during capture.
+        if windows[..index]
+            .iter()
+            .any(|previous| previous.binding().token() == binding.token())
+        {
             return Err(PlatformSnapshotError::DuplicateWindowToken {
                 token: binding.token(),
             });
@@ -1798,23 +1799,19 @@ fn validate_close_observations(
     windows: &[ObservedWindow],
     observations: &[WindowCloseObservation],
 ) -> Result<(), PlatformSnapshotError> {
-    let window_bindings = windows
-        .iter()
-        .map(ObservedWindow::binding)
-        .collect::<BTreeSet<_>>();
-    let mut bindings = BTreeSet::new();
-    for observation in observations {
+    for (index, observation) in observations.iter().enumerate() {
         let binding = observation.binding();
-        if !bindings.insert(binding) {
+        if index != 0 && observations[index - 1].binding() == binding {
             return Err(PlatformSnapshotError::DuplicateCloseObservation { binding });
         }
+        let has_window = windows
+            .binary_search_by_key(&binding, ObservedWindow::binding)
+            .is_ok();
         match observation.known_state() {
-            Some(WindowCloseState::LiveClear | WindowCloseState::LiveRequested)
-                if !window_bindings.contains(&binding) =>
-            {
+            Some(WindowCloseState::LiveClear | WindowCloseState::LiveRequested) if !has_window => {
                 return Err(PlatformSnapshotError::LiveCloseObservationWithoutWindow { binding });
             }
-            Some(WindowCloseState::Destroyed) if window_bindings.contains(&binding) => {
+            Some(WindowCloseState::Destroyed) if has_window => {
                 return Err(PlatformSnapshotError::DestroyedCloseObservationWithWindow { binding });
             }
             Some(
@@ -2499,6 +2496,24 @@ mod tests {
                 unknown_work_areas(1),
             ),
             Err(PlatformSnapshotError::DuplicateWindowBinding { .. })
+        ));
+    }
+
+    #[test]
+    fn sorted_snapshot_validation_rejects_token_reuse_across_different_incarnations() {
+        let earlier = binding(1);
+        let later = binding(3);
+        assert_eq!(earlier.token(), later.token());
+        assert_ne!(earlier, later);
+        assert!(matches!(
+            snapshot_with_unknown_inventory(
+                1,
+                PlatformCapabilities::default(),
+                vec![ObservedWindow::new(later), ObservedWindow::new(earlier)],
+                Vec::new(),
+                unknown_work_areas(1),
+            ),
+            Err(PlatformSnapshotError::DuplicateWindowToken { token }) if token == earlier.token()
         ));
     }
 

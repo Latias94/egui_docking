@@ -1659,6 +1659,7 @@ struct NativeHostState {
     output_resources: output_resource::NativeOutputResources,
     input_storage_allowance: Option<capacity::NativeHostInputAllowance>,
     pointer_translation_reserved_bytes: usize,
+    snapshot_storage_reserved_bytes: usize,
     window_resources: NativeWindowResources,
     retirements: NativeRetirementState,
     close_control: NativeCloseControl,
@@ -1751,6 +1752,7 @@ impl NativeHostState {
             input_storage_allowance: None,
             pointer_translation_reserved_bytes: NativePointerTranslator::default()
                 .reserved_translation_capacity_bytes(),
+            snapshot_storage_reserved_bytes: 0,
             window_resources: NativeWindowResources::default(),
             retirements: NativeRetirementState::default(),
             close_control: NativeCloseControl::default(),
@@ -2542,7 +2544,11 @@ impl NativeHostState {
     fn viewport_roster_known_borrowed(&self, roster: NativeViewportRoster<'_>) -> bool {
         let known = |key: &NativeViewportRosterKey| {
             key.context == self.roster_context
-                && key.roster.matches_borrowed(roster, &self.viewports)
+                && key.roster.matches_borrowed(
+                    roster,
+                    &self.viewports,
+                    self.terminal_roster.work_area_capacity(),
+                )
         };
         self.committed_viewport_roster.as_ref().is_some_and(known)
             || self.in_flight_viewport_roster.as_ref().is_some_and(known)
@@ -2557,12 +2563,17 @@ impl NativeHostState {
         &mut self,
         roster: impl Into<Arc<NativeViewportRosterRecord>>,
     ) -> bool {
+        let roster = roster.into();
+        if roster.observation_count() > self.terminal_roster.window_capacity() {
+            self.freeze_ordinary();
+            return false;
+        }
         if !self.admit_ordinary() {
             return false;
         }
         let envelope = NativeViewportRosterEnvelope::from_shared(
             self.roster_context,
-            roster.into(),
+            roster,
             matches!(self.mode, HostIngressMode::Active),
             None,
         );
@@ -2581,11 +2592,15 @@ impl NativeHostState {
         &mut self,
         roster: impl Into<Arc<NativeViewportRosterRecord>>,
     ) -> bool {
+        let roster = roster.into();
+        if roster.observation_count() > self.terminal_roster.window_capacity() {
+            return false;
+        }
         self.terminal_roster.capture(|generation| {
             self.journal.reserve(HostRecord::ViewportRoster(
                 NativeViewportRosterEnvelope::from_shared(
                     self.roster_context,
-                    roster.into(),
+                    roster,
                     true,
                     Some(generation),
                 ),
@@ -4301,10 +4316,23 @@ impl NativeHostBridge {
             .retire_unrecognized_destroyed(binding);
     }
 
+    #[cfg(test)]
     pub(crate) fn retirement_destroyed_observations(
         &self,
     ) -> Vec<(NativeSurfaceBinding, NativeWindowFacts)> {
         self.lock().retirements.destroyed_observations().collect()
+    }
+
+    pub(crate) fn with_retirement_destroyed_observations<R>(
+        &self,
+        action: impl FnOnce(
+            usize,
+            &mut dyn Iterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        ) -> R,
+    ) -> R {
+        let state = self.lock();
+        let count = state.retirements.destroyed_observations().count();
+        action(count, &mut state.retirements.destroyed_observations())
     }
 
     pub(crate) fn retirement_mark_snapshot_queued(&self) {

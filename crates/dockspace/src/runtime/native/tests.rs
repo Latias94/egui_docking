@@ -24,6 +24,7 @@ mod managed_lifecycle;
 mod pointer_metadata;
 mod pointer_sequence;
 mod prepared_pointer;
+mod producer_capacity;
 mod storage;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -88,44 +89,52 @@ fn full_managed_capabilities() -> NativeHostCapabilities {
 
 #[test]
 fn admission_diff_reports_only_the_same_pending_binding() {
-    let domain = crate::ids::EngineAuthorityDomainId::new_for_test(1);
-    let pending = ViewportBinding::new(
-        domain,
-        crate::ids::WorkspaceEpoch::new(1),
-        SURFACE,
-        WindowToken::new(1),
-        WindowIncarnation::new(1),
+    let (mut session, binding) = native_root_session();
+    let native = session.native.as_mut().unwrap();
+    assert!(
+        native
+            .prepare_native_commit(&session.engine)
+            .unwrap()
+            .report
+            .admissions
+            .is_empty(),
+        "an already-admitted external registration is not a first-live transition"
     );
+
+    native
+        .producer
+        .binding_mut(binding.binding)
+        .unwrap()
+        .admission = Some(ViewportAdmission::Pending);
+    assert_eq!(
+        native
+            .prepare_native_commit(&session.engine)
+            .unwrap()
+            .report
+            .admissions,
+        vec![binding]
+    );
+
     let replacement = ViewportBinding::new(
-        domain,
-        crate::ids::WorkspaceEpoch::new(1),
+        binding.binding.authority_domain(),
+        binding.binding.epoch(),
         SURFACE,
         WindowToken::new(1),
         WindowIncarnation::new(2),
     );
-
-    assert_eq!(
-        newly_admitted_bindings(
-            &BTreeMap::from([(pending, ViewportAdmission::Pending)]),
-            &BTreeMap::from([(pending, ViewportAdmission::Admitted)]),
-        ),
-        vec![pending]
-    );
+    native
+        .producer
+        .binding_mut(binding.binding)
+        .unwrap()
+        .binding = replacement;
     assert!(
-        newly_admitted_bindings(
-            &BTreeMap::from([(pending, ViewportAdmission::Pending)]),
-            &BTreeMap::from([(replacement, ViewportAdmission::Admitted)]),
-        )
-        .is_empty(),
+        native
+            .prepare_native_commit(&session.engine)
+            .unwrap()
+            .report
+            .admissions
+            .is_empty(),
         "a recreated binding cannot inherit its predecessor's admission"
-    );
-    assert!(
-        newly_admitted_bindings(
-            &BTreeMap::new(),
-            &BTreeMap::from([(pending, ViewportAdmission::Admitted)]),
-        )
-        .is_empty(),
-        "an already-admitted external registration is not a first-live transition"
     );
 }
 
@@ -838,8 +847,9 @@ fn retired_binding_accepts_only_an_exact_destroyed_tombstone() {
         .native
         .as_mut()
         .expect("the native provider remains enrolled");
-    assert_eq!(native.bindings.remove(&binding.surface()), Some(binding));
-    native.retired_bindings.insert(binding.binding);
+    let state = native.producer.binding_mut(binding.binding).unwrap();
+    assert!(state.admission.take().is_some());
+    state.window_generation = 0;
 
     assert!(session.recognizes_native_binding(binding));
     assert!(!session.is_current_native_binding(binding));
@@ -852,11 +862,9 @@ fn retired_binding_accepts_only_an_exact_destroyed_tombstone() {
         .native
         .as_mut()
         .expect("the native provider remains enrolled");
-    assert_eq!(
-        native.bindings.remove(&live_binding.surface()),
-        Some(live_binding)
-    );
-    native.retired_bindings.insert(live_binding.binding);
+    let state = native.producer.binding_mut(live_binding.binding).unwrap();
+    assert!(state.admission.take().is_some());
+    state.window_generation = 0;
     let error = live_session
         .report_native_snapshot([(live_binding, NativeWindowFacts::live())])
         .expect_err("a retired binding cannot regain live authority");
@@ -870,8 +878,9 @@ fn retired_binding_accepts_same_provider_effect_results() {
         .native
         .as_mut()
         .expect("the native provider remains enrolled");
-    assert_eq!(native.bindings.remove(&binding.surface()), Some(binding));
-    native.retired_bindings.insert(binding.binding);
+    let state = native.producer.binding_mut(binding.binding).unwrap();
+    assert!(state.admission.take().is_some());
+    state.window_generation = 0;
 
     let mut ledger = EffectLedger::default();
     ledger

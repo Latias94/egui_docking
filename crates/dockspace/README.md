@@ -293,6 +293,44 @@ accepted input. It does not include the separately measured pending report
 sidecars or the host's callback/resource owners; combine those before advertising
 a total input-memory limit.
 
+Add `with_producer_storage_limit(NativeProducerStorageLimit::new(
+binding_slots, work_area_slots, byte_limit))` for a separate producer allowance
+in the same atomic enrollment. Both slot counts use `NonZeroUsize`.
+`producer_storage_limit()`, `binding_slots()`, and `work_area_slots()` expose the
+selected bounds so a host can reserve its own snapshot source and scratch data.
+Without this option producer storage remains unlimited, including rosters larger
+than a native adapter's selected profile.
+
+Binding slots cover the complete current registry together with every retired
+incarnation awaiting an accepted `report_native_binding_quiescence` append.
+Missing inventory, disabled routing and registry removal do not release slots.
+New root and owned-child registrations check this union and queued registrations
+before appending, so a refused registration cannot trap an earlier accepted
+prefix. A candidate-local allocation allowance also rejects pointer/product
+tear-off before minting another binding. Accepted pointer releases can therefore
+commit their ordinary typed rejection without replaying forever. Automatic
+replacement falls back to host registration when no new lifetime fits.
+
+The fixed byte promise covers producer inline state, actual reserved vector
+capacity, old/new producer overlap, native roster/admission report construction,
+snapshot entry/generation candidates and snapshot payload construction overlap.
+Every final host-frame candidate, including document restore, prepares the full
+producer replacement and native report before core publication. Rejection or a
+dropped preparation leaves the original producer and publication prefix intact.
+Snapshot ingestion checks each actual iterator entry before allocating bounded
+scratch; iterator size hints never grant admission or advance generations.
+
+`native_input_producer_storage_reserved_bytes()` returns the selected fixed peak
+allowance. `native_input_producer_storage_capacity_bytes()` returns current
+producer inline storage and vector backing, including spare capacity after
+quiescence; it returns zero without native input. Combine this resident query
+with the transport and pending-report queries for those distinct owners.
+Caller-owned observation iterators, `NativeWorkAreaRoster` backing and complete
+delivered report containers belong to the host. Final retained snapshot payloads
+belong to transport; producer bytes cover their construction overlap only.
+Reducer/workspace state, allocator metadata and Arc control blocks remain outside
+these allowances. These primitives do not enable a total product memory limit.
+
 Add `with_report_storage_limit(NativeReportStorageLimit::new(...))` to select a
 separate terminal-report allowance during the same atomic enrollment. It bounds
 unsettled presentation outputs, retained presentation stream metadata and

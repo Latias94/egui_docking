@@ -654,6 +654,7 @@ pub struct CoreHostFramePrelude {
     presentation_scopes: BTreeMap<PresentationHostLease, BTreeSet<HostPresentationStreamId>>,
     presentation_observations: BTreeMap<PresentationHostLease, HostPresentationObservation>,
     item_identity_scope: Option<Arc<BTreeSet<ItemId>>>,
+    native_binding_allocation_budget: Option<usize>,
     poison: Option<CoreHostFrameError>,
 }
 

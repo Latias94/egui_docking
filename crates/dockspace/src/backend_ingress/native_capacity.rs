@@ -263,7 +263,7 @@ fn fixed_reserved_bytes(
     let inline = size_of::<BackendIngressRecorder>()
         + size_of::<Mutex<()>>()
         + CoreHostFrame::backend_ingress_inline_capacity_bytes()
-        + size_of::<BackendIngressPrefixRetirementReceipt>();
+        + size_of::<Option<BackendIngressPrefixRetirementReceipt>>();
     let per_replay_slot = size_of::<BackendIngressRecord>()
         + size_of::<(BackendIngressOrdinal, BackendIngressRecordLiveness)>()
         + size_of::<ViewportBinding>()

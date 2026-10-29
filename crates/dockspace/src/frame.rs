@@ -680,6 +680,16 @@ impl ViewportCoordinator {
         self.effects.compact_quiesced_backend_provider(receipt)
     }
 
+    /// Installs a candidate-local allowance for new native binding lifetimes.
+    pub(crate) fn set_native_binding_allocation_budget(&mut self, remaining: Option<usize>) {
+        self.registry
+            .set_native_binding_allocation_budget(remaining);
+    }
+
+    pub(crate) const fn native_binding_allocation_available(&self) -> bool {
+        self.registry.native_binding_allocation_available()
+    }
+
     /// Registers an existing adapter window without storing its OS handle.
     pub(crate) fn register_existing(
         &mut self,
@@ -3717,6 +3727,7 @@ impl ViewportCoordinator {
             .remove_destroyed(binding)
             .map_err(ViewportCoordinatorError::Registry)?;
         let request = if let Some(placement) = placement
+            && candidate.registry.native_binding_allocation_available()
             && candidate
                 .capabilities
                 .native_exact_placement_create()

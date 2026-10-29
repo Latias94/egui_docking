@@ -932,6 +932,72 @@ Negative controls independently omit delivery backpressure and obsolete-close
 invalidation; each fails its regression and exact restoration passes the three
 progress/cancellation cases. No physical or complete-budget claim follows.
 
+The producer/construction slice adds a separately selected
+`NativeProducerStorageLimit`. Current and retired exact lifetimes share flat
+binding storage until successful quiescence append; current admission and window/
+close generations remain on that same entry. Enrollment validates the initial
+registry and the complete old/new producer, returned binding/admission vectors,
+snapshot facts/generation scratch and payload-construction peak before provider
+publication. Every final native host-frame candidate, including layout reset and
+document restore, prepares producer replacement and its report before core
+publication. Snapshot iteration ignores size hints and installs generation
+candidates only after successful recorder append. Snapshot constructors use
+in-place sorting and validation without temporary tree allocations.
+
+Registration preflights current, retired and queued lifetime demand before append.
+A candidate-local allocation allowance also covers accepted pointer releases,
+product tear-off and automatic replacement. Full lifetime storage returns a typed
+rejection or host-recovery boundary instead of trapping an accepted prefix in
+permanent commit rollback. A release waiting for exact preview presentation has
+the same terminal capacity rejection, using its original cause and manipulation
+identity; repeated dropped candidates do not duplicate its presentation fact or
+terminal feedback.
+
+The native adapter selects the producer's window/display bounds for a separate
+fixed snapshot promise under the same private host allowance. Borrowed capture
+checks logical bounds before minting a source. Conversion reserves the complete
+live-plus-destroyed merge and ACK/focus sidecars; prepared work-area storage owns
+the future committed routes, so successful core publication is followed only by
+filling and moving existing backing. Capacity rejection preserves the original
+roster envelope. Oversized display input revokes only work-area authority before
+validation; borrowed and frozen-source deduplication preserve this normalization
+and its capacity diagnostic. Generic/default producer storage remains unlimited.
+
+This closes roster/producer construction admission as a selected primitive.
+Host lifecycle/command owners still need a common prepaid allowance, including
+multiple retained resource entries for one exact lifetime, successful-dispatch
+ACK ownership, retirement and deferred/control construction. Those owners must
+be bounded before enabling the combined 4 MiB product profile. Configured-cap
+load/latency, lifecycle soak, native scoped input and physical platform gates
+remain open; neither default-path sampling nor this primitive completes U7/U8.
+
+The next owner-admission slice must use an explicit resource-entry bound for
+`(ViewportId, NativeSurfaceBinding)`, rather than assume one entry per window
+lifetime. Provider/viewport handoff may retain old awaiting or captured command
+owners alongside a successor. New command admission must precede backend queueing;
+staging must reserve its whole owner set before core commit. For input control,
+the existing effect lease bound E proves at most E held requests/results, but one
+accepted queue head can additionally await snapshot after releasing its lease:
+pending backing therefore needs E+1 entries. Stable input observations can use
+the producer lifetime bound W only if manual quiescence shares the automatic
+path's reference guard. Retiring input should rotate the original deque and
+move results directly into the prepaid result owner without a replacement deque
+or temporary result vector. These are bounded implementation tasks on existing
+owners, not another lifecycle registry or a presumed constant fanout multiplier.
+
+Fresh producer/construction qualification passes 1,813 all-feature workspace
+tests, 86 public-host tests, ten doctests, strict rustdoc and correctness/
+suspicious Clippy. Native gates pass 360 tests normally and 360 without native
+debug assertions, plus Clippy and macOS programmatic redock. The latter samples
+2,385,753 owned input-data bytes at root boundaries without enabling the product
+profile. A control removing only the pending native-release capacity terminal
+fails its real gesture regression; exact restoration passes all ten producer
+regressions normally and without core debug assertions. Final accounting adds
+the empty retirement-receipt Option to transport's resident and prepaid storage;
+the matching 27 storage/producer/byte-boundary cases and full workspace pass.
+These gates qualify this slice only; the remaining owner-admission and platform
+requirements above still apply.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

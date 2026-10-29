@@ -1,7 +1,5 @@
 //! Compilation of explicit host facts into one complete core platform snapshot.
 
-use std::collections::BTreeMap;
-
 use super::{
     CompiledNativeWindow, NativeCloseEffectAcknowledgement, NativeCloseFact, NativeCloseState,
     NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability, NativeHostProfile,
@@ -82,15 +80,25 @@ pub(super) fn compile_unknown_inventory_snapshot(
     .map_err(|_| NativePlatformError::ProtocolInvariant)
 }
 
-fn live_window_count(supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>) -> usize {
+/// Borrowed input is copied only after identity and finite-slot validation.
+/// Generation candidates share this bounded buffer and are installed on append.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NativeSnapshotEntry {
+    pub(super) binding: ViewportBinding,
+    pub(super) facts: NativeWindowFacts,
+    pub(super) window_generation: u64,
+    pub(super) close_generation: u64,
+}
+
+fn live_window_count(supplied: &[NativeSnapshotEntry]) -> usize {
     supplied
-        .values()
-        .filter(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Live))
+        .iter()
+        .filter(|entry| matches!(entry.facts.lifecycle, NativeWindowLifecycleFact::Live))
         .count()
 }
 
 pub(super) fn snapshot_descendant_capacity_bytes(
-    supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
+    supplied: &[NativeSnapshotEntry],
     work_areas: &NativeWorkAreaRoster,
 ) -> Result<usize, NativePlatformError> {
     let live = live_window_count(supplied)
@@ -117,36 +125,22 @@ pub(super) fn compile_platform_snapshot(
     provider: PlatformObservationLease,
     generation: u64,
     focus: FocusObservationEnvelope,
-    window_observation_generations: &BTreeMap<ViewportBinding, u64>,
-    close_generations: &BTreeMap<ViewportBinding, u64>,
-    supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
+    supplied: &[NativeSnapshotEntry],
     work_areas: &NativeWorkAreaRoster,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
     let reason = AuthorityUnavailableReason::NotReported;
     let live_count = live_window_count(supplied);
-    let mut live_bindings = Vec::with_capacity(live_count);
-    let mut windows = Vec::with_capacity(live_count);
-    let mut close_observations = Vec::with_capacity(supplied.len());
-    for (&binding, &facts) in supplied {
-        let close_generation = close_generations
-            .get(&binding)
-            .copied()
-            .ok_or(NativePlatformError::ProtocolInvariant)?;
-        let window_observation_generation =
-            if matches!(facts.lifecycle, NativeWindowLifecycleFact::Live) {
-                window_observation_generations
-                    .get(&binding)
-                    .copied()
-                    .ok_or(NativePlatformError::ProtocolInvariant)?
-            } else {
-                0
-            };
+    let mut live_bindings = super::storage::producer_buffer(live_count)?;
+    let mut windows = super::storage::producer_buffer(live_count)?;
+    let mut close_observations = super::storage::producer_buffer(supplied.len())?;
+    for entry in supplied {
+        let binding = entry.binding;
         let compiled = compile_window_fact(
             provider,
             binding,
-            facts,
-            window_observation_generation,
-            close_generation,
+            entry.facts,
+            entry.window_generation,
+            entry.close_generation,
         )?;
         if compiled.is_live {
             live_bindings.push(binding);
@@ -167,7 +161,7 @@ pub(super) fn compile_platform_snapshot(
                 return Err(NativePlatformError::InvalidWorkAreaRoster);
             }
             NativeWorkAreaRoster::Exact(work_areas) => {
-                let mut observations = Vec::with_capacity(work_areas.len());
+                let mut observations = super::storage::producer_buffer(work_areas.len())?;
                 observations.extend(work_areas.iter().copied().map(|facts| {
                     ObservedWorkArea::new(facts.token(), facts.bounds(), facts.scale_factor())
                 }));

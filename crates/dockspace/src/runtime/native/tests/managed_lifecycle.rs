@@ -899,8 +899,14 @@ fn tracked_application_action_correlation_ignores_an_earlier_pointer_close_reque
     assert!(std::ptr::eq(application_outcome, &report.inputs()[1]));
 }
 
-fn request_native_create() -> PendingNativeCreate {
-    let (mut session, root_binding) = managed_tear_off_session();
+pub(super) fn prepare_native_tear_off_release(
+    limit: Option<NativeInputStorageLimit>,
+) -> (
+    DockspaceSession,
+    NativeSurfaceBinding,
+    DockspaceReceiverDescriptor,
+) {
+    let (mut session, root_binding) = managed_tear_off_session_with_storage_limit(limit);
     let work_area_binding = session
         .native_work_area(HostWorkAreaToken::new(1))
         .expect("the committed work-area roster mints route authority");
@@ -1031,6 +1037,11 @@ fn request_native_create() -> PendingNativeCreate {
             NativePointerOwner::None,
         ))
         .expect("the exact outside-all release records");
+    (session, root_binding, source_receiver)
+}
+
+fn request_native_create() -> PendingNativeCreate {
+    let (mut session, root_binding, source_receiver) = prepare_native_tear_off_release(None);
     let mut release = session
         .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
         .expect("the native release frame begins");
@@ -1086,11 +1097,20 @@ fn request_native_create() -> PendingNativeCreate {
 }
 
 fn managed_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
+    managed_tear_off_session_with_storage_limit(None)
+}
+
+fn managed_tear_off_session_with_storage_limit(
+    limit: Option<NativeInputStorageLimit>,
+) -> (DockspaceSession, NativeSurfaceBinding) {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ITEM, SECOND_ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    managed_session_from_workspace(builder.build().expect("the tear-off workspace validates"))
+    managed_session_from_workspace_with_storage_limit(
+        builder.build().expect("the tear-off workspace validates"),
+        limit,
+    )
 }
 
 #[test]
@@ -1129,7 +1149,7 @@ fn registered_root_window_menu_allows_contained_float_and_child_promotion() {
         .expect("native presentation-command inspection commits");
 }
 
-fn programmatic_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
+pub(super) fn programmatic_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
     const MAIN_ROOT: RootId = RootId::new(2);
     const MAIN_ITEM: ItemId = ItemId::new(3);
     const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
@@ -1169,13 +1189,29 @@ fn programmatic_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
 fn managed_session_from_workspace(
     workspace: Workspace,
 ) -> (DockspaceSession, NativeSurfaceBinding) {
+    managed_session_from_workspace_with_storage_limit(workspace, None)
+}
+
+fn managed_session_from_workspace_with_storage_limit(
+    workspace: Workspace,
+    limit: Option<NativeInputStorageLimit>,
+) -> (DockspaceSession, NativeSurfaceBinding) {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let mut session = DockspaceSession::from_workspace_for_test(workspace, policy)
         .expect("the tear-off session initializes");
-    session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
-        .expect("the managed native provider enrolls");
+    if let Some(limit) = limit {
+        session
+            .enable_managed_native_host_with_input_storage_limit(
+                NativePointerRoster::Exact(Vec::new()),
+                limit,
+            )
+            .expect("the finite managed native provider enrolls");
+    } else {
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .expect("the managed native provider enrolls");
+    }
     session
         .configure_managed_native_capabilities(full_managed_capabilities())
         .expect("the managed backend capabilities configure");

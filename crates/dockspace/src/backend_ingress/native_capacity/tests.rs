@@ -346,7 +346,7 @@ fn native_capacity_replay_reserves_full_atomic_group_and_shares_payload_data() {
             + size_of::<Mutex<()>>()
             + recorder.record_buffer_capacity_bytes()
             + CoreHostFrame::backend_ingress_inline_capacity_bytes()
-            + size_of::<BackendIngressPrefixRetirementReceipt>()
+            + size_of::<Option<BackendIngressPrefixRetirementReceipt>>()
             + batch.record_buffer_capacity_bytes()
             + guard.owned_capacity_bytes()
             + count * size_of::<ViewportBinding>()

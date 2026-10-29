@@ -1,8 +1,14 @@
 //! Capacity of the native facade's retained input transport.
 
-use super::{NativePlatformError, RuntimeNativeState};
+use super::compiler::NativeSnapshotEntry;
+use super::{
+    NativeBindingState, NativePlatformError, NativeSurfaceBinding, PreparedNativeHostCommit,
+    RuntimeNativeState,
+};
 use crate::backend_ingress::BackendIngressRecorder;
+use crate::platform::{ObservedWindow, ObservedWorkArea, PlatformSnapshot, WindowCloseObservation};
 use crate::runtime::{DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession};
+use crate::viewport::{ViewportBinding, WorkAreaToken};
 use std::num::NonZeroUsize;
 
 /// Optional admission limit for a managed host's recorded input transport.
@@ -10,7 +16,7 @@ use std::num::NonZeroUsize;
 /// The allowance includes recorder backing, retained payload capacity, and
 /// reserved space for pointer preparation, one replay batch, its commit guard,
 /// and prefix retirement. Preparation fits alongside still-retained payloads.
-/// It excludes host callback buffers, producer maps and caller-owned iterators,
+/// It excludes host callback buffers, producer storage and caller-owned iterators,
 /// pending reports, renderer state, reducer state, allocator overhead and Arc
 /// control blocks. Hosts must account for
 /// those owners separately when enforcing a total native-input budget.
@@ -19,6 +25,7 @@ pub struct NativeInputStorageLimit {
     record_slots: NonZeroUsize,
     byte_limit: usize,
     report_storage: Option<NativeReportStorageLimit>,
+    producer_storage: Option<NativeProducerStorageLimit>,
 }
 
 impl NativeInputStorageLimit {
@@ -32,6 +39,7 @@ impl NativeInputStorageLimit {
             record_slots,
             byte_limit,
             report_storage: None,
+            producer_storage: None,
         }
     }
 
@@ -49,6 +57,20 @@ impl NativeInputStorageLimit {
         self.report_storage
     }
 
+    /// Also bounds producer lifetimes and complete snapshot construction.
+    /// This allowance is separate from transport and terminal-report bytes.
+    #[must_use]
+    pub const fn with_producer_storage_limit(mut self, limit: NativeProducerStorageLimit) -> Self {
+        self.producer_storage = Some(limit);
+        self
+    }
+
+    /// Returns the separately selected producer allowance, if any.
+    #[must_use]
+    pub const fn producer_storage_limit(self) -> Option<NativeProducerStorageLimit> {
+        self.producer_storage
+    }
+
     /// Returns the maximum number of retained input records.
     #[must_use]
     pub const fn record_slots(self) -> NonZeroUsize {
@@ -59,6 +81,94 @@ impl NativeInputStorageLimit {
     #[must_use]
     pub const fn byte_limit(self) -> usize {
         self.byte_limit
+    }
+}
+
+/// Optional prepaid storage for one native producer's complete binding lifetimes.
+///
+/// Binding slots cover the union of the complete current registry and retired
+/// incarnations awaiting an accepted quiescence record. Routing eligibility and
+/// missing window facts never release a slot. Work-area slots bound both the
+/// published producer roster and each prospective complete snapshot. The byte
+/// allowance also covers overlapping commit candidates, native report vectors,
+/// snapshot facts and generation candidates, and snapshot validation scratch.
+///
+/// Final recorder/replay payloads, terminal reports, caller-owned observation iterators
+/// and work-area buffers, reducer state, allocator metadata and Arc control
+/// blocks belong to their separate owners. Retained caller-owned commit reports
+/// are outside this allowance after delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeProducerStorageLimit {
+    binding_slots: NonZeroUsize,
+    work_area_slots: NonZeroUsize,
+    byte_limit: usize,
+}
+
+impl NativeProducerStorageLimit {
+    /// Selects complete lifetime and work-area bounds and their prepaid bytes.
+    #[must_use]
+    pub const fn new(
+        binding_slots: NonZeroUsize,
+        work_area_slots: NonZeroUsize,
+        byte_limit: usize,
+    ) -> Self {
+        Self {
+            binding_slots,
+            work_area_slots,
+            byte_limit,
+        }
+    }
+
+    /// Returns the combined current and retired binding bound.
+    #[must_use]
+    pub const fn binding_slots(self) -> NonZeroUsize {
+        self.binding_slots
+    }
+
+    /// Returns the complete work-area roster bound.
+    #[must_use]
+    pub const fn work_area_slots(self) -> NonZeroUsize {
+        self.work_area_slots
+    }
+
+    /// Returns the separately promised producer-storage bytes.
+    #[must_use]
+    pub const fn byte_limit(self) -> usize {
+        self.byte_limit
+    }
+
+    pub(super) fn required_bytes(self) -> Option<usize> {
+        // Keep the old producer, its complete replacement and the returned
+        // native roster/admissions prepaid together. Snapshot scratch retains
+        // facts plus old/new generations while constructing transport payloads.
+        // The payload staging allowance ends when ownership moves to transport.
+        let fixed = producer_inline_capacity_bytes()
+            .checked_add(size_of::<PreparedNativeHostCommit>())?
+            .checked_add(size_of::<Vec<NativeSnapshotEntry>>())?
+            .checked_add(size_of::<PlatformSnapshot>())?;
+        let binding_bytes = size_of::<NativeBindingState>()
+            .checked_mul(2)?
+            .checked_add(size_of::<NativeSurfaceBinding>().checked_mul(2)?)?
+            .checked_add(size_of::<NativeSnapshotEntry>())?
+            .checked_add(size_of::<ViewportBinding>())?
+            .checked_add(size_of::<ObservedWindow>())?
+            .checked_add(size_of::<WindowCloseObservation>())?;
+        let area_bytes = size_of::<WorkAreaToken>()
+            .checked_mul(2)?
+            .checked_add(size_of::<ObservedWorkArea>())?;
+        fixed
+            .checked_add(self.binding_slots.get().checked_mul(binding_bytes)?)?
+            .checked_add(self.work_area_slots.get().checked_mul(area_bytes)?)
+    }
+
+    pub(super) fn validate(self) -> Result<(), NativePlatformError> {
+        if self
+            .required_bytes()
+            .is_none_or(|required| required > self.byte_limit)
+        {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        Ok(())
     }
 }
 
@@ -149,6 +259,9 @@ impl NativeReportStorageLimit {
 impl RuntimeNativeState {
     fn input_owned_capacity_bytes(&self) -> Result<usize, NativePlatformError> {
         let mut bytes = size_of::<BackendIngressRecorder>()
+            .saturating_add(size_of::<
+                Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>,
+            >())
             .saturating_add(self.recorder.record_buffer_capacity_bytes())
             .saturating_add(self.recorder.shared_fixed_data_bytes());
         for record in self.recorder.retained_records() {
@@ -162,15 +275,63 @@ impl RuntimeNativeState {
             bytes = bytes.saturating_add(pending.frame.backend_ingress_buffer_capacity_bytes());
         }
         if let Some(receipt) = self.pending_prefix_retirement.as_ref() {
-            bytes = bytes
-                .saturating_add(size_of_val(receipt))
-                .saturating_add(receipt.owned_capacity_bytes());
+            bytes = bytes.saturating_add(receipt.owned_capacity_bytes());
         }
         Ok(bytes)
     }
 }
 
+/// Every producer buffer verifies its actual capacity before taking any data.
+/// Allocator size classes and unobservable tree nodes cannot enlarge the quota.
+pub(super) fn producer_buffer<T>(slots: usize) -> Result<Vec<T>, NativePlatformError> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(slots)
+        .map_err(|_| NativePlatformError::InputCapacity)?;
+    if buffer.capacity() > slots {
+        return Err(NativePlatformError::InputCapacity);
+    }
+    Ok(buffer)
+}
+
+/// Charge facade inline state and padding once, excluding the separately owned
+/// transport fields. The enclosing native Option also belongs to this owner.
+pub(super) const fn producer_inline_capacity_bytes() -> usize {
+    size_of::<Option<RuntimeNativeState>>()
+        - size_of::<BackendIngressRecorder>()
+        - size_of::<Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>>()
+        - size_of::<Option<super::PendingNativeReplay>>()
+}
+
 impl DockspaceSession {
+    /// Returns the current producer's inline storage and owned backing in bytes.
+    ///
+    /// Includes lifetime/work-area vector headers, generations, configuration,
+    /// focus state, inline padding and spare capacity, even after quiescence.
+    /// Recorder/replay payloads, terminal reports, temporary preparation buffers,
+    /// caller-owned iterators/work areas and delivered reports are separate.
+    /// This measures resident data, not the fixed peak reservation returned
+    /// by [`Self::native_input_producer_storage_reserved_bytes`].
+    /// Sessions without native input return zero.
+    #[must_use]
+    pub fn native_input_producer_storage_capacity_bytes(&self) -> usize {
+        self.native.as_ref().map_or(0, |native| {
+            producer_inline_capacity_bytes().saturating_add(native.producer.owned_capacity_bytes())
+        })
+    }
+
+    /// Returns the fixed allowance promised for native producer storage.
+    ///
+    /// This promise is separate from recorder/replay and terminal-report bytes.
+    /// Returns `None` when producer storage is unlimited or native input is absent.
+    #[must_use]
+    pub fn native_input_producer_storage_reserved_bytes(&self) -> Option<usize> {
+        self.native
+            .as_ref()
+            .and_then(|native| native.producer_storage_limit)
+            .map(NativeProducerStorageLimit::byte_limit)
+    }
+
     /// Returns the fixed allowance promised for native terminal-report storage.
     /// Its bytes are separate from the recorded/replay transport allowance and
     /// must be combined with host-side reservations before claiming a total cap.

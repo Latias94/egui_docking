@@ -956,9 +956,7 @@ impl RuntimeNativeState {
         &self,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativePlatformError> {
-        if binding.provider != self.provider()
-            || self.bindings.get(&binding.surface()) != Some(&binding)
-        {
+        if binding.provider != self.provider() || !self.binding_is_live(binding) {
             return Err(NativePlatformError::InvalidPointerFacts);
         }
         Ok(())
@@ -969,7 +967,7 @@ impl RuntimeNativeState {
         work_area: NativeWorkAreaBinding,
     ) -> Result<(), NativePlatformError> {
         if work_area.provider != self.provider()
-            || self.work_areas.get(&work_area.token) != Some(&work_area)
+            || self.work_area_binding(work_area.token) != Some(work_area)
         {
             return Err(NativePlatformError::InvalidPointerFacts);
         }

@@ -614,9 +614,8 @@ fn split_presentation_reports_settle_only_the_stream_in_each_exact_prefix() {
         .native
         .as_ref()
         .unwrap()
-        .bindings
-        .values()
-        .map(|binding| (*binding, facts))
+        .current_bindings()
+        .map(|binding| (binding, facts))
         .collect::<Vec<_>>();
     session
         .report_managed_native_snapshot(

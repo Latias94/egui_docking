@@ -65,6 +65,7 @@ mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
 mod storage;
+pub(crate) use storage::NativeSnapshotStorageLimit;
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
 
@@ -96,6 +97,7 @@ pub(crate) struct NativeCoordinator {
     pending_presentation_acknowledgements:
         BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
     queued_snapshot: Option<QueuedNativeSnapshot>,
+    snapshot_storage: Option<NativeSnapshotStorageLimit>,
     close_observation_settlement: (bool, bool),
     deferred_viewports: DeferredViewportDriver,
     receivers: NativeReceiverStore,
@@ -386,12 +388,13 @@ impl NativeCoordinator {
             session.enable_managed_native_host(initial_pointer_roster)?;
         }
         session.report_native_inventory_unknown()?;
-        Ok(Self {
+        let mut native = Self {
             session,
             bridge: Arc::new(NativeHostBridge::new(NativeViewportMap::default())),
             pending_no_frame_invalidations: BTreeMap::new(),
             pending_presentation_acknowledgements: BTreeMap::new(),
             queued_snapshot: None,
+            snapshot_storage: None,
             close_observation_settlement: (false, false),
             deferred_viewports: DeferredViewportDriver::default(),
             receivers: NativeReceiverStore::default(),
@@ -404,7 +407,22 @@ impl NativeCoordinator {
             focus_control: NativeFocusControl::default(),
             input_control: NativeInputControl::default(),
             lifecycle_progress: NativeLifecycleProgress::default(),
-        })
+        };
+        if let Some(producer) =
+            storage_limit.and_then(NativeInputStorageLimit::producer_storage_limit)
+        {
+            let window_slots = producer.binding_slots().get();
+            let work_area_slots = producer.work_area_slots().get();
+            let byte_limit =
+                NativeSnapshotStorageLimit::required_bytes(window_slots, work_area_slots)
+                    .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            native.configure_snapshot_storage_limit(NativeSnapshotStorageLimit {
+                window_slots,
+                work_area_slots,
+                byte_limit,
+            })?;
+        }
+        Ok(native)
     }
 
     /// Returns the eframe host handler to install in [`eframe::NativeOptions`].
@@ -2050,23 +2068,42 @@ impl NativeCoordinator {
         roster: &NativeViewportRosterRecord,
         envelope: NativeViewportRosterEnvelope,
     ) -> Result<(), NativeRuntimeError> {
+        let compiled =
+            self.bridge
+                .with_retirement_destroyed_observations(|destroyed_count, destroyed| {
+                    self.preflight_snapshot_storage(roster, destroyed_count)?;
+                    let mut observations = self.compile_viewport_roster(roster, destroyed_count)?;
+                    observations
+                        .extend(destroyed.map(|(binding, facts)| {
+                            CompiledWindowObservation::new(binding, facts)
+                        }));
+                    Ok::<_, NativeRuntimeError>((observations, destroyed_count != 0))
+                });
+        let compiled = match compiled {
+            Err(error) if error.is_input_capacity() => return Err(error),
+            result => result,
+        };
         self.session
             .configure_managed_native_capabilities(capabilities_for_backend(roster.backend()))?;
-        if let (Ok(mut observations), Ok(frozen_work_areas)) =
-            (self.compile_viewport_roster(roster), roster.work_areas())
+        if let (Ok((observations, has_destroyed)), Ok(frozen_work_areas)) =
+            (compiled, roster.work_areas())
         {
             let (core_work_areas, prepared_work_areas) =
                 self.work_areas.prepare(frozen_work_areas)?;
-            let destroyed = self.bridge.retirement_destroyed_observations();
-            let has_destroyed = !destroyed.is_empty();
-            observations.extend(
-                destroyed
-                    .into_iter()
-                    .map(|(binding, facts)| CompiledWindowObservation::new(binding, facts)),
-            );
             let mut presentation_acknowledgements = Vec::new();
-            let mut input_acknowledgement = None;
             let mut focus_reportable = Vec::new();
+            for entries in [&mut presentation_acknowledgements, &mut focus_reportable] {
+                entries
+                    .try_reserve_exact(observations.len())
+                    .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+                if self
+                    .snapshot_storage
+                    .is_some_and(|limit| entries.capacity() > 2 * limit.window_slots)
+                {
+                    return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+                }
+            }
+            let mut input_acknowledgement = None;
             for observation in &observations {
                 let binding = observation.binding();
                 if observation.presentation_acknowledged() {
@@ -2133,32 +2170,43 @@ impl NativeCoordinator {
     fn compile_viewport_roster(
         &self,
         roster: &NativeViewportRosterRecord,
-    ) -> Result<Vec<CompiledWindowObservation>, NativeHostProtocolError> {
+        destroyed_count: usize,
+    ) -> Result<Vec<CompiledWindowObservation>, NativeRuntimeError> {
+        let capacity = roster
+            .observation_count()
+            .checked_add(destroyed_count)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let mut observations = Vec::new();
+        observations
+            .try_reserve_exact(capacity)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if self
+            .snapshot_storage
+            .is_some_and(|limit| observations.capacity() > 2 * limit.window_slots)
+        {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+        }
         #[cfg(test)]
         if let Some(compiled) = roster.compiled_override() {
-            return compiled.map(|observations| {
-                observations
-                    .into_iter()
-                    .map(|observation| self.with_native_input_observation(observation))
-                    .collect()
-            });
+            observations.extend(
+                compiled?
+                    .iter()
+                    .copied()
+                    .map(|observation| self.with_native_input_observation(observation)),
+            );
+            return Ok(observations);
         }
-
-        roster
-            .observations()
-            .iter()
-            .copied()
-            .map(|observation| {
-                compile_window_observation(
-                    observation.binding(),
-                    observation.snapshot(),
-                    self.pending_presentation_acknowledgements
-                        .get(&observation.binding())
-                        .copied(),
-                )
-                .map(|compiled| self.with_native_input_observation(compiled))
-            })
-            .collect()
+        for observation in roster.observations().iter().copied() {
+            let compiled = compile_window_observation(
+                observation.binding(),
+                observation.snapshot(),
+                self.pending_presentation_acknowledgements
+                    .get(&observation.binding())
+                    .copied(),
+            )?;
+            observations.push(self.with_native_input_observation(compiled));
+        }
+        Ok(observations)
     }
 
     fn with_native_input_observation(

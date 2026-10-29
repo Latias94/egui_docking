@@ -32,6 +32,8 @@ pub(super) struct TerminalRosterState {
     settled_generation: u64,
     receipt: Option<TerminalRosterReceipt>,
     backings: [Arc<NativeViewportRosterRecord>; 2],
+    window_slots: usize,
+    work_area_slots: usize,
     window_capacity_exceeded: bool,
     work_area_capacity_exceeded: bool,
 }
@@ -54,15 +56,41 @@ impl TerminalRosterState {
                     work_area_slots,
                 ))
             }),
+            window_slots,
+            work_area_slots,
             window_capacity_exceeded: false,
             work_area_capacity_exceeded: false,
         }
     }
 
     pub(super) fn window_capacity(&self) -> usize {
-        self.backings[0]
-            .window_capacity()
-            .min(self.backings[1].window_capacity())
+        self.window_slots.min(
+            self.backings[0]
+                .window_capacity()
+                .min(self.backings[1].window_capacity()),
+        )
+    }
+
+    pub(super) const fn work_area_capacity(&self) -> usize {
+        self.work_area_slots
+    }
+
+    pub(super) fn configure_limits(&mut self, windows: usize, work_areas: usize) -> bool {
+        if windows == 0
+            || work_areas == 0
+            || self.has_pending()
+            || self
+                .backings
+                .iter()
+                .any(|backing| Arc::strong_count(backing) != 1)
+            || windows > self.window_capacity()
+            || work_areas > self.work_area_slots
+        {
+            return false;
+        }
+        self.window_slots = windows;
+        self.work_area_slots = work_areas;
+        true
     }
 
     /// Charges each preallocated Record and its actual vector capacities once.
@@ -92,7 +120,8 @@ impl TerminalRosterState {
         roster: NativeViewportRoster<'_>,
         viewports: &NativeViewportMap,
     ) -> Option<Arc<NativeViewportRosterRecord>> {
-        self.capture_with(|backing| backing.capture_into(roster, viewports))
+        let (windows, areas) = (self.window_slots, self.work_area_slots);
+        self.capture_with(|backing| backing.capture_into(roster, viewports, windows, areas))
     }
 
     pub(super) fn capture_ordinary_roster(
@@ -100,7 +129,8 @@ impl TerminalRosterState {
         roster: NativeViewportRoster<'_>,
         viewports: &NativeViewportMap,
     ) -> Option<Arc<NativeViewportRosterRecord>> {
-        self.capture_backing_with(|backing| backing.capture_into(roster, viewports))
+        let (windows, areas) = (self.window_slots, self.work_area_slots);
+        self.capture_backing_with(|backing| backing.capture_into(roster, viewports, windows, areas))
     }
 
     fn capture_with(

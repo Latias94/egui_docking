@@ -233,7 +233,12 @@ impl DockEngine {
         };
         let binding = match registration {
             Ok(binding) => binding,
-            Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { .. }) => {
+            Err(
+                ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { .. }
+                | ViewportCoordinatorError::Registry(
+                    crate::viewport_registry::ViewportRegistryError::NativeBindingCapacity,
+                ),
+            ) => {
                 return Ok(InputOutcome::ViewportRegistrationRejected { surface });
             }
             Err(source) => return Err(EngineError::Viewport { input, source }),

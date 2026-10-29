@@ -12,6 +12,123 @@ use dockspace::runtime::{
 use std::num::NonZeroUsize;
 
 #[test]
+fn public_producer_limit_keeps_accepted_registration_and_quiescence_progress_without_reconfiguration()
+ {
+    use dockspace::runtime::NativeProducerStorageLimit;
+
+    let layout = |identities: &[u64]| {
+        DockspaceLayout::new(identities.iter().copied().map(|identity| {
+            DockspaceSurfaceLayout::new(
+                SurfaceId::new(identity),
+                DockspaceRootLayout::new(
+                    RootId::new(identity),
+                    DockspaceNode::central_tabs([ItemId::new(identity)]),
+                ),
+            )
+        }))
+        .unwrap()
+    };
+    let mut session =
+        DockspaceSession::from_layout(layout(&[1, 2]), DockPolicy::default()).unwrap();
+    let producer = NativeProducerStorageLimit::new(NonZeroUsize::MIN, NonZeroUsize::MIN, 1 << 20);
+    session
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            NativeInputStorageLimit::new(NonZeroUsize::new(4).unwrap(), 1 << 20)
+                .with_producer_storage_limit(producer),
+        )
+        .unwrap();
+    assert_eq!(
+        session.native_input_producer_storage_reserved_bytes(),
+        Some(producer.byte_limit())
+    );
+    session
+        .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
+        .unwrap();
+    let recorded = session.native_input_recorded_count();
+    let version = session.version();
+    let backing = session.native_input_producer_storage_capacity_bytes();
+    assert_eq!(
+        session
+            .register_native_root(SurfaceId::new(2), HostWindowToken::new(2))
+            .unwrap_err()
+            .native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    assert_eq!(session.native_input_recorded_count(), recorded);
+    assert_eq!(session.version(), version);
+
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(frame);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.native_input_recorded_count(), recorded);
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    let binding = report
+        .inputs()
+        .iter()
+        .find_map(|input| match input {
+            HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(report.native_bindings(), [binding]);
+    assert!(!session.has_pending_native_input());
+    assert_eq!(
+        session.native_input_producer_storage_capacity_bytes(),
+        backing
+    );
+
+    let reset = session.prepare_layout_reset(layout(&[2])).unwrap();
+    let mut frame = session
+        .begin_native_layout_reset_frame(&reset, |_| unreachable!())
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    assert!(!session.is_current_native_binding(binding));
+    assert!(session.recognizes_native_binding(binding));
+    assert_eq!(
+        session
+            .register_native_root(SurfaceId::new(2), HostWindowToken::new(2))
+            .unwrap_err()
+            .native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    assert_eq!(session.native_input_recorded_count(), recorded);
+
+    session.report_native_binding_quiescence(binding).unwrap();
+    assert!(!session.recognizes_native_binding(binding));
+    session
+        .register_native_root(SurfaceId::new(2), HostWindowToken::new(2))
+        .unwrap();
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert_eq!(report.native_bindings().len(), 1);
+    assert_eq!(report.native_bindings()[0].surface(), SurfaceId::new(2));
+    assert_ne!(report.native_bindings()[0], binding);
+    assert_eq!(session.native_input_recorded_count(), recorded + 2);
+    assert_eq!(
+        session.native_input_producer_storage_capacity_bytes(),
+        backing
+    );
+    assert_eq!(
+        session.native_input_producer_storage_reserved_bytes(),
+        Some(producer.byte_limit())
+    );
+}
+
+#[test]
 fn public_report_allowance_rejects_before_publication_and_reuses_a_prepaid_output_slot() {
     use dockspace::geometry::{LogicalRect, LogicalSize};
     use dockspace::runtime::{

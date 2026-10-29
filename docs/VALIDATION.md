@@ -15,6 +15,88 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 producer and complete-roster construction admission
+
+`NativeInputStorageLimit::with_producer_storage_limit` selects a separate
+`NativeProducerStorageLimit` for current/retired binding lifetimes, complete
+work-area rosters, producer replacement and snapshot construction. Native
+enrollment checks the initial registry, required bytes and overflow before
+publishing a provider. The public reserved-byte query exposes the fixed peak
+promise; the resident query includes producer inline state, padding and actual
+vector capacities. Generic/default producer storage remains unlimited.
+
+One flat binding entry retains admission and window/close generations through
+route loss and retirement. Only successful quiescence append releases its slot;
+rejected append retains that exact lifetime. Registration also checks existing
+queued demand before append. With one selected lifetime, a refused second
+registration does not block the first accepted prefix. A candidate-local
+allocation budget covers semantic/pointer tear-off and automatic recovery.
+Full storage returns ordinary rejection or host recovery without minting a new
+binding. Final prepublication preparation independently checks the complete
+old/new union and constructs native binding/admission reports, including reset
+and document restore. Dropping either preparation publishes neither candidate.
+
+Snapshot ingestion validates each actual iterator entry without trusting size
+hints, reserves bounded scratch and all normalized vectors, and installs its
+generation candidates only after successful recorder append. Platform snapshot
+constructors sort in place and validate without temporary tree allocations.
+Caller-owned observation iterators, work-area buffers and delivered report
+containers remain host data; final recorded payloads belong to transport, while
+producer storage covers their construction overlap.
+
+The native adapter uses the selected window/display bounds for a distinct fixed
+snapshot promise under its existing private host allowance. Conversion reserves
+the whole live-plus-destroyed merge, ACK/focus vectors, old/new display-token and
+route storage, and future committed routes. Work-area commit fills and moves the
+already prepared backing after core publish. Capacity failure leaves the exact
+source roster unacknowledged and does not record Unknown. Borrowed work-area
+overflow normalizes to Unknown before validation and preserves complete window
+facts; both borrowed comparison and frozen-source equality retain that capacity
+diagnostic so changed authority can be captured again.
+
+The real native-release regression initially exposed an invariant in the
+presentation-delayed path: a full lifetime store rejected creation, but pending
+release settlement required unconditional delivery. It now consumes the original
+pending release with one rejection using its original cause/session. Other proof
+types retain their existing delivery invariant. The regression drops two
+candidates, verifies that the accepted preview report is recorded only once,
+then requires one terminal rejection and no feedback on the next frame.
+
+Fresh all-feature workspace qualification passes 1,813 tests. The external public
+host passes 86 tests, including fixed-quota registration, drop/retry, retirement
+and quiescence progress without private reconfiguration. Ten doctests, strict
+rustdoc and correctness/suspicious Clippy pass. Results are recorded in
+`/tmp/dockspace-producer-storage-qualification.json`.
+
+The matching local unpublished-fork native workspace passes 360 tests normally
+and 360 with native debug assertions disabled, plus correctness/suspicious
+Clippy. The macOS programmatic tear-off/first-live/redock/retirement journey
+exits 0 and samples 2,385,753 owned input-data bytes at root boundaries. This is
+a workload cross-check, not configured-cap saturation. Adapter regressions cover
+one-byte-short configuration, exact original-envelope retry through the production
+capacity barrier, whole live/destroyed merging, prepared ACK/focus backing across
+drop, shared host headroom, logical window rejection before capture identity, and
+work-area normalization/deduplication. Work-area tests also compare old/new
+construction peaks and backing identity through commit and Unknown revocation.
+Tracked fork pins remain unchanged and do not reproduce the local seam yet.
+
+A disposable-snapshot negative control removes only the presented-release
+capacity terminal. The real native-release regression fails with
+`InputPrefixReductionFailed` (exit 100). Restoring the exact implementation
+passes all ten producer regressions, both normally and without core debug
+assertions; results are recorded in
+`/tmp/dockspace-producer-storage-control.json`. Final accounting review also
+corrects the inline `Option` for prefix retirement: transport charges it even
+while empty, producer does not charge it again, and owned receipt backing is
+added only while held. The exact byte-boundary and ownership-transfer tests
+check that distinction without claiming physical destruction or settlement.
+
+This qualifies the selected producer/construction primitive, not the complete
+4 MiB product profile. Native host lifecycle/command owners, successful-dispatch
+ACK storage and their constructor overlap still need a common prepaid allowance.
+Configured-cap load/release latency, lifecycle soak, native scoped input and
+physical platform certification remain open.
+
 ## 2026-10-29 U7 prepaid terminal reporting and effect backpressure
 
 `NativeInputStorageLimit::with_report_storage_limit` now selects a separate

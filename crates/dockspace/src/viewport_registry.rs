@@ -442,6 +442,7 @@ pub struct ViewportRegistry {
     token_to_surface: BTreeMap<WindowToken, SurfaceId>,
     last_token: WindowToken,
     last_incarnation: WindowIncarnation,
+    native_binding_allocation_budget: Option<usize>,
     inventory_generation: InventoryGeneration,
     last_coordinate_generation: CoordinateGeneration,
     surface_authority_generations: BTreeMap<SurfaceId, CoordinateGeneration>,
@@ -462,9 +463,27 @@ impl ViewportRegistry {
             token_to_surface: BTreeMap::new(),
             last_token: WindowToken::new(0),
             last_incarnation: WindowIncarnation::new(0),
+            native_binding_allocation_budget: None,
             inventory_generation: InventoryGeneration::new(0),
             last_coordinate_generation: CoordinateGeneration::new(0),
             surface_authority_generations: BTreeMap::new(),
+        }
+    }
+
+    /// Candidate-local storage admission, cleared before publication. This is
+    /// a consumable allocation budget, not another binding identity registry.
+    pub(crate) fn set_native_binding_allocation_budget(&mut self, remaining: Option<usize>) {
+        self.native_binding_allocation_budget = remaining;
+    }
+
+    pub(crate) const fn native_binding_allocation_available(&self) -> bool {
+        !matches!(self.native_binding_allocation_budget, Some(0))
+    }
+
+    fn commit_native_binding_slot(&mut self) {
+        if let Some(remaining) = &mut self.native_binding_allocation_budget {
+            debug_assert!(*remaining > 0, "successful binding insertion was admitted");
+            *remaining = remaining.saturating_sub(1);
         }
     }
 
@@ -520,14 +539,19 @@ impl ViewportRegistry {
         if self.token_to_surface.contains_key(&token) {
             return Err(ViewportRegistryError::TokenAlreadyRegistered { token });
         }
+        if !self.native_binding_allocation_available() {
+            return Err(ViewportRegistryError::NativeBindingCapacity);
+        }
         let incarnation = self.next_incarnation()?;
         self.last_token = WindowToken::new(self.last_token.get().max(token.get()));
-        self.insert_binding(
+        let binding = self.insert_binding(
             ViewportBinding::new(self.authority_domain, epoch, surface, token, incarnation),
             role,
             ownership,
             admission,
-        )
+        )?;
+        self.commit_native_binding_slot();
+        Ok(binding)
     }
 
     /// Reserves a core token for a future native child window.
@@ -543,6 +567,9 @@ impl ViewportRegistry {
         if self.records.contains_key(&surface) {
             return Err(ViewportRegistryError::SurfaceAlreadyRegistered { surface });
         }
+        if !self.native_binding_allocation_available() {
+            return Err(ViewportRegistryError::NativeBindingCapacity);
+        }
         let token = self
             .last_token
             .checked_next()
@@ -557,6 +584,7 @@ impl ViewportRegistry {
             ViewportAdmission::Pending,
         )?;
         self.last_token = token;
+        self.commit_native_binding_slot();
         Ok(binding)
     }
 
@@ -1457,6 +1485,8 @@ fn reduce_close_observation(record: &mut ViewportRecord, events: &mut Vec<Regist
 /// Typed registry allocation, identity, or lifecycle failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ViewportRegistryError {
+    #[error("native binding lifetime storage has no available slot")]
+    NativeBindingCapacity,
     #[error("logical surface {surface:?} is already registered")]
     SurfaceAlreadyRegistered { surface: SurfaceId },
     #[error("window token {token:?} is already registered")]

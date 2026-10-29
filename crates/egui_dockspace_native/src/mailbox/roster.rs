@@ -30,6 +30,7 @@ impl PartialEq for NativeViewportRosterRecord {
     fn eq(&self, other: &Self) -> bool {
         let equal = self.observations == other.observations
             && self.work_areas == other.work_areas
+            && self.work_area_capacity_exceeded == other.work_area_capacity_exceeded
             && self.backend == other.backend;
         #[cfg(test)]
         let equal = equal && self.compiled_override == other.compiled_override;
@@ -106,8 +107,12 @@ impl NativeViewportRosterRecord {
         &mut self,
         roster: NativeViewportRoster<'_>,
         viewports: &NativeViewportMap,
+        window_slots: usize,
+        work_area_slots: usize,
     ) -> bool {
-        if Self::mapped_window_count(roster, viewports) > self.observations.capacity() {
+        if Self::mapped_window_count(roster, viewports)
+            > window_slots.min(self.observations.capacity())
+        {
             return false;
         }
         self.observations.clear();
@@ -131,8 +136,19 @@ impl NativeViewportRosterRecord {
         {
             self.work_area_spare = storage;
         }
-        (self.work_areas, self.work_area_capacity_exceeded) =
-            FrozenWorkAreaRoster::capture_reusing(roster.work_areas(), &mut self.work_area_spare);
+        if matches!(roster.work_areas(), eframe::NativeWorkAreaRoster::Exact(records)
+            if records.len() > work_area_slots)
+        {
+            self.work_area_spare.clear();
+            self.work_areas = Ok(FrozenWorkAreaRoster::Unknown);
+            self.work_area_capacity_exceeded = true;
+        } else {
+            (self.work_areas, self.work_area_capacity_exceeded) =
+                FrozenWorkAreaRoster::capture_reusing(
+                    roster.work_areas(),
+                    &mut self.work_area_spare,
+                );
+        }
         self.backend = roster.backend();
         #[cfg(test)]
         {
@@ -182,6 +198,7 @@ impl NativeViewportRosterRecord {
         &self,
         roster: NativeViewportRoster<'_>,
         viewports: &NativeViewportMap,
+        work_area_slots: usize,
     ) -> bool {
         if self.backend != roster.backend()
             || self.observations.len() != Self::mapped_window_count(roster, viewports)
@@ -204,15 +221,11 @@ impl NativeViewportRosterRecord {
                 return false;
             }
         }
-        if self.work_area_capacity_exceeded
-            && matches!(roster.work_areas(), eframe::NativeWorkAreaRoster::Exact(records)
-                if records.len() > self.work_area_spare.capacity())
-        {
-            // Oversized display inventories consistently revoke work-area
-            // authority while preserving the complete window inventory.
-            return true;
-        }
-        match &self.work_areas {
+        let exact_len = match roster.work_areas() {
+            eframe::NativeWorkAreaRoster::Exact(records) => Some(records.len()),
+            eframe::NativeWorkAreaRoster::Unknown => None,
+        };
+        self.matches_normalized_work_areas(exact_len, work_area_slots, || match &self.work_areas {
             Ok(expected) => expected.matches_borrowed(roster.work_areas()),
             Err(expected) => {
                 FrozenWorkAreaRoster::validate_borrowed(roster.work_areas())
@@ -220,11 +233,42 @@ impl NativeViewportRosterRecord {
                     .as_ref()
                     == Some(expected)
             }
+        })
+    }
+
+    fn matches_normalized_work_areas(
+        &self,
+        exact_len: Option<usize>,
+        work_area_slots: usize,
+        compare_facts: impl FnOnce() -> bool,
+    ) -> bool {
+        let work_area_capacity = match &self.work_areas {
+            Ok(FrozenWorkAreaRoster::Exact(records)) => records.capacity(),
+            _ => self.work_area_spare.capacity(),
+        };
+        let exceeds_work_area_capacity =
+            exact_len.is_some_and(|len| len > work_area_slots.min(work_area_capacity));
+        if self.work_area_capacity_exceeded != exceeds_work_area_capacity {
+            return false;
         }
+        if exceeds_work_area_capacity {
+            // Oversized display inventories consistently revoke work-area
+            // authority before validation while preserving the window inventory.
+            return true;
+        }
+        compare_facts()
     }
 
     pub(crate) fn observations(&self) -> &[FrozenWindowObservation] {
         &self.observations
+    }
+
+    pub(crate) fn observation_count(&self) -> usize {
+        #[cfg(test)]
+        if let Some(Ok(compiled)) = &self.compiled_override {
+            return compiled.len();
+        }
+        self.observations.len()
     }
 
     pub(crate) fn work_areas(&self) -> Result<&FrozenWorkAreaRoster, NativeHostProtocolError> {
@@ -238,8 +282,10 @@ impl NativeViewportRosterRecord {
     #[cfg(test)]
     pub(crate) fn compiled_override(
         &self,
-    ) -> Option<Result<Vec<CompiledWindowObservation>, NativeHostProtocolError>> {
-        self.compiled_override.clone()
+    ) -> Option<Result<&[CompiledWindowObservation], NativeHostProtocolError>> {
+        self.compiled_override
+            .as_ref()
+            .map(|result| result.as_ref().map(Vec::as_slice).map_err(|error| *error))
     }
 
     #[cfg(test)]
@@ -337,5 +383,74 @@ impl NativeViewportRosterEnvelope {
 
     pub(crate) const fn is_terminal(&self) -> bool {
         self.terminal_generation.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn oversized_input_cannot_match_an_old_validation_error() {
+        let mut old = NativeViewportRosterRecord::with_capacity(0, 64);
+        old.work_areas = Err(NativeHostProtocolError::InvalidWorkAreaRoster);
+        assert!(!old.matches_normalized_work_areas(Some(2), 1, || {
+            panic!("capture skips validation for an oversized roster, even for equal old errors")
+        }));
+        old.work_areas = Ok(FrozenWorkAreaRoster::Unknown);
+        old.work_area_capacity_exceeded = true;
+        assert!(old.matches_normalized_work_areas(Some(2), 1, || {
+            panic!("two oversized rosters share their normalized Unknown result")
+        }));
+        assert!(!old.matches_normalized_work_areas(None, 1, || {
+            panic!("Unknown must clear the previous capacity diagnostic")
+        }));
+    }
+
+    #[test]
+    fn normalized_comparison_uses_active_backing_and_compares_facts_at_the_exact_limit() {
+        use dockspace::geometry::{PhysicalRect, ScaleFactor};
+
+        let mut old = NativeViewportRosterRecord::with_capacity(0, 0);
+        let bounds = PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).unwrap();
+        old.work_areas = Ok(FrozenWorkAreaRoster::for_test_exact([(
+            1,
+            bounds,
+            bounds,
+            ScaleFactor::new(1.0).unwrap(),
+        )]));
+        let compared = Cell::new(0);
+        for equal in [false, true] {
+            assert_eq!(
+                old.matches_normalized_work_areas(Some(1), 1, || {
+                    compared.set(compared.get() + 1);
+                    equal
+                }),
+                equal
+            );
+        }
+        assert_eq!(compared.get(), 2);
+        assert_eq!(old.work_area_spare.capacity(), 0);
+    }
+
+    #[test]
+    fn clearing_overflow_diagnostics_passes_the_second_source_deduplication() {
+        use crate::mailbox::NativeHostBridge;
+
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let mut state = bridge.lock();
+        let mut oversized = NativeViewportRosterRecord::with_capacity(0, 64);
+        oversized.work_area_capacity_exceeded = true;
+        let ordinary_unknown = NativeViewportRosterRecord::with_capacity(0, 64);
+        assert_ne!(oversized, ordinary_unknown);
+        state.committed_viewport_roster = Some(NativeViewportRosterKey::from_shared(
+            state.roster_context,
+            Arc::new(oversized),
+        ));
+        let ordinal = state.journal.captured_through();
+        assert!(state.record_viewport_roster(ordinary_unknown));
+        assert_eq!(state.journal.captured_through(), ordinal + 1);
     }
 }

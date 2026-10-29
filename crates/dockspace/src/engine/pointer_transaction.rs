@@ -1865,6 +1865,31 @@ impl DockEngine {
             return Ok(true);
         }
 
+        if !self.viewport.native_binding_allocation_available()
+            && matches!(&pending.release_decision,
+                PreviewDecision::Publish { proof, .. } if matches!(proof.as_ref(), PreviewProof::Native { .. }))
+        {
+            // A presented preview reserves its exact release, not a future
+            // native lifetime. Capacity rejection is one terminal outcome;
+            // replaying the accepted release cannot create more storage.
+            let rejection = InteractionRejection::CommandRejected(
+                crate::error::CommandError::SurfaceLifecycleFrozen {
+                    surface: pending.drag.source_surface,
+                },
+            );
+            interaction_events.push(InteractionEvent::new_caused(
+                pending.cause,
+                self.version,
+                InteractionEventKind::Rejected {
+                    status: InteractionStatus::Dragging {
+                        session: pending.session,
+                    },
+                    reason: crate::interaction::ManipulationRejection::from_interaction(&rejection),
+                },
+            ));
+            return Ok(true);
+        }
+
         let cause = pending.cause;
         let policy = self.policy.clone();
         let outcome = self.deliver_drag_release(

@@ -122,8 +122,15 @@ impl CoreHostFramePrelude {
             presentation_scopes,
             presentation_observations: BTreeMap::new(),
             item_identity_scope: None,
+            native_binding_allocation_budget: None,
             poison: None,
         })
+    }
+
+    /// Limits new native lifetimes throughout this unpublished candidate,
+    /// including observation-driven recovery and accepted pointer releases.
+    pub(crate) fn set_native_binding_allocation_budget(&mut self, remaining: Option<usize>) {
+        self.native_binding_allocation_budget = remaining;
     }
 
     /// Freezes the application identities admitted by a durable document session.
@@ -419,6 +426,9 @@ impl DockEngine {
             .collect::<BTreeSet<_>>();
         let runtime_retention_revision = self.runtime_retention_revision;
         let mut candidate = self.candidate();
+        candidate
+            .viewport
+            .set_native_binding_allocation_budget(prelude.native_binding_allocation_budget);
         let mut vacancy_ledger = TickVacancyLedger::capture(&candidate);
         let tick = candidate
             .last_reducer_tick
@@ -1041,6 +1051,7 @@ impl CoreHostFrame {
             presentation_scopes,
             presentation_observations: _,
             item_identity_scope,
+            native_binding_allocation_budget: _,
             poison: _,
         } = prelude;
         let frozen_presentation_roster = HostPresentationRoster::capture(&candidate)?;
@@ -2926,6 +2937,11 @@ impl PreparedHostFrameCommit<'_> {
 }
 
 impl OwnedPreparedHostFrameCommit {
+    /// Borrows the final unpublished candidate for runtime storage admission.
+    pub(crate) const fn candidate_engine(&self) -> &DockEngine {
+        &self.candidate
+    }
+
     pub(crate) fn has_new_undelivered_platform_effects(&self, engine: &DockEngine) -> bool {
         self.candidate
             .viewport

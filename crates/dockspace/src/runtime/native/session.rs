@@ -154,6 +154,9 @@ impl DockspaceSession {
         if let Some(reports) = limit.report_storage_limit() {
             reports.validate()?;
         }
+        if let Some(producer) = limit.producer_storage_limit() {
+            producer.validate()?;
+        }
         crate::backend_ingress::BackendIngressRecorder::preflight_native_transport_configuration(
             limit.record_slots(),
             limit.byte_limit(),
@@ -242,6 +245,12 @@ impl DockspaceSession {
         if self.native.is_some() {
             return Err(NativePlatformError::ProviderAlreadyEnabled.into());
         }
+        let producer_storage_limit =
+            storage_limit.and_then(NativeInputStorageLimit::producer_storage_limit);
+        // Admit the complete existing registry before the provider initializer
+        // can publish either platform or pointer authority.
+        let producer = NativeProducerState::prepare(&self.engine, None, producer_storage_limit)?;
+        let mut initial_bindings = storage::producer_buffer(producer.bindings.len())?;
         let report_storage = storage_limit
             .and_then(NativeInputStorageLimit::report_storage_limit)
             .map(|limit| {
@@ -299,15 +308,16 @@ impl DockspaceSession {
                 }
                 error => error.into(),
             })?;
-        let mut native = RuntimeNativeState::new(recorder, profile);
-        let initial_commit = native.commit(&self.engine);
+        let native = RuntimeNativeState::new(recorder, profile, producer, producer_storage_limit);
+        initial_bindings.extend(native.current_bindings());
+        initial_bindings.sort_unstable_by_key(|binding| binding.surface());
         self.native = Some(native);
         if let Some((limit, presentation, effects)) = report_storage {
             self.presentation = presentation;
             self.abandoned_native_effects = effects;
             self.native_report_storage_limit = Some(limit);
         }
-        Ok(initial_commit.bindings)
+        Ok(initial_bindings)
     }
 
     /// Records one exact-set native platform snapshot in backend order.
@@ -395,7 +405,7 @@ impl DockspaceSession {
         self.native
             .as_ref()
             .filter(|native| native.profile == NativeHostProfile::ManagedDesktop)
-            .and_then(|native| native.work_areas.get(&token.into_core()).copied())
+            .and_then(|native| native.work_area_binding(token.into_core()))
     }
 
     /// Records one desktop-global native pointer edge in host event order.
@@ -588,17 +598,17 @@ impl DockspaceSession {
     ) -> Result<(), DockspaceRuntimeError> {
         let expected_epoch = self.version().epoch();
         let native = self.native_state_mut()?;
-        if native.bindings.get(&binding.surface()) != Some(&binding) {
+        if !native.contains_binding(binding) {
             return Err(NativePlatformError::StaleSurface {
                 surface: binding.surface(),
             }
             .into());
         }
         let generation = native
-            .close_generations
-            .get(&binding.binding)
-            .copied()
-            .unwrap_or(0)
+            .producer
+            .binding(binding.binding)
+            .ok_or(NativePlatformError::ProtocolInvariant)?
+            .close_generation
             .checked_add(1)
             .ok_or(NativePlatformError::GenerationExhausted)?;
         let state = match state {
@@ -632,7 +642,9 @@ impl DockspaceSession {
                 acknowledgement,
             ),
         )?;
-        native.close_generations.insert(binding.binding, generation);
+        if let Some(state) = native.producer.binding_mut(binding.binding) {
+            state.close_generation = generation;
+        }
         Ok(())
     }
 
@@ -714,15 +726,22 @@ impl DockspaceSession {
     /// # Errors
     ///
     /// Returns an error when native authority is unavailable or the backend
-    /// producer rejects the semantic record.
+    /// producer rejects the semantic record. A finite producer rejects a new
+    /// lifetime before appending when current, retired and queued registrations
+    /// exhaust its slots.
     pub fn register_native_root(
         &mut self,
         surface: SurfaceId,
         token: HostWindowToken,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected = self.version();
-        self.native_state_mut()?
-            .record_root_registration(expected, surface, token.into_core())?;
+        let committed = self.engine.backend_ingress_committed_through();
+        self.native_state_mut()?.record_root_registration(
+            expected,
+            committed,
+            surface,
+            token.into_core(),
+        )?;
         Ok(())
     }
 
@@ -735,7 +754,9 @@ impl DockspaceSession {
     /// # Errors
     ///
     /// Returns an error when native authority is unavailable or the backend
-    /// producer rejects the bootstrap record. Semantic rejection is reported
+    /// producer rejects the bootstrap record. A finite producer checks lifetime
+    /// capacity before appending, together with queued root and child
+    /// registrations. Semantic rejection is reported
     /// by the next [`HostFrameReport`](crate::runtime::HostFrameReport).
     pub fn register_owned_native_child(
         &mut self,
@@ -744,8 +765,10 @@ impl DockspaceSession {
         recovery_host: SurfaceId,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected = self.version();
+        let committed = self.engine.backend_ingress_committed_through();
         self.native_state_mut()?.record_child_bootstrap(
             expected,
+            committed,
             surface,
             token.into_core(),
             crate::surface_recovery::SurfaceRecoveryBootstrap::new(recovery_host),
@@ -811,8 +834,7 @@ fn validate_close_request(
     }
     let binding = close.edge.binding();
     if native
-        .bindings
-        .get(&binding.surface())
+        .current_binding(binding.surface())
         .is_none_or(|current| current.binding != binding)
     {
         return Err(NativePlatformError::StaleSurface {

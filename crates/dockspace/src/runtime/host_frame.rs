@@ -670,7 +670,9 @@ impl DockspaceHostFrame<'_> {
         let effect_capacity = session.abandoned_native_effects.available_slots();
         let frame = frame.with_platform_effect_delivery_limit(effect_capacity);
         #[cfg(feature = "serde")]
-        let (transition, presentation, effects) = if let Some(restore) = document_restore {
+        let (transition, presentation, effects, prepared_native) = if let Some(restore) =
+            document_restore
+        {
             let prepared = restore
                 .prepare_publication(frame, &session.engine)
                 .map_err(DockspacePersistenceError::session)?;
@@ -680,6 +682,11 @@ impl DockspaceHostFrame<'_> {
             {
                 return Err(NativePlatformError::InputCapacity.into());
             }
+            let prepared_native = session
+                .native
+                .as_ref()
+                .map(|native| native.prepare_native_commit(prepared.candidate_engine()))
+                .transpose()?;
             let presentation = session
                 .presentation
                 .prepare_emissions(prepared.transition(), &submitted_presentation)?;
@@ -688,7 +695,7 @@ impl DockspaceHostFrame<'_> {
                 .prepare_emissions(prepared.transition().platform_effects())?;
             let (transition, binding) = prepared.commit(&mut session.engine)?;
             session.document = Some(binding);
-            (transition, presentation, effects)
+            (transition, presentation, effects, prepared_native)
         } else {
             let prepared = frame.prepare_owned(&session.engine)?;
             if !accepted_native_prefix
@@ -699,16 +706,26 @@ impl DockspaceHostFrame<'_> {
             {
                 return Err(NativePlatformError::InputCapacity.into());
             }
+            let prepared_native = session
+                .native
+                .as_ref()
+                .map(|native| native.prepare_native_commit(prepared.candidate_engine()))
+                .transpose()?;
             let presentation = session
                 .presentation
                 .prepare_emissions(prepared.transition(), &submitted_presentation)?;
             let effects = session
                 .abandoned_native_effects
                 .prepare_emissions(prepared.transition().platform_effects())?;
-            (prepared.commit(&mut session.engine)?, presentation, effects)
+            (
+                prepared.commit(&mut session.engine)?,
+                presentation,
+                effects,
+                prepared_native,
+            )
         };
         #[cfg(not(feature = "serde"))]
-        let (transition, presentation, effects) = {
+        let (transition, presentation, effects, prepared_native) = {
             let prepared = frame.prepare_owned(&session.engine)?;
             if !accepted_native_prefix
                 && has_ordinary_application_input(prepared.transition())
@@ -718,20 +735,33 @@ impl DockspaceHostFrame<'_> {
             {
                 return Err(NativePlatformError::InputCapacity.into());
             }
+            let prepared_native = session
+                .native
+                .as_ref()
+                .map(|native| native.prepare_native_commit(prepared.candidate_engine()))
+                .transpose()?;
             let presentation = session
                 .presentation
                 .prepare_emissions(prepared.transition(), &submitted_presentation)?;
             let effects = session
                 .abandoned_native_effects
                 .prepare_emissions(prepared.transition().platform_effects())?;
-            (prepared.commit(&mut session.engine)?, presentation, effects)
+            (
+                prepared.commit(&mut session.engine)?,
+                presentation,
+                effects,
+                prepared_native,
+            )
         };
         session.committed_source_sequence = next_source_sequence;
-        let mut native_commit = session.native.as_mut().map(|native| {
-            let mut committed = native.commit(&session.engine);
-            committed.input_pending |= native_input_pending;
-            committed
-        });
+        let mut native_commit =
+            prepared_native
+                .zip(session.native.as_mut())
+                .map(|(prepared, native)| {
+                    let mut committed = prepared.commit(native);
+                    committed.input_pending |= native_input_pending;
+                    committed
+                });
         let surface_presentation_commits = session.presentation.commit_observation(
             &session.engine,
             &transition,

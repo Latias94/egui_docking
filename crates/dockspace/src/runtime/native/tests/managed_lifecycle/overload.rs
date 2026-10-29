@@ -40,9 +40,7 @@ impl FiniteReset {
                     .native
                     .as_ref()
                     .unwrap()
-                    .bindings
-                    .get(&SURFACE)
-                    .copied()
+                    .current_binding(SURFACE)
                     .unwrap();
                 session
                     .report_native_input_binding_retired(binding)

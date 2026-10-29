@@ -451,6 +451,11 @@ impl DockspaceSession {
                     }
                 }
                 let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
+                prelude.set_native_binding_allocation_budget(
+                    self.native
+                        .as_ref()
+                        .and_then(native::RuntimeNativeState::binding_allocation_budget),
+                );
                 #[cfg(feature = "serde")]
                 if let Some(HostFrameReplacement::DocumentRestore(restore)) = replacement.as_ref() {
                     prelude.restrict_item_identity_scope(restore.item_identity_scope());

@@ -76,6 +76,44 @@ fn cursor(ordinal: u64, window: WindowId, binding: NativeSurfaceBinding) -> Host
     ))
 }
 
+#[test]
+fn selected_window_limit_rejects_whole_synthetic_rosters_before_minting() {
+    let (bridge, _, binding, _) = bridge_with_clock();
+    let snapshot = crate::coordinator::NativeSnapshotStorageLimit::required_bytes(1, 1).unwrap();
+    assert!(bridge.configure_snapshot_storage_allowance(snapshot, 1, 1));
+    let observations = [crate::window_snapshot::CompiledWindowObservation::new(
+        binding,
+        dockspace::runtime::NativeWindowFacts::live(),
+    ); 2];
+    let mut state = bridge.lock();
+    let ordinal = state.journal.captured_through();
+    let retained = state.retained_record_count();
+    // Repeated bindings are a deliberately malformed private fixture. The
+    // count guard must run before either capture identity or validation.
+    assert!(
+        !state.record_viewport_roster(NativeViewportRosterRecord::for_test(observations, true))
+    );
+    assert_eq!(state.journal.captured_through(), ordinal);
+    assert_eq!(state.retained_record_count(), retained);
+    state.terminal_roster.require();
+    assert!(
+        !state.record_terminal_viewport_roster(NativeViewportRosterRecord::for_test(
+            observations,
+            true
+        ))
+    );
+    assert!(state.terminal_roster.needs_capture());
+    assert!(state.terminal_roster.ingress().is_none());
+    assert_eq!(state.journal.captured_through(), ordinal);
+    assert!(
+        state.record_terminal_viewport_roster(NativeViewportRosterRecord::for_test(
+            [observations[0]],
+            true
+        ))
+    );
+    assert_eq!(state.journal.captured_through(), ordinal + 1);
+}
+
 fn three_bindings() -> [NativeSurfaceBinding; 3] {
     let layout = DockspaceLayout::new((1..=3).map(|id| {
         DockspaceSurfaceLayout::new(

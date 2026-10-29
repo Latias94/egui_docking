@@ -407,6 +407,13 @@ impl DockEngine {
     ) -> Result<Result<crate::frame::NativeCreateRequest, NativeRootCreateRejection>, EngineError>
     {
         let source_surface = source_presentation.surface();
+        if !self.viewport.native_binding_allocation_available() {
+            // Accepted pointer release must terminate with a semantic rejection;
+            // rolling back its recorder prefix would replay it without progress.
+            return Ok(Err(NativeRootCreateRejection::RecoveryUnavailable {
+                source_surface,
+            }));
+        }
         if self.root_has_pending_presentation_transition(proposal.root()) {
             return Ok(Err(NativeRootCreateRejection::RootPending {
                 source_surface,

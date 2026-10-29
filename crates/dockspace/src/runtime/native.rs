@@ -10,8 +10,6 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use thiserror::Error;
 
 use super::native_effect::{
@@ -38,8 +36,8 @@ use crate::viewport::{
 use crate::viewport_registry::ViewportAdmission;
 pub use budget::{NativeInputBudget, NativeMonotonicClock};
 use compiler::{
-    compile_focus_observation, compile_platform_snapshot, compile_unknown_inventory_snapshot,
-    snapshot_descendant_capacity_bytes,
+    NativeSnapshotEntry, compile_focus_observation, compile_platform_snapshot,
+    compile_unknown_inventory_snapshot, snapshot_descendant_capacity_bytes,
 };
 pub(super) use input_batch::PendingNativeReplay;
 pub use pointer::{
@@ -51,7 +49,7 @@ pub use pointer::{
     NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
     NativeScrollSequenceId,
 };
-pub use storage::{NativeInputStorageLimit, NativeReportStorageLimit};
+pub use storage::{NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit};
 
 /// Adapter-owned opaque native-window token.
 ///
@@ -865,14 +863,121 @@ pub(super) struct RuntimeNativeState {
     pending_replay: Option<PendingNativeReplay>,
     snapshot_generation: u64,
     binding_roster_unsettled_through: Option<BackendIngressOrdinal>,
-    bindings: BTreeMap<SurfaceId, NativeSurfaceBinding>,
-    binding_admissions: BTreeMap<ViewportBinding, ViewportAdmission>,
-    retired_bindings: BTreeSet<ViewportBinding>,
-    window_observation_generations: BTreeMap<ViewportBinding, u64>,
-    work_areas: BTreeMap<WorkAreaToken, NativeWorkAreaBinding>,
-    close_generations: BTreeMap<ViewportBinding, u64>,
+    producer: NativeProducerState,
+    producer_storage_limit: Option<NativeProducerStorageLimit>,
     focus_generation: u64,
     focus: NativeGlobalFocus,
+}
+
+/// One exact incarnation remains allocated until its quiescence append succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeBindingState {
+    binding: ViewportBinding,
+    admission: Option<ViewportAdmission>,
+    window_generation: u64,
+    close_generation: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NativeProducerState {
+    bindings: Vec<NativeBindingState>,
+    work_areas: Vec<WorkAreaToken>,
+    work_area_generation: WorkAreaGeneration,
+}
+
+impl NativeProducerState {
+    fn binding(&self, binding: ViewportBinding) -> Option<&NativeBindingState> {
+        self.bindings
+            .binary_search_by_key(&binding, |state| state.binding)
+            .ok()
+            .and_then(|index| self.bindings.get(index))
+    }
+
+    fn binding_mut(&mut self, binding: ViewportBinding) -> Option<&mut NativeBindingState> {
+        self.bindings
+            .binary_search_by_key(&binding, |state| state.binding)
+            .ok()
+            .and_then(|index| self.bindings.get_mut(index))
+    }
+
+    fn prepare(
+        engine: &crate::engine::DockEngine,
+        previous: Option<&Self>,
+        limit: Option<NativeProducerStorageLimit>,
+    ) -> Result<Self, NativePlatformError> {
+        if let Some(limit) = limit {
+            limit.validate()?;
+        }
+        let registry = engine.viewport().registry();
+        let mut binding_count = previous.map_or(0, |producer| producer.bindings.len());
+        for (_, record) in registry.records() {
+            if previous.is_none_or(|producer| producer.binding(record.binding()).is_none()) {
+                binding_count = binding_count
+                    .checked_add(1)
+                    .ok_or(NativePlatformError::InputCapacity)?;
+            }
+            if limit.is_some_and(|limit| binding_count > limit.binding_slots().get()) {
+                return Err(NativePlatformError::InputCapacity);
+            }
+        }
+        let work_area_count = engine.viewport().work_areas().count();
+        if limit.is_some_and(|limit| {
+            binding_count > limit.binding_slots().get()
+                || work_area_count > limit.work_area_slots().get()
+        }) {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        let mut bindings = storage::producer_buffer(
+            limit.map_or(binding_count, |limit| limit.binding_slots().get()),
+        )?;
+        let mut work_areas = storage::producer_buffer(
+            limit.map_or(work_area_count, |limit| limit.work_area_slots().get()),
+        )?;
+        if let Some(previous) = previous {
+            for state in &previous.bindings {
+                let mut next = *state;
+                next.admission = registry
+                    .record(state.binding.surface())
+                    .filter(|record| record.binding() == state.binding)
+                    .map(|record| record.admission());
+                if next.admission.is_none() {
+                    // Retired windows retain close tombstone generations, but
+                    // can no longer publish live coordinate/input observations.
+                    next.window_generation = 0;
+                }
+                bindings.push(next);
+            }
+        }
+        for (_, record) in registry.records() {
+            if previous.is_none_or(|producer| producer.binding(record.binding()).is_none()) {
+                bindings.push(NativeBindingState {
+                    binding: record.binding(),
+                    admission: Some(record.admission()),
+                    window_generation: 0,
+                    close_generation: 0,
+                });
+            }
+        }
+        bindings.sort_unstable_by_key(|state| state.binding);
+        work_areas.extend(engine.viewport().work_areas().map(|(token, _)| token));
+        work_areas.sort_unstable();
+        Ok(Self {
+            bindings,
+            work_areas,
+            work_area_generation: engine.viewport().work_area_generation(),
+        })
+    }
+
+    fn owned_capacity_bytes(&self) -> usize {
+        self.bindings
+            .capacity()
+            .saturating_mul(size_of::<NativeBindingState>())
+            .saturating_add(
+                self.work_areas
+                    .capacity()
+                    .saturating_mul(size_of::<WorkAreaToken>()),
+            )
+    }
 }
 
 #[derive(Debug)]
@@ -883,7 +988,12 @@ struct CompiledNativeWindow {
 }
 
 impl RuntimeNativeState {
-    fn new(recorder: BackendIngressRecorder, profile: NativeHostProfile) -> Self {
+    fn new(
+        recorder: BackendIngressRecorder,
+        profile: NativeHostProfile,
+        producer: NativeProducerState,
+        producer_storage_limit: Option<NativeProducerStorageLimit>,
+    ) -> Self {
         Self {
             profile,
             managed_capabilities: None,
@@ -892,12 +1002,8 @@ impl RuntimeNativeState {
             pending_replay: None,
             snapshot_generation: 0,
             binding_roster_unsettled_through: None,
-            bindings: BTreeMap::new(),
-            binding_admissions: BTreeMap::new(),
-            retired_bindings: BTreeSet::new(),
-            window_observation_generations: BTreeMap::new(),
-            work_areas: BTreeMap::new(),
-            close_generations: BTreeMap::new(),
+            producer,
+            producer_storage_limit,
             focus_generation: 0,
             focus: NativeGlobalFocus::Unknown,
         }
@@ -922,19 +1028,57 @@ impl RuntimeNativeState {
         self.recorder.lease().platform_provider()
     }
 
+    pub(super) fn binding_allocation_budget(&self) -> Option<usize> {
+        self.producer_storage_limit.map(|limit| {
+            limit
+                .binding_slots()
+                .get()
+                .saturating_sub(self.producer.bindings.len())
+        })
+    }
+
     pub(super) fn contains_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        binding.provider == self.provider()
-            && self.bindings.get(&binding.surface()) == Some(&binding)
+        binding.provider == self.provider() && self.binding_is_live(binding)
     }
 
     pub(super) fn recognizes_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        binding.provider == self.provider()
-            && (self.bindings.get(&binding.surface()) == Some(&binding)
-                || self.retired_bindings.contains(&binding.binding))
+        binding.provider == self.provider() && self.producer.binding(binding.binding).is_some()
     }
 
     pub(super) fn binding_is_live(&self, binding: NativeSurfaceBinding) -> bool {
-        self.bindings.get(&binding.surface()) == Some(&binding)
+        self.producer
+            .binding(binding.binding)
+            .is_some_and(|state| state.admission.is_some())
+    }
+
+    fn current_binding(&self, surface: SurfaceId) -> Option<NativeSurfaceBinding> {
+        self.producer
+            .bindings
+            .iter()
+            .find(|state| state.binding.surface() == surface && state.admission.is_some())
+            .map(|state| NativeSurfaceBinding::from_binding(self.provider(), state.binding))
+    }
+
+    fn current_bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        self.producer
+            .bindings
+            .iter()
+            .filter(|state| state.admission.is_some())
+            .map(|state| NativeSurfaceBinding::from_binding(self.provider(), state.binding))
+    }
+
+    fn work_area_binding(&self, token: WorkAreaToken) -> Option<NativeWorkAreaBinding> {
+        self.producer
+            .work_areas
+            .binary_search(&token)
+            .ok()
+            .map(|_| {
+                NativeWorkAreaBinding::new(
+                    self.provider(),
+                    self.producer.work_area_generation,
+                    token,
+                )
+            })
     }
 
     pub(super) fn recorder_mut(&mut self) -> &mut BackendIngressRecorder {
@@ -995,22 +1139,22 @@ impl RuntimeNativeState {
         if binding.provider != self.provider() {
             return Err(NativePlatformError::ProviderSuperseded);
         }
-        if self.bindings.get(&binding.surface()) == Some(&binding) {
+        if self.binding_is_live(binding) {
             return Err(NativePlatformError::BindingStillLive {
                 surface: binding.surface(),
             });
         }
-        if !self.retired_bindings.contains(&binding.binding) {
-            return Err(NativePlatformError::BindingNotRetired {
+        let index = self
+            .producer
+            .bindings
+            .binary_search_by_key(&binding.binding, |state| state.binding)
+            .map_err(|_| NativePlatformError::BindingNotRetired {
                 surface: binding.surface(),
-            });
-        }
+            })?;
         self.recorder
             .record_platform_binding_quiescence(binding.binding)
             .map_err(NativePlatformError::from_ingress)?;
-        let removed = self.retired_bindings.remove(&binding.binding);
-        debug_assert!(removed, "validated retired binding remains present");
-        self.close_generations.remove(&binding.binding);
+        self.producer.bindings.remove(index);
         Ok(())
     }
 
@@ -1051,9 +1195,8 @@ impl RuntimeNativeState {
         ),
         NativePlatformError,
     > {
-        let live = bindings.into_iter().collect::<BTreeSet<_>>();
         if let NativeGlobalFocus::Dock(binding) = self.focus
-            && !live.contains(&binding.binding)
+            && !bindings.into_iter().any(|live| live == binding.binding)
         {
             let generation = self.next_focus_generation()?;
             return Ok((
@@ -1064,82 +1207,78 @@ impl RuntimeNativeState {
         Ok((self.current_focus_observation()?, None))
     }
 
-    fn next_close_generations(
-        &self,
-        bindings: impl IntoIterator<Item = ViewportBinding>,
-    ) -> Result<BTreeMap<ViewportBinding, u64>, NativePlatformError> {
-        bindings
-            .into_iter()
-            .map(|binding| {
-                let generation = self
-                    .close_generations
-                    .get(&binding)
-                    .copied()
-                    .unwrap_or(0)
-                    .checked_add(1)
-                    .ok_or(NativePlatformError::GenerationExhausted)?;
-                Ok((binding, generation))
-            })
-            .collect()
-    }
-
-    fn next_window_observation_generations(
-        &self,
-        supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
-    ) -> Result<BTreeMap<ViewportBinding, u64>, NativePlatformError> {
-        supplied
-            .iter()
-            .filter_map(|(binding, facts)| {
-                matches!(facts.lifecycle, NativeWindowLifecycleFact::Live).then_some(*binding)
-            })
-            .map(|binding| {
-                let generation = self
-                    .window_observation_generations
-                    .get(&binding)
-                    .copied()
-                    .unwrap_or(0)
-                    .checked_add(1)
-                    .ok_or(NativePlatformError::GenerationExhausted)?;
-                Ok((binding, generation))
-            })
-            .collect()
-    }
-
     fn validate_snapshot_roster(
         &self,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
-    ) -> Result<BTreeMap<ViewportBinding, NativeWindowFacts>, NativePlatformError> {
+    ) -> Result<Vec<NativeSnapshotEntry>, NativePlatformError> {
         if self.binding_roster_unsettled_through.is_some() {
             return Err(NativePlatformError::BindingRosterUnsettled);
         }
-        let mut supplied = BTreeMap::new();
+        let mut supplied: Vec<NativeSnapshotEntry> = Vec::new();
         for (binding, facts) in observations {
             if binding.provider != self.provider() {
                 return Err(NativePlatformError::ProviderSuperseded);
             }
-            let current = self.bindings.get(&binding.surface()) == Some(&binding);
-            let retired = self.retired_bindings.contains(&binding.binding);
-            if !current && !retired {
-                return Err(NativePlatformError::StaleSurface {
+            let state = self.producer.binding(binding.binding).ok_or(
+                NativePlatformError::StaleSurface {
                     surface: binding.surface(),
-                });
-            }
-            if retired && !matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }) {
+                },
+            )?;
+            if state.admission.is_none()
+                && !matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. })
+            {
                 return Err(NativePlatformError::RetiredSurfaceHasLiveFacts {
                     surface: binding.surface(),
                 });
             }
-            if supplied.insert(binding.binding, facts).is_some() {
+            if supplied
+                .iter()
+                .any(|entry| entry.binding == binding.binding)
+            {
                 return Err(NativePlatformError::DuplicateSurface {
                     surface: binding.surface(),
                 });
             }
+            let close_generation = state
+                .close_generation
+                .checked_add(1)
+                .ok_or(NativePlatformError::GenerationExhausted)?;
+            let window_generation = if matches!(facts.lifecycle, NativeWindowLifecycleFact::Live) {
+                state
+                    .window_generation
+                    .checked_add(1)
+                    .ok_or(NativePlatformError::GenerationExhausted)?
+            } else {
+                0
+            };
+            // Iterator hints never determine allocation or admission. Validate
+            // each capability and its slot before growing owned scratch.
+            if supplied.len() == supplied.capacity() {
+                if let Some(limit) = self.producer_storage_limit {
+                    if supplied.len() >= limit.binding_slots().get() {
+                        return Err(NativePlatformError::InputCapacity);
+                    }
+                    supplied = storage::producer_buffer(limit.binding_slots().get())?;
+                } else {
+                    supplied
+                        .try_reserve(1)
+                        .map_err(|_| NativePlatformError::InputCapacity)?;
+                }
+            }
+            supplied.push(NativeSnapshotEntry {
+                binding: binding.binding,
+                facts,
+                window_generation,
+                close_generation,
+            });
         }
-        if self
-            .bindings
-            .values()
-            .any(|binding| !supplied.contains_key(&binding.binding))
-        {
+        supplied.sort_unstable_by_key(|entry| entry.binding);
+        if self.producer.bindings.iter().any(|state| {
+            state.admission.is_some()
+                && supplied
+                    .binary_search_by_key(&state.binding, |entry| entry.binding)
+                    .is_err()
+        }) {
             return Err(NativePlatformError::IncompleteRoster);
         }
         Ok(supplied)
@@ -1156,17 +1295,22 @@ impl RuntimeNativeState {
         {
             return Err(NativePlatformError::HostProfileMismatch);
         }
+        if let (Some(limit), NativeWorkAreaRoster::Exact(areas)) =
+            (self.producer_storage_limit, &work_areas)
+            && areas.len() > limit.work_area_slots().get()
+        {
+            return Err(NativePlatformError::InputCapacity);
+        }
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
         let descendants = snapshot_descendant_capacity_bytes(&supplied, &work_areas)?;
         self.recorder
             .preflight_native_transport_append(1, descendants)
             .map_err(NativePlatformError::from_ingress)?;
-        let window_observation_generations = self.next_window_observation_generations(&supplied)?;
-        let close_generations = self.next_close_generations(supplied.keys().copied())?;
         let (focus, focus_update) =
-            self.focus_observation_for_bindings(supplied.iter().filter_map(|(binding, facts)| {
-                matches!(facts.lifecycle, NativeWindowLifecycleFact::Live).then_some(*binding)
+            self.focus_observation_for_bindings(supplied.iter().filter_map(|entry| {
+                matches!(entry.facts.lifecycle, NativeWindowLifecycleFact::Live)
+                    .then_some(entry.binding)
             }))?;
         let snapshot = compile_platform_snapshot(
             self.profile,
@@ -1174,8 +1318,6 @@ impl RuntimeNativeState {
             self.provider(),
             generation,
             focus,
-            &window_observation_generations,
-            &close_generations,
             &supplied,
             &work_areas,
         )?;
@@ -1184,13 +1326,27 @@ impl RuntimeNativeState {
             .record_platform_snapshot(expected_epoch, snapshot)
             .map_err(NativePlatformError::from_ingress)?;
         self.binding_roster_unsettled_through = supplied
-            .values()
-            .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }))
+            .iter()
+            .any(|entry| {
+                matches!(
+                    entry.facts.lifecycle,
+                    NativeWindowLifecycleFact::Destroyed { .. }
+                )
+            })
             .then_some(ordinal);
         self.snapshot_generation = generation;
-        self.window_observation_generations
-            .extend(window_observation_generations);
-        self.close_generations.extend(close_generations);
+        // All generation candidates remain private until the final recorder
+        // append succeeds. Installing them only updates existing lifetime slots.
+        for state in &mut self.producer.bindings {
+            if let Ok(index) = supplied.binary_search_by_key(&state.binding, |entry| entry.binding)
+                && let Some(entry) = supplied.get(index)
+            {
+                if matches!(entry.facts.lifecycle, NativeWindowLifecycleFact::Live) {
+                    state.window_generation = entry.window_generation;
+                }
+                state.close_generation = entry.close_generation;
+            }
+        }
         if let Some((generation, focus)) = focus_update {
             self.focus_generation = generation;
             self.focus = focus;
@@ -1233,7 +1389,7 @@ impl RuntimeNativeState {
             if binding.provider != self.provider() {
                 return Err(NativePlatformError::ProviderSuperseded);
             }
-            if self.bindings.get(&binding.surface()) != Some(&binding) {
+            if !self.binding_is_live(binding) {
                 return Err(NativePlatformError::StaleSurface {
                     surface: binding.surface(),
                 });
@@ -1255,9 +1411,11 @@ impl RuntimeNativeState {
     fn record_root_registration(
         &mut self,
         expected: crate::model::WorkspaceVersion,
+        committed: BackendIngressOrdinal,
         surface: SurfaceId,
         token: WindowToken,
     ) -> Result<(), NativePlatformError> {
+        self.preflight_registration(committed, surface)?;
         let ordinal = self
             .recorder
             .record_viewport_registration(expected, surface, token, ViewportRole::Root, None)
@@ -1269,10 +1427,12 @@ impl RuntimeNativeState {
     fn record_child_bootstrap(
         &mut self,
         expected: crate::model::WorkspaceVersion,
+        committed: BackendIngressOrdinal,
         surface: SurfaceId,
         token: WindowToken,
         recovery: crate::surface_recovery::SurfaceRecoveryBootstrap,
     ) -> Result<(), NativePlatformError> {
+        self.preflight_registration(committed, surface)?;
         let ordinal = self
             .recorder
             .record_child_viewport_bootstrap(expected, surface, token, recovery)
@@ -1281,74 +1441,118 @@ impl RuntimeNativeState {
         Ok(())
     }
 
-    pub(super) fn commit(&mut self, engine: &crate::engine::DockEngine) -> NativeHostCommit {
-        let next_binding_admissions = engine
-            .viewport()
-            .registry()
-            .records()
-            .map(|(_, record)| (record.binding(), record.admission()))
-            .collect::<BTreeMap<_, _>>();
-        let native_admissions =
-            newly_admitted_bindings(&self.binding_admissions, &next_binding_admissions)
-                .into_iter()
-                .map(|binding| NativeSurfaceBinding::from_binding(self.provider(), binding))
-                .collect();
-        let next_bindings: BTreeMap<SurfaceId, NativeSurfaceBinding> = engine
-            .viewport()
-            .registry()
-            .records()
-            .map(|(surface, record)| {
-                (
-                    surface,
-                    NativeSurfaceBinding::from_binding(self.provider(), record.binding()),
-                )
-            })
-            .collect();
-        for binding in self.bindings.values() {
-            if next_bindings.get(&binding.surface()) != Some(binding) {
-                self.retired_bindings.insert(binding.binding);
+    fn preflight_registration(
+        &self,
+        committed: BackendIngressOrdinal,
+        surface: SurfaceId,
+    ) -> Result<(), NativePlatformError> {
+        let Some(limit) = self.producer_storage_limit else {
+            return Ok(());
+        };
+        // A repeated current/queued surface cannot create another incarnation.
+        // Preserve its existing semantic rejection instead of reserving a slot.
+        if self.current_binding(surface).is_some() {
+            return Ok(());
+        }
+        let records = self.recorder.retained_records();
+        let mut required = self.producer.bindings.len();
+        let mut already_queued = false;
+        for (index, record) in records.iter().enumerate() {
+            if record.ordinal() <= committed {
+                continue;
+            }
+            let Some(queued) = registration_surface(record) else {
+                continue;
+            };
+            if queued == surface {
+                already_queued = true;
+            }
+            if self.current_binding(queued).is_some()
+                || records[..index].iter().any(|previous| {
+                    previous.ordinal() > committed && registration_surface(previous) == Some(queued)
+                })
+            {
+                continue;
+            }
+            required = required
+                .checked_add(1)
+                .ok_or(NativePlatformError::InputCapacity)?;
+        }
+        if !already_queued {
+            required = required
+                .checked_add(1)
+                .ok_or(NativePlatformError::InputCapacity)?;
+        }
+        if required > limit.binding_slots().get() {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        Ok(())
+    }
+
+    pub(super) fn prepare_native_commit(
+        &self,
+        engine: &crate::engine::DockEngine,
+    ) -> Result<PreparedNativeHostCommit, NativePlatformError> {
+        let next_producer = NativeProducerState::prepare(
+            engine,
+            Some(&self.producer),
+            self.producer_storage_limit,
+        )?;
+        let current_count = next_producer
+            .bindings
+            .iter()
+            .filter(|state| state.admission.is_some())
+            .count();
+        let mut bindings = storage::producer_buffer(current_count)?;
+        let mut admissions = storage::producer_buffer(current_count)?;
+        for state in &next_producer.bindings {
+            if let Some(admission) = state.admission {
+                let binding = NativeSurfaceBinding::from_binding(self.provider(), state.binding);
+                bindings.push(binding);
+                if admission == ViewportAdmission::Admitted
+                    && self
+                        .producer
+                        .binding(state.binding)
+                        .is_some_and(|previous| {
+                            previous.admission == Some(ViewportAdmission::Pending)
+                        })
+                {
+                    admissions.push(binding);
+                }
             }
         }
-        self.bindings = next_bindings;
-        self.binding_admissions = next_binding_admissions;
-        self.window_observation_generations.retain(|binding, _| {
-            self.bindings
-                .get(&binding.surface())
-                .is_some_and(|current| current.binding == *binding)
-        });
-        self.work_areas = engine
-            .viewport()
-            .work_areas()
-            .map(|(token, _)| {
-                (
-                    token,
-                    NativeWorkAreaBinding::new(
-                        self.provider(),
-                        engine.viewport().work_area_generation(),
-                        token,
-                    ),
-                )
-            })
-            .collect();
-        self.close_generations.retain(|binding, _| {
-            self.bindings
-                .get(&binding.surface())
-                .is_some_and(|current| current.binding == *binding)
-                || self.retired_bindings.contains(binding)
-        });
+        // Preserve the public roster and first-live ordering of the old maps.
+        bindings.sort_unstable_by_key(|binding| binding.surface());
+        admissions.sort_unstable_by_key(|binding| binding.binding);
         let committed = engine.backend_ingress_committed_through();
-        if self
+        let binding_roster_unsettled_through = self
             .binding_roster_unsettled_through
-            .is_some_and(|through| through <= committed)
-        {
-            self.binding_roster_unsettled_through = None;
-        }
-        NativeHostCommit {
-            provider: self.provider(),
-            admissions: native_admissions,
-            bindings: self.bindings.values().copied().collect(),
-            input_pending: self.recorder.recorded_through() > committed,
-        }
+            .filter(|through| *through > committed);
+        Ok(PreparedNativeHostCommit {
+            next_producer,
+            binding_roster_unsettled_through,
+            report: NativeHostCommit {
+                provider: self.provider(),
+                admissions,
+                bindings,
+                input_pending: self.recorder.recorded_through() > committed,
+            },
+        })
+    }
+}
+
+/// The complete producer replacement and report are admitted before core publish.
+pub(super) struct PreparedNativeHostCommit {
+    next_producer: NativeProducerState,
+    binding_roster_unsettled_through: Option<BackendIngressOrdinal>,
+    report: NativeHostCommit,
+}
+
+impl PreparedNativeHostCommit {
+    pub(super) fn commit(self, native: &mut RuntimeNativeState) -> NativeHostCommit {
+        native.producer = self.next_producer;
+        native.binding_roster_unsettled_through = self.binding_roster_unsettled_through;
+        self.report
     }
 }
 
@@ -1359,16 +1563,16 @@ pub(super) struct NativeHostCommit {
     pub(super) input_pending: bool,
 }
 
-fn newly_admitted_bindings(
-    previous: &BTreeMap<ViewportBinding, ViewportAdmission>,
-    current: &BTreeMap<ViewportBinding, ViewportAdmission>,
-) -> Vec<ViewportBinding> {
-    current
-        .iter()
-        .filter_map(|(binding, admission)| {
-            (previous.get(binding) == Some(&ViewportAdmission::Pending)
-                && *admission == ViewportAdmission::Admitted)
-                .then_some(*binding)
-        })
-        .collect()
+fn registration_surface(
+    record: &crate::backend_ingress::BackendIngressRecord,
+) -> Option<SurfaceId> {
+    let crate::backend_ingress::BackendIngressPayload::SemanticInput(input) = record.payload()
+    else {
+        return None;
+    };
+    match input.as_ref() {
+        EngineInput::RegisterViewport { surface, .. }
+        | EngineInput::BootstrapChildViewport { surface, .. } => Some(*surface),
+        _ => None,
+    }
 }

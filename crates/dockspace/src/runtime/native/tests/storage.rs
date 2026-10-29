@@ -75,6 +75,7 @@ fn native_semantic_box_capacity_is_charged_once_across_batch_clones() {
         EngineInput::RegisterViewport { .. }
     ));
     let expected = size_of::<BackendIngressRecorder>()
+        + size_of::<Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>>()
         + recorder.record_buffer_capacity_bytes()
         + recorder.shared_fixed_data_bytes()
         + size_of::<EngineInput>();
@@ -105,6 +106,62 @@ fn native_semantic_box_capacity_is_charged_once_across_batch_clones() {
         session.native_input_owned_capacity_bytes().unwrap(),
         expected
     );
+}
+
+#[test]
+fn retirement_receipt_inline_storage_is_charged_while_empty_and_owned() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let reset = session
+        .prepare_layout_reset(crate::model::DockspaceLayout::empty())
+        .unwrap();
+    let mut frame = session
+        .begin_native_layout_reset_frame(&reset, |_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    session.report_native_binding_quiescence(binding).unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    let watermark = session.engine.backend_ingress_commit_watermark().unwrap();
+    let native = session.native.as_mut().unwrap();
+    let receipt = native
+        .recorder
+        .retire_committed_prefix(watermark)
+        .unwrap()
+        .unwrap();
+    let descendants = receipt.owned_capacity_bytes();
+    assert!(descendants >= size_of::<ViewportBinding>());
+    assert!(native.pending_prefix_retirement.is_none());
+    let expected = size_of::<BackendIngressRecorder>()
+        + size_of::<Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>>()
+        + native.recorder.record_buffer_capacity_bytes()
+        + native.recorder.shared_fixed_data_bytes();
+    let empty = session.native_input_owned_capacity_bytes().unwrap();
+    assert_eq!(empty, expected);
+    session.native.as_mut().unwrap().pending_prefix_retirement = Some(receipt);
+    assert_eq!(
+        session.native_input_owned_capacity_bytes().unwrap(),
+        empty + descendants
+    );
+    // Move the affine receipt out only to measure this facade's ownership. This
+    // fixture does not claim physical destruction or successful core settlement.
+    let moved = session
+        .native
+        .as_mut()
+        .unwrap()
+        .pending_prefix_retirement
+        .take()
+        .unwrap();
+    assert_eq!(moved.owned_capacity_bytes(), descendants);
+    assert_eq!(session.native_input_owned_capacity_bytes().unwrap(), empty);
 }
 
 #[test]

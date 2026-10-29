@@ -99,6 +99,7 @@ impl NativeHostState {
                 .and_then(|bytes| {
                     bytes.checked_add(self.reserved_pointer_translation_capacity_bytes())
                 })
+                .and_then(|bytes| bytes.checked_add(self.snapshot_storage_reserved_bytes))
                 .and_then(|bytes| bytes.checked_add(allowance.external_reserved_bytes))
                 .and_then(|bytes| bytes.checked_add(additional))
                 .is_some_and(|bytes| bytes <= allowance.byte_limit)
@@ -135,29 +136,57 @@ impl NativeHostState {
 
     /// Existing route, resource and retirement roots share one lifetime promise.
     /// A route-to-retirement move cannot return capacity before quiescence.
-    pub(super) fn can_admit_binding(&self, incoming: NativeSurfaceBinding) -> bool {
+    fn retained_lifetime_count(&self) -> usize {
         let bindings = || {
             self.viewports
                 .bindings()
                 .chain(self.retirements.bindings())
                 .chain(self.window_resources.bindings())
         };
-        if bindings().any(|binding| binding.same_window_lifetime(incoming)) {
-            return true;
-        }
-        let retained = bindings()
+        bindings()
             .enumerate()
             .filter(|(index, binding)| {
                 !bindings()
                     .take(*index)
                     .any(|previous| previous.same_window_lifetime(*binding))
             })
-            .count();
-        retained < self.terminal_roster.window_capacity()
+            .count()
+    }
+
+    pub(super) fn can_admit_binding(&self, incoming: NativeSurfaceBinding) -> bool {
+        self.viewports
+            .bindings()
+            .chain(self.retirements.bindings())
+            .chain(self.window_resources.bindings())
+            .any(|binding| binding.same_window_lifetime(incoming))
+            || self.retained_lifetime_count() < self.terminal_roster.window_capacity()
     }
 }
 
 impl NativeHostBridge {
+    /// One fixed conversion/settlement promise is paid before source capture.
+    /// It is retained independently of queued snapshot occupancy.
+    pub(crate) fn configure_snapshot_storage_allowance(
+        &self,
+        bytes: usize,
+        windows: usize,
+        work_areas: usize,
+    ) -> bool {
+        let mut state = self.lock();
+        if state.retained_lifetime_count() > windows || state.journal.retained_record_count() != 0 {
+            return false;
+        }
+        let previous = state.snapshot_storage_reserved_bytes;
+        state.snapshot_storage_reserved_bytes = bytes;
+        if !state.can_reserve_output_data()
+            || !state.terminal_roster.configure_limits(windows, work_areas)
+        {
+            state.snapshot_storage_reserved_bytes = previous;
+            return false;
+        }
+        true
+    }
+
     /// Configures one combined host allowance with room for initial output progress.
     ///
     /// The bridge already promises pointer translation and its retry overlap.
@@ -454,6 +483,45 @@ mod tests {
         );
         assert!(bridge.lock().can_reserve_input_data(output));
         assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
+    }
+
+    #[test]
+    fn snapshot_promise_uses_the_same_allowance_and_failed_configuration_preserves_limits() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let baseline = bridge.owned_input_capacity_bytes(None);
+        let reserved = bridge.lock().reserved_pointer_translation_capacity_bytes();
+        let output = NativeOutputResources::ordinary_entry_data_bytes();
+        let snapshot =
+            crate::coordinator::NativeSnapshotStorageLimit::required_bytes(2, 1).unwrap();
+        assert!(
+            bridge
+                .configure_input_storage_allowance(baseline + reserved + output + snapshot - 1, 0)
+        );
+        assert!(!bridge.configure_snapshot_storage_allowance(snapshot, 2, 1));
+        {
+            let state = bridge.lock();
+            assert_eq!(state.snapshot_storage_reserved_bytes, 0);
+            assert_eq!(
+                state.terminal_roster.window_capacity(),
+                super::super::terminal_roster::DEFAULT_WINDOW_CAPACITY
+            );
+            assert_eq!(
+                state.terminal_roster.work_area_capacity(),
+                super::super::terminal_roster::DEFAULT_WORK_AREA_CAPACITY
+            );
+            assert!(state.can_reserve_output_data());
+        }
+
+        assert!(
+            bridge.configure_input_storage_allowance(baseline + reserved + output + snapshot, 0)
+        );
+        assert!(bridge.configure_snapshot_storage_allowance(snapshot, 2, 1));
+        let state = bridge.lock();
+        assert_eq!(state.snapshot_storage_reserved_bytes, snapshot);
+        assert_eq!(state.terminal_roster.window_capacity(), 2);
+        assert_eq!(state.terminal_roster.work_area_capacity(), 1);
+        assert!(state.can_reserve_input_data(output));
+        assert!(!state.can_reserve_input_data(output + 1));
     }
 
     #[test]
