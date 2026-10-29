@@ -54,7 +54,6 @@ fn bounded_effect_submission_returns_the_affine_result_until_accepted_input_drai
     assert_eq!(session.native_input_recorded_count(), recorded);
 
     commit_managed_frame(&mut session);
-    commit_managed_frame(&mut session);
     session.report_native_effect_result(failed).unwrap();
     assert_eq!(session.native_input_recorded_count(), recorded + 1);
     let mut report = commit_managed_frame_report(&mut session);

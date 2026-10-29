@@ -15,6 +15,58 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 native core-capacity backpressure
+
+The native coordinator can exercise the facade's selected transport limit
+through one internal enrollment path, while its default product configuration
+remains unlimited until complete host/terminal admission is ready. The public
+core `prepare_native_pointer_capacity()` performs explicit committed-prefix
+maintenance before caller iteration and reports a finite pointer-preparation
+allowance or unlimited recording. A suspended candidate retains its data.
+`has_pending_native_input()` distinguishes an accepted prefix which can make
+progress through commit from a permanently undersized empty recorder.
+
+Cursor claims use that allowance and the remaining scheduling budget to select
+their exact raw prefix. Translation streams directly into prepared journals
+instead of allocating another `Vec<NativePointerInput>`. Only successful
+recording transfers the raw prefix and installs the translator candidate. A full
+recorder retains the raw head and source identity, marks the existing host-frame
+boundary pending, and yields so accepted input can commit. Capacity errors are
+converted to that yield only while accepted core records remain; an empty core
+which cannot admit the next indivisible terminal group returns the original
+capacity error rather than spinning through empty frames.
+
+Affine effect-result submission now reclaims a committed prefix after its
+original provider/binding/epoch validation and before append. Rejection still
+returns the original result. This prevents a retry from remaining falsely full
+until a later pointer operation performs maintenance and overtakes it.
+
+Core regressions cover temporary zero capacity, frame drop, reclaim after exact
+commit, suspended-candidate preservation, an empty recorder too small for one
+edge, and direct effect retry without an extra empty frame. The bounded native
+journey uses a real pressed translator stream, clips a cursor prefix to two
+remaining slots, retains the raw suffix at full capacity, and resumes the same
+pointer after commit. A five-device terminal group against four slots explicitly
+fails without consuming the raw Destroyed callback or changing translator state.
+
+Fresh serialized qualification passes 1,780 all-feature workspace tests,
+80 external public-host tests, ten doctests, strict rustdoc, and
+correctness/suspicious Clippy. The local unpublished-fork native workspace passes
+330 tests normally and 330 with native debug assertions disabled, plus its
+correctness/suspicious Clippy. The macOS programmatic tear-off, first-live,
+redock and retirement journey exits 0 with a sampled root-boundary high-water
+mark of 2,024,952 owned input-data bytes. The qualification record is
+`/tmp/dockspace-native-core-backpressure-qualification.json`. A disposable
+snapshot control removes only the cursor-prefix capacity clipping. The bounded
+journey then fails because it cannot transfer the two admissible records
+(exit 100); restoring clipping passes (exit 0). Control results are recorded in
+`/tmp/dockspace-native-core-backpressure-control.json`.
+
+This establishes retry and error behavior for the bounded core allowance. It does
+not yet reserve terminal fanout before creating native obligations or enable the
+combined 4 MiB product admission profile. Existing obligation storage, raw/core
+peaks, native scoped input and load/soak qualification remain required.
+
 ## 2026-10-29 U7 native owned-data integration prerequisite
 
 `NativeDockspaceApp::input_storage_capacity_bytes()` now combines the current

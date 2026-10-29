@@ -17,6 +17,45 @@ impl DockspaceSession {
             .map_or(0, |native| native.recorder.recorded_through().get())
     }
 
+    /// Returns whether recorded native facts still await a successful frame commit.
+    ///
+    /// This reports recorder state, without consuming input or granting a commit
+    /// capability. Pending renderer/effect reports which have not been recorded
+    /// are separate; host frames retain their ordinary pending-input barrier.
+    #[must_use]
+    pub fn has_pending_native_input(&self) -> bool {
+        self.native.as_ref().is_some_and(|native| {
+            native.recorder.recorded_through() > self.engine.backend_ingress_committed_through()
+        })
+    }
+
+    /// Reclaims committed transport and reports how many pointer edges can be prepared.
+    ///
+    /// Returns `None` for unlimited recording. A finite zero means preceding
+    /// accepted records need to commit before more pointer preparation can fit.
+    /// This maintenance step must precede caller iteration; the recording APIs
+    /// still validate every actual append. A suspended replay retains its data
+    /// and receives no retirement credit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a managed host, on failed prefix retirement, or
+    /// when the empty configured transport cannot accommodate even one edge.
+    pub fn prepare_native_pointer_capacity(
+        &mut self,
+    ) -> Result<Option<usize>, DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        let native = self.native_state_mut()?;
+        let capacity = native
+            .recorder
+            .native_pointer_preparation_limit(None)
+            .map_err(NativePlatformError::from_ingress)?;
+        if capacity == Some(0) && native.recorder.retained_record_count() == 0 {
+            return Err(NativePlatformError::InputCapacity.into());
+        }
+        Ok(capacity)
+    }
+
     fn native_state_mut(&mut self) -> Result<&mut RuntimeNativeState, DockspaceRuntimeError> {
         let native = self
             .native
@@ -532,7 +571,7 @@ impl DockspaceSession {
         result: NativeEffectResult,
     ) -> Result<(), NativeEffectSubmissionError> {
         let current_epoch = self.version().epoch();
-        let Some(native) = self.native.as_mut() else {
+        let Some(native) = self.native.as_ref() else {
             return Err(NativeEffectSubmissionError::new(
                 NativePlatformError::ProviderUnavailable,
                 result,
@@ -557,6 +596,17 @@ impl DockspaceSession {
                 result,
             ));
         }
+        let native = match self.native_state_mut() {
+            Ok(native) => native,
+            Err(error) => {
+                let reason = if error.native_kind() == Some(NativeHostErrorKind::InputCapacity) {
+                    NativePlatformError::InputCapacity
+                } else {
+                    NativePlatformError::ProtocolInvariant
+                };
+                return Err(NativeEffectSubmissionError::new(reason, result));
+            }
+        };
         native
             .record_effect_result(result.result)
             .map_err(|error| NativeEffectSubmissionError::new(error, result))

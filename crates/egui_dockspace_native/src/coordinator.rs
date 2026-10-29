@@ -10,10 +10,10 @@ use dockspace::runtime::{
     HostWindowToken, NativeCloseDisposition, NativeCloseEffectAcknowledgement, NativeCloseState,
     NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
     NativeEffectResult, NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind,
-    NativeIndeterminateReason, NativeInputBudget, NativePointerInput, NativePointerRoster,
-    NativePresentationEffectAcknowledgement, NativeReceiverAnswer, NativeReceiverQuery,
-    NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts, NativeWorkAreaBinding,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
+    NativeIndeterminateReason, NativeInputBudget, NativeInputStorageLimit, NativePointerInput,
+    NativePointerRoster, NativePresentationEffectAcknowledgement, NativeReceiverAnswer,
+    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
+    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
     SurfaceUnavailableReason,
 };
 use eframe::{
@@ -344,10 +344,25 @@ impl NativeCoordinator {
     /// Returns an error when another native or pointer provider is active or
     /// the initial pointer roster is not a complete valid checkpoint.
     pub fn new(
-        mut session: DockspaceSession,
+        session: DockspaceSession,
         initial_pointer_roster: NativePointerRoster,
     ) -> Result<Self, NativeRuntimeError> {
-        session.enable_managed_native_host(initial_pointer_roster)?;
+        Self::new_with_input_storage_limit(session, initial_pointer_roster, None)
+    }
+
+    pub(crate) fn new_with_input_storage_limit(
+        mut session: DockspaceSession,
+        initial_pointer_roster: NativePointerRoster,
+        storage_limit: Option<NativeInputStorageLimit>,
+    ) -> Result<Self, NativeRuntimeError> {
+        if let Some(limit) = storage_limit {
+            session.enable_managed_native_host_with_input_storage_limit(
+                initial_pointer_roster,
+                limit,
+            )?;
+        } else {
+            session.enable_managed_native_host(initial_pointer_roster)?;
+        }
         session.report_native_inventory_unknown()?;
         Ok(Self {
             session,
@@ -1290,10 +1305,18 @@ impl NativeCoordinator {
         budget: &mut NativeInputBudget,
     ) -> Result<Option<std::num::NonZeroUsize>, NativeRuntimeError> {
         self.bridge.admission_dispatch();
-        self.prepare_output_prefix(budget)?;
         let recorded_before = self.session.native_input_recorded_count();
         let allowance_before = budget.remaining_records();
-        let result = self.reduce_callback_prefix_inner(context, budget);
+        let result = self
+            .prepare_output_prefix(budget)
+            .and_then(|()| self.reduce_callback_prefix_inner(context, budget));
+        let result = match result {
+            Err(error) if error.is_input_capacity() && self.session.has_pending_native_input() => {
+                self.bridge.defer_for_core_input_capacity();
+                Ok(None)
+            }
+            result => result,
+        };
         if let Ok(Some(count)) = &result
             && self.session.native_input_recorded_count() == recorded_before
             && budget.remaining_records() == allowance_before
@@ -1360,31 +1383,42 @@ impl NativeCoordinator {
         }
         let bridge = Arc::clone(&self.bridge);
         if let Some(prefix) = bridge.claim_cursor_prefix(budget.remaining_records()) {
+            let pointer_capacity = self.session.prepare_native_pointer_capacity()?;
+            if pointer_capacity == Some(0) {
+                drop(prefix);
+                self.bridge.defer_for_core_input_capacity();
+                return Ok(None);
+            }
+            let prefix_limit = pointer_capacity.map_or(budget.remaining_records(), |capacity| {
+                capacity.min(budget.remaining_records())
+            });
             let mut candidate = self.pointer_translator.clone();
-            let mut inputs = Vec::new();
             let mut consumed = 0;
             let mut ignored = 0;
-            for record in prefix.events() {
-                if budget.is_exhausted() {
-                    break;
-                }
-                match candidate.translate(record, |point| self.work_areas.binding_at(point)) {
-                    NativePointerTranslation::Input(input) => inputs.push(input),
-                    NativePointerTranslation::Ignored => ignored += 1,
-                    NativePointerTranslation::NotPointer => {
-                        return Err(
-                            NativeHostProtocolError::WindowEventAcknowledgementMismatch.into()
-                        );
+            {
+                let mut events = prefix.events().take(prefix_limit);
+                let inputs = std::iter::from_fn(|| {
+                    loop {
+                        if budget.is_exhausted() {
+                            return None;
+                        }
+                        let record = events.next()?;
+                        consumed += 1;
+                        match candidate.translate(record, |point| self.work_areas.binding_at(point))
+                        {
+                            NativePointerTranslation::Input(input) => return Some(input),
+                            NativePointerTranslation::Ignored => ignored += 1,
+                            NativePointerTranslation::NotPointer => unreachable!(
+                                "a cursor prefix claim contains only immutable cursor-moved records"
+                            ),
+                        }
                     }
-                }
-                consumed += 1;
+                });
+                self.session.record_native_pointer_sequence(inputs)?;
             }
             let Some(count) = std::num::NonZeroUsize::new(consumed) else {
                 return Ok(None);
             };
-            if !inputs.is_empty() {
-                self.session.record_native_pointer_sequence(inputs)?;
-            }
             if !prefix.retain_prefix(count) {
                 return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
             }

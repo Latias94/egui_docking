@@ -210,6 +210,14 @@ fn native_input_capacity_counts_private_replay_buffers_without_recharging_payloa
         session.native_input_owned_capacity_bytes().unwrap(),
         before + replay
     );
+    let retained_before_prepare = format!("{:?}", session.native);
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.prepare_native_pointer_capacity().unwrap(), None);
+    assert_eq!(
+        format!("{:?}", session.native),
+        retained_before_prepare,
+        "capacity maintenance cannot retire storage retained by a suspended candidate"
+    );
 
     let mut frame = session
         .poll_native_host_frame(&mut NativeInputBudget::new(&clock), |_| {

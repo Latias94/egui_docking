@@ -46,6 +46,8 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
         .unwrap();
     let report_data = session.native_input_pending_report_capacity_bytes();
     assert!(report_data > 0);
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.prepare_native_pointer_capacity().unwrap(), Some(0));
     let moved = NativePointerInput::new(
         NativePointerId::new(7),
         NativePointerEvent::Moved,
@@ -82,6 +84,8 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
             }
         }
         assert_eq!(session.native_input_recorded_count(), expected);
+        assert!(!session.has_pending_native_input());
+        assert_eq!(session.prepare_native_pointer_capacity().unwrap(), Some(1));
         assert_eq!(
             session.native_input_pending_report_capacity_bytes(),
             report_data,

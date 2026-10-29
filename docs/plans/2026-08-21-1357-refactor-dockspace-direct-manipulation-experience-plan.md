@@ -750,6 +750,23 @@ with a sampled root-boundary high-water mark of 2,024,872 bytes. A targeted
 duplicate-roster-charge control fails, and restoration passes. The complete 4 MiB
 admission gate remains open despite this sampled workload fitting its target.
 
+The native core-capacity slice now clips cursor claims to the facade's explicit
+preparation allowance and streams translation into prepared journals. Temporary
+full storage preserves the raw owner and translator candidate while the existing
+accepted core prefix commits; empty-core permanent insufficiency remains an
+explicit error. Effect results reclaim committed storage before retry, preserving
+their affine result on rejection and their order ahead of subsequent pointer
+recording. The bounded native qualification path is selected internally; default
+product recording remains unlimited until future terminal fanout/storage is
+reserved before obligation admission. This is not the final 4 MiB product gate.
+The slice passes 1,780 all-feature workspace tests, 80 external public-host tests,
+ten doctests, strict docs and correctness/suspicious Clippy. Local native gates
+pass 330 tests normally and 330 without native debug assertions; the macOS
+programmatic redock journey completes with a sampled root-boundary high-water
+mark of 2,024,952 bytes. Physical input and mixed-DPI qualification remain open.
+A disposable-snapshot control removes only cursor-prefix capacity clipping and
+fails the bounded transfer regression; restoring clipping passes that test.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

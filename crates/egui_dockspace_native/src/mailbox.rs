@@ -2994,6 +2994,11 @@ impl NativeHostBridge {
         !matches!(self.lock().admission, NativeAdmission::Draining { .. })
     }
 
+    /// The raw owner remains queued while already accepted core input drains.
+    pub(crate) fn defer_for_core_input_capacity(&self) {
+        self.lock().event_boundary_pending = true;
+    }
+
     pub(crate) fn finish_overload_cancellation(&self, boundary: u64) -> bool {
         self.lock().admission.finish_cancellation(boundary)
     }

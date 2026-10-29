@@ -169,6 +169,12 @@ impl NativeHostProtocolError {
 }
 
 impl NativeRuntimeError {
+    pub(crate) const fn is_input_capacity(&self) -> bool {
+        matches!(&self.source,
+            NativeRuntimeErrorSource::Dockspace(error)
+                if matches!(error.native_kind(), Some(NativeHostErrorKind::InputCapacity)))
+    }
+
     /// Returns the stable product-level failure category.
     #[must_use]
     pub const fn kind(&self) -> NativeRuntimeErrorKind {

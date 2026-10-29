@@ -292,6 +292,14 @@ accepted input. It does not include the separately measured pending report
 sidecars or the host's callback/resource owners; combine those before advertising
 a total input-memory limit.
 
+Buffered hosts can call `prepare_native_pointer_capacity()` before beginning
+their own translation iterator. It reclaims committed transport and returns an
+optional finite edge count; a suspended replay keeps its original storage. Zero
+capacity with `has_pending_native_input() == true` means the accepted prefix
+must commit first. An empty recorder too small for even one pointer edge returns
+`InputCapacity`. The returned count is a scheduling hint; the recording methods
+still validate the actual payloads and complete batch admission.
+
 The synchronous `begin_native_host_frame` convenience remains available for
 hosts deliberately draining a complete interval; it does not enforce a time
 budget. The working egui native coordinator uses the budgeted protocol and

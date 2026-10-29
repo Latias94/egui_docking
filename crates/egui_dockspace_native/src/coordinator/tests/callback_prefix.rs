@@ -2,7 +2,7 @@ use super::*;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute};
 
-fn pointer_record(
+pub(super) fn pointer_record(
     native: &NativeCoordinator,
     binding: NativeSurfaceBinding,
     ordinal: u64,
@@ -54,7 +54,7 @@ fn pointer_record_at(
     record
 }
 
-fn commit_boundary(native: &mut NativeCoordinator) {
+pub(super) fn commit_boundary(native: &mut NativeCoordinator) {
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();

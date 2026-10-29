@@ -27,6 +27,127 @@ fn complete(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
 }
 
 #[test]
+fn preparation_capacity_reclaims_only_committed_input_and_reports_a_full_prefix() {
+    let mut session = unenrolled_session();
+    session
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            limit(2, WORK_BYTES),
+        )
+        .unwrap();
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.prepare_native_pointer_capacity().unwrap(), Some(1));
+    session
+        .record_native_pointer(unknown_native_pointer_input(11, NativePointerEvent::Moved))
+        .unwrap();
+    let recorded = session.native_input_recorded_count();
+    assert_eq!(session.prepare_native_pointer_capacity().unwrap(), Some(0));
+    let before = session
+        .native
+        .as_ref()
+        .unwrap()
+        .recorder
+        .pending_batch()
+        .unwrap();
+    let version = session.version();
+    drop(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.prepare_native_pointer_capacity().unwrap(), Some(0));
+    assert_eq!(
+        session
+            .native
+            .as_ref()
+            .unwrap()
+            .recorder
+            .pending_batch()
+            .unwrap(),
+        before
+    );
+    assert_eq!(session.version(), version);
+    complete(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    assert!(!session.has_pending_native_input());
+    assert!(
+        !session
+            .native
+            .as_ref()
+            .unwrap()
+            .recorder
+            .retained_records()
+            .is_empty()
+    );
+    assert_eq!(session.prepare_native_pointer_capacity().unwrap(), Some(2));
+    assert!(
+        session
+            .native
+            .as_ref()
+            .unwrap()
+            .recorder
+            .retained_records()
+            .is_empty()
+    );
+    assert_eq!(session.native_input_recorded_count(), recorded);
+    session
+        .record_native_pointer_sequence([
+            unknown_native_pointer_input(11, NativePointerEvent::Moved),
+            unknown_native_pointer_input(11, NativePointerEvent::Moved),
+        ])
+        .unwrap();
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.native_input_recorded_count(), recorded + 2);
+}
+
+#[test]
+fn preparation_capacity_reports_an_empty_transport_that_cannot_hold_one_pointer_edge() {
+    let mut probe = unenrolled_session();
+    probe
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            limit(1, WORK_BYTES),
+        )
+        .unwrap();
+    let checkpoint_bytes = probe
+        .native
+        .as_ref()
+        .unwrap()
+        .recorder
+        .native_transport_reserved_bytes()
+        .unwrap();
+    let mut session = unenrolled_session();
+    session
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            limit(1, checkpoint_bytes),
+        )
+        .unwrap();
+    complete(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    assert!(!session.has_pending_native_input());
+    let recorded = session.native_input_recorded_count();
+    for _ in 0..2 {
+        assert_eq!(
+            session
+                .prepare_native_pointer_capacity()
+                .unwrap_err()
+                .native_kind(),
+            Some(NativeHostErrorKind::InputCapacity)
+        );
+        assert!(!session.has_pending_native_input());
+        assert_eq!(session.native_input_recorded_count(), recorded);
+    }
+}
+
+#[test]
 fn bounded_enrollment_rejects_fixed_and_checkpoint_cost_without_publishing_a_provider() {
     let roster = || {
         NativePointerRoster::Exact(vec![NativePointerState::new(
