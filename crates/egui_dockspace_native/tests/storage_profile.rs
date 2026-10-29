@@ -72,6 +72,21 @@ fn public_storage_profile_rejects_incomplete_or_short_limits_and_selects_bounded
     );
 
     let exact = NativeStorageLimit::new(input, required, 48, 32, 16).unwrap();
+    for (resources, closes) in [(0, 16), (48, 0)] {
+        let insufficient = NativeStorageLimit::new(input, total, resources, 32, closes).unwrap();
+        let error = NativeDockspaceApp::new_with_storage_limit(
+            egui::Id::unique("public-storage-without-root-owner"),
+            session(),
+            SURFACE,
+            Panes,
+            DockStyle::default(),
+            NativeWindowClosePolicy::default(),
+            insufficient,
+        )
+        .err()
+        .expect("a native app must reserve its root resource and OS close owner");
+        assert_eq!(error.kind(), NativeRuntimeErrorKind::InvalidConfiguration);
+    }
     let bounded = NativeDockspaceApp::new_with_storage_limit(
         egui::Id::unique("public-bounded-storage"),
         session(),
@@ -87,6 +102,7 @@ fn public_storage_profile_rejects_incomplete_or_short_limits_and_selects_bounded
         .expect("the public bounded constructor installs its reservation");
     let resident = bounded.input_storage_capacity_bytes().unwrap();
     assert!(resident <= reserved && reserved <= exact.byte_limit());
+    assert!(!bounded.current_output_is_retained());
 
     let default = NativeDockspaceApp::new(
         egui::Id::unique("public-default-storage"),

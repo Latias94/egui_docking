@@ -188,6 +188,19 @@ impl NativeCoordinator {
         requests: Vec<NativeEffectRequest>,
     ) -> Result<(), NativeRuntimeError> {
         for request in requests {
+            if !self.bridge.accepts_new_work()
+                && matches!(
+                    request.operation(),
+                    NativeEffectOperation::CreateWindow { .. }
+                        | NativeEffectOperation::RequestReplacement { .. }
+                        | NativeEffectOperation::ShowWindow { .. }
+                        | NativeEffectOperation::RequestFocus { .. }
+                        | NativeEffectOperation::SetPointerPassthrough { enabled: true, .. }
+                )
+            {
+                self.submit_failed_effect(request, NativeDispatchFailure::ProviderStopped)?;
+                continue;
+            }
             match request.operation() {
                 NativeEffectOperation::CreateWindow {
                     binding,

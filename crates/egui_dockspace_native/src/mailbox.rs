@@ -36,6 +36,7 @@ use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeViewportBi
 use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWindowEventRecord};
 use crate::focus_control::{NativeGlobalFocusRecord, NativeViewportFocusRecord};
 use crate::input_control::NativePointerPassthroughRecord;
+use crate::lifecycle_progress::NativeOutputBacklog;
 use crate::pointer_event::NativePointerTranslator;
 use crate::retirement::{
     CleanupResultRetentionError, CommittedRetirement, DestroyedObservation, NativeRetirementState,
@@ -1962,6 +1963,7 @@ impl NativeHostState {
     }
 
     /// Resource slots share the journal clock without allocating another queue.
+    #[cfg(test)]
     fn ordered_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
         let mut raw = self.journal.reserved_iter().peekable();
         let mut after = 0;
@@ -1981,10 +1983,111 @@ impl NativeHostState {
         })
     }
 
-    fn dispatchable_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+    fn first_output_barrier(&self, cutoff: Option<u64>) -> Option<u64> {
+        self.journal
+            .reserved_iter()
+            .chain(self.owner_ingress())
+            .filter(|ingress| {
+                cutoff.is_none_or(|cutoff| ingress.ordinal() <= cutoff)
+                    && !matches!(ingress.record(), HostRecord::Output { .. })
+            })
+            .map(ReservedHostRecord::ordinal)
+            .min()
+    }
+
+    fn output_prefix_range(&self, limit: usize) -> NativeOutputPrefix {
+        let limit = limit.min(OUTPUT_PREFIX_CAPACITY);
+        let mut prefix = NativeOutputPrefix::default();
+        if limit == 0 {
+            return prefix;
+        }
         let cutoff = self.dispatch_cutoff();
-        self.ordered_ingress()
-            .take_while(move |record| cutoff.is_none_or(|cutoff| record.ordinal() <= cutoff))
+        let barrier = self.first_output_barrier(cutoff);
+        let mut first = None;
+        let mut ready = 0usize;
+        let mut submitted = 0;
+        let mut submitted_through = 0;
+        for (resource, ingress) in self.output_resources.terminal_ingress() {
+            let ordinal = ingress.ordinal();
+            if cutoff.is_some_and(|cutoff| ordinal > cutoff)
+                || barrier.is_some_and(|barrier| ordinal >= barrier)
+            {
+                continue;
+            }
+            if resource.submitted {
+                submitted += 1;
+                submitted_through = submitted_through.max(ordinal);
+            } else {
+                first = Some(first.map_or(ordinal, |first: u64| first.min(ordinal)));
+                prefix.through = prefix.through.max(ordinal);
+                ready += 1;
+            }
+        }
+        // Submitted owners remain the exact leading capture prefix until commit.
+        let Some(first) = first else {
+            return prefix;
+        };
+        if submitted != self.submitted_output_prefix || submitted_through >= first {
+            return NativeOutputPrefix::default();
+        }
+
+        if ready <= limit && prefix.through - first + 1 == ready as u64 {
+            // Output-only ingress has contiguous capture ordinals. Use those
+            // ordinals to place the common complete prefix without sorting.
+            for (resource, ingress) in self.output_resources.terminal_ingress() {
+                let ordinal = ingress.ordinal();
+                if resource.submitted
+                    || ordinal < first
+                    || ordinal > prefix.through
+                    || cutoff.is_some_and(|cutoff| ordinal > cutoff)
+                    || barrier.is_some_and(|barrier| ordinal >= barrier)
+                {
+                    continue;
+                }
+                let HostRecord::Output { token } = ingress.record() else {
+                    return NativeOutputPrefix::default();
+                };
+                let index = usize::try_from(ordinal - first)
+                    .expect("a bounded output ordinal difference fits usize");
+                if index >= ready || prefix.outputs[index].replace((ordinal, *token)).is_some() {
+                    return NativeOutputPrefix::default();
+                }
+            }
+            if prefix.outputs[..ready].iter().any(Option::is_none) {
+                return NativeOutputPrefix::default();
+            }
+            prefix.remaining = ready;
+            return prefix;
+        }
+
+        // A shorter budget or a non-contiguous stream selects only its first
+        // bounded ordinals. This avoids building a heap index or sorting every
+        // retained output when a caller needs only a small dispatch slice.
+        let mut after = first.saturating_sub(1);
+        let selected = limit.min(ready);
+        for index in 0..selected {
+            let Some((_, ingress)) = self
+                .output_resources
+                .terminal_ingress()
+                .filter(|(resource, ingress)| {
+                    !resource.submitted
+                        && ingress.ordinal() > after
+                        && ingress.ordinal() <= prefix.through
+                        && cutoff.is_none_or(|cutoff| ingress.ordinal() <= cutoff)
+                        && barrier.is_none_or(|barrier| ingress.ordinal() < barrier)
+                })
+                .min_by_key(|(_, ingress)| ingress.ordinal())
+            else {
+                return NativeOutputPrefix::default();
+            };
+            let HostRecord::Output { token } = ingress.record() else {
+                return NativeOutputPrefix::default();
+            };
+            after = ingress.ordinal();
+            prefix.outputs[index] = Some((after, *token));
+        }
+        prefix.remaining = selected;
+        prefix
     }
 
     fn transfer_front_record(&mut self) {
@@ -2013,6 +2116,12 @@ impl NativeHostState {
         }
     }
 
+    fn can_reduce_output_prefix(&self) -> bool {
+        // Only terminals validated by accept_output_order reach output ingress.
+        // Quarantine drains that FIFO without clearing the original violation.
+        !self.output_order_invalid || matches!(self.mode, HostIngressMode::Quarantined)
+    }
+
     fn has_pending_coordinator_work(&self) -> bool {
         !matches!(self.admission, NativeAdmission::Running)
             || self.retained_record_count() != 0
@@ -2020,7 +2129,7 @@ impl NativeHostState {
             || self.window_resources.has_pending_work()
             || self.retirements.has_pending_work()
             || self.in_flight_viewport_roster.is_some()
-            || self.output_order_invalid
+            || !self.can_reduce_output_prefix()
             || self.event_boundary_pending
             || self.viewports.has_semantic_wake()
             || self.terminal_roster.has_pending()
@@ -2914,12 +3023,26 @@ pub(crate) struct NativeHostBridge {
     clock: NativeMonotonicClock,
 }
 
+const OUTPUT_PREFIX_CAPACITY: usize = 256;
+
 /// A fixed range of the existing capture journal, without owning its records.
 /// Reading advances before callers mutate or remove an exact output owner.
 pub(crate) struct NativeOutputPrefix {
-    after: u64,
+    outputs: [Option<(u64, NativeOutputToken)>; OUTPUT_PREFIX_CAPACITY],
+    next: usize,
     through: u64,
     remaining: usize,
+}
+
+impl Default for NativeOutputPrefix {
+    fn default() -> Self {
+        Self {
+            outputs: [None; OUTPUT_PREFIX_CAPACITY],
+            next: 0,
+            through: 0,
+            remaining: 0,
+        }
+    }
 }
 
 pub(crate) struct NativeOutputPrefixEntry {
@@ -3443,6 +3566,10 @@ impl NativeHostBridge {
         !matches!(self.lock().admission, NativeAdmission::Draining { .. })
     }
 
+    pub(crate) fn accepts_new_work(&self) -> bool {
+        self.lock().mode.accepts_new_work()
+    }
+
     /// The raw owner remains queued while already accepted core input drains.
     pub(crate) fn defer_for_core_input_capacity(&self) {
         self.lock().event_boundary_pending = true;
@@ -3488,6 +3615,7 @@ impl NativeHostBridge {
         include_staging: bool,
     ) -> Result<(HostFrameReport, Vec<ViewportId>), NativeRuntimeError> {
         let mut records = self.lock();
+        let include_staging = include_staging && records.mode.accepts_new_work();
         let NativeHostState {
             viewports,
             window_resources,
@@ -4004,36 +4132,10 @@ impl NativeHostBridge {
 
     pub(crate) fn output_prefix(&self, limit: usize) -> NativeOutputPrefix {
         let records = self.lock();
-        let mut prefix = NativeOutputPrefix {
-            after: 0,
-            through: 0,
-            remaining: 0,
-        };
         if !matches!(records.dispatch(), NativeDispatch::Replay { .. }) {
-            return prefix;
+            return NativeOutputPrefix::default();
         }
-        for ingress in records
-            .dispatchable_ingress()
-            .skip(records.submitted_output_prefix)
-            .take(limit)
-        {
-            let HostRecord::Output { token } = ingress.record() else {
-                break;
-            };
-            if !records
-                .output_resources
-                .get(token)
-                .is_some_and(|resource| resource.terminal.is_some())
-            {
-                break;
-            }
-            if prefix.remaining == 0 {
-                prefix.after = ingress.ordinal() - 1;
-            }
-            prefix.through = ingress.ordinal();
-            prefix.remaining += 1;
-        }
-        prefix
+        records.output_prefix_range(limit)
     }
 
     pub(crate) fn next_output_prefix(
@@ -4046,20 +4148,25 @@ impl NativeHostBridge {
         let records = self.lock();
         // Submitted heads change dispatch to ContinueBoundary. Membership is
         // already frozen by capture ordinal; never reapply Replay or its skip.
-        let ingress = records
-            .output_resources
-            .values()
-            .filter_map(NativeOutputResource::terminal_ingress)
-            .filter(|record| record.ordinal() > prefix.after && record.ordinal() <= prefix.through)
-            .min_by_key(|record| record.ordinal())
-            .ok_or(NativeHostProtocolError::OutputOrderViolation)?;
-        let HostRecord::Output { token } = ingress.record() else {
-            return Err(NativeHostProtocolError::OutputOrderViolation);
-        };
+        let (ordinal, token) =
+            prefix.outputs[prefix.next].ok_or(NativeHostProtocolError::OutputOrderViolation)?;
         let resource = records
             .output_resources
-            .get(token)
+            .get(&token)
             .ok_or(NativeHostProtocolError::OutputOrderViolation)?;
+        let ingress = resource
+            .terminal_ingress()
+            .filter(|ingress| ingress.ordinal() == ordinal)
+            .ok_or(NativeHostProtocolError::OutputOrderViolation)?;
+        let HostRecord::Output {
+            token: ingress_token,
+        } = ingress.record()
+        else {
+            return Err(NativeHostProtocolError::OutputOrderViolation);
+        };
+        if *ingress_token != token {
+            return Err(NativeHostProtocolError::OutputOrderViolation);
+        }
         let entry = NativeOutputPrefixEntry {
             result: resource
                 .terminal
@@ -4068,7 +4175,7 @@ impl NativeHostBridge {
             attached: resource.paint.is_some(),
             binding: resource.reservation.binding(),
         };
-        prefix.after = ingress.ordinal();
+        prefix.next += 1;
         prefix.remaining -= 1;
         Ok(Some(entry))
     }
@@ -4083,20 +4190,14 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn has_unsubmitted_output_prefix(&self) -> bool {
-        let records = self.lock();
-        match records
-            .dispatchable_ingress()
-            .map(ReservedHostRecord::record)
-            .nth(records.submitted_output_prefix)
-        {
-            Some(HostRecord::Output { token }) => records
-                .output_resources
-                .get(token)
-                .is_some_and(|resource| !resource.submitted),
-            _ => false,
-        }
+        self.lock().output_prefix_range(1).remaining != 0
     }
 
+    pub(crate) fn can_reduce_output_prefix(&self) -> bool {
+        self.lock().can_reduce_output_prefix()
+    }
+
+    #[cfg(test)]
     pub(crate) fn output_order_is_valid(&self) -> bool {
         !self.lock().output_order_invalid
     }
@@ -4552,11 +4653,26 @@ impl NativeHostBridge {
 
     pub(crate) fn accepts_staging_paint(&self, token: NativeOutputToken) -> bool {
         let records = self.lock();
-        records.mode.accepts_new_work()
-            && records
-                .output_resources
-                .get(&token)
-                .is_some_and(|resource| !resource.reservation.abandoned && !resource.submitted)
+        records
+            .output_resources
+            .get(&token)
+            .is_some_and(|resource| {
+                !resource.reservation.abandoned
+                    && !resource.submitted
+                    && match records.mode {
+                        HostIngressMode::Active => true,
+                        // A captured terminal settles an already accepted staging paint.
+                        HostIngressMode::Quarantined => resource.terminal.is_some(),
+                        HostIngressMode::Frozen => false,
+                    }
+            })
+    }
+
+    pub(crate) fn output_backlog(&self) -> NativeOutputBacklog {
+        let records = self.lock();
+        records
+            .output_resources
+            .output_backlog(records.window_resources.awaiting_staging_count())
     }
 
     pub(crate) fn pending_output_count(&self) -> usize {
@@ -4636,15 +4752,23 @@ impl NativeHostBridge {
 
     pub(crate) fn mark_output_submitted(&self, token: NativeOutputToken) -> bool {
         let mut records = self.lock();
-        let index = records.submitted_output_prefix;
-        if !matches!(records.dispatchable_ingress().nth(index).map(ReservedHostRecord::record), Some(HostRecord::Output { token: current }) if *current == token)
-        {
+        let prefix = records.output_prefix_range(1);
+        if prefix.remaining == 0 {
             return false;
         }
         let Some(resource) = records.output_resources.get_mut(&token) else {
             return false;
         };
-        if resource.submitted || resource.terminal.is_none() {
+        let Some((ordinal, expected_token)) = prefix.outputs[0] else {
+            return false;
+        };
+        if resource.submitted
+            || expected_token != token
+            || resource.terminal.is_none()
+            || !resource
+                .terminal_ingress()
+                .is_some_and(|ingress| ingress.ordinal() == ordinal)
+        {
             return false;
         }
         resource.submitted = true;

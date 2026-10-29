@@ -185,6 +185,9 @@ impl NativeOwnerStorageLimit {
         closes: usize,
     ) -> Option<usize> {
         size_of::<Option<Self>>()
+            // One frozen dispatch prefix can coexist with the single-entry
+            // submission check. Both bounded stack buffers belong to the host.
+            .checked_add(size_of::<crate::mailbox::NativeOutputPrefix>().checked_mul(2)?)?
             .checked_add(NativeHostBridge::window_resource_storage_bytes(resources)?)?
             .checked_add(NativeHostBridge::window_resource_staging_bytes(resources)?)?
             .checked_add(NativeHostBridge::lifecycle_storage_bytes(bindings, closes)?)?

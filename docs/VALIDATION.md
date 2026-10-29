@@ -15,6 +15,90 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 real output-owner pressure
+
+The new `egui-native-output-pressure` binary uses actual eframe output tokens
+and terminal results. Its bounded proxy delays at most 258 terminal callbacks;
+that test-owned backing is reported separately from runtime data. It does not
+fabricate opaque identities or model 256 queued GPU frames. The selected 4 MiB
+profile has I64/256 KiB, W2/A1/16 KiB, R258/E2/768 KiB and M4/C2/L2. The larger
+presentation bound prevents R64 from masking the independent ordinary O256 cap.
+
+The proxy first lets actual creation establish an awaiting staging request,
+defers its child candidate and fills ordinary output owners. During filling it
+pauses new complete inventory capture, including terminal-roster recapture;
+already accepted inventory and all ordinary window/effect callbacks retain
+their original owners. Each output's exact window snapshot still passes through.
+This controlled inventory pause isolates O256 from the separate two-roster
+backing limit. The next root candidate resumes fresh complete roster capture
+after terminal delivery; successful first-live/redock/retirement is required.
+It does not qualify simultaneous full output and roster saturation.
+
+The test requires exactly 256 ordinary owners, one root control and one protected
+child staging owner. It correlates real control tokens with NotPresented for
+root and Presented for the protected child, then requires another root candidate
+to Defer. All 258 results return in their original completion order. The ordered
+journey must recover ordinary admission, redock, retire the child, settle one
+last root boundary and leave zero output owners after window exit. Separate
+processes replay a real duplicate or deliver the second real result first;
+they must preserve the precise output-order fatal error, have no extra cleanup
+errors, and finish the existing cleanup protocol. Their final root terminal
+checks drained shutdown and zero output owners before event-loop teardown.
+
+These journeys exposed three production issues. Deferred admission consumed an
+OS repaint while egui still considered its wake queued; the fork now acknowledges
+that consumed wake before calling host admission, without consuming input or
+advancing a pass. Output prefix preparation repeatedly merged all owner ingress
+and could exhaust the next dispatch before useful work; it now freezes bounded
+original ordinal/token membership once, with a linear complete-prefix path and
+checked per-token reads. Two simultaneous prefix scratch buffers are prepaid in
+the existing owner allowance. Quarantine now retains the first protocol error
+while draining validated terminal ingress, consumes already captured staging
+terminals, rejects new create/show/focus/input-enable work, and runs compensating
+close/release/cleanup through the original retirement protocol. It publishes no
+new staging requests. Read-only occupancy and error queries add no authority.
+The consumed-wake state retains the previous real pass's repaint delay until
+the next actual begin-pass, preserving egui input timing history. A final root
+close pass settles accepted work while retaining its existing framebuffer;
+it cannot issue an owner whose terminal would require a post-exit root cycle.
+The smoke observes the current staged retention and original owner count before
+requesting exit, then checks every final root terminal and window exit again.
+Finite application construction also requires a root resource and close slot
+before provider enable; pure storage profiles may still describe zero slots.
+
+Fresh frozen gates pass 443 native tests normally and 443 with native debug
+assertions disabled, including all 10,000 model lifetimes in each run. The fork
+passes 196 egui/eframe tests with Glow, 190 with WGPU, and 196 with native debug
+assertions disabled across both renderers. Both renderers also compile without
+the native seam. Correctness/suspicious Clippy, strict rustdoc, formatting and
+default/bounded macOS programmatic redock pass. The public profile regression
+also checks pre-enrollment root resource/close-slot refusal. The native/fork
+checks use the same frozen 420 Rust sources and both modified fork sources.
+Results are recorded in `/tmp/dockspace-output-pressure-qualification.json`.
+Removing only the consumed-wake acknowledgement call in an isolated fork
+snapshot makes the deferred-child regression fail (exit 100); exact restoration
+passes (exit 0). The live fork source remains hash-identical throughout.
+The control is recorded in `/tmp/dockspace-repaint-admission-control.json`.
+The fork changes are locally committed at
+`86feb7f8cc49217bff54a8924b2cb525f4af3285` and remain unpublished; tracked native
+manifests still pin the earlier public baseline, so these gates use explicit
+local source overrides rather than claiming that remote pin reproduces them.
+
+Ordered, duplicate and reordered macOS output-pressure journeys all pass with
+actual O256/control2/protected-staging1 occupancy. Each forwards the original
+258 real results, sampling 2,843,172 resident bytes and 3,807,664 reservation
+bytes under the selected 4,194,304-byte limit. The separately bounded proxy
+backing is 18,576 bytes. The ordinary bounded redock samples 3,005,859 resident
+and 4,155,496 reservation bytes; its unlimited comparison samples 2,750,841
+resident bytes. Independent prefix/cutoff/scratch review found no remaining
+concrete blocker in this slice.
+
+A staging paint whose terminal has not arrived at quarantine
+still needs its own cancellation/late-terminal qualification; these captured
+terminal journeys do not close that case. Physical X11, active 1,000 Hz/release
+timing, native scoped/stationary behavior and configured-cap cross-saturation
+remain open. Full U7/U8 readiness is not established.
+
 ## 2026-10-29 X11 physical harness callback migration
 
 The Linux-only diagnostic handler now returns the exact inner

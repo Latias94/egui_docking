@@ -44,7 +44,9 @@ use crate::host_frame::NativeHostFrame;
 use crate::input_control::{
     NativeInputControl, NativeInputResultDisposition, NativePointerPassthroughCommand,
 };
-use crate::lifecycle_progress::{NativeCloseProgress, NativeLifecycleProgress};
+use crate::lifecycle_progress::{
+    NativeCloseProgress, NativeLifecycleProgress, NativeOutputBacklog,
+};
 use crate::mailbox::{
     DeferredViewportPaint, NativeDispatch, NativeHostBridge, NativeOutputPrefix,
     NativeStagingPaintRecord, NativeViewportRosterEnvelope, NativeViewportRosterRecord,
@@ -589,6 +591,10 @@ impl NativeCoordinator {
 
     pub(crate) fn close_progress(&self) -> NativeCloseProgress {
         self.bridge.with_close_control(|control| control.progress())
+    }
+
+    pub(crate) fn output_backlog(&self) -> NativeOutputBacklog {
+        self.bridge.output_backlog()
     }
 
     pub(crate) fn is_quiescent(&self) -> bool {
@@ -2910,7 +2916,7 @@ impl NativeCoordinator {
         &mut self,
         budget: &mut NativeInputBudget,
     ) -> Result<(), NativeRuntimeError> {
-        if !self.bridge.output_order_is_valid() {
+        if !self.bridge.can_reduce_output_prefix() {
             return Err(NativeHostProtocolError::OutputOrderViolation.into());
         }
         let mut prefix = self

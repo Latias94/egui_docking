@@ -363,6 +363,13 @@ impl NativePassActions {
         self.staged.contains_key(&token)
     }
 
+    pub(crate) fn is_retained(&self, token: NativeOutputToken) -> bool {
+        matches!(
+            self.staged.get(&token),
+            Some(StagedPass::RetainPrevious { .. })
+        )
+    }
+
     pub(crate) fn discard_pass(
         &mut self,
         token: NativeOutputToken,

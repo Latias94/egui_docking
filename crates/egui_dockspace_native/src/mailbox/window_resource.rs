@@ -455,6 +455,19 @@ impl NativeWindowResources {
         staging.is_awaiting().then_some(staging.request)
     }
 
+    pub(super) fn awaiting_staging_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|resource| {
+                !resource.retired
+                    && resource
+                        .staging
+                        .as_ref()
+                        .is_some_and(StagingReceipt::is_awaiting)
+            })
+            .count()
+    }
+
     pub(super) fn reserve_create(
         &mut self,
         viewport: ViewportId,

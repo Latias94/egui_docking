@@ -10,6 +10,7 @@ use eframe::{NativeOutputToken, egui::ViewportId};
 use super::journal::ReservedHostRecord;
 use super::{HostRecord, OutputReservation};
 use crate::error::NativeHostProtocolError;
+use crate::lifecycle_progress::NativeOutputBacklog;
 
 const ORDINARY_OUTPUT_CAPACITY: usize = 256;
 
@@ -137,6 +138,18 @@ impl NativeOutputResources {
             )
     }
 
+    pub(super) fn output_backlog(&self, awaiting_staging: usize) -> NativeOutputBacklog {
+        NativeOutputBacklog::new(
+            self.ordinary.len(),
+            usize::from(self.root_control.is_some()) + self.child_controls.len(),
+            self.child_controls
+                .iter()
+                .filter(|(_, resource)| !resource.reservation.abandoned)
+                .count(),
+            awaiting_staging,
+        )
+    }
+
     pub(super) fn contains_key(&self, token: &NativeOutputToken) -> bool {
         self.get(token).is_some()
     }
@@ -252,6 +265,16 @@ impl NativeOutputResources {
 
     pub(super) fn values(&self) -> impl Iterator<Item = &NativeOutputResource> {
         self.iter().map(|(_, resource)| resource)
+    }
+
+    pub(super) fn terminal_ingress(
+        &self,
+    ) -> impl Iterator<Item = (&NativeOutputResource, &ReservedHostRecord)> {
+        self.values().filter_map(|resource| {
+            resource
+                .terminal_ingress()
+                .map(|ingress| (resource, ingress))
+        })
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&NativeOutputToken, &NativeOutputResource)> {

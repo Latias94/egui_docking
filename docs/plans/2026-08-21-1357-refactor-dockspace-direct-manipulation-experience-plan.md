@@ -1192,6 +1192,42 @@ because the production native preview is missing after observed press,
 threshold, routed outside motion and pass-through ACK. This physical blocker
 remains open; callback migration does not certify U7/U8.
 
+The next output-pressure slice uses a dedicated real-window binary with actual
+eframe token/result callbacks and a bounded 258-result test proxy. After one
+real child staging request is waiting, the proxy defers that candidate, pauses
+new complete inventory capture and fills the independent O256 owner backing.
+It proves root control and protected child staging admission with their exact
+NotPresented/Presented terminals, then requires root Defer before returning the
+original FIFO. Fresh inventory resumes on the next framework candidate; normal
+first-live/redock/retirement and a final zero-output-owner boundary are required.
+Duplicate and reordered terminal journeys run in separate processes and must
+retain the exact order-violation fatal while completing original cleanup without
+extra errors. The selected I64/W2/R258/E2/M4/C2/L2 configuration remains under
+4 MiB; proxy storage is measured separately. This isolates O256 and does not
+replace the full-roster/configured-cap cross-saturation gate.
+
+The implementation also repairs consumed repaint acknowledgement after native
+Defer, repeated full-owner prefix preparation, and quarantine's order-error /
+accepted-staging cleanup barriers. Prefix membership uses bounded original
+tokens and ordinals; its overlapping fixed scratch is charged to the existing
+owner allowance. Consumed native wakes preserve real-pass repaint history, and
+root close passes retain their framebuffer without issuing post-exit semantic
+output obligations. The final terminal and window-exit checks require no
+remaining output owner. Native application construction rejects profiles with
+no root resource or close-request slot before provider enable.
+Fresh qualification passes native 443/443 normal/assertion-disabled tests,
+fork Glow196/WGPU190/no-assert196, both renderers without the seam, Clippy,
+strict docs, default/bounded redock and all three macOS pressure journeys.
+The pressure journeys sample 2,843,172 resident / 3,807,664 reserved bytes below
+4 MiB, with a separately bounded 18,576-byte proxy. The bounded redock samples
+3,005,859 resident / 4,155,496 reserved bytes. A disposable-snapshot negative
+control removing only consumed-wake acknowledgement fails; exact restoration
+passes. The local fork is committed at `86feb7f8cc49217bff54a8924b2cb525f4af3285`
+without changing the earlier remote manifest pins.
+Staging without a captured terminal at fatal,
+physical X11, 1,000 Hz/release latency and native scoped/stationary continuation
+remain explicit work. No complete U7/U8 claim follows from this slice.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

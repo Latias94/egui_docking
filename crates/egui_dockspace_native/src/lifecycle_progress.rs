@@ -1,4 +1,57 @@
-//! Fixed-size internal projection of exact native lifecycle progress.
+//! Fixed-size projections of native lifecycle progress and output ownership.
+
+/// Current retained native output owners, without tokens or lifecycle authority.
+///
+/// Counts occupancy rather than allocated capacity or completed output history.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct NativeOutputBacklog {
+    ordinary: usize,
+    control: usize,
+    protected_staging: usize,
+    awaiting_staging: usize,
+}
+
+impl NativeOutputBacklog {
+    pub(crate) const fn new(
+        ordinary: usize,
+        control: usize,
+        protected_staging: usize,
+        awaiting_staging: usize,
+    ) -> Self {
+        Self {
+            ordinary,
+            control,
+            protected_staging,
+            awaiting_staging,
+        }
+    }
+
+    /// Returns the number of retained ordinary output owners.
+    #[must_use]
+    pub const fn ordinary(self) -> usize {
+        self.ordinary
+    }
+
+    /// Returns retained root and child control owners, including protected staging.
+    #[must_use]
+    pub const fn control(self) -> usize {
+        self.control
+    }
+
+    /// Returns protected child staging owners, a subset of the control backlog.
+    #[must_use]
+    pub const fn protected_staging(self) -> usize {
+        self.protected_staging
+    }
+
+    /// Returns existing staging requests still waiting for their first paint callback.
+    ///
+    /// Requests are distinct from retained output owners and confer no paint authority.
+    #[must_use]
+    pub const fn awaiting_staging(self) -> usize {
+        self.awaiting_staging
+    }
+}
 
 /// Bounded, read-only native close progress without window identities or history.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

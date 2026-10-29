@@ -39,4 +39,4 @@ pub use application_action::{
 pub use close_control::NativeWindowClosePolicy;
 pub use coordinator::NativeStorageLimit;
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
-pub use lifecycle_progress::NativeCloseProgress;
+pub use lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};

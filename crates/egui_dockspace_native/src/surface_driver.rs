@@ -24,7 +24,7 @@ use crate::deferred_viewport::DeferredViewportSpec;
 #[cfg(test)]
 use crate::error::NativeRuntimeErrorKind;
 use crate::error::{NativeHostProtocolError, NativeRuntimeError};
-use crate::lifecycle_progress::NativeCloseProgress;
+use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::pass_actions::{NativeFinalPass, NativePassActionError, NativePassActions};
 
 const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
@@ -265,6 +265,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if session.view().surface(root_surface).is_none() {
             return Err(NativeHostProtocolError::RootSurfaceUnavailable(root_surface).into());
         }
+        if storage.is_some_and(|limit| {
+            limit.combined.owners.resource_slots == 0 || limit.combined.owners.close_slots == 0
+        }) {
+            return Err(NativeHostProtocolError::NativeOwnerStorageConfiguration.into());
+        }
         let mut coordinator = match storage {
             Some(limit) => NativeCoordinator::new_with_combined_storage_limit(
                 session,
@@ -321,6 +326,16 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
     }
 
+    pub(crate) fn with_errors<R>(
+        &self,
+        inspect: impl FnOnce(Option<&NativeRuntimeError>, &[NativeRuntimeError]) -> R,
+    ) -> R {
+        match &self.shutdown {
+            Some(shutdown) => inspect(Some(&shutdown.primary), &shutdown.cleanup_errors),
+            None => inspect(None, &[]),
+        }
+    }
+
     pub(crate) fn is_surface_presented(&self, surface: SurfaceId) -> bool {
         self.coordinator
             .session()
@@ -330,6 +345,15 @@ impl<P: PaneView> NativeRuntimeState<P> {
 
     pub(crate) fn close_progress(&self) -> NativeCloseProgress {
         self.coordinator.close_progress()
+    }
+
+    pub(crate) fn output_backlog(&self) -> NativeOutputBacklog {
+        self.coordinator.output_backlog()
+    }
+
+    pub(crate) fn current_output_is_retained(&self) -> bool {
+        eframe::current_native_output_token()
+            .is_some_and(|token| self.pass_actions.is_retained(token))
     }
 
     pub(crate) fn owned_input_capacity_bytes(&self) -> Result<usize, NativeRuntimeError> {
@@ -347,6 +371,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.pass_actions.has_retained_action_work(),
             self.coordinator.is_quiescent(),
         )
+    }
+
+    pub(crate) fn is_shutdown_drained(&self) -> bool {
+        self.shutdown.is_some()
+            && !self.application_actions.is_occupied()
+            && !self.pass_actions.has_retained_action_work()
+            && self.coordinator.is_quiescent()
     }
 
     pub(crate) fn request_dock_root(
@@ -549,7 +580,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         // the existing framebuffer for this exact pass. If the settlement
         // changes product authority, the committed report requests the next
         // semantic frame explicitly.
+        // A root close pass has no future native boundary after event-loop exit.
+        // Settle its accepted work without issuing another affine semantic paint.
+        // Held OS closes have already been removed from raw input by the fork.
+        let root_is_closing =
+            surface == root_surface && context.input(|input| input.viewport().close_requested());
         let retain_previous_output = control_output
+            || root_is_closing
             || native_input_pending
             || should_retain_previous_output(output_prefix_pending, reduced_callback)
             || no_frame_invalidation_pending

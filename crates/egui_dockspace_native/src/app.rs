@@ -15,7 +15,7 @@ use crate::deferred_viewport::{
     DeferredViewportSpec, declare_deferred_viewports, paint_placeholder,
 };
 use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErrorKind};
-use crate::lifecycle_progress::NativeCloseProgress;
+use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::mailbox::DeferredViewportPaint;
 use crate::surface_driver::{NativeErrorPresentation, NativeRuntimeState, NativeSurfaceUpdate};
 use crate::{NativeActionFailure, NativeActionRequestError};
@@ -102,7 +102,8 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// # Errors
     ///
     /// Returns configuration or enrollment failure before returning a host
-    /// handler, including invalid core subprofile storage allowances.
+    /// handler, including invalid core subprofile storage allowances or a profile
+    /// without a resource and close-request slot for the application root.
     pub fn new_with_storage_limit(
         instance_id: Id,
         session: DockspaceSession,
@@ -190,6 +191,19 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
             .map(NativeRuntimeError::kind)
     }
 
+    /// Inspects the first fatal error and subsequent cleanup errors under the runtime lock.
+    ///
+    /// Borrows existing error storage without cloning or allocating. Before a
+    /// fatal error, the callback receives `None` and an empty slice. Cleanup
+    /// errors retain their observation order. The callback must not re-enter
+    /// this application's runtime methods because the lock remains held.
+    pub fn with_errors<R>(
+        &self,
+        inspect: impl FnOnce(Option<&NativeRuntimeError>, &[NativeRuntimeError]) -> R,
+    ) -> R {
+        lock_state(&self.state).with_errors(inspect)
+    }
+
     /// Returns whether one logical surface has an exact currently presented output.
     ///
     /// This is a product readiness query, not a renderer token or historical
@@ -210,10 +224,44 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).is_quiescent()
     }
 
+    /// Returns whether fatal shutdown has drained application and lifecycle work.
+    ///
+    /// Requires an existing fatal error, no pending application or retained
+    /// local actions, and a quiescent coordinator. This does not require a
+    /// presented root surface and does not change [`Self::is_quiescent`].
+    /// Diagnostic outputs may still be in flight, including the current pass;
+    /// verify [`Self::output_backlog`] after their terminal callbacks when
+    /// complete output-owner retirement is required. Inspect [`Self::with_errors`]
+    /// separately for the primary failure and any cleanup failures.
+    #[must_use]
+    pub fn is_shutdown_drained(&self) -> bool {
+        lock_state(&self.state).is_shutdown_drained()
+    }
+
     /// Returns bounded retained-request and committed-cancellation close counters.
     #[must_use]
     pub fn close_progress(&self) -> NativeCloseProgress {
         lock_state(&self.state).close_progress()
+    }
+
+    /// Returns current output-owner occupancy at one locked host boundary.
+    ///
+    /// Control owners include root diagnostics, child diagnostics and protected
+    /// child staging. The snapshot carries no output identity or admission authority.
+    #[must_use]
+    pub fn output_backlog(&self) -> NativeOutputBacklog {
+        lock_state(&self.state).output_backlog()
+    }
+
+    /// Returns whether the current pass has staged retention of the previous framebuffer.
+    ///
+    /// This read-only status is available after the app UI runs and before its
+    /// finalizer. Multipass or queued actions may still change the final result;
+    /// only the real terminal callback settles output ownership. Outside a
+    /// native output callback this returns `false`.
+    #[must_use]
+    pub fn current_output_is_retained(&self) -> bool {
+        lock_state(&self.state).current_output_is_retained()
     }
 
     /// Returns the current owned data capacity of native input and lifecycle transport.

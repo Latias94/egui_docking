@@ -21,6 +21,10 @@ x11rb = { version = "0.13.2", features = ["xtest"] }
 name = "egui-native-physical-smoke"
 path = "src/bin/physical_x11.rs"
 
+[[bin]]
+name = "egui-native-output-pressure"
+path = "src/bin/output_pressure.rs"
+
 [lints.rust]
 unsafe_code = "forbid"
 

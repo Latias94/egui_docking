@@ -177,6 +177,18 @@ impl NativeHostProtocolError {
 }
 
 impl NativeRuntimeError {
+    /// Returns whether this error is the exact native output-order protocol violation.
+    ///
+    /// Other failures in the [`NativeRuntimeErrorKind::HostProtocol`] category
+    /// return `false`.
+    #[must_use]
+    pub const fn is_output_order_violation(&self) -> bool {
+        matches!(
+            self.source,
+            NativeRuntimeErrorSource::HostProtocol(NativeHostProtocolError::OutputOrderViolation)
+        )
+    }
+
     pub(crate) const fn is_input_capacity(&self) -> bool {
         matches!(&self.source,
             NativeRuntimeErrorSource::Dockspace(error)
