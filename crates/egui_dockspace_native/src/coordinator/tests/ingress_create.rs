@@ -24,6 +24,9 @@ const SOURCE_SURFACE: SurfaceId = SurfaceId::new(41);
 const SOURCE_ROOT: RootId = RootId::new(51);
 const SOURCE_ITEM: ItemId = ItemId::new(61);
 
+#[path = "ingress_create/active_load.rs"]
+mod active_load;
+
 fn program_has_drag_preview(plan: SurfacePaintPlan<'_>) -> bool {
     let mut previewed = false;
     plan.visit_surface_program(|step| {

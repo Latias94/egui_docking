@@ -2,7 +2,7 @@
 title: Dockspace engine host architecture and direct manipulation - Plan
 type: refactor
 date: 2026-08-21
-revised: 2026-10-29
+revised: 2026-10-30
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -1306,6 +1306,24 @@ unchanged Linux physical XTest journey passes independently. The late-first-live
 case has ordinary3/control1 and one withheld real terminal, while the separate
 O256 journeys retain their own capacity assertions. It does not certify input
 load/release timing or the remaining native scope/platform/combined-cap gates.
+
+The controlled active-ingress qualification (2026-10-30) admits 10,000 distinct
+raw cursor moves at injected 1 ms intervals into one bounded coordinator and
+dispatches each 16 ms cadence with one shared callback/core budget. Exact
+record-count, nonempty age and lower/upper budget assertions pass. Its bridge
+backlog peaks at 16 records / 15 ms; sampled owned input data peaks at 3,021,220
+bytes within the combined 4 MiB reservation. Release remains one pending result
+with unchanged source topology until its exact painted output is reported and
+settled; the next dispatch delivers Dock once with the same manipulation ID.
+The controlled accepted-release-to-terminal delay is 31 ms. Native normal and
+assertion-disabled focused gates each pass seven tests; native Clippy passes.
+An active-prefix coalescing mutation in the disposable snapshot is rejected by
+the recorder-count assertion. This qualifies callback-to-core recording and
+model latency only: dispatch time is frozen, native property effects remain
+undispatched, and OS 1,000 Hz / real-time release / 2 ms service timing still
+need host evidence. Native scoped/stationary input, cross-saturation and the
+broader physical matrix remain U7/U8 work. See `docs/VALIDATION.md` and
+`/tmp/dockspace-active-load-qualification.json` for evidence and exclusions.
 
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement

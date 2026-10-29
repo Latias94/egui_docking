@@ -3668,6 +3668,12 @@ impl NativeHostBridge {
         self.lock().journal.captured_through()
     }
 
+    #[cfg(test)]
+    pub(crate) fn input_backlog_for_test(&self) -> (usize, Option<std::time::Duration>) {
+        let records = self.lock();
+        (records.retained_record_count(), records.oldest_record_age())
+    }
+
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {
         match self.lock().front_dispatch_record() {
             Some(HostRecord::WindowEvent(event)) => Some(event.clone()),

@@ -15,6 +15,54 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 controlled kilohertz active-ingress qualification
+
+One bounded native coordinator/session now receives 10,000 distinct cursor
+moves at 1 ms intervals in injected monotonic time, with one dispatch every
+16 ms. The fixture enters through owned raw `WindowEventRecord` capture,
+bridge admission and the production callback-prefix translator. Callback
+reduction and core polling share one `NativeInputBudget` for each dispatch;
+the test checks both a lower and an upper bound on completed-record accounting.
+It never restarts that budget to hide a yield. Every active move reaches the
+core recorder, active state and the docking preview survive every accepted
+prefix, and no early manipulation feedback or native create is allowed.
+
+The bridge-retained ingress backlog is checked after every capture against its
+exact expected count and age, including nonempty `Some(age)` values. Its peak
+is 16 records / 15 ms. Capacity samples cover capture, dispatch, release and
+settlement boundaries under the combined 4 MiB profile. They count owned input
+data capacity and its reservations, not process RSS or allocations inside a
+dispatch. Renderer/receiver storage and allocator overhead retain their existing
+documented exclusions.
+
+The release frame publishes exactly one Pending(AwaitingPresentation), keeps
+the source item in its original root and emits exactly one complete painted
+output for that surface. The model reports that exact output as Presented.
+The next dispatch must settle its artifact and publish exactly one Delivered
+(Dock) with the same manipulation identity. Delivery changes the topology and
+invalidates the old preview, so the artifact is settled without remaining
+current receiver authority; `presents(artifact)` is not required after that
+mutation. The resulting accepted-release-to-terminal delay is 31 ms in the
+controlled schedule, below its 100 ms model budget.
+
+Normal and native-debug-assertion-disabled nextest gates each pass the model
+and six existing callback-prefix regressions. Correctness/suspicious native
+Clippy and formatting pass. Both model runs sample 3,021,220 owned input bytes.
+In a disposable source snapshot, forcing active prefixes into idle-motion
+coalescing fails the intended recorder-count assertion (7 instead of 22), then
+the production file is restored byte-for-byte. Commands, source hashes and
+results are retained in `/tmp/dockspace-active-load-qualification.json` and
+`/tmp/dockspace-active-load-negative-qualification.json`.
+
+This is callback-to-core model evidence. The dispatch clock does not advance
+while a reducer runs, so it does not establish a 2 ms service wall-clock bound,
+OS delivery at 1,000 Hz, GPU presentation or real-time 100 ms release latency.
+Native pass-through effects enter their original adapter queue; the fixture
+neither dispatches them to an OS nor fabricates Applied callbacks. Physical
+input, native scoped/stationary continuity and combined-cap cross-saturation
+remain separate qualification work. This slice does not complete U7/U8 or the
+full plan, and still uses the explicit unpublished local egui fork override.
+
 ## 2026-10-30 recovery after transfer and before first-live admission
 
 The host frame now exposes exact pending recovery surfaces and an explicit
