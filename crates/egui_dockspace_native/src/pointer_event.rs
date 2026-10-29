@@ -88,6 +88,45 @@ pub(crate) enum NativePointerTranslation {
 }
 
 impl NativePointerTranslator {
+    /// Counts inline storage, device and mouse entry data, and both tombstone sets.
+    /// B-tree node and allocator overhead are excluded.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        let bytes = size_of::<Self>()
+            .saturating_add(self.devices.len().saturating_mul(
+                size_of::<NativeInputDeviceKey>() + size_of::<NativePointerDeviceState>(),
+            ))
+            .saturating_add(
+                self.removed_inputs
+                    .len()
+                    .saturating_mul(size_of::<NativeInputDeviceKey>()),
+            )
+            .saturating_add(
+                self.overload_scroll_tails
+                    .len()
+                    .saturating_mul(size_of::<NativeInputDeviceKey>()),
+            );
+        self.devices.values().fold(bytes, |bytes, device| {
+            bytes
+                .saturating_add(
+                    device
+                        .mouse
+                        .active_buttons
+                        .len()
+                        .saturating_mul(size_of::<NativePointerButton>()),
+                )
+                .saturating_add(device.mouse.button_origins.len().saturating_mul(
+                    size_of::<NativePointerButton>() + size_of::<NativeSurfaceBinding>(),
+                ))
+                .saturating_add(
+                    device
+                        .mouse
+                        .cancelled_buttons
+                        .len()
+                        .saturating_mul(size_of::<NativePointerButton>()),
+                )
+        })
+    }
+
     pub(crate) fn can_coalesce_idle_cursor_moves(&self) -> bool {
         self.devices.values().all(NativePointerDeviceState::is_idle)
     }
@@ -972,6 +1011,65 @@ mod overload;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_capacity_counts_mouse_entries_and_retained_tombstones() {
+        let mut translator = NativePointerTranslator::default();
+        let empty = translator.owned_data_capacity_bytes();
+        let mouse = NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Test(1));
+        translator.device_mut(mouse).expect("mouse enrolls");
+        let idle = translator.owned_data_capacity_bytes();
+        let routes = NativePointerRoutes::from_binding(None);
+        assert!(
+            translator
+                .device_mut(mouse)
+                .expect("mouse remains enrolled")
+                .mouse
+                .observe(
+                    NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                    routes,
+                )
+        );
+        assert!(translator.owned_data_capacity_bytes() > idle);
+        assert!(
+            translator
+                .device_mut(mouse)
+                .expect("mouse remains enrolled")
+                .mouse
+                .observe(
+                    NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+                    routes,
+                )
+        );
+        assert_eq!(translator.owned_data_capacity_bytes(), idle);
+
+        translator.forget_removed_devices();
+        assert!(translator.devices.is_empty());
+        assert!(translator.removed_inputs.contains(&mouse));
+        let removed = translator.owned_data_capacity_bytes();
+        assert!(removed > empty);
+        assert!(removed < idle);
+
+        let scroll = NativeInputDeviceKey::Scroll(NativePhysicalDeviceKey::Test(2));
+        translator
+            .device_mut(scroll)
+            .expect("scroll device enrolls")
+            .scroll = NativeScrollState::Live {
+            sequence: NativeScrollSequenceId::new(1),
+            delivery: None,
+        };
+        translator.finish_overload_cancellation();
+        assert!(translator.devices.is_empty());
+        assert!(translator.removed_inputs.contains(&mouse));
+        assert!(translator.overload_scroll_tails.contains(&scroll));
+        let both_tombstones = translator.owned_data_capacity_bytes();
+        assert!(both_tombstones > removed);
+        assert_eq!(both_tombstones - removed, removed - empty);
+
+        translator.forget_removed_devices();
+        translator.finish_overload_cancellation();
+        assert_eq!(translator.owned_data_capacity_bytes(), both_tombstones);
+    }
 
     #[test]
     fn idle_cursor_coalescing_stops_for_buttons_and_scroll() {

@@ -1,6 +1,7 @@
 //! Atomic work-area routing sidecar for the native coordinator.
 
 use std::collections::BTreeMap;
+use std::mem::size_of;
 
 use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::runtime::{
@@ -145,6 +146,24 @@ pub(crate) struct PreparedWorkAreaRoster {
     routes: PreparedRoutes,
 }
 
+impl PreparedWorkAreaRoster {
+    /// Counts inline storage, retained token data, and actual route capacity.
+    /// B-tree node and allocator overhead are excluded.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        let route_capacity = match &self.routes {
+            PreparedRoutes::Exact(routes) => routes.capacity(),
+            PreparedRoutes::Unknown => 0,
+        };
+        size_of::<Self>()
+            .saturating_add(
+                self.tokens
+                    .len()
+                    .saturating_mul(size_of::<DisplayIdentity>() + size_of::<HostWorkAreaToken>()),
+            )
+            .saturating_add(route_capacity.saturating_mul(size_of::<PreparedRoute>()))
+    }
+}
+
 #[derive(Debug)]
 enum PreparedRoutes {
     Exact(Vec<PreparedRoute>),
@@ -182,6 +201,22 @@ impl Default for NativeWorkAreaState {
 }
 
 impl NativeWorkAreaState {
+    /// Counts inline storage, retained token history, and actual route capacity.
+    /// B-tree node and allocator overhead are excluded.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.tokens
+                    .len()
+                    .saturating_mul(size_of::<DisplayIdentity>() + size_of::<HostWorkAreaToken>()),
+            )
+            .saturating_add(
+                self.routes
+                    .capacity()
+                    .saturating_mul(size_of::<CommittedRoute>()),
+            )
+    }
+
     pub(crate) fn prepare(
         &self,
         roster: &FrozenWorkAreaRoster,
@@ -237,17 +272,15 @@ impl NativeWorkAreaState {
             self.routes = Vec::new();
             return;
         };
-        let routes = prepared_routes
-            .iter()
-            .filter_map(|route| {
-                session
-                    .native_work_area(route.token)
-                    .map(|binding| CommittedRoute {
-                        display_bounds: route.display_bounds,
-                        binding,
-                    })
-            })
-            .collect::<Vec<_>>();
+        let mut routes = Vec::with_capacity(prepared_routes.len());
+        routes.extend(prepared_routes.iter().filter_map(|route| {
+            session
+                .native_work_area(route.token)
+                .map(|binding| CommittedRoute {
+                    display_bounds: route.display_bounds,
+                    binding,
+                })
+        }));
         debug_assert_eq!(
             routes.len(),
             prepared_routes.len(),
@@ -331,6 +364,12 @@ fn validate_exact_records(records: &mut [FrozenWorkArea]) -> Result<(), NativeHo
 
 #[cfg(test)]
 mod tests {
+    use dockspace::model::DockspaceLayout;
+    use dockspace::policy::DockPolicy;
+    use dockspace::runtime::{
+        NativeHostCapabilities, NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
+    };
+
     use super::*;
 
     #[test]
@@ -404,11 +443,32 @@ mod tests {
             ScaleFactor::new(1.0).expect("scale validates"),
         )]);
 
-        let (core, prepared) = state.prepare(&roster).expect("exact roster prepares");
+        let (core, mut prepared) = state.prepare(&roster).expect("exact roster prepares");
 
         assert!(matches!(core, NativeWorkAreaRoster::Exact(records) if records.len() == 1));
         assert_eq!(prepared.tokens, BTreeMap::from([(display, token)]));
         assert_eq!(prepared.next_token, 20);
+        let initial_bytes = prepared.owned_data_capacity_bytes();
+        assert_eq!(
+            initial_bytes,
+            size_of::<PreparedWorkAreaRoster>()
+                + size_of::<DisplayIdentity>()
+                + size_of::<HostWorkAreaToken>()
+                + size_of::<PreparedRoute>()
+        );
+
+        let PreparedRoutes::Exact(routes) = &mut prepared.routes else {
+            panic!("an exact roster prepares route storage");
+        };
+        let initial_capacity = routes.capacity();
+        routes.reserve_exact(7);
+        let extra_capacity = routes.capacity() - initial_capacity;
+        assert!(extra_capacity > 0);
+        routes.clear();
+        assert_eq!(
+            prepared.owned_data_capacity_bytes(),
+            initial_bytes + extra_capacity * size_of::<PreparedRoute>()
+        );
     }
 
     #[test]
@@ -428,8 +488,103 @@ mod tests {
         assert_eq!(core, NativeWorkAreaRoster::Unknown);
         assert!(prepared.tokens.is_empty());
         assert!(matches!(prepared.routes, PreparedRoutes::Unknown));
+        assert_eq!(
+            prepared.owned_data_capacity_bytes(),
+            size_of::<PreparedWorkAreaRoster>()
+        );
         assert_eq!(state.tokens, BTreeMap::from([(display, token)]));
         assert_eq!(state.next_token, 20);
+    }
+
+    #[test]
+    fn owned_capacity_tracks_commit_spare_storage_and_unknown_revocation() {
+        let mut session =
+            DockspaceSession::from_layout(DockspaceLayout::empty(), DockPolicy::default())
+                .expect("empty test session initializes");
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .expect("managed native host enrolls");
+        session
+            .configure_managed_native_capabilities(
+                NativeHostCapabilities::none_supported()
+                    .with(NativeHostCapability::AuthoritativeInventory)
+                    .with(NativeHostCapability::WorkArea),
+            )
+            .expect("work-area capabilities configure");
+        let apply_snapshot = |session: &mut DockspaceSession, roster| {
+            session
+                .report_managed_native_snapshot([], roster)
+                .expect("the complete work-area snapshot records");
+            session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .expect("the work-area frame begins")
+                .commit()
+                .expect("the empty-layout frame commits");
+        };
+        let roster = FrozenWorkAreaRoster::for_test_exact([(
+            7,
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("display bounds validate"),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0).expect("work-area bounds validate"),
+            ScaleFactor::new(1.0).expect("scale validates"),
+        )]);
+        let point = PhysicalPoint::new(1600.0, 1060.0).expect("desktop point validates");
+        let mut state = NativeWorkAreaState::default();
+        let empty_bytes = state.owned_data_capacity_bytes();
+        assert_eq!(empty_bytes, size_of::<NativeWorkAreaState>());
+
+        let (core, prepared) = state.prepare(&roster).expect("exact roster prepares");
+        let token = prepared.tokens[&DisplayIdentity::Test(7)];
+        assert_eq!(state.owned_data_capacity_bytes(), empty_bytes);
+        assert_eq!(state.binding_at(point), None);
+        assert_eq!(session.native_work_area(token), None);
+        apply_snapshot(&mut session, core);
+        let binding = session
+            .native_work_area(token)
+            .expect("the committed core snapshot mints work-area authority");
+        state.commit(prepared, &session);
+        assert_eq!(state.routes.len(), 1);
+        assert_eq!(state.routes.capacity(), 1);
+        assert_eq!(state.binding_at(point), Some(binding));
+        let committed_bytes = state.owned_data_capacity_bytes();
+        assert_eq!(
+            committed_bytes - empty_bytes,
+            size_of::<DisplayIdentity>()
+                + size_of::<HostWorkAreaToken>()
+                + size_of::<CommittedRoute>()
+        );
+
+        let initial_capacity = state.routes.capacity();
+        state.routes.reserve_exact(7);
+        let extra_capacity = state.routes.capacity() - initial_capacity;
+        assert!(extra_capacity > 0);
+        let retained_bytes = state.owned_data_capacity_bytes();
+        assert_eq!(
+            retained_bytes - committed_bytes,
+            extra_capacity * size_of::<CommittedRoute>()
+        );
+        assert_eq!(state.binding_at(point), Some(binding));
+        let route_bytes = state.routes.capacity() * size_of::<CommittedRoute>();
+        let next_token = state.next_token;
+
+        let (core, prepared) = state
+            .prepare(&FrozenWorkAreaRoster::Unknown)
+            .expect("unknown roster prepares");
+        apply_snapshot(&mut session, core);
+        state.commit(prepared, &session);
+        assert!(state.routes.is_empty());
+        assert_eq!(state.routes.capacity(), 0);
+        assert_eq!(state.binding_at(point), None);
+        assert_eq!(session.native_work_area(token), None);
+        assert_eq!(
+            state.tokens,
+            BTreeMap::from([(DisplayIdentity::Test(7), token)])
+        );
+        assert_eq!(state.next_token, next_token);
+        assert_eq!(
+            state.owned_data_capacity_bytes(),
+            retained_bytes - route_bytes
+        );
+        assert!(state.owned_data_capacity_bytes() > empty_bytes);
     }
 
     #[test]

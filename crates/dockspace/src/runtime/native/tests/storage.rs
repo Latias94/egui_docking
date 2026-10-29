@@ -3,6 +3,65 @@ use crate::backend_ingress::{BackendIngressPayload, BackendIngressRecord, Backen
 use std::time::Duration;
 
 #[test]
+fn pending_report_capacity_tracks_exact_emissions_and_shared_abandonment_once() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let bounds = PhysicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap();
+    let scale = ScaleFactor::new(1.0).unwrap();
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                NativeWindowFacts::live()
+                    .with_content_bounds(bounds)
+                    .with_outer_bounds(bounds)
+                    .with_native_scale_factor(scale)
+                    .with_presentation_scale_factor(scale)
+                    .with_input(NativeWindowInputState::ReceivesInput, None)
+                    .with_presentation(NativeWindowPresentationState::Visible, None)
+                    .with_close(NativeCloseState::Clear, None),
+            )],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .unwrap();
+    commit_managed_frame(&mut session);
+    let baseline = session.native_input_pending_report_capacity_bytes();
+    let (output, _) = paint_native_output(&mut session);
+    let pending = session.native_input_pending_report_capacity_bytes();
+    assert!(
+        pending > baseline,
+        "an affine emission has retained report data"
+    );
+    let shared_queue = session.abandoned_native_effects.clone();
+    assert_eq!(
+        session.native_input_pending_report_capacity_bytes(),
+        pending
+    );
+    drop(shared_queue);
+    assert_eq!(
+        session.native_input_pending_report_capacity_bytes(),
+        pending
+    );
+    drop(output);
+    let abandoned = session.native_input_pending_report_capacity_bytes();
+    assert!(
+        abandoned > pending,
+        "the exact abandoned output is queued before poll"
+    );
+    commit_managed_frame(&mut session);
+    let settled = session.native_input_pending_report_capacity_bytes();
+    assert!(
+        settled < abandoned,
+        "exact settlement removes the emission and report entries"
+    );
+    commit_managed_frame(&mut session);
+    assert_eq!(
+        session.native_input_pending_report_capacity_bytes(),
+        settled
+    );
+}
+
+#[test]
 fn native_semantic_box_capacity_is_charged_once_across_batch_clones() {
     let (session, _) = native_root_session();
     let recorder = &session.native.as_ref().unwrap().recorder;

@@ -21,6 +21,7 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
     )])
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    assert_eq!(session.native_input_pending_report_capacity_bytes(), 0);
     let slots = NonZeroUsize::new(1).unwrap();
     let refused = session
         .enable_managed_native_host_with_input_storage_limit(
@@ -34,6 +35,7 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
     );
     assert_eq!(session.native_input_recorded_count(), 0);
     assert_eq!(session.native_input_owned_capacity_bytes().unwrap(), 0);
+    assert_eq!(session.native_input_pending_report_capacity_bytes(), 0);
 
     let limit = NativeInputStorageLimit::new(slots, 1 << 20);
     session
@@ -42,6 +44,8 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
             limit,
         )
         .unwrap();
+    let report_data = session.native_input_pending_report_capacity_bytes();
+    assert!(report_data > 0);
     let moved = NativePointerInput::new(
         NativePointerId::new(7),
         NativePointerEvent::Moved,
@@ -78,6 +82,11 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
             }
         }
         assert_eq!(session.native_input_recorded_count(), expected);
+        assert_eq!(
+            session.native_input_pending_report_capacity_bytes(),
+            report_data,
+            "pointer-only frames do not create pending renderer reports"
+        );
         if expected == 1 {
             assert_eq!(
                 session

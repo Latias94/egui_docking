@@ -210,6 +210,21 @@ pub(crate) struct NativeInputControl {
 }
 
 impl NativeInputControl {
+    /// Counts inline storage, pending backing capacity, and observation entry data.
+    /// B-tree node and allocator overhead are excluded. Core counts the shared
+    /// abandoned-effect queue behind the inline request handles once.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.pending
+                    .capacity()
+                    .saturating_mul(size_of::<PendingNativeInput>()),
+            )
+            .saturating_add(self.observations.len().saturating_mul(
+                size_of::<NativeSurfaceBinding>() + size_of::<NativeInputObservation>(),
+            ))
+    }
+
     pub(crate) fn has_pending_work(&self) -> bool {
         !self.pending.is_empty()
             || self

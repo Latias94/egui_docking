@@ -731,6 +731,25 @@ certify physical input, mixed-DPI behavior or remotely reproducible fork pins.
 A disposable-snapshot negative control prematurely credits committed data during
 staging and fails the peak regression; restoring the implementation passes it.
 
+Native owned-data integration now measures the existing host owners together:
+raw and two shared roster backings; exact route/index, window/output/close and
+retirement entries; snapshot/work-area sidecars; effect/input controls; pointer
+devices and retained tombstones; core recorded transport and pending report
+queues. Independent same-window entries remain charged, while roster and
+abandoned-result backing is counted once through existing ownership. Boxed close
+decisions and spare vector capacity are included. Native effect command storage
+is restricted to its actual finite Close/Focus producers. The real-window smoke
+samples the public app query at root boundaries and records a high-water mark.
+This closes the current-data measurement gap, not prospective admission: shared
+host/core allowance, original-owner future terminal reservations, constructor
+peaks, scoped input and load/soak qualification remain required.
+The source passes 1,778 all-feature workspace tests, 80 public-host tests, strict
+docs/doctests and correctness/suspicious Clippy. Native tests pass 328 normally
+and 328 without native debug assertions; macOS programmatic redock completes
+with a sampled root-boundary high-water mark of 2,024,872 bytes. A targeted
+duplicate-roster-charge control fails, and restoration passes. The complete 4 MiB
+admission gate remains open despite this sampled workload fitting its target.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

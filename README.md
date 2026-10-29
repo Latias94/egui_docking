@@ -55,6 +55,13 @@ shares one commitment. More than 64 work-area records revoke work-area authority
 to `Unknown` while preserving the complete window inventory. Snapshot storage
 pressure freezes ordinary admission through the existing overload boundary.
 The full 4 MiB transfer budget and input-load qualification remain unfinished.
+`NativeDockspaceApp::input_storage_capacity_bytes()` measures the current raw,
+shared-roster, core transport/report, window/output/close/retirement, callback and
+pointer/work-area data at a locked host boundary. It counts actual vector
+capacity and existing entry data, without allocator metadata, render/receiver
+state or future terminal reservations. The real-window smoke samples this query
+through its lifecycle; those samples do not prove the complete admission limit
+or transient construction peaks.
 
 ## Architecture
 

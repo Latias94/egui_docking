@@ -165,7 +165,7 @@ impl NativeCoordinator {
         assert!(inserted, "preflighted native retirement must insert");
         if dispatch == NativeRetirementDispatch::CloseViewport {
             self.effects
-                .queue_command(viewport, binding, ViewportCommand::Close);
+                .queue_command(viewport, binding, NativeViewportCommand::Close);
         }
         Ok(())
     }
@@ -383,8 +383,11 @@ impl NativeCoordinator {
                         .retain(viewport, window, binding, request)
                     {
                         Ok(()) => {
-                            self.effects
-                                .queue_command(viewport, binding, ViewportCommand::Focus);
+                            self.effects.queue_command(
+                                viewport,
+                                binding,
+                                NativeViewportCommand::Focus,
+                            );
                         }
                         Err(request) => {
                             self.submit_failed_effect(

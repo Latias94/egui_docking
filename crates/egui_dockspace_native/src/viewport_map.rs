@@ -1,6 +1,7 @@
 //! Minimal product mapping between native windows, eframe viewports, and core bindings.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::size_of;
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::NativeSurfaceBinding;
@@ -60,6 +61,37 @@ pub(crate) struct NativeViewportMap {
 }
 
 impl NativeViewportMap {
+    /// Counts inline storage and retained entry data, excluding B-tree node overhead.
+    /// Route receipts and their supported ingress payloads are entirely inline.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.viewports
+                    .len()
+                    .saturating_mul(size_of::<ViewportId>() + size_of::<NativeViewportRoute>()),
+            )
+            .saturating_add(
+                self.windows
+                    .len()
+                    .saturating_mul(size_of::<WindowId>() + size_of::<ViewportId>()),
+            )
+            .saturating_add(
+                self.surfaces
+                    .len()
+                    .saturating_mul(size_of::<SurfaceId>() + size_of::<ViewportId>()),
+            )
+            .saturating_add(
+                self.focus_reportable
+                    .len()
+                    .saturating_mul(size_of::<NativeSurfaceBinding>()),
+            )
+            .saturating_add(
+                self.prepared_retirements
+                    .len()
+                    .saturating_mul(size_of::<NativeSurfaceBinding>()),
+            )
+    }
+
     pub(crate) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
         self.viewports.values().map(|route| route.binding)
     }
@@ -1034,6 +1066,72 @@ mod tests {
     }
 
     #[test]
+    fn owned_data_capacity_tracks_route_indexes_and_retirement_markers() {
+        let (first, second) = bindings();
+        let first_viewport = ViewportId::ROOT;
+        let second_viewport = ViewportId::from_hash_of("capacity-peer");
+        let mut routes = NativeViewportMap::default();
+        let empty = routes.owned_data_capacity_bytes();
+        assert_eq!(empty, size_of::<NativeViewportMap>());
+        routes.reserve(first_viewport, first).unwrap();
+        let reserved = routes.owned_data_capacity_bytes();
+        assert!(reserved > empty);
+        routes.reserve(second_viewport, second).unwrap();
+        let two_reserved = routes.owned_data_capacity_bytes();
+        assert_eq!(two_reserved - reserved, reserved - empty);
+
+        routes
+            .attach(first_viewport, first, WindowId::from(81))
+            .unwrap();
+        let attached = routes.owned_data_capacity_bytes();
+        assert!(attached > two_reserved);
+        routes
+            .attach(second_viewport, second, WindowId::from(82))
+            .unwrap();
+        let two_attached = routes.owned_data_capacity_bytes();
+        assert_eq!(two_attached - attached, attached - two_reserved);
+        let mut journal = crate::mailbox::journal::HostIngressJournal::new(
+            dockspace::runtime::NativeMonotonicClock::system(),
+        );
+        assert_eq!(
+            routes.receive_window_destroyed(
+                WindowId::from(81),
+                Some(first_viewport),
+                1,
+                |viewport, binding| journal.reserve(crate::mailbox::HostRecord::WindowEvent(
+                    crate::event::NativeWindowEventRecord::for_test(
+                        1,
+                        WindowId::from(81),
+                        Some(viewport),
+                        Some(binding),
+                        winit::event::WindowEvent::Destroyed,
+                    ),
+                )),
+            ),
+            Some((first_viewport, first)),
+        );
+        assert_eq!(routes.window_ingress().count(), 1);
+        assert_eq!(routes.owned_data_capacity_bytes(), two_attached);
+        routes.set_focus_reportable([first, second]);
+        let two_focused = routes.owned_data_capacity_bytes();
+        assert!(two_focused > two_attached);
+        routes.set_focus_reportable([second]);
+        let one_focused = routes.owned_data_capacity_bytes();
+        assert!(one_focused > two_attached && one_focused < two_focused);
+        // Both sets store the same binding type but own separate retained entries.
+        assert!(routes.prepared_retirements.insert(first));
+        assert_eq!(routes.owned_data_capacity_bytes(), two_focused);
+        assert!(routes.suppress_pointer_route(first_viewport, first));
+        assert_eq!(routes.owned_data_capacity_bytes(), two_focused);
+        assert!(routes.prepared_retirements.remove(&first));
+        routes.set_focus_reportable([]);
+        assert_eq!(routes.owned_data_capacity_bytes(), two_attached);
+        drop(routes.remove_viewport(first_viewport, first).unwrap());
+        drop(routes.remove_viewport(second_viewport, second).unwrap());
+        assert_eq!(routes.owned_data_capacity_bytes(), empty);
+    }
+
+    #[test]
     fn captured_output_window_routes_and_excludes_peers_before_reducer_indexes_it() {
         let (binding, other_binding) = bindings();
         let viewport = ViewportId::ROOT;
@@ -1041,13 +1139,16 @@ mod tests {
         let window = WindowId::from(71);
         let mut routes = NativeViewportMap::default();
         routes.reserve(viewport, binding).unwrap();
+        let reserved = routes.owned_data_capacity_bytes();
         assert!(routes.admit_test_create(viewport, binding));
+        assert_eq!(routes.owned_data_capacity_bytes(), reserved);
 
         // This route model uses the admitted tokenless test attempt, not a
         // fabricated renderer output token or a full Created callback fixture.
         routes
             .capture_output_window(viewport, binding, window, None)
             .unwrap();
+        assert_eq!(routes.owned_data_capacity_bytes(), reserved);
         assert!(routes.windows.is_empty());
         assert!(routes.has_window_receipt(viewport, binding));
         assert_eq!(routes.window(viewport), Some(window));
@@ -1091,9 +1192,11 @@ mod tests {
             routes.windows.is_empty(),
             "duplicate capture cannot allocate the index entry"
         );
+        let captured = routes.owned_data_capacity_bytes();
         routes
             .attach_output(viewport, binding, window, None)
             .unwrap();
+        assert!(routes.owned_data_capacity_bytes() > captured);
         assert_eq!(routes.windows.get(&window), Some(&viewport));
         assert_eq!(
             routes.route_for_event(window, None),

@@ -314,6 +314,10 @@ pub(crate) struct NativeViewportRosterEnvelope {
 }
 
 impl NativeViewportRosterEnvelope {
+    pub(crate) const fn shared_roster(&self) -> &Arc<NativeViewportRosterRecord> {
+        &self.key.roster
+    }
+
     pub(super) fn from_shared(
         context: u64,
         roster: Arc<NativeViewportRosterRecord>,

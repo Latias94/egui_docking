@@ -15,6 +15,58 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 native owned-data integration prerequisite
+
+`NativeDockspaceApp::input_storage_capacity_bytes()` now combines the current
+owned data across native transport owners at a locked host boundary. It counts
+the preallocated raw backing, both shared roster backings, exact route/index,
+window-resource, output, close and retirement entries, queued-snapshot
+acknowledgement/focus and prepared-work-area storage, retained work-area state,
+effect/input controls, pointer translation devices and tombstones, core recorded
+transport, and core pending report sidecars. The core sidecar query is separately
+available as `native_input_pending_report_capacity_bytes()`.
+
+Each module counts inline state and existing key/value data plus the actual
+owned descendant capacities. Parent owners deduct already-inline child state.
+Close decision plans include their boxed item data. Independent entries remain
+charged even when they refer to the same window lifetime. Shared roster data is
+charged through its two backing owners; external fixture allocations are compared
+through existing Arc handles, including a queued snapshot's last reference.
+Shared abandoned effect/presentation queues are counted through the session,
+without following each affine handle back into the same allocation. No address
+registry, allocator-node estimate or source parser is introduced.
+
+Effect command storage now has the finite `Close | Focus` representation used by
+its actual producers; the typed queue cannot silently accept an unmeasured
+dynamic command payload. Work-area commit allocates its known complete route
+capacity before extending it, preserving exact validation and Unknown routing
+revocation. Tests cover raw transfer/commit retaining backing, report settlement,
+close-plan decisions, full callback/retirement barriers, shared and distinct
+roster allocations, queued sidecar spare capacity, retained command capacity and
+input tombstones. The real-window smoke samples owned input data after each root
+UI callback, records its high-water mark and checks that profile against 4 MiB.
+
+Fresh serialized qualification passes all 1,778 all-feature workspace tests,
+80 external public-host tests, ten doctests, strict rustdoc, and
+correctness/suspicious Clippy. The local unpublished-fork native workspace passes
+328 tests normally and 328 with native debug assertions disabled, plus its
+correctness/suspicious Clippy. The macOS programmatic tear-off, first-live,
+redock and retirement journey exits 0 and samples a maximum of 2,024,872 owned
+input-data bytes at root boundaries. A disposable-snapshot control disables only
+same-allocation roster deduplication; its regression fails on duplicate charging
+(exit 100), and restoring the implementation passes (exit 0). Results are recorded
+in `/tmp/dockspace-native-owned-storage-qualification.json` and
+`/tmp/dockspace-native-owned-storage-control.json`.
+
+The measurement excludes allocator/BTree-node/Arc metadata, opaque callbacks/clock closures,
+core workspace/authority, renderer/receiver data, application action/transition queues,
+diagnostic errors and caller buffers. It measures current data at stable
+boundaries, not transient constructor peaks or promised future terminal storage.
+The final shared allowance still must reserve that future storage before
+admission, combine the host and recorder allowance, and qualify overload/load,
+native scoped input and soak. A passing sampled smoke does not complete those
+requirements or establish physical-input or mixed-DPI support.
+
 ## 2026-10-29 U7 bounded prepared-pointer transfer
 
 Public native pointer batch/sequence recording now prepares a bounded vector of

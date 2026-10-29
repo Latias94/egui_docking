@@ -5,6 +5,7 @@
 //! reports destruction and the corresponding core frame commits.
 
 use std::collections::BTreeMap;
+use std::mem::size_of;
 
 use crate::mailbox::journal::ReservedHostRecord;
 use crate::viewport_map::{NativeCreateReceipt, NativeWindowReceipt};
@@ -136,6 +137,20 @@ pub(crate) struct NativeRetirementState {
 }
 
 impl NativeRetirementState {
+    /// Counts inline storage and retained entry data, excluding B-tree node overhead.
+    /// Receipts, cleanup capabilities, and supported ingress payloads are inline.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.pending.len().saturating_mul(
+                    size_of::<NativeSurfaceBinding>() + size_of::<PendingRetirement>(),
+                ),
+            )
+            .saturating_add(self.unmaterialized.len().saturating_mul(
+                size_of::<NativeSurfaceBinding>() + size_of::<NativeCreateReceipt>(),
+            ))
+    }
+
     pub(crate) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
         self.pending
             .keys()
@@ -721,12 +736,16 @@ mod tests {
         let binding = binding();
         let viewport = ViewportId::from_hash_of("retired-child");
         let mut state = NativeRetirementState::default();
+        let empty = state.owned_data_capacity_bytes();
+        assert_eq!(empty, size_of::<NativeRetirementState>());
         let window = WindowId::from(22);
         let mut routes = crate::viewport_map::NativeViewportMap::default();
         routes.bind(viewport, window, binding).unwrap();
         state
             .retain_window(routes.take_window_receipt(viewport, binding).unwrap())
             .unwrap();
+        let retained = state.owned_data_capacity_bytes();
+        assert!(retained > empty);
         for (candidate_window, candidate_viewport, ordinal) in [
             (WindowId::from(23), Some(viewport), 1),
             (window, Some(ViewportId::ROOT), 1),
@@ -756,6 +775,7 @@ mod tests {
             Some((viewport, binding))
         );
         assert_eq!(state.window_ingress().count(), 1);
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
         let capture_ordinal = state.window_ingress().next().unwrap().ordinal();
         assert_ne!(capture_ordinal, 1);
         assert_eq!(
@@ -796,6 +816,7 @@ mod tests {
         assert!(state.window_ingress().next().is_none());
         assert!(state.take_window_ingress(capture_ordinal).is_none());
         assert!(!state.requires_snapshot());
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
         state.commit_destroyed_callbacks();
         assert!(state.requires_snapshot());
         assert_eq!(state.destroyed_observations().count(), 1);
@@ -810,12 +831,69 @@ mod tests {
         state.mark_snapshot_queued();
         state.settle_snapshot(true);
         assert!(!state.requires_snapshot());
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
         let committed = state.committed_routes();
         assert_eq!(committed.len(), 1);
         state.commit_routes(&committed);
         assert_eq!(state.quiescence_candidates().collect::<Vec<_>>(), [binding]);
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
         assert!(state.finish_quiescence(binding));
         assert!(state.quiescence_candidates().next().is_none());
+        assert_eq!(state.owned_data_capacity_bytes(), empty);
+    }
+
+    #[test]
+    fn owned_data_capacity_keeps_failed_create_entries_until_quiescence() {
+        let materialized = binding();
+        let failed_binding = binding();
+        let viewport = ViewportId::from_hash_of("capacity-retirement");
+        let mut routes = crate::viewport_map::NativeViewportMap::default();
+        routes
+            .bind(viewport, WindowId::from(25), materialized)
+            .unwrap();
+        let mut state = NativeRetirementState::default();
+        let empty = state.owned_data_capacity_bytes();
+        state
+            .retain_window(routes.take_window_receipt(viewport, materialized).unwrap())
+            .unwrap();
+        let pending = state.owned_data_capacity_bytes();
+        assert!(pending > empty);
+
+        let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
+        let mut receipt = NativeCreateReceipt::new(None);
+        let failed = crate::viewport_map::CreateTerminal::Failed(
+            eframe::NativeViewportCreateFailureKind::WindowUnavailable,
+        );
+        assert_eq!(
+            receipt.receive(None, failed, || {
+                journal.reserve(HostRecord::ViewportCreateFailed(
+                    crate::viewport_callback::NativeViewportCreateFailureRecord::new(
+                        viewport,
+                        failed_binding,
+                        eframe::NativeViewportCreateFailureKind::WindowUnavailable,
+                    ),
+                ))
+            }),
+            crate::viewport_map::CreateAdmission::First,
+        );
+        let ordinal = receipt.ingress().unwrap().ordinal();
+        assert!(receipt.transfer(None, failed));
+        assert!(state.begin_unmaterialized_quiescence(failed_binding, receipt));
+        let retained = state.owned_data_capacity_bytes();
+        assert!(retained > pending);
+        state.mark_create_failure_recorded(failed_binding);
+        state.commit_create_failures();
+        assert!(!state.finish_quiescence(failed_binding));
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
+        let ingress = state.take_create_ingress(ordinal).unwrap();
+        assert_eq!(ingress.ordinal(), ordinal);
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
+        state.commit_create_failures();
+        assert!(state.is_quiescence_candidate(failed_binding));
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
+        assert!(state.finish_quiescence(failed_binding));
+        assert_eq!(state.owned_data_capacity_bytes(), pending);
+        assert!(state.has_window(viewport, materialized));
     }
 
     #[test]

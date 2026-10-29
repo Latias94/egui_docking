@@ -459,6 +459,47 @@ pub(super) struct SubmittedPresentationObservation {
 }
 
 impl RuntimePresentationState {
+    /// Counts sidecar entries and vector capacities, including its shared drop queue once.
+    pub(super) fn owned_data_capacity_bytes(&self) -> usize {
+        let pending = self.pending.values().fold(0usize, |bytes, outputs| {
+            bytes.saturating_add(
+                outputs
+                    .capacity()
+                    .saturating_mul(size_of::<HostPresentationOutput>()),
+            )
+        });
+        let results =
+            self.results.values().fold(0usize, |bytes, reports| {
+                bytes.saturating_add(reports.len().saturating_mul(
+                    size_of::<HostFrameKey>() + size_of::<SurfacePresentationResult>(),
+                ))
+            });
+        size_of::<Self>()
+            .saturating_add(self.pending.len().saturating_mul(
+                size_of::<HostPresentationStreamId>() + size_of::<Vec<HostPresentationOutput>>(),
+            ))
+            .saturating_add(pending)
+            .saturating_add(self.results.len().saturating_mul(
+                size_of::<HostPresentationStreamId>()
+                    + size_of::<BTreeMap<HostFrameKey, SurfacePresentationResult>>(),
+            ))
+            .saturating_add(results)
+            .saturating_add(self.capture_generations.len().saturating_mul(
+                size_of::<HostPresentationStreamId>()
+                    + size_of::<HostPresentationCaptureGeneration>(),
+            ))
+            .saturating_add(self.backend_recorded.len().saturating_mul(
+                size_of::<HostPresentationStreamId>() + size_of::<RecordedPresentationReport>(),
+            ))
+            .saturating_add(size_of::<Mutex<Vec<HostPresentationOutput>>>())
+            .saturating_add(
+                self.abandoned
+                    .lock()
+                    .capacity()
+                    .saturating_mul(size_of::<HostPresentationOutput>()),
+            )
+    }
+
     pub(super) fn reclaim_quiescent_streams(
         &mut self,
         engine: &mut DockEngine,

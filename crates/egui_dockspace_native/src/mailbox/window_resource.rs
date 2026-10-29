@@ -1,6 +1,7 @@
 //! One exact binding owns deferred creation, staging and command callbacks.
 
 use std::collections::BTreeMap;
+use std::mem::size_of;
 
 use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
 use eframe::{
@@ -95,6 +96,14 @@ pub(super) struct NativeWindowResources {
 }
 
 impl NativeWindowResources {
+    /// Counts inline storage and retained entry data, excluding B-tree node overhead.
+    /// Callback and staging receipts include their supported ingress payloads inline.
+    pub(super) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>().saturating_add(self.entries.len().saturating_mul(
+            size_of::<(ViewportId, NativeSurfaceBinding)>() + size_of::<NativeWindowResource>(),
+        ))
+    }
+
     pub(super) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
         self.entries.values().map(|resource| resource.binding)
     }
@@ -717,12 +726,16 @@ mod tests {
         let binding = request.binding();
         for retire_before_transfer in [false, true] {
             let mut resources = NativeWindowResources::default();
+            let empty = resources.owned_data_capacity_bytes();
             let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
             resources
                 .publish_staging(BTreeMap::from([(viewport, request)]))
                 .unwrap();
+            let retained = resources.owned_data_capacity_bytes();
+            assert!(retained > empty);
             resources.clear_staging();
             assert!(!resources.references_binding(binding));
+            assert_eq!(resources.owned_data_capacity_bytes(), empty);
             resources
                 .publish_staging(BTreeMap::from([(viewport, request)]))
                 .unwrap();
@@ -744,6 +757,7 @@ mod tests {
             assert!(resources.has_pending_work());
             assert!(resources.staging(viewport).is_none());
             assert_eq!(resources.callback_ingress().count(), 1);
+            assert_eq!(resources.owned_data_capacity_bytes(), retained);
             let ingress = resources.take_callback_ingress(ordinal).unwrap();
             journal.transfer_reserved(ingress);
             resources.clear_staging();
@@ -751,6 +765,7 @@ mod tests {
             assert!(resources.references_binding(binding));
             assert!(resources.has_pending_work());
             assert!(resources.callback_ingress().next().is_none());
+            assert_eq!(resources.owned_data_capacity_bytes(), retained);
             assert!(resources.take_callback_ingress(ordinal).is_none());
             assert_eq!(journal.retained_record_count(), 1);
             resources.commit_transferred_callbacks();
@@ -758,6 +773,7 @@ mod tests {
             assert!(!resources.references_binding(binding));
             assert!(!resources.has_pending_work());
             assert_eq!(journal.retained_record_count(), 0);
+            assert_eq!(resources.owned_data_capacity_bytes(), empty);
         }
     }
 
@@ -859,6 +875,29 @@ mod tests {
     }
 
     #[test]
+    fn owned_data_capacity_tracks_entries_until_their_last_resource_clears() {
+        let (first, second) = bindings();
+        let viewport = ViewportId::ROOT;
+        let rect = NativePhysicalRect::new(0, 0, 640, 480);
+        let mut resources = NativeWindowResources::default();
+        let empty = resources.owned_data_capacity_bytes();
+        assert_eq!(empty, size_of::<NativeWindowResources>());
+        assert!(resources.reserve_create(viewport, first, rect));
+        let one = resources.owned_data_capacity_bytes();
+        assert!(one > empty);
+        let peer = ViewportId::from_hash_of("capacity-peer");
+        assert!(resources.reserve_create(peer, second, rect));
+        assert_eq!(resources.owned_data_capacity_bytes() - one, one - empty);
+        assert!(resources.clear_create(viewport, first));
+        assert!(resources.hidden_binding(viewport).is_some());
+        assert_eq!(resources.owned_data_capacity_bytes() - one, one - empty);
+        assert!(resources.clear_hidden(viewport, first));
+        assert_eq!(resources.owned_data_capacity_bytes(), one);
+        resources.retire(peer, second);
+        assert_eq!(resources.owned_data_capacity_bytes(), empty);
+    }
+
+    #[test]
     fn retired_received_callback_survives_new_active_owner_until_exact_handoff_and_commit() {
         let (first, next) = bindings();
         let viewport = ViewportId::ROOT;
@@ -872,7 +911,9 @@ mod tests {
         let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
         let rect = NativePhysicalRect::new(0, 0, 640, 480);
         assert!(resources.reserve_create(viewport, first, rect));
+        let one = resources.owned_data_capacity_bytes();
         assert!(resources.reserve_pointer_callback(viewport, first, window, first_token, true));
+        assert_eq!(resources.owned_data_capacity_bytes(), one);
         let record = NativePointerPassthroughRecord::for_test(
             first_token,
             viewport,
@@ -902,7 +943,9 @@ mod tests {
             CommandCallbackAdmission::Duplicate,
         );
         let ordinal = resources.callback_ingress().next().unwrap().ordinal();
+        assert_eq!(resources.owned_data_capacity_bytes(), one);
         resources.retire(viewport, first);
+        assert_eq!(resources.owned_data_capacity_bytes(), one);
         assert!(resources.create(viewport).is_none());
         assert!(resources.hidden_binding(viewport).is_none());
         assert!(resources.staging(viewport).is_none());
@@ -910,6 +953,8 @@ mod tests {
         assert!(resources.references_binding(first));
         assert!(!resources.reserve_create(viewport, first, rect));
         assert!(resources.reserve_create(viewport, next, rect));
+        let two = resources.owned_data_capacity_bytes();
+        assert!(two > one);
         assert_eq!(resources.create(viewport).unwrap().binding, next);
         assert_eq!(resources.hidden_binding(viewport), Some(next));
         resources.retire(viewport, first);
@@ -936,6 +981,7 @@ mod tests {
             resources.references_binding(first),
             "a received callback is not committed by an unrelated boundary"
         );
+        assert_eq!(resources.owned_data_capacity_bytes(), two);
         assert!(resources.take_callback_ingress(ordinal + 1).is_none());
         let ingress = resources
             .take_callback_ingress(ordinal)
@@ -948,7 +994,9 @@ mod tests {
             resources.references_binding(first),
             "handoff alone does not release the retired owner"
         );
+        assert_eq!(resources.owned_data_capacity_bytes(), two);
         resources.commit_transferred_callbacks();
+        assert_eq!(resources.owned_data_capacity_bytes(), one);
         assert!(!resources.references_binding(first));
         assert!(resources.references_binding(next));
         assert_eq!(resources.create(viewport).unwrap().binding, next);

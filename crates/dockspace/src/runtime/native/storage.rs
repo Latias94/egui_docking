@@ -71,6 +71,24 @@ impl RuntimeNativeState {
 }
 
 impl DockspaceSession {
+    /// Returns the owned data capacity of native effect and presentation reporting.
+    ///
+    /// Includes pending emission/result entries, retained capture generations,
+    /// recorded-report metadata and shared abandoned-result queues once through
+    /// their session owner. It excludes renderer artifacts, core authority,
+    /// allocator metadata and Arc control blocks. The recorded transport returned
+    /// by [`Self::native_input_owned_capacity_bytes`] is separate.
+    /// Sessions without native input return zero.
+    #[must_use]
+    pub fn native_input_pending_report_capacity_bytes(&self) -> usize {
+        if self.native.is_none() {
+            return 0;
+        }
+        self.presentation
+            .owned_data_capacity_bytes()
+            .saturating_add(self.abandoned_native_effects.owned_data_capacity_bytes())
+    }
+
     /// Returns the resident data capacity of recorded native input transport.
     ///
     /// Includes recorder envelopes, payload data, owned vector capacities, and

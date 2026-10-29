@@ -1104,7 +1104,7 @@ fn queued_viewport_close_retains_its_exact_binding_until_dispatch() {
 
     native
         .effects
-        .queue_command(viewport, binding, ViewportCommand::Close);
+        .queue_command(viewport, binding, NativeViewportCommand::Close);
     assert!(native.effects.references_binding(binding));
     assert_eq!(
         native

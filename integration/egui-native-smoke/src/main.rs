@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         phase: SmokePhase::AwaitRootPresentation,
         deadline: Instant::now() + Duration::from_secs(30),
         outcome: reported_outcome,
+        input_capacity_high_water: 0,
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([720.0, 520.0]),
@@ -196,6 +197,7 @@ struct SmokeApp {
     phase: SmokePhase,
     deadline: Instant,
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
+    input_capacity_high_water: usize,
 }
 
 impl eframe::App for SmokeApp {
@@ -214,6 +216,24 @@ impl SmokeApp {
     fn drive(&mut self, context: &egui::Context) {
         if matches!(self.phase, SmokePhase::Done) {
             return;
+        }
+        match self.dockspace.input_storage_capacity_bytes() {
+            Ok(bytes) => {
+                self.input_capacity_high_water = self.input_capacity_high_water.max(bytes);
+                if bytes > 4 * 1024 * 1024 {
+                    self.finish(context, Err(format!(
+                        "native input data at a root boundary exceeded the 4 MiB smoke profile: {bytes} bytes"
+                    )));
+                    return;
+                }
+            }
+            Err(error) => {
+                self.finish(
+                    context,
+                    Err(format!("native input capacity query failed: {error}")),
+                );
+                return;
+            }
         }
         if let Some(kind) = self.dockspace.error_kind() {
             self.finish(
@@ -562,6 +582,10 @@ impl SmokeApp {
     }
 
     fn finish(&mut self, context: &egui::Context, outcome: Result<(), String>) {
+        eprintln!(
+            "native-smoke: peak input data at root boundaries = {} bytes",
+            self.input_capacity_high_water
+        );
         match &outcome {
             Ok(()) => eprintln!("native-smoke: complete"),
             Err(message) => eprintln!("native-smoke: failed: {message}"),

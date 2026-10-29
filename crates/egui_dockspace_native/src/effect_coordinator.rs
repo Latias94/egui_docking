@@ -82,10 +82,48 @@ pub(crate) struct NativeEffectCoordinator {
 struct PendingViewportCommand {
     viewport: ViewportId,
     binding: NativeSurfaceBinding,
-    command: ViewportCommand,
+    command: NativeViewportCommand,
+}
+
+/// The coordinator only produces commands without dynamically owned payloads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NativeViewportCommand {
+    Close,
+    Focus,
+}
+
+impl NativeViewportCommand {
+    const fn into_viewport_command(self) -> ViewportCommand {
+        match self {
+            Self::Close => ViewportCommand::Close,
+            Self::Focus => ViewportCommand::Focus,
+        }
+    }
 }
 
 impl NativeEffectCoordinator {
+    /// Counts inline storage, retained entry data, and command backing capacity.
+    /// B-tree node and allocator overhead are excluded. Request handles are
+    /// inline; core counts their shared abandoned-effect queue once.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.pending_viewports
+                    .len()
+                    .saturating_mul(size_of::<ViewportId>() + size_of::<PendingViewportEffect>()),
+            )
+            .saturating_add(
+                self.pending_shows.len().saturating_mul(
+                    size_of::<NativeSurfaceBinding>() + size_of::<PendingNativeShow>(),
+                ),
+            )
+            .saturating_add(
+                self.pending_commands
+                    .capacity()
+                    .saturating_mul(size_of::<PendingViewportCommand>()),
+            )
+    }
+
     pub(crate) fn has_pending_work(&self) -> bool {
         !self.pending_viewports.is_empty()
             || !self.pending_shows.is_empty()
@@ -113,7 +151,7 @@ impl NativeEffectCoordinator {
         &mut self,
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
-        command: ViewportCommand,
+        command: NativeViewportCommand,
     ) {
         self.pending_commands.push(PendingViewportCommand {
             viewport,
@@ -125,7 +163,7 @@ impl NativeEffectCoordinator {
     pub(crate) fn take_commands(&mut self) -> Vec<(ViewportId, ViewportCommand)> {
         std::mem::take(&mut self.pending_commands)
             .into_iter()
-            .map(|pending| (pending.viewport, pending.command))
+            .map(|pending| (pending.viewport, pending.command.into_viewport_command()))
             .collect()
     }
 
@@ -143,7 +181,7 @@ impl NativeEffectCoordinator {
         let Some(index) = self.pending_commands.iter().position(|pending| {
             pending.viewport == viewport
                 && pending.binding == binding
-                && pending.command == *command
+                && pending.command.into_viewport_command() == *command
         }) else {
             return false;
         };
@@ -313,5 +351,83 @@ impl NativeEffectCoordinator {
             .remove(&plan.viewport)
             .expect("the matching pending viewport effect remains present");
         Some(pending.request)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+    use dockspace::policy::DockPolicy;
+    use dockspace::runtime::{
+        DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster,
+        SurfaceUnavailableReason,
+    };
+
+    use super::*;
+
+    #[test]
+    fn removed_commands_keep_capacity_until_queue_is_taken() {
+        let surface = SurfaceId::new(1);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            surface,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .expect("test layout validates");
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+            .expect("test session initializes");
+        session
+            .enable_managed_native_host(NativePointerRoster::Unknown)
+            .expect("managed native host enrolls");
+        session
+            .register_native_root(surface, HostWindowToken::new(1))
+            .expect("root registration queues");
+        let mut frame = session
+            .begin_host_frame()
+            .expect("registration frame begins");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("registration frame settles");
+        let binding = frame
+            .commit()
+            .expect("registration frame commits")
+            .inputs()
+            .iter()
+            .find_map(|input| match input {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .expect("registration emits one binding");
+
+        let mut effects = NativeEffectCoordinator::default();
+        let empty = effects.owned_data_capacity_bytes();
+        for _ in 0..8 {
+            effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Close);
+            effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Focus);
+        }
+        let queued = effects.owned_data_capacity_bytes();
+        let capacity = effects.pending_commands.capacity();
+        assert!(queued > empty);
+
+        effects.remove_commands(binding);
+        assert!(!effects.has_pending_work());
+        assert_eq!(effects.pending_commands.capacity(), capacity);
+        assert_eq!(effects.owned_data_capacity_bytes(), queued);
+
+        effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Close);
+        effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Focus);
+        assert_eq!(effects.owned_data_capacity_bytes(), queued);
+        assert!(effects.remove_command(ViewportId::ROOT, binding, &ViewportCommand::Close));
+        assert_eq!(effects.owned_data_capacity_bytes(), queued);
+        assert_eq!(
+            effects.take_commands(),
+            vec![(ViewportId::ROOT, ViewportCommand::Focus)],
+        );
+        assert_eq!(effects.owned_data_capacity_bytes(), empty);
     }
 }

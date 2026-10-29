@@ -165,6 +165,29 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).close_progress()
     }
 
+    /// Returns the current owned data capacity of native input and lifecycle transport.
+    ///
+    /// Includes preallocated raw/roster backing, recorder/replay transport,
+    /// pending report queues, exact window/output/close/retirement owners,
+    /// callback controls, pointer translation state and snapshot/work-area
+    /// sidecars. Shared roster and abandoned-result data are counted once
+    /// through their existing owners. Spare vector capacity remains charged.
+    ///
+    /// Excludes allocator/BTree node metadata, Arc control blocks, opaque host
+    /// callbacks/clock closures, core workspace/authority, renderer/receiver
+    /// data, application action/transition queues, diagnostic errors and
+    /// caller-owned buffers. This
+    /// measures current data at a locked host boundary; it does not reserve
+    /// future terminal data or certify the complete 4 MiB admission limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invariant error if an internal producer bypasses the finite
+    /// native payload contract of the recorder.
+    pub fn input_storage_capacity_bytes(&self) -> Result<usize, NativeRuntimeError> {
+        lock_state(&self.state).owned_input_capacity_bytes()
+    }
+
     /// Queues one complete-root dock action for the next final root pass.
     ///
     /// The action is prepared against the exact published revision while the

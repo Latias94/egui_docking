@@ -432,6 +432,17 @@ impl NativeEffectDropQueue {
         !self.lock().is_empty()
     }
 
+    /// Counts the one session-owned queue behind all affine request handles.
+    pub(super) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(size_of::<Mutex<Vec<NativeEffectResult>>>())
+            .saturating_add(
+                self.lock()
+                    .capacity()
+                    .saturating_mul(size_of::<NativeEffectResult>()),
+            )
+    }
+
     pub(super) fn take_for(
         &self,
         provider: PlatformObservationLease,
@@ -808,10 +819,13 @@ mod tests {
             .pop()
             .expect("one destructive emission exists");
         let abandoned = NativeEffectDropQueue::default();
+        let empty_capacity = abandoned.owned_data_capacity_bytes();
         drop(NativeEffectRequest::from_emission(
             &emission,
             abandoned.clone(),
         ));
+        let retained_capacity = abandoned.owned_data_capacity_bytes();
+        assert!(retained_capacity > empty_capacity);
 
         let replacement = providers
             .begin_replacement(predecessor)
@@ -824,12 +838,14 @@ mod tests {
             abandoned.take_for(successor).is_err(),
             "a successor cannot consume an uncorrelated predecessor result"
         );
+        assert_eq!(abandoned.owned_data_capacity_bytes(), retained_capacity);
         let retained = abandoned
             .take_for(predecessor)
             .expect("the failed take leaves the original queue intact");
         assert_eq!(retained.len(), 1);
         assert_eq!(retained[0].provider, predecessor);
         assert!(retained[0].can_be_correlated_by_cleanup());
+        assert_eq!(abandoned.owned_data_capacity_bytes(), empty_capacity);
     }
 
     #[test]

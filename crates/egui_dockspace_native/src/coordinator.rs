@@ -29,7 +29,8 @@ use crate::NativeRuntimeError;
 use crate::capabilities::capabilities_for_backend;
 use crate::deferred_viewport::{DeferredViewportDriver, DeferredViewportSpec, viewport_id_for};
 use crate::effect_coordinator::{
-    NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
+    NativeEffectCoordinator, NativeViewportCommand, NativeViewportEffectKind,
+    NativeViewportEffectPlan,
 };
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
@@ -63,6 +64,7 @@ mod close_driver;
 mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
+mod storage;
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
 

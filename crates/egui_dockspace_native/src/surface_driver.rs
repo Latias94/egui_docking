@@ -299,6 +299,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
         self.coordinator.close_progress()
     }
 
+    pub(crate) fn owned_input_capacity_bytes(&self) -> Result<usize, NativeRuntimeError> {
+        self.coordinator.owned_input_capacity_bytes()
+    }
+
     pub(crate) fn is_quiescent(&self) -> bool {
         committed_boundary_is_quiescent(
             self.shutdown.is_some(),

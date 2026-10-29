@@ -58,6 +58,16 @@ pub(crate) struct DeferredViewportDriver {
 }
 
 impl DeferredViewportDriver {
+    /// Counts inline storage and retained entry data, excluding B-tree node
+    /// and allocator overhead. Deferred specifications are entirely inline.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>().saturating_add(
+            self.entries
+                .len()
+                .saturating_mul(size_of::<ViewportId>() + size_of::<DeferredViewportSpec>()),
+        )
+    }
+
     pub(crate) fn can_insert(
         &self,
         viewport: ViewportId,

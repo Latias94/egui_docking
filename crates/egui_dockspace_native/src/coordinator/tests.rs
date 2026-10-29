@@ -26,6 +26,7 @@ mod input_control;
 mod overload;
 mod replacement;
 mod retirement;
+mod storage;
 mod touch;
 mod wheel;
 mod work_area;

@@ -277,6 +277,21 @@ control blocks are outside its measurement boundary; it is not process memory.
 Use the frame query while a frame is open so its cursor or commit guard is
 included. Sessions without native input report zero.
 
+`native_input_pending_report_capacity_bytes()` separately measures the native
+presentation and effect report sidecars, including their shared abandoned-result
+queues once through the session owner. It includes retained entry data and spare
+vector capacity, with the same allocator/Arc metadata exclusions. Querying or
+cloning an affine handle does not duplicate its shared queue charge.
+
+A host can select `NativeInputStorageLimit` during
+`enable_managed_native_host_with_input_storage_limit`. This optional recorded
+transport allowance reserves recorder backing, prepared pointer journals, full
+atomic replay, the commit guard and prefix retirement. The default remains
+unlimited. `InputCapacity` preserves unaccepted data for retry after draining
+accepted input. It does not include the separately measured pending report
+sidecars or the host's callback/resource owners; combine those before advertising
+a total input-memory limit.
+
 The synchronous `begin_native_host_frame` convenience remains available for
 hosts deliberately draining a complete interval; it does not enforce a time
 budget. The working egui native coordinator uses the budgeted protocol and

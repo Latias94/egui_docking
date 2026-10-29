@@ -2,6 +2,7 @@
 
 use dockspace::close::CloseItemDecisionState;
 use std::collections::BTreeMap;
+use std::mem::{size_of, size_of_val};
 
 use dockspace::runtime::{
     DockspaceClosePlan, NativeCloseEffectAcknowledgement, NativeSurfaceBinding,
@@ -247,6 +248,21 @@ pub(crate) struct NativeCloseControl {
 }
 
 impl NativeCloseControl {
+    /// Counts inline storage, retained entry data, and boxed close-plan items.
+    /// Inline receipts are counted once; B-tree node and allocator overhead are excluded.
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        let entries =
+            size_of::<Self>().saturating_add(self.pending.len().saturating_mul(
+                size_of::<NativeSurfaceBinding>() + size_of::<PendingNativeClose>(),
+            ));
+        self.pending
+            .values()
+            .filter_map(|pending| pending.decision_plan.as_ref())
+            .fold(entries, |bytes, plan| {
+                bytes.saturating_add(size_of_val(plan.items()))
+            })
+    }
+
     pub(crate) const fn progress(&self) -> crate::lifecycle_progress::NativeCloseProgress {
         self.progress
     }
@@ -753,5 +769,192 @@ impl NativeCloseControl {
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending.contains_key(&binding)
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+    use dockspace::policy::DockPolicy;
+    use dockspace::runtime::{
+        DockspaceSession, HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState,
+        NativeEffectAcknowledgement, NativeMonotonicClock, NativePointerRoster, NativeWindowFacts,
+        NativeWorkAreaRoster, SurfaceUnavailableReason,
+    };
+    use winit::event::WindowEvent;
+
+    use super::*;
+    use crate::mailbox::{HostRecord, journal::HostIngressJournal};
+
+    fn commit(session: &mut DockspaceSession) -> HostFrameReport {
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap()
+    }
+
+    fn fixture(item_count: u64) -> (DockspaceSession, NativeSurfaceBinding) {
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SurfaceId::new(1),
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs((1..=item_count).map(ItemId::new)),
+            ),
+        )])
+        .unwrap();
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .unwrap();
+        session
+            .register_native_root(SurfaceId::new(1), HostWindowToken::new(11))
+            .unwrap();
+        let binding = commit(&mut session)
+            .inputs()
+            .iter()
+            .find_map(|input| match input {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .unwrap();
+        session
+            .report_managed_native_snapshot(
+                [(binding, NativeWindowFacts::live())],
+                NativeWorkAreaRoster::Unknown,
+            )
+            .unwrap();
+        commit(&mut session);
+        (session, binding)
+    }
+
+    fn request(
+        session: &mut DockspaceSession,
+        binding: NativeSurfaceBinding,
+    ) -> NativeSurfaceCloseRequest {
+        session
+            .publish_native_close(binding, NativeCloseState::Requested, None)
+            .unwrap();
+        commit(session)
+            .inputs()
+            .iter()
+            .find_map(|input| match input {
+                HostInputOutcome::NativeCloseObservationApplied { close_requests } => {
+                    close_requests.first().copied()
+                }
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn event(binding: NativeSurfaceBinding) -> NativeWindowEventRecord {
+        NativeWindowEventRecord::for_test(
+            1,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::CloseRequested,
+        )
+    }
+
+    #[test]
+    fn owned_data_capacity_keeps_close_entries_until_cancellation_commit() {
+        let (mut session, binding) = fixture(1);
+        let (_, other) = fixture(1);
+        let close = request(&mut session, binding);
+        let mut control = NativeCloseControl::default();
+        let empty = control.owned_data_capacity_bytes();
+        assert_eq!(empty, size_of::<NativeCloseControl>());
+        assert!(control.observe_request(&event(binding), binding));
+        assert_eq!(control.bind_request(close), Ok(true));
+        let one = control.owned_data_capacity_bytes();
+        assert!(one > empty);
+        assert!(control.observe_request(&event(other), other));
+        assert_eq!(control.owned_data_capacity_bytes() - one, one - empty);
+        control.retire_binding(other);
+        assert_eq!(control.owned_data_capacity_bytes(), one);
+
+        session.cancel_native_surface_close(close).unwrap();
+        let effect = commit(&mut session).take_native_effects().pop().unwrap();
+        let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = effect.accepted() else {
+            panic!("cancellation must provide its close acknowledgement")
+        };
+        assert_eq!(
+            control.begin_cancellation(close, acknowledgement),
+            Some(ViewportId::ROOT)
+        );
+        let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
+        let mut receipt = CancellationReceipt::new();
+        // Exercise the inline receipt model without fabricating an opaque fork token.
+        assert_eq!(
+            receipt.receive(|| journal.reserve(HostRecord::WindowEvent(event(binding)))),
+            NativeCloseCallbackAdmission::First,
+        );
+        control
+            .pending
+            .get_mut(&binding)
+            .unwrap()
+            .cancellation_receipt = Some(receipt);
+        let ordinal = control.callback_ingress().next().unwrap().ordinal();
+        assert_eq!(control.owned_data_capacity_bytes(), one);
+        control.commit_transferred_callbacks();
+        assert_eq!(control.owned_data_capacity_bytes(), one);
+        assert!(control.take_callback_ingress(ordinal).is_some());
+        assert!(control.mark_clear_recorded(binding));
+        assert_eq!(control.settle_clear(false), 1);
+        assert_eq!(control.settle_clear(true), 0);
+        assert_eq!(control.owned_data_capacity_bytes(), one);
+        control.commit_transferred_callbacks();
+        assert_eq!(control.owned_data_capacity_bytes(), one);
+        assert_eq!(control.settle_clear(true), 1);
+        assert_eq!(control.owned_data_capacity_bytes(), empty);
+    }
+
+    #[test]
+    fn owned_data_capacity_includes_boxed_decisions_until_plan_settlement() {
+        for item_count in [1, 3] {
+            let (mut session, binding) = fixture(item_count);
+            let close = request(&mut session, binding);
+            let mut control = NativeCloseControl::default();
+            let empty = control.owned_data_capacity_bytes();
+            assert!(control.observe_request(&event(binding), binding));
+            assert_eq!(control.bind_request(close), Ok(true));
+            control.mark_policy_recorded(close);
+            let inline = control.owned_data_capacity_bytes();
+            session
+                .request_native_surface_close(close, NativeSurfaceCloseAction::CloseContent)
+                .unwrap();
+            let plan = commit(&mut session)
+                .inputs()
+                .iter()
+                .find_map(|input| match input {
+                    HostInputOutcome::NativeSurfaceCloseRequested { plan, .. } => {
+                        Some(plan.clone())
+                    }
+                    _ => None,
+                })
+                .expect("the native close produces its content decision plan");
+            assert_eq!(plan.items().len(), usize::try_from(item_count).unwrap());
+            control.retain_decision_plan(close, &plan);
+            let retained = control.owned_data_capacity_bytes();
+            assert!(retained > inline);
+            assert_eq!(retained - inline, size_of_val(plan.items()));
+            control.commit_transferred_callbacks();
+            assert_eq!(control.owned_data_capacity_bytes(), retained);
+            control.settle_decision_plans(std::slice::from_ref(&plan));
+            assert_eq!(control.owned_data_capacity_bytes(), inline);
+            control.retain_decision_plan(close, &plan);
+            assert_eq!(control.owned_data_capacity_bytes(), retained);
+            control.retire_binding(binding);
+            assert_eq!(control.owned_data_capacity_bytes(), empty);
+        }
     }
 }
