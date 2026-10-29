@@ -2,6 +2,65 @@
 
 use super::*;
 
+/// Independent host-owner bounds; window lifetimes and effect leases do not
+/// imply a fixed number of retained resource or ordinary command entries.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NativeOwnerStorageLimit {
+    pub(crate) resource_slots: usize,
+    pub(crate) command_slots: usize,
+    pub(crate) byte_limit: usize,
+}
+
+impl NativeOwnerStorageLimit {
+    pub(super) fn external_reserved_bytes(self) -> Option<usize> {
+        self.byte_limit
+            .checked_sub(NativeHostBridge::window_resource_storage_bytes(
+                self.resource_slots,
+            )?)?
+            .checked_sub(NativeHostBridge::window_resource_staging_bytes(
+                self.resource_slots,
+            )?)
+    }
+
+    pub(crate) fn required_bytes(
+        bindings: usize,
+        effects: usize,
+        resources: usize,
+        commands: usize,
+    ) -> Option<usize> {
+        size_of::<Option<Self>>()
+            .checked_add(NativeHostBridge::window_resource_storage_bytes(resources)?)?
+            .checked_add(NativeHostBridge::window_resource_staging_bytes(resources)?)?
+            .checked_add(NativeInputControl::reservation_bytes(
+                Some(bindings),
+                Some(effects),
+            )?)?
+            .checked_add(NativeEffectCoordinator::reservation_bytes(
+                Some(effects),
+                Some(commands),
+            )?)?
+            .checked_add(DeferredViewportDriver::reservation_bytes(bindings)?)?
+            .checked_add(size_of::<Vec<DeferredViewportSpec>>())?
+            .checked_add(bindings.checked_mul(size_of::<DeferredViewportSpec>())?)
+    }
+
+    pub(super) fn validate(
+        self,
+        bindings: Option<usize>,
+        effects: Option<usize>,
+    ) -> Result<(), NativeRuntimeError> {
+        let (Some(bindings), Some(effects)) = (bindings, effects) else {
+            return Err(NativeHostProtocolError::NativeOwnerStorageConfiguration.into());
+        };
+        if Self::required_bytes(bindings, effects, self.resource_slots, self.command_slots)
+            .is_none_or(|required| required > self.byte_limit)
+        {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+        }
+        Ok(())
+    }
+}
+
 /// One complete roster conversion and its retained settlement sidecars.
 /// Core producer/replay storage and frozen source payloads have separate owners.
 #[derive(Debug, Clone, Copy)]

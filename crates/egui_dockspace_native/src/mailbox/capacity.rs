@@ -6,6 +6,7 @@ use super::roster::NativeViewportRosterRecord;
 use super::window_resource::NativeWindowResources;
 use super::{HostRecord, NativeHostBridge, NativeHostState, NativeSurfaceBinding};
 use crate::close_control::NativeCloseControl;
+use crate::error::NativeHostProtocolError;
 use crate::event::NativeWindowEventClass;
 use crate::pointer_event::NativePointerTranslator;
 use crate::retirement::NativeRetirementState;
@@ -100,6 +101,8 @@ impl NativeHostState {
                     bytes.checked_add(self.reserved_pointer_translation_capacity_bytes())
                 })
                 .and_then(|bytes| bytes.checked_add(self.snapshot_storage_reserved_bytes))
+                .and_then(|bytes| bytes.checked_add(self.window_resource_staging_reserved_bytes))
+                .and_then(|bytes| bytes.checked_add(self.host_owner_external_reserved_bytes))
                 .and_then(|bytes| bytes.checked_add(allowance.external_reserved_bytes))
                 .and_then(|bytes| bytes.checked_add(additional))
                 .is_some_and(|bytes| bytes <= allowance.byte_limit)
@@ -164,6 +167,49 @@ impl NativeHostState {
 }
 
 impl NativeHostBridge {
+    pub(crate) fn window_resource_storage_bytes(slots: usize) -> Option<usize> {
+        NativeWindowResources::reservation_bytes(slots)
+    }
+
+    pub(crate) fn window_resource_staging_bytes(slots: usize) -> Option<usize> {
+        NativeWindowResources::staging_reservation_bytes(slots)
+    }
+
+    /// Initial installation reserves current entry backing plus one complete
+    /// staging preparation before any terminal obligation or capture exists.
+    pub(crate) fn configure_window_resource_storage(
+        &self,
+        slots: usize,
+        external_reserved_bytes: usize,
+    ) -> Result<(), NativeHostProtocolError> {
+        let mut state = self.lock();
+        if state.window_resource_staging_reserved_bytes != 0
+            || !state.window_resources.can_configure_capacity_limit()
+            || state.window_resources.owned_data_capacity_bytes()
+                != size_of::<NativeWindowResources>()
+            || state.journal.captured_through() != 0
+            || state.output_context.is_some()
+        {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        let staging = Self::window_resource_staging_bytes(slots)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let additional = Self::window_resource_storage_bytes(slots)
+            .and_then(|bytes| bytes.checked_sub(size_of::<NativeWindowResources>()))
+            .and_then(|bytes| bytes.checked_add(staging))
+            .and_then(|bytes| bytes.checked_add(external_reserved_bytes))
+            .and_then(|bytes| bytes.checked_add(NativeOutputResources::ordinary_entry_data_bytes()))
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if !state.can_reserve_input_data(additional) {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        let resources = NativeWindowResources::with_capacity_limit(slots)?;
+        state.window_resources = resources;
+        state.window_resource_staging_reserved_bytes = staging;
+        state.host_owner_external_reserved_bytes = external_reserved_bytes;
+        Ok(())
+    }
+
     /// One fixed conversion/settlement promise is paid before source capture.
     /// It is retained independently of queued snapshot occupancy.
     pub(crate) fn configure_snapshot_storage_allowance(
@@ -239,6 +285,40 @@ mod tests {
         DeviceId, MouseScrollDelta, PointerEventFacts, Touch, TouchPhase, WindowEvent,
     };
     use winit::window::WindowId;
+
+    #[test]
+    fn resource_and_external_owner_storage_share_output_headroom_before_initial_installation() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let baseline = bridge.owned_input_capacity_bytes(None);
+        let pointer = bridge.lock().reserved_pointer_translation_capacity_bytes();
+        let output = NativeOutputResources::ordinary_entry_data_bytes();
+        let external = 1234;
+        let resources = NativeHostBridge::window_resource_storage_bytes(1).unwrap()
+            - size_of::<NativeWindowResources>();
+        let staging = NativeHostBridge::window_resource_staging_bytes(1).unwrap();
+        let required = baseline + pointer + output + resources + staging + external;
+        assert!(bridge.configure_input_storage_allowance(required - 1, 0));
+        assert_eq!(
+            bridge.configure_window_resource_storage(1, external),
+            Err(NativeHostProtocolError::NativeReportStorageUnavailable)
+        );
+        assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
+        assert_eq!(bridge.lock().window_resource_staging_reserved_bytes, 0);
+        assert_eq!(bridge.lock().host_owner_external_reserved_bytes, 0);
+        assert!(bridge.configure_input_storage_allowance(required, 0));
+        bridge
+            .configure_window_resource_storage(1, external)
+            .unwrap();
+        assert_eq!(
+            bridge.owned_input_capacity_bytes(None),
+            baseline + resources
+        );
+        let state = bridge.lock();
+        assert_eq!(state.window_resource_staging_reserved_bytes, staging);
+        assert_eq!(state.host_owner_external_reserved_bytes, external);
+        assert!(state.can_reserve_input_data(output));
+        assert!(!state.can_reserve_input_data(output + 1));
+    }
 
     fn scroll(ordinal: u64, phase: TouchPhase) -> NativeWindowEventRecord {
         NativeWindowEventRecord::for_test(

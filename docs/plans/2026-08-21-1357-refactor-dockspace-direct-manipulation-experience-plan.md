@@ -998,6 +998,60 @@ the matching 27 storage/producer/byte-boundary cases and full workspace pass.
 These gates qualify this slice only; the remaining owner-admission and platform
 requirements above still apply.
 
+The resource/input/effect-owner slice implements independent M exact resource
+entries and C ordinary command entries. Resource keys retain viewport plus exact
+binding, so old provider/viewport command owners coexist with successors without
+being merged by window lifetime. Finite backing is preallocated and remains
+charged after prune/drain. Create/show effect stores share the original E request
+lease bound; stable input observations use W exact binding entries and pending
+input prepays E+1 for the accepted head which still awaits snapshot. Input
+retirement rotates its original deque and transfers affine results directly into
+the existing prepaid result owner.
+
+The local eframe seam prepares an affine property command and its exact token
+without enqueueing backend work. Adapter focus, visibility and pass-through
+dispatch reserve their terminal receipt and retain their original effect owner
+before enqueueing. Capacity refusal produces a typed predispatch failure. Native
+staging prepares all entry/request/wake backing under the existing host lock,
+holds that lock across core publication, then fills existing slots; no callback
+can consume the prepared space in between. The public core staging API returns
+a borrowed exact-size iterator instead of silently collecting a temporary Vec.
+The necessary deferred-viewport declaration copy is explicitly reserved before
+releasing the runtime lock to call egui.
+
+Manual binding quiescence now shares the automatic host-reference guard,
+including stable input observations, exact routes, unfinished physical receipts,
+callbacks and sidecars. Missing pending work alone cannot release W. The selected
+private owner allowance combines current resource backing, staging scratch and
+external input/effect/declaration promises with the same bridge allowance. This
+does not yet prepay retirement/close-control storage, route/index and semantic
+wake sets, or coordinator presentation/no-frame ACK storage and retirement
+construction. Those remaining existing owners must close before combined-profile
+enablement; configured-cap load/soak, scoped input and physical gates remain open.
+
+Fresh owner-slice qualification passes 1,813 all-feature workspace tests, 86
+public-host tests, ten doctests, strict docs and correctness/suspicious Clippy.
+Native qualification passes 387 tests normally and 387 without native debug
+assertions, plus Clippy and macOS programmatic real-window redock. A negative
+control omitting the extra accepted-head slot fails, and exact restoration
+passes all 18 targeted owner cases. The local unpublished fork commit
+`bac446e142f93a5dc92695ab32e15a12e6dc7453` passes Glow 82, WGPU 76 and
+combined no-assertion 82 tests, plus both renderers without the seam. These
+results qualify this owner slice; they do not enable the complete product cap.
+
+The next retirement/close slice should consolidate materialized and failed-create
+retirement entries into one lifetime owner with a shared W backing. Release must
+reject an alias collision before moving a physical receipt or acknowledgement.
+Close capture retains its exact binding, current request and one parked successor;
+it needs an independent entry allowance rather than an assumed W multiplier.
+Its entry must exist before Hold, while cancellation, Destroyed and cleanup
+callbacks only fill the original prepaid fields. Retirement route preparation,
+quiescence and close-policy iteration should eliminate avoidable collected
+vectors and prepay any necessary affine preparation before irreversible moves.
+Subsequent route, semantic-wake and ACK owners require their own admission:
+current routes are a W subset, but retained exact-binding presentation and
+no-frame obligations cannot inherit W or the released effect lease bound E.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

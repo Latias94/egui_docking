@@ -1,13 +1,12 @@
 //! Native host-frame adapter over the renderer-neutral session frame.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSubmittedAction, HostFrameReport, HostInputOutcome,
-    NativeStagingPaintRequest, PreparedDockAction, PreparedPaneFocusObservation,
-    PreparedSurfaceAction, SurfaceUnavailableReason,
+    PreparedDockAction, PreparedPaneFocusObservation, PreparedSurfaceAction,
+    SurfaceUnavailableReason,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, PaneView};
@@ -221,7 +220,6 @@ impl<'session> NativeHostFrame<'session> {
     /// Returns an error without releasing the callback-order barrier when the
     /// core rejects the candidate frame.
     pub fn commit(self) -> Result<HostFrameReport, NativeRuntimeError> {
-        let staging_requests = self.compile_staging_requests()?;
         let Self {
             frame,
             bridge,
@@ -229,7 +227,8 @@ impl<'session> NativeHostFrame<'session> {
             repaint_context,
             overload,
         } = self;
-        let report = frame.commit()?;
+        let (report, staging_viewports) =
+            bridge.commit_host_frame_with_staging(frame, overload.is_none())?;
         if let Some(cancellation) = overload {
             if !matches!(
                 report.submitted_action_outcome(cancellation.submitted),
@@ -242,7 +241,6 @@ impl<'session> NativeHostFrame<'session> {
             bridge.release_pointer_translation_capacity(cancellation.translator);
         }
         receivers.commit_presentations(report.surface_presentation_commits());
-        let staging_viewports = bridge.publish_staging_requests(staging_requests)?;
         bridge.commit_frame_boundary(report.native_input_pending());
         if let Some(context) = repaint_context {
             let ready_semantic_viewports = bridge.take_ready_semantic_viewports();
@@ -253,17 +251,6 @@ impl<'session> NativeHostFrame<'session> {
             );
         }
         Ok(report)
-    }
-
-    fn compile_staging_requests(
-        &self,
-    ) -> Result<BTreeMap<egui::ViewportId, NativeStagingPaintRequest>, NativeRuntimeError> {
-        if self.overload.is_some() {
-            return Ok(BTreeMap::new());
-        }
-        self.bridge
-            .compile_staging_requests(self.frame.native_staging_paints())
-            .map_err(Into::into)
     }
 }
 

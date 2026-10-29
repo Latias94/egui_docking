@@ -1,13 +1,15 @@
 //! Ordered callback mailbox for the fork-backed native host.
 
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use winit::window::WindowId;
 
 use dockspace::runtime::{
-    NativeCleanupObservation, NativeCloseEffectAcknowledgement, NativeEffectResult,
-    NativeInputBudget, NativeMonotonicClock, NativeStagingPaintRequest, NativeSurfaceBinding,
-    NativeWindowFacts,
+    DockspaceHostFrame, HostFrameReport, NativeCleanupObservation,
+    NativeCloseEffectAcknowledgement, NativeEffectResult, NativeInputBudget, NativeMonotonicClock,
+    NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowFacts,
 };
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
@@ -1660,6 +1662,8 @@ struct NativeHostState {
     input_storage_allowance: Option<capacity::NativeHostInputAllowance>,
     pointer_translation_reserved_bytes: usize,
     snapshot_storage_reserved_bytes: usize,
+    window_resource_staging_reserved_bytes: usize,
+    host_owner_external_reserved_bytes: usize,
     window_resources: NativeWindowResources,
     retirements: NativeRetirementState,
     close_control: NativeCloseControl,
@@ -1753,6 +1757,8 @@ impl NativeHostState {
             pointer_translation_reserved_bytes: NativePointerTranslator::default()
                 .reserved_translation_capacity_bytes(),
             snapshot_storage_reserved_bytes: 0,
+            window_resource_staging_reserved_bytes: 0,
+            host_owner_external_reserved_bytes: 0,
             window_resources: NativeWindowResources::default(),
             retirements: NativeRetirementState::default(),
             close_control: NativeCloseControl::default(),
@@ -3097,26 +3103,43 @@ impl NativeHostBridge {
         action(&mut self.lock().viewports)
     }
 
-    pub(crate) fn compile_staging_requests(
+    /// Core commit does not call eframe or the bridge. Holding the existing host
+    /// lock through preparation and publication prevents concurrent callbacks
+    /// from spending a prepared resource slot before its infallible install.
+    pub(crate) fn commit_host_frame_with_staging(
         &self,
-        staging: impl IntoIterator<Item = NativeStagingPaintRequest>,
-    ) -> Result<BTreeMap<ViewportId, NativeStagingPaintRequest>, NativeHostProtocolError> {
-        let records = self.lock();
-        let mut requests = BTreeMap::new();
-        for request in staging {
-            let Some(viewport) = records.viewports.viewport(request.surface()) else {
-                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
-            };
-            if records.viewports.binding(viewport) != Some(request.binding())
-                || requests.insert(viewport, request).is_some()
-            {
-                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
-            }
+        frame: DockspaceHostFrame<'_>,
+        include_staging: bool,
+    ) -> Result<(HostFrameReport, Vec<ViewportId>), NativeRuntimeError> {
+        let mut records = self.lock();
+        let NativeHostState {
+            viewports,
+            window_resources,
+            ..
+        } = &mut *records;
+        let mut route_error = None;
+        let requests = frame
+            .native_staging_paints()
+            .filter(|_| include_staging)
+            .map_while(|request| {
+                let viewport = viewports.viewport(request.surface());
+                match viewport {
+                    Some(viewport) if viewports.binding(viewport) == Some(request.binding()) => {
+                        Some((viewport, request))
+                    }
+                    _ => {
+                        route_error = Some(NativeHostProtocolError::OutputRouteAttachmentFailed);
+                        None
+                    }
+                }
+            });
+        let prepared = window_resources.prepare_staging(requests)?;
+        if let Some(error) = route_error {
+            return Err(error.into());
         }
-        if !records.window_resources.can_publish_staging(&requests) {
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
-        }
-        Ok(requests)
+        let report = frame.commit()?;
+        let wake = window_resources.commit_staging(prepared);
+        Ok((report, wake))
     }
 
     pub(crate) fn output_route_state(
@@ -3842,6 +3865,7 @@ impl NativeHostBridge {
             .cancel_cancellation_callback_reservation(binding, request);
     }
 
+    #[cfg(test)]
     pub(crate) fn can_publish_staging_requests(
         &self,
         requests: &BTreeMap<ViewportId, NativeStagingPaintRequest>,
@@ -3849,6 +3873,7 @@ impl NativeHostBridge {
         self.lock().window_resources.can_publish_staging(requests)
     }
 
+    #[cfg(test)]
     pub(crate) fn publish_staging_requests(
         &self,
         requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
@@ -4246,6 +4271,15 @@ impl NativeHostBridge {
 
     pub(crate) fn retirement_is_quiescence_candidate(&self, binding: NativeSurfaceBinding) -> bool {
         self.lock().retirements.is_quiescence_candidate(binding)
+    }
+
+    pub(crate) fn retirement_blocks_quiescence(&self, binding: NativeSurfaceBinding) -> bool {
+        let records = self.lock();
+        records
+            .retirements
+            .bindings()
+            .any(|retained| retained == binding)
+            && !records.retirements.is_quiescence_candidate(binding)
     }
 
     /// Records input retirement once under the exact physical callback owner.

@@ -29,7 +29,7 @@ fn bounded_snapshot_coordinator() -> NativeCoordinator {
         ),
     ])
     .unwrap();
-    NativeCoordinator::new_with_input_storage_limit(
+    NativeCoordinator::new_with_storage_limits(
         DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap(),
         NativePointerRoster::Exact(Vec::new()),
         Some(
@@ -40,6 +40,7 @@ fn bounded_snapshot_coordinator() -> NativeCoordinator {
                     1024 * 1024,
                 )),
         ),
+        None,
     )
     .unwrap()
 }

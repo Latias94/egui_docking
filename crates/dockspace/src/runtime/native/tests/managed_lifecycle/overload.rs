@@ -1027,7 +1027,6 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
     assert!(
         frame
             .native_staging_paints()
-            .iter()
             .any(|paint| paint.binding() == child_binding
                 && paint.phase() == NativeStagingPresentationPhase::PreShow),
         "overload cancellation must not turn the accepted create into shutdown"

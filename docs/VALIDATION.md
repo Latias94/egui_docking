@@ -15,6 +15,76 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 prepaid resource, input, effect and deferred owners
+
+The selected private `NativeOwnerStorageLimit` now combines independent M exact
+window-resource entries and C ordinary commands with producer W and effect-report
+E. Configuration validates the complete allowance and preallocates all selected
+backing before core enrollment. Resource keys include both viewport and exact
+binding, so predecessor callback owners continue to occupy their own entries.
+Finite clear, prune and command drain retain their original backing and charge.
+Create and show stores share E live requests while retaining their distinct
+prepaid backing. Stable input observations use W; manual quiescence now shares
+the automatic path's retained-reference guard, including stable observations
+which no longer report pending work. The public coordinator session fixes its
+provider for its lifetime; a future public provider-handoff API would need its
+own observation-slot admission before backend dispatch.
+
+Input command pending storage prepays E+1: one accepted head can still await its
+snapshot after releasing its effect-report lease, while E successor requests
+retain those leases. Retirement rotates the same deque in order and moves
+affine results directly into the existing prepaid result owner. Observation
+capacity refusal retains the exact callback and original request for retry.
+The selected configuration checks overflow and actual allocated capacities;
+generic/default dimensions remain unlimited.
+
+The local eframe seam now prepares a non-Clone property command and its exact
+token without enqueueing work. Focus, visibility and pass-through dispatch
+reserve their callback and retain the original effect owner before consuming
+the preparation. Rejected preparation only spends identity; no command or
+terminal callback is queued. Staging reserves its complete unique owner set,
+request backing and wake backing under the existing host mutex, then holds
+that mutex through core publication and installs without further allocation.
+The core staging query returns a borrowed exact-size iterator. The necessary
+deferred declaration copy is explicitly reserved and counted before the app
+releases the runtime lock to call egui. Production command drain and input
+retirement no longer collect temporary command/result vectors.
+
+Fresh qualification passes 1,813 all-feature workspace tests, 86 external
+public-host tests, ten doctests, strict rustdoc and correctness/suspicious Clippy.
+The local unpublished-fork native workspace passes 387 tests normally and 387
+with native debug assertions disabled, plus correctness/suspicious Clippy.
+The macOS programmatic tear-off, first-live, redock and retirement journey exits
+0 and samples 2,389,273 owned input-data bytes at root boundaries. These results
+are recorded in `/tmp/dockspace-owner-storage-qualification.json`; the tested
+snapshot matches all 407 frozen source files. This is a workload sample rather
+than configured-cap saturation or a physical-input/mixed-DPI qualification.
+
+A disposable-snapshot control removes only the accepted input head's extra
+pending slot. The real one-lease/accepted-head/successor regression fails
+(exit 100). Restoring the exact source passes all 18 selected input, resource
+and coordinator-owner cases (exit 0), with snapshot/source bytes matching again.
+Results are recorded in `/tmp/dockspace-owner-storage-control.json`.
+
+The local eframe fork commit
+`bac446e142f93a5dc92695ab32e15a12e6dc7453` passes 82 Glow tests, 76 WGPU
+tests and 82 combined-renderer tests with eframe debug assertions disabled.
+Both renderers also compile without `native-host-seam`. The new regression
+requires empty backend queues during preparation and after rejected preparation,
+then verifies exact token/value order only after enqueue. Results are recorded
+in `/tmp/dockspace-owner-storage-fork-qualification.json`. This fork commit is
+local and unpublished; tracked dependency pins remain unchanged.
+
+Independent reviews found no remaining concrete blocker in this slice. They
+also confirmed the next boundaries: retirement's materialized and failed-create
+paths must share one lifetime allowance; close owners need exact-entry
+admission; route/index and semantic-wake storage, presentation/no-frame ACKs
+and retirement construction still need prepaid capacity. The complete 4 MiB
+product profile remains disabled. Configured-cap load/release latency, lifecycle
+soak, native scoped input, native showcase and physical certification remain
+open. Tracked native fork pins still name the earlier public baseline and do
+not reproduce the local unpublished seam.
+
 ## 2026-10-29 U7 producer and complete-roster construction admission
 
 `NativeInputStorageLimit::with_producer_storage_limit` selects a separate

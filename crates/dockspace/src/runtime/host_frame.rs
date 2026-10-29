@@ -554,7 +554,9 @@ impl DockspaceHostFrame<'_> {
     /// paint only adapter-owned background or loading chrome and must not invoke
     /// pane UI, publish receivers, or infer focus authority from the callback.
     #[must_use]
-    pub fn native_staging_paints(&self) -> Vec<NativeStagingPaintRequest> {
+    pub fn native_staging_paints(
+        &self,
+    ) -> impl ExactSizeIterator<Item = NativeStagingPaintRequest> + '_ {
         self.frame
             .view()
             .native_staging_presentations()
@@ -567,7 +569,6 @@ impl DockspaceHostFrame<'_> {
                     presentation,
                 )
             })
-            .collect()
     }
 
     /// Records that the renderer painted one exact native staging placeholder.

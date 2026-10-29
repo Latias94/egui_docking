@@ -150,6 +150,10 @@ impl NativeCoordinator {
         {
             return self.submit_unsupported_effect(request);
         }
+        if dispatch == NativeRetirementDispatch::CloseViewport && !self.effects.can_queue_command()
+        {
+            return self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected);
+        }
         self.fail_pending_viewport_effect(
             viewport,
             binding,
@@ -165,7 +169,8 @@ impl NativeCoordinator {
         assert!(inserted, "preflighted native retirement must insert");
         if dispatch == NativeRetirementDispatch::CloseViewport {
             self.effects
-                .queue_command(viewport, binding, NativeViewportCommand::Close);
+                .queue_command(viewport, binding, NativeViewportCommand::Close)
+                .expect("the retirement command backing was reserved before accepted dispatch");
         }
         Ok(())
     }
@@ -273,12 +278,14 @@ impl NativeCoordinator {
                     let route = self.exact_window_route_for_binding(binding);
                     if route.is_none_or(|route| route.0 != viewport)
                         || self.has_pending_presentation_effect(binding)
+                        || !self.effects.preflight_can_retain_show(binding)
                     {
                         self.submit_unsupported_effect(request)?;
                         continue;
                     }
                     let (_, window) = route.expect("the exact show route was checked");
-                    let token = eframe::queue_native_viewport_visibility(context, viewport, true);
+                    let prepared = eframe::prepare_native_viewport_visibility(viewport, true);
+                    let token = prepared.token();
                     if !self
                         .bridge
                         .reserve_visibility_callback(viewport, binding, window, token, true)
@@ -293,6 +300,7 @@ impl NativeCoordinator {
                         .map_err(|_| {
                             NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
                         })?;
+                    prepared.enqueue(context);
                 }
                 NativeEffectOperation::ReleaseChild { binding }
                 | NativeEffectOperation::CompensatingClose { binding } => {
@@ -378,16 +386,20 @@ impl NativeCoordinator {
                         )?;
                         continue;
                     };
+                    if !self.effects.can_queue_command() {
+                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
+                        continue;
+                    }
                     match self
                         .focus_control
                         .retain(viewport, window, binding, request)
                     {
                         Ok(()) => {
-                            self.effects.queue_command(
-                                viewport,
-                                binding,
-                                NativeViewportCommand::Focus,
-                            );
+                            self.effects
+                                .queue_command(viewport, binding, NativeViewportCommand::Focus)
+                                .expect(
+                                    "focus command backing was reserved before request retention",
+                                );
                         }
                         Err(request) => {
                             self.submit_failed_effect(
@@ -415,8 +427,12 @@ impl NativeCoordinator {
                         )?;
                         continue;
                     }
-                    self.input_control
-                        .retain(viewport, window, binding, enabled, request);
+                    if let Err(request) = self
+                        .input_control
+                        .retain(viewport, window, binding, enabled, request)
+                    {
+                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
+                    }
                 }
                 NativeEffectOperation::RetainChild { binding } => {
                     let binding = *binding;
@@ -605,6 +621,7 @@ impl NativeCoordinator {
         if let Err(request) = self.effects.insert(plan, request) {
             let cleared = self.bridge.clear_create(viewport, plan.binding());
             debug_assert!(cleared, "the rejected create retains its reservation");
+            self.bridge.clear_hidden_render(viewport, plan.binding());
             return Err(request);
         }
 
@@ -637,6 +654,7 @@ impl NativeCoordinator {
         if reserve_result.is_err() {
             let cleared = self.bridge.clear_create(viewport, plan.binding());
             debug_assert!(cleared, "the rejected create retains its reservation");
+            self.bridge.clear_hidden_render(viewport, plan.binding());
             return Err(self
                 .effects
                 .remove_unstarted(plan)

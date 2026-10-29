@@ -251,30 +251,38 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         let token = eframe::current_native_output_token();
         let (specs, request_repaint) = {
             let mut state = lock_state(&self.state);
-            if state.error().is_some() {
+            let mut request_repaint = if state.error().is_some() {
                 let (progress, cleanup_errors) = state.advance_shutdown(&context);
                 for error in cleanup_errors {
                     state.record_cleanup_error(error);
                 }
-                let specs = state.deferred_viewport_specs();
                 render_native_error(&mut state, token, ui);
-                (specs, progress)
+                progress
             } else {
                 let root_surface = state.root_surface();
                 match state.update_surface(ui, root_surface) {
-                    Ok(NativeSurfaceUpdate::Semantic) => (state.deferred_viewport_specs(), false),
+                    Ok(NativeSurfaceUpdate::Semantic) => false,
                     Ok(NativeSurfaceUpdate::RetainPrevious) => {
                         paint_root_waiting(ui);
-                        (state.deferred_viewport_specs(), false)
+                        false
                     }
                     Err(error) => {
                         state.stop_current_output(error);
-                        let specs = state.deferred_viewport_specs();
                         render_native_error(&mut state, token, ui);
-                        (specs, true)
+                        true
                     }
                 }
-            }
+            };
+            let specs = match state.prepare_deferred_viewport_specs() {
+                Ok(specs) => specs,
+                Err(error) => {
+                    state.stop_current_output(error);
+                    render_native_error(&mut state, token, ui);
+                    request_repaint = true;
+                    Vec::new()
+                }
+            };
+            (specs, request_repaint)
         };
         if request_repaint {
             context.request_repaint_once_of(ViewportId::ROOT);

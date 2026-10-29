@@ -1289,7 +1289,7 @@ fn product_runtime_exposes_and_settles_exact_native_staging_outputs() {
     let mut frame = session
         .begin_host_frame()
         .expect("runtime staging frame begins");
-    let paints = frame.native_staging_paints();
+    let paints: Vec<_> = frame.native_staging_paints().collect();
     assert_eq!(paints.len(), 1, "expected {expected:?}");
     let paint = paints[0];
     assert_eq!(paint.surface(), request.binding().surface());

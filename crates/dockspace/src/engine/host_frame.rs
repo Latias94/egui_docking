@@ -621,7 +621,7 @@ impl<'frame> HostFrameView<'frame> {
     /// Returns non-interactive native staging passes requested by core.
     pub fn native_staging_presentations(
         &self,
-    ) -> impl ExactSizeIterator<Item = NativeStagingPresentation> + '_ {
+    ) -> impl ExactSizeIterator<Item = NativeStagingPresentation> + 'frame + use<'frame> {
         self.presentation_roster.native_staging_presentations()
     }
 

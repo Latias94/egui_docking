@@ -1,5 +1,6 @@
 //! One exact binding owns deferred creation, staging and command callbacks.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
@@ -14,6 +15,7 @@ use winit::window::WindowId;
 use super::command_callback::{CommandCallbackAdmission, NativeCommandCallbacks};
 use super::journal::ReservedHostRecord;
 use super::{HostRecord, NativeCreateReservation, NativeStagingPaintRecord};
+use crate::error::NativeHostProtocolError;
 use crate::focus_control::NativeViewportFocusRecord;
 use crate::input_control::NativePointerPassthroughRecord;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
@@ -62,6 +64,7 @@ impl StagingReceipt {
 
 #[derive(Debug)]
 struct NativeWindowResource {
+    viewport: ViewportId,
     binding: NativeSurfaceBinding,
     retired: bool,
     create_rect: Option<NativePhysicalRect>,
@@ -92,31 +95,90 @@ impl NativeWindowResource {
 
 #[derive(Debug, Default)]
 pub(super) struct NativeWindowResources {
-    entries: BTreeMap<(ViewportId, NativeSurfaceBinding), NativeWindowResource>,
+    entries: Vec<NativeWindowResource>,
+    slot_limit: Option<usize>,
+}
+
+/// Prepared request data and wake backing, without callback or lifetime authority.
+/// The caller must serialize owner activation and retirement between preparation
+/// and publication on the same resource store.
+#[derive(Debug)]
+#[must_use = "prepared staging must be published after core commit or dropped"]
+pub(crate) struct PreparedWindowStaging {
+    requests: Vec<(ViewportId, NativeStagingPaintRequest)>,
+    wake: Vec<ViewportId>,
+}
+
+impl PreparedWindowStaging {
+    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(
+                self.requests
+                    .capacity()
+                    .saturating_mul(size_of::<(ViewportId, NativeStagingPaintRequest)>()),
+            )
+            .saturating_add(self.wake.capacity().saturating_mul(size_of::<ViewportId>()))
+    }
 }
 
 impl NativeWindowResources {
-    /// Counts inline storage and retained entry data, excluding B-tree node overhead.
+    /// Replacement is permitted only after every exact owner has been released.
+    pub(super) fn can_configure_capacity_limit(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Reserves independent exact-key slots, including old pending owners.
+    pub(super) fn with_capacity_limit(slots: usize) -> Result<Self, NativeHostProtocolError> {
+        Self::reservation_bytes(slots)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(slots)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if entries.capacity() > slots {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        Ok(Self {
+            entries,
+            slot_limit: Some(slots),
+        })
+    }
+
+    pub(super) fn reservation_bytes(slots: usize) -> Option<usize> {
+        size_of::<Self>().checked_add(slots.checked_mul(size_of::<NativeWindowResource>())?)
+    }
+
+    /// Finite staging reserves both vectors once, so construction has no
+    /// overlapping old request or wake allocation beyond these capacities.
+    pub(super) fn staging_reservation_bytes(slots: usize) -> Option<usize> {
+        let per_slot = size_of::<(ViewportId, NativeStagingPaintRequest)>()
+            .checked_add(size_of::<ViewportId>())?;
+        size_of::<PreparedWindowStaging>().checked_add(slots.checked_mul(per_slot)?)
+    }
+
+    /// Counts inline storage and actual retained entry backing capacity.
     /// Callback and staging receipts include their supported ingress payloads inline.
     pub(super) fn owned_data_capacity_bytes(&self) -> usize {
-        size_of::<Self>().saturating_add(self.entries.len().saturating_mul(
-            size_of::<(ViewportId, NativeSurfaceBinding)>() + size_of::<NativeWindowResource>(),
-        ))
+        size_of::<Self>().saturating_add(
+            self.entries
+                .capacity()
+                .saturating_mul(size_of::<NativeWindowResource>()),
+        )
     }
 
     pub(super) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
-        self.entries.values().map(|resource| resource.binding)
+        self.entries.iter().map(|resource| resource.binding)
     }
 
     pub(super) fn has_pending_work(&self) -> bool {
         self.entries
-            .values()
+            .iter()
             .any(NativeWindowResource::has_pending_work)
     }
 
     pub(super) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.entries
-            .values()
+            .iter()
             .any(|resource| resource.binding == binding)
     }
 
@@ -125,25 +187,72 @@ impl NativeWindowResources {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        self.entries
-            .get(&(viewport, binding))
+        self.resource(viewport, binding)
             .is_some_and(|resource| !resource.retired)
     }
 
+    fn resource(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Option<&NativeWindowResource> {
+        self.entries
+            .iter()
+            .find(|resource| resource.viewport == viewport && resource.binding == binding)
+    }
+
+    fn resource_mut(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Option<&mut NativeWindowResource> {
+        self.entries
+            .iter_mut()
+            .find(|resource| resource.viewport == viewport && resource.binding == binding)
+    }
+
     fn active_resource(&self, viewport: ViewportId) -> Option<&NativeWindowResource> {
-        self.entries.iter().find_map(|((candidate, _), resource)| {
-            (*candidate == viewport && !resource.retired).then_some(resource)
-        })
+        self.entries
+            .iter()
+            .find(|resource| resource.viewport == viewport && !resource.retired)
     }
 
     fn can_activate(&self, viewport: ViewportId, binding: NativeSurfaceBinding) -> bool {
         !self
-            .entries
-            .get(&(viewport, binding))
+            .resource(viewport, binding)
             .is_some_and(|resource| resource.retired)
             && self
                 .active_resource(viewport)
                 .is_none_or(|resource| resource.binding == binding)
+    }
+
+    fn can_add_entries(&self, additional: usize) -> bool {
+        self.entries
+            .len()
+            .checked_add(additional)
+            .is_some_and(|len| self.slot_limit.is_none_or(|limit| len <= limit))
+    }
+
+    fn reserve_entries(&mut self, additional: usize) -> Result<(), NativeHostProtocolError> {
+        if !self.can_add_entries(additional) {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        self.entries
+            .try_reserve_exact(additional)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)
+    }
+
+    fn insert_owner(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
+        debug_assert!(self.entries.len() < self.entries.capacity());
+        self.entries.push(NativeWindowResource {
+            viewport,
+            binding,
+            retired: false,
+            create_rect: None,
+            hidden_render: false,
+            staging: None,
+            callbacks: NativeCommandCallbacks::default(),
+        });
     }
 
     pub(super) fn create(&self, viewport: ViewportId) -> Option<NativeCreateReservation> {
@@ -186,7 +295,7 @@ impl NativeWindowResources {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        let Some(resource) = self.entries.get_mut(&(viewport, binding)) else {
+        let Some(resource) = self.resource_mut(viewport, binding) else {
             return false;
         };
         if resource.create_rect.take().is_none() {
@@ -201,7 +310,7 @@ impl NativeWindowResources {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        let Some(resource) = self.entries.get_mut(&(viewport, binding)) else {
+        let Some(resource) = self.resource_mut(viewport, binding) else {
             return false;
         };
         if !resource.hidden_render {
@@ -212,32 +321,115 @@ impl NativeWindowResources {
         true
     }
 
+    #[cfg(test)]
     pub(super) fn can_publish_staging(
         &self,
         requests: &BTreeMap<ViewportId, NativeStagingPaintRequest>,
     ) -> bool {
-        requests
-            .iter()
-            .all(|(viewport, request)| self.can_activate(*viewport, request.binding()))
+        self.staging_missing_entries(requests)
+            .is_some_and(|missing| self.can_add_entries(missing))
     }
 
-    /// Validates every binding before mutating any slot.
-    ///
-    /// A captured terminal retains its slot through full commit. Core derives
-    /// current staging requests on every frame, so a newer basis can be retried
-    /// after that commit without buffering a second request here.
-    pub(super) fn publish_staging(
-        &mut self,
-        requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
-    ) -> Option<Vec<ViewportId>> {
-        if !self.can_publish_staging(&requests) {
-            return None;
-        }
-        let mut wake = Vec::new();
+    #[cfg(test)]
+    fn staging_missing_entries(
+        &self,
+        requests: &BTreeMap<ViewportId, NativeStagingPaintRequest>,
+    ) -> Option<usize> {
+        let mut missing = 0;
+        // BTreeMap already guarantees one request per viewport, hence unique exact keys.
         for (viewport, request) in requests {
+            if !self.can_activate(*viewport, request.binding()) {
+                return None;
+            }
+            if self.resource(*viewport, request.binding()).is_none() {
+                missing += 1;
+            }
+        }
+        Some(missing)
+    }
+
+    /// Reserves all construction backing without changing owners or staging receipts.
+    /// Finite preparation pays its full slot limit before reading the iterator;
+    /// duplicate viewports and excess keys reject without unbounded collection.
+    /// Dropping the preparation leaves only the store's charged spare capacity.
+    pub(super) fn prepare_staging(
+        &mut self,
+        requests: impl IntoIterator<Item = (ViewportId, NativeStagingPaintRequest)>,
+    ) -> Result<PreparedWindowStaging, NativeHostProtocolError> {
+        let mut prepared_requests = Vec::new();
+        let mut wake = Vec::new();
+        if let Some(limit) = self.slot_limit {
+            Self::staging_reservation_bytes(limit)
+                .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            prepared_requests
+                .try_reserve_exact(limit)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            wake.try_reserve_exact(limit)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if prepared_requests.capacity() > limit || wake.capacity() > limit {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+            }
+        }
+        let mut missing = 0;
+        for (viewport, request) in requests {
+            if !self.can_activate(viewport, request.binding())
+                || prepared_requests
+                    .iter()
+                    .any(|(previous, _)| *previous == viewport)
+            {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
+            }
+            if self.resource(viewport, request.binding()).is_none() {
+                missing += 1;
+            }
+            if !self.can_add_entries(missing) {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+            }
+            if self.slot_limit.is_none() {
+                prepared_requests
+                    .try_reserve_exact(1)
+                    .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            }
+            prepared_requests.push((viewport, request));
+        }
+        if self.slot_limit.is_none() {
+            wake.try_reserve_exact(prepared_requests.len())
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        }
+        self.reserve_entries(missing)?;
+        Ok(PreparedWindowStaging {
+            requests: prepared_requests,
+            wake,
+        })
+    }
+
+    /// Publishes a serialized preparation without allocating. Received and
+    /// transferred staging keeps its exact basis until the full commit.
+    pub(super) fn commit_staging(&mut self, prepared: PreparedWindowStaging) -> Vec<ViewportId> {
+        let PreparedWindowStaging { requests, mut wake } = prepared;
+        assert!(
+            requests
+                .iter()
+                .all(|(viewport, request)| self.can_activate(*viewport, request.binding())),
+            "prepared staging owners must remain compatible until publication"
+        );
+        let missing = requests
+            .iter()
+            .filter(|(viewport, request)| self.resource(*viewport, request.binding()).is_none())
+            .count();
+        assert!(
+            self.can_add_entries(missing)
+                && missing <= self.entries.capacity() - self.entries.len()
+                && wake.capacity() >= requests.len(),
+            "prepared staging backing must remain reserved until publication"
+        );
+        for (viewport, request) in requests {
+            if self.resource(viewport, request.binding()).is_none() {
+                self.insert_owner(viewport, request.binding());
+            }
             let resource = self
-                .command_owner(viewport, request.binding())
-                .expect("all staging owners were validated before mutation");
+                .resource_mut(viewport, request.binding())
+                .expect("the exact prepared staging owner is present");
             match &mut resource.staging {
                 Some(staging) if staging.request == request || !staging.is_awaiting() => {}
                 Some(staging) => *staging = StagingReceipt::new(request),
@@ -247,7 +439,17 @@ impl NativeWindowResources {
                 }
             }
         }
-        Some(wake)
+        wake
+    }
+
+    /// Compatibility wrapper for immediate preparation and publication.
+    #[cfg(test)]
+    pub(super) fn publish_staging(
+        &mut self,
+        requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
+    ) -> Option<Vec<ViewportId>> {
+        let prepared = self.prepare_staging(requests).ok()?;
+        Some(self.commit_staging(prepared))
     }
 
     /// Only the first exact paint captures ingress into the existing staging owner.
@@ -256,8 +458,9 @@ impl NativeWindowResources {
         record: NativeStagingPaintRecord,
         reserve: impl FnOnce() -> ReservedHostRecord,
     ) -> bool {
-        let key = (record.token().viewport_id(), record.request().binding());
-        let Some(resource) = self.entries.get_mut(&key) else {
+        let Some(resource) =
+            self.resource_mut(record.token().viewport_id(), record.request().binding())
+        else {
             return false;
         };
         if resource.retired {
@@ -270,7 +473,7 @@ impl NativeWindowResources {
     }
 
     pub(super) fn clear_staging(&mut self) {
-        self.entries.retain(|_, resource| {
+        self.entries.retain_mut(|resource| {
             if resource
                 .staging
                 .as_ref()
@@ -283,7 +486,7 @@ impl NativeWindowResources {
     }
 
     pub(super) fn retire(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
-        let Some(resource) = self.entries.get_mut(&(viewport, binding)) else {
+        let Some(resource) = self.resource_mut(viewport, binding) else {
             return;
         };
         resource.retired = true;
@@ -308,18 +511,11 @@ impl NativeWindowResources {
         if !self.can_activate(viewport, binding) {
             return None;
         }
-        let resource =
-            self.entries
-                .entry((viewport, binding))
-                .or_insert_with(|| NativeWindowResource {
-                    binding,
-                    retired: false,
-                    create_rect: None,
-                    hidden_render: false,
-                    staging: None,
-                    callbacks: NativeCommandCallbacks::default(),
-                });
-        Some(resource)
+        if self.resource(viewport, binding).is_none() {
+            self.reserve_entries(1).ok()?;
+            self.insert_owner(viewport, binding);
+        }
+        self.resource_mut(viewport, binding)
     }
 
     pub(super) fn reserve_pointer_callback(
@@ -330,8 +526,9 @@ impl NativeWindowResources {
         token: NativeViewportPointerPassthroughCommandToken,
         enabled: bool,
     ) -> bool {
-        if self.entries.iter().any(|(key, owner)| {
-            *key != (viewport, binding) && owner.callbacks.has_pointer_token(token)
+        if self.entries.iter().any(|owner| {
+            (owner.viewport, owner.binding) != (viewport, binding)
+                && owner.callbacks.has_pointer_token(token)
         }) {
             return false;
         }
@@ -344,12 +541,12 @@ impl NativeWindowResources {
         record: NativePointerPassthroughRecord,
         make_ingress: impl FnOnce(NativeSurfaceBinding) -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
-        let Some((key, owner)) = self.entries.iter_mut().find(|(key, owner)| {
-            key.0 == record.viewport() && owner.callbacks.matches_pointer(record)
+        let Some(owner) = self.entries.iter_mut().find(|owner| {
+            owner.viewport == record.viewport() && owner.callbacks.matches_pointer(record)
         }) else {
             return CommandCallbackAdmission::Unreserved;
         };
-        let binding = key.1;
+        let binding = owner.binding;
         owner
             .callbacks
             .accept_pointer(record, || make_ingress(binding))
@@ -362,8 +559,9 @@ impl NativeWindowResources {
         window: WindowId,
         token: NativeViewportFocusCommandToken,
     ) -> bool {
-        if self.entries.iter().any(|(key, owner)| {
-            *key != (viewport, binding) && owner.callbacks.has_focus_token(token)
+        if self.entries.iter().any(|owner| {
+            (owner.viewport, owner.binding) != (viewport, binding)
+                && owner.callbacks.has_focus_token(token)
         }) {
             return false;
         }
@@ -376,12 +574,12 @@ impl NativeWindowResources {
         record: NativeViewportFocusRecord,
         make_ingress: impl FnOnce(NativeSurfaceBinding) -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
-        let Some((key, owner)) = self.entries.iter_mut().find(|(key, owner)| {
-            key.0 == record.viewport() && owner.callbacks.matches_focus(record)
+        let Some(owner) = self.entries.iter_mut().find(|owner| {
+            owner.viewport == record.viewport() && owner.callbacks.matches_focus(record)
         }) else {
             return CommandCallbackAdmission::Unreserved;
         };
-        let binding = key.1;
+        let binding = owner.binding;
         owner
             .callbacks
             .accept_focus(record, || make_ingress(binding))
@@ -395,8 +593,9 @@ impl NativeWindowResources {
         token: NativeViewportVisibilityCommandToken,
         visible: bool,
     ) -> bool {
-        if self.entries.iter().any(|(key, owner)| {
-            *key != (viewport, binding) && owner.callbacks.has_visibility_token(token)
+        if self.entries.iter().any(|owner| {
+            (owner.viewport, owner.binding) != (viewport, binding)
+                && owner.callbacks.has_visibility_token(token)
         }) {
             return false;
         }
@@ -409,8 +608,8 @@ impl NativeWindowResources {
         record: NativeViewportVisibilityRecord,
         make_ingress: impl FnOnce(NativeSurfaceBinding) -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
-        let Some((key, owner)) = self.entries.iter_mut().find(|(key, owner)| {
-            key.0 == record.viewport()
+        let Some(owner) = self.entries.iter_mut().find(|owner| {
+            owner.viewport == record.viewport()
                 && owner.callbacks.matches_visibility(
                     record.token(),
                     record.window(),
@@ -419,7 +618,7 @@ impl NativeWindowResources {
         }) else {
             return CommandCallbackAdmission::Unreserved;
         };
-        let binding = key.1;
+        let binding = owner.binding;
         owner
             .callbacks
             .accept_visibility(record, || make_ingress(binding))
@@ -432,13 +631,11 @@ impl NativeWindowResources {
         window: WindowId,
         visible: bool,
     ) -> Option<NativeSurfaceBinding> {
-        self.entries
-            .iter()
-            .find_map(|((candidate, binding), owner)| {
-                (*candidate == viewport
-                    && owner.callbacks.matches_visibility(token, window, visible))
-                .then_some(*binding)
-            })
+        self.entries.iter().find_map(|owner| {
+            (owner.viewport == viewport
+                && owner.callbacks.matches_visibility(token, window, visible))
+            .then_some(owner.binding)
+        })
     }
 
     pub(super) fn retire_property_command(
@@ -453,18 +650,18 @@ impl NativeWindowResources {
                 *viewport_id
             }
         };
-        let Some((key, owner)) = self.entries.iter_mut().find(|(key, owner)| {
-            key.0 == viewport && owner.callbacks.matches_property_retirement(&retirement)
+        let Some(owner) = self.entries.iter_mut().find(|owner| {
+            owner.viewport == viewport && owner.callbacks.matches_property_retirement(&retirement)
         }) else {
             return CommandCallbackAdmission::Unreserved;
         };
         owner
             .callbacks
-            .retire_property_command(viewport, key.1, retirement, make_ingress)
+            .retire_property_command(viewport, owner.binding, retirement, make_ingress)
     }
 
     pub(super) fn callback_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.entries.values().flat_map(|owner| {
+        self.entries.iter().flat_map(|owner| {
             owner.callbacks.callback_ingress().chain(
                 owner
                     .staging
@@ -475,7 +672,7 @@ impl NativeWindowResources {
     }
 
     pub(super) fn take_callback_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
-        self.entries.values_mut().find_map(|owner| {
+        self.entries.iter_mut().find_map(|owner| {
             owner.callbacks.take_callback_ingress(ordinal).or_else(|| {
                 owner
                     .staging
@@ -486,7 +683,7 @@ impl NativeWindowResources {
     }
 
     pub(super) fn commit_transferred_callbacks(&mut self) {
-        for owner in self.entries.values_mut() {
+        for owner in &mut self.entries {
             owner.callbacks.commit_transferred();
             if owner
                 .staging
@@ -496,19 +693,20 @@ impl NativeWindowResources {
                 owner.staging = None;
             }
         }
-        self.entries.retain(|_, resource| !resource.is_empty());
+        self.entries.retain(|resource| !resource.is_empty());
     }
 
     fn prune(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
-        if self
-            .entries
-            .get(&(viewport, binding))
-            .is_some_and(NativeWindowResource::is_empty)
-        {
-            self.entries.remove(&(viewport, binding));
+        if let Some(index) = self.entries.iter().position(|resource| {
+            resource.viewport == viewport && resource.binding == binding && resource.is_empty()
+        }) {
+            self.entries.remove(index);
         }
     }
 }
+
+#[cfg(test)]
+mod capacity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -545,7 +743,7 @@ mod tests {
 
     // Obtain two real bases from the public create lifecycle, without constructing
     // opaque staging requests or eframe output tokens in the adapter tests.
-    fn reissued_staging_requests() -> [NativeStagingPaintRequest; 2] {
+    pub(super) fn reissued_staging_requests() -> [NativeStagingPaintRequest; 2] {
         let surface = SurfaceId::new(1);
         let root = RootId::new(2);
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -735,13 +933,12 @@ mod tests {
             assert!(retained > empty);
             resources.clear_staging();
             assert!(!resources.references_binding(binding));
-            assert_eq!(resources.owned_data_capacity_bytes(), empty);
+            assert_eq!(resources.owned_data_capacity_bytes(), retained);
             resources
                 .publish_staging(BTreeMap::from([(viewport, request)]))
                 .unwrap();
             let receipt = resources
-                .entries
-                .get_mut(&(viewport, binding))
+                .resource_mut(viewport, binding)
                 .unwrap()
                 .staging
                 .as_mut()
@@ -773,7 +970,7 @@ mod tests {
             assert!(!resources.references_binding(binding));
             assert!(!resources.has_pending_work());
             assert_eq!(journal.retained_record_count(), 0);
-            assert_eq!(resources.owned_data_capacity_bytes(), empty);
+            assert_eq!(resources.owned_data_capacity_bytes(), retained);
         }
     }
 
@@ -789,8 +986,7 @@ mod tests {
             Some(vec![viewport]),
         );
         let receipt = resources
-            .entries
-            .get_mut(&(viewport, binding))
+            .resource_mut(viewport, binding)
             .unwrap()
             .staging
             .as_mut()
@@ -826,8 +1022,7 @@ mod tests {
         );
         assert_eq!(resources.staging(viewport), Some(newer));
         let receipt = resources
-            .entries
-            .get_mut(&(viewport, binding))
+            .resource_mut(viewport, binding)
             .unwrap()
             .staging
             .as_mut()
@@ -839,7 +1034,7 @@ mod tests {
         assert!(resources.staging(viewport).is_none());
     }
 
-    fn bindings() -> (NativeSurfaceBinding, NativeSurfaceBinding) {
+    pub(super) fn bindings() -> (NativeSurfaceBinding, NativeSurfaceBinding) {
         let layout = DockspaceLayout::new([1, 2].map(|id| {
             DockspaceSurfaceLayout::new(
                 SurfaceId::new(id),
@@ -875,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_data_capacity_tracks_entries_until_their_last_resource_clears() {
+    fn owned_data_capacity_retains_backing_after_the_last_resource_clears() {
         let (first, second) = bindings();
         let viewport = ViewportId::ROOT;
         let rect = NativePhysicalRect::new(0, 0, 640, 480);
@@ -887,14 +1082,16 @@ mod tests {
         assert!(one > empty);
         let peer = ViewportId::from_hash_of("capacity-peer");
         assert!(resources.reserve_create(peer, second, rect));
-        assert_eq!(resources.owned_data_capacity_bytes() - one, one - empty);
+        let two = resources.owned_data_capacity_bytes();
+        assert!(two > one);
         assert!(resources.clear_create(viewport, first));
         assert!(resources.hidden_binding(viewport).is_some());
-        assert_eq!(resources.owned_data_capacity_bytes() - one, one - empty);
+        assert_eq!(resources.owned_data_capacity_bytes(), two);
         assert!(resources.clear_hidden(viewport, first));
-        assert_eq!(resources.owned_data_capacity_bytes(), one);
+        assert_eq!(resources.owned_data_capacity_bytes(), two);
         resources.retire(peer, second);
-        assert_eq!(resources.owned_data_capacity_bytes(), empty);
+        assert!(resources.entries.is_empty());
+        assert_eq!(resources.owned_data_capacity_bytes(), two);
     }
 
     #[test]
@@ -996,7 +1193,7 @@ mod tests {
         );
         assert_eq!(resources.owned_data_capacity_bytes(), two);
         resources.commit_transferred_callbacks();
-        assert_eq!(resources.owned_data_capacity_bytes(), one);
+        assert_eq!(resources.owned_data_capacity_bytes(), two);
         assert!(!resources.references_binding(first));
         assert!(resources.references_binding(next));
         assert_eq!(resources.create(viewport).unwrap().binding, next);

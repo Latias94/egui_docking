@@ -1024,7 +1024,7 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
             advance.progress,
             "shutdown {phase} boundary made no progress"
         );
-        assert!(advance.commands.is_empty());
+        assert!(!advance.commands_dispatched);
         assert!(advance.abandoned_outputs.is_empty());
     }
 
@@ -1097,7 +1097,8 @@ fn queued_viewport_close_retains_its_exact_binding_until_dispatch() {
 
     native
         .effects
-        .queue_command(viewport, binding, NativeViewportCommand::Close);
+        .queue_command(viewport, binding, NativeViewportCommand::Close)
+        .unwrap();
     assert!(native.effects.references_binding(binding));
     assert_eq!(
         native

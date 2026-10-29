@@ -580,7 +580,7 @@ fn quarantined_shutdown_rejects_tokenless_allow_without_marking_accepted() {
             .with_close_control(|control| control.unresolved_requests().next()),
         Some(close)
     );
-    assert!(advance.commands.is_empty());
+    assert!(!advance.commands_dispatched);
     assert!(
         native
             .take_viewport_commands(&egui::Context::default())

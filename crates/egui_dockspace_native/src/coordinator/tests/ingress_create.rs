@@ -1485,7 +1485,7 @@ fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
     assert!(!native.bridge.references_binding(child));
 
     let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
-    assert!(advance.commands.is_empty());
+    assert!(!advance.commands_dispatched);
     assert!(advance.abandoned_outputs.is_empty());
     assert!(
         !advance.transition_source_exhausted,

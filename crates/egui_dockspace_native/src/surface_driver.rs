@@ -8,7 +8,7 @@ use dockspace::runtime::{
 };
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{self, Id, ViewportId};
-use eframe::{NativeHostWake, NativeOutputToken, queue_native_viewport_pointer_passthrough};
+use eframe::{NativeHostWake, NativeOutputToken};
 #[cfg(test)]
 use egui_dockspace::DockspaceActionStatus;
 use egui_dockspace::{DockStyle, PaneView};
@@ -379,8 +379,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
     }
 
-    pub(crate) fn deferred_viewport_specs(&self) -> Vec<DeferredViewportSpec> {
-        self.coordinator.deferred_viewport_specs()
+    pub(crate) fn prepare_deferred_viewport_specs(
+        &self,
+    ) -> Result<Vec<DeferredViewportSpec>, NativeRuntimeError> {
+        self.coordinator.prepare_deferred_viewport_specs()
     }
 
     pub(crate) fn deferred_viewport_paint(
@@ -689,19 +691,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 )
                 .map_err(map_pass_action_error)?;
         }
-        for (viewport, command) in coordinator.take_viewport_commands(&context)? {
-            context.send_viewport_cmd_to(viewport, command);
-        }
+        coordinator.dispatch_viewport_commands(&context)?;
         if let Some(command) = coordinator.pointer_passthrough_command() {
-            let token = queue_native_viewport_pointer_passthrough(
-                &context,
-                command.viewport(),
-                command.enabled(),
-            );
-            if !coordinator.mark_pointer_passthrough_dispatched(command, token) {
+            if !coordinator.dispatch_pointer_passthrough(&context, command) {
                 let removed = coordinator.fail_pointer_passthrough_dispatch(command);
-                debug_assert!(removed, "the failed dispatch still owns the queued command");
-                return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
+                if !removed {
+                    return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
+                }
+                context.request_repaint_once_of(egui::ViewportId::ROOT);
             }
         }
         for repaint_surface in report.repaint_surfaces() {
@@ -1106,26 +1103,22 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     fn dispatch_post_commit(&mut self, context: &egui::Context) -> Result<(), NativeRuntimeError> {
-        for (viewport, command) in self.coordinator.take_viewport_commands(context)? {
-            context.send_viewport_cmd_to(viewport, command);
-        }
+        self.coordinator.dispatch_viewport_commands(context)?;
         let Some(command) = self.coordinator.pointer_passthrough_command() else {
             return Ok(());
         };
-        let dispatch = queue_native_viewport_pointer_passthrough(
-            context,
-            command.viewport(),
-            command.enabled(),
-        );
         if self
             .coordinator
-            .mark_pointer_passthrough_dispatched(command, dispatch)
+            .dispatch_pointer_passthrough(context, command)
         {
             return Ok(());
         }
         let removed = self.coordinator.fail_pointer_passthrough_dispatch(command);
-        debug_assert!(removed, "the failed dispatch still owns the queued command");
-        Err(NativeHostProtocolError::NativeInputDispatchChanged.into())
+        if !removed {
+            return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
+        }
+        context.request_repaint_once_of(egui::ViewportId::ROOT);
+        Ok(())
     }
 
     fn bind_root_registration(
@@ -1245,7 +1238,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             transition_source_exhausted,
             presentation_transitions,
             registrations,
-            commands,
+            commands_dispatched: _,
             repaint_viewports,
             pointer_passthrough,
             abandoned_outputs,
@@ -1270,22 +1263,16 @@ impl<P: PaneView> NativeRuntimeState<P> {
         for viewport in repaint_viewports {
             context.request_repaint_once_of(viewport);
         }
-        for (viewport, command) in commands {
-            context.send_viewport_cmd_to(viewport, command);
-        }
         if let Some(command) = pointer_passthrough {
-            let token = queue_native_viewport_pointer_passthrough(
-                context,
-                command.viewport(),
-                command.enabled(),
-            );
             if !self
                 .coordinator
-                .mark_pointer_passthrough_dispatched(command, token)
+                .dispatch_pointer_passthrough(context, command)
             {
                 let removed = self.coordinator.fail_pointer_passthrough_dispatch(command);
-                debug_assert!(removed, "the failed dispatch still owns the queued command");
-                errors.push(NativeHostProtocolError::NativeInputDispatchChanged.into());
+                if !removed {
+                    errors.push(NativeHostProtocolError::NativeInputDispatchChanged.into());
+                }
+                context.request_repaint_once_of(egui::ViewportId::ROOT);
             }
         }
         if let Some(root_window) = root_window {
@@ -2125,6 +2112,8 @@ mod tests {
         let context = egui::Context::default();
         context.begin_pass(egui::RawInput::default());
 
+        // Shutdown dispatches the command before returning its progress report.
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
         let (progress, errors) = state.apply_shutdown_advance_for_root_window(
             &context,
             NativeShutdownAdvance {
@@ -2132,7 +2121,7 @@ mod tests {
                 transition_source_exhausted: false,
                 presentation_transitions: Vec::new(),
                 registrations: vec![NativeShutdownRegistration::Rejected(SURFACE)],
-                commands: vec![(egui::ViewportId::ROOT, egui::ViewportCommand::Close)],
+                commands_dispatched: true,
                 repaint_viewports: Vec::new(),
                 pointer_passthrough: None,
                 abandoned_outputs: Vec::new(),

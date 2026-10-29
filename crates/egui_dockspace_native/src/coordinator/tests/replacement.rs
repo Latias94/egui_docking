@@ -196,7 +196,7 @@ fn shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor() {
     assert!(!native.session.recognizes_native_binding(predecessor));
 
     let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
-    assert!(advance.commands.is_empty());
+    assert!(!advance.commands_dispatched);
     assert!(advance.abandoned_outputs.is_empty());
     assert!(!native.session.is_current_native_binding(successor));
 }

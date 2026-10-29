@@ -19,13 +19,14 @@ fn bounded_coordinator(slots: usize) -> (NativeCoordinator, NativeSurfaceBinding
     ])
     .unwrap();
     let session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
-    let mut native = NativeCoordinator::new_with_input_storage_limit(
+    let mut native = NativeCoordinator::new_with_storage_limits(
         session,
         NativePointerRoster::Exact(Vec::new()),
         Some(NativeInputStorageLimit::new(
             NonZeroUsize::new(slots).unwrap(),
             1024 * 1024,
         )),
+        None,
     )
     .unwrap();
     let (binding, _) = register_roots(&mut native);

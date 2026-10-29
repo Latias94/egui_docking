@@ -25,6 +25,7 @@ mod ingress_create;
 mod input_capacity;
 mod input_control;
 mod overload;
+mod owner_storage;
 mod replacement;
 mod retirement;
 mod storage;
@@ -943,7 +944,7 @@ fn shutdown_preserves_callback_error_when_reduction_fails() {
 
     let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
     assert!(!advance.progress);
-    assert!(advance.commands.is_empty());
+    assert!(!advance.commands_dispatched);
     assert!(advance.errors.iter().any(|error| {
         std::error::Error::source(error)
             .is_some_and(|source| source.to_string().contains("creation failure"))

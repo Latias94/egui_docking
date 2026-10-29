@@ -1,6 +1,6 @@
 //! Exact native pointer pass-through command and observation ownership.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 use dockspace::runtime::{
     NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectRequest, NativeEffectResult,
@@ -13,7 +13,11 @@ use eframe::{
 };
 use winit::window::WindowId;
 
+use crate::error::NativeHostProtocolError;
 use crate::viewport_map::NativeViewportMap;
+
+#[cfg(test)]
+mod capacity_tests;
 
 /// One exact result of applying a native pointer pass-through command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +188,7 @@ impl PendingNativeInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeInputObservation {
+    binding: NativeSurfaceBinding,
     state: NativeWindowInputState,
     acknowledgement: Option<NativeInputEffectAcknowledgement>,
 }
@@ -205,13 +210,72 @@ pub(crate) enum NativeInputResultDisposition {
 #[derive(Debug, Default)]
 pub(crate) struct NativeInputControl {
     pending: VecDeque<PendingNativeInput>,
-    observations: BTreeMap<NativeSurfaceBinding, NativeInputObservation>,
+    observations: Vec<NativeInputObservation>,
+    binding_slots: Option<usize>,
+    pending_slots: Option<usize>,
     quarantined: bool,
 }
 
 impl NativeInputControl {
-    /// Counts inline storage, pending backing capacity, and observation entry data.
-    /// B-tree node and allocator overhead are excluded. Core counts the shared
+    /// Prepays the selected dimensions before accepting any command or callback.
+    /// Only the globally ordered head can await its snapshot after releasing
+    /// its report lease, so E outstanding requests need at most E + 1 entries.
+    pub(crate) fn with_storage_limits(
+        binding_slots: Option<usize>,
+        effect_slots: Option<usize>,
+    ) -> Result<Self, NativeHostProtocolError> {
+        Self::reservation_bytes(binding_slots, effect_slots)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let pending_slots = effect_slots.map(|slots| slots + 1);
+        let mut pending = VecDeque::new();
+        let mut observations = Vec::new();
+        if let Some(slots) = pending_slots {
+            pending
+                .try_reserve_exact(slots)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if pending.capacity() > slots {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+            }
+        }
+        if let Some(slots) = binding_slots {
+            observations
+                .try_reserve_exact(slots)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if observations.capacity() > slots {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+            }
+        }
+        Ok(Self {
+            pending,
+            observations,
+            binding_slots,
+            pending_slots,
+            quarantined: false,
+        })
+    }
+
+    /// Counts inline state and prepaid backing only for selected dimensions.
+    /// An unlimited dimension contributes no backing promise; this is not a
+    /// total bound unless both the producer and report limits are selected.
+    pub(crate) fn reservation_bytes(
+        binding_slots: Option<usize>,
+        effect_slots: Option<usize>,
+    ) -> Option<usize> {
+        let pending_slots = match effect_slots {
+            Some(slots) => slots.checked_add(1)?,
+            None => 0,
+        };
+        size_of::<Self>()
+            .checked_add(pending_slots.checked_mul(size_of::<PendingNativeInput>())?)?
+            .checked_add(
+                binding_slots
+                    .unwrap_or(0)
+                    .checked_mul(size_of::<NativeInputObservation>())?,
+            )
+    }
+
+    /// Counts inline storage and actual pending/observation backing capacity.
+    /// Allocator overhead is excluded. Core counts the shared
     /// abandoned-effect queue behind the inline request handles once.
     pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
         size_of::<Self>()
@@ -220,22 +284,24 @@ impl NativeInputControl {
                     .capacity()
                     .saturating_mul(size_of::<PendingNativeInput>()),
             )
-            .saturating_add(self.observations.len().saturating_mul(
-                size_of::<NativeSurfaceBinding>() + size_of::<NativeInputObservation>(),
-            ))
+            .saturating_add(
+                self.observations
+                    .capacity()
+                    .saturating_mul(size_of::<NativeInputObservation>()),
+            )
     }
 
     pub(crate) fn has_pending_work(&self) -> bool {
         !self.pending.is_empty()
             || self
                 .observations
-                .values()
+                .iter()
                 .any(|observation| observation.acknowledgement.is_some())
     }
 
     pub(crate) fn requires_snapshot(&self) -> bool {
         self.observations
-            .values()
+            .iter()
             .any(|observation| observation.acknowledgement.is_some())
             || self.pending.front().is_some_and(|pending| {
                 matches!(pending.state, PendingNativeInputState::AwaitingSnapshot)
@@ -249,7 +315,14 @@ impl NativeInputControl {
         binding: NativeSurfaceBinding,
         enabled: bool,
         request: NativeEffectRequest,
-    ) {
+    ) -> Result<(), NativeEffectRequest> {
+        if self
+            .pending_slots
+            .is_some_and(|slots| self.pending.len() >= slots)
+            || self.pending_slots.is_none() && self.pending.try_reserve(1).is_err()
+        {
+            return Err(request);
+        }
         self.pending.push_back(PendingNativeInput {
             viewport,
             window,
@@ -257,6 +330,7 @@ impl NativeInputControl {
             enabled,
             state: PendingNativeInputState::Queued(request),
         });
+        Ok(())
     }
 
     pub(crate) fn command_to_dispatch(&self) -> Option<NativePointerPassthroughCommand> {
@@ -317,16 +391,22 @@ impl NativeInputControl {
         }
     }
 
-    pub(crate) fn accept_applied(&mut self, record: NativePointerPassthroughRecord) -> bool {
+    pub(crate) fn accept_applied(
+        &mut self,
+        record: NativePointerPassthroughRecord,
+    ) -> Result<bool, NativeHostProtocolError> {
         let NativeInputResultDisposition::Current { binding, status } = self.classify(record)
         else {
-            return false;
+            return Ok(false);
         };
         if status != NativeViewportPointerPassthroughStatus::Applied {
-            return false;
+            return Ok(false);
         }
+        // Prepare storage before accepted() releases the affine report lease.
+        // A failed preflight leaves the callback correlation and request intact.
+        self.preflight_observation(binding)?;
         let Some(pending) = self.pending.front_mut() else {
-            return false;
+            return Ok(false);
         };
         let state = std::mem::replace(
             &mut pending.state,
@@ -334,28 +414,26 @@ impl NativeInputControl {
         );
         let PendingNativeInputState::AwaitingCallback { request, token } = state else {
             pending.state = state;
-            return false;
+            return Ok(false);
         };
         debug_assert_eq!(token, record.token);
         let Some(NativeEffectAcknowledgement::Input(acknowledgement)) = request.accepted() else {
             unreachable!("pointer pass-through effects carry input acknowledgements")
         };
-        self.observations.insert(
+        self.store_observation(NativeInputObservation {
             binding,
-            NativeInputObservation {
-                state: record.state(),
-                acknowledgement: Some(acknowledgement),
-            },
-        );
-        true
+            state: record.state(),
+            acknowledgement: Some(acknowledgement),
+        });
+        Ok(true)
     }
 
     pub(crate) fn observe_unowned_applied(
         &mut self,
         record: NativePointerPassthroughRecord,
-    ) -> bool {
+    ) -> Result<bool, NativeHostProtocolError> {
         let Some(binding) = record.binding else {
-            return false;
+            return Ok(false);
         };
         if record.status != NativeViewportPointerPassthroughStatus::Applied
             || self
@@ -363,16 +441,51 @@ impl NativeInputControl {
                 .iter()
                 .any(|pending| pending.binding == binding)
         {
-            return false;
+            return Ok(false);
         }
-        self.observations.insert(
+        self.preflight_observation(binding)?;
+        self.store_observation(NativeInputObservation {
             binding,
-            NativeInputObservation {
-                state: record.state(),
-                acknowledgement: None,
-            },
-        );
-        true
+            state: record.state(),
+            acknowledgement: None,
+        });
+        Ok(true)
+    }
+
+    fn preflight_observation(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeHostProtocolError> {
+        if self
+            .observations
+            .binary_search_by_key(&binding, |observation| observation.binding)
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if self
+            .binding_slots
+            .is_some_and(|slots| self.observations.len() >= slots)
+        {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        if self.binding_slots.is_none() {
+            self.observations
+                .try_reserve(1)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        }
+        Ok(())
+    }
+
+    /// The caller prepays a new entry before changing any affine owner.
+    fn store_observation(&mut self, observation: NativeInputObservation) {
+        match self
+            .observations
+            .binary_search_by_key(&observation.binding, |entry| entry.binding)
+        {
+            Ok(index) => self.observations[index] = observation,
+            Err(index) => self.observations.insert(index, observation),
+        }
     }
 
     pub(crate) fn take_unsupported_result(
@@ -440,8 +553,11 @@ impl NativeInputControl {
         let Some(binding) = acknowledged else {
             return false;
         };
-        if let Some(observation) = self.observations.get_mut(&binding) {
-            observation.acknowledgement = None;
+        if let Ok(index) = self
+            .observations
+            .binary_search_by_key(&binding, |observation| observation.binding)
+        {
+            self.observations[index].acknowledgement = None;
         }
         self.pending.pop_front();
         true
@@ -455,37 +571,47 @@ impl NativeInputControl {
         Option<NativeInputEffectAcknowledgement>,
     )> {
         self.observations
-            .get(&binding)
+            .binary_search_by_key(&binding, |observation| observation.binding)
+            .ok()
+            .and_then(|index| self.observations.get(index))
             .map(|observation| (observation.state, observation.acknowledgement))
     }
 
-    pub(crate) fn retire_binding(
+    pub(crate) fn retire_binding_into(
         &mut self,
         binding: NativeSurfaceBinding,
-    ) -> Vec<NativeEffectResult> {
-        self.observations.remove(&binding);
-        let mut retained = VecDeque::with_capacity(self.pending.len());
-        let mut results = Vec::new();
-        while let Some(pending) = self.pending.pop_front() {
+        mut emit: impl FnMut(NativeEffectResult),
+    ) {
+        self.observations
+            .retain(|observation| observation.binding != binding);
+        // Visit the original queue exactly once. Survivors return to the same
+        // backing in order; affine results move directly into the prepaid sink.
+        let count = self.pending.len();
+        for _ in 0..count {
+            let pending = self
+                .pending
+                .pop_front()
+                .expect("each original input entry is visited once");
             if pending.binding != binding {
-                retained.push_back(pending);
+                self.pending.push_back(pending);
                 continue;
             }
             match pending.state {
                 PendingNativeInputState::Queued(request) => {
-                    results.push(request.dispatch_failed(NativeDispatchFailure::ProviderStopped));
+                    emit(request.dispatch_failed(NativeDispatchFailure::ProviderStopped));
                 }
-                PendingNativeInputState::AwaitingCallback { request, .. } => results
-                    .push(request.indeterminate(NativeIndeterminateReason::AcknowledgementLost)),
+                PendingNativeInputState::AwaitingCallback { request, .. } => {
+                    emit(request.indeterminate(NativeIndeterminateReason::AcknowledgementLost));
+                }
                 PendingNativeInputState::AwaitingSnapshot => {}
             }
         }
-        self.pending = retained;
-        results
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        self.observations.contains_key(&binding)
+        self.observations
+            .binary_search_by_key(&binding, |observation| observation.binding)
+            .is_ok()
             || self
                 .pending
                 .iter()
@@ -510,7 +636,7 @@ impl NativeInputControl {
         let PendingNativeInputState::Queued(request) = pending.state else {
             unreachable!("the exact queued input command retains its affine request")
         };
-        Some(request.indeterminate(NativeIndeterminateReason::AcknowledgementLost))
+        Some(request.dispatch_failed(NativeDispatchFailure::AdapterRejected))
     }
 
     pub(crate) fn begin_quarantine(&mut self) {

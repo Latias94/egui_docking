@@ -65,7 +65,7 @@ mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
 mod storage;
-pub(crate) use storage::NativeSnapshotStorageLimit;
+pub(crate) use storage::{NativeOwnerStorageLimit, NativeSnapshotStorageLimit};
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
 
@@ -98,6 +98,7 @@ pub(crate) struct NativeCoordinator {
         BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
     queued_snapshot: Option<QueuedNativeSnapshot>,
     snapshot_storage: Option<NativeSnapshotStorageLimit>,
+    owner_storage: Option<NativeOwnerStorageLimit>,
     close_observation_settlement: (bool, bool),
     deferred_viewports: DeferredViewportDriver,
     receivers: NativeReceiverStore,
@@ -349,14 +350,44 @@ impl NativeCoordinator {
         session: DockspaceSession,
         initial_pointer_roster: NativePointerRoster,
     ) -> Result<Self, NativeRuntimeError> {
-        Self::new_with_input_storage_limit(session, initial_pointer_roster, None)
+        Self::new_with_storage_limits(session, initial_pointer_roster, None, None)
     }
 
-    pub(crate) fn new_with_input_storage_limit(
+    pub(crate) fn new_with_storage_limits(
         mut session: DockspaceSession,
         initial_pointer_roster: NativePointerRoster,
         storage_limit: Option<NativeInputStorageLimit>,
+        owner_limit: Option<NativeOwnerStorageLimit>,
     ) -> Result<Self, NativeRuntimeError> {
+        let binding_slots = storage_limit
+            .and_then(NativeInputStorageLimit::producer_storage_limit)
+            .map(|limit| limit.binding_slots().get());
+        let effect_slots = storage_limit
+            .and_then(NativeInputStorageLimit::report_storage_limit)
+            .map(|limit| limit.effect_slots().get());
+        if let Some(owners) = owner_limit {
+            owners.validate(binding_slots, effect_slots)?;
+        }
+        let input_control = NativeInputControl::with_storage_limits(binding_slots, effect_slots)?;
+        let effects = NativeEffectCoordinator::with_storage_limits(
+            effect_slots,
+            owner_limit.map(|limit| limit.command_slots),
+        )?;
+        let deferred_viewports = match owner_limit {
+            Some(_) => DeferredViewportDriver::with_capacity_limit(
+                binding_slots.expect("owner storage validates the binding bound"),
+            )?,
+            None => DeferredViewportDriver::default(),
+        };
+        let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
+        if let Some(owners) = owner_limit {
+            bridge.configure_window_resource_storage(
+                owners.resource_slots,
+                owners
+                    .external_reserved_bytes()
+                    .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?,
+            )?;
+        }
         let mut pending_effect_results = VecDeque::new();
         if let Some(reports) = storage_limit.and_then(NativeInputStorageLimit::report_storage_limit)
         {
@@ -390,22 +421,23 @@ impl NativeCoordinator {
         session.report_native_inventory_unknown()?;
         let mut native = Self {
             session,
-            bridge: Arc::new(NativeHostBridge::new(NativeViewportMap::default())),
+            bridge,
             pending_no_frame_invalidations: BTreeMap::new(),
             pending_presentation_acknowledgements: BTreeMap::new(),
             queued_snapshot: None,
             snapshot_storage: None,
+            owner_storage: owner_limit,
             close_observation_settlement: (false, false),
-            deferred_viewports: DeferredViewportDriver::default(),
+            deferred_viewports,
             receivers: NativeReceiverStore::default(),
-            effects: NativeEffectCoordinator::default(),
+            effects,
             pending_effect_results,
             pending_presentation_transitions: Vec::new(),
             callback_errors: VecDeque::new(),
             pointer_translator: NativePointerTranslator::default(),
             work_areas: NativeWorkAreaState::default(),
             focus_control: NativeFocusControl::default(),
-            input_control: NativeInputControl::default(),
+            input_control,
             lifecycle_progress: NativeLifecycleProgress::default(),
         };
         if let Some(producer) =
@@ -632,39 +664,108 @@ impl NativeCoordinator {
     }
 
     /// Returns every child viewport which the next root pass must re-declare.
+    #[cfg(test)]
     pub(crate) fn deferred_viewport_specs(&self) -> Vec<DeferredViewportSpec> {
         self.deferred_viewports.retained_specs()
     }
 
-    pub(crate) fn take_viewport_commands(
+    pub(crate) fn prepare_deferred_viewport_specs(
+        &self,
+    ) -> Result<Vec<DeferredViewportSpec>, NativeRuntimeError> {
+        let count = self.deferred_viewports.specs().count();
+        let mut specs = Vec::new();
+        specs
+            .try_reserve_exact(count)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if specs.capacity() > count {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+        }
+        specs.extend(self.deferred_viewports.specs());
+        Ok(specs)
+    }
+
+    fn dispatch_queued_focus(
         &mut self,
         context: &eframe::egui::Context,
-    ) -> Result<Vec<(ViewportId, ViewportCommand)>, NativeRuntimeError> {
+    ) -> Result<bool, NativeRuntimeError> {
         if let Some((viewport, binding, window)) = self.focus_control.queued_route() {
             if self.exact_window_route_for_binding(binding) != Some((viewport, window)) {
                 return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
             }
-            let token = eframe::queue_native_viewport_focus(context, viewport);
+            let prepared = eframe::prepare_native_viewport_focus(viewport);
+            let token = prepared.token();
             if !self
                 .bridge
                 .reserve_focus_callback(viewport, binding, window, token)
-                || !self.focus_control.mark_dispatched(viewport, token)
             {
-                return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
+                let Some(NativeFocusTermination::Queued { viewport, request }) =
+                    self.focus_control.take_queued_terminal(binding)
+                else {
+                    return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
+                };
+                self.effects
+                    .remove_command(viewport, binding, &ViewportCommand::Focus);
+                self.queue_pending_effect_result(
+                    request.dispatch_failed(NativeDispatchFailure::AdapterRejected),
+                    None,
+                );
+            } else {
+                if !self.focus_control.mark_dispatched(viewport, token) {
+                    return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
+                }
+                prepared.enqueue(context);
+                let removed =
+                    self.effects
+                        .remove_command(viewport, binding, &ViewportCommand::Focus);
+                debug_assert!(
+                    removed,
+                    "the dispatched focus request owns its queued command"
+                );
             }
-            let removed = self
-                .effects
-                .remove_command(viewport, binding, &ViewportCommand::Focus);
-            debug_assert!(
-                removed,
-                "the dispatched focus request owns its queued command"
-            );
+            return Ok(true);
         }
+        Ok(false)
+    }
+
+    pub(crate) fn dispatch_viewport_commands(
+        &mut self,
+        context: &eframe::egui::Context,
+    ) -> Result<bool, NativeRuntimeError> {
+        let mut progressed = self.dispatch_queued_focus(context)?;
+        for (viewport, command) in self.effects.drain_commands() {
+            context.send_viewport_cmd_to(viewport, command);
+            progressed = true;
+        }
+        Ok(progressed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_viewport_commands(
+        &mut self,
+        context: &eframe::egui::Context,
+    ) -> Result<Vec<(ViewportId, ViewportCommand)>, NativeRuntimeError> {
+        self.dispatch_queued_focus(context)?;
         Ok(self.effects.take_commands())
     }
 
     pub(crate) fn pointer_passthrough_command(&self) -> Option<NativePointerPassthroughCommand> {
         self.input_control.command_to_dispatch()
+    }
+
+    pub(crate) fn dispatch_pointer_passthrough(
+        &mut self,
+        context: &eframe::egui::Context,
+        command: NativePointerPassthroughCommand,
+    ) -> bool {
+        let prepared = eframe::prepare_native_viewport_pointer_passthrough(
+            command.viewport(),
+            command.enabled(),
+        );
+        if !self.mark_pointer_passthrough_dispatched(command, prepared.token()) {
+            return false;
+        }
+        prepared.enqueue(context);
+        true
     }
 
     pub(crate) fn mark_pointer_passthrough_dispatched(
@@ -1028,22 +1129,7 @@ impl NativeCoordinator {
         let mut recorded = false;
         let mut errors = Vec::new();
         for binding in candidates {
-            if self.bridge.references_binding(binding)
-                || self.pointer_translator.references_binding(binding)
-                || self.receivers.references_binding(binding)
-                || self.deferred_viewports.viewport_for(binding).is_some()
-                || self.effects.references_binding(binding)
-                || self
-                    .pending_effect_results
-                    .iter()
-                    .any(|pending| pending.blocks_quiescence(binding))
-                || self.bridge.retirement_references_cleanup(binding)
-                || self.focus_control.references_binding(binding)
-                || self.input_control.references_binding(binding)
-                || self
-                    .pending_presentation_acknowledgements
-                    .contains_key(&binding)
-            {
+            if self.binding_has_retained_host_references(binding) {
                 continue;
             }
             if self.session.recognizes_native_binding(binding)
@@ -1062,6 +1148,28 @@ impl NativeCoordinator {
             recorded = true;
         }
         (recorded, errors)
+    }
+
+    fn binding_has_retained_host_references(&self, binding: NativeSurfaceBinding) -> bool {
+        self.bridge.references_binding(binding)
+            || self.bridge.retirement_blocks_quiescence(binding)
+            || self
+                .bridge
+                .with_viewports(|routes| routes.bindings().any(|route| route == binding))
+            || self.pointer_translator.references_binding(binding)
+            || self.receivers.references_binding(binding)
+            || self.deferred_viewports.viewport_for(binding).is_some()
+            || self.effects.references_binding(binding)
+            || self
+                .pending_effect_results
+                .iter()
+                .any(|pending| pending.blocks_quiescence(binding))
+            || self.bridge.retirement_references_cleanup(binding)
+            || self.focus_control.references_binding(binding)
+            || self.input_control.references_binding(binding)
+            || self
+                .pending_presentation_acknowledgements
+                .contains_key(&binding)
     }
 
     pub(crate) fn try_report_pending_effect_results(&mut self) -> Result<bool, NativeRuntimeError> {
@@ -1138,9 +1246,13 @@ impl NativeCoordinator {
     }
 
     fn retain_retired_input_results(&mut self, binding: NativeSurfaceBinding) {
-        for result in self.input_control.retire_binding(binding) {
-            self.queue_pending_effect_result(result, None);
-        }
+        let results = &mut self.pending_effect_results;
+        self.input_control.retire_binding_into(binding, |result| {
+            results.push_back(PendingNativeEffectResult {
+                result,
+                last_rejection: None,
+            });
+        });
     }
 
     fn terminalize_focus(&mut self, binding: NativeSurfaceBinding) {
@@ -1553,7 +1665,7 @@ impl NativeCoordinator {
                     let route = self.exact_window_route_for_binding(binding);
                     if route == Some((record.viewport(), record.window()))
                         && self.session.is_current_native_binding(binding)
-                        && self.input_control.observe_unowned_applied(record)
+                        && self.input_control.observe_unowned_applied(record)?
                     {
                         self.bridge.invalidate_viewport_roster();
                     }
@@ -1566,7 +1678,7 @@ impl NativeCoordinator {
             {
                 match status {
                     NativeViewportPointerPassthroughStatus::Applied => {
-                        if !self.input_control.accept_applied(record) {
+                        if !self.input_control.accept_applied(record)? {
                             return Err(
                                 NativeHostProtocolError::NativeInputCorrelationChanged.into()
                             );
@@ -2339,6 +2451,11 @@ impl NativeCoordinator {
         &mut self,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeRuntimeError> {
+        if self.binding_has_retained_host_references(binding) {
+            return Err(
+                NativeHostProtocolError::NativeBindingNotQuiescent(binding.surface()).into(),
+            );
+        }
         self.session.report_native_binding_quiescence(binding)?;
         Ok(())
     }

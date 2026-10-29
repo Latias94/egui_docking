@@ -5,8 +5,6 @@
 //! viewport requests which must survive until eframe reports the matching
 //! create, failure, or visibility-dispatch callback.
 
-use std::collections::BTreeMap;
-
 use dockspace::geometry::PhysicalRect;
 use dockspace::runtime::{
     NativeDispatchFailure, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
@@ -17,6 +15,7 @@ use eframe::{
     egui::{ViewportCommand, ViewportId},
 };
 
+use crate::error::NativeHostProtocolError;
 use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use winit::window::WindowId;
 
@@ -65,6 +64,7 @@ struct PendingViewportEffect {
 
 #[derive(Debug)]
 struct PendingNativeShow {
+    binding: NativeSurfaceBinding,
     viewport: ViewportId,
     window: WindowId,
     token: NativeViewportVisibilityCommandToken,
@@ -73,9 +73,11 @@ struct PendingNativeShow {
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeEffectCoordinator {
-    pending_viewports: BTreeMap<ViewportId, PendingViewportEffect>,
-    pending_shows: BTreeMap<NativeSurfaceBinding, PendingNativeShow>,
+    pending_viewports: Vec<PendingViewportEffect>,
+    pending_shows: Vec<PendingNativeShow>,
     pending_commands: Vec<PendingViewportCommand>,
+    effect_slots: Option<usize>,
+    command_slots: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -86,7 +88,7 @@ struct PendingViewportCommand {
 }
 
 /// The coordinator only produces commands without dynamically owned payloads.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeViewportCommand {
     Close,
     Focus,
@@ -102,26 +104,93 @@ impl NativeViewportCommand {
 }
 
 impl NativeEffectCoordinator {
-    /// Counts inline storage, retained entry data, and command backing capacity.
-    /// B-tree node and allocator overhead are excluded. Request handles are
-    /// inline; core counts their shared abandoned-effect queue once.
+    /// Reserves both affine-request stores and the independent command queue.
+    /// The stores share E live request slots; each prepays E backing entries so
+    /// requests may move between create and show phases without reallocating.
+    pub(crate) fn with_storage_limits(
+        effect_slots: Option<usize>,
+        command_slots: Option<usize>,
+    ) -> Result<Self, NativeHostProtocolError> {
+        Self::reservation_bytes(effect_slots, command_slots)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let mut pending_viewports = Vec::new();
+        let mut pending_shows = Vec::new();
+        let mut pending_commands = Vec::new();
+        if let Some(slots) = effect_slots {
+            pending_viewports
+                .try_reserve_exact(slots)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            pending_shows
+                .try_reserve_exact(slots)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if pending_viewports.capacity() > slots || pending_shows.capacity() > slots {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+            }
+        }
+        if let Some(slots) = command_slots {
+            pending_commands
+                .try_reserve_exact(slots)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if pending_commands.capacity() > slots {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+            }
+        }
+        Ok(Self {
+            pending_viewports,
+            pending_shows,
+            pending_commands,
+            effect_slots,
+            command_slots,
+        })
+    }
+
+    /// Includes inline state, both E backing stores and independent C backing.
+    /// Unlimited dimensions promise no backing. Core owns the shared request
+    /// lease queue, and draining commands keeps this same prepaid allocation.
+    pub(crate) fn reservation_bytes(
+        effect_slots: Option<usize>,
+        command_slots: Option<usize>,
+    ) -> Option<usize> {
+        let per_effect =
+            size_of::<PendingViewportEffect>().checked_add(size_of::<PendingNativeShow>())?;
+        size_of::<Self>()
+            .checked_add(effect_slots.unwrap_or(0).checked_mul(per_effect)?)?
+            .checked_add(
+                command_slots
+                    .unwrap_or(0)
+                    .checked_mul(size_of::<PendingViewportCommand>())?,
+            )
+    }
+
+    /// Counts inline state and actual vector capacities, including spare slots.
+    /// Allocator overhead is excluded. Core counts shared abandoned-effect
+    /// backing once; each retained request keeps its original core lease.
     pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
         size_of::<Self>()
             .saturating_add(
                 self.pending_viewports
-                    .len()
-                    .saturating_mul(size_of::<ViewportId>() + size_of::<PendingViewportEffect>()),
+                    .capacity()
+                    .saturating_mul(size_of::<PendingViewportEffect>()),
             )
             .saturating_add(
-                self.pending_shows.len().saturating_mul(
-                    size_of::<NativeSurfaceBinding>() + size_of::<PendingNativeShow>(),
-                ),
+                self.pending_shows
+                    .capacity()
+                    .saturating_mul(size_of::<PendingNativeShow>()),
             )
             .saturating_add(
                 self.pending_commands
                     .capacity()
                     .saturating_mul(size_of::<PendingViewportCommand>()),
             )
+    }
+
+    fn can_retain_effect(&self) -> bool {
+        self.effect_slots.is_none_or(|slots| {
+            self.pending_viewports
+                .len()
+                .checked_add(self.pending_shows.len())
+                .is_some_and(|retained| retained < slots)
+        })
     }
 
     pub(crate) fn has_pending_work(&self) -> bool {
@@ -133,18 +202,33 @@ impl NativeEffectCoordinator {
     pub(crate) fn awaiting_viewport_callbacks(
         &self,
     ) -> impl Iterator<Item = NativeViewportEffectPlan> + '_ {
-        self.pending_viewports.values().map(|pending| pending.plan)
+        self.pending_viewports.iter().map(|pending| pending.plan)
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending_viewports
-            .values()
+            .iter()
             .any(|pending| pending.plan.binding == binding)
-            || self.pending_shows.contains_key(&binding)
+            || self.has_pending_show(binding)
             || self
                 .pending_commands
                 .iter()
                 .any(|pending| pending.binding == binding)
+    }
+
+    /// Performs all command backing allocation before accepting an effect or
+    /// allowing an OS operation. A finite queue never grows beyond C slots.
+    pub(crate) fn can_queue_command(&mut self) -> bool {
+        if self
+            .command_slots
+            .is_some_and(|slots| self.pending_commands.len() >= slots)
+        {
+            return false;
+        }
+        if self.pending_commands.len() < self.pending_commands.capacity() {
+            return true;
+        }
+        self.command_slots.is_none() && self.pending_commands.try_reserve(1).is_ok()
     }
 
     pub(crate) fn queue_command(
@@ -152,19 +236,30 @@ impl NativeEffectCoordinator {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
         command: NativeViewportCommand,
-    ) {
+    ) -> Result<(), NativeViewportCommand> {
+        if !self.can_queue_command() {
+            return Err(command);
+        }
         self.pending_commands.push(PendingViewportCommand {
             viewport,
             binding,
             command,
         });
+        Ok(())
     }
 
-    pub(crate) fn take_commands(&mut self) -> Vec<(ViewportId, ViewportCommand)> {
-        std::mem::take(&mut self.pending_commands)
-            .into_iter()
+    /// Yields queued commands in arrival order without releasing queue backing.
+    pub(crate) fn drain_commands(
+        &mut self,
+    ) -> impl Iterator<Item = (ViewportId, ViewportCommand)> + '_ {
+        self.pending_commands
+            .drain(..)
             .map(|pending| (pending.viewport, pending.command.into_viewport_command()))
-            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_commands(&mut self) -> Vec<(ViewportId, ViewportCommand)> {
+        self.drain_commands().collect()
     }
 
     pub(crate) fn remove_commands(&mut self, binding: NativeSurfaceBinding) {
@@ -190,7 +285,22 @@ impl NativeEffectCoordinator {
     }
 
     pub(crate) fn has_pending_show(&self, binding: NativeSurfaceBinding) -> bool {
-        self.pending_shows.contains_key(&binding)
+        self.pending_shows
+            .binary_search_by_key(&binding, |pending| pending.binding)
+            .is_ok()
+    }
+
+    /// Completes key, shared-quota and backing admission before reserving a
+    /// visibility callback. With no intervening effect insertion, retention
+    /// uses this same capacity without allocation. Tokens still settle exactly.
+    pub(crate) fn preflight_can_retain_show(&mut self, binding: NativeSurfaceBinding) -> bool {
+        if self.has_pending_show(binding) || !self.can_retain_effect() {
+            return false;
+        }
+        if self.pending_shows.len() < self.pending_shows.capacity() {
+            return true;
+        }
+        self.effect_slots.is_none() && self.pending_shows.try_reserve(1).is_ok()
     }
 
     pub(crate) fn retain_show(
@@ -201,12 +311,18 @@ impl NativeEffectCoordinator {
         token: NativeViewportVisibilityCommandToken,
         request: NativeEffectRequest,
     ) -> Result<(), NativeEffectRequest> {
-        if self.pending_shows.contains_key(&binding) {
+        if !matches!(request.operation(), NativeEffectOperation::ShowWindow { binding: exact } if *exact == binding)
+            || !self.preflight_can_retain_show(binding)
+        {
             return Err(request);
         }
+        let index = self
+            .pending_shows
+            .partition_point(|pending| pending.binding < binding);
         self.pending_shows.insert(
-            binding,
+            index,
             PendingNativeShow {
+                binding,
                 viewport,
                 window,
                 token,
@@ -220,7 +336,11 @@ impl NativeEffectCoordinator {
         &mut self,
         record: NativeViewportVisibilityRecord,
     ) -> Option<NativeEffectRequest> {
-        let pending = self.pending_shows.get(&record.binding())?;
+        let index = self
+            .pending_shows
+            .binary_search_by_key(&record.binding(), |pending| pending.binding)
+            .ok()?;
+        let pending = self.pending_shows.get(index)?;
         if pending.viewport != record.viewport()
             || pending.window != record.window()
             || pending.token != record.token()
@@ -228,9 +348,7 @@ impl NativeEffectCoordinator {
         {
             return None;
         }
-        self.pending_shows
-            .remove(&record.binding())
-            .map(|pending| pending.request)
+        Some(self.pending_shows.remove(index).request)
     }
 
     #[cfg(test)]
@@ -239,20 +357,33 @@ impl NativeEffectCoordinator {
         binding: NativeSurfaceBinding,
     ) -> Option<NativeViewportVisibilityCommandToken> {
         self.pending_shows
-            .get(&binding)
+            .iter()
+            .find(|pending| pending.binding == binding)
             .map(|pending| pending.token)
     }
 
     pub(crate) fn remove_show(&mut self, binding: NativeSurfaceBinding) {
-        self.pending_shows.remove(&binding);
+        if let Ok(index) = self
+            .pending_shows
+            .binary_search_by_key(&binding, |pending| pending.binding)
+        {
+            self.pending_shows.remove(index);
+        }
     }
 
+    /// Prepares a create/replacement key and its backing before a callback or
+    /// deferred declaration acquires an external owner.
     pub(crate) fn plan(
-        &self,
+        &mut self,
         viewport: ViewportId,
         request: &NativeEffectRequest,
     ) -> Option<NativeViewportEffectPlan> {
-        if self.pending_viewports.contains_key(&viewport) {
+        if self
+            .pending_viewports
+            .binary_search_by_key(&viewport, |pending| pending.plan.viewport)
+            .is_ok()
+            || !self.can_retain_effect()
+        {
             return None;
         }
         let (binding, placement, role, kind) = match request.operation() {
@@ -278,6 +409,11 @@ impl NativeEffectCoordinator {
             ),
             _ => return None,
         };
+        if self.pending_viewports.len() == self.pending_viewports.capacity()
+            && (self.effect_slots.is_some() || self.pending_viewports.try_reserve(1).is_err())
+        {
+            return None;
+        }
         Some(NativeViewportEffectPlan {
             viewport,
             binding,
@@ -292,11 +428,14 @@ impl NativeEffectCoordinator {
         plan: NativeViewportEffectPlan,
         request: NativeEffectRequest,
     ) -> Result<(), NativeEffectRequest> {
-        if self.pending_viewports.contains_key(&plan.viewport) {
+        if self.plan(plan.viewport, &request) != Some(plan) {
             return Err(request);
         }
+        let index = self
+            .pending_viewports
+            .partition_point(|pending| pending.plan.viewport < plan.viewport);
         self.pending_viewports
-            .insert(plan.viewport, PendingViewportEffect { plan, request });
+            .insert(index, PendingViewportEffect { plan, request });
         Ok(())
     }
 
@@ -305,36 +444,28 @@ impl NativeEffectCoordinator {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> Option<NativeEffectRequest> {
-        let pending = self.pending_viewports.get(&viewport)?;
-        if pending.plan.binding != binding {
+        let index = self
+            .pending_viewports
+            .binary_search_by_key(&viewport, |pending| pending.plan.viewport)
+            .ok()?;
+        if self.pending_viewports.get(index)?.plan.binding != binding {
             return None;
         }
-        let pending = self
-            .pending_viewports
-            .remove(&viewport)
-            .expect("the matching pending viewport effect remains present");
-        Some(pending.request)
+        Some(self.pending_viewports.remove(index).request)
     }
 
     pub(crate) fn take_failure_result(
         &mut self,
         failure: NativeViewportCreateFailureRecord,
     ) -> Option<NativeEffectResult> {
-        let pending = self.pending_viewports.get(&failure.viewport())?;
-        if pending.plan.binding != failure.binding() {
-            return None;
-        }
-        let pending = self
-            .pending_viewports
-            .remove(&failure.viewport())
-            .expect("the matching pending viewport effect remains present");
+        let request = self.take_for_output(failure.viewport(), failure.binding())?;
         Some(match failure.kind() {
-            NativeViewportCreateFailureKind::WindowUnavailable => pending
-                .request
-                .dispatch_failed(NativeDispatchFailure::WindowUnavailable),
-            NativeViewportCreateFailureKind::VisibilityUnsupported => pending
-                .request
-                .unsupported(NativeUnsupportedReason::BackendUnsupported),
+            NativeViewportCreateFailureKind::WindowUnavailable => {
+                request.dispatch_failed(NativeDispatchFailure::WindowUnavailable)
+            }
+            NativeViewportCreateFailureKind::VisibilityUnsupported => {
+                request.unsupported(NativeUnsupportedReason::BackendUnsupported)
+            }
         })
     }
 
@@ -342,17 +473,19 @@ impl NativeEffectCoordinator {
         &mut self,
         plan: NativeViewportEffectPlan,
     ) -> Option<NativeEffectRequest> {
-        let pending = self.pending_viewports.get(&plan.viewport)?;
-        if pending.plan != plan {
+        let index = self
+            .pending_viewports
+            .binary_search_by_key(&plan.viewport, |pending| pending.plan.viewport)
+            .ok()?;
+        if self.pending_viewports.get(index)?.plan != plan {
             return None;
         }
-        let pending = self
-            .pending_viewports
-            .remove(&plan.viewport)
-            .expect("the matching pending viewport effect remains present");
-        Some(pending.request)
+        Some(self.pending_viewports.remove(index).request)
     }
 }
+
+#[cfg(test)]
+mod capacity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -369,7 +502,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn removed_commands_keep_capacity_until_queue_is_taken() {
+    fn removed_and_drained_commands_keep_backing_capacity() {
         let surface = SurfaceId::new(1);
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             surface,
@@ -407,8 +540,12 @@ mod tests {
         let mut effects = NativeEffectCoordinator::default();
         let empty = effects.owned_data_capacity_bytes();
         for _ in 0..8 {
-            effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Close);
-            effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Focus);
+            effects
+                .queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Close)
+                .unwrap();
+            effects
+                .queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Focus)
+                .unwrap();
         }
         let queued = effects.owned_data_capacity_bytes();
         let capacity = effects.pending_commands.capacity();
@@ -419,8 +556,12 @@ mod tests {
         assert_eq!(effects.pending_commands.capacity(), capacity);
         assert_eq!(effects.owned_data_capacity_bytes(), queued);
 
-        effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Close);
-        effects.queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Focus);
+        effects
+            .queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Close)
+            .unwrap();
+        effects
+            .queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Focus)
+            .unwrap();
         assert_eq!(effects.owned_data_capacity_bytes(), queued);
         assert!(effects.remove_command(ViewportId::ROOT, binding, &ViewportCommand::Close));
         assert_eq!(effects.owned_data_capacity_bytes(), queued);
@@ -428,6 +569,7 @@ mod tests {
             effects.take_commands(),
             vec![(ViewportId::ROOT, ViewportCommand::Focus)],
         );
-        assert_eq!(effects.owned_data_capacity_bytes(), empty);
+        assert_eq!(effects.owned_data_capacity_bytes(), queued);
+        assert_eq!(effects.pending_commands.capacity(), capacity);
     }
 }

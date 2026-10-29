@@ -112,6 +112,10 @@ pub(crate) enum NativeHostProtocolError {
     NativeInputCorrelationChanged,
     #[error("native pointer pass-through dispatch changed before it was registered")]
     NativeInputDispatchChanged,
+    #[error("native surface {0} still has a retained host route, callback or sidecar")]
+    NativeBindingNotQuiescent(SurfaceId),
+    #[error("finite native host-owner storage requires both producer and effect-report bounds")]
+    NativeOwnerStorageConfiguration,
     #[error("an exact native close cancellation was not accepted by the core")]
     NativeCloseCancellationRejected,
     #[error("the committed overload cancellation does not match its frozen input boundary")]
@@ -123,12 +127,12 @@ pub(crate) enum NativeHostProtocolError {
 impl NativeHostProtocolError {
     const fn kind(&self) -> NativeRuntimeErrorKind {
         match self {
-            Self::OutputTokenUnavailable | Self::RootSurfaceUnavailable(_) => {
-                NativeRuntimeErrorKind::InvalidConfiguration
-            }
-            Self::MultipassLocalActionConflict | Self::NativeReportStorageUnavailable => {
-                NativeRuntimeErrorKind::OperationConflict
-            }
+            Self::OutputTokenUnavailable
+            | Self::RootSurfaceUnavailable(_)
+            | Self::NativeOwnerStorageConfiguration => NativeRuntimeErrorKind::InvalidConfiguration,
+            Self::MultipassLocalActionConflict
+            | Self::NativeReportStorageUnavailable
+            | Self::NativeBindingNotQuiescent(_) => NativeRuntimeErrorKind::OperationConflict,
             Self::NativeEffectResultRejected(kind) => kind.runtime_error_kind(),
             Self::OutputBudgetUnavailable
             | Self::CallbackRecordPending

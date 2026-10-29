@@ -3,7 +3,7 @@
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{HostInputOutcome, NativeDispatchFailure, NativeReceiverAnswer};
 use eframe::NativeOutputToken;
-use eframe::egui::{ViewportCommand, ViewportId};
+use eframe::egui::ViewportId;
 
 use super::*;
 use crate::close_control::NativeWindowClosePolicy;
@@ -20,7 +20,7 @@ pub(crate) struct NativeShutdownAdvance {
     pub(crate) transition_source_exhausted: bool,
     pub(crate) presentation_transitions: Vec<DockspacePresentationTransition>,
     pub(crate) registrations: Vec<NativeShutdownRegistration>,
-    pub(crate) commands: Vec<(ViewportId, ViewportCommand)>,
+    pub(crate) commands_dispatched: bool,
     pub(crate) repaint_viewports: Vec<ViewportId>,
     pub(crate) pointer_passthrough: Option<NativePointerPassthroughCommand>,
     pub(crate) abandoned_outputs: Vec<NativeOutputToken>,
@@ -38,7 +38,7 @@ impl NativeShutdownAdvance {
             transition_source_exhausted: false,
             presentation_transitions,
             registrations: Vec::new(),
-            commands: Vec::new(),
+            commands_dispatched: false,
             repaint_viewports: Vec::new(),
             pointer_passthrough: None,
             abandoned_outputs: Vec::new(),
@@ -71,14 +71,14 @@ impl NativeCoordinator {
         match self.drive_close_policy(context, policy, external_root, budget) {
             Ok(close_progress) => {
                 let presentation_transitions = self.take_internal_presentation_transitions();
-                let commands = self
-                    .take_viewport_commands(context)
-                    .unwrap_or_else(|error| {
-                        advance.errors.push(error);
-                        Vec::new()
-                    });
+                let commands_dispatched =
+                    self.dispatch_viewport_commands(context)
+                        .unwrap_or_else(|error| {
+                            advance.errors.push(error);
+                            false
+                        });
                 let progressed =
-                    close_progress || !presentation_transitions.is_empty() || !commands.is_empty();
+                    close_progress || !presentation_transitions.is_empty() || commands_dispatched;
                 advance.progress |= progressed;
                 if progressed {
                     advance.transition_source_exhausted = false;
@@ -86,7 +86,7 @@ impl NativeCoordinator {
                 advance
                     .presentation_transitions
                     .extend(presentation_transitions);
-                advance.commands.extend(commands);
+                advance.commands_dispatched |= commands_dispatched;
             }
             Err(error) => {
                 advance.transition_source_exhausted = false;
@@ -258,15 +258,15 @@ impl NativeCoordinator {
         let effects = report.take_native_effects();
         let effects_emitted = !effects.is_empty();
         self.fail_shutdown_effects(context, effects, &mut errors);
-        let commands = self
-            .take_viewport_commands(context)
-            .unwrap_or_else(|error| {
-                errors.push(error);
-                Vec::new()
-            });
+        let commands_dispatched =
+            self.dispatch_viewport_commands(context)
+                .unwrap_or_else(|error| {
+                    errors.push(error);
+                    false
+                });
         let input_enable_cancelled_after_commit = self.cancel_quarantined_input_results();
         let pointer_passthrough = self.pointer_passthrough_command();
-        let commands_pending = !commands.is_empty();
+        let commands_pending = commands_dispatched;
         let pointer_passthrough_pending = pointer_passthrough.is_some();
 
         let transition_progress = progress
@@ -296,7 +296,7 @@ impl NativeCoordinator {
             transition_source_exhausted,
             presentation_transitions,
             registrations,
-            commands,
+            commands_dispatched,
             repaint_viewports,
             pointer_passthrough,
             abandoned_outputs,
