@@ -1,15 +1,23 @@
 //! Complete-roster storage is promised before a new native lifetime is admitted.
 
 use super::journal::HostIngressJournal;
-use super::output_resource::NativeOutputResource;
+use super::output_resource::NativeOutputResources;
 use super::roster::NativeViewportRosterRecord;
 use super::window_resource::NativeWindowResources;
 use super::{HostRecord, NativeHostBridge, NativeHostState, NativeSurfaceBinding};
 use crate::close_control::NativeCloseControl;
 use crate::retirement::NativeRetirementState;
 use crate::viewport_map::NativeViewportMap;
-use eframe::{NativeOutputToken, egui::ViewportId};
+use eframe::egui::ViewportId;
 use std::sync::Arc;
+
+/// A host share of one selected input budget, including promised external work.
+/// Existing owners remain responsible for their exact protocol and lifetime.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NativeHostInputAllowance {
+    byte_limit: usize,
+    external_reserved_bytes: usize,
+}
 
 impl NativeHostState {
     fn roster_payloads<'state>(
@@ -54,11 +62,7 @@ impl NativeHostState {
             .saturating_add(
                 self.close_control.owned_data_capacity_bytes() - size_of::<NativeCloseControl>(),
             )
-            .saturating_add(
-                self.output_resources.len().saturating_mul(
-                    size_of::<NativeOutputToken>() + size_of::<NativeOutputResource>(),
-                ),
-            )
+            .saturating_add(self.output_resources.owned_descendant_capacity_bytes())
             .saturating_add(
                 self.blocked_semantic_viewports
                     .len()
@@ -86,6 +90,21 @@ impl NativeHostState {
         bytes
     }
 
+    pub(super) fn can_reserve_input_data(&self, additional: usize) -> bool {
+        self.input_storage_allowance.is_none_or(|allowance| {
+            self.owned_input_capacity_bytes(None)
+                .checked_add(size_of::<NativeHostBridge>() - size_of::<NativeHostState>())
+                .and_then(|bytes| bytes.checked_add(allowance.external_reserved_bytes))
+                .and_then(|bytes| bytes.checked_add(additional))
+                .is_some_and(|bytes| bytes <= allowance.byte_limit)
+        })
+    }
+
+    pub(super) fn can_reserve_output_data(&self) -> bool {
+        self.output_resources.can_reserve_ordinary()
+            && self.can_reserve_input_data(NativeOutputResources::ordinary_entry_data_bytes())
+    }
+
     /// Existing route, resource and retirement roots share one lifetime promise.
     /// A route-to-retirement move cannot return capacity before quiescence.
     pub(super) fn can_admit_binding(&self, incoming: NativeSurfaceBinding) -> bool {
@@ -111,6 +130,34 @@ impl NativeHostState {
 }
 
 impl NativeHostBridge {
+    /// Configures one combined host allowance with room for initial output progress.
+    ///
+    /// The caller promises all non-bridge data and constructor/terminal work in
+    /// `external_reserved_bytes`; generic/default hosting remains unlimited.
+    /// Other growth boundaries must use the same allowance before product enablement.
+    pub(crate) fn configure_input_storage_allowance(
+        &self,
+        byte_limit: usize,
+        external_reserved_bytes: usize,
+    ) -> bool {
+        let mut state = self.lock();
+        let existing = state.input_storage_allowance;
+        state.input_storage_allowance = Some(NativeHostInputAllowance {
+            byte_limit,
+            external_reserved_bytes,
+        });
+        let fits = if existing.is_some() {
+            state.can_reserve_input_data(0)
+        } else {
+            state.can_reserve_output_data()
+        };
+        if !fits {
+            state.input_storage_allowance = existing;
+            return false;
+        }
+        true
+    }
+
     pub(crate) fn owned_input_capacity_bytes(
         &self,
         external_roster: Option<&Arc<NativeViewportRosterRecord>>,
@@ -128,6 +175,64 @@ mod tests {
     use super::super::roster::{NativeViewportRosterEnvelope, NativeViewportRosterKey};
     use super::*;
     use crate::event::NativeDeviceRemovalRecord;
+
+    #[test]
+    fn host_allowance_reserves_output_progress_and_rejection_preserves_existing_configuration() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let baseline = bridge.owned_input_capacity_bytes(None);
+        let output = NativeOutputResources::ordinary_entry_data_bytes();
+        assert!(!bridge.configure_input_storage_allowance(baseline, 0));
+        assert!(bridge.lock().input_storage_allowance.is_none());
+        assert!(bridge.configure_input_storage_allowance(baseline + output, 0));
+        assert!(bridge.lock().can_reserve_input_data(output));
+        assert!(!bridge.lock().can_reserve_input_data(output + 1));
+        assert!(!bridge.configure_input_storage_allowance(baseline + output, output + 1));
+        assert!(bridge.lock().can_reserve_input_data(output));
+        assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
+    }
+
+    #[test]
+    fn promised_external_work_reduces_the_same_host_allowance_before_growth() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let baseline = bridge.owned_input_capacity_bytes(None);
+        let output = NativeOutputResources::ordinary_entry_data_bytes();
+        assert!(bridge.configure_input_storage_allowance(baseline + 2 * output, output));
+        assert!(bridge.lock().can_reserve_output_data());
+        assert!(bridge.configure_input_storage_allowance(baseline + 2 * output, 2 * output));
+        assert!(!bridge.lock().can_reserve_output_data());
+        assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
+        assert_eq!(
+            bridge.admission_dispatch(),
+            super::super::admission::NativeDispatch::ContinueBoundary
+        );
+        assert!(matches!(
+            bridge.lock().admission,
+            super::super::admission::NativeAdmission::Draining { boundary: 0 }
+        ));
+        assert!(bridge.finish_overload_cancellation(0));
+        assert!(matches!(
+            bridge.lock().admission,
+            super::super::admission::NativeAdmission::Recovering { boundary: 0 }
+        ));
+        bridge.commit_frame_boundary(false);
+        assert_eq!(
+            bridge.admission_dispatch(),
+            super::super::admission::NativeDispatch::Idle
+        );
+        assert!(matches!(
+            bridge.lock().admission,
+            super::super::admission::NativeAdmission::Recovering { boundary: 0 }
+        ));
+        assert!(bridge.configure_input_storage_allowance(baseline + 2 * output, output));
+        assert_eq!(
+            bridge.admission_dispatch(),
+            super::super::admission::NativeDispatch::Idle
+        );
+        assert!(matches!(
+            bridge.lock().admission,
+            super::super::admission::NativeAdmission::Running
+        ));
+    }
 
     #[test]
     fn raw_transfer_and_commit_keep_the_preallocated_storage_charged() {

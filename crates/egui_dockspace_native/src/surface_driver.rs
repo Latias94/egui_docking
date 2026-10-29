@@ -482,6 +482,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let pass_actions = &mut self.pass_actions;
         let root_surface = self.root_surface;
         let bridge = coordinator.dispatch_bridge();
+        let control_output = bridge.is_control_output(token);
         let surface_is_presented = coordinator.session().presented_surface(surface).is_some();
         let Some(mut host_frame) = coordinator.poll_resolved_host_frame(&context, budget)? else {
             if surface != root_surface {
@@ -515,7 +516,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         // the existing framebuffer for this exact pass. If the settlement
         // changes product authority, the committed report requests the next
         // semantic frame explicitly.
-        let retain_previous_output = native_input_pending
+        let retain_previous_output = control_output
+            || native_input_pending
             || should_retain_previous_output(output_prefix_pending, reduced_callback)
             || no_frame_invalidation_pending
             || !no_frame_invalidations.is_empty();
@@ -814,9 +816,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 surface,
                 local_actions_ready,
             } => {
-                let application_action_ready =
-                    surface == self.root_surface && self.application_actions.has_queued();
-                if local_actions_ready || application_action_ready {
+                let control_output = self.coordinator.dispatch_bridge().is_control_output(token);
+                let application_action_ready = !control_output
+                    && surface == self.root_surface
+                    && self.application_actions.has_queued();
+                if !control_output && (local_actions_ready || application_action_ready) {
                     self.commit_terminal_actions(
                         context,
                         token,

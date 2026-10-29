@@ -13,8 +13,8 @@ use dockspace::runtime::{
 use eframe::NativeViewportCreateFailureKind;
 use eframe::{
     NativeDeviceRemoval, NativeGlobalFocusObservation, NativeHostAttachment, NativeHostHandler,
-    NativeHostWake, NativeOutputPassFinalization, NativeOutputPassFinalizer, NativeOutputResult,
-    NativeOutputToken, NativePhysicalRect, NativeViewportCloseRequest,
+    NativeHostWake, NativeOutputAdmission, NativeOutputPassFinalization, NativeOutputPassFinalizer,
+    NativeOutputResult, NativeOutputToken, NativePhysicalRect, NativeViewportCloseRequest,
     NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeViewportCreateFailure,
     NativeViewportFocusResult, NativeViewportPointerPassthroughResult, NativeViewportRoster,
     NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowEventDisposition,
@@ -1655,7 +1655,8 @@ struct NativeHostState {
     mode: HostIngressMode,
     admission: NativeAdmission,
     journal: HostIngressJournal,
-    output_resources: BTreeMap<NativeOutputToken, NativeOutputResource>,
+    output_resources: output_resource::NativeOutputResources,
+    input_storage_allowance: Option<capacity::NativeHostInputAllowance>,
     window_resources: NativeWindowResources,
     retirements: NativeRetirementState,
     close_control: NativeCloseControl,
@@ -1725,7 +1726,8 @@ impl NativeHostState {
             mode: HostIngressMode::Active,
             admission: NativeAdmission::default(),
             journal: HostIngressJournal::new(clock),
-            output_resources: BTreeMap::new(),
+            output_resources: output_resource::NativeOutputResources::default(),
+            input_storage_allowance: None,
             window_resources: NativeWindowResources::default(),
             retirements: NativeRetirementState::default(),
             close_control: NativeCloseControl::default(),
@@ -1764,6 +1766,7 @@ impl NativeHostState {
 
     fn admit_ordinary(&mut self) -> bool {
         if !self.journal.can_push_raw()
+            || !self.can_reserve_output_data()
             || self.retained_record_count() >= admission::RECORD_LIMIT
             || self
                 .oldest_record_age()
@@ -1944,11 +1947,28 @@ impl NativeHostState {
         {
             return false;
         }
+        let output_capacity_available = self.can_reserve_output_data();
+        if !output_capacity_available {
+            self.freeze_ordinary();
+        }
         let wake_after_current = binding.is_some_and(|binding| {
             self.window_resources.hidden_binding(token.viewport_id()) == Some(binding)
         });
-        let mut reservation = if matches!(self.admission, NativeAdmission::Draining { .. }) {
-            OutputReservation::diagnostic(binding, window)
+        let prepaid_output = !output_capacity_available
+            || matches!(self.admission, NativeAdmission::Draining { .. });
+        let mut reservation = if prepaid_output {
+            let promised_staging = binding.filter(|binding| {
+                token.viewport_id() != ViewportId::ROOT
+                    && self.mode.accepts_new_work()
+                    && self
+                        .window_resources
+                        .staging(token.viewport_id())
+                        .is_some_and(|request| request.binding() == *binding)
+            });
+            promised_staging.map_or_else(
+                || OutputReservation::diagnostic(binding, window),
+                |binding| OutputReservation::bound(binding, window),
+            )
         } else {
             match self.mode {
                 HostIngressMode::Active => binding.map_or_else(
@@ -1975,8 +1995,11 @@ impl NativeHostState {
             let armed = reservation.require_wake_after_current();
             debug_assert!(armed, "a new output can retain its wake obligation");
         }
-        self.output_resources
-            .insert(token, NativeOutputResource::new(reservation, budget));
+        let resource = NativeOutputResource::new(reservation, budget);
+        if prepaid_output || resource.reservation.abandoned {
+            return self.output_resources.insert_control(token, resource);
+        }
+        self.output_resources.insert(token, resource);
         true
     }
 
@@ -2642,7 +2665,7 @@ impl NativeHostState {
         }
         self.window_resources.retire(viewport, binding);
         let mut abandoned = Vec::new();
-        for (token, reservation) in &mut self.output_resources {
+        for (token, reservation) in self.output_resources.iter_mut() {
             if reservation.reservation.binding() == Some(binding)
                 && !reservation.reservation.terminal_recorded
                 && reservation.reservation.abandon()
@@ -2981,12 +3004,15 @@ impl NativeHostBridge {
         let age = records.oldest_record_age();
         if matches!(records.admission, NativeAdmission::Running)
             && (!records.journal.can_push_raw()
+                || !records.can_reserve_output_data()
                 || count >= admission::RECORD_LIMIT
                 || age.is_some_and(|age| age >= admission::AGE_LIMIT))
         {
             records.freeze_ordinary();
         }
-        records.admission.try_resume(count, age);
+        if records.can_reserve_output_data() {
+            records.admission.try_resume(count, age);
+        }
         records.dispatch()
     }
 
@@ -3789,6 +3815,10 @@ impl NativeHostBridge {
         }
         let Some(request) = records.window_resources.staging(token.viewport_id()) else {
             if let Some(binding) = reservation.binding() {
+                if records.output_resources.is_control(token) {
+                    records.block_semantic_viewport(token.viewport_id());
+                    return DeferredViewportPaint::Retain(binding);
+                }
                 if records.semantic_prelude_ready() {
                     records
                         .blocked_semantic_viewports
@@ -3840,6 +3870,15 @@ impl NativeHostBridge {
         );
         let ordinary_roster = root_roster.is_some() && records.admit_ordinary();
         if !records.reserve_output(token, binding, window, budget) {
+            if token.viewport_id() != ViewportId::ROOT
+                && binding.is_some()
+                && records.mode.accepts_terminal_callbacks()
+            {
+                // Deferred output runs no egui pass, so its original redraw
+                // cannot be relied on to wake again. Reuse the existing child
+                // continuation released by the next complete root boundary.
+                records.block_semantic_viewport(token.viewport_id());
+            }
             return false;
         }
         if matches!(records.mode, HostIngressMode::Quarantined)
@@ -3918,6 +3957,10 @@ impl NativeHostBridge {
             .output_resources
             .get(&token)
             .map(|resource| resource.reservation)
+    }
+
+    pub(crate) fn is_control_output(&self, token: NativeOutputToken) -> bool {
+        self.lock().output_resources.is_control(token)
     }
 
     pub(crate) fn has_pending_output(&self, token: NativeOutputToken) -> bool {
@@ -4591,8 +4634,12 @@ impl NativeHostHandler for NativeHostBridge {
         token: NativeOutputToken,
         window: NativeWindowSnapshot,
         root_roster: Option<NativeViewportRoster<'_>>,
-    ) {
-        let _ = self.reserve_output(token, window, root_roster);
+    ) -> NativeOutputAdmission {
+        if self.reserve_output(token, window, root_roster) {
+            NativeOutputAdmission::Proceed
+        } else {
+            NativeOutputAdmission::Defer
+        }
     }
 
     fn on_output_pass_finalized(

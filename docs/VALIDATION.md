@@ -15,6 +15,69 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 output admission and prepaid control storage
+
+The local eframe seam now asks `on_output_begin` for
+`NativeOutputAdmission::Proceed | Defer`. Both Glow and WGPU perform that
+admission before extracting egui-winit input or running application/UI updates.
+A deferred candidate never enters the active-output stack, produces no pass
+finalization or terminal callback, and consumes no output-completion ordinal.
+Its candidate nonce may be spent. The existing after-current root wake schedules
+progress, while previous framebuffer authority and buffered input stay owned by
+their original framework paths. No rejected-token registry is introduced.
+
+The native adapter limits ordinary output ownership to 256 entries and checks a
+selected private host allowance before inserting another owner. That allowance
+combines current bridge data with an explicit reservation for external work;
+rejected configuration preserves the previous allowance. Output exhaustion
+freezes the existing ordinary-admission boundary, and recovery cannot reopen
+ordinary input until output capacity fits again. The full product byte profile
+remains disabled while the other growth boundaries are still open.
+
+One root control owner is inline, independently of a preallocated backing for
+256 child control/staging owners. The complete backing remains charged while
+empty. A child physical window cannot occupy another prepaid slot before its
+existing slot retires. Diagnostic and terminal-create results use the same
+exact output identity, dispatch-budget lease and continuous completion checks,
+then release the prepaid owner without appending ordinary output ingress.
+Already promised child staging can retain its affine paint and terminal in the
+same prepaid backing until full commit. A busy protected slot defers before UI
+and input consumption rather than accepting an ownerless terminal obligation.
+
+Root diagnostic identity persists for the whole pass, including after overload
+cancellation changes the admission mode. Such a pass drains accepted core work,
+retains the existing framebuffer or uses NoFrame, and cannot publish a new
+semantic paint or execute queued ordinary application actions. Binding references,
+lookup, abandonment, budget return and retirement cover ordinary and prepaid
+owners through one private output-resource collection.
+
+The required local fork is now committed at
+`af92097942f551914644f9d36f73dfba948e4997`; it remains unpublished, and tracked
+native dependency pins still name the earlier public baseline. Fresh serialized
+qualification passes 339 native tests normally and 339 without native debug
+assertions, plus correctness/suspicious Clippy. The complete fork eframe library
+passes 81 Glow tests, 75 WGPU tests and 81 combined-renderer tests with eframe
+debug assertions disabled. Glow and WGPU also compile with the native-host seam
+disabled. The macOS programmatic tear-off, first-live, redock and retirement
+journey exits 0 with a sampled root-boundary high-water mark of 2,384,816 owned
+input-data bytes. The new preallocated control backing remains included in that
+sample. Results are recorded in
+`/tmp/dockspace-native-output-capacity-qualification.json` and
+`/tmp/dockspace-native-output-capacity-fork-qualification.json`.
+
+The capacity regressions cover selected-byte rejection, external reservation
+charging, fixed backing after transfer and recovery only after storage becomes
+available. A disposable-snapshot control omits only promised external-work bytes
+from admission; the reservation regression fails (exit 100), and restoration
+passes (exit 0). Control results are recorded in
+`/tmp/dockspace-native-output-capacity-control.json`. Fork tests cover nested child/root deferral, contiguous retry
+completion, retained framebuffer preservation and disabled-host behavior. Their
+model results and backend source placement do not establish a physical
+keyboard/text-input retry journey or configured-cap real-window saturation.
+That saturation journey remains required when the complete product profile is
+enabled. Remaining device candidates, future report/drop promises, lifetime
+promises and roster-construction overlap still precede the total 4 MiB claim.
+
 ## 2026-10-29 U7 close-decision owner and scheduling
 
 `DockspaceHostFrame::pending_close_decisions(request)` visits the current

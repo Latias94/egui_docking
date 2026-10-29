@@ -834,6 +834,30 @@ per-allocation registry, second lifecycle authority or another measurement-only
 prerequisite in place of closing these four admission sites. The exact profile
 sizes remain implementation choices subject to complete-budget qualification.
 
+The output-admission implementation now checks ordinary output count (256) and
+the selected private combined host allowance before entry insertion. One inline
+root owner and a preallocated 256-child control/staging backing remain charged
+independently of occupancy. Each child physical window can occupy one protected
+slot; existing staging retains its original affine terminal until full commit.
+Frozen ordinary admission still permits prepaid control progress. Root control
+identity forbids new semantic paint/application actions even after cancellation
+changes the mode. A new fork `Proceed | Defer` result prevents a busy-slot
+candidate from running UI, consuming buffered egui input, entering the output
+stack or creating an unowned terminal; both renderer paths ask before input
+extraction. Rejection uses the existing durable root wake and no rejected-token
+registry. This closes output entry insertion, not the remaining three growth
+boundaries or the complete byte profile. Physical text/key retry and configured
+product-cap saturation remain later qualification requirements.
+The local fork commit is `af92097942f551914644f9d36f73dfba948e4997`, unpublished
+with tracked pins unchanged. Native gates pass 339 tests normally and 339
+without native debug assertions, plus correctness/suspicious Clippy. Fork Glow,
+WGPU and combined-renderer no-assertion gates pass 81, 75 and 81 library tests;
+both renderers compile without the seam. Programmatic macOS redock completes
+with a sampled root-boundary high-water mark of 2,384,816 bytes, including the
+prepaid control backing. Omitting only external-work reservation charging fails
+its regression and restoring it passes. These checks do not replace configured
+cap saturation, physical input or the remaining combined-budget work.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

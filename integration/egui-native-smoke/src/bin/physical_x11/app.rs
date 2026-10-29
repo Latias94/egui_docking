@@ -308,7 +308,7 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         token: eframe::NativeOutputToken,
         window: eframe::NativeWindowSnapshot,
         root_roster: Option<eframe::NativeViewportRoster<'_>>,
-    ) {
+    ) -> eframe::NativeOutputAdmission {
         if let Some(roster) = root_roster {
             let key = RootRosterKey::capture(roster);
             let work_area = validated_x11_work_area(roster);
@@ -325,7 +325,7 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 changed.notify_all();
             }
         }
-        self.inner.on_output_begin(token, window, root_roster);
+        self.inner.on_output_begin(token, window, root_roster)
     }
 
     fn on_output_pass_finalized(

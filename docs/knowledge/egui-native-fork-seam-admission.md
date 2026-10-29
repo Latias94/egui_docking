@@ -146,6 +146,33 @@ when upstream supplies equivalent exact execution-or-retirement results. No
 docking identity, cancellation policy or second lifecycle owner belongs in this
 seam.
 
+### Local output-admission prerequisite (not yet pinned)
+
+Local fork commit `af92097942f551914644f9d36f73dfba948e4997` makes
+`NativeHostHandler::on_output_begin` return
+`NativeOutputAdmission::Proceed | Defer`. This is a transport admission decision,
+not docking or placement policy. Glow and WGPU ask before extracting buffered
+egui-winit input and running UI. A deferred candidate spends no completion
+ordinal, active output scope, finalizer or terminal callback. The framework
+retains input and prior framebuffer state and schedules its existing root wake
+after the current native event. Ordinary rendering without a host is unchanged.
+
+The adapter reserves the exact accepted output owner before Proceed. Its
+prepaid root and child control/staging storage lets accepted obligations finish
+when ordinary capacity is frozen; a busy slot returns Defer without a second
+rejected-token registry. Nested deferral preserves the outer token, and later
+accepted child/root completion remains contiguous. Remove this result when
+upstream eframe exposes equivalent pre-input output admission with truthful
+defer/terminal ownership. Local model tests do not establish physical keyboard
+input retry or the adapter's complete memory budget. Tracked pins remain the
+published baseline above until an explicit publication step.
+
+The complete eframe library passes 81 Glow tests, 75 WGPU tests and 81 combined
+renderer tests without eframe debug assertions. Both renderer-only configurations
+also compile with this seam disabled. Adapter qualification passes 339 native
+tests in normal and assertion-disabled builds and the programmatic macOS redock
+journey. These remain local, unpublished-fork results.
+
 ## Admitted seams
 
 | Seam | Missing upstream fact | Affected platforms | Minimal patch boundary | Checked evidence | Removal or upstream condition |

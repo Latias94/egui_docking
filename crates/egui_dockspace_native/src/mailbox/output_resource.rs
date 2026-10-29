@@ -5,9 +5,13 @@ use dockspace::runtime::{
     PaintedSurfaceOutput,
 };
 use eframe::NativeOutputResult;
+use eframe::{NativeOutputToken, egui::ViewportId};
+use std::collections::BTreeMap;
 
 use super::journal::ReservedHostRecord;
 use super::{HostRecord, OutputReservation};
+
+const ORDINARY_OUTPUT_CAPACITY: usize = 256;
 
 pub(crate) enum PendingNativeOutput {
     Surface(PaintedSurfaceOutput),
@@ -55,6 +59,156 @@ pub(super) struct NativeOutputResource {
     terminal_ingress: Option<ReservedHostRecord>,
     pub(super) submitted: bool,
     budget: Option<NativeInputBudget>,
+}
+
+/// Ordinary output owners and prepaid control passes use the same protocol.
+///
+/// The root slot is inline and independent of the bounded child backing, so
+/// nested child passes cannot consume the root's recovery capacity. Control
+/// diagnostic terminals remove their exact owner without joining semantic
+/// ingress. An already promised child staging output may retain its affine
+/// paint and terminal in that same prepaid backing through full commit.
+#[derive(Debug)]
+pub(super) struct NativeOutputResources {
+    ordinary: BTreeMap<NativeOutputToken, NativeOutputResource>,
+    root_control: Option<(NativeOutputToken, NativeOutputResource)>,
+    child_controls: Vec<(NativeOutputToken, NativeOutputResource)>,
+}
+
+impl Default for NativeOutputResources {
+    fn default() -> Self {
+        Self {
+            ordinary: BTreeMap::new(),
+            root_control: None,
+            child_controls: Vec::with_capacity(super::terminal_roster::DEFAULT_WINDOW_CAPACITY),
+        }
+    }
+}
+
+impl NativeOutputResources {
+    pub(super) const fn ordinary_entry_data_bytes() -> usize {
+        size_of::<NativeOutputToken>() + size_of::<NativeOutputResource>()
+    }
+
+    pub(super) fn owned_descendant_capacity_bytes(&self) -> usize {
+        self.ordinary
+            .len()
+            .saturating_mul(Self::ordinary_entry_data_bytes())
+            .saturating_add(
+                self.child_controls
+                    .capacity()
+                    .saturating_mul(size_of::<(NativeOutputToken, NativeOutputResource)>()),
+            )
+    }
+
+    pub(super) fn contains_key(&self, token: &NativeOutputToken) -> bool {
+        self.get(token).is_some()
+    }
+
+    pub(super) fn can_reserve_ordinary(&self) -> bool {
+        self.ordinary.len() < ORDINARY_OUTPUT_CAPACITY
+    }
+
+    pub(super) fn is_control(&self, token: NativeOutputToken) -> bool {
+        self.root_control
+            .as_ref()
+            .is_some_and(|(key, _)| *key == token)
+            || self
+                .child_controls
+                .iter()
+                .any(|(key, resource)| *key == token && resource.reservation.abandoned)
+    }
+
+    pub(super) fn get(&self, token: &NativeOutputToken) -> Option<&NativeOutputResource> {
+        self.ordinary.get(token).or_else(|| {
+            self.root_control
+                .iter()
+                .chain(self.child_controls.iter())
+                .find_map(|(key, resource)| (key == token).then_some(resource))
+        })
+    }
+
+    pub(super) fn get_mut(
+        &mut self,
+        token: &NativeOutputToken,
+    ) -> Option<&mut NativeOutputResource> {
+        if let Some(resource) = self.ordinary.get_mut(token) {
+            return Some(resource);
+        }
+        self.root_control
+            .iter_mut()
+            .chain(self.child_controls.iter_mut())
+            .find_map(|(key, resource)| (*key == *token).then_some(resource))
+    }
+
+    pub(super) fn insert(&mut self, token: NativeOutputToken, resource: NativeOutputResource) {
+        let old = self.ordinary.insert(token, resource);
+        debug_assert!(old.is_none(), "one exact native output has one owner");
+    }
+
+    pub(super) fn insert_control(
+        &mut self,
+        token: NativeOutputToken,
+        resource: NativeOutputResource,
+    ) -> bool {
+        if token.viewport_id() == ViewportId::ROOT {
+            debug_assert!(resource.reservation.abandoned);
+            if self.root_control.is_some() {
+                return false;
+            }
+            self.root_control = Some((token, resource));
+        } else {
+            if self.child_controls.len() == self.child_controls.capacity()
+                || self.child_controls.iter().any(|(current, _)| {
+                    current.same_context(token)
+                        && current.viewport_id() == token.viewport_id()
+                        && current.window_id() == token.window_id()
+                })
+            {
+                return false;
+            }
+            self.child_controls.push((token, resource));
+        }
+        true
+    }
+
+    pub(super) fn remove(&mut self, token: &NativeOutputToken) -> Option<NativeOutputResource> {
+        if self
+            .root_control
+            .as_ref()
+            .is_some_and(|(key, _)| key == token)
+        {
+            return self.root_control.take().map(|(_, resource)| resource);
+        }
+        if let Some(index) = self.child_controls.iter().position(|(key, _)| key == token) {
+            return Some(self.child_controls.swap_remove(index).1);
+        }
+        self.ordinary.remove(token)
+    }
+
+    pub(super) fn values(&self) -> impl Iterator<Item = &NativeOutputResource> {
+        self.iter().map(|(_, resource)| resource)
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&NativeOutputToken, &NativeOutputResource)> {
+        self.ordinary.iter().chain(
+            self.root_control
+                .iter()
+                .chain(self.child_controls.iter())
+                .map(|(token, resource)| (token, resource)),
+        )
+    }
+
+    pub(super) fn iter_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&NativeOutputToken, &mut NativeOutputResource)> {
+        self.ordinary.iter_mut().chain(
+            self.root_control
+                .iter_mut()
+                .chain(self.child_controls.iter_mut())
+                .map(|(token, resource)| (&*token, resource)),
+        )
+    }
 }
 
 impl NativeOutputResource {
