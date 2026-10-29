@@ -93,6 +93,16 @@ and 4,155,496 reservation bytes; its unlimited comparison samples 2,750,841
 resident bytes. Independent prefix/cutoff/scratch review found no remaining
 concrete blocker in this slice.
 
+The same committed source also builds both smoke binaries on Linux/arm64 and
+passes ordered, duplicate and reordered real-token pressure under Xvfb/Openbox
+with software GL. All three reach O256/control2/protected-staging1 and forward
+258 original results, sampling 2,843,140 resident bytes and 3,808,176 reservation
+bytes below the same 4 MiB limit. Terminal and event-loop-exit owner checks pass.
+This is deterministic delayed delivery over real native windows, not physical
+pointer evidence. Logs and source identities are recorded in
+`/tmp/dockspace-output-pressure-linux-qualification.json` and
+`/tmp/dockspace-output-pressure-linux-{build,ordered,duplicate,reordered}.log`.
+
 A staging paint whose terminal has not arrived at quarantine
 still needs its own cancellation/late-terminal qualification; these captured
 terminal journeys do not close that case. Physical X11, active 1,000 Hz/release
@@ -122,6 +132,16 @@ routed outside motion and the pass-through Applied ACK are observed, but the
 production native preview is absent before release. The driver fails at
 `drag-out-x11-events`; this remains a release blocker under investigation.
 Neither the unit tests nor programmatic redock replace that physical gate.
+A fresh minimal two-site diagnostic against the current source directly records
+the failure: with two retained records, oldest age 2.67 ms and all byte/raw/output
+capacity checks still passing, ordinary complete-roster recapture finds both
+payload backings borrowed. That path freezes ordinary ingress and commits
+`InputOverload`, cancelling the active Dragging owner. This is distinct from
+expired age or exhausted output capacity. The diagnostic changes only the first
+freeze and Cancelled-event logging in a disposable snapshot;
+`/tmp/dockspace-native-freeze-diagnostic-run.log` records the direct cause.
+Replacing this transient roster-pressure cancellation with bounded recapture
+backpressure is the next implementation slice, not a completed physical claim.
 
 ## 2026-10-29 U7 explicit bounded application and lifecycle model
 

@@ -1191,6 +1191,12 @@ Xvfb/Openbox redock completes with resident/reservation peaks of 3,005,827 /
 because the production native preview is missing after observed press,
 threshold, routed outside motion and pass-through ACK. This physical blocker
 remains open; callback migration does not certify U7/U8.
+Subsequent minimal tracing directly identifies the premature cancellation:
+ordinary fresh-roster recapture has both fixed backings borrowed with two
+retained records and 2.67 ms oldest age, while byte/raw/output checks pass.
+That transient shortage currently freezes ingress and commits InputOverload.
+The next slice must preserve the gesture through existing bounded roster
+recapture/control ownership, without adding another payload or loosening caps.
 
 The next output-pressure slice uses a dedicated real-window binary with actual
 eframe token/result callbacks and a bounded 258-result test proxy. After one
@@ -1224,6 +1230,10 @@ The pressure journeys sample 2,843,172 resident / 3,807,664 reserved bytes below
 control removing only consumed-wake acknowledgement fails; exact restoration
 passes. The local fork is committed at `86feb7f8cc49217bff54a8924b2cb525f4af3285`
 without changing the earlier remote manifest pins.
+The same source subsequently passes all three pressure journeys on Linux/arm64
+under Xvfb/Openbox/software GL, sampling 2,843,140 resident / 3,808,176 reserved
+bytes under the same 4 MiB profile. This confirms real-window delayed output
+delivery on that backend without claiming physical pointer qualification.
 Staging without a captured terminal at fatal,
 physical X11, 1,000 Hz/release latency and native scoped/stationary continuation
 remain explicit work. No complete U7/U8 claim follows from this slice.
