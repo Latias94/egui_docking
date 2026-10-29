@@ -99,13 +99,14 @@ fn owner_configuration_requires_real_producer_and_report_bounds_and_the_complete
 }
 
 #[test]
-fn zero_resource_capacity_refuses_a_prepared_command_before_any_backend_work_or_source_capture() {
+fn zero_resource_capacity_refuses_a_root_route_before_any_backend_work_or_source_capture() {
     let mut native = bounded(0, 0);
     let (binding, _) = register_roots(&mut native);
     let window = WindowId::from(11);
-    native
-        .bind_viewport(ViewportId::ROOT, window, binding)
-        .unwrap();
+    assert!(matches!(
+        native.bind_viewport(ViewportId::ROOT, window, binding),
+        Err(NativeViewportBindingError::CapacityExceeded { limit: 0 }),
+    ));
     let before = native.owned_input_capacity_bytes().unwrap();
     let recorded = native.session.native_input_recorded_count();
     let prepared = eframe::prepare_native_viewport_focus(ViewportId::ROOT);
@@ -119,7 +120,7 @@ fn zero_resource_capacity_refuses_a_prepared_command_before_any_backend_work_or_
     assert_eq!(native.session.native_input_recorded_count(), recorded);
     assert_eq!(native.owned_input_capacity_bytes().unwrap(), before);
     assert!(!native.bridge.has_pending_callback_records());
-    assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(binding));
+    assert_eq!(native.viewport_binding(ViewportId::ROOT), None);
 }
 
 #[test]
@@ -173,4 +174,56 @@ fn manual_quiescence_shares_the_automatic_guard_for_stable_input_observations() 
     native.retain_retired_input_results(binding);
     assert!(!native.binding_has_retained_host_references(binding));
     assert_eq!(native.input_control.owned_data_capacity_bytes(), backing);
+}
+
+#[test]
+fn finite_no_frame_preparation_reuses_one_ready_backing_and_keeps_the_exact_owner_until_commit() {
+    let mut native = bounded(2, 1);
+    let (first, second) = register_roots(&mut native);
+    let child = ViewportId::from_hash_of("prepaid-no-frame-child");
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), first)
+        .unwrap();
+    native
+        .bind_viewport(child, WindowId::from(22), second)
+        .unwrap();
+    let invalidation =
+        PendingNoFrameInvalidation::terminal_observed_for_test(child, WindowId::from(22), second);
+    native
+        .bridge
+        .retain_no_frame(child, second, invalidation)
+        .unwrap();
+    let baseline = native.owned_input_capacity_bytes().unwrap();
+    let mut prepared = native.prepare_no_frame_invalidations().unwrap();
+    assert_eq!(prepared.ready, [invalidation]);
+    assert_eq!(prepared.ready.capacity(), 2);
+    assert_eq!(prepared.repaint_viewports.capacity(), 2);
+    let ready_backing = prepared.ready.as_ptr();
+    let repaint_backing = prepared.repaint_viewports.as_ptr();
+    prepared.select_for_surfaces(&[], true);
+    assert!(prepared.ready.is_empty());
+    assert_eq!(prepared.repaint_viewports, [child]);
+    assert_eq!(prepared.ready.as_ptr(), ready_backing);
+    assert_eq!(prepared.repaint_viewports.as_ptr(), repaint_backing);
+    drop(prepared);
+    assert_eq!(
+        native.bridge.no_frame_for_binding(second),
+        Some(invalidation)
+    );
+    assert_eq!(native.owned_input_capacity_bytes().unwrap(), baseline);
+    let mut retry = native.prepare_no_frame_invalidations().unwrap();
+    retry.select_for_surfaces(&[second.surface()], true);
+    assert_eq!(retry.ready, [invalidation]);
+    assert!(retry.repaint_viewports.is_empty());
+    native.finish_no_frame_invalidations(&[]);
+    assert_eq!(native.bridge.pending_no_frame_count(), 1);
+    native.finish_no_frame_invalidations(&retry.ready);
+    assert_eq!(native.bridge.pending_no_frame_count(), 0);
+    assert_eq!(native.owned_input_capacity_bytes().unwrap(), baseline);
+    // The live route retains the original resource row after observations clear.
+    native
+        .bridge
+        .retain_no_frame(child, second, invalidation)
+        .unwrap();
+    assert_eq!(native.owned_input_capacity_bytes().unwrap(), baseline);
 }

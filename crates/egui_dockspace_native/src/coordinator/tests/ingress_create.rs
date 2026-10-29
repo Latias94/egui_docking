@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
@@ -696,6 +698,12 @@ fn staging_resource_owner_retains_empty_frames_and_rejects_foreign_batches_atomi
     native.bridge.retire_deferred_binding(viewport, source);
     assert!(native.bridge.references_binding(child));
     native.bridge.retire_deferred_binding(viewport, child);
+    assert!(
+        native.bridge.references_binding(child),
+        "the current route retains its prepaid resource slot"
+    );
+    assert_eq!(native.viewport_binding(viewport), Some(child));
+    native.unbind_viewport(viewport, child).unwrap();
     assert!(!native.bridge.references_binding(child));
 }
 
@@ -791,11 +799,7 @@ fn delayed_same_value_visibility_callback_cannot_claim_a_later_show_request() {
     assert_ne!(older_token, token);
     assert!(native.reduce_next_viewport_visibility().unwrap());
     assert!(native.effects.has_pending_show(child));
-    assert!(
-        !native
-            .pending_presentation_acknowledgements
-            .contains_key(&child)
-    );
+    assert!(native.bridge.presentation_ack(child).is_none());
     assert!(native.bridge.front_viewport_visibility().is_none());
 
     let exact = NativeViewportVisibilityRecord::for_test(
@@ -811,11 +815,7 @@ fn delayed_same_value_visibility_callback_cannot_claim_a_later_show_request() {
         .push_record(HostRecord::ViewportVisibility(exact));
     assert!(native.reduce_next_viewport_visibility().unwrap());
     assert!(!native.effects.has_pending_show(child));
-    assert!(
-        native
-            .pending_presentation_acknowledgements
-            .contains_key(&child)
-    );
+    assert!(native.bridge.presentation_ack(child).is_some());
     assert_eq!(
         native.lifecycle_progress().first_live_admissions(),
         0,

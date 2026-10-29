@@ -1,6 +1,6 @@
 //! Thin coordinator between eframe callbacks and the renderer-neutral session.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use dockspace::geometry::PhysicalRect;
@@ -93,9 +93,6 @@ const fn staging_paint_failure_disposition(
 pub(crate) struct NativeCoordinator {
     session: DockspaceSession,
     bridge: Arc<NativeHostBridge>,
-    pending_no_frame_invalidations: BTreeMap<NativeSurfaceBinding, PendingNoFrameInvalidation>,
-    pending_presentation_acknowledgements:
-        BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
     queued_snapshot: Option<QueuedNativeSnapshot>,
     snapshot_storage: Option<NativeSnapshotStorageLimit>,
     owner_storage: Option<NativeOwnerStorageLimit>,
@@ -116,11 +113,11 @@ pub(crate) struct NativeCoordinator {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PendingNoFrameInvalidation {
-    terminal: NoFrameTerminal,
-    viewport: ViewportId,
-    window: WindowId,
-    create_attempt: Option<NativeViewportCreateAttempt>,
-    binding: NativeSurfaceBinding,
+    pub(crate) terminal: NoFrameTerminal,
+    pub(crate) viewport: ViewportId,
+    pub(crate) window: WindowId,
+    pub(crate) create_attempt: Option<NativeViewportCreateAttempt>,
+    pub(crate) binding: NativeSurfaceBinding,
 }
 
 impl PendingNoFrameInvalidation {
@@ -159,11 +156,36 @@ impl PendingNoFrameInvalidation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NoFrameTerminal {
+pub(crate) enum NoFrameTerminal {
     Awaiting(NativeOutputToken),
     Observed,
 }
 
+pub(crate) struct PreparedNoFrameInvalidations {
+    pub(crate) ready: Vec<PendingNoFrameInvalidation>,
+    pub(crate) repaint_viewports: Vec<ViewportId>,
+}
+
+impl PreparedNoFrameInvalidations {
+    pub(crate) fn select_for_surfaces(&mut self, surfaces: &[SurfaceId], enabled: bool) {
+        self.repaint_viewports.clear();
+        self.ready.retain(|invalidation| {
+            if !enabled {
+                return false;
+            }
+            if surfaces.contains(&invalidation.surface()) {
+                return true;
+            }
+            if !self.repaint_viewports.contains(&invalidation.viewport()) {
+                assert!(self.repaint_viewports.len() < self.repaint_viewports.capacity());
+                self.repaint_viewports.push(invalidation.viewport());
+            }
+            false
+        });
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn split_no_frame_invalidations_for_frame<T>(
     frame_surfaces: &[SurfaceId],
     ready: impl IntoIterator<Item = T>,
@@ -183,13 +205,13 @@ pub(crate) fn split_no_frame_invalidations_for_frame<T>(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NoFrameInvalidationReadiness {
+pub(crate) enum NoFrameInvalidationReadiness {
     WaitingForTerminal,
     Ready,
     Stale,
 }
 
-const fn no_frame_invalidation_readiness(
+pub(crate) const fn no_frame_invalidation_readiness(
     terminal_pending: bool,
     route_is_current: bool,
     binding_is_current: bool,
@@ -293,11 +315,11 @@ impl std::fmt::Debug for NativeCoordinator {
             .field("pending_outputs", &self.bridge.pending_output_count())
             .field(
                 "pending_no_frame_invalidations",
-                &self.pending_no_frame_invalidations.len(),
+                &self.bridge.pending_no_frame_count(),
             )
             .field(
                 "pending_presentation_acknowledgements",
-                &self.pending_presentation_acknowledgements.len(),
+                &self.bridge.presentation_ack_count(),
             )
             .field(
                 "queued_snapshot_presentation_acknowledgements",
@@ -377,7 +399,7 @@ impl NativeCoordinator {
             )?,
             None => DeferredViewportDriver::default(),
         };
-        let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
+        let bridge = Arc::new(NativeHostBridge::try_new(NativeViewportMap::default())?);
         let mut close_decision_scratch = Vec::new();
         if let Some(owners) = owner_limit {
             let bindings = binding_slots.expect("owner storage validates the binding bound");
@@ -429,8 +451,6 @@ impl NativeCoordinator {
         let mut native = Self {
             session,
             bridge,
-            pending_no_frame_invalidations: BTreeMap::new(),
-            pending_presentation_acknowledgements: BTreeMap::new(),
             queued_snapshot: None,
             snapshot_storage: None,
             owner_storage: owner_limit,
@@ -493,8 +513,6 @@ impl NativeCoordinator {
     pub(crate) fn is_quiescent(&self) -> bool {
         !self.bridge.has_pending_coordinator_work()
             && !self.bridge.has_pending_lifecycle_output(&self.session)
-            && self.pending_no_frame_invalidations.is_empty()
-            && self.pending_presentation_acknowledgements.is_empty()
             && !self.receivers.has_pending_commit()
             && self.queued_snapshot.is_none()
             && !self.deferred_viewports.has_transitional_viewport()
@@ -892,7 +910,7 @@ impl NativeCoordinator {
         let (committed, abandoned) = prepared.commit_with_routes();
         for retirement in &committed {
             let binding = retirement.binding();
-            self.pending_presentation_acknowledgements.remove(&binding);
+            self.bridge.clear_presentation_ack(binding);
             self.effects.remove_show(binding);
             self.terminalize_focus(binding);
             self.effects.remove_commands(binding);
@@ -974,7 +992,7 @@ impl NativeCoordinator {
             });
             let presentation_acknowledged = !queued.presentation_acknowledgements.is_empty();
             for binding in queued.presentation_acknowledgements {
-                self.pending_presentation_acknowledgements.remove(&binding);
+                self.bridge.clear_presentation_ack(binding);
             }
             if presentation_acknowledged {
                 self.bridge.invalidate_viewport_roster();
@@ -1170,9 +1188,6 @@ impl NativeCoordinator {
             || self.bridge.retirement_references_cleanup(binding)
             || self.focus_control.references_binding(binding)
             || self.input_control.references_binding(binding)
-            || self
-                .pending_presentation_acknowledgements
-                .contains_key(&binding)
     }
 
     pub(crate) fn try_report_pending_effect_results(&mut self) -> Result<bool, NativeRuntimeError> {
@@ -1896,6 +1911,14 @@ impl NativeCoordinator {
             self.acknowledge_viewport_visibility(record)?;
             return Ok(true);
         }
+        if record.status() == NativeViewportVisibilityStatus::Dispatched
+            && self.effects.matches_show(record)
+            && !self
+                .bridge
+                .can_retain_presentation_ack(record.viewport(), record.binding())
+        {
+            return Err(NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into());
+        }
         let Some(request) = self.effects.take_show(record) else {
             self.acknowledge_viewport_visibility(record)?;
             return Ok(true);
@@ -1909,8 +1932,9 @@ impl NativeCoordinator {
                         NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
                     );
                 };
-                self.pending_presentation_acknowledgements
-                    .insert(record.binding(), acknowledgement);
+                self.bridge
+                    .retain_presentation_ack(record.viewport(), record.binding(), acknowledgement)
+                    .expect("the exact visibility callback retained its prepaid presentation slot");
                 self.bridge.invalidate_viewport_roster();
                 None
             }
@@ -1930,18 +1954,16 @@ impl NativeCoordinator {
     }
 
     fn has_pending_presentation_effect(&self, binding: NativeSurfaceBinding) -> bool {
-        self.pending_presentation_acknowledgements
-            .contains_key(&binding)
-            || self.effects.has_pending_show(binding)
+        self.bridge.presentation_ack(binding).is_some() || self.effects.has_pending_show(binding)
     }
 
     fn reduce_next_viewport_created(&mut self) -> Result<bool, NativeRuntimeError> {
         let Some(created) = self.bridge.front_viewport_created() else {
             return Ok(false);
         };
-        if self
-            .pending_presentation_acknowledgements
-            .contains_key(&created.binding())
+        if !self
+            .bridge
+            .can_retain_presentation_ack(created.token().viewport_id(), created.binding())
         {
             return Err(NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into());
         }
@@ -1964,8 +1986,13 @@ impl NativeCoordinator {
         else {
             return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
         };
-        self.pending_presentation_acknowledgements
-            .insert(created.binding(), acknowledgement);
+        self.bridge
+            .retain_presentation_ack(
+                created.token().viewport_id(),
+                created.binding(),
+                acknowledgement,
+            )
+            .expect("the exact create callback retained its prepaid presentation slot");
         self.bridge.invalidate_viewport_roster();
         if !self.bridge.acknowledge_viewport_created(created) {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
@@ -2183,17 +2210,18 @@ impl NativeCoordinator {
         roster: &NativeViewportRosterRecord,
         envelope: NativeViewportRosterEnvelope,
     ) -> Result<(), NativeRuntimeError> {
-        let compiled =
-            self.bridge
-                .with_retirement_destroyed_observations(|destroyed_count, destroyed| {
-                    self.preflight_snapshot_storage(roster, destroyed_count)?;
-                    let mut observations = self.compile_viewport_roster(roster, destroyed_count)?;
-                    observations
-                        .extend(destroyed.map(|(binding, facts)| {
-                            CompiledWindowObservation::new(binding, facts)
-                        }));
-                    Ok::<_, NativeRuntimeError>((observations, destroyed_count != 0))
-                });
+        let compiled = self.bridge.with_retirement_destroyed_observations(
+            |destroyed_count, destroyed, presentation_ack| {
+                self.preflight_snapshot_storage(roster, destroyed_count)?;
+                let mut observations =
+                    self.compile_viewport_roster(roster, destroyed_count, presentation_ack)?;
+                observations.extend(
+                    destroyed
+                        .map(|(binding, facts)| CompiledWindowObservation::new(binding, facts)),
+                );
+                Ok::<_, NativeRuntimeError>((observations, destroyed_count != 0))
+            },
+        );
         let compiled = match compiled {
             Err(error) if error.is_input_capacity() => return Err(error),
             result => result,
@@ -2286,6 +2314,9 @@ impl NativeCoordinator {
         &self,
         roster: &NativeViewportRosterRecord,
         destroyed_count: usize,
+        presentation_ack: &dyn Fn(
+            NativeSurfaceBinding,
+        ) -> Option<NativePresentationEffectAcknowledgement>,
     ) -> Result<Vec<CompiledWindowObservation>, NativeRuntimeError> {
         let capacity = roster
             .observation_count()
@@ -2315,9 +2346,7 @@ impl NativeCoordinator {
             let compiled = compile_window_observation(
                 observation.binding(),
                 observation.snapshot(),
-                self.pending_presentation_acknowledgements
-                    .get(&observation.binding())
-                    .copied(),
+                presentation_ack(observation.binding()),
             )?;
             observations.push(self.with_native_input_observation(compiled));
         }
@@ -2681,26 +2710,26 @@ impl NativeCoordinator {
             return Err(NativeOutputBindingErrorKind::OutputAlreadyBound);
         }
         let wake_on_terminal = !retained;
+        let no_frame = reservation
+            .binding()
+            .filter(|binding| {
+                !retained
+                    && should_record_no_frame_invalidation(
+                        self.bridge.accepts_no_frame_invalidation(),
+                        self.session.is_current_native_binding(*binding),
+                        self.session.presented_surface(binding.surface()).is_some(),
+                    )
+            })
+            .map(|binding| PendingNoFrameInvalidation::awaiting_terminal(token, binding));
         if !matches!(
             self.bridge
-                .settle_output_abandonment(token, wake_on_terminal),
+                .settle_output_abandonment(token, wake_on_terminal, no_frame),
             OutputAbandonment::NewlyAbandoned | OutputAbandonment::AlreadyAbandonedAwaitingTerminal
         ) {
             return Err(NativeOutputBindingErrorKind::TokenNotReserved);
         }
         if !retained && let Some(binding) = reservation.binding() {
             self.receivers.retire_binding(binding);
-            if should_record_no_frame_invalidation(
-                self.bridge.accepts_no_frame_invalidation(),
-                self.session.is_current_native_binding(binding),
-                self.session.presented_surface(binding.surface()).is_some(),
-            ) {
-                self.pending_no_frame_invalidations
-                    .entry(binding)
-                    .or_insert_with(|| {
-                        PendingNoFrameInvalidation::awaiting_terminal(token, binding)
-                    });
-            }
         }
         // A retained output needs no follow-up. A NoFrame fallback is allowed
         // to wake only from its physical terminal callback, after the window
@@ -2708,66 +2737,21 @@ impl NativeCoordinator {
         Ok(NativeHostWake::Wait)
     }
 
-    pub(crate) fn prepare_no_frame_invalidations(&mut self) -> Vec<PendingNoFrameInvalidation> {
-        let mut ready = Vec::new();
-        let mut stale = Vec::new();
-        for invalidation in self.pending_no_frame_invalidations.values_mut() {
-            let (terminal_pending, current_binding) = match invalidation.terminal {
-                NoFrameTerminal::Awaiting(token) => {
-                    let (reservation, binding) = self.bridge.output_route_state(token);
-                    if reservation.is_none() {
-                        invalidation.terminal = NoFrameTerminal::Observed;
-                    }
-                    (reservation.is_some(), binding)
-                }
-                NoFrameTerminal::Observed => (
-                    false,
-                    self.bridge.with_viewports(|viewports| {
-                        viewports.binding_for_output(
-                            invalidation.viewport,
-                            invalidation.window,
-                            invalidation.create_attempt,
-                        )
-                    }),
-                ),
-            };
-            let route_is_current = current_binding == Some(invalidation.binding);
-            match no_frame_invalidation_readiness(
-                terminal_pending,
-                route_is_current,
-                self.session.is_current_native_binding(invalidation.binding),
-            ) {
-                NoFrameInvalidationReadiness::WaitingForTerminal => {}
-                NoFrameInvalidationReadiness::Ready => ready.push(*invalidation),
-                NoFrameInvalidationReadiness::Stale => stale.push(invalidation.binding),
-            }
-        }
-        for binding in stale {
-            self.pending_no_frame_invalidations.remove(&binding);
-        }
-        ready
+    pub(crate) fn prepare_no_frame_invalidations(
+        &mut self,
+    ) -> Result<PreparedNoFrameInvalidations, NativeRuntimeError> {
+        self.bridge.prepare_no_frame_invalidations(&self.session)
     }
 
     pub(crate) fn has_pending_no_frame_invalidation(&self, surface: SurfaceId) -> bool {
-        self.pending_no_frame_invalidations
-            .keys()
-            .any(|binding| binding.surface() == surface)
+        self.bridge.has_pending_no_frame_invalidation(surface)
     }
 
     pub(crate) fn finish_no_frame_invalidations(
         &mut self,
         committed: &[PendingNoFrameInvalidation],
     ) {
-        for invalidation in committed {
-            if self
-                .pending_no_frame_invalidations
-                .get(&invalidation.binding)
-                == Some(invalidation)
-            {
-                self.pending_no_frame_invalidations
-                    .remove(&invalidation.binding);
-            }
-        }
+        self.bridge.finish_no_frame_invalidations(committed);
     }
 
     pub(crate) fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
@@ -2787,7 +2771,7 @@ impl NativeCoordinator {
     }
 
     fn requires_terminal_snapshot(&self) -> bool {
-        !self.pending_presentation_acknowledgements.is_empty()
+        self.bridge.presentation_ack_count() != 0
             || self.input_control.requires_snapshot()
             || self.bridge.retirement_requires_snapshot()
             || self.bridge.viewport_roster_dirty()

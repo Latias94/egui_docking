@@ -243,12 +243,12 @@ impl<'session> NativeHostFrame<'session> {
         receivers.commit_presentations(report.surface_presentation_commits());
         bridge.commit_frame_boundary(report.native_input_pending());
         if let Some(context) = repaint_context {
-            let ready_semantic_viewports = bridge.take_ready_semantic_viewports();
-            request_native_viewport_repaints(
-                &context,
-                &staging_viewports,
-                &ready_semantic_viewports,
-            );
+            request_native_viewport_repaints(&context, &staging_viewports, &[]);
+            while let Some(viewport) = bridge.claim_ready_semantic_viewport() {
+                if !staging_viewports.contains(&viewport) {
+                    context.request_repaint_of(viewport);
+                }
+            }
         }
         Ok(report)
     }

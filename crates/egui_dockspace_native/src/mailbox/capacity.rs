@@ -11,7 +11,6 @@ use crate::event::NativeWindowEventClass;
 use crate::pointer_event::NativePointerTranslator;
 use crate::retirement::NativeRetirementState;
 use crate::viewport_map::NativeViewportMap;
-use eframe::egui::ViewportId;
 use std::sync::Arc;
 
 /// A host share of one selected input budget, including promised external work.
@@ -66,16 +65,6 @@ impl NativeHostState {
                 self.close_control.owned_data_capacity_bytes() - size_of::<NativeCloseControl>(),
             )
             .saturating_add(self.output_resources.owned_descendant_capacity_bytes())
-            .saturating_add(
-                self.blocked_semantic_viewports
-                    .len()
-                    .saturating_mul(size_of::<ViewportId>()),
-            )
-            .saturating_add(
-                self.ready_semantic_viewports
-                    .len()
-                    .saturating_mul(size_of::<ViewportId>()),
-            )
             .saturating_add(self.terminal_roster.reserved_payload_capacity_bytes());
         // Production rosters always belong to the two backing owners. Tests may
         // inject external allocations; compare the existing handles without
@@ -127,14 +116,11 @@ impl NativeHostState {
     }
 
     pub(super) fn can_reserve_pointer_translation(&self) -> bool {
-        NativePointerTranslator::callback_translation_capacity_bytes()
-            .checked_add(NativeOutputResources::ordinary_entry_data_bytes())
-            .is_some_and(|bytes| self.can_reserve_input_data(bytes))
+        self.can_reserve_input_data(NativePointerTranslator::callback_translation_capacity_bytes())
     }
 
     pub(super) fn can_reserve_output_data(&self) -> bool {
-        self.output_resources.can_reserve_ordinary()
-            && self.can_reserve_input_data(NativeOutputResources::ordinary_entry_data_bytes())
+        self.output_resources.can_reserve_ordinary() && self.can_reserve_input_data(0)
     }
 
     /// Existing route, resource and retirement roots share one lifetime promise.
@@ -218,7 +204,6 @@ impl NativeHostBridge {
             return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
         }
         let additional = Self::lifecycle_storage_bytes(bindings, closes)
-            .and_then(|bytes| bytes.checked_add(NativeOutputResources::ordinary_entry_data_bytes()))
             .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
         // Existing backing remains live until all replacements have succeeded.
         if !state.can_reserve_input_data(additional) {
@@ -264,7 +249,6 @@ impl NativeHostBridge {
             .and_then(|bytes| bytes.checked_sub(size_of::<NativeWindowResources>()))
             .and_then(|bytes| bytes.checked_add(staging))
             .and_then(|bytes| bytes.checked_add(external_reserved_bytes))
-            .and_then(|bytes| bytes.checked_add(NativeOutputResources::ordinary_entry_data_bytes()))
             .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
         if !state.can_reserve_input_data(additional) {
             return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
@@ -357,9 +341,8 @@ mod tests {
         let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let baseline = bridge.owned_input_capacity_bytes(None);
         let pointer = bridge.lock().reserved_pointer_translation_capacity_bytes();
-        let output = NativeOutputResources::ordinary_entry_data_bytes();
         let candidate = NativeHostBridge::lifecycle_storage_bytes(2, 1).unwrap();
-        let required = baseline + pointer + candidate + output;
+        let required = baseline + pointer + candidate;
         assert!(bridge.configure_input_storage_allowance(required - 1, 0));
         assert_eq!(
             bridge.configure_lifecycle_storage(2, 1),
@@ -389,16 +372,15 @@ mod tests {
     }
 
     #[test]
-    fn resource_and_external_owner_storage_share_output_headroom_before_initial_installation() {
+    fn resource_and_external_owner_storage_share_the_prepaid_output_allowance() {
         let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let baseline = bridge.owned_input_capacity_bytes(None);
         let pointer = bridge.lock().reserved_pointer_translation_capacity_bytes();
-        let output = NativeOutputResources::ordinary_entry_data_bytes();
         let external = 1234;
         let resources = NativeHostBridge::window_resource_storage_bytes(1).unwrap()
             - size_of::<NativeWindowResources>();
         let staging = NativeHostBridge::window_resource_staging_bytes(1).unwrap();
-        let required = baseline + pointer + output + resources + staging + external;
+        let required = baseline + pointer + resources + staging + external;
         assert!(bridge.configure_input_storage_allowance(required - 1, 0));
         assert_eq!(
             bridge.configure_window_resource_storage(1, external),
@@ -418,8 +400,9 @@ mod tests {
         let state = bridge.lock();
         assert_eq!(state.window_resource_staging_reserved_bytes, staging);
         assert_eq!(state.host_owner_external_reserved_bytes, external);
-        assert!(state.can_reserve_input_data(output));
-        assert!(!state.can_reserve_input_data(output + 1));
+        assert!(state.can_reserve_input_data(0));
+        assert!(!state.can_reserve_input_data(1));
+        assert!(state.can_reserve_output_data());
     }
 
     fn scroll(ordinal: u64, phase: TouchPhase) -> NativeWindowEventRecord {
@@ -438,15 +421,12 @@ mod tests {
     }
 
     #[test]
-    fn pointer_growth_cannot_spend_the_output_headroom_needed_after_a_retained_scroll_tail() {
+    fn pointer_growth_is_rejected_before_spending_prepaid_output_backing() {
         let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let baseline = bridge.owned_input_capacity_bytes(None);
         let reserved = bridge.lock().reserved_pointer_translation_capacity_bytes();
         let growth = NativePointerTranslator::callback_translation_capacity_bytes();
-        let output = NativeOutputResources::ordinary_entry_data_bytes();
-        assert!(
-            bridge.configure_input_storage_allowance(baseline + reserved + output.max(growth), 0)
-        );
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved + growth - 1, 0));
         assert!(
             !bridge
                 .lock()
@@ -455,6 +435,7 @@ mod tests {
         assert_eq!(bridge.lock().journal.captured_through(), 0);
         assert!(bridge.lock().journal.is_empty());
         assert!(bridge.lock().can_reserve_output_data());
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved + growth, 0));
     }
 
     #[test]
@@ -468,7 +449,6 @@ mod tests {
             let baseline = bridge.owned_input_capacity_bytes(None);
             let limit = baseline
                 + translator.reserved_translation_capacity_bytes()
-                + NativeOutputResources::ordinary_entry_data_bytes()
                 + growth
                 + next_callback_allowance;
             assert!(bridge.configure_input_storage_allowance(limit, 0));
@@ -545,10 +525,7 @@ mod tests {
         let mut translator = NativePointerTranslator::default();
         let baseline = bridge.owned_input_capacity_bytes(None);
         let growth = NativePointerTranslator::callback_translation_capacity_bytes();
-        let limit = baseline
-            + translator.reserved_translation_capacity_bytes()
-            + NativeOutputResources::ordinary_entry_data_bytes()
-            + 5 * growth;
+        let limit = baseline + translator.reserved_translation_capacity_bytes() + 5 * growth;
         assert!(bridge.configure_input_storage_allowance(limit, 0));
         let touch = |ordinal| {
             NativeWindowEventRecord::for_test(
@@ -654,16 +631,13 @@ mod tests {
         let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let baseline = bridge.owned_input_capacity_bytes(None);
         let reserved = bridge.lock().reserved_pointer_translation_capacity_bytes();
-        let output = NativeOutputResources::ordinary_entry_data_bytes();
-        assert!(!bridge.configure_input_storage_allowance(baseline, 0));
+        assert!(!bridge.configure_input_storage_allowance(baseline + reserved - 1, 0));
         assert!(bridge.lock().input_storage_allowance.is_none());
-        assert!(bridge.configure_input_storage_allowance(baseline + reserved + output, 0));
-        assert!(bridge.lock().can_reserve_input_data(output));
-        assert!(!bridge.lock().can_reserve_input_data(output + 1));
-        assert!(
-            !bridge.configure_input_storage_allowance(baseline + reserved + output, output + 1)
-        );
-        assert!(bridge.lock().can_reserve_input_data(output));
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved, 0));
+        assert!(bridge.lock().can_reserve_input_data(0));
+        assert!(!bridge.lock().can_reserve_input_data(1));
+        assert!(!bridge.configure_input_storage_allowance(baseline + reserved, 1));
+        assert!(bridge.lock().can_reserve_output_data());
         assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
     }
 
@@ -672,13 +646,9 @@ mod tests {
         let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let baseline = bridge.owned_input_capacity_bytes(None);
         let reserved = bridge.lock().reserved_pointer_translation_capacity_bytes();
-        let output = NativeOutputResources::ordinary_entry_data_bytes();
         let snapshot =
             crate::coordinator::NativeSnapshotStorageLimit::required_bytes(2, 1).unwrap();
-        assert!(
-            bridge
-                .configure_input_storage_allowance(baseline + reserved + output + snapshot - 1, 0)
-        );
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved + snapshot - 1, 0));
         assert!(!bridge.configure_snapshot_storage_allowance(snapshot, 2, 1));
         {
             let state = bridge.lock();
@@ -694,16 +664,14 @@ mod tests {
             assert!(state.can_reserve_output_data());
         }
 
-        assert!(
-            bridge.configure_input_storage_allowance(baseline + reserved + output + snapshot, 0)
-        );
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved + snapshot, 0));
         assert!(bridge.configure_snapshot_storage_allowance(snapshot, 2, 1));
         let state = bridge.lock();
         assert_eq!(state.snapshot_storage_reserved_bytes, snapshot);
         assert_eq!(state.terminal_roster.window_capacity(), 2);
         assert_eq!(state.terminal_roster.work_area_capacity(), 1);
-        assert!(state.can_reserve_input_data(output));
-        assert!(!state.can_reserve_input_data(output + 1));
+        assert!(state.can_reserve_input_data(0));
+        assert!(!state.can_reserve_input_data(1));
     }
 
     #[test]
@@ -717,6 +685,13 @@ mod tests {
         assert!(
             bridge.configure_input_storage_allowance(baseline + reserved + 2 * output, 2 * output)
         );
+        assert!(bridge.lock().can_reserve_output_data());
+        bridge
+            .lock()
+            .input_storage_allowance
+            .as_mut()
+            .unwrap()
+            .external_reserved_bytes += 1;
         assert!(!bridge.lock().can_reserve_output_data());
         assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
         assert_eq!(

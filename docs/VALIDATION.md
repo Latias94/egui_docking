@@ -15,6 +15,82 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 inline observations, route wakes and prepaid output backing
+
+The existing exact window-resource entry now owns its presentation ACK and
+NoFrame invalidation inline. The two coordinator maps are deleted. Route
+reservation, bind, attach and replacement prepare the resource slot before
+changing their route; a refused M capacity leaves that route unchanged. The
+resource's backing-retention bit is derived from existing route and announced
+output references under the original host mutex. It carries no independent
+lifecycle authority and does not itself make an idle route pending work.
+Replacement and unbind explicitly retire the predecessor; old ACKs, invalidation
+records and callbacks keep their exact entry until their original settlement.
+Clearing observations alone does not release the current route's resource slot.
+
+Create/show callbacks check their original prepaid presentation slot before
+taking or accepting the affine request. ACK lookup for roster compilation is
+borrowed under the same lock as destroyed observations, avoiding recursive
+bridge locking and an extra ACK copy. Exact-binding uniqueness is preserved
+across viewport aliases. NoFrame keeps the first exact record, and abandonment
+plus obligation recording occurs under one lock before the terminal callback can
+release its last output reference. Preparation reserves M ready records and M
+repaint slots before changing any record. Stale removal, accepted selection and
+repaint selection then update those buffers in place; commit compare-clears the
+complete original record. The selected owner allowance includes that construction
+peak rather than collecting multiple ready/stale/accepted/fallback copies.
+
+Semantic repaint state now belongs to the original viewport route as
+Idle/Blocked/Ready. The two host sets and production take/collect are deleted.
+Replacement preserves that viewport's wake; exact removal ends it and an old
+retirement cannot clear its successor. Only a complete clear causal boundary
+releases Blocked. Each Ready is claimed under the host lock and repainted after
+unlock; an already scheduled staging repaint consumes a duplicate semantic
+obligation without scheduling twice. A host without a repaint context leaves
+Ready retained. An unknown route does not mint a wake owner; the fork's Defer
+path still schedules the root recovery boundary.
+
+Ordinary output backing is now a sorted Vec prepaid for its existing O=256
+limit. The root control owner remains inline and child-control backing remains
+independent. The fallible production constructor prepares both stores before
+core enrollment; actual capacities remain charged after removal. Insert refuses
+a duplicate or full store with the original incoming resource instead of
+overwriting an accepted owner. Shared byte admission now charges the complete
+backing once in its host baseline, so a new output consumes a prepaid slot and
+does not add a second per-entry byte charge. Pointer, resource, lifecycle and
+snapshot allowance checks use the same prepaid baseline.
+
+Fresh qualification passes 427 native tests normally and 427 with native debug
+assertions disabled, plus correctness/suspicious Clippy. The macOS programmatic
+tear-off, first-live, redock and retirement journey exits 0 and samples 2,750,825
+owned input-data bytes at root boundaries. The tested snapshot matches all 413
+frozen Rust source files. Results are recorded in
+`/tmp/dockspace-observation-storage-qualification.json`. The core/local adapter
+sources remain unchanged from the preceding 1,813 workspace and 86 public-host
+qualification; this slice reruns the changed native workspace.
+
+The 17 added regressions cover exact inline observations and alias conflicts,
+pin/retire/prune, route wake replacement and once-only claim, empty output
+backing accounting, and finite NoFrame preparation/drop/retry without growth.
+One disposable-snapshot control removes only the host-reference retention
+condition. The native finite NoFrame regression then fails (exit 100) because a
+live route loses its original slot after observation settlement. Exact source
+restoration passes all 19 selected observation/wake/owner cases (exit 0), and
+snapshot/source bytes match again. Results are recorded in
+`/tmp/dockspace-observation-storage-control.json`.
+
+Independent wake, output and pin/ACK/NoFrame reviews found no remaining concrete
+blocker in this slice. A preliminary compile failure was an old test's implicit
+parent import; two old assertions were updated to distinguish a live route's
+idle retained backing from pending callback work. The output prepayment tests
+and macOS round trip do not qualify full-O saturation, duplicate-token or
+iteration-order pressure. No public test token minting seam was added for those
+unexecuted cases. Output-prefix/unfinalized/quarantine construction, complete
+initial combined admission, configured-cap load/release latency and lifecycle
+soak remain ahead of product-profile enablement. The complete 4 MiB profile is
+still disabled; scoped native input, native showcase and physical platform gates
+remain open. The local unpublished fork and tracked dependency pins are unchanged.
+
 ## 2026-10-29 U7 prepaid retirement, close and viewport-route owners
 
 The selected private owner allowance now prepays one W retirement backing shared

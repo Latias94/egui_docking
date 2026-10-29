@@ -336,19 +336,27 @@ impl NativeEffectCoordinator {
         &mut self,
         record: NativeViewportVisibilityRecord,
     ) -> Option<NativeEffectRequest> {
+        if !self.matches_show(record) {
+            return None;
+        }
         let index = self
             .pending_shows
             .binary_search_by_key(&record.binding(), |pending| pending.binding)
             .ok()?;
-        let pending = self.pending_shows.get(index)?;
-        if pending.viewport != record.viewport()
-            || pending.window != record.window()
-            || pending.token != record.token()
-            || !record.visible()
-        {
-            return None;
-        }
         Some(self.pending_shows.remove(index).request)
+    }
+
+    pub(crate) fn matches_show(&self, record: NativeViewportVisibilityRecord) -> bool {
+        self.pending_shows
+            .binary_search_by_key(&record.binding(), |pending| pending.binding)
+            .ok()
+            .and_then(|index| self.pending_shows.get(index))
+            .is_some_and(|pending| {
+                pending.viewport == record.viewport()
+                    && pending.window == record.window()
+                    && pending.token == record.token()
+                    && record.visible()
+            })
     }
 
     #[cfg(test)]

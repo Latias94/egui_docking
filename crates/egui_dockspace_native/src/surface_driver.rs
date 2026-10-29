@@ -17,10 +17,9 @@ use crate::application_action::{
     NativeActionRequestError, NativeActionTerminal, NativeApplicationActions,
 };
 use crate::close_control::NativeWindowClosePolicy;
-use crate::coordinator::{
-    NativeCoordinator, NativeShutdownAdvance, NativeShutdownRegistration,
-    split_no_frame_invalidations_for_frame,
-};
+#[cfg(test)]
+use crate::coordinator::split_no_frame_invalidations_for_frame;
+use crate::coordinator::{NativeCoordinator, NativeShutdownAdvance, NativeShutdownRegistration};
 use crate::deferred_viewport::DeferredViewportSpec;
 #[cfg(test)]
 use crate::error::NativeRuntimeErrorKind;
@@ -177,6 +176,7 @@ const fn retained_pass_requires_semantic_retry(
     retain_previous_output && (!surface_is_presented || application_action_queued)
 }
 
+#[cfg(test)]
 fn select_no_frame_invalidations_for_frame<T>(
     context: &egui::Context,
     frame_surfaces: &[SurfaceId],
@@ -475,7 +475,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         } else {
             None
         };
-        let no_frame_invalidations = coordinator.prepare_no_frame_invalidations();
+        let mut no_frame_invalidations = coordinator.prepare_no_frame_invalidations()?;
         let no_frame_invalidation_pending = coordinator.has_pending_no_frame_invalidation(surface);
 
         let instance_id = self.instance_id.with(surface.get());
@@ -505,13 +505,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
             prepared_retirements
         };
         let frame_surfaces = host_frame.frame.surfaces();
-        let no_frame_invalidations = select_no_frame_invalidations_for_frame(
-            &context,
-            &frame_surfaces,
-            no_frame_invalidations,
-            |invalidation| invalidation.surface(),
-            |invalidation| invalidation.viewport(),
-        );
+        no_frame_invalidations.select_for_surfaces(&frame_surfaces, true);
+        for viewport in &no_frame_invalidations.repaint_viewports {
+            context.request_repaint_once_of(*viewport);
+        }
+        let no_frame_invalidations = no_frame_invalidations.ready;
         // A renderer terminal callback must commit before any later callback,
         // but confirming another painted output in that settlement frame
         // creates an unbounded Presented -> repaint -> Presented loop. Retain

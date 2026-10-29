@@ -6,10 +6,10 @@ use dockspace::runtime::{
 };
 use eframe::NativeOutputResult;
 use eframe::{NativeOutputToken, egui::ViewportId};
-use std::collections::BTreeMap;
 
 use super::journal::ReservedHostRecord;
 use super::{HostRecord, OutputReservation};
+use crate::error::NativeHostProtocolError;
 
 const ORDINARY_OUTPUT_CAPACITY: usize = 256;
 
@@ -70,22 +70,50 @@ pub(super) struct NativeOutputResource {
 /// paint and terminal in that same prepaid backing through full commit.
 #[derive(Debug)]
 pub(super) struct NativeOutputResources {
-    ordinary: BTreeMap<NativeOutputToken, NativeOutputResource>,
+    ordinary: Vec<(NativeOutputToken, NativeOutputResource)>,
     root_control: Option<(NativeOutputToken, NativeOutputResource)>,
     child_controls: Vec<(NativeOutputToken, NativeOutputResource)>,
 }
 
 impl Default for NativeOutputResources {
     fn default() -> Self {
-        Self {
-            ordinary: BTreeMap::new(),
-            root_control: None,
-            child_controls: Vec::with_capacity(super::terminal_roster::DEFAULT_WINDOW_CAPACITY),
-        }
+        Self::try_new().expect("native output backing can be prepaid")
     }
 }
 
 impl NativeOutputResources {
+    /// Prepays ordinary and child control backing before admitting any output.
+    pub(super) fn try_new() -> Result<Self, NativeHostProtocolError> {
+        let error = NativeHostProtocolError::NativeReportStorageUnavailable;
+        Self::reservation_bytes().ok_or(error)?;
+        let mut ordinary = Vec::new();
+        ordinary
+            .try_reserve_exact(ORDINARY_OUTPUT_CAPACITY)
+            .map_err(|_| error)?;
+        if ordinary.capacity() > ORDINARY_OUTPUT_CAPACITY {
+            return Err(error);
+        }
+        let mut child_controls = Vec::new();
+        child_controls
+            .try_reserve_exact(super::terminal_roster::DEFAULT_WINDOW_CAPACITY)
+            .map_err(|_| error)?;
+        if child_controls.capacity() > super::terminal_roster::DEFAULT_WINDOW_CAPACITY {
+            return Err(error);
+        }
+        Ok(Self {
+            ordinary,
+            root_control: None,
+            child_controls,
+        })
+    }
+
+    /// Includes inline state and both fixed backings, without allocator metadata.
+    pub(super) fn reservation_bytes() -> Option<usize> {
+        let slots = ORDINARY_OUTPUT_CAPACITY
+            .checked_add(super::terminal_roster::DEFAULT_WINDOW_CAPACITY)?;
+        size_of::<Self>().checked_add(slots.checked_mul(Self::ordinary_entry_data_bytes())?)
+    }
+
     pub(super) const fn maximum_token_count(&self) -> usize {
         ORDINARY_OUTPUT_CAPACITY + 1 + self.child_controls.capacity()
     }
@@ -95,12 +123,12 @@ impl NativeOutputResources {
     }
 
     pub(super) const fn ordinary_entry_data_bytes() -> usize {
-        size_of::<NativeOutputToken>() + size_of::<NativeOutputResource>()
+        size_of::<(NativeOutputToken, NativeOutputResource)>()
     }
 
     pub(super) fn owned_descendant_capacity_bytes(&self) -> usize {
         self.ordinary
-            .len()
+            .capacity()
             .saturating_mul(Self::ordinary_entry_data_bytes())
             .saturating_add(
                 self.child_controls
@@ -128,20 +156,24 @@ impl NativeOutputResources {
     }
 
     pub(super) fn get(&self, token: &NativeOutputToken) -> Option<&NativeOutputResource> {
-        self.ordinary.get(token).or_else(|| {
-            self.root_control
-                .iter()
-                .chain(self.child_controls.iter())
-                .find_map(|(key, resource)| (key == token).then_some(resource))
-        })
+        self.ordinary
+            .binary_search_by_key(token, |(key, _)| *key)
+            .ok()
+            .map(|index| &self.ordinary[index].1)
+            .or_else(|| {
+                self.root_control
+                    .iter()
+                    .chain(self.child_controls.iter())
+                    .find_map(|(key, resource)| (key == token).then_some(resource))
+            })
     }
 
     pub(super) fn get_mut(
         &mut self,
         token: &NativeOutputToken,
     ) -> Option<&mut NativeOutputResource> {
-        if let Some(resource) = self.ordinary.get_mut(token) {
-            return Some(resource);
+        if let Ok(index) = self.ordinary.binary_search_by_key(token, |(key, _)| *key) {
+            return Some(&mut self.ordinary[index].1);
         }
         self.root_control
             .iter_mut()
@@ -149,9 +181,26 @@ impl NativeOutputResources {
             .find_map(|(key, resource)| (*key == *token).then_some(resource))
     }
 
-    pub(super) fn insert(&mut self, token: NativeOutputToken, resource: NativeOutputResource) {
-        let old = self.ordinary.insert(token, resource);
-        debug_assert!(old.is_none(), "one exact native output has one owner");
+    /// Refusal preserves the incoming affine resource and every retained owner.
+    pub(super) fn insert(
+        &mut self,
+        token: NativeOutputToken,
+        resource: NativeOutputResource,
+    ) -> Result<(), NativeOutputResource> {
+        if !self.can_reserve_ordinary()
+            || self
+                .root_control
+                .iter()
+                .chain(self.child_controls.iter())
+                .any(|(key, _)| *key == token)
+        {
+            return Err(resource);
+        }
+        let Err(index) = self.ordinary.binary_search_by_key(&token, |(key, _)| *key) else {
+            return Err(resource);
+        };
+        self.ordinary.insert(index, (token, resource));
+        Ok(())
     }
 
     pub(super) fn insert_control(
@@ -159,6 +208,9 @@ impl NativeOutputResources {
         token: NativeOutputToken,
         resource: NativeOutputResource,
     ) -> bool {
+        if self.contains_key(&token) {
+            return false;
+        }
         if token.viewport_id() == ViewportId::ROOT {
             debug_assert!(resource.reservation.abandoned);
             if self.root_control.is_some() {
@@ -191,7 +243,11 @@ impl NativeOutputResources {
         if let Some(index) = self.child_controls.iter().position(|(key, _)| key == token) {
             return Some(self.child_controls.swap_remove(index).1);
         }
-        self.ordinary.remove(token)
+        let index = self
+            .ordinary
+            .binary_search_by_key(token, |(key, _)| *key)
+            .ok()?;
+        Some(self.ordinary.remove(index).1)
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &NativeOutputResource> {
@@ -199,23 +255,21 @@ impl NativeOutputResources {
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&NativeOutputToken, &NativeOutputResource)> {
-        self.ordinary.iter().chain(
-            self.root_control
-                .iter()
-                .chain(self.child_controls.iter())
-                .map(|(token, resource)| (token, resource)),
-        )
+        self.ordinary
+            .iter()
+            .chain(self.root_control.iter())
+            .chain(self.child_controls.iter())
+            .map(|(token, resource)| (token, resource))
     }
 
     pub(super) fn iter_mut(
         &mut self,
     ) -> impl Iterator<Item = (&NativeOutputToken, &mut NativeOutputResource)> {
-        self.ordinary.iter_mut().chain(
-            self.root_control
-                .iter_mut()
-                .chain(self.child_controls.iter_mut())
-                .map(|(token, resource)| (&*token, resource)),
-        )
+        self.ordinary
+            .iter_mut()
+            .chain(self.root_control.iter_mut())
+            .chain(self.child_controls.iter_mut())
+            .map(|(token, resource)| (&*token, resource))
     }
 }
 
@@ -293,6 +347,9 @@ impl NativeOutputResource {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod storage_tests;
 
 #[cfg(test)]
 mod tests {

@@ -165,20 +165,24 @@ fn no_frame_invalidation_waits_for_terminal_and_rejects_stale_routes() {
 fn quarantine_preserves_a_terminal_observed_no_frame_invalidation() {
     let mut native = coordinator();
     let (_, binding) = register_roots(&mut native);
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), binding)
+        .unwrap();
     let invalidation = PendingNoFrameInvalidation::terminal_observed_for_test(
         ViewportId::ROOT,
         WindowId::from(11),
         binding,
     );
     native
-        .pending_no_frame_invalidations
-        .insert(binding, invalidation);
+        .bridge
+        .retain_no_frame(ViewportId::ROOT, binding, invalidation)
+        .unwrap();
 
     let _ = native.quarantine_after_fatal();
 
     assert_eq!(
-        native.pending_no_frame_invalidations.get(&binding),
-        Some(&invalidation),
+        native.bridge.no_frame_for_binding(binding),
+        Some(invalidation),
         "fatal quarantine must not erase a physical NoFrame awaiting core invalidation"
     );
 }
@@ -203,15 +207,16 @@ fn shutdown_commits_terminal_no_frame_invalidation_before_clearing_it() {
         child_binding,
     );
     native
-        .pending_no_frame_invalidations
-        .insert(child_binding, invalidation);
+        .bridge
+        .retain_no_frame(child_viewport, child_binding, invalidation)
+        .unwrap();
     let _ = native.quarantine_after_fatal();
 
     let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
 
     assert!(advance.errors.is_empty());
     assert!(
-        native.pending_no_frame_invalidations.is_empty(),
+        native.bridge.pending_no_frame_count() == 0,
         "the obligation clears only after its core frame commits"
     );
     assert!(
@@ -1002,7 +1007,13 @@ fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
             .expect("the visibility callback boundary commits");
     }
 
-    assert!(!native.bridge.references_binding(second));
+    assert!(
+        native.bridge.references_binding(second),
+        "the live route retains its prepaid resource slot"
+    );
+    assert!(!native.bridge.has_pending_callback_records());
+    assert!(native.bridge.presentation_ack(second).is_none());
+    assert_eq!(native.viewport_binding(child), Some(second));
     assert!(native.session.is_current_native_binding(first));
     assert!(native.session.is_current_native_binding(second));
 }

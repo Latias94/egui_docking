@@ -41,6 +41,12 @@ impl NativeOwnerStorageLimit {
             .checked_add(NativeHostBridge::retirement_preparation_storage_bytes(
                 bindings,
             )?)?
+            .checked_add(size_of::<PreparedNoFrameInvalidations>())?
+            .checked_add(
+                resources.checked_mul(
+                    size_of::<PendingNoFrameInvalidation>() + size_of::<ViewportId>(),
+                )?,
+            )?
             .checked_add(size_of::<Vec<dockspace::close::CloseRequestId>>())?
             .checked_add(closes.checked_mul(size_of::<dockspace::close::CloseRequestId>())?)?
             .checked_add(NativeInputControl::reservation_bytes(
@@ -197,17 +203,6 @@ impl NativeCoordinator {
             .saturating_add(self.session.native_input_owned_capacity_bytes()?)
             .saturating_add(self.session.native_input_producer_storage_capacity_bytes())
             .saturating_add(self.session.native_input_pending_report_capacity_bytes())
-            .saturating_add(self.pending_no_frame_invalidations.len().saturating_mul(
-                size_of::<NativeSurfaceBinding>() + size_of::<PendingNoFrameInvalidation>(),
-            ))
-            .saturating_add(
-                self.pending_presentation_acknowledgements
-                    .len()
-                    .saturating_mul(
-                        size_of::<NativeSurfaceBinding>()
-                            + size_of::<NativePresentationEffectAcknowledgement>(),
-                    ),
-            )
             .saturating_add(
                 self.queued_snapshot
                     .as_ref()

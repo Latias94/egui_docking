@@ -140,13 +140,13 @@ impl NativeCoordinator {
                 return NativeShutdownAdvance::partial(progress, presentation_transitions, errors);
             }
         };
-        let ready_no_frame_invalidations = self.prepare_no_frame_invalidations();
-        let (_, fallback_repaint_viewports) = split_no_frame_invalidations_for_frame(
-            &[],
-            ready_no_frame_invalidations.iter().copied(),
-            |invalidation| invalidation.surface(),
-            |invalidation| invalidation.viewport(),
-        );
+        let mut no_frame_invalidations = match self.prepare_no_frame_invalidations() {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                errors.push(error);
+                return NativeShutdownAdvance::partial(progress, presentation_transitions, errors);
+            }
+        };
 
         let mut host_frame = match self.poll_host_frame(budget, |_| NativeReceiverAnswer::Unknown) {
             Ok(Some(frame)) => frame,
@@ -164,7 +164,7 @@ impl NativeCoordinator {
                     progress,
                     presentation_transitions,
                     errors,
-                    fallback_repaint_viewports,
+                    no_frame_invalidations.repaint_viewports,
                 );
             }
         };
@@ -175,15 +175,11 @@ impl NativeCoordinator {
             prepared_retirements
         };
         let frame_surfaces = host_frame.frame.surfaces();
-        let (accepted_no_frame_invalidations, repaint_viewports) =
-            split_no_frame_invalidations_for_frame(
-                &frame_surfaces,
-                ready_no_frame_invalidations
-                    .into_iter()
-                    .filter(|_| !native_input_pending),
-                |invalidation| invalidation.surface(),
-                |invalidation| invalidation.viewport(),
-            );
+        no_frame_invalidations.select_for_surfaces(&frame_surfaces, !native_input_pending);
+        let PreparedNoFrameInvalidations {
+            ready: accepted_no_frame_invalidations,
+            repaint_viewports,
+        } = no_frame_invalidations;
         for invalidation in &accepted_no_frame_invalidations {
             if let Err(error) = host_frame.defer_surface(
                 invalidation.surface(),

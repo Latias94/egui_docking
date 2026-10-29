@@ -235,9 +235,10 @@ fn atomic_yield_keeps_the_boundary_even_after_every_raw_callback_was_claimed() {
 #[test]
 fn deferred_child_paint_survives_repeated_partial_commits_and_a_dropped_final_frame() {
     let mut native = coordinator();
-    register_roots(&mut native);
+    let (_, binding) = register_roots(&mut native);
     let context = egui::Context::default();
     let child = ViewportId::from_hash_of("partial-native-child");
+    native.reserve_viewport(child, binding).unwrap();
     let wakes = Arc::new(AtomicU64::new(0));
     context.set_request_repaint_callback({
         let wakes = Arc::clone(&wakes);

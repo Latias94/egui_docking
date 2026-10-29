@@ -1079,6 +1079,33 @@ slice. Semantic wakes, presentation/no-frame ACK ownership and remaining output/
 construction backing still precede combined profile enablement; the complete
 4 MiB, configured-cap load/latency, soak and physical gates remain open.
 
+The subsequent observation slice moves presentation ACK and NoFrame state into
+the original M exact resource entries and deletes both coordinator maps. Route
+admission prepares that entry before mutation; its backing pin is refreshed from
+existing routes and announced outputs. Exact observation/callback obligations
+survive retirement and settlement, while a pin alone remains idle. NoFrame
+abandonment and retention are atomic under the host lock; readiness and surface
+selection reuse one prepaid ready Vec and one repaint Vec. Roster compilation
+borrows ACK lookup under the destroyed-observation lock without another copy.
+
+Semantic wake state is inline on each viewport route, replacing both sets and
+the production ready Vec. Same-viewport replacement preserves its wake, exact
+removal ends it, full clear boundaries release it, and repaint calls occur after
+claiming one route outside the lock. Ordinary output's existing O=256 bound now
+has fallibly prepaid sorted backing; root and child control stores retain their
+independent capacity. Shared admission charges this backing in the baseline
+instead of promising another per-entry output increment.
+
+Fresh gates pass 427 native tests normally and 427 without native debug
+assertions, correctness/suspicious Clippy and macOS programmatic real-window
+redock. A pin-removal negative control fails the finite NoFrame regression;
+exact restoration passes all 19 selected observation/wake/owner cases. Independent
+wake/output/observation reviews report no remaining concrete blocker in this
+slice. Output-prefix, unfinalized and quarantine construction, complete initial
+combined admission and full-O/configured-cap load still precede product-profile
+enablement. The complete 4 MiB, latency, soak, scoped input and physical gates
+remain open; ordinary prepayment does not by itself qualify saturation.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

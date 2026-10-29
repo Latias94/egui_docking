@@ -519,6 +519,7 @@ fn queued_property_retirement_keeps_its_exact_owner_until_ack_and_full_commit() 
                 .window_resources
                 .reserve_pointer_callback(viewport, next, new_window, next_token, false,)
         );
+        records.viewports.reserve(viewport, next).unwrap();
         records.block_semantic_viewport(viewport);
     }
     bridge.commit_frame_boundary(false);
@@ -566,7 +567,7 @@ fn queued_property_retirement_keeps_its_exact_owner_until_ack_and_full_commit() 
         let ingress = records.window_resources.callback_ingress().next().unwrap();
         assert_eq!(ingress.ordinal(), 1);
         assert_eq!(ingress.captured_at(), Duration::from_millis(10));
-        assert!(records.blocked_semantic_viewports.contains(&viewport));
+        assert!(records.viewports.semantic_viewport_blocked(viewport));
     }
     bridge.commit_frame_boundary(true);
     assert!(bridge.lock().window_resources.references_binding(first));
@@ -588,7 +589,7 @@ fn queued_property_retirement_keeps_its_exact_owner_until_ack_and_full_commit() 
         assert_eq!(records.journal.captured_through(), 1);
         assert_eq!(records.retained_record_count(), 1);
         assert_eq!(records.oldest_record_age(), Some(Duration::from_millis(90)));
-        assert!(records.blocked_semantic_viewports.contains(&viewport));
+        assert!(records.viewports.semantic_viewport_blocked(viewport));
     }
     bridge.commit_frame_boundary(false);
     {
@@ -668,10 +669,11 @@ fn assert_retired_callback_order(received_before_retirement: bool) {
                 .window_resources
                 .reserve_pointer_callback(viewport, next, new_window, next_token, false,)
         );
+        records.viewports.reserve(viewport, next).unwrap();
         records.block_semantic_viewport(viewport);
         assert!(records.retire_deferred_binding(viewport, first).is_empty());
-        assert!(records.blocked_semantic_viewports.contains(&viewport));
-        assert!(records.ready_semantic_viewports.is_empty());
+        assert!(records.viewports.semantic_viewport_blocked(viewport));
+        assert!(!records.viewports.semantic_viewport_ready(viewport));
         assert_eq!(
             records.record_viewport_pointer_passthrough(late),
             !received_before_retirement,
@@ -687,7 +689,7 @@ fn assert_retired_callback_order(received_before_retirement: bool) {
             records.window_resources.create(viewport).unwrap().binding,
             next
         );
-        assert!(records.blocked_semantic_viewports.contains(&viewport));
+        assert!(records.viewports.semantic_viewport_blocked(viewport));
     }
     bridge.push_record(cursor(3, new_window, viewport, next));
     assert_eq!(bridge.front_event().unwrap().ordinal(), 1);
@@ -700,8 +702,8 @@ fn assert_retired_callback_order(received_before_retirement: bool) {
     {
         let records = bridge.lock();
         assert!(records.window_resources.references_binding(first));
-        assert!(records.blocked_semantic_viewports.contains(&viewport));
-        assert!(records.ready_semantic_viewports.is_empty());
+        assert!(records.viewports.semantic_viewport_blocked(viewport));
+        assert!(!records.viewports.semantic_viewport_ready(viewport));
     }
     assert!(bridge.acknowledge_viewport_pointer_passthrough(callback));
     bridge.commit_frame_boundary(true);
@@ -714,7 +716,7 @@ fn assert_retired_callback_order(received_before_retirement: bool) {
                 .references_viewport_binding(viewport, next)
         );
         assert_eq!(records.retained_record_count(), 2);
-        assert!(records.blocked_semantic_viewports.contains(&viewport));
+        assert!(records.viewports.semantic_viewport_blocked(viewport));
     }
     bridge.commit_frame_boundary(false);
     {
@@ -730,8 +732,8 @@ fn assert_retired_callback_order(received_before_retirement: bool) {
             next
         );
         assert_eq!(records.retained_record_count(), 1);
-        assert!(records.blocked_semantic_viewports.contains(&viewport));
-        assert!(records.ready_semantic_viewports.is_empty());
+        assert!(records.viewports.semantic_viewport_blocked(viewport));
+        assert!(!records.viewports.semantic_viewport_ready(viewport));
     }
     assert_eq!(bridge.front_event().unwrap().ordinal(), 3);
     assert!(bridge.acknowledge_event(3));

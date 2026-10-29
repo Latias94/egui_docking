@@ -1,10 +1,12 @@
-//! One exact binding owns deferred creation, staging and command callbacks.
+//! One exact binding owns creation, staging, callbacks and pending observations.
 
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
-use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
+use dockspace::runtime::{
+    NativePresentationEffectAcknowledgement, NativeStagingPaintRequest, NativeSurfaceBinding,
+};
 use eframe::{
     NativePhysicalRect, NativeViewportFocusCommandToken,
     NativeViewportPointerPassthroughCommandToken, NativeViewportPropertyCommandRetirement,
@@ -15,6 +17,7 @@ use winit::window::WindowId;
 use super::command_callback::{CommandCallbackAdmission, NativeCommandCallbacks};
 use super::journal::ReservedHostRecord;
 use super::{HostRecord, NativeCreateReservation, NativeStagingPaintRecord};
+use crate::coordinator::PendingNoFrameInvalidation;
 use crate::error::NativeHostProtocolError;
 use crate::focus_control::NativeViewportFocusRecord;
 use crate::input_control::NativePointerPassthroughRecord;
@@ -67,15 +70,21 @@ struct NativeWindowResource {
     viewport: ViewportId,
     binding: NativeSurfaceBinding,
     retired: bool,
+    retained_by_host: bool,
     create_rect: Option<NativePhysicalRect>,
     hidden_render: bool,
     staging: Option<StagingReceipt>,
     callbacks: NativeCommandCallbacks,
+    presentation_ack: Option<NativePresentationEffectAcknowledgement>,
+    no_frame: Option<PendingNoFrameInvalidation>,
 }
 
 impl NativeWindowResource {
     fn is_empty(&self) -> bool {
-        self.create_rect.is_none()
+        !self.retained_by_host
+            && self.presentation_ack.is_none()
+            && self.no_frame.is_none()
+            && self.create_rect.is_none()
             && !self.hidden_render
             && self.staging.is_none()
             && if self.retired {
@@ -86,7 +95,9 @@ impl NativeWindowResource {
     }
 
     fn has_pending_work(&self) -> bool {
-        self.create_rect.is_some()
+        self.presentation_ack.is_some()
+            || self.no_frame.is_some()
+            || self.create_rect.is_some()
             || self.hidden_render
             || self.staging.is_some()
             || self.callbacks.has_pending_work()
@@ -125,6 +136,10 @@ impl NativeWindowResources {
     /// Replacement is permitted only after every exact owner has been released.
     pub(super) fn can_configure_capacity_limit(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    pub(super) const fn resource_slot_limit(&self) -> Option<usize> {
+        self.slot_limit
     }
 
     /// Reserves independent exact-key slots, including old pending owners.
@@ -191,6 +206,170 @@ impl NativeWindowResources {
             .is_some_and(|resource| !resource.retired)
     }
 
+    /// Reserves only backing, allowing a successor while its predecessor is active.
+    /// The caller must keep preparation, route mutation and publication serialized;
+    /// no other insertion may consume the reserved spare before publication.
+    pub(super) fn prepare_host_reference(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeHostProtocolError> {
+        if self.resource(viewport, binding).is_none() {
+            self.reserve_entries(1)?;
+        }
+        Ok(())
+    }
+
+    /// Pins a successfully published route or output using its prepared backing.
+    /// The pin neither revives a retired owner nor retires another exact binding.
+    pub(super) fn commit_host_reference(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        if self.resource(viewport, binding).is_none() {
+            assert!(
+                self.can_add_entries(1) && self.entries.len() < self.entries.capacity(),
+                "host references must reserve exact owner backing before publication"
+            );
+            self.insert_owner(viewport, binding);
+        }
+        self.resource_mut(viewport, binding)
+            .expect("the exact prepared host owner is present")
+            .retained_by_host = true;
+    }
+
+    /// Recomputes backing retention from all current routes and retained outputs.
+    /// Route replacement and unbinding must separately retire their old owners:
+    /// an output-only pin does not identify the currently active route.
+    pub(super) fn refresh_host_references(
+        &mut self,
+        mut retained: impl FnMut(ViewportId, NativeSurfaceBinding) -> bool,
+    ) {
+        self.entries.retain_mut(|resource| {
+            resource.retained_by_host = retained(resource.viewport, resource.binding);
+            !resource.is_empty()
+        });
+    }
+
+    pub(super) fn presentation_ack(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativePresentationEffectAcknowledgement> {
+        self.entries.iter().find_map(|resource| {
+            (resource.binding == binding)
+                .then_some(resource.presentation_ack)
+                .flatten()
+        })
+    }
+
+    /// Must succeed before taking the affine request that produces its ACK.
+    /// Aliases on other viewports share the exact binding's single observation.
+    pub(super) fn can_retain_presentation_ack(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.resource(viewport, binding).is_some() && self.presentation_ack(binding).is_none()
+    }
+
+    pub(super) fn retain_presentation_ack(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        acknowledgement: NativePresentationEffectAcknowledgement,
+    ) -> Result<(), NativePresentationEffectAcknowledgement> {
+        if !self.can_retain_presentation_ack(viewport, binding) {
+            return Err(acknowledgement);
+        }
+        self.resource_mut(viewport, binding)
+            .expect("presentation ACK admission requires its exact owner")
+            .presentation_ack = Some(acknowledgement);
+        Ok(())
+    }
+
+    pub(super) fn clear_presentation_ack(&mut self, binding: NativeSurfaceBinding) -> bool {
+        let Some(resource) = self
+            .entries
+            .iter_mut()
+            .find(|resource| resource.binding == binding && resource.presentation_ack.is_some())
+        else {
+            return false;
+        };
+        resource.presentation_ack = None;
+        let viewport = resource.viewport;
+        self.prune(viewport, binding);
+        true
+    }
+
+    pub(super) fn presentation_ack_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|resource| resource.presentation_ack.is_some())
+            .count()
+    }
+
+    pub(super) fn pending_no_frame(&self) -> impl Iterator<Item = &PendingNoFrameInvalidation> {
+        self.entries
+            .iter()
+            .filter_map(|resource| resource.no_frame.as_ref())
+    }
+
+    /// Filters observations in place while the caller borrows routes and outputs
+    /// under the same host lock. Surviving records retain their exact owner key.
+    pub(super) fn retain_no_frame_records(
+        &mut self,
+        mut retain: impl FnMut(&mut PendingNoFrameInvalidation) -> bool,
+    ) {
+        self.entries.retain_mut(|resource| {
+            if resource
+                .no_frame
+                .as_mut()
+                .is_some_and(|record| !retain(record))
+            {
+                resource.no_frame = None;
+            }
+            !resource.is_empty()
+        });
+    }
+
+    /// Retains the first record for an exact binding without allocating.
+    /// Call before removing or abandoning the last output that pins its owner.
+    pub(super) fn retain_no_frame(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        record: PendingNoFrameInvalidation,
+    ) -> Result<(), PendingNoFrameInvalidation> {
+        if record.viewport != viewport || record.binding != binding {
+            return Err(record);
+        }
+        if self
+            .entries
+            .iter()
+            .any(|resource| resource.binding == binding && resource.no_frame.is_some())
+        {
+            return Ok(());
+        }
+        let Some(resource) = self.resource_mut(viewport, binding) else {
+            return Err(record);
+        };
+        resource.no_frame = Some(record);
+        Ok(())
+    }
+
+    pub(super) fn clear_no_frame_if(&mut self, record: PendingNoFrameInvalidation) -> bool {
+        let Some(resource) = self.entries.iter_mut().find(|resource| {
+            resource.binding == record.binding && resource.no_frame == Some(record)
+        }) else {
+            return false;
+        };
+        resource.no_frame = None;
+        let viewport = resource.viewport;
+        self.prune(viewport, record.binding);
+        true
+    }
+
     fn resource(
         &self,
         viewport: ViewportId,
@@ -248,10 +427,13 @@ impl NativeWindowResources {
             viewport,
             binding,
             retired: false,
+            retained_by_host: false,
             create_rect: None,
             hidden_render: false,
             staging: None,
             callbacks: NativeCommandCallbacks::default(),
+            presentation_ack: None,
+            no_frame: None,
         });
     }
 
@@ -499,7 +681,8 @@ impl NativeWindowResources {
         {
             resource.staging = None;
         }
-        // An already dispatched terminal keeps its original owner through full commit.
+        // Dispatched terminals and pending observations keep their original owner
+        // through their respective full commits, including during quarantine.
         self.prune(viewport, binding);
     }
 
@@ -709,6 +892,9 @@ impl NativeWindowResources {
 mod capacity_tests;
 
 #[cfg(test)]
+mod observation_tests;
+
+#[cfg(test)]
 mod tests {
     use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
     use dockspace::model::{
@@ -744,6 +930,13 @@ mod tests {
     // Obtain two real bases from the public create lifecycle, without constructing
     // opaque staging requests or eframe output tokens in the adapter tests.
     pub(super) fn reissued_staging_requests() -> [NativeStagingPaintRequest; 2] {
+        staging_observations().0
+    }
+
+    pub(super) fn staging_observations() -> (
+        [NativeStagingPaintRequest; 2],
+        NativePresentationEffectAcknowledgement,
+    ) {
         let surface = SurfaceId::new(1);
         let root = RootId::new(2);
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -880,7 +1073,7 @@ mod tests {
             request
         });
         assert_ne!(requests[0], requests[1]);
-        requests
+        (requests, created)
     }
 
     // The private receipt protocol only needs the journal envelope. Callback

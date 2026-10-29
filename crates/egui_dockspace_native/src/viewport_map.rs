@@ -16,6 +16,14 @@ pub(crate) use create_receipt::{CreateAdmission, CreateTerminal, NativeCreateRec
 mod window_receipt;
 pub(crate) use window_receipt::NativeWindowReceipt;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum SemanticWake {
+    #[default]
+    Idle,
+    Blocked,
+    Ready,
+}
+
 #[derive(Debug)]
 struct NativeViewportRoute {
     viewport: ViewportId,
@@ -26,6 +34,7 @@ struct NativeViewportRoute {
     terminal: Option<NativeWindowReceipt>,
     pointer_suppressed: bool,
     focus_reportable: bool,
+    semantic_wake: SemanticWake,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +122,80 @@ impl NativeViewportMap {
 
     pub(crate) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
         self.viewports.iter().map(|route| route.binding)
+    }
+
+    /// Retains a semantic repaint only on an existing viewport route.
+    /// Reblocking a ready route revokes its previous claim eligibility.
+    /// Returns whether the route exists, including an already blocked route.
+    pub(crate) fn block_semantic_viewport(&mut self, viewport: ViewportId) -> bool {
+        let Some(route) = self.route_mut(viewport) else {
+            return false;
+        };
+        route.semantic_wake = SemanticWake::Blocked;
+        true
+    }
+
+    /// The caller releases blocked paints only after the complete ordered
+    /// boundary commits and no semantic prelude remains pending.
+    pub(crate) fn release_blocked_semantic_viewports(&mut self) {
+        for route in &mut self.viewports {
+            if route.semantic_wake == SemanticWake::Blocked {
+                route.semantic_wake = SemanticWake::Ready;
+            }
+        }
+    }
+
+    /// Transfers one ready repaint in viewport order without owning a snapshot.
+    /// The caller requests the repaint after releasing its host-state lock.
+    pub(crate) fn claim_ready_semantic_viewport(&mut self) -> Option<ViewportId> {
+        let route = self
+            .viewports
+            .iter_mut()
+            .find(|route| route.semantic_wake == SemanticWake::Ready)?;
+        route.semantic_wake = SemanticWake::Idle;
+        Some(route.viewport)
+    }
+
+    /// Clears only the exact route's repaint, preserving any successor owner.
+    /// Returns whether the exact route matched, even if its repaint was idle.
+    pub(crate) fn clear_semantic_wake(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let Some(route) = self.route_mut(viewport) else {
+            return false;
+        };
+        if route.binding != binding {
+            return false;
+        }
+        route.semantic_wake = SemanticWake::Idle;
+        true
+    }
+
+    /// Quarantine relinquishes repaint obligations without retiring any route.
+    pub(crate) fn clear_semantic_wakes(&mut self) {
+        for route in &mut self.viewports {
+            route.semantic_wake = SemanticWake::Idle;
+        }
+    }
+
+    pub(crate) fn has_semantic_wake(&self) -> bool {
+        self.viewports
+            .iter()
+            .any(|route| route.semantic_wake != SemanticWake::Idle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn semantic_viewport_blocked(&self, viewport: ViewportId) -> bool {
+        self.route(viewport)
+            .is_some_and(|route| route.semantic_wake == SemanticWake::Blocked)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn semantic_viewport_ready(&self, viewport: ViewportId) -> bool {
+        self.route(viewport)
+            .is_some_and(|route| route.semantic_wake == SemanticWake::Ready)
     }
 
     pub(crate) fn reserve(
@@ -997,7 +1080,7 @@ impl NativeViewportMap {
         window: Option<WindowId>,
         binding: NativeSurfaceBinding,
     ) {
-        let route = NativeViewportRoute {
+        let mut route = NativeViewportRoute {
             viewport,
             window,
             window_published: window.is_some(),
@@ -1007,12 +1090,18 @@ impl NativeViewportMap {
                 .map(|window| NativeWindowReceipt::attached(viewport, window, binding, None)),
             pointer_suppressed: false,
             focus_reportable: false,
+            semantic_wake: SemanticWake::Idle,
         };
         match self
             .viewports
             .binary_search_by_key(&viewport, |route| route.viewport)
         {
-            Ok(index) => self.viewports[index] = route,
+            Ok(index) => {
+                // A pending repaint belongs to the logical viewport across its
+                // physical replacement, including a reservation without a window.
+                route.semantic_wake = self.viewports[index].semantic_wake;
+                self.viewports[index] = route;
+            }
             Err(index) => {
                 assert!(self.viewports.len() < self.viewports.capacity());
                 self.viewports.insert(index, route);
@@ -1088,6 +1177,9 @@ impl NativeViewportMap {
 
 #[cfg(test)]
 mod storage_tests;
+
+#[cfg(test)]
+mod wake_tests;
 
 #[cfg(test)]
 mod tests {
