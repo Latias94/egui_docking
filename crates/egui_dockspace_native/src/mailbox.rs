@@ -29,6 +29,7 @@ use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeViewportBi
 use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWindowEventRecord};
 use crate::focus_control::{NativeGlobalFocusRecord, NativeViewportFocusRecord};
 use crate::input_control::NativePointerPassthroughRecord;
+use crate::pointer_event::NativePointerTranslator;
 use crate::retirement::{
     CleanupResultRetentionError, CommittedRetirement, DestroyedObservation, NativeRetirementState,
 };
@@ -1657,6 +1658,7 @@ struct NativeHostState {
     journal: HostIngressJournal,
     output_resources: output_resource::NativeOutputResources,
     input_storage_allowance: Option<capacity::NativeHostInputAllowance>,
+    pointer_translation_reserved_bytes: usize,
     window_resources: NativeWindowResources,
     retirements: NativeRetirementState,
     close_control: NativeCloseControl,
@@ -1704,10 +1706,29 @@ impl CursorPrefixClaim<'_> {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn retain_prefix(mut self, count: std::num::NonZeroUsize) -> bool {
         if count > self.len {
             return false;
         }
+        self.records.journal.transfer_front(count.get());
+        self.records.event_boundary_pending = true;
+        true
+    }
+
+    pub(crate) fn retain_translated_prefix(
+        mut self,
+        count: std::num::NonZeroUsize,
+        translator: &mut NativePointerTranslator,
+        candidate: NativePointerTranslator,
+    ) -> bool {
+        if count > self.len {
+            return false;
+        }
+        // Drop the old backing before returning its overlap promise to callbacks.
+        *translator = candidate;
+        self.records.pointer_translation_reserved_bytes =
+            translator.reserved_translation_capacity_bytes();
         self.records.journal.transfer_front(count.get());
         self.records.event_boundary_pending = true;
         true
@@ -1728,6 +1749,8 @@ impl NativeHostState {
             journal: HostIngressJournal::new(clock),
             output_resources: output_resource::NativeOutputResources::default(),
             input_storage_allowance: None,
+            pointer_translation_reserved_bytes: NativePointerTranslator::default()
+                .reserved_translation_capacity_bytes(),
             window_resources: NativeWindowResources::default(),
             retirements: NativeRetirementState::default(),
             close_control: NativeCloseControl::default(),
@@ -2386,6 +2409,12 @@ impl NativeHostState {
             && !reserved_close
             && !self.admit_ordinary()
         {
+            return false;
+        }
+        if NativeWindowEventClass::classify(record.event()) == NativeWindowEventClass::Pointer
+            && !self.can_reserve_pointer_translation()
+        {
+            self.freeze_ordinary();
             return false;
         }
         if matches!(record.event(), winit::event::WindowEvent::CloseRequested)
@@ -3335,6 +3364,41 @@ impl NativeHostBridge {
             records.event_boundary_pending = true;
         }
         matches
+    }
+
+    /// Trades the accepted source's growth promise for the installed state.
+    /// The old translator and retry candidate fit before this atomic transfer.
+    pub(crate) fn acknowledge_translated_event(
+        &self,
+        ordinal: u64,
+        translator: &mut NativePointerTranslator,
+        candidate: NativePointerTranslator,
+    ) -> bool {
+        let mut records = self.lock();
+        if !matches!(
+            records.front_dispatch_record(),
+            Some(HostRecord::WindowEvent(event))
+                if event.ordinal() == ordinal
+                    && NativeWindowEventClass::classify(event.event()) == NativeWindowEventClass::Pointer
+        ) {
+            return false;
+        }
+        *translator = candidate;
+        records.pointer_translation_reserved_bytes =
+            translator.reserved_translation_capacity_bytes();
+        records.transfer_front_record();
+        records.event_boundary_pending = true;
+        true
+    }
+
+    /// Terminal transformations only shrink or replace existing entries.
+    pub(crate) fn release_pointer_translation_capacity(
+        &self,
+        translator: &NativePointerTranslator,
+    ) {
+        let mut records = self.lock();
+        records.pointer_translation_reserved_bytes =
+            translator.reserved_translation_capacity_bytes();
     }
 
     pub(crate) fn acknowledge_device_removal(&self, expected: NativeDeviceRemovalRecord) -> bool {

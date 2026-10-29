@@ -37,6 +37,146 @@ fn bounded_coordinator(slots: usize) -> (NativeCoordinator, NativeSurfaceBinding
 }
 
 #[test]
+fn selected_host_allowance_drains_every_accepted_contact_before_one_retryable_cancellation() {
+    use crate::mailbox::NativeDispatch;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, Touch, TouchPhase};
+
+    let (mut native, binding) = bounded_coordinator(4);
+    let baseline = native.bridge.owned_input_capacity_bytes(None);
+    let core_allowance = 1024 * 1024;
+    let growth = NativePointerTranslator::callback_translation_capacity_bytes();
+    let host_allowance = baseline
+        + native
+            .pointer_translator
+            .reserved_translation_capacity_bytes()
+        + 32 * growth;
+    assert!(
+        native
+            .bridge
+            .configure_input_storage_allowance(host_allowance + core_allowance, core_allowance,)
+    );
+    for ordinal in 1..=128 {
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+                ordinal,
+                WindowId::from(11),
+                Some(ViewportId::ROOT),
+                Some(binding),
+                WindowEvent::Touch(Touch {
+                    device_id: DeviceId::dummy(),
+                    phase: TouchPhase::Started,
+                    location: PhysicalPosition::new(10.0, 20.0),
+                    force: None,
+                    id: ordinal,
+                }),
+            )));
+    }
+    let boundary = native.bridge.freeze_ordinary_for_test();
+    assert!((1..128).contains(&boundary));
+    assert_eq!(
+        native.bridge.admission_dispatch(),
+        NativeDispatch::ContinueBoundary
+    );
+    commit_boundary(&mut native);
+    let recorded = native.session.native_input_recorded_count();
+    let context = egui::Context::default();
+    for consumed in 1..=boundary {
+        assert_eq!(
+            native.next_window_event().unwrap().unwrap().ordinal(),
+            consumed
+        );
+        assert_eq!(
+            native
+                .reduce_callback_prefix(&context, &mut test_budget())
+                .unwrap(),
+            Some(NonZeroUsize::MIN)
+        );
+        assert_eq!(
+            native.session.native_input_recorded_count(),
+            recorded + consumed
+        );
+        let reserved = native
+            .pointer_translator
+            .reserved_translation_capacity_bytes()
+            + (boundary - consumed) as usize * growth;
+        assert!(baseline + reserved <= host_allowance);
+        let retained = format!("{:?}", native.pointer_translator);
+        let version = native.session.version();
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        if consumed == 1 {
+            drop(frame);
+            assert_eq!(native.session.version(), version);
+            assert_eq!(format!("{:?}", native.pointer_translator), retained);
+            assert!(
+                native
+                    .reduce_callback_prefix(&context, &mut test_budget())
+                    .unwrap()
+                    .is_none()
+            );
+        } else {
+            let report = frame.commit().unwrap();
+            assert!(
+                !report
+                    .inputs()
+                    .contains(&HostInputOutcome::NativeInputCancelledForOverload)
+            );
+            continue;
+        }
+        commit_boundary(&mut native);
+    }
+    assert!(native.next_window_event().unwrap().is_none());
+    assert_eq!(
+        native.bridge.admission_dispatch(),
+        NativeDispatch::Cancel { boundary }
+    );
+    assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
+    let retained = format!("{:?}", native.pointer_translator);
+    let mut cancelled = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    cancelled
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(cancelled);
+    assert_eq!(format!("{:?}", native.pointer_translator), retained);
+    assert_eq!(
+        native.bridge.admission_dispatch(),
+        NativeDispatch::Cancel { boundary }
+    );
+    let mut cancelled = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    cancelled
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = cancelled.commit().unwrap();
+    assert_eq!(
+        report
+            .inputs()
+            .iter()
+            .filter(|outcome| matches!(outcome, HostInputOutcome::NativeInputCancelledForOverload))
+            .count(),
+        1
+    );
+    assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+    assert_eq!(
+        native.pointer_translator.owned_data_capacity_bytes(),
+        size_of::<NativePointerTranslator>()
+    );
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        recorded + boundary
+    );
+}
+
+#[test]
 fn bounded_cursor_prefix_clips_yields_when_full_and_resumes_the_same_stream() {
     let (mut native, binding) = bounded_coordinator(4);
     assert_eq!(

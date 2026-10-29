@@ -1369,6 +1369,8 @@ impl NativeCoordinator {
         if let Some(removal) = self.next_device_removal()? {
             self.session.report_native_input_device_removal()?;
             self.pointer_translator.forget_removed_devices();
+            self.bridge
+                .release_pointer_translation_capacity(&self.pointer_translator);
             self.acknowledge_device_removal(removal)?;
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
@@ -1391,6 +1393,7 @@ impl NativeCoordinator {
             let prefix_limit = pointer_capacity.map_or(budget.remaining_records(), |capacity| {
                 capacity.min(budget.remaining_records())
             });
+            // Raw admission prepaid both current state and candidate growth.
             let mut candidate = self.pointer_translator.clone();
             let mut consumed = 0;
             let mut ignored = 0;
@@ -1418,11 +1421,10 @@ impl NativeCoordinator {
             let Some(count) = std::num::NonZeroUsize::new(consumed) else {
                 return Ok(None);
             };
-            if !prefix.retain_prefix(count) {
+            if !prefix.retain_translated_prefix(count, &mut self.pointer_translator, candidate) {
                 return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
             }
             budget.complete_unsequenced_records(ignored);
-            self.pointer_translator = candidate;
             return Ok(Some(count));
         }
         let Some(record) = self.next_window_event()? else {
@@ -1439,12 +1441,15 @@ impl NativeCoordinator {
                 self.pointer_translator.retire_binding(binding);
                 Ok(())
             })?;
+            bridge.release_pointer_translation_capacity(&self.pointer_translator);
         }
         if NativeWindowEventClass::classify(record.event()) != NativeWindowEventClass::Pointer {
             self.reduce_non_pointer_event(&record)?;
             self.acknowledge_window_event(record.ordinal())?;
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
+        // Keep the original state until core retention and exact source transfer.
+        // The accepted raw callback already owns the overlapping storage promise.
         let mut candidate = self.pointer_translator.clone();
         let work_areas = &self.work_areas;
         match candidate.translate(&record, |point| work_areas.binding_at(point)) {
@@ -1454,8 +1459,13 @@ impl NativeCoordinator {
             NativePointerTranslation::Ignored => budget.complete_unsequenced_records(1),
             NativePointerTranslation::Input(input) => self.record_pointer(input)?,
         }
-        self.acknowledge_window_event(record.ordinal())?;
-        self.pointer_translator = candidate;
+        if !self.bridge.acknowledge_translated_event(
+            record.ordinal(),
+            &mut self.pointer_translator,
+            candidate,
+        ) {
+            return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
+        }
         Ok(Some(std::num::NonZeroUsize::MIN))
     }
 

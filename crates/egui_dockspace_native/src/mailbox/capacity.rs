@@ -6,6 +6,8 @@ use super::roster::NativeViewportRosterRecord;
 use super::window_resource::NativeWindowResources;
 use super::{HostRecord, NativeHostBridge, NativeHostState, NativeSurfaceBinding};
 use crate::close_control::NativeCloseControl;
+use crate::event::NativeWindowEventClass;
+use crate::pointer_event::NativePointerTranslator;
 use crate::retirement::NativeRetirementState;
 use crate::viewport_map::NativeViewportMap;
 use eframe::egui::ViewportId;
@@ -94,10 +96,36 @@ impl NativeHostState {
         self.input_storage_allowance.is_none_or(|allowance| {
             self.owned_input_capacity_bytes(None)
                 .checked_add(size_of::<NativeHostBridge>() - size_of::<NativeHostState>())
+                .and_then(|bytes| {
+                    bytes.checked_add(self.reserved_pointer_translation_capacity_bytes())
+                })
                 .and_then(|bytes| bytes.checked_add(allowance.external_reserved_bytes))
                 .and_then(|bytes| bytes.checked_add(additional))
                 .is_some_and(|bytes| bytes <= allowance.byte_limit)
         })
+    }
+
+    /// Every accepted raw pointer promises its worst-case state growth before
+    /// capture. Transfer replaces that promise with two copies of current state;
+    /// cancellation and binding/device retirement need no extra allocation.
+    pub(super) fn reserved_pointer_translation_capacity_bytes(&self) -> usize {
+        let pending = self
+            .journal
+            .iter()
+            .filter(|record| {
+                matches!(record, HostRecord::WindowEvent(event)
+                    if NativeWindowEventClass::classify(event.event()) == NativeWindowEventClass::Pointer)
+            })
+            .count();
+        self.pointer_translation_reserved_bytes.saturating_add(
+            pending.saturating_mul(NativePointerTranslator::callback_translation_capacity_bytes()),
+        )
+    }
+
+    pub(super) fn can_reserve_pointer_translation(&self) -> bool {
+        NativePointerTranslator::callback_translation_capacity_bytes()
+            .checked_add(NativeOutputResources::ordinary_entry_data_bytes())
+            .is_some_and(|bytes| self.can_reserve_input_data(bytes))
     }
 
     pub(super) fn can_reserve_output_data(&self) -> bool {
@@ -132,8 +160,9 @@ impl NativeHostState {
 impl NativeHostBridge {
     /// Configures one combined host allowance with room for initial output progress.
     ///
-    /// The caller promises all non-bridge data and constructor/terminal work in
-    /// `external_reserved_bytes`; generic/default hosting remains unlimited.
+    /// The bridge already promises pointer translation and its retry overlap.
+    /// The caller promises other non-bridge data and constructor/terminal work
+    /// in `external_reserved_bytes`; generic/default hosting remains unlimited.
     /// Other growth boundaries must use the same allowance before product enablement.
     pub(crate) fn configure_input_storage_allowance(
         &self,
@@ -174,19 +203,255 @@ impl NativeHostBridge {
 mod tests {
     use super::super::roster::{NativeViewportRosterEnvelope, NativeViewportRosterKey};
     use super::*;
-    use crate::event::NativeDeviceRemovalRecord;
+    use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventRecord};
+    use crate::pointer_event::NativePointerTranslation;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{
+        DeviceId, MouseScrollDelta, PointerEventFacts, Touch, TouchPhase, WindowEvent,
+    };
+    use winit::window::WindowId;
+
+    fn scroll(ordinal: u64, phase: TouchPhase) -> NativeWindowEventRecord {
+        NativeWindowEventRecord::for_test(
+            ordinal,
+            WindowId::from(1),
+            None,
+            None,
+            WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase,
+                facts: PointerEventFacts::default(),
+            },
+        )
+    }
+
+    #[test]
+    fn pointer_growth_cannot_spend_the_output_headroom_needed_after_a_retained_scroll_tail() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let baseline = bridge.owned_input_capacity_bytes(None);
+        let reserved = bridge.lock().reserved_pointer_translation_capacity_bytes();
+        let growth = NativePointerTranslator::callback_translation_capacity_bytes();
+        let output = NativeOutputResources::ordinary_entry_data_bytes();
+        assert!(
+            bridge.configure_input_storage_allowance(baseline + reserved + output.max(growth), 0)
+        );
+        assert!(
+            !bridge
+                .lock()
+                .capture_window_event(scroll(1, TouchPhase::Started))
+        );
+        assert_eq!(bridge.lock().journal.captured_through(), 0);
+        assert!(bridge.lock().journal.is_empty());
+        assert!(bridge.lock().can_reserve_output_data());
+    }
+
+    #[test]
+    fn scroll_tombstone_keeps_its_charge_and_recovery_reopens_output_admission() {
+        use super::super::admission::{NativeAdmission, NativeDispatch};
+
+        let growth = NativePointerTranslator::callback_translation_capacity_bytes();
+        for next_callback_allowance in [0, growth] {
+            let bridge = NativeHostBridge::new(NativeViewportMap::default());
+            let mut translator = NativePointerTranslator::default();
+            let baseline = bridge.owned_input_capacity_bytes(None);
+            let limit = baseline
+                + translator.reserved_translation_capacity_bytes()
+                + NativeOutputResources::ordinary_entry_data_bytes()
+                + growth
+                + next_callback_allowance;
+            assert!(bridge.configure_input_storage_allowance(limit, 0));
+            assert!(
+                bridge
+                    .lock()
+                    .capture_window_event(scroll(1, TouchPhase::Started))
+            );
+            if next_callback_allowance == 0 {
+                assert!(
+                    !bridge
+                        .lock()
+                        .capture_window_event(scroll(2, TouchPhase::Moved))
+                );
+            }
+            let boundary = bridge.freeze_ordinary_for_test();
+            assert_eq!(boundary, 1);
+            bridge.commit_frame_boundary(false);
+            let record = bridge.front_event().unwrap();
+            let mut candidate = translator.clone();
+            let first_translation = candidate.translate(&record, |_| None);
+            assert!(matches!(
+                first_translation,
+                NativePointerTranslation::Input(_)
+            ));
+            assert!(bridge.acknowledge_translated_event(
+                record.ordinal(),
+                &mut translator,
+                candidate
+            ));
+            bridge.commit_frame_boundary(false);
+            assert_eq!(
+                bridge.admission_dispatch(),
+                NativeDispatch::Cancel { boundary }
+            );
+            assert!(bridge.finish_overload_cancellation(boundary));
+            translator.finish_overload_cancellation();
+            bridge.release_pointer_translation_capacity(&translator);
+            bridge.commit_frame_boundary(false);
+            assert!(translator.owned_data_capacity_bytes() > size_of::<NativePointerTranslator>());
+            assert!(bridge.lock().can_reserve_output_data());
+            assert_eq!(bridge.admission_dispatch(), NativeDispatch::Idle);
+            assert_eq!(bridge.lock().admission, NativeAdmission::Running);
+            assert!(
+                baseline + bridge.lock().reserved_pointer_translation_capacity_bytes() <= limit
+            );
+
+            if next_callback_allowance != 0 {
+                for (ordinal, phase) in [(3, TouchPhase::Moved), (4, TouchPhase::Started)] {
+                    assert!(bridge.lock().capture_window_event(scroll(ordinal, phase)));
+                    let mut candidate = translator.clone();
+                    let translated = candidate.translate(&bridge.front_event().unwrap(), |_| None);
+                    if phase == TouchPhase::Moved {
+                        assert_eq!(translated, NativePointerTranslation::Ignored);
+                    } else {
+                        assert!(matches!(translated, NativePointerTranslation::Input(_)));
+                        assert_ne!(translated, first_translation);
+                    }
+                    assert!(bridge.acknowledge_translated_event(
+                        ordinal,
+                        &mut translator,
+                        candidate
+                    ));
+                    bridge.commit_frame_boundary(false);
+                    assert!(bridge.lock().can_reserve_output_data());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_sources_prepay_translation_retry_overlap_and_rejection_keeps_the_first_boundary() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let mut translator = NativePointerTranslator::default();
+        let baseline = bridge.owned_input_capacity_bytes(None);
+        let growth = NativePointerTranslator::callback_translation_capacity_bytes();
+        let limit = baseline
+            + translator.reserved_translation_capacity_bytes()
+            + NativeOutputResources::ordinary_entry_data_bytes()
+            + 5 * growth;
+        assert!(bridge.configure_input_storage_allowance(limit, 0));
+        let touch = |ordinal| {
+            NativeWindowEventRecord::for_test(
+                ordinal,
+                WindowId::from(1),
+                None,
+                None,
+                WindowEvent::Touch(Touch {
+                    device_id: DeviceId::dummy(),
+                    phase: TouchPhase::Started,
+                    location: PhysicalPosition::new(1.0, 2.0),
+                    force: None,
+                    id: ordinal,
+                }),
+            )
+        };
+        let accepted = {
+            let mut state = bridge.lock();
+            let accepted = (1..=256)
+                .take_while(|ordinal| state.capture_window_event(touch(*ordinal)))
+                .count();
+            assert!((1..256).contains(&accepted));
+            assert_eq!(state.journal.captured_through(), accepted as u64);
+            assert_eq!(
+                state.reserved_pointer_translation_capacity_bytes(),
+                translator.reserved_translation_capacity_bytes() + accepted * growth,
+            );
+            assert!(baseline + state.reserved_pointer_translation_capacity_bytes() <= limit);
+            assert_eq!(
+                state.admission,
+                super::super::admission::NativeAdmission::Draining {
+                    boundary: accepted as u64,
+                }
+            );
+            assert!(!state.capture_window_event(touch(999)));
+            assert_eq!(state.journal.captured_through(), accepted as u64);
+            accepted
+        };
+
+        // A rejected core transfer drops only its retry candidate. Neither the
+        // exact raw source nor the original translator returns its reservation.
+        let before = bridge.lock().reserved_pointer_translation_capacity_bytes();
+        let first = bridge.front_event().unwrap();
+        let mut failed = translator.clone();
+        assert!(matches!(
+            failed.translate(&first, |_| None),
+            NativePointerTranslation::Input(_)
+        ));
+        drop(failed);
+        assert_eq!(bridge.front_event().unwrap().ordinal(), first.ordinal());
+        assert_eq!(
+            bridge.lock().reserved_pointer_translation_capacity_bytes(),
+            before
+        );
+        assert_eq!(
+            translator.owned_data_capacity_bytes(),
+            size_of::<NativePointerTranslator>()
+        );
+
+        for ordinal in 1..=accepted {
+            let record = bridge.front_event().unwrap();
+            assert_eq!(record.ordinal(), ordinal as u64);
+            let mut candidate = translator.clone();
+            assert!(matches!(
+                candidate.translate(&record, |_| None),
+                NativePointerTranslation::Input(_)
+            ));
+            let peak = translator.owned_data_capacity_bytes()
+                + candidate.owned_data_capacity_bytes()
+                - size_of::<NativePointerTranslator>();
+            assert!(peak <= bridge.lock().reserved_pointer_translation_capacity_bytes());
+            assert!(bridge.acknowledge_translated_event(
+                record.ordinal(),
+                &mut translator,
+                candidate
+            ));
+            assert!(
+                baseline + bridge.lock().reserved_pointer_translation_capacity_bytes() <= limit
+            );
+            bridge.commit_frame_boundary(false);
+        }
+        assert!(bridge.front_event().is_none());
+        let installed = translator.reserved_translation_capacity_bytes();
+        assert_eq!(
+            bridge.lock().reserved_pointer_translation_capacity_bytes(),
+            installed
+        );
+        translator.forget_removed_devices();
+        bridge.release_pointer_translation_capacity(&translator);
+        assert!(bridge.lock().reserved_pointer_translation_capacity_bytes() <= installed);
+        assert_eq!(
+            bridge.lock().reserved_pointer_translation_capacity_bytes(),
+            translator.reserved_translation_capacity_bytes()
+        );
+        assert!(
+            translator.owned_data_capacity_bytes() > size_of::<NativePointerTranslator>(),
+            "device removal retains charged tombstone slots"
+        );
+    }
 
     #[test]
     fn host_allowance_reserves_output_progress_and_rejection_preserves_existing_configuration() {
         let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let baseline = bridge.owned_input_capacity_bytes(None);
+        let reserved = bridge.lock().reserved_pointer_translation_capacity_bytes();
         let output = NativeOutputResources::ordinary_entry_data_bytes();
         assert!(!bridge.configure_input_storage_allowance(baseline, 0));
         assert!(bridge.lock().input_storage_allowance.is_none());
-        assert!(bridge.configure_input_storage_allowance(baseline + output, 0));
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved + output, 0));
         assert!(bridge.lock().can_reserve_input_data(output));
         assert!(!bridge.lock().can_reserve_input_data(output + 1));
-        assert!(!bridge.configure_input_storage_allowance(baseline + output, output + 1));
+        assert!(
+            !bridge.configure_input_storage_allowance(baseline + reserved + output, output + 1)
+        );
         assert!(bridge.lock().can_reserve_input_data(output));
         assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
     }
@@ -195,10 +460,13 @@ mod tests {
     fn promised_external_work_reduces_the_same_host_allowance_before_growth() {
         let bridge = NativeHostBridge::new(NativeViewportMap::default());
         let baseline = bridge.owned_input_capacity_bytes(None);
+        let reserved = bridge.lock().reserved_pointer_translation_capacity_bytes();
         let output = NativeOutputResources::ordinary_entry_data_bytes();
-        assert!(bridge.configure_input_storage_allowance(baseline + 2 * output, output));
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved + 2 * output, output));
         assert!(bridge.lock().can_reserve_output_data());
-        assert!(bridge.configure_input_storage_allowance(baseline + 2 * output, 2 * output));
+        assert!(
+            bridge.configure_input_storage_allowance(baseline + reserved + 2 * output, 2 * output)
+        );
         assert!(!bridge.lock().can_reserve_output_data());
         assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
         assert_eq!(
@@ -223,7 +491,7 @@ mod tests {
             bridge.lock().admission,
             super::super::admission::NativeAdmission::Recovering { boundary: 0 }
         ));
-        assert!(bridge.configure_input_storage_allowance(baseline + 2 * output, output));
+        assert!(bridge.configure_input_storage_allowance(baseline + reserved + 2 * output, output));
         assert_eq!(
             bridge.admission_dispatch(),
             super::super::admission::NativeDispatch::Idle

@@ -858,6 +858,39 @@ prepaid control backing. Omitting only external-work reservation charging fails
 its regression and restoring it passes. These checks do not replace configured
 cap saturation, physical input or the remaining combined-budget work.
 
+The pointer-translation slice now promises each accepted raw pointer's maximum
+device/button growth before minting its source reservation. Existing translator
+data and its overlapping candidate share the same private host allowance. Core
+retention, candidate installation, destruction of the old backing and raw-source
+transfer precede returning excess growth capacity, under the existing bridge
+lock. A rejected recording leaves the original translator and exact source
+available for retry. Source count and age still survive until full core commit.
+Device-removal and phaseful-scroll tombstones reuse the original device entry;
+active/cancelled buttons and their origins share one button entry. Binding,
+provider and overload terminals therefore need no new translator allocation,
+and retained tombstones keep their full entry-data charge. New pointer admission
+checks its growth together with one ordinary output entry, so consuming the last
+source allowance cannot strand a retained scroll tail in Recovering.
+This closes the second of the four growth boundaries. Future presentation/effect
+report promises and roster/producer construction peaks still block product
+profile enablement and the complete 4 MiB qualification.
+Fresh native gates pass 344 tests normally and 344 without native debug
+assertions, plus correctness/suspicious Clippy and the programmatic macOS redock
+journey. A negative control removing only output headroom fails its regression;
+the exact restored source passes. Validation records the source-saturation,
+retained-scroll recovery and real coordinator/core drop/retry coverage.
+
+The remaining admission work uses the final prepared core transition before
+publication as the report-prepayment boundary, including document restore.
+Presentation terminal storage belongs to the existing pending output; effect
+storage must survive request/result/acknowledgement handoff through the existing
+owners. Roster conversion must cover the complete live-plus-destroyed merge
+(conservatively up to twice the window bound), old/new work-area backing and
+producer-generation candidates. Core producer limits need their own selected
+finite profile: later adapter route admission cannot retroactively bound an
+already published core registration. These are implementation requirements,
+not new allocator registries or another lifecycle authority.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

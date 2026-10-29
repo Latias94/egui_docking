@@ -119,6 +119,98 @@ fn binding() -> NativeSurfaceBinding {
 }
 
 #[test]
+fn binding_and_provider_terminals_reuse_all_button_contact_and_scroll_slots() {
+    let binding = binding();
+    let mut translator = NativePointerTranslator::default();
+    let mut ordinal = 0;
+    let mut observe = |translator: &mut NativePointerTranslator, event| {
+        ordinal += 1;
+        let before = translator.owned_data_capacity_bytes();
+        let record = NativeWindowEventRecord::for_test(
+            ordinal,
+            WindowId::from(1),
+            None,
+            Some(binding),
+            event,
+        );
+        assert!(matches!(
+            translator.translate(&record, |_| None),
+            NativePointerTranslation::Input(_)
+        ));
+        assert!(
+            translator.owned_data_capacity_bytes()
+                <= before + NativePointerTranslator::callback_translation_capacity_bytes() / 2
+        );
+    };
+    for button in 0..64 {
+        observe(
+            &mut translator,
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Other(button),
+                facts: PointerEventFacts::default(),
+            },
+        );
+    }
+    for id in 0..64 {
+        observe(
+            &mut translator,
+            WindowEvent::Touch(Touch {
+                device_id: DeviceId::dummy(),
+                phase: TouchPhase::Started,
+                location: PhysicalPosition::new(10.0, 20.0),
+                force: None,
+                id,
+            }),
+        );
+    }
+    observe(&mut translator, wheel(TouchPhase::Started));
+    let admitted = translator.owned_data_capacity_bytes();
+    let reserved = translator.reserved_translation_capacity_bytes();
+    translator.retire_binding(binding);
+    assert!(!translator.references_binding(binding));
+    assert!(translator.owned_data_capacity_bytes() <= admitted);
+    let mouse = NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Winit(DeviceId::dummy()));
+    let Some(NativePointerDeviceEntry::Live(device)) = translator.devices.get(&mouse) else {
+        panic!("binding retirement retains the exact mouse identity");
+    };
+    assert_eq!(device.mouse.buttons.len(), 64);
+    assert!(
+        device
+            .mouse
+            .buttons
+            .values()
+            .all(|button| matches!(button, NativeMouseButtonState::Cancelled))
+    );
+    assert_eq!(
+        translator
+            .devices
+            .values()
+            .filter(|entry| matches!(entry, NativePointerDeviceEntry::Removed))
+            .count(),
+        64
+    );
+
+    translator.forget_removed_devices();
+    assert!(translator.reserved_translation_capacity_bytes() <= reserved);
+    let removed = translator.owned_data_capacity_bytes();
+    assert_eq!(translator.devices.len(), 66);
+    translator.finish_overload_cancellation();
+    assert_eq!(
+        translator.owned_data_capacity_bytes(),
+        removed,
+        "overload must keep removed gates in their already charged slots"
+    );
+    let late = record(touch(TouchPhase::Moved));
+    assert_eq!(
+        translator.translate(&late, |_| None),
+        NativePointerTranslation::Ignored
+    );
+    assert_eq!(translator.owned_data_capacity_bytes(), removed);
+}
+
+#[test]
 fn overload_discards_mouse_buttons_origins_and_capture_before_fresh_press() {
     let binding = binding();
     let window = WindowId::from(1);

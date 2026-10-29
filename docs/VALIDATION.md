@@ -15,6 +15,66 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 pointer translation capacity and terminal storage
+
+The native bridge now promises pointer translation storage before accepting a
+raw callback. For each accepted source it charges the maximum addition of one
+device entry and one button entry, including both current and retry copies.
+Existing translator descendants and the overlapping candidate are also reserved.
+The selected private host allowance combines these promises with bridge-owned
+data and the caller's reservation for other external work. No per-allocation
+registry or second pointer/lifecycle authority is introduced.
+
+Core retention happens before source transfer. Under the existing bridge lock,
+successful transfer installs the candidate, destroys the old translator backing,
+updates the current reservation and consumes the exact raw prefix. Failed core
+recording leaves the original translator and raw identity available for retry.
+The raw source's original count and age still belong to the full commit boundary;
+its translator-growth promise moves to the installed state at retention.
+
+Device state, removal gates and phaseful-scroll tail gates now occupy one device
+map. Mouse active/cancelled state and press origin occupy one button map. Binding
+retirement changes button states and touch entries in place; provider removal
+and overload cancellation reuse existing entries or remove unneeded ones.
+These terminals do not allocate new translator data. Retained tombstones remain
+charged at the complete device-entry size, including when they are idle.
+Identity and scroll-sequence counters survive cancellation. A reused removed
+device or overload scroll-tail entry receives a fresh semantic identity at
+explicit start; idle cursor and discrete-scroll input keep their normal entry.
+
+Independent review found that checking pointer growth and output space
+separately could spend the last output entry's headroom and strand a retained
+scroll tail in Recovering. Admission now checks their sum with checked
+arithmetic. The minimum-capacity regression rejects the source before minting
+ingress identity; another regression retains the scroll tail through drain and
+cancellation and verifies ordinary output recovery. With a further callback's
+allowance, late scroll phases remain ignored and a fresh Started is accepted.
+
+Fresh serialized qualification passes 344 native tests normally and 344 with
+native debug assertions disabled, plus correctness/suspicious Clippy. Tests
+exercise prepaid source saturation, retry-candidate abandonment, complete source
+transfer, charged tombstones, many buttons/contacts, and a real coordinator/core
+journey which drains every accepted contact before one overload cancellation.
+Dropped input and cancellation frames retain their existing ownership and retry
+progress. The macOS programmatic tear-off, first-live, redock and retirement
+journey exits 0, sampling 2,386,698 owned input-data bytes at root boundaries.
+Its measurement is a workload cross-check, not a bound on future construction.
+Results are recorded in `/tmp/dockspace-pointer-storage-qualification.json`.
+
+A disposable-snapshot negative control removes only the ordinary output entry
+from the pointer-growth admission check. The minimum-headroom regression fails
+(exit 100); restoring the exact source passes it (exit 0). The original and
+restored snapshot bytes match the working source. Results are recorded in
+`/tmp/dockspace-pointer-storage-control.json`. Independent review rechecked the
+joint admission and both scroll recovery cases and found no further must-fix in
+this slice.
+
+The complete product byte profile remains disabled. Future presentation/effect
+report promises and roster/producer construction overlap still need admission
+before the total 4 MiB, configured-cap load/soak, scoped native input and physical
+platform claims can be qualified. This slice uses the same local unpublished
+egui fork as the preceding output work; tracked native pins remain unchanged.
+
 ## 2026-10-29 U7 output admission and prepaid control storage
 
 The local eframe seam now asks `on_output_begin` for

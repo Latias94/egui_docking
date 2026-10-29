@@ -239,6 +239,7 @@ impl<'session> NativeHostFrame<'session> {
                 return Err(NativeHostProtocolError::NativeOverloadCancellationChanged.into());
             }
             cancellation.translator.finish_overload_cancellation();
+            bridge.release_pointer_translation_capacity(cancellation.translator);
         }
         receivers.commit_presentations(report.surface_presentation_commits());
         let staging_viewports = bridge.publish_staging_requests(staging_requests)?;

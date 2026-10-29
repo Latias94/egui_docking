@@ -1,6 +1,6 @@
 //! Translation from callback-time winit pointer facts into core native input.
 
-use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::collections::{BTreeMap, btree_map::Entry};
 
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
@@ -21,11 +21,18 @@ use crate::event::{
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NativePointerTranslator {
-    devices: BTreeMap<NativeInputDeviceKey, NativePointerDeviceState>,
-    removed_inputs: BTreeSet<NativeInputDeviceKey>,
-    overload_scroll_tails: BTreeSet<NativeInputDeviceKey>,
+    devices: BTreeMap<NativeInputDeviceKey, NativePointerDeviceEntry>,
     next_device_identity: u64,
     next_scroll_sequence: u64,
+}
+
+#[derive(Debug, Clone)]
+enum NativePointerDeviceEntry {
+    Live(NativePointerDeviceState),
+    /// Late callbacks cannot reuse this identity without an explicit start.
+    Removed,
+    /// A cancelled phaseful scroll ignores tails until an explicit start.
+    ScrollTail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,10 +62,16 @@ struct NativePointerDeviceState {
 
 #[derive(Debug, Clone, Default)]
 struct NativeMouseState {
-    active_buttons: BTreeSet<NativePointerButton>,
-    button_origins: BTreeMap<NativePointerButton, NativeSurfaceBinding>,
-    cancelled_buttons: BTreeSet<NativePointerButton>,
+    buttons: BTreeMap<NativePointerButton, NativeMouseButtonState>,
     capture: Option<NativeSurfaceBinding>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NativeMouseButtonState {
+    Active {
+        origin: Option<NativeSurfaceBinding>,
+    },
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -82,97 +95,96 @@ pub(crate) enum NativePointerTranslation {
 }
 
 impl NativePointerTranslator {
-    /// Counts inline storage, device and mouse entry data, and both tombstone sets.
+    /// Counts inline storage, device/tombstone entries and button entries.
     /// B-tree node and allocator overhead are excluded.
     pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
-        let bytes = size_of::<Self>()
-            .saturating_add(self.devices.len().saturating_mul(
-                size_of::<NativeInputDeviceKey>() + size_of::<NativePointerDeviceState>(),
+        let bytes = size_of::<Self>().saturating_add(self.devices.len().saturating_mul(
+            size_of::<NativeInputDeviceKey>() + size_of::<NativePointerDeviceEntry>(),
+        ));
+        self.devices.values().fold(bytes, |bytes, entry| {
+            let NativePointerDeviceEntry::Live(device) = entry else {
+                return bytes;
+            };
+            bytes.saturating_add(device.mouse.buttons.len().saturating_mul(
+                size_of::<NativePointerButton>() + size_of::<NativeMouseButtonState>(),
             ))
-            .saturating_add(
-                self.removed_inputs
-                    .len()
-                    .saturating_mul(size_of::<NativeInputDeviceKey>()),
-            )
-            .saturating_add(
-                self.overload_scroll_tails
-                    .len()
-                    .saturating_mul(size_of::<NativeInputDeviceKey>()),
-            );
-        self.devices.values().fold(bytes, |bytes, device| {
-            bytes
-                .saturating_add(
-                    device
-                        .mouse
-                        .active_buttons
-                        .len()
-                        .saturating_mul(size_of::<NativePointerButton>()),
-                )
-                .saturating_add(device.mouse.button_origins.len().saturating_mul(
-                    size_of::<NativePointerButton>() + size_of::<NativeSurfaceBinding>(),
-                ))
-                .saturating_add(
-                    device
-                        .mouse
-                        .cancelled_buttons
-                        .len()
-                        .saturating_mul(size_of::<NativePointerButton>()),
-                )
         })
     }
 
+    /// Promises the current dynamic data and its overlapping retry candidate.
+    /// The permanent inline translator is counted by its coordinator owner.
+    pub(crate) fn reserved_translation_capacity_bytes(&self) -> usize {
+        size_of::<Self>().saturating_add(
+            self.owned_data_capacity_bytes()
+                .saturating_sub(size_of::<Self>())
+                .saturating_mul(2),
+        )
+    }
+
+    /// One callback can add at most one device and one button, in both copies.
+    /// Existing terminal transitions only replace entries in place.
+    pub(crate) const fn callback_translation_capacity_bytes() -> usize {
+        2 * (size_of::<NativeInputDeviceKey>()
+            + size_of::<NativePointerDeviceEntry>()
+            + size_of::<NativePointerButton>()
+            + size_of::<NativeMouseButtonState>())
+    }
+
     pub(crate) fn can_coalesce_idle_cursor_moves(&self) -> bool {
-        self.devices.values().all(NativePointerDeviceState::is_idle)
+        self.devices.values().all(|entry| match entry {
+            NativePointerDeviceEntry::Live(device) => device.is_idle(),
+            NativePointerDeviceEntry::Removed | NativePointerDeviceEntry::ScrollTail => true,
+        })
     }
 
     /// Forgets adapter state after core overload cancellation commits.
     ///
-    /// Core already terminated the semantic streams. Discard their identities
-    /// without emitting terminals or claiming an exact empty pointer roster.
-    /// Only phaseful scroll lanes need a tombstone until the next explicit
-    /// start; idle wheel lanes must still accept Moved-only discrete samples.
+    /// Core already terminated the semantic streams. Only phaseful scroll
+    /// lanes retain their existing slot until the next explicit start.
     pub(crate) fn finish_overload_cancellation(&mut self) {
-        self.overload_scroll_tails
-            .extend(self.devices.iter().filter_map(|(key, device)| {
-                (!matches!(device.scroll, NativeScrollState::Idle)).then_some(*key)
-            }));
-        self.devices.clear();
+        self.devices.retain(|_, entry| match entry {
+            NativePointerDeviceEntry::Live(device) => {
+                if matches!(device.scroll, NativeScrollState::Idle) {
+                    false
+                } else {
+                    *entry = NativePointerDeviceEntry::ScrollTail;
+                    true
+                }
+            }
+            NativePointerDeviceEntry::Removed | NativePointerDeviceEntry::ScrollTail => true,
+        });
     }
 
     /// Installs local tail suppression after core records binding retirement.
     ///
-    /// Mouse and scroll lanes keep their identities. Touch contacts move into
-    /// the existing tombstone set so contact ID reuse allocates a fresh identity.
+    /// Touch tombstones and cancelled mouse buttons reuse their original slots;
+    /// destruction never needs new adapter storage after the fact is accepted.
     pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
-        let Self {
-            devices,
-            removed_inputs,
-            ..
-        } = self;
-        devices.retain(|key, device| {
-            if device.retire_binding(binding) && matches!(key, NativeInputDeviceKey::Touch { .. }) {
-                let _ = removed_inputs.insert(*key);
-                return false;
+        for (key, entry) in &mut self.devices {
+            if let NativePointerDeviceEntry::Live(device) = entry
+                && device.retire_binding(binding)
+                && matches!(key, NativeInputDeviceKey::Touch { .. })
+            {
+                *entry = NativePointerDeviceEntry::Removed;
             }
-            true
-        });
+        }
     }
 
-    /// Forgets adapter identities after the provider-wide removal fact records.
+    /// Retains each removed identity's existing slot as a tail gate.
     ///
-    /// Winit raw-device identifiers are not correlated with the virtual
-    /// identifiers carried by window input, so one raw removal cannot safely
-    /// target a subset of these states. Tombstones reject their late tails
-    /// until an explicit start allocates a fresh identity.
+    /// Winit raw-device identifiers cannot select a subset of the virtual
+    /// identities carried by window input. An explicit start allocates a fresh
+    /// identity in the same slot; late tails cannot revive the previous one.
     pub(crate) fn forget_removed_devices(&mut self) {
-        self.removed_inputs.extend(self.devices.keys().copied());
-        self.devices.clear();
+        for entry in self.devices.values_mut() {
+            *entry = NativePointerDeviceEntry::Removed;
+        }
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        self.devices
-            .values()
-            .any(|device| device.references_binding(binding))
+        self.devices.values().any(|entry| {
+            matches!(entry, NativePointerDeviceEntry::Live(device) if device.references_binding(binding))
+        })
     }
 
     pub(crate) fn translate(
@@ -215,12 +227,12 @@ impl NativePointerTranslator {
         let routes = record
             .pointer_routes()
             .unwrap_or_else(|| NativePointerRoutes::from_binding(record.binding()));
-        if self.removed_inputs.contains(&device) {
-            if starts_reused_device_stream(record.event()) {
-                let _ = self.removed_inputs.remove(&device);
-            } else {
-                return NativePointerTranslation::Ignored;
-            }
+        if matches!(
+            self.devices.get(&device),
+            Some(NativePointerDeviceEntry::Removed | NativePointerDeviceEntry::ScrollTail)
+        ) && !starts_reused_device_stream(record.event())
+        {
+            return NativePointerTranslation::Ignored;
         }
 
         match record.event() {
@@ -298,7 +310,10 @@ impl NativePointerTranslator {
         routes: NativePointerRoutes,
         resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
-        let enrolled = self.devices.contains_key(&device);
+        let enrolled = matches!(
+            self.devices.get(&device),
+            Some(NativePointerDeviceEntry::Live(_))
+        );
         if matches!(touch.phase, TouchPhase::Started) == enrolled {
             return NativePointerTranslation::Ignored;
         }
@@ -306,7 +321,7 @@ impl NativePointerTranslator {
             && self
                 .devices
                 .get(&device)
-                .is_some_and(|state| state.mouse.active_origin_mismatch(routes))
+                .is_some_and(|entry| entry.active_touch_origin_mismatch(routes))
         {
             return NativePointerTranslation::Ignored;
         }
@@ -315,7 +330,7 @@ impl NativePointerTranslator {
                 && self
                     .devices
                     .get(&device)
-                    .is_some_and(|state| state.mouse.active_origin_mismatch(routes))
+                    .is_some_and(|entry| entry.active_touch_origin_mismatch(routes))
         {
             NativePointerRoutes::from_binding(None)
         } else {
@@ -376,12 +391,6 @@ impl NativePointerTranslator {
         routes: NativePointerRoutes,
         resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
-        if self.overload_scroll_tails.contains(&device) {
-            if !matches!(phase, TouchPhase::Started) {
-                return NativePointerTranslation::Ignored;
-            }
-            let _ = self.overload_scroll_tails.remove(&device);
-        }
         if self.device_mut(device).is_none() {
             return NativePointerTranslation::Ignored;
         }
@@ -390,9 +399,9 @@ impl NativePointerTranslator {
             next_scroll_sequence,
             ..
         } = self;
-        let device = devices
-            .get_mut(&device)
-            .expect("a successfully enrolled device remains in the adapter map");
+        let Some(NativePointerDeviceEntry::Live(device)) = devices.get_mut(&device) else {
+            unreachable!("a successfully enrolled device remains live in the adapter map");
+        };
         let delivery = exact_delivery_binding(routes.delivery());
         if let NativeScrollState::Live {
             delivery: Some(active),
@@ -439,11 +448,26 @@ impl NativePointerTranslator {
             next_device_identity,
             ..
         } = self;
-        match devices.entry(key) {
-            Entry::Occupied(entry) => Some(entry.into_mut()),
+        let entry = match devices.entry(key) {
+            Entry::Occupied(entry) => {
+                let entry = entry.into_mut();
+                if !matches!(entry, NativePointerDeviceEntry::Live(_)) {
+                    let next = allocate_device_identity(next_device_identity)?;
+                    *entry = NativePointerDeviceEntry::Live(NativePointerDeviceState::new(next));
+                }
+                entry
+            }
             Entry::Vacant(entry) => {
                 let next = allocate_device_identity(next_device_identity)?;
-                Some(entry.insert(NativePointerDeviceState::new(next)))
+                entry.insert(NativePointerDeviceEntry::Live(
+                    NativePointerDeviceState::new(next),
+                ))
+            }
+        };
+        match entry {
+            NativePointerDeviceEntry::Live(device) => Some(device),
+            NativePointerDeviceEntry::Removed | NativePointerDeviceEntry::ScrollTail => {
+                unreachable!("device enrollment installs a live identity")
             }
         }
     }
@@ -510,6 +534,12 @@ fn allocate_device_identity(next_device_identity: &mut u64) -> Option<u64> {
     Some(next)
 }
 
+impl NativePointerDeviceEntry {
+    fn active_touch_origin_mismatch(&self, routes: NativePointerRoutes) -> bool {
+        matches!(self, Self::Live(device) if device.mouse.active_origin_mismatch(routes))
+    }
+}
+
 impl NativePointerDeviceState {
     fn new(identity: u64) -> Self {
         Self {
@@ -563,10 +593,7 @@ fn allocate_scroll_sequence(next_scroll_sequence: &mut u64) -> Option<NativeScro
 
 impl NativeMouseState {
     fn is_idle(&self) -> bool {
-        self.active_buttons.is_empty()
-            && self.button_origins.is_empty()
-            && self.cancelled_buttons.is_empty()
-            && self.capture.is_none()
+        self.buttons.is_empty() && self.capture.is_none()
     }
 
     fn observe(&mut self, event: NativePointerEvent, routes: NativePointerRoutes) -> bool {
@@ -578,27 +605,35 @@ impl NativeMouseState {
             event,
             NativePointerEvent::ButtonReleased(button)
                 | NativePointerEvent::ContactEnded(button)
-                if self.cancelled_buttons.remove(&button)
+                if matches!(self.buttons.remove(&button), Some(NativeMouseButtonState::Cancelled))
         ) {
             return false;
         }
         match event {
             NativePointerEvent::ButtonPressed(button) => {
-                let _ = self.cancelled_buttons.remove(&button);
-                let _ = self.active_buttons.insert(button);
-                if let Some(origin) = exact_delivery_binding(routes.delivery()) {
-                    let _ = self.button_origins.entry(button).or_insert(origin);
+                let delivery = exact_delivery_binding(routes.delivery());
+                match self.buttons.entry(button) {
+                    Entry::Occupied(mut entry) => match entry.get_mut() {
+                        NativeMouseButtonState::Active { origin } => {
+                            if origin.is_none() {
+                                *origin = delivery;
+                            }
+                        }
+                        state @ NativeMouseButtonState::Cancelled => {
+                            *state = NativeMouseButtonState::Active { origin: delivery };
+                        }
+                    },
+                    Entry::Vacant(entry) => {
+                        entry.insert(NativeMouseButtonState::Active { origin: delivery });
+                    }
                 }
             }
             NativePointerEvent::ButtonReleased(button)
             | NativePointerEvent::ContactEnded(button) => {
-                let _ = self.active_buttons.remove(&button);
-                let _ = self.button_origins.remove(&button);
+                let _ = self.buttons.remove(&button);
             }
             NativePointerEvent::StreamEnded | NativePointerEvent::StreamCancelled(_) => {
-                self.active_buttons.clear();
-                self.button_origins.clear();
-                self.cancelled_buttons.clear();
+                self.buttons.clear();
                 self.capture = None;
             }
             NativePointerEvent::Moved
@@ -618,15 +653,21 @@ impl NativeMouseState {
         // motion through the capture owner. Preserve both callback facts by
         // waiting for the exact capture-owner delivery instead of rewriting it.
         matches!(event, NativePointerEvent::Moved)
-            && !self.active_buttons.is_empty()
+            && self
+                .buttons
+                .values()
+                .any(|state| matches!(state, NativeMouseButtonState::Active { .. }))
             && exact_delivery_binding(routes.capture())
                 .is_some_and(|capture| exact_delivery_binding(routes.delivery()) != Some(capture))
     }
 
     fn active_origin_mismatch(&self, routes: NativePointerRoutes) -> bool {
-        self.button_origins
+        self.buttons
             .get(&NativePointerButton::Primary)
-            .is_some_and(|origin| exact_delivery_binding(routes.delivery()) != Some(*origin))
+            .is_some_and(|state| {
+                matches!(state, NativeMouseButtonState::Active { origin: Some(origin) }
+                    if exact_delivery_binding(routes.delivery()) != Some(*origin))
+            })
     }
 
     fn observe_routes(&mut self, routes: NativePointerRoutes) {
@@ -637,18 +678,19 @@ impl NativeMouseState {
         if !self.references_binding(binding) {
             return false;
         }
-        self.cancelled_buttons
-            .extend(self.active_buttons.iter().copied());
-        self.active_buttons.clear();
-        self.button_origins.clear();
+        for state in self.buttons.values_mut() {
+            *state = NativeMouseButtonState::Cancelled;
+        }
         self.capture = None;
         true
     }
 
     fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        self.button_origins
+        self.buttons
             .values()
-            .any(|origin| *origin == binding)
+            .any(|state| {
+                matches!(state, NativeMouseButtonState::Active { origin: Some(origin) } if *origin == binding)
+            })
             || self.capture == Some(binding)
     }
 }
@@ -823,7 +865,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owned_capacity_counts_mouse_entries_and_retained_tombstones() {
+    fn owned_capacity_keeps_device_slots_charged_when_they_become_tombstones() {
         let mut translator = NativePointerTranslator::default();
         let empty = translator.owned_data_capacity_bytes();
         let mouse = NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Test(1));
@@ -854,11 +896,14 @@ mod tests {
         assert_eq!(translator.owned_data_capacity_bytes(), idle);
 
         translator.forget_removed_devices();
-        assert!(translator.devices.is_empty());
-        assert!(translator.removed_inputs.contains(&mouse));
+        assert_eq!(translator.devices.len(), 1);
+        assert!(matches!(
+            translator.devices.get(&mouse),
+            Some(NativePointerDeviceEntry::Removed)
+        ));
         let removed = translator.owned_data_capacity_bytes();
         assert!(removed > empty);
-        assert!(removed < idle);
+        assert_eq!(removed, idle);
 
         let scroll = NativeInputDeviceKey::Scroll(NativePhysicalDeviceKey::Test(2));
         translator
@@ -869,9 +914,15 @@ mod tests {
             delivery: None,
         };
         translator.finish_overload_cancellation();
-        assert!(translator.devices.is_empty());
-        assert!(translator.removed_inputs.contains(&mouse));
-        assert!(translator.overload_scroll_tails.contains(&scroll));
+        assert_eq!(translator.devices.len(), 2);
+        assert!(matches!(
+            translator.devices.get(&mouse),
+            Some(NativePointerDeviceEntry::Removed)
+        ));
+        assert!(matches!(
+            translator.devices.get(&scroll),
+            Some(NativePointerDeviceEntry::ScrollTail)
+        ));
         let both_tombstones = translator.owned_data_capacity_bytes();
         assert!(both_tombstones > removed);
         assert_eq!(both_tombstones - removed, removed - empty);
