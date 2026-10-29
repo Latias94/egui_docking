@@ -1183,6 +1183,15 @@ child/staging fanout, 1,000 Hz/release timing, native scoped/stationary behavior
 or complete U7/U8. The separate Linux-only handler-forwarding correction is not
 included in these gates.
 
+The subsequent Linux-only physical harness migration preserves the inner close
+disposition, forwards property-command retirement and rejects Retired pointer
+commands as unapplied. Its actual Linux build and 29 unit tests pass; bounded
+Xvfb/Openbox redock completes with resident/reservation peaks of 3,005,827 /
+4,123,712 bytes under 4 MiB. The current XTest journey still fails before release
+because the production native preview is missing after observed press,
+threshold, routed outside motion and pass-through ACK. This physical blocker
+remains open; callback migration does not certify U7/U8.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

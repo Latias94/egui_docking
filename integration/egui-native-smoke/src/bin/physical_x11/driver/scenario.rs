@@ -108,7 +108,8 @@ fn wait_for_pointer_passthrough(
                     Ok(observation)
                 }
                 eframe::NativeViewportPointerPassthroughStatus::Unsupported
-                | eframe::NativeViewportPointerPassthroughStatus::Failed => Err(format!(
+                | eframe::NativeViewportPointerPassthroughStatus::Failed
+                | eframe::NativeViewportPointerPassthroughStatus::Retired => Err(format!(
                     "{stage}: native pointer pass-through was not applied: {observation:?}"
                 )),
             };

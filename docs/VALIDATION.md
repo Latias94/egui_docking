@@ -15,6 +15,30 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 X11 physical harness callback migration
+
+The Linux-only diagnostic handler now returns the exact inner
+`NativeWindowEventDisposition`, preserving held-close decisions, and forwards
+property-command retirement and its wake. Its physical pointer barrier treats
+`Retired` as an unapplied command rather than proof that pass-through changed.
+The current fork's complete handler trait is forwarded without substituting
+callback authority. The macOS cfg does not compile these files.
+
+On the existing Rust 1.95 Linux/arm64 container, the physical binary compiles
+and all 29 unit tests pass. Under Xvfb/Openbox with software GL, the bounded
+programmatic redock completes first-live and retirement, sampling 3,005,827
+resident bytes and 4,123,712 reservation bytes below the selected 4 MiB limit.
+The build uses the same unpublished local egui fork and tracked Winit revision.
+Logs and frozen source identities are retained in
+`/tmp/dockspace-linux-handler-{tests,build,bounded-redock,physical}.log` and
+`/tmp/dockspace-linux-handler-snapshot.json`.
+
+The physical XTest journey is **not qualified**: real press, threshold crossing,
+routed outside motion and the pass-through Applied ACK are observed, but the
+production native preview is absent before release. The driver fails at
+`drag-out-x11-events`; this remains a release blocker under investigation.
+Neither the unit tests nor programmatic redock replace that physical gate.
+
 ## 2026-10-29 U7 explicit bounded application and lifecycle model
 
 `NativeStorageLimit` is an explicit public application choice. It validates the

@@ -255,8 +255,11 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         self.inner.render_hidden_deferred_viewport(viewport_id)
     }
 
-    fn on_window_event(&self, event: eframe::NativeWindowEvent<'_>) {
-        self.inner.on_window_event(event);
+    fn on_window_event(
+        &self,
+        event: eframe::NativeWindowEvent<'_>,
+    ) -> eframe::NativeWindowEventDisposition {
+        self.inner.on_window_event(event)
     }
 
     fn on_device_removed(&self, removal: eframe::NativeDeviceRemoval) {
@@ -301,6 +304,13 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         }
         changed.notify_all();
         wake
+    }
+
+    fn on_viewport_property_command_retired(
+        &self,
+        retirement: eframe::NativeViewportPropertyCommandRetirement,
+    ) -> eframe::NativeHostWake {
+        self.inner.on_viewport_property_command_retired(retirement)
     }
 
     fn on_output_begin(
