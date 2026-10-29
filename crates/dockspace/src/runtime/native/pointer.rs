@@ -526,6 +526,7 @@ pub struct NativeReceiverQuery {
     pub(in crate::runtime) purpose: NativeReceiverPurpose,
     pub(in crate::runtime) presented_surface: super::super::PresentedDockspaceSurface,
     pub(in crate::runtime) point: Option<LogicalPoint>,
+    pub(in crate::runtime) metadata: crate::runtime::PointerEventMetadata,
 }
 
 impl NativeReceiverQuery {
@@ -533,6 +534,15 @@ impl NativeReceiverQuery {
     #[must_use]
     pub const fn purpose(&self) -> &NativeReceiverPurpose {
         &self.purpose
+    }
+
+    /// Returns the device and original capture time of the edge being resolved.
+    ///
+    /// Retrying an unpublished frame retains these facts rather than sampling
+    /// the host clock again. Unknown device facts remain explicit.
+    #[must_use]
+    pub const fn metadata(self) -> crate::runtime::PointerEventMetadata {
+        self.metadata
     }
 
     /// Returns the exact logical surface which must answer the question.

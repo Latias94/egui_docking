@@ -397,6 +397,7 @@ fn native_receiver_query_binds_only_the_exact_presented_output_and_binding() {
         purpose: NativeReceiverPurpose::DragDelivery,
         presented_surface: PresentedDockspaceSurface::from_projection(projection),
         point: Some(descriptor.center()),
+        metadata: super::super::PointerEventMetadata::unknown(),
     };
 
     assert_eq!(query.surface(), SURFACE);

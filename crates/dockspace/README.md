@@ -266,6 +266,13 @@ group can pause computation across polls but cannot publish a partial roster.
 Later accepted records never join the already frozen candidate. Dropping a
 returned frame or failing an attempt leaves its input retryable.
 
+Attach the original callback observation time and observed device class with
+`NativePointerInput::with_metadata`. Use one monotonic clock origin for the
+provider; queued translation and frame retries must not resample that time.
+Receiver queries expose the retained facts through
+`NativeReceiverQuery::metadata()`. These facts identify the edge being resolved;
+they do not grant local coordinates, desktop routing or stationary authority.
+
 `native_input_owned_capacity_bytes()` on the session or an open host frame
 reports recorded input transport data: recorder envelopes and buffers, shared
 payload data, replay record buffers, and a pending prefix-retirement receipt.

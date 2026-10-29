@@ -2004,11 +2004,10 @@ impl CoreHostFrame {
         debug_assert_eq!(journal.edges().len(), commit.accepted_edges().len());
         let mut specs = Vec::with_capacity(journal.edges().len());
         for (edge, accepted) in journal.edges().iter().zip(commit.accepted_edges()) {
-            specs.push(pointer_receiver_candidate_spec(
-                &self.candidate,
-                edge,
-                accepted.stream(),
-            ));
+            specs.push(
+                pointer_receiver_candidate_spec(&self.candidate, edge, accepted.stream())
+                    .with_metadata(edge.metadata()),
+            );
         }
         let attempt = match self
             .pointer_receiver_attempt_issuer

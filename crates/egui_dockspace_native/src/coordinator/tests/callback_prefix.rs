@@ -352,9 +352,17 @@ fn foreign_cursor_prefix_rejection_keeps_raw_input_and_translator_unpublished() 
 #[test]
 fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
     use dockspace::geometry::LogicalPoint;
-    use dockspace::runtime::NativeReceiverPurpose;
+    use dockspace::runtime::{
+        NativeMonotonicClock, NativeReceiverPurpose, PointerDeviceKind, PointerEventMetadata,
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
-    let mut native = coordinator();
+    let ticks = Arc::new(AtomicU64::new(0));
+    let observed = Arc::clone(&ticks);
+    let clock =
+        NativeMonotonicClock::new(move || Duration::from_micros(observed.load(Ordering::SeqCst)));
+    let mut native = coordinator_with_clock(clock);
     let (binding, second) = register_roots(&mut native);
     native
         .bind_viewport(ViewportId::ROOT, WindowId::from(11), binding)
@@ -386,6 +394,7 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
         .unwrap();
     inspection.commit().unwrap();
     let start = source.center();
+    ticks.store(5, Ordering::SeqCst);
     native
         .bridge
         .push_record(HostRecord::WindowEvent(pointer_record_at(
@@ -395,6 +404,7 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
             true,
             PhysicalPosition::new(start.x(), start.y()),
         )));
+    ticks.store(20_000, Ordering::SeqCst);
     assert_eq!(
         native
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
@@ -403,13 +413,21 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
             .get(),
         1
     );
+    let mut press_queries = 0;
     let mut press = native
         .begin_host_frame(|query| {
+            assert_eq!(
+                query.metadata(),
+                PointerEventMetadata::new(PointerDeviceKind::Mouse, Duration::from_micros(5)),
+                "single callbacks retain capture time instead of translation time"
+            );
+            press_queries += 1;
             query
                 .bind_receiver(&source)
                 .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
         })
         .unwrap();
+    assert_eq!(press_queries, 2);
     press
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
@@ -420,6 +438,7 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
         .map(|index| LogicalPoint::new(start.x() + 24.0 + f64::from(index) * 0.25, 120.0).unwrap())
         .collect();
     for (ordinal, point) in (2..).zip(&expected) {
+        ticks.store(20_000 + ordinal, Ordering::SeqCst);
         native
             .bridge
             .push_record(HostRecord::WindowEvent(pointer_record_at(
@@ -430,6 +449,7 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
                 PhysicalPosition::new(point.x(), point.y()),
             )));
     }
+    ticks.store(100_000, Ordering::SeqCst);
     assert_eq!(
         native
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
@@ -440,18 +460,36 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
     );
     assert!(native.next_window_event().unwrap().is_none());
     for should_commit in [false, true] {
+        ticks.store(
+            if should_commit { 200_000 } else { 150_000 },
+            Ordering::SeqCst,
+        );
         let mut observed = Vec::new();
         let mut frame = native
             .begin_host_frame(|query| {
                 assert_eq!(query.purpose(), &NativeReceiverPurpose::HoverHit);
                 assert_eq!(query.surface(), FIRST_SURFACE);
-                observed.push(query.point().unwrap());
+                observed.push((query.point().unwrap(), query.metadata()));
                 NativeReceiverAnswer::NoReceiver(query.presented_surface())
             })
             .unwrap();
+        let expected_samples: Vec<_> = expected
+            .iter()
+            .copied()
+            .zip(2..)
+            .map(|(point, ordinal)| {
+                (
+                    point,
+                    PointerEventMetadata::new(
+                        PointerDeviceKind::Mouse,
+                        Duration::from_micros(20_000 + ordinal),
+                    ),
+                )
+            })
+            .collect();
         assert_eq!(
-            observed, expected,
-            "every semantic cursor edge preserves its input point and order"
+            observed, expected_samples,
+            "every semantic cursor edge preserves its input point, capture time and order"
         );
         if should_commit {
             frame

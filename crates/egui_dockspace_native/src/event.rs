@@ -319,7 +319,7 @@ impl NativeWindowEventRecord {
                 hover: NativePointerRouteSnapshot::Unknown,
                 capture: NativePointerRouteSnapshot::from_winit(*capture, viewports),
             }),
-            WindowEvent::PanGesture { .. } => Some(NativePointerRoutes {
+            WindowEvent::PanGesture { .. } | WindowEvent::Touch(_) => Some(NativePointerRoutes {
                 delivery,
                 hover: NativePointerRouteSnapshot::Unknown,
                 capture: NativePointerRouteSnapshot::Unknown,

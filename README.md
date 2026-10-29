@@ -48,6 +48,12 @@ from the 2026-10-27 audit are repaired and covered by fresh regressions. See
 [`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
 docking and multiview crate.
 
+Native creation currently publishes topology after a non-interactive PostShow
+placeholder, before exact semantic first-live admission. R15's atomic first-live
+ownership boundary remains open; the next lifecycle replacement must keep source
+ownership until that exact content output is accepted. See the current audit in
+[`docs/VALIDATION.md`](docs/VALIDATION.md).
+
 The experimental native adapter reserves 4,096 raw callback slots and two
 reusable complete-roster payloads. It admits at most 256 simultaneously retained
 native binding lifetimes, including pending retirement; a route/create pair
@@ -250,7 +256,7 @@ pointer authority unavailable until equivalent platform-fact tests land. X11
 is the current certified physical reference backend.
 
 CI keeps those claims separate. The programmatic Glow smoke proves hidden
-creation, staging, first-live transfer, redock, and retirement through product
+creation, staging, first-live admission, redock, and retirement through product
 commands. The X11/XTest smoke locates only read-only semantic receivers, injects
 real OS pointer events through Winit, and proves drag-out, first-live, the exact
 Center guide, drag-back, OS-window destruction, and retirement quiescence. It

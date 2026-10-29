@@ -13,7 +13,9 @@ use thiserror::Error;
 
 use crate::geometry::LogicalPoint;
 use crate::ids::{EngineAuthorityDomainId, SurfaceId};
-use crate::pointer_journal::{FiniteScrollVector, PointerEdgeSequence, PointerInputLease};
+use crate::pointer_journal::{
+    FiniteScrollVector, PointerEdgeSequence, PointerEventMetadata, PointerInputLease,
+};
 use crate::presentation_hit::{PresentationHitRegionId, PresentationPointerLane};
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
 use crate::scene::SurfaceInteractionProjection;
@@ -305,6 +307,7 @@ impl PointerReceiverProbeRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointerReceiverCandidate {
     id: PointerReceiverCandidateId,
+    metadata: PointerEventMetadata,
     probes: PointerReceiverProbeRequest,
     delivery_surface: Option<SurfaceId>,
     route_point: Option<LogicalPoint>,
@@ -319,6 +322,12 @@ impl PointerReceiverCandidate {
     #[must_use]
     pub const fn id(&self) -> PointerReceiverCandidateId {
         self.id
+    }
+
+    /// Returns the device and original capture time retained by this exact edge.
+    #[must_use]
+    pub const fn metadata(&self) -> PointerEventMetadata {
+        self.metadata
     }
 
     /// Returns the exact independent facts requested for this edge.
@@ -398,6 +407,7 @@ impl PointerReceiverCandidate {
 )]
 pub(crate) struct PointerReceiverCandidateSpec {
     sequence: PointerEdgeSequence,
+    metadata: PointerEventMetadata,
     probes: PointerReceiverProbeRequest,
     delivery_surface: Option<SurfaceId>,
     route_point: Option<LogicalPoint>,
@@ -412,9 +422,15 @@ pub(crate) struct PointerReceiverCandidateSpec {
     reason = "reserved for CoreHostFrame pointer-receiver integration"
 )]
 impl PointerReceiverCandidateSpec {
+    pub(crate) const fn with_metadata(mut self, metadata: PointerEventMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     pub(crate) const fn not_applicable(sequence: PointerEdgeSequence) -> Self {
         Self {
             sequence,
+            metadata: PointerEventMetadata::unknown(),
             probes: PointerReceiverProbeRequest::NotApplicable,
             delivery_surface: None,
             route_point: None,
@@ -433,6 +449,7 @@ impl PointerReceiverCandidateSpec {
     ) -> Self {
         Self {
             sequence,
+            metadata: PointerEventMetadata::unknown(),
             probes: if delivery_surface.is_some() {
                 PointerReceiverProbeRequest::Delivery
             } else {
@@ -459,6 +476,7 @@ impl PointerReceiverCandidateSpec {
     ) -> Self {
         Self {
             sequence,
+            metadata: PointerEventMetadata::unknown(),
             probes: if challenge.requires_receiver_probe() && delivery_surface.is_some() {
                 PointerReceiverProbeRequest::Delivery
             } else {
@@ -484,6 +502,7 @@ impl PointerReceiverCandidateSpec {
     ) -> Self {
         Self {
             sequence,
+            metadata: PointerEventMetadata::unknown(),
             probes: PointerReceiverProbeRequest::HoverHit,
             delivery_surface: None,
             route_point: None,
@@ -621,6 +640,7 @@ impl PointerReceiverCandidateRoster {
             .into_iter()
             .map(|spec| PointerReceiverCandidate {
                 id: PointerReceiverCandidateId::new(attempt.id, attempt.lease, spec.sequence),
+                metadata: spec.metadata,
                 probes: spec.probes,
                 delivery_surface: spec.delivery_surface,
                 route_point: spec.route_point,

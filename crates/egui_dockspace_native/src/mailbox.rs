@@ -1703,14 +1703,21 @@ impl CursorPrefixClaim<'_> {
         self.len
     }
 
+    #[cfg(test)]
     pub(crate) fn events(&self) -> impl Iterator<Item = &NativeWindowEventRecord> {
+        self.captured_events().map(|(event, _)| event)
+    }
+
+    pub(crate) fn captured_events(
+        &self,
+    ) -> impl Iterator<Item = (&NativeWindowEventRecord, std::time::Duration)> {
         self.records
             .journal
-            .iter()
+            .reserved_iter()
             .take(self.len.get())
             .filter_map(|record| {
-                if let HostRecord::WindowEvent(event) = record {
-                    Some(event)
+                if let HostRecord::WindowEvent(event) = record.record() {
+                    Some((event, record.captured_at()))
                 } else {
                     None
                 }
@@ -3324,10 +3331,18 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn try_new(viewports: NativeViewportMap) -> Result<Self, NativeHostProtocolError> {
-        Self::try_new_with_capacity(
+        Self::try_new_with_clock(viewports, NativeMonotonicClock::system())
+    }
+
+    pub(crate) fn try_new_with_clock(
+        viewports: NativeViewportMap,
+        clock: NativeMonotonicClock,
+    ) -> Result<Self, NativeHostProtocolError> {
+        Self::try_new_with_capacity_and_clock(
             viewports,
             terminal_roster::DEFAULT_WINDOW_CAPACITY,
             terminal_roster::DEFAULT_WORK_AREA_CAPACITY,
+            clock,
         )
     }
 
@@ -3674,24 +3689,23 @@ impl NativeHostBridge {
         (records.retained_record_count(), records.oldest_record_age())
     }
 
+    #[cfg(test)]
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::WindowEvent(event)) => Some(event.clone()),
-            Some(
-                HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
+        self.front_captured_event().map(|(event, _)| event)
+    }
+
+    pub(crate) fn front_captured_event(
+        &self,
+    ) -> Option<(NativeWindowEventRecord, std::time::Duration)> {
+        let records = self.lock();
+        if !records.front_dispatchable() {
+            return None;
         }
+        let record = records.front_ingress()?;
+        let HostRecord::WindowEvent(event) = record.record() else {
+            return None;
+        };
+        Some((event.clone(), record.captured_at()))
     }
 
     pub(crate) fn front_device_removal(&self) -> Option<NativeDeviceRemovalRecord> {

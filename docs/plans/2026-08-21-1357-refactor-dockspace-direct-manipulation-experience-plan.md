@@ -1325,6 +1325,43 @@ need host evidence. Native scoped/stationary input, cross-saturation and the
 broader physical matrix remain U7/U8 work. See `docs/VALIDATION.md` and
 `/tmp/dockspace-active-load-qualification.json` for evidence and exclusions.
 
+The following metadata/suppression slice keeps original journal capture time on
+both single-event and cursor-prefix translation, freezes it with the receiver
+candidate and exposes it on native receiver queries. Touch keeps its observed
+class; unknown scroll classes stay unknown. Touch callback snapshots now freeze
+the filtered delivery route instead of recovering a suppressed lifecycle
+binding. The 256-move retry fixture checks original points, times, classes and
+order; touch regressions cover original capture, cancellation/Ended and retired
+binding isolation. This does not close native local input or stationary work.
+Its frozen gates pass workspace1,824/public86/doctest10, native452/452 normal
+and assertion-disabled (both same-instance 10,000-lifetime runs), core/native
+Clippy, strict docs and formatting. Bounded macOS programmatic redock reaches
+quiescence at 3,005,859 owned input / 4,155,496 reserved bytes. Independent
+review finds no remaining P1/P2 in this slice; this is not R15 ownership-frontier
+qualification. Evidence is under `/tmp/dockspace-native-pointer-metadata-*`.
+
+Next scoped-input work preserves one joined provider and backend order but
+replaces its desktop-only enrollment with a host observation domain. Each
+gesture separately freezes a local endpoint/generation or desktop lane through
+Pressed, Armed, Dragging and pending release; the next gesture on the same
+pointer may choose again. Do not widen headless HostLocal or the standalone
+local producer guards to implement joined native input. Keep real Native
+delivery/capture and their binding-retirement dependencies. Retain callback-local
+physical coordinates with their event-time conversion proof; delayed translation
+must not apply a newer scale to an older sample. Missing desktop position must
+not disable proven local operations or grant outside-all authority.
+
+The first positive local-to-desktop handoff is an ordered atomic lane change for
+an active docking drag on the same binding/generation, with same-stream
+contact/button/capture continuity and a same-sample coordinate mapping. It keeps
+the provider, stream, session and source, revokes obsolete preview/continuation,
+and uses the existing exact-output terminal. Unsupported phases, coordinate
+rebases or incomplete continuity reject the upgrade without swallowing the real
+release/cancel. Provider replacement and checkpoint reset are not handoffs.
+Only after that contract is executable should native long-press, hover dwell
+and edge-scroll continuations be enabled through current output proofs, after
+accepted raw input, and within the same budget.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
@@ -1385,6 +1422,30 @@ that regression with ButtonAlreadyPressed; restoring the implementation passes.
 - **Command and window identity:** Focus, visibility and pointer pass-through results must echo the exact host command identity; ordinary framework commands cannot settle those owners. Scheduling a typed property operation must not leave an unowned ordinary property command which can survive window retirement. Physical-window terminal reservations outlive logical route suppression when an OS obligation remains; reusing a viewport for a successor cannot overwrite or satisfy the predecessor's terminal slot. Reuse the existing create-attempt, held-close and retirement owners rather than introducing another lifecycle authority.
 - **Test scenarios:** Covers AE6. Hidden or directly prepared backends, delayed first valid output, A1/A2 replacement, no-frame, pass-through, close/veto/defer, failure recovery, redock, retirement and quiescence preserve one owner. Qualified X11 physical input docks at non-guide points and retires the child.
 - **Verification:** Public host lifecycle traces, programmatic real-window tests, and qualified X11 physical journeys pass; old distributed maps and obsolete staging contracts are removed.
+
+R15 corrective boundary (2026-10-30, unresolved): independent review confirms
+that PostShow currently publishes workspace/root/item ownership and advances the
+workspace revision before exact semantic first-live presentation. First-live
+currently commits routing/admission and retained-resource release only. Staging
+is a disabled placeholder, so this is not merely another name for an interactive
+first output. Retained source payloads/recovery obligations do not retain the
+original workspace ownership. The historical product-boundary protocol explains
+this implementation but is not an exception to current R15, U8 or the DoD.
+
+Keep the current R15 contract and replace that frontier before the next native
+scope expansion. First, compile the prospective child's full semantic program
+from one core-owned transient projection while source ownership stays durable.
+Preparing or dropping that output must not publish the native workspace command.
+Next, accept its exact current terminal and publish transfer, revision and native
+admission atomically once; stale, dropped, failed, cancelled and rolled-back
+attempts preserve the source. Reuse the original saga/resource and presentation
+owners. Remove obsolete early-transfer phases and pre-first-live compensation
+APIs as their replacement becomes authoritative; hidden pre/post-show passes
+remain host strategy, not the universal engine readiness contract. Cover the
+source/version boundary, exact content-output acceptance, failed commit/retry,
+late predecessor, concurrent creates, direct prepared hosts and the egui native
+strategy before claiming U8 completion. Existing green transfer/recovery tests
+are evidence for their earlier protocol and cannot substitute for this gate.
 
 Local resource-ownership checkpoint (2026-10-29): command/output reservations
 and deferred-window sidecars now have joined owners. An admitted create attempt

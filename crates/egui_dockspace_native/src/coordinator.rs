@@ -466,7 +466,12 @@ impl NativeCoordinator {
                     clock.expect("the combined constructor supplies its monotonic clock"),
                 )?
             }
-            None => NativeHostBridge::try_new(NativeViewportMap::default())?,
+            None => match clock {
+                Some(clock) => {
+                    NativeHostBridge::try_new_with_clock(NativeViewportMap::default(), clock)?
+                }
+                None => NativeHostBridge::try_new(NativeViewportMap::default())?,
+            },
         });
         if let Some(limit) = combined {
             if !bridge.configure_input_storage_allowance(
@@ -1446,6 +1451,7 @@ impl NativeCoordinator {
     ///
     /// Returns an error when a terminal output is still waiting for its affine
     /// painted output or core rejects its presentation result.
+    #[cfg(test)]
     pub fn next_window_event(
         &mut self,
     ) -> Result<Option<NativeWindowEventRecord>, NativeRuntimeError> {
@@ -1652,16 +1658,17 @@ impl NativeCoordinator {
             let mut consumed = 0;
             let mut ignored = 0;
             {
-                let mut events = prefix.events().take(prefix_limit);
+                let mut events = prefix.captured_events().take(prefix_limit);
                 let inputs = std::iter::from_fn(|| {
                     loop {
                         if budget.is_exhausted() {
                             return None;
                         }
-                        let record = events.next()?;
+                        let (record, captured_at) = events.next()?;
                         consumed += 1;
-                        match candidate.translate(record, |point| self.work_areas.binding_at(point))
-                        {
+                        match candidate.translate_captured(record, captured_at, |point| {
+                            self.work_areas.binding_at(point)
+                        }) {
                             NativePointerTranslation::Input(input) => return Some(input),
                             NativePointerTranslation::Ignored => ignored += 1,
                             NativePointerTranslation::NotPointer => unreachable!(
@@ -1681,7 +1688,7 @@ impl NativeCoordinator {
             budget.complete_unsequenced_records(ignored);
             return Ok(Some(count));
         }
-        let Some(record) = self.next_window_event()? else {
+        let Some((record, captured_at)) = self.bridge.front_captured_event() else {
             return Ok(None);
         };
         if matches!(record.event(), winit::event::WindowEvent::Destroyed)
@@ -1706,7 +1713,9 @@ impl NativeCoordinator {
         // The accepted raw callback already owns the overlapping storage promise.
         let mut candidate = self.pointer_translator.clone();
         let work_areas = &self.work_areas;
-        match candidate.translate(&record, |point| work_areas.binding_at(point)) {
+        match candidate
+            .translate_captured(&record, captured_at, |point| work_areas.binding_at(point))
+        {
             NativePointerTranslation::NotPointer => {
                 unreachable!("pointer translation follows the same immutable event classification")
             }

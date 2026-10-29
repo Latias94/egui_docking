@@ -1,6 +1,7 @@
 //! Translation from callback-time winit pointer facts into core native input.
 
 use std::collections::{BTreeMap, btree_map::Entry};
+use std::time::Duration;
 
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
@@ -9,6 +10,7 @@ use dockspace::runtime::{
     NativePointerInput, NativePointerOwner, NativeScrollCancelReason, NativeScrollDelta,
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
     NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding, NativeWorkAreaBinding,
+    PointerDeviceKind, PointerEventMetadata,
 };
 use winit::event::{
     DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
@@ -198,6 +200,29 @@ impl NativePointerTranslator {
         let device = pointer_device(record.event())
             .expect("pointer event classification and device extraction must stay aligned");
         self.translate_for_device(record, device, resolve_work_area)
+    }
+
+    /// Retains the journal's original observation time across delayed replay.
+    pub(crate) fn translate_captured(
+        &mut self,
+        record: &NativeWindowEventRecord,
+        captured_at: Duration,
+        resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        let translation = self.translate(record, resolve_work_area);
+        let NativePointerTranslation::Input(input) = translation else {
+            return translation;
+        };
+        let device = match record.event() {
+            WindowEvent::Touch(_) => PointerDeviceKind::Touch,
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::PointerCaptureChanged { .. } => PointerDeviceKind::Mouse,
+            _ => PointerDeviceKind::Unknown,
+        };
+        NativePointerTranslation::Input(
+            input.with_metadata(PointerEventMetadata::new(device, captured_at)),
+        )
     }
 
     #[cfg(test)]

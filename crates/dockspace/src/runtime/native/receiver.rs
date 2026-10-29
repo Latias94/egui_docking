@@ -54,6 +54,7 @@ fn resolve_delivery_observation(
                 purpose: NativeReceiverPurpose::ClickDelivery,
                 presented_surface,
                 point: candidate.route_point(),
+                metadata: candidate.metadata(),
             };
             (
                 resolve_delivery_lane(projection, &resolver(query)),
@@ -66,11 +67,13 @@ fn resolve_delivery_observation(
                 purpose: NativeReceiverPurpose::ClickDelivery,
                 presented_surface,
                 point: candidate.route_point(),
+                metadata: candidate.metadata(),
             };
             let drag = NativeReceiverQuery {
                 purpose: NativeReceiverPurpose::DragDelivery,
                 presented_surface,
                 point: candidate.route_point(),
+                metadata: candidate.metadata(),
             };
             (
                 resolve_delivery_lane(projection, &resolver(click)),
@@ -86,6 +89,7 @@ fn resolve_delivery_observation(
                 purpose: NativeReceiverPurpose::ScrollDelivery(challenge),
                 presented_surface,
                 point: candidate.route_point(),
+                metadata: candidate.metadata(),
             };
             (
                 unknown,
@@ -114,6 +118,7 @@ fn resolve_hover_observation(
         purpose: NativeReceiverPurpose::HoverHit,
         presented_surface: PresentedDockspaceSurface::from_projection(projection),
         point: Some(point),
+        metadata: candidate.metadata(),
     };
     let disposition = match resolver(query) {
         NativeReceiverAnswer::Dock(receiver)

@@ -251,6 +251,26 @@ fn native_effect_rejection_policy_retains_state_races_and_capacity_backpressure(
 }
 
 fn coordinator() -> NativeCoordinator {
+    NativeCoordinator::new(
+        coordinator_session(),
+        NativePointerRoster::Exact(Vec::new()),
+    )
+    .expect("managed coordinator enrolls")
+}
+
+fn coordinator_with_clock(clock: dockspace::runtime::NativeMonotonicClock) -> NativeCoordinator {
+    NativeCoordinator::new_with_storage_allowance(
+        coordinator_session(),
+        NativePointerRoster::Exact(Vec::new()),
+        None,
+        None,
+        None,
+        Some(clock),
+    )
+    .expect("managed coordinator enrolls with the test clock")
+}
+
+fn coordinator_session() -> DockspaceSession {
     let layout = DockspaceLayout::new([
         DockspaceSurfaceLayout::new(
             FIRST_SURFACE,
@@ -265,10 +285,7 @@ fn coordinator() -> NativeCoordinator {
         ),
     ])
     .expect("test layout validates");
-    let session = DockspaceSession::from_layout(layout, DockPolicy::default())
-        .expect("test session initializes");
-    NativeCoordinator::new(session, NativePointerRoster::Exact(Vec::new()))
-        .expect("managed coordinator enrolls")
+    DockspaceSession::from_layout(layout, DockPolicy::default()).expect("test session initializes")
 }
 
 fn register_roots(

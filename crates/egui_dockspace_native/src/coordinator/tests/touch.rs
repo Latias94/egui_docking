@@ -9,8 +9,291 @@ use winit::event::{
 };
 
 use super::*;
-use crate::event::NativeDeviceRemovalRecord;
+use crate::event::{NativeDeviceRemovalRecord, NativePointerRouteSnapshot};
 use crate::mailbox::HostRecord;
+
+#[test]
+fn captured_touch_metadata_uses_the_original_journal_clock_and_contact_class() {
+    use dockspace::runtime::{NativeMonotonicClock, PointerDeviceKind, PointerEventMetadata};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    let ticks = Arc::new(AtomicU64::new(0));
+    let observed = Arc::clone(&ticks);
+    let mut native = coordinator_with_clock(NativeMonotonicClock::new(move || {
+        Duration::from_millis(observed.load(Ordering::SeqCst))
+    }));
+    let (binding, _) = register_roots(&mut native);
+    let window = WindowId::from(99);
+    native
+        .bind_viewport(ViewportId::ROOT, window, binding)
+        .unwrap();
+    ticks.store(40, Ordering::SeqCst);
+    let record = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            1,
+            window,
+            Some(ViewportId::ROOT),
+            WindowEvent::Touch(Touch {
+                device_id: DeviceId::dummy(),
+                phase: TouchPhase::Started,
+                location: PhysicalPosition::new(24.0, 36.0),
+                force: None,
+                id: 15,
+            }),
+            routes,
+        )
+    });
+    native.bridge.push_record(HostRecord::WindowEvent(record));
+    let expected = pointer_input(
+        binding,
+        NativePointerId::new(1),
+        NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+    )
+    .with_metadata(PointerEventMetadata::new(
+        PointerDeviceKind::Touch,
+        Duration::from_millis(40),
+    ));
+    for now in [100, 200] {
+        ticks.store(now, Ordering::SeqCst);
+        let (record, captured_at) = native.bridge.front_captured_event().unwrap();
+        let mut candidate = native.pointer_translator.clone();
+        assert_eq!(
+            candidate.translate_captured(&record, captured_at, |_| None),
+            NativePointerTranslation::Input(expected)
+        );
+        assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+        assert!(!native.bridge.callback_boundary_pending());
+    }
+    let recorded = native.session.native_input_recorded_count();
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .unwrap()
+            .get(),
+        1
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(native.bridge.front_captured_event().is_none());
+    assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
+    assert!(native.bridge.callback_boundary_pending());
+    let version = native.session.version();
+    drop(
+        native
+            .begin_host_frame(|_| panic!("a contact without position grants no receiver authority"))
+            .unwrap(),
+    );
+    assert_eq!(native.session.version(), version);
+    assert!(native.bridge.callback_boundary_pending());
+    commit_pending_pointer_frame(&mut native);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(!native.bridge.callback_boundary_pending());
+}
+
+#[test]
+fn touch_snapshots_freeze_exact_delivery_and_preserve_terminal_semantics() {
+    for (terminal, terminal_event) in [
+        (
+            TouchPhase::Ended,
+            NativePointerEvent::ContactEnded(NativePointerButton::Primary),
+        ),
+        (
+            TouchPhase::Cancelled,
+            NativePointerEvent::StreamCancelled(
+                NativePointerCancelReason::ExplicitPlatformCancellation,
+            ),
+        ),
+    ] {
+        let mut native = coordinator();
+        let (binding, _) = register_roots(&mut native);
+        let window = WindowId::from(97);
+        native
+            .bind_viewport(ViewportId::ROOT, window, binding)
+            .expect("touch viewport binds");
+        let mut translator = NativePointerTranslator::default();
+
+        for (ordinal, phase, event) in [
+            (
+                1,
+                TouchPhase::Started,
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            ),
+            (2, TouchPhase::Moved, NativePointerEvent::Moved),
+            (3, terminal, terminal_event),
+        ] {
+            let record = native.bridge.with_viewports(|routes| {
+                NativeWindowEventRecord::for_test_snapshot(
+                    ordinal,
+                    window,
+                    Some(ViewportId::ROOT),
+                    WindowEvent::Touch(Touch {
+                        device_id: DeviceId::dummy(),
+                        phase,
+                        location: PhysicalPosition::new(24.0, 36.0),
+                        force: None,
+                        id: 13,
+                    }),
+                    routes,
+                )
+            });
+            assert_eq!(record.binding(), Some(binding));
+            let routes = record.pointer_routes().expect("touch routes are frozen");
+            assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(binding));
+            assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
+            assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
+
+            let expected = if matches!(phase, TouchPhase::Cancelled) {
+                authority_free_pointer_input(NativePointerId::new(1), event)
+            } else {
+                pointer_input(binding, NativePointerId::new(1), event)
+            };
+            assert_eq!(
+                translator.translate(&record, |_| None),
+                NativePointerTranslation::Input(expected)
+            );
+        }
+        assert!(!translator.references_binding(binding));
+    }
+}
+
+#[test]
+fn destroyed_touch_snapshots_never_recover_retained_lifecycle_binding() {
+    for (terminal, terminal_event) in [
+        (
+            TouchPhase::Ended,
+            NativePointerEvent::ContactEnded(NativePointerButton::Primary),
+        ),
+        (
+            TouchPhase::Cancelled,
+            NativePointerEvent::StreamCancelled(
+                NativePointerCancelReason::ExplicitPlatformCancellation,
+            ),
+        ),
+    ] {
+        let mut native = coordinator();
+        let (binding, _) = register_roots(&mut native);
+        let window = WindowId::from(98);
+        native
+            .bind_viewport(ViewportId::ROOT, window, binding)
+            .expect("touch viewport binds");
+        let touch = |phase| {
+            WindowEvent::Touch(Touch {
+                device_id: DeviceId::dummy(),
+                phase,
+                location: PhysicalPosition::new(24.0, 36.0),
+                force: None,
+                id: 14,
+            })
+        };
+        let started = native.bridge.with_viewports(|routes| {
+            NativeWindowEventRecord::for_test_snapshot(
+                1,
+                window,
+                Some(ViewportId::ROOT),
+                touch(TouchPhase::Started),
+                routes,
+            )
+        });
+        let mut translator = NativePointerTranslator::default();
+        assert_eq!(
+            translator.translate(&started, |_| None),
+            NativePointerTranslation::Input(pointer_input(
+                binding,
+                NativePointerId::new(1),
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            ))
+        );
+
+        let destroyed = native.bridge.with_viewports_mut(|routes| {
+            let destroyed = NativeWindowEventRecord::for_test_ingress(
+                2,
+                window,
+                Some(ViewportId::ROOT),
+                WindowEvent::Destroyed,
+                routes,
+            );
+            assert_eq!(
+                routes.binding_for_event(window, Some(ViewportId::ROOT)),
+                Some(binding),
+                "pointer suppression retains the lifecycle binding"
+            );
+            assert_eq!(
+                routes.pointer_binding_for_event(window, Some(ViewportId::ROOT)),
+                None
+            );
+            destroyed
+        });
+        assert_eq!(destroyed.binding(), Some(binding));
+        assert_eq!(
+            started.pointer_routes().unwrap().delivery(),
+            NativePointerRouteSnapshot::Dock(binding),
+            "suppression cannot rewrite an earlier touch snapshot"
+        );
+
+        let snapshot = |ordinal, phase| {
+            native.bridge.with_viewports(|routes| {
+                NativeWindowEventRecord::for_test_snapshot(
+                    ordinal,
+                    window,
+                    Some(ViewportId::ROOT),
+                    touch(phase),
+                    routes,
+                )
+            })
+        };
+        let moved = snapshot(3, TouchPhase::Moved);
+        let terminated = snapshot(4, terminal);
+        let late_move = snapshot(5, TouchPhase::Moved);
+        let restarted = snapshot(6, TouchPhase::Started);
+        for record in [&moved, &terminated, &late_move, &restarted] {
+            assert_eq!(record.binding(), Some(binding));
+            let routes = record.pointer_routes().expect("touch routes are frozen");
+            assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Unknown);
+            assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
+            assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
+        }
+
+        let mut retired = translator.clone();
+        retired.retire_binding(binding);
+        assert!(!retired.references_binding(binding));
+        for record in [&moved, &terminated, &late_move] {
+            assert_eq!(
+                retired.translate(record, |_| None),
+                NativePointerTranslation::Ignored,
+                "suppressed touch snapshots cannot bypass retired-contact tombstones"
+            );
+        }
+        assert_eq!(
+            translator.translate(&moved, |_| None),
+            NativePointerTranslation::Ignored
+        );
+        assert_eq!(
+            translator.translate(&terminated, |_| None),
+            NativePointerTranslation::Input(authority_free_pointer_input(
+                NativePointerId::new(1),
+                terminal_event,
+            )),
+            "a suppressed terminal closes the contact without lifecycle authority"
+        );
+        assert_eq!(
+            translator.translate(&late_move, |_| None),
+            NativePointerTranslation::Ignored,
+            "a terminal cannot be followed by a resurrected contact"
+        );
+        for translator in [&mut translator, &mut retired] {
+            assert_eq!(
+                translator.translate(&restarted, |_| None),
+                NativePointerTranslation::Input(authority_free_pointer_input(
+                    NativePointerId::new(2),
+                    NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                )),
+                "an explicit start gets a fresh identity without recovering lifecycle authority"
+            );
+            assert!(!translator.references_binding(binding));
+        }
+    }
+}
 
 #[test]
 fn mouse_and_touch_contacts_receive_distinct_adapter_pointer_identities() {

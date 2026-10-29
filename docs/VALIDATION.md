@@ -15,6 +15,70 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 open R15 first-live ownership frontier
+
+Independent contract review confirms that current native code does not yet meet
+R15's first-live durable-ownership boundary. PostShow is a non-interactive
+placeholder with no pane UI, hit, focus or accessibility output. Accepting its
+staging terminal nevertheless applies the frozen native workspace command,
+moves root/item presentation ownership to the child and advances the workspace
+revision. The later exact semantic first-live terminal admits routing and
+releases retained resources; it does not perform that already published transfer.
+An immutable source payload and recovery obligation preserve recoverability,
+not the original workspace ownership.
+
+The existing transfer/recovery gates below qualify that earlier protocol, not
+R15 conformance. R15, U8 and the Definition of Done remain unchanged. The next
+core lifecycle replacement needs a transient child semantic projection before
+durable transfer, followed by one exact first-live commit for ownership and
+admission. PostShow must not publish source topology. Obsolete early-transfer
+and pre-first-live compensation paths are deleted with that replacement. Native
+readiness and the complete refactor remain open despite the passing local and
+recovery tests. This correction precedes expanding native scoped input.
+
+## 2026-10-30 native original capture metadata and touch-route suppression
+
+Native single-event and immutable cursor-prefix translation now read each
+record's original `ReservedHostRecord.captured_at` from the existing journal.
+The timestamp is not resampled during translation, core replay or frame retry.
+Touch events carry Touch metadata; cursor, mouse-button and capture events carry
+their mouse class. Scroll/Pan events retain Unknown device class because this
+adapter does not observe their physical input class. The original timestamp
+still accompanies those edges.
+
+Core freezes the edge metadata into its exact receiver candidate and exposes it
+through `NativeReceiverQuery::metadata()`. Hosts do not supply or replace it when
+answering a query. The existing 256-move dropped-frame fixture now checks every
+point, original capture time, device class and order on both attempts, with an
+injected clock advanced separately before translation and before each replay.
+A single press checks its original time on both click and drag queries. The
+Touch fixture checks capture time/class before retention, original translator
+state on retry, once-only recording and dropped/committed core boundaries.
+
+Touch snapshots now use the same filtered pointer delivery lookup as PanGesture.
+A retained window lifecycle binding cannot recreate pointer authority after a
+Destroyed callback suppresses that route. Regressions cover the earlier exact
+snapshot, the later suppressed snapshot, Ended/Cancelled, retired tails and a
+fresh contact identity without resurrecting the old binding.
+
+Frozen qualification passes 1,824 workspace tests, 86 public-consumer tests,
+10 doctests, correctness/suspicious core/native Clippy, strict core/native
+rustdoc and formatting. Native normal and assertion-disabled configurations
+each pass 452 tests, including their same-instance 10,000-lifetime model. The
+bounded macOS programmatic redock reaches first-live, redock, retirement and
+quiescence, sampling 3,005,859 owned input / 4,155,496 reserved bytes under
+4 MiB. Independent review reports no remaining P1/P2 in this metadata/suppression
+slice. Source hashes and commands are retained in
+`/tmp/dockspace-native-pointer-metadata-snapshot.json` and
+`/tmp/dockspace-native-pointer-metadata-qualification.json`. These gates cover
+the existing transfer protocol; the open R15 correction above is separate.
+
+This is metadata and route-isolation groundwork. It does not add native local
+coordinates, touch long press, enlarged touch hit targets, stationary scheduling
+or validated local-to-desktop handoff. Native physical-touch claims remain
+unqualified, and the native gates continue to use the explicit unpublished egui
+fork override.
+
 ## 2026-10-30 controlled kilohertz active-ingress qualification
 
 One bounded native coordinator/session now receives 10,000 distinct cursor
