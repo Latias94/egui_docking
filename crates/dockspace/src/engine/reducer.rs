@@ -1226,6 +1226,7 @@ impl DockEngine {
                     | InputOutcome::PaneFocusObservationPublished { .. }
                     | InputOutcome::PaneFocusObservationStale { .. }
                     | InputOutcome::NativeCreateCancelled { .. }
+                    | InputOutcome::NativeCreateFirstLiveRecovery { .. }
                     | InputOutcome::ViewportCleanupRetried { .. }
                     | InputOutcome::WorkspaceReplaced { .. }
                     | InputOutcome::CommandProcessed { .. }
@@ -1377,6 +1378,17 @@ impl DockEngine {
             EngineInput::CancelNativeCreate { expected, saga } => {
                 self.reduce_native_create_cancellation(input.sequence, *expected, *saga)
             }
+            EngineInput::RecoverNativeCreateFirstLive {
+                expected,
+                saga,
+                binding,
+            } => self.reduce_native_create_first_live_recovery(
+                input.sequence,
+                *expected,
+                *saga,
+                *binding,
+                events,
+            ),
             EngineInput::RetryViewportCleanup {
                 expected,
                 failed_effect,

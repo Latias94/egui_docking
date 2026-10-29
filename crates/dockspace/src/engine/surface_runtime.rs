@@ -1517,6 +1517,143 @@ impl DockEngine {
         Ok(InputOutcome::NativeCreateCancelled { saga, compensation })
     }
 
+    pub(super) fn native_create_first_live_recovery_obligation(
+        &self,
+        saga: NativeCreateSagaId,
+        binding: ViewportBinding,
+    ) -> Option<&SurfaceRecoveryObligation> {
+        let create = self.viewport.native_create_saga(saga)?;
+        if !self.native_create_first_live_resource_matches(saga, binding) {
+            return None;
+        }
+        let resource = create.resource();
+        let bound = self.bound_surface_recoveries.get(&binding.surface())?;
+        let obligation = &bound.obligation;
+        let original = create.prepared().recovery_obligation();
+        (bound.binding == binding
+            && bound.retained_staging_resource == Some(resource)
+            && obligation.id() == original.id()
+            && obligation.target() == original.target()
+            && obligation.authority_domain() == self.authority_domain
+            && self
+                .root_recovery_anchors
+                .get(&obligation.target().host_surface())
+                == Some(&obligation.target().anchor())
+            && Self::recovery_policy_request(
+                &self.workspace,
+                binding.surface(),
+                obligation.target().host_surface(),
+            )
+            .as_ref()
+                == Ok(obligation.request()))
+        .then_some(obligation)
+    }
+
+    fn native_create_first_live_resource_matches(
+        &self,
+        saga: NativeCreateSagaId,
+        binding: ViewportBinding,
+    ) -> bool {
+        let Some(create) = self.viewport.native_create_saga(saga) else {
+            return false;
+        };
+        let crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { proof } =
+            create.phase()
+        else {
+            return false;
+        };
+        let resource = create.resource();
+        create.binding() == binding
+            && proof.retained_resource() == Some(resource)
+            && self
+                .native_admission
+                .owns_native_create_barrier(saga, binding, resource)
+            && self
+                .viewport
+                .viewport(binding.surface())
+                .is_some_and(|record| {
+                    record.binding() == binding && record.admission() == ViewportAdmission::Pending
+                })
+    }
+
+    pub(super) fn preserves_unrecovered_first_live_surface(
+        &self,
+        saga: NativeCreateSagaId,
+        candidate: &Workspace,
+    ) -> bool {
+        let Some(create) = self.viewport.native_create_saga(saga) else {
+            return false;
+        };
+        self.native_create_first_live_recovery_obligation(saga, create.binding())
+            .is_some()
+            && self
+                .capture_surface_roster(create.binding().surface())
+                .is_ok_and(|roster| roster.matches_workspace(candidate))
+    }
+
+    pub(super) fn reduce_native_create_first_live_recovery(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        saga: NativeCreateSagaId,
+        binding: ViewportBinding,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        use crate::transition::NativeCreateFirstLiveRecoveryResult as ResultKind;
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        let create = self
+            .viewport
+            .native_create_saga(saga)
+            .ok_or(EngineError::Viewport {
+                input,
+                source: ViewportCoordinatorError::MissingCreateSaga { saga },
+            })?;
+        let host = create
+            .prepared()
+            .recovery_obligation()
+            .target()
+            .host_surface();
+        let result = if let Some(obligation) = self
+            .native_create_first_live_recovery_obligation(saga, binding)
+            .cloned()
+        {
+            self.viewport
+                .validate_native_staging_resource_conservation()
+                .map_err(|source| EngineError::Viewport { input, source })?;
+            let mut roster = self
+                .capture_surface_roster(binding.surface())
+                .map_err(|source| EngineError::SurfaceRoster { input, source })?;
+            let _ = self.freeze_surface_roster_minimums(&mut roster);
+            let target = self.freeze_surface_recovery_target(host);
+            // This semantic input follows the completed platform action batch.
+            // Persistent recovery rosters are still checked by publication.
+            let barrier = BTreeMap::new();
+            match self.apply_obligated_surface_recovery(
+                input,
+                &roster,
+                &obligation,
+                SurfaceRecoveryTargetContext::new(&barrier, target.as_ref()),
+                events,
+            )? {
+                ObligatedSurfaceRecoveryApplication::Applied => ResultKind::Applied,
+                ObligatedSurfaceRecoveryApplication::Blocked(reason) => ResultKind::Blocked(reason),
+            }
+        } else {
+            ResultKind::Blocked(SurfaceRecoveryBlockedReason::ObligationMismatch)
+        };
+        Ok(InputOutcome::NativeCreateFirstLiveRecovery {
+            saga,
+            binding,
+            host,
+            result,
+        })
+    }
+
     pub(super) fn reduce_viewport_cleanup_retry(
         &mut self,
         input: InputSequence,
@@ -1781,7 +1918,7 @@ impl DockEngine {
                     if !self.surface_recovery.update_pending_roster(roster.clone()) {
                         return Err(EngineError::ConflictingSurfaceRecovery { input, surface });
                     }
-                    let application = self.apply_destroyed_surface_recovery(
+                    let application = self.apply_obligated_surface_recovery(
                         input,
                         &roster,
                         &obligation,
@@ -1794,13 +1931,13 @@ impl DockEngine {
                         events,
                     )?;
                     match application {
-                        DestroyedSurfaceRecoveryApplication::Applied => {
+                        ObligatedSurfaceRecoveryApplication::Applied => {
                             self.viewport
                                 .complete_pending_recovery(surface)
                                 .map_err(|source| EngineError::Viewport { input, source })?;
                             self.surface_recovery.complete_pending(surface);
                         }
-                        DestroyedSurfaceRecoveryApplication::Blocked(reason) => {
+                        ObligatedSurfaceRecoveryApplication::Blocked(reason) => {
                             self.surface_recovery.mark_blocked(surface, reason);
                         }
                     }
@@ -2295,12 +2432,12 @@ impl DockEngine {
         let application = if obligation.authority_domain() != self.authority_domain
             || current_request.as_ref() != Ok(obligation.request())
         {
-            DestroyedSurfaceRecoveryApplication::Blocked(
+            ObligatedSurfaceRecoveryApplication::Blocked(
                 SurfaceRecoveryBlockedReason::ObligationMismatch,
             )
         } else {
             let recovery_target = obligation.target();
-            self.apply_destroyed_surface_recovery(
+            self.apply_obligated_surface_recovery(
                 input,
                 roster,
                 &obligation,
@@ -2313,7 +2450,7 @@ impl DockEngine {
                 context.events,
             )?
         };
-        if matches!(application, DestroyedSurfaceRecoveryApplication::Applied)
+        if matches!(application, ObligatedSurfaceRecoveryApplication::Applied)
             && self.workspace.surface(surface).is_none()
         {
             self.complete_destroyed_surface(input, binding)?;
@@ -2323,7 +2460,7 @@ impl DockEngine {
                     .release_transferred_native_staging_resource(resource, binding)
                     .map_err(|source| EngineError::Viewport { input, source })?;
             }
-        } else if let DestroyedSurfaceRecoveryApplication::Blocked(reason) = application {
+        } else if let ObligatedSurfaceRecoveryApplication::Blocked(reason) = application {
             self.viewport
                 .defer_destroyed_surface_recovery(
                     binding,
@@ -2354,17 +2491,17 @@ impl DockEngine {
         Ok(())
     }
 
-    fn apply_destroyed_surface_recovery(
+    fn apply_obligated_surface_recovery(
         &mut self,
         input: InputSequence,
         roster: &SurfaceRosterDisposition,
         obligation: &SurfaceRecoveryObligation,
         context: SurfaceRecoveryTargetContext<'_>,
         events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<DestroyedSurfaceRecoveryApplication, EngineError> {
+    ) -> Result<ObligatedSurfaceRecoveryApplication, EngineError> {
         let recovery_target = obligation.target();
         let Some(target_facts) = context.target_facts else {
-            return Ok(DestroyedSurfaceRecoveryApplication::Blocked(
+            return Ok(ObligatedSurfaceRecoveryApplication::Blocked(
                 SurfaceRecoveryBlockedReason::HostAuthorityUnavailable {
                     surface: recovery_target.host_surface(),
                 },
@@ -2377,7 +2514,7 @@ impl DockEngine {
         ) {
             Ok(transaction) => transaction,
             Err(source) => {
-                return Ok(DestroyedSurfaceRecoveryApplication::Blocked(
+                return Ok(ObligatedSurfaceRecoveryApplication::Blocked(
                     SurfaceRecoveryBlockedReason::Compile(source),
                 ));
             }
@@ -2395,9 +2532,9 @@ impl DockEngine {
             },
         )?;
         Ok(if applied {
-            DestroyedSurfaceRecoveryApplication::Applied
+            ObligatedSurfaceRecoveryApplication::Applied
         } else {
-            DestroyedSurfaceRecoveryApplication::Blocked(
+            ObligatedSurfaceRecoveryApplication::Blocked(
                 SurfaceRecoveryBlockedReason::ProgramRejected,
             )
         })

@@ -20,6 +20,7 @@ mod budget;
 mod callback_prefix;
 mod close;
 mod combined_soak;
+mod first_live_recovery;
 mod focus;
 mod held_close;
 mod ingress_create;

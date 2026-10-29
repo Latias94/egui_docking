@@ -51,6 +51,7 @@ enum Scenario {
     Duplicate,
     Reordered,
     LateStaging,
+    LateFirstLive,
 }
 
 impl Scenario {
@@ -62,9 +63,10 @@ impl Scenario {
             [value] if value == "duplicate" => Ok(Self::Duplicate),
             [value] if value == "reordered" => Ok(Self::Reordered),
             [value] if value == "late-staging" => Ok(Self::LateStaging),
+            [value] if value == "late-first-live" => Ok(Self::LateFirstLive),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "expected one output-pressure scenario: ordered, duplicate, reordered, late-staging",
+                "expected one output-pressure scenario: ordered, duplicate, reordered, late-staging, late-first-live",
             )),
         }
     }
@@ -75,6 +77,7 @@ enum Phase {
     Bootstrap,
     AwaitChild,
     AwaitStaging,
+    AwaitFirstLive,
     Filling,
     Draining,
     AwaitRedock,
@@ -105,6 +108,7 @@ struct PressureState {
     forwarded: usize,
     final_terminal_checked: bool,
     late_terminal_after_fatal: bool,
+    previous_terminal: Option<eframe::NativeOutputResult>,
     outcome: Option<Result<(), String>>,
 }
 
@@ -132,6 +136,7 @@ impl PressureState {
             forwarded: 0,
             final_terminal_checked: false,
             late_terminal_after_fatal: false,
+            previous_terminal: None,
             outcome: None,
         }
     }
@@ -158,7 +163,10 @@ impl PressureState {
     }
 
     fn requests_external_repaint(&self) -> bool {
-        !(self.scenario == Scenario::LateStaging && self.late_terminal_after_fatal)
+        !(matches!(
+            self.scenario,
+            Scenario::LateStaging | Scenario::LateFirstLive
+        ) && self.late_terminal_after_fatal)
     }
 }
 
@@ -271,13 +279,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| Err(format!("window exited in {:?}", shared.phase)))
         .map_err(io::Error::other)?;
     assert!(shared.buffered.is_empty());
-    assert_eq!(shared.peak_ordinary, ORDINARY_OUTPUTS);
-    assert_eq!(shared.peak_control, 2);
-    assert!(shared.full_root_defer_seen && shared.protected_child_seen);
+    if scenario != Scenario::LateFirstLive {
+        assert_eq!(shared.peak_ordinary, ORDINARY_OUTPUTS);
+        assert_eq!(shared.peak_control, 2);
+        assert!(shared.full_root_defer_seen && shared.protected_child_seen);
+    }
     assert!(shared.final_terminal_checked);
     if scenario == Scenario::LateStaging {
         assert!(shared.late_terminal_after_fatal);
         assert_eq!(shared.forwarded, BUFFERED_TERMINALS);
+    }
+    if scenario == Scenario::LateFirstLive {
+        assert!(shared.late_terminal_after_fatal);
+        assert_eq!(shared.forwarded, 1);
     }
     let backlog = lock(&runtime).output_backlog();
     let runtime = lock(&runtime);
@@ -374,7 +388,10 @@ impl PressureApp {
                 return Err(format!("unexpected runtime error {error:?}"));
             }
             if runtime.output_backlog().ordinary() == 0 && runtime.is_shutdown_drained() {
-                if state.scenario == Scenario::LateStaging {
+                if matches!(
+                    state.scenario,
+                    Scenario::LateStaging | Scenario::LateFirstLive
+                ) {
                     if !state.late_terminal_after_fatal {
                         return Err("shutdown drained before the withheld staging terminal".into());
                     }

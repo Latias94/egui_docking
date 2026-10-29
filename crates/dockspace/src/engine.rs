@@ -2019,7 +2019,7 @@ enum CommandApplication {
     Rejected(crate::error::CommandError),
 }
 
-enum DestroyedSurfaceRecoveryApplication {
+enum ObligatedSurfaceRecoveryApplication {
     Applied,
     Blocked(SurfaceRecoveryBlockedReason),
 }
@@ -4051,6 +4051,10 @@ impl DockEngine {
             let WorkspaceCommand::RehomeRoot { source, .. } = saga.prepared().command() else {
                 return None;
             };
+            if matches!(saga.phase(), crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }) {
+                return (!self.preserves_unrecovered_first_live_surface(saga_id, candidate))
+                    .then_some(saga.prepared().source_surface());
+            }
             (candidate
                 .capture_node_source(source.root(), source.node())
                 .ok()
@@ -5346,20 +5350,62 @@ impl DockEngine {
             let prepared = saga.prepared();
             let obligation = prepared.recovery_obligation();
             let surface = obligation.request().source_surface();
+            let consumes_first_live_recovery = recovery_commit == Some((surface, obligation.id()))
+                && candidate.surface(surface).is_none()
+                && self
+                    .native_create_first_live_recovery_obligation(saga_id, saga.binding())
+                    .is_some()
+                && obligation
+                    .target()
+                    .converted_main()
+                    .is_none_or(|converted| {
+                        candidate.presentation_for_root(converted.source_root())
+                            == Some(crate::RootPresentationOwner::Contained {
+                                surface: obligation.target().host_surface(),
+                                floating: converted.floating(),
+                            })
+                    });
+            if consumes_first_live_recovery {
+                continue;
+            }
             if let Some(converted) = obligation.target().converted_main()
                 && candidate.contained_floating(converted.floating()).is_some()
             {
-                return Err(CommandError::SurfaceLifecycleFrozen { surface });
+                // A contained source keeps this same floating identity until
+                // transfer. Its future recovery reservation must not freeze an
+                // unrelated create while that exact source is unchanged.
+                let source_preserved = !matches!(
+                    saga.phase(),
+                    crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                ) && matches!(
+                    self.workspace.presentation_for_root(converted.source_root()),
+                    Some(crate::RootPresentationOwner::Contained { surface: source_surface, floating })
+                        if source_surface == prepared.source_surface() && floating == converted.floating()
+                ) && candidate
+                    .presentation_for_root(converted.source_root())
+                    == self
+                        .workspace
+                        .presentation_for_root(converted.source_root())
+                    && candidate.contained_floating(converted.floating())
+                        == self.workspace.contained_floating(converted.floating())
+                    && matches!(prepared.command(), WorkspaceCommand::RehomeRoot { source, .. }
+                        if candidate.capture_node_source(source.root(), source.node()).as_ref() == Ok(source));
+                if !source_preserved {
+                    return Err(CommandError::SurfaceLifecycleFrozen { surface });
+                }
             }
             if candidate.surface(surface).is_some() {
-                if !matches!(
-                    authority,
-                    WorkspacePublicationAuthority::NativeCommit { saga } if saga == saga_id
-                ) || Self::recovery_policy_request(
-                    &candidate,
-                    surface,
-                    obligation.request().host_surface(),
-                )? != *obligation.request()
+                let transferring = matches!(
+                    authority, WorkspacePublicationAuthority::NativeCommit { saga } if saga == saga_id
+                );
+                let unchanged_first_live =
+                    self.preserves_unrecovered_first_live_surface(saga_id, &candidate);
+                if (!transferring && !unchanged_first_live)
+                    || Self::recovery_policy_request(
+                        &candidate,
+                        surface,
+                        obligation.request().host_surface(),
+                    )? != *obligation.request()
                 {
                     return Err(CommandError::SurfaceLifecycleFrozen { surface });
                 }

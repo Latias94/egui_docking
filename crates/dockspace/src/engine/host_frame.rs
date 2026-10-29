@@ -1025,6 +1025,12 @@ impl<'frame> HostFrameView<'frame> {
 }
 
 impl CoreHostFrame {
+    pub(crate) fn last_input_outcome(&self) -> Option<&crate::transition::InputOutcome> {
+        self.reduced_inputs
+            .last()
+            .map(crate::transition::ReducedInput::outcome)
+    }
+
     pub(crate) const fn presentation_attempt(&self) -> HostPresentationAttemptId {
         self.presentation_obligations.attempt()
     }

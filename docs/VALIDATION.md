@@ -15,6 +15,91 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 recovery after transfer and before first-live admission
+
+The host frame now exposes exact pending recovery surfaces and an explicit
+`recover_transferred_native_create` operation. It resolves the saga and binding
+from the current candidate, then checks phase, registry admission, retained
+resource, first-live barrier, bound recovery obligation, domain, anchor and
+normalized complete source facts. Hosts supply neither a recovery target nor
+replacement geometry. The existing complete-roster recovery compiler publishes
+the obligated logical recovery; tick-final vacancy transfers retained resources
+to the original BindingCleanup and waits for real window destruction. No
+Presented, Destroyed or native-close fact is fabricated.
+
+The immediate result distinguishes no candidate, Applied and Blocked. Applied
+still requires frame commit; Blocked preserves every lifecycle owner. Both
+attempts have an exact submitted-action result in the public report. Frame
+drop, failed publication and effect-report pressure retain the original
+transaction and delivery ledgers. A session query derives pending create work
+from the existing coordinator so a visible but unadmitted child cannot be
+mistaken for quiescent shutdown.
+
+Fatal native dispatch tries candidates within its original shared budget,
+charging every attempt and continuing past Blocked entries until one recovery
+applies. It stores no persistent rotation cursor or new candidate registry.
+Blocked-only reports do not count as progress or revive generic repaint demand.
+When host authority is unavailable, the actual matching viewport Ui can supply
+current dock/popup bounds and pane/tab metrics through the existing measurement
+port. Only a committed Ready measurement schedules the next recovery boundary.
+Foreign hosts receive a targeted wake through their existing route; a missing
+route retains the blocked obligation. Existing no-frame invalidation and
+overload terminal boundaries still take precedence.
+
+Concurrent creates exposed two old source-reservation errors. Before transfer,
+an unchanged contained source may keep its original reserved floating while an
+independent create progresses; its owner, floating record and complete frozen
+NodeSource must remain exact. After transfer, independent publication protects
+the current complete child roster rather than the pre-transfer source owner.
+Every saga still needs its own binding/resource/obligation proof. Removing one
+recovered surface changes the global popup roster and invalidates other old
+measurement tickets. A second host therefore returns HostAuthorityUnavailable
+until a fresh measurement boundary; no extra same-tick authority bypass was
+retained. Two-host regressions cover both candidate fairness and sequential
+cleanup with the required fresh measurements.
+
+The real `late-first-live` smoke waits for actual ownership transfer, withholds
+one original real first-live terminal and injects a duplicate previous real
+terminal. It returns the withheld terminal only after fatal quarantine, then
+stops external repaint demand. Success requires the exact primary output-order
+error, no cleanup error, restored source items, no child first-live promotion,
+zero output owners and drained shutdown. This is a delayed real-window terminal
+journey with a small ordinary output peak, not the separate O256 qualification.
+The old `b69a363` production source times out in Draining after all output owners
+reach zero; that negative control is recorded in
+`/tmp/dockspace-first-live-negative-qualification.json`.
+
+Focused verification passes 11 core tests, including exact phase/binding
+isolation, rollback, occupied effect reports, late terminal rejection and two
+independent native roots. Native focused verification passes four shutdown
+tests, including per-attempt budget accounting and Blocked/measurement wakes.
+The selected source hashes are recorded in
+`/tmp/dockspace-first-live-recovery-snapshot.json`.
+
+Final frozen verification passes 1,824 workspace tests, 86 public-consumer
+tests, 10 doctests, correctness/suspicious core/native Clippy, strict rustdoc
+and formatting. Native normal and assertion-disabled configurations each pass
+448 tests, including the same-instance 10,000-lifetime model. The full workspace
+gate also preserves the older same-tick newly visible child-vacancy/focus
+regression; partial tab-created children retain their existing vacancy protocol.
+Default/bounded macOS redock and all five macOS/Linux output scenarios pass;
+the unchanged Linux physical XTest journey passes separately. The late-first-live
+scenario peaks at ordinary3/control1, forwarding its one real withheld terminal:
+macOS samples 2,843,172 resident / 3,807,664 reserved bytes and Linux samples
+2,843,140 / 3,808,560 bytes. The O256 journeys retain their independent
+ordinary256/control2 assertions; they are not inferred from the small first-live
+case. Results are recorded in
+`/tmp/dockspace-first-live-recovery-qualification.json` and
+`/tmp/dockspace-first-live-recovery-linux-qualification.json`. These native gates
+use the unchanged unpublished local egui fork override; the tracked remote pin
+still does not reproduce the local seam. A public-harness link initially failed
+because the disk was full; removing only this workspace's regenerable incremental
+compiler cache allowed the same frozen sources to pass the resumed gate.
+
+This slice does not establish
+1,000 Hz/release timing, native scoped/stationary continuity, configured-cap
+cross-saturation, the broader physical platform matrix or complete U7/U8.
+
 ## 2026-10-29 fatal cleanup before native ownership transfer
 
 `DockspaceHostFrame::cancel_next_native_create` selects at most one eligible
@@ -74,9 +159,8 @@ Results are recorded in `/tmp/dockspace-late-staging-qualification.json` and
 changes were needed; these runs still use the explicit unpublished local fork
 override rather than the older tracked remote pin.
 
-This closes pre-transfer cleanup only. A create whose durable ownership has
-already transferred but whose first-live output lacks a terminal still needs
-explicit recovery through its existing bound recovery obligation; the new
+This checkpoint closes pre-transfer cleanup only. The subsequent first-live
+recovery qualification above handles transferred ownership separately; the
 cancellation API intentionally cannot abort it. No full U7/U8 claim follows.
 
 ## 2026-10-29 bounded roster recapture and X11 physical recovery

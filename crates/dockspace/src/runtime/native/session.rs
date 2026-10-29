@@ -5,6 +5,20 @@ use crate::intent::Authority;
 use crate::pointer_journal::PointerEdgeSequence;
 
 impl DockspaceSession {
+    /// Returns whether native creation still owns a staging or first-live obligation.
+    ///
+    /// The answer is derived from the existing lifecycle coordinator. A child
+    /// whose topology transferred remains pending until exact first-live
+    /// admission or obligated recovery settles that lifecycle.
+    #[must_use]
+    pub fn has_pending_native_create(&self) -> bool {
+        self.engine
+            .viewport()
+            .native_create_sagas()
+            .next()
+            .is_some()
+    }
+
     /// Returns the cumulative number of records accepted by this native producer.
     ///
     /// Hosts may compare this diagnostic counter around callback translation to

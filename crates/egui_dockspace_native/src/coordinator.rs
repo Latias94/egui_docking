@@ -598,7 +598,8 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn is_quiescent(&self) -> bool {
-        !self.bridge.has_pending_coordinator_work()
+        !self.session.has_pending_native_create()
+            && !self.bridge.has_pending_coordinator_work()
             && !self.bridge.has_pending_lifecycle_output(&self.session)
             && !self.receivers.has_pending_commit()
             && self.queued_snapshot.is_none()

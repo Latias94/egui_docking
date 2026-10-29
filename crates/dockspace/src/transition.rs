@@ -49,6 +49,15 @@ pub enum InputPriority {
     ConfigurationCommit,
 }
 
+/// Result of one explicit recovery before native first-live admission.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NativeCreateFirstLiveRecoveryResult {
+    /// The complete child roster was restored through its durable obligation.
+    Applied,
+    /// No ownership or lifecycle resource was consumed.
+    Blocked(crate::surface_recovery::SurfaceRecoveryBlockedReason),
+}
+
 /// Result of reducing one sequenced input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputOutcome {
@@ -200,6 +209,17 @@ pub enum InputOutcome {
         saga: NativeCreateSagaId,
         /// Immediate compensation when the child had already become observable.
         compensation: Option<EffectId>,
+    },
+    /// A transferred native create attempted its exact durable roster recovery.
+    NativeCreateFirstLiveRecovery {
+        /// Exact pending lifecycle.
+        saga: NativeCreateSagaId,
+        /// Exact child incarnation.
+        binding: ViewportBinding,
+        /// Recovery host named by the existing durable obligation.
+        host: SurfaceId,
+        /// Logical application or an unconsumed recovery obligation.
+        result: NativeCreateFirstLiveRecoveryResult,
     },
     /// One definitively failed cleanup was replaced by a new exact-once effect.
     ViewportCleanupRetried {

@@ -1279,6 +1279,34 @@ recovery. Do not use stale fallback geometry, fabricate Presented/Destroyed,
 or add unconditional per-frame retries for a blocked recovery. Multiple
 simultaneous transferred reservations need their own exact-authority tests.
 
+The subsequent first-live recovery slice (2026-10-30) uses that existing bound
+obligation with exact saga/binding/barrier/resource and normalized roster checks.
+Public hosts can enumerate candidates and select one child precisely. Applied
+and Blocked attempts remain rollbackable, budgeted and report-addressable;
+Blocked does not consume ownership or imply repaint progress. Native shutdown
+continues past blocked candidates until one recovery applies, then commits the
+original vacancy/BindingCleanup protocol. Actual matching Ui measurements can
+restore host Ready in a separate committed boundary; foreign hosts use their
+existing directed viewport wake. A derived pending-create query prevents false
+quiescence. Concurrent contained-source and transferred-source reservation
+guards now protect their respective current owners. Removing a recovered
+surface changes global popup routing, so another host must refresh its invalid
+measurement ticket before the next recovery; no same-tick authority bypass is
+introduced. Focused core11/native4 pass, including two independent root hosts,
+rollback/report pressure, exact phase/binding isolation and late first-live
+rejection. Frozen identities and the old production negative control are under
+`/tmp/dockspace-first-live-*`. Load/release timing, native scoped/stationary
+input, configured-cap cross-saturation and the broader physical matrix remain
+required before U7/U8 completion.
+Final frozen qualification passes workspace1,824/public86/doctest10,
+native448/448 normal/assertion-disabled with both same-instance 10,000-lifetime
+model runs, core/native Clippy, strict docs and formatting. Default/bounded
+macOS redock and all five macOS/Linux real-window output scenarios pass; the
+unchanged Linux physical XTest journey passes independently. The late-first-live
+case has ordinary3/control1 and one withheld real terminal, while the separate
+O256 journeys retain their own capacity assertions. It does not certify input
+load/release timing or the remaining native scope/platform/combined-cap gates.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

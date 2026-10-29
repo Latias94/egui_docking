@@ -8,16 +8,16 @@ use super::{
     DockspacePresentationTransition, DockspacePresentationTransitionId,
     DockspacePresentationTransitionResult, DockspaceSubmittedAction, DockspaceTouchEvent,
     HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommit,
-    NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
-    NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput, SurfacePointerId,
-    SurfacePresentationCommit, WorkspaceVersion,
+    NativeCreateRecoveryBlockedReason, NativeEffectRequest, NativeSurfaceBinding,
+    NativeSurfaceCloseRejection, NativeSurfaceCloseRequest, PaintedNativeStagingOutput,
+    PaintedSurfaceOutput, SurfacePointerId, SurfacePresentationCommit, WorkspaceVersion,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
 use crate::event::{PresentationRehomeResult, WorkspaceEventKind};
 use crate::interaction::InteractionOutcome;
 use crate::model::SurfaceId;
-use crate::transition::InputOutcome;
+use crate::transition::{InputOutcome, NativeCreateFirstLiveRecoveryResult};
 
 impl HostFrameReport {
     pub(super) fn from_transition(
@@ -83,6 +83,26 @@ impl HostFrameReport {
                     InputOutcome::NativeInputCancelledForOverload => {
                         Some(HostInputOutcome::NativeInputCancelledForOverload)
                     }
+                    InputOutcome::NativeCreateFirstLiveRecovery {
+                        binding,
+                        host,
+                        result,
+                        ..
+                    } => Some(match result {
+                        NativeCreateFirstLiveRecoveryResult::Applied => {
+                            HostInputOutcome::NativeCreateFirstLiveRecovered {
+                                surface: binding.surface(),
+                                host: *host,
+                            }
+                        }
+                        NativeCreateFirstLiveRecoveryResult::Blocked(reason) => {
+                            HostInputOutcome::NativeCreateFirstLiveRecoveryBlocked {
+                                surface: binding.surface(),
+                                host: *host,
+                                reason: NativeCreateRecoveryBlockedReason::from_core(reason),
+                            }
+                        }
+                    }),
                     InputOutcome::ProductActionProcessed { outcome, .. } => {
                         Some(product_action_host_outcome(outcome, reduced.cause()))
                     }

@@ -361,7 +361,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         let (specs, request_repaint) = {
             let mut state = lock_state(&self.state);
             let mut request_repaint = if state.error().is_some() {
-                let (progress, cleanup_errors) = state.advance_shutdown(&context);
+                let (progress, cleanup_errors) = state.advance_shutdown(ui);
                 for error in cleanup_errors {
                     state.record_cleanup_error(error);
                 }
@@ -419,7 +419,7 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
     let token = eframe::current_native_output_token();
     let mut state = lock_state(shared);
     if state.error().is_some() {
-        let (progress, cleanup_errors) = state.advance_shutdown(ui.ctx());
+        let (progress, cleanup_errors) = state.advance_shutdown(ui);
         for error in cleanup_errors {
             state.record_cleanup_error(error);
         }

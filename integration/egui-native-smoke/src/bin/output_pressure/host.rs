@@ -76,11 +76,13 @@ impl PressureHost {
         }
     }
 
-    fn flush_late_staging_after_fatal(&self) {
+    fn flush_late_output_after_fatal(&self) {
         {
             let state = lock(&self.shared);
-            if state.scenario != Scenario::LateStaging
-                || state.phase != Phase::Draining
+            if !matches!(
+                state.scenario,
+                Scenario::LateStaging | Scenario::LateFirstLive
+            ) || state.phase != Phase::Draining
                 || state.buffered.is_empty()
             {
                 return;
@@ -105,7 +107,7 @@ impl PressureHost {
             lock(&self.shared).forwarded += 1;
         }
         lock(&self.shared).late_terminal_after_fatal = true;
-        eprintln!("output-pressure: original staging terminal delivered after fatal quarantine");
+        eprintln!("output-pressure: original deferred terminal delivered after fatal quarantine");
     }
 }
 
@@ -259,13 +261,55 @@ impl NativeHostHandler for PressureHost {
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
-        self.flush_late_staging_after_fatal();
+        self.flush_late_output_after_fatal();
+        let transferred = {
+            let state = lock(&self.shared);
+            state.scenario == Scenario::LateFirstLive
+                && state.phase == Phase::AwaitFirstLive
+                && Some(result.token().viewport_id()) == state.child_viewport
+                && result.status() == eframe::NativeOutputStatus::Presented
+        } && {
+            let runtime = lock(&self.runtime);
+            runtime.with_view(|view| {
+                view.item(CHILD_ITEM)
+                    .is_some_and(|item| item.surface() != ROOT_SURFACE)
+            }) == Some(true)
+        };
+        if transferred {
+            let previous = {
+                let mut state = lock(&self.shared);
+                let previous = state
+                    .previous_terminal
+                    .expect("a real root terminal precedes the first-live child");
+                assert!(previous.ordinal() < result.ordinal());
+                assert!(state.buffered.is_empty());
+                state.buffered.push_back(result);
+                state.phase = Phase::Draining;
+                previous
+            };
+            let runtime = lock(&self.runtime);
+            let child = lock(&self.shared)
+                .child_surface
+                .expect("the requested child identity has already been returned");
+            assert!(!runtime.is_surface_presented(child));
+            assert!(runtime.output_backlog().ordinary() > 0);
+            drop(runtime);
+            self.inner.on_output(previous);
+            eprintln!(
+                "output-pressure: withholding real first-live terminal after ownership transfer"
+            );
+            return NativeHostWake::RepaintRootAfterCurrent;
+        }
         {
             let mut state = lock(&self.shared);
             if state.phase == Phase::AwaitChild && result.token().viewport_id() != ViewportId::ROOT
             {
                 state.child_viewport = Some(result.token().viewport_id());
-                state.phase = Phase::AwaitStaging;
+                state.phase = if state.scenario == Scenario::LateFirstLive {
+                    Phase::AwaitFirstLive
+                } else {
+                    Phase::AwaitStaging
+                };
             }
             if state.phase == Phase::AwaitStaging
                 && result.token().viewport_id() == ViewportId::ROOT
@@ -315,6 +359,7 @@ impl NativeHostHandler for PressureHost {
             }
         }
         let wake = self.inner.on_output(result);
+        lock(&self.shared).previous_terminal = Some(result);
         if result.token().viewport_id() == ViewportId::ROOT
             && lock(&self.shared).phase == Phase::Done
         {

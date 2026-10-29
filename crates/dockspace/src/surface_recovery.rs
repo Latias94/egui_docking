@@ -816,9 +816,9 @@ impl SurfaceRosterDisposition {
         self.roster.contained().is_empty() || self.contained_minimum_authority.is_some()
     }
 
-    /// Compiles direct destruction recovery for the optional main and complete forest.
+    /// Compiles obligated recovery for the optional main and complete forest.
     ///
-    /// This is the only production compiler for unplanned destruction recovery.
+    /// Destruction and explicit first-live recovery use this same compiler.
     /// It derives every destination rectangle from the frozen complete source
     /// roster and one exact host fact set; callers cannot supply partial or
     /// reordered placement records.
@@ -1408,11 +1408,11 @@ impl SurfaceRecoveryState {
     }
 }
 
-/// Typed reason why a destroyed child surface remains retained for a later retry.
+/// Typed reason why an obligated child surface remains retained for a later retry.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SurfaceRecoveryBlockedReason {
-    /// The destruction edge did not match the engine-owned durable obligation.
-    #[error("destroyed surface recovery obligation is missing or mismatched")]
+    /// The recovery request did not match the engine-owned durable obligation.
+    #[error("surface recovery obligation is missing or mismatched")]
     ObligationMismatch,
     /// The exact recovery host has no current measured platform authority.
     #[error("recovery host surface {surface} is not currently authoritative")]

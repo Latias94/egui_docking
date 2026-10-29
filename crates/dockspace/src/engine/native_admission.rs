@@ -90,6 +90,18 @@ impl NativeAdmissionError {
 }
 
 impl NativeAdmissionState {
+    pub(super) fn owns_native_create_barrier(
+        &self,
+        saga: NativeCreateSagaId,
+        binding: ViewportBinding,
+        resource: NativeStagingResourceId,
+    ) -> bool {
+        self.barriers.get(&binding).is_some_and(|barrier| {
+            barrier.owner == FirstLiveOwner::NativeCreate(saga)
+                && barrier.resource == Some(resource)
+        })
+    }
+
     fn register_barrier(
         &mut self,
         target: ViewportBinding,

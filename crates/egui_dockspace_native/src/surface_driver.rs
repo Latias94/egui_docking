@@ -1256,10 +1256,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing.into())
     }
 
-    pub(crate) fn advance_shutdown(
-        &mut self,
-        context: &egui::Context,
-    ) -> (bool, Vec<NativeRuntimeError>) {
+    pub(crate) fn advance_shutdown(&mut self, ui: &egui::Ui) -> (bool, Vec<NativeRuntimeError>) {
+        let context = ui.ctx();
         let Some(token) = eframe::current_native_output_token() else {
             return (
                 false,
@@ -1277,13 +1275,48 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.shutdown.is_some(),
             "shutdown advance requires a primary failure"
         );
+        let dock_rect = ui.available_rect_before_wrap();
+        let popup_rect = context.input(egui::InputState::content_rect).round_ui();
+        let panes = &self.panes;
+        let style = &self.style;
+        let measurement_host = bridge
+            .with_viewports(|routes| {
+                routes.binding_for_output(
+                    token.viewport_id(),
+                    token.window_id(),
+                    token.create_attempt(),
+                )
+            })
+            .filter(|_| token.viewport_id() == context.viewport_id())
+            .map(|binding| binding.surface());
+        let mut measure = |frame: &mut crate::host_frame::NativeHostFrame<'_>, host| {
+            let current = bridge.with_viewports(|routes| {
+                routes.binding_for_output(
+                    token.viewport_id(),
+                    token.window_id(),
+                    token.create_attempt(),
+                )
+            });
+            if token.viewport_id() != context.viewport_id()
+                || current.is_none_or(|binding| binding.surface() != host)
+            {
+                return Ok(false);
+            }
+            frame.measure_surface(host, ui, dock_rect, popup_rect, panes, style)?;
+            Ok(true)
+        };
         let advance = self
             .coordinator
-            .advance_shutdown_boundary_with_close_policy(
+            .advance_shutdown_boundary_with_close_policy_and_measurement(
                 context,
                 self.close_policy,
                 self.root_surface,
                 &mut budget,
+                if let Some(host) = measurement_host {
+                    Some((host, &mut measure))
+                } else {
+                    None
+                },
             );
         self.apply_shutdown_advance(context, advance)
     }

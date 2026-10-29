@@ -396,3 +396,120 @@ fn cancelling_an_unemitted_create_releases_its_retained_resource() {
         "cancelling before create extraction must release the resource immediately"
     );
 }
+
+#[test]
+fn first_live_recovery_cannot_borrow_another_phase_or_binding() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let request = install_pending_native_root_reservation(&mut fixture, RootId::new(198));
+    let resource = fixture
+        .engine
+        .viewport()
+        .native_create_saga(request.saga())
+        .unwrap()
+        .resource();
+    let workspace = fixture.engine.workspace().clone();
+    let _ = fixture.engine.viewport.take_new_effects();
+
+    let expected = fixture.engine.version();
+    let blocked = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::RecoverNativeCreateFirstLive {
+            expected,
+            saga: request.saga(),
+            binding: request.binding(),
+        },
+    )
+    .expect("a staging saga cannot consume first-live recovery authority");
+    assert!(matches!(
+        blocked.reduced_inputs().last().unwrap().outcome(),
+        InputOutcome::NativeCreateFirstLiveRecovery {
+            result: crate::transition::NativeCreateFirstLiveRecoveryResult::Blocked(
+                crate::surface_recovery::SurfaceRecoveryBlockedReason::ObligationMismatch,
+            ),
+            ..
+        }
+    ));
+    assert_eq!(fixture.engine.workspace(), &workspace);
+    assert_eq!(retained_resource(&fixture, resource).id(), resource);
+
+    let _ =
+        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 2);
+    let pre_show = current_native_staging_presentation(
+        &fixture,
+        request,
+        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
+    );
+    let _ = present_background_native_staging(&mut fixture, pre_show);
+    let _ =
+        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 3);
+    let _ = publish_background_native_window(
+        &mut fixture,
+        request,
+        WindowPresentationState::Visible,
+        4,
+    );
+    let post_show = current_native_staging_presentation(
+        &fixture,
+        request,
+        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
+    );
+    let _ = present_background_native_staging(&mut fixture, post_show);
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .unwrap()
+            .phase(),
+        crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+    ));
+    let foreign = fixture
+        .engine
+        .viewport()
+        .registry()
+        .records()
+        .map(|(_, record)| record.binding())
+        .find(|binding| *binding != request.binding())
+        .expect("the original recovery host has its own binding");
+    let workspace = fixture.engine.workspace().clone();
+    let expected = fixture.engine.version();
+    let blocked = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::RecoverNativeCreateFirstLive {
+            expected,
+            saga: request.saga(),
+            binding: foreign,
+        },
+    )
+    .expect("another current binding cannot borrow the transferred saga");
+    assert!(matches!(
+        blocked.reduced_inputs().last().unwrap().outcome(),
+        InputOutcome::NativeCreateFirstLiveRecovery {
+            result: crate::transition::NativeCreateFirstLiveRecoveryResult::Blocked(
+                crate::surface_recovery::SurfaceRecoveryBlockedReason::ObligationMismatch,
+            ),
+            ..
+        }
+    ));
+    assert_eq!(fixture.engine.workspace(), &workspace);
+    assert_eq!(retained_resource(&fixture, resource).id(), resource);
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .is_some()
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .binding_retirements()
+            .next()
+            .is_none()
+    );
+}
