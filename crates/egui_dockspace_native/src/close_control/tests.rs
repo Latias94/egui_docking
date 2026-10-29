@@ -225,6 +225,64 @@ fn capture_is_exact_and_cannot_bind_core_before_requested_was_recorded() {
 }
 
 #[test]
+fn decision_request_settlement_releases_only_the_exact_completed_id() {
+    let mut control = NativeCloseControl::default();
+    let mut requests = Vec::new();
+    for ordinal in [11, 12] {
+        let (mut session, binding) = fixture();
+        let request = core_request(&mut session, binding);
+        assert!(control.observe_request(&event(binding, ordinal, 11), binding));
+        assert_eq!(control.bind_request(request), Ok(true));
+        control.mark_policy_recorded(request);
+        session
+            .request_native_surface_close(request, NativeSurfaceCloseAction::CloseContent)
+            .unwrap();
+        let report = commit(&mut session);
+        let plan = report
+            .inputs()
+            .iter()
+            .find_map(|input| match input {
+                HostInputOutcome::NativeSurfaceCloseRequested { plan, .. } => Some(plan),
+                _ => None,
+            })
+            .unwrap();
+        control.retain_decision_plan(request, plan);
+        requests.push((binding, request, plan.request()));
+    }
+    assert_eq!(control.decision_requests().count(), 2);
+    let [
+        (first_binding, first_close, first),
+        (second_binding, second_close, second),
+    ] = requests.as_slice()
+    else {
+        panic!("both exact native closes must retain a decision request")
+    };
+    assert_ne!(first, second);
+    control.settle_decision_requests(&[]);
+    assert_eq!(control.decision_requests().count(), 2);
+    control.settle_decision_requests(&[*first]);
+    assert_eq!(control.decision_requests().collect::<Vec<_>>(), [*second]);
+    control.settle_decision_requests(&[*first]);
+    assert_eq!(control.decision_requests().collect::<Vec<_>>(), [*second]);
+    assert_eq!(
+        control.request_for_binding(*first_binding),
+        Some(*first_close)
+    );
+    assert_eq!(
+        control.request_for_binding(*second_binding),
+        Some(*second_close)
+    );
+    control.retire_binding(*first_binding);
+    assert_eq!(control.decision_requests().collect::<Vec<_>>(), [*second]);
+    control.settle_decision_requests(&[*second]);
+    assert!(control.decision_requests().next().is_none());
+    assert!(!control.has_runnable_policy_work());
+    assert!(control.references_binding(*second_binding));
+    control.retire_binding(*second_binding);
+    assert!(!control.has_pending_work());
+}
+
+#[test]
 fn one_successor_waits_for_received_transferred_and_committed_clear() {
     for callback_already_received in [false, true] {
         let (mut session, binding) = fixture();

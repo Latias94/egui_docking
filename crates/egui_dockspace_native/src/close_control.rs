@@ -1,8 +1,8 @@
 //! Exact native close correlation owned by the eframe adapter.
 
-use dockspace::close::CloseItemDecisionState;
+use dockspace::close::{CloseItemDecisionState, CloseRequestId};
 use std::collections::BTreeMap;
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of;
 
 use dockspace::runtime::{
     DockspaceClosePlan, NativeCloseEffectAcknowledgement, NativeSurfaceBinding,
@@ -181,7 +181,7 @@ struct PendingNativeClose {
     cancellation_receipt: Option<CancellationReceipt>,
     clear_recorded: bool,
     policy_recorded: bool,
-    decision_plan: Option<DockspaceClosePlan>,
+    decision_request: Option<CloseRequestId>,
     successor: Option<CapturedNativeClose>,
     // A successor waits here, rather than at the raw journal head, until its
     // predecessor's Clear commits. Its original journal identity and age survive.
@@ -200,7 +200,7 @@ impl PendingNativeClose {
             cancellation_receipt: None,
             clear_recorded: false,
             policy_recorded: false,
-            decision_plan: None,
+            decision_request: None,
             successor: None,
             successor_ingress: None,
             promoted_ingress: None,
@@ -248,19 +248,14 @@ pub(crate) struct NativeCloseControl {
 }
 
 impl NativeCloseControl {
-    /// Counts inline storage, retained entry data, and boxed close-plan items.
+    /// Counts inline storage and fixed metadata for each retained close owner.
     /// Inline receipts are counted once; B-tree node and allocator overhead are excluded.
     pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
-        let entries =
-            size_of::<Self>().saturating_add(self.pending.len().saturating_mul(
+        size_of::<Self>().saturating_add(
+            self.pending.len().saturating_mul(
                 size_of::<NativeSurfaceBinding>() + size_of::<PendingNativeClose>(),
-            ));
-        self.pending
-            .values()
-            .filter_map(|pending| pending.decision_plan.as_ref())
-            .fold(entries, |bytes, plan| {
-                bytes.saturating_add(size_of_val(plan.items()))
-            })
+            ),
+        )
     }
 
     pub(crate) const fn progress(&self) -> crate::lifecycle_progress::NativeCloseProgress {
@@ -511,29 +506,29 @@ impl NativeCloseControl {
             && !pending.accepted
             && pending.cancellation.is_none()
         {
-            pending.decision_plan = plan
-                .items()
-                .iter()
-                .any(|item| item.state() == CloseItemDecisionState::Pending)
-                .then(|| plan.clone());
+            pending.decision_request = (plan.phase().requires_decision()
+                && plan
+                    .items()
+                    .iter()
+                    .any(|item| item.state() == CloseItemDecisionState::Pending))
+            .then_some(plan.request());
         }
     }
 
-    pub(crate) fn decision_plans(&self) -> Vec<DockspaceClosePlan> {
+    pub(crate) fn decision_requests(&self) -> impl Iterator<Item = CloseRequestId> + '_ {
         self.pending
             .values()
-            .filter_map(|pending| pending.decision_plan.clone())
-            .collect()
+            .filter_map(|pending| pending.decision_request)
     }
 
-    pub(crate) fn settle_decision_plans(&mut self, plans: &[DockspaceClosePlan]) {
+    /// Releases only requests proven complete by a successfully committed frame.
+    pub(crate) fn settle_decision_requests(&mut self, requests: &[CloseRequestId]) {
         for pending in self.pending.values_mut() {
-            if pending.decision_plan.as_ref().is_some_and(|plan| {
-                plans
-                    .iter()
-                    .any(|submitted| submitted.request() == plan.request())
-            }) {
-                pending.decision_plan = None;
+            if pending
+                .decision_request
+                .is_some_and(|request| requests.contains(&request))
+            {
+                pending.decision_request = None;
             }
         }
     }
@@ -543,7 +538,7 @@ impl NativeCloseControl {
             || self
                 .pending
                 .values()
-                .any(|pending| pending.decision_plan.is_some())
+                .any(|pending| pending.decision_request.is_some())
     }
 
     pub(crate) fn request_for_binding(
@@ -919,8 +914,10 @@ mod capacity_tests {
     }
 
     #[test]
-    fn owned_data_capacity_includes_boxed_decisions_until_plan_settlement() {
-        for item_count in [1, 3] {
+    fn owned_data_capacity_keeps_fixed_decision_metadata_until_exact_retirement() {
+        let (_, foreign) = fixture(1);
+        let mut metadata_bytes = None;
+        for item_count in [1, 3, 1024] {
             let (mut session, binding) = fixture(item_count);
             let close = request(&mut session, binding);
             let mut control = NativeCloseControl::default();
@@ -932,29 +929,43 @@ mod capacity_tests {
             session
                 .request_native_surface_close(close, NativeSurfaceCloseAction::CloseContent)
                 .unwrap();
-            let plan = commit(&mut session)
+            let report = commit(&mut session);
+            let plan = report
                 .inputs()
                 .iter()
                 .find_map(|input| match input {
-                    HostInputOutcome::NativeSurfaceCloseRequested { plan, .. } => {
-                        Some(plan.clone())
-                    }
+                    HostInputOutcome::NativeSurfaceCloseRequested { plan, .. } => Some(plan),
                     _ => None,
                 })
                 .expect("the native close produces its content decision plan");
             assert_eq!(plan.items().len(), usize::try_from(item_count).unwrap());
-            control.retain_decision_plan(close, &plan);
-            let retained = control.owned_data_capacity_bytes();
-            assert!(retained > inline);
-            assert_eq!(retained - inline, size_of_val(plan.items()));
-            control.commit_transferred_callbacks();
-            assert_eq!(control.owned_data_capacity_bytes(), retained);
-            control.settle_decision_plans(std::slice::from_ref(&plan));
+            control.retain_decision_plan(close, plan);
+            let decision_request = plan.request();
+            drop(report);
+            assert_eq!(
+                control.decision_requests().collect::<Vec<_>>(),
+                [decision_request]
+            );
             assert_eq!(control.owned_data_capacity_bytes(), inline);
-            control.retain_decision_plan(close, &plan);
-            assert_eq!(control.owned_data_capacity_bytes(), retained);
+            assert_eq!(
+                *metadata_bytes.get_or_insert(inline - empty),
+                inline - empty
+            );
+            control.commit_transferred_callbacks();
+            control.settle_decision_requests(&[]);
+            control.retire_binding(foreign);
+            assert_eq!(control.owned_data_capacity_bytes(), inline);
+            assert_eq!(control.request_for_binding(binding), Some(close));
+            assert_eq!(
+                control.decision_requests().collect::<Vec<_>>(),
+                [decision_request]
+            );
+            assert!(control.references_binding(binding));
             control.retire_binding(binding);
             assert_eq!(control.owned_data_capacity_bytes(), empty);
+            assert_eq!(control.request_for_binding(binding), None);
+            assert!(control.decision_requests().next().is_none());
+            assert!(!control.references_binding(binding));
         }
     }
 }

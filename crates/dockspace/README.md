@@ -361,6 +361,13 @@ Allow, Veto and deferred-continuation loop without a renderer or pointer host.
 
 Inspect `HostFrameReport::inputs()` for `HostInputOutcome::CloseRequested`.
 Each plan contains stable item identities and their exact decision tokens.
+Hosts which retain only a request identity can visit
+`DockspaceHostFrame::pending_close_decisions(request)` to read current unresolved
+initial decisions without cloning the complete plan. Take a bounded prefix of
+copied items, submit their tokens, and commit before querying the remainder in a
+later frame. A dropped frame leaves the same decisions pending. Deferred
+continuations remain separate; a foreign, stale, terminal or compacted request
+yields no initial decisions. Earlier pending native input must settle first.
 Submit initial decisions with `resolve_close`; a deferred item exposes a distinct
 continuation for `continue_deferred_close`. Core keeps the entire group unchanged
 until every required item allows the request. A veto retains the group; repeated

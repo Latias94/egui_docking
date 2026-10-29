@@ -925,6 +925,10 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.viewport_focus_binding(surface)
     }
 
+    pub(crate) fn close_plan(&self, request: CloseRequestId) -> Option<&'frame ClosePlan> {
+        self.engine.close_plan(request)
+    }
+
     /// Returns the sole pane-focus intent current at this exact reducer boundary.
     ///
     /// Adapters must read this post-input view instead of retaining a second

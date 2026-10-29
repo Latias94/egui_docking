@@ -789,6 +789,51 @@ A disposable-snapshot control omits only binding-fact staged-ledger sync and
 fails the real presented-receiver same-batch regression with
 `ButtonAlreadyPressed`; restoring synchronization passes the same regression.
 
+The close-decision follow-up removes full plan copies from the native close
+owner and its driver. The existing owner retains only `CloseRequestId`; the
+public host-frame iterator reads current pending initial tokens without a full
+plan clone. Driver request/item preparation and each decision share the current
+record/deadline budget. Partial commits retain the exact request and existing
+root wake; only a successfully committed, complete request releases its metadata.
+Core application reports keep their complete-plan contract. Public bounded
+300-pane and drop/retry coverage, native prefix gating and deferred/foreign/veto
+cases qualify this contract independently of renderer/platform behavior.
+This reduces promised terminal storage but leaves the combined allowance,
+output/report obligations, constructor peaks and complete U7 gates open.
+Fresh gates pass 1,786 all-feature workspace tests, 84 public-host tests, ten
+doctests, strict docs and correctness/suspicious Clippy. Local native tests pass
+337 normally and 337 without native debug assertions; the macOS programmatic
+redock journey completes with a sampled root-boundary high-water mark of
+2,024,968 bytes. This is local unpublished-fork qualification, not physical input
+or a complete-budget claim.
+A disposable-snapshot control removes only per-decision record charging and
+fails the 259-pane/three-record regression; restoring charging passes it.
+
+Final admission work is limited to four existing growth boundaries before the
+product profile can be enabled:
+
+1. Output-token owners must reserve ordinary capacity before insertion while a
+   bounded root diagnostic/control path still drains accepted input and closes
+   its exact token. Rejection cannot merely omit an owner and reinterpret the
+   later renderer terminal as a protocol error or require a rejected-token set.
+2. Pointer translation must reserve overlapping candidate data and every new
+   device/button/tombstone entry before allocation. Moving a device into a
+   tombstone does not release its retained-data charge.
+3. Presentation/effect obligations must reserve future report/drop capacity at
+   emission, so a terminal callback or affine `Drop` never competes with
+   ordinary admission for unpromised space.
+4. Roster conversion, producer generation maps and work-area/acknowledgement
+   sidecars must reserve their construction and replacement overlap before
+   materialization, including the still-live old backing.
+
+Use one fixed core/replay allowance plus the remaining host allowance under the
+existing serialized bridge ownership. Current owner data, promised terminal
+space and construction overlap must fit together; root-boundary sampling is
+only a cross-check. Keep the generic core unlimited by default. Do not add a
+per-allocation registry, second lifecycle authority or another measurement-only
+prerequisite in place of closing these four admission sites. The exact profile
+sizes remain implementation choices subject to complete-budget qualification.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

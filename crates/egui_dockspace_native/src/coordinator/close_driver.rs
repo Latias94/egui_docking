@@ -1,6 +1,6 @@
 //! Budgeted native-close policy using the existing exact close owner.
 
-use dockspace::close::{CloseDecision, CloseItemDecisionState};
+use dockspace::close::CloseDecision;
 use dockspace::runtime::{
     HostFrameReport, NativeInputBudget, NativeReceiverAnswer, SurfaceUnavailableReason,
 };
@@ -22,7 +22,7 @@ impl NativeCoordinator {
         Ok(())
     }
 
-    fn rearm_budget_deferred_close_policy(
+    fn rearm_deferred_close_policy(
         &self,
         context: &eframe::egui::Context,
     ) -> Result<(), NativeRuntimeError> {
@@ -47,7 +47,7 @@ impl NativeCoordinator {
             return Ok(false);
         }
         if budget.is_exhausted() {
-            self.rearm_budget_deferred_close_policy(context)?;
+            self.rearm_deferred_close_policy(context)?;
             return Ok(false);
         }
         if self.bridge.callback_boundary_pending() || self.bridge.has_unsubmitted_output_prefix() {
@@ -59,21 +59,15 @@ impl NativeCoordinator {
                 .take(budget.remaining_records())
                 .collect::<Vec<_>>()
         });
-        let plans = self.bridge.with_close_control(|control| {
+        let decision_requests = self.bridge.with_close_control(|control| {
             control
-                .decision_plans()
-                .into_iter()
-                .filter(|plan| {
-                    plan.items()
-                        .iter()
-                        .any(|item| item.state() == CloseItemDecisionState::Pending)
-                })
+                .decision_requests()
+                .take(budget.remaining_records())
                 .collect::<Vec<_>>()
         });
         let mut recorded = false;
         for close in requests {
             if budget.is_exhausted() {
-                self.rearm_budget_deferred_close_policy(context)?;
                 break;
             }
             match policy.request(close.surface() == external_root) {
@@ -85,13 +79,19 @@ impl NativeCoordinator {
             self.bridge.hold_native_boundary();
             recorded = true;
         }
-        if !recorded && plans.is_empty() {
-            return Ok(false);
+        if !recorded {
+            if budget.is_exhausted() {
+                self.rearm_deferred_close_policy(context)?;
+                return Ok(false);
+            }
+            if decision_requests.is_empty() {
+                return Ok(false);
+            }
         }
 
         // Later raw callbacks must not overtake a policy already retained by
         // the joined recorder. A general prefix poll can resume it next token;
-        // report settlement stores any decision plan on its exact close owner.
+        // report settlement stores only the decision request on its exact close owner.
         let Some(frame) = self
             .session
             .poll_native_host_frame(budget, |_| NativeReceiverAnswer::Unknown)?
@@ -106,31 +106,42 @@ impl NativeCoordinator {
             &mut self.receivers,
             None,
         );
-        let input_pending = frame.frame.native_input_pending();
-        let decisions_ready = !input_pending && !budget.is_exhausted();
-        if decisions_ready {
-            for plan in &plans {
-                for item in plan.items() {
-                    if item.state() == CloseItemDecisionState::Pending {
-                        frame.frame.resolve_close(
-                            plan.request(),
-                            item.token(),
-                            CloseDecision::Allow,
-                        )?;
+        let mut completed_requests = Vec::new();
+        if !frame.frame.native_input_pending() {
+            for request in decision_requests {
+                if budget.is_exhausted() {
+                    break;
+                }
+                let decisions = frame
+                    .frame
+                    .pending_close_decisions(request)
+                    .take(budget.remaining_records())
+                    .collect::<Vec<_>>();
+                for item in decisions {
+                    if budget.is_exhausted() {
+                        break;
                     }
+                    frame
+                        .frame
+                        .resolve_close(request, item.token(), CloseDecision::Allow)?;
+                    budget.complete_unsequenced_records(1);
+                }
+                if frame
+                    .frame
+                    .pending_close_decisions(request)
+                    .next()
+                    .is_none()
+                {
+                    completed_requests.push(request);
                 }
             }
         }
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let report = frame.commit()?;
-        if decisions_ready {
-            self.bridge
-                .with_close_control(|control| control.settle_decision_plans(&plans));
-        }
+        self.bridge
+            .with_close_control(|control| control.settle_decision_requests(&completed_requests));
         self.finish_internal_report(context, report)?;
-        if budget.is_exhausted() {
-            self.rearm_budget_deferred_close_policy(context)?;
-        }
+        self.rearm_deferred_close_policy(context)?;
         Ok(true)
     }
 

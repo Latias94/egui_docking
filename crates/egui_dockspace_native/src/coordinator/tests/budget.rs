@@ -1,9 +1,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use dockspace::close::{CloseDecision, CloseItemDecisionState, CloseRequestId};
 use dockspace::runtime::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativeInputBudget, NativeMonotonicClock,
     NativePointerEvent, NativePointerHover, NativePointerId, NativePointerOwner,
+    NativeSurfaceCloseRequest,
 };
 
 use super::*;
@@ -76,6 +78,77 @@ fn prefix_before_snapshot(native: &mut NativeCoordinator) -> HostFrameReport {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the retained-output prefix settles without semantic paint");
     frame.commit().expect("the pointer prefix commits")
+}
+
+fn pending_content_close(
+    item_count: u64,
+) -> (NativeCoordinator, NativeSurfaceCloseRequest, CloseRequestId) {
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            FIRST_SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        ),
+        DockspaceSurfaceLayout::new(
+            SECOND_SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(2),
+                DockspaceNode::tabs((2..=item_count + 1).map(ItemId::new)),
+            ),
+        ),
+    ])
+    .unwrap();
+    let session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    let mut native =
+        NativeCoordinator::new(session, NativePointerRoster::Exact(Vec::new())).unwrap();
+    let (root, binding) = register_roots(&mut native);
+    let close = super::close::observe_model_close(
+        &mut native,
+        binding,
+        [root, binding],
+        ViewportId::from_hash_of("budgeted-content-close"),
+        WindowId::from(86),
+        44,
+    );
+    assert!(
+        native
+            .drive_close_policy(
+                &egui::Context::default(),
+                crate::NativeWindowClosePolicy::CloseContent,
+                root.surface(),
+                &mut test_budget(),
+            )
+            .unwrap()
+    );
+    let request = native.bridge.with_close_control(|control| {
+        let mut requests = control.decision_requests();
+        let request = requests.next().unwrap();
+        assert!(requests.next().is_none());
+        request
+    });
+    (native, close, request)
+}
+
+fn pending_decision_items(native: &mut NativeCoordinator, request: CloseRequestId) -> Vec<ItemId> {
+    let frame = native.session.begin_host_frame().unwrap();
+    frame
+        .pending_close_decisions(request)
+        .map(|item| item.item())
+        .collect()
+}
+
+fn clear_root_repaint(context: &egui::Context) {
+    for _ in 0..8 {
+        if !context.has_requested_repaint_for(&ViewportId::ROOT) {
+            break;
+        }
+        context.begin_pass(egui::RawInput::default());
+        let mut output = context.end_pass();
+        output.textures_delta.clear();
+    }
+    assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
 }
 
 #[test]
@@ -262,7 +335,7 @@ fn policy_queued_before_a_yield_is_not_requeued_when_its_exact_plan_resumes() {
     assert!(
         native
             .bridge
-            .with_close_control(|control| control.decision_plans().is_empty())
+            .with_close_control(|control| control.decision_requests().next().is_none())
     );
     assert!(
         !native
@@ -293,7 +366,7 @@ fn policy_queued_before_a_yield_is_not_requeued_when_its_exact_plan_resumes() {
     assert_eq!(
         native
             .bridge
-            .with_close_control(|control| control.decision_plans().len()),
+            .with_close_control(|control| control.decision_requests().count()),
         1
     );
     assert!(
@@ -309,7 +382,7 @@ fn policy_queued_before_a_yield_is_not_requeued_when_its_exact_plan_resumes() {
     assert!(
         native
             .bridge
-            .with_close_control(|control| control.decision_plans().is_empty())
+            .with_close_control(|control| control.decision_requests().next().is_none())
     );
     assert!(
         !native
@@ -327,6 +400,249 @@ fn policy_queued_before_a_yield_is_not_requeued_when_its_exact_plan_resumes() {
             .expect("queued native commands dispatch")
             .is_empty(),
         "tokenless policy still cannot dispatch platform close"
+    );
+}
+
+#[test]
+fn native_close_content_decisions_share_the_remaining_record_allowance() {
+    let (mut native, close, request) = pending_content_close(259);
+    assert_eq!(pending_decision_items(&mut native, request).len(), 259);
+    let context = egui::Context::default();
+    clear_root_repaint(&context);
+    let mut budget = test_budget();
+    budget.complete_unsequenced_records(budget.remaining_records() - 3);
+    assert!(
+        native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut budget,
+            )
+            .unwrap()
+    );
+    assert_eq!(budget.remaining_records(), 0);
+    assert!(!native.bridge.callback_boundary_pending());
+    native.bridge.with_close_control(|control| {
+        assert_eq!(control.decision_requests().collect::<Vec<_>>(), [request]);
+        assert_eq!(control.request_for_binding(close.binding()), Some(close));
+        assert!(control.has_runnable_policy_work());
+    });
+    assert_eq!(
+        pending_decision_items(&mut native, request),
+        (5..=260).map(ItemId::new).collect::<Vec<_>>()
+    );
+    assert!(context.has_requested_repaint_for(&ViewportId::ROOT));
+    clear_root_repaint(&context);
+
+    // Reusing the exhausted budget cannot open an empty candidate or repeat votes.
+    assert!(
+        !native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut budget,
+            )
+            .unwrap()
+    );
+    assert!(context.has_requested_repaint_for(&ViewportId::ROOT));
+    clear_root_repaint(&context);
+    let mut fresh = test_budget();
+    assert!(
+        native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut fresh,
+            )
+            .unwrap()
+    );
+    assert_eq!(fresh.remaining_records(), 0);
+    native.bridge.with_close_control(|control| {
+        assert!(control.decision_requests().next().is_none());
+        assert!(!control.has_runnable_policy_work());
+        assert_eq!(control.request_for_binding(close.binding()), Some(close));
+    });
+    assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
+    assert!(pending_decision_items(&mut native, request).is_empty());
+    let mut idle = test_budget();
+    assert!(
+        !native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut idle,
+            )
+            .unwrap()
+    );
+    assert_eq!(idle.remaining_records(), 256);
+    assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
+}
+
+#[test]
+fn close_decision_deadline_commits_only_the_processed_prefix() {
+    let (mut native, _, request) = pending_content_close(16);
+    let calls = Arc::new(AtomicU64::new(0));
+    let source = Arc::clone(&calls);
+    let clock = NativeMonotonicClock::new(move || {
+        if source.fetch_add(1, Ordering::SeqCst) < 8 {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(2)
+        }
+    });
+    let context = egui::Context::default();
+    clear_root_repaint(&context);
+    let mut budget = NativeInputBudget::new(&clock);
+    assert!(
+        native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut budget,
+            )
+            .unwrap()
+    );
+    let completed = 256 - budget.remaining_records();
+    assert!((1..16).contains(&completed));
+    assert!(budget.is_exhausted());
+    assert_eq!(
+        pending_decision_items(&mut native, request),
+        (2..=17)
+            .map(ItemId::new)
+            .skip(completed)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        native
+            .bridge
+            .with_close_control(|control| control.decision_requests().collect::<Vec<_>>()),
+        [request]
+    );
+    assert!(context.has_requested_repaint_for(&ViewportId::ROOT));
+    assert!(
+        native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut test_budget(),
+            )
+            .unwrap()
+    );
+    assert!(
+        native
+            .bridge
+            .with_close_control(|control| control.decision_requests().next().is_none())
+    );
+}
+
+#[test]
+fn pending_native_input_keeps_the_same_close_decision_owner() {
+    let (mut native, _, request) = pending_content_close(3);
+    native
+        .session
+        .record_native_pointer_sequence((0..2).map(|_| unknown_move()))
+        .unwrap();
+    let context = egui::Context::default();
+    let mut budget = test_budget();
+    budget.complete_unsequenced_records(255);
+    assert!(
+        native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut budget,
+            )
+            .unwrap()
+    );
+    assert_eq!(budget.remaining_records(), 0);
+    assert!(native.bridge.callback_boundary_pending());
+    assert_eq!(
+        native
+            .bridge
+            .with_close_control(|control| control.decision_requests().collect::<Vec<_>>()),
+        [request]
+    );
+    let report = commit_poll(&mut native, &mut test_budget());
+    assert!(!report.native_input_pending());
+    assert_eq!(pending_decision_items(&mut native, request).len(), 3);
+    let mut fresh = test_budget();
+    assert!(
+        native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut fresh,
+            )
+            .unwrap()
+    );
+    assert_eq!(fresh.remaining_records(), 253);
+    assert!(
+        native
+            .bridge
+            .with_close_control(|control| control.decision_requests().next().is_none())
+    );
+}
+
+#[test]
+fn vetoed_close_decision_owner_clears_after_one_successful_frame() {
+    let (mut native, close, request) = pending_content_close(3);
+    let context = egui::Context::default();
+    let mut frame = native.session.begin_host_frame().unwrap();
+    let item = frame.pending_close_decisions(request).next().unwrap();
+    frame
+        .resolve_close(request, item.token(), CloseDecision::Veto)
+        .unwrap();
+    assert!(frame.pending_close_decisions(request).next().is_none());
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert!(report.inputs().iter().any(|input| matches!(
+        input,
+        HostInputOutcome::CloseDecisionProcessed { plan: Some(plan), .. }
+            if plan.items().iter().any(|item| item.state() == CloseItemDecisionState::Pending)
+    )));
+    native.finish_internal_report(&context, report).unwrap();
+    assert_eq!(
+        native
+            .bridge
+            .with_close_control(|control| control.decision_requests().collect::<Vec<_>>()),
+        [request]
+    );
+    clear_root_repaint(&context);
+    assert!(
+        native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut test_budget(),
+            )
+            .unwrap()
+    );
+    native.bridge.with_close_control(|control| {
+        assert!(control.decision_requests().next().is_none());
+        assert!(!control.has_runnable_policy_work());
+        assert_eq!(control.request_for_binding(close.binding()), Some(close));
+    });
+    assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
+    assert!(
+        !native
+            .drive_close_policy(
+                &context,
+                crate::NativeWindowClosePolicy::CloseContent,
+                FIRST_SURFACE,
+                &mut test_budget(),
+            )
+            .unwrap()
     );
 }
 

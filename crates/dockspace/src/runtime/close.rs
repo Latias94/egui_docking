@@ -239,7 +239,7 @@ impl DockspaceClosePhase {
 }
 
 impl DockspaceCloseItem {
-    const fn from_core(item: crate::close_plan::ClosePlanItem) -> Self {
+    pub(super) const fn from_core(item: crate::close_plan::ClosePlanItem) -> Self {
         Self {
             item: item.item(),
             capability: item.capability(),

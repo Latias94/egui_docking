@@ -15,6 +15,49 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 close-decision owner and scheduling
+
+`DockspaceHostFrame::pending_close_decisions(request)` visits the current
+candidate's unresolved initial decisions without allocating a complete plan.
+Hosts can copy a bounded prefix and retain only the exact request identity
+between commits. Deferred continuations remain explicit, and non-decision
+phases, foreign/compacted requests and pending earlier native input yield no
+initial tokens. A dropped candidate preserves the published decisions.
+
+The native close owner now retains one `CloseRequestId` in its existing exact
+binding record. It no longer clones boxed item lists on report settlement or
+copies all retained plans into the driver. The driver bounds request and item
+preparation by the current shared record allowance, checks the deadline between
+decisions and accounts for every submitted decision. Partial commits keep the
+same owner and rearm the existing root wake. Only a successful frame clears
+request IDs proven to have no remaining initial decisions; failed or dropped
+frames cannot release that progress.
+
+The public-host regression closes 300 panes in 64-decision prefixes, verifies
+original-token retry after dropping a candidate, and checks deferred/foreign/
+vetoed requests plus the complete native-prefix barrier. Native qualification
+includes more than one batch of pane decisions and a supplied partial record
+allowance. Close-owner owned-data capacity now depends on exact owner count,
+independently of each plan's pane count. Core application reports retain their
+existing complete-plan contract; this slice removes adapter duplicate storage.
+
+Fresh serialized qualification passes 1,786 all-feature workspace tests,
+84 external public-host tests, ten doctests, strict rustdoc, and
+correctness/suspicious Clippy. The local unpublished-fork native workspace passes
+337 tests normally and 337 with native debug assertions disabled, plus its
+correctness/suspicious Clippy. The macOS programmatic tear-off, first-live,
+redock and retirement journey exits 0 with a sampled root-boundary high-water
+mark of 2,024,968 owned input-data bytes. Results are recorded in
+`/tmp/dockspace-close-decision-qualification.json`. A disposable-snapshot control
+removes only per-decision record charging; the 259-pane/three-record regression
+fails because its allowance is not exhausted (exit 100), and restoration passes
+(exit 0). Control results are recorded in
+`/tmp/dockspace-close-decision-control.json`.
+
+The total shared input allowance, remaining output/report promises and
+constructor peaks are still open. This work does not enable the product cap or
+qualify native load, soak or physical input.
+
 ## 2026-10-29 U7 fixed-size binding input termination
 
 `report_native_input_binding_retired(binding)` records one provider-bound

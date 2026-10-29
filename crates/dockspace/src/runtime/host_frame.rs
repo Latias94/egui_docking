@@ -22,10 +22,10 @@ use super::local_action::PreparedSurfaceAction;
 use super::native::NativePlatformError;
 use super::presentation;
 use super::{
-    DockPresentationConfig, DockspaceRuntimeError, DockspaceSession, DockspaceSubmittedAction,
-    HostFrameReport, NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowPlacement,
-    PreparedDockAction, PreparedPaneFocusObservation, SurfaceProgramExecutionReceipt,
-    SurfaceUnavailableReason,
+    DockPresentationConfig, DockspaceCloseItem, DockspaceRuntimeError, DockspaceSession,
+    DockspaceSubmittedAction, HostFrameReport, NativeStagingPaintRequest, NativeSurfaceBinding,
+    NativeWindowPlacement, PreparedDockAction, PreparedPaneFocusObservation,
+    SurfaceProgramExecutionReceipt, SurfaceUnavailableReason,
 };
 
 pub(super) const APPLICATION_INPUT_SOURCE: StableInputSourceId =
@@ -419,6 +419,41 @@ impl DockspaceHostFrame<'_> {
             token,
             decision,
         })
+    }
+
+    /// Visits current unresolved initial decisions without cloning a complete plan.
+    ///
+    /// Items retain the plan's normative order. Only decision-phase plans are
+    /// visited; deferred continuations are separate, and a terminal, stale,
+    /// foreign or compacted request yields no items. Earlier unresolved native
+    /// input also yields no items because application decisions must wait for
+    /// its complete boundary. Callers can take a bounded prefix, submit those
+    /// copied tokens, commit, and query the remaining decisions in a later frame.
+    ///
+    /// Reading grants no authority beyond each existing exact decision token.
+    /// Dropping the frame leaves published decisions unchanged; ordinary token
+    /// validation still applies when resolving a copied item.
+    pub fn pending_close_decisions(
+        &self,
+        request: CloseRequestId,
+    ) -> impl Iterator<Item = DockspaceCloseItem> + '_ {
+        self.frame
+            .view()
+            .close_plan(request)
+            .filter(|plan| {
+                !self.native_input_pending
+                    && matches!(
+                        plan.phase(),
+                        crate::close_plan::ClosePlanPhase::Requested
+                            | crate::close_plan::ClosePlanPhase::Resolving
+                            | crate::close_plan::ClosePlanPhase::Deferred
+                    )
+            })
+            .into_iter()
+            .flat_map(|plan| plan.items().iter())
+            .filter(|item| item.state() == crate::close_plan::CloseItemDecisionState::Pending)
+            .copied()
+            .map(DockspaceCloseItem::from_core)
     }
 
     /// Resolves one deferred close continuation.
