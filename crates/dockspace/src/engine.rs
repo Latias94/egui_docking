@@ -739,6 +739,8 @@ impl<'frame> HostFrameView<'frame> {
 /// post-observation host-frame authority.
 #[derive(Debug)]
 pub struct CoreHostFrame {
+    /// Optional external report slots available for this frame's effect delivery.
+    platform_effect_delivery_limit: Option<usize>,
     authority_domain: EngineAuthorityDomainId,
     presentation_host: PresentationHostLease,
     workspace: WorkspaceVersion,

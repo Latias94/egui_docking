@@ -12,6 +12,114 @@ use dockspace::runtime::{
 use std::num::NonZeroUsize;
 
 #[test]
+fn public_report_allowance_rejects_before_publication_and_reuses_a_prepaid_output_slot() {
+    use dockspace::geometry::{LogicalRect, LogicalSize};
+    use dockspace::runtime::{
+        NativeReportStorageLimit, SurfacePresentationResult, UniformSurfaceMetrics,
+    };
+
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SurfaceId::new(1),
+        DockspaceRootLayout::new(
+            RootId::new(1),
+            DockspaceNode::central_tabs([ItemId::new(1)]),
+        ),
+    )])
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    let one = NonZeroUsize::new(1).unwrap();
+    let reports = NativeReportStorageLimit::new(one, one, 1 << 20);
+    session
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            NativeInputStorageLimit::new(NonZeroUsize::new(4).unwrap(), 1 << 20)
+                .with_report_storage_limit(reports),
+        )
+        .unwrap();
+    assert_eq!(
+        session.native_input_report_storage_reserved_bytes(),
+        Some(reports.byte_limit())
+    );
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    frame
+        .measure_surface(
+            SurfaceId::new(1),
+            UniformSurfaceMetrics::new(
+                LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                LogicalSize::new(32.0, 24.0).unwrap(),
+                80.0,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    frame.commit().unwrap();
+
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    let receipt = frame
+        .paint_plan(SurfaceId::new(1))
+        .unwrap()
+        .unwrap()
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .unwrap();
+    frame.confirm_surface_painted(receipt).unwrap();
+    let first = frame
+        .commit()
+        .unwrap()
+        .take_painted_outputs()
+        .pop()
+        .unwrap();
+    let first_artifact = first.presentation_artifact();
+    let version = session.version();
+    let recorded = session.native_input_recorded_count();
+    let bytes = session.native_input_pending_report_capacity_bytes();
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    let receipt = frame
+        .paint_plan(SurfaceId::new(1))
+        .unwrap()
+        .unwrap()
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .unwrap();
+    frame.confirm_surface_painted(receipt).unwrap();
+    assert_eq!(
+        frame.commit().unwrap_err().native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    assert_eq!(session.version(), version);
+    assert_eq!(session.native_input_recorded_count(), recorded);
+    assert_eq!(session.native_input_pending_report_capacity_bytes(), bytes);
+
+    session
+        .report_surface_presentation(first, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    let receipt = frame
+        .paint_plan(SurfaceId::new(1))
+        .unwrap()
+        .unwrap()
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .unwrap();
+    frame.confirm_surface_painted(receipt).unwrap();
+    let mut report = frame.commit().unwrap();
+    assert!(report.surface_presentation_commits()[0].presents(first_artifact));
+    let second = report.take_painted_outputs().pop().unwrap();
+    let second_artifact = second.presentation_artifact();
+    let bytes = session.native_input_pending_report_capacity_bytes();
+    std::thread::spawn(move || drop(second)).join().unwrap();
+    assert_eq!(session.native_input_pending_report_capacity_bytes(), bytes);
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert!(report.surface_presentation_commits()[0].retires(second_artifact));
+    assert_eq!(
+        session.native_input_report_storage_reserved_bytes(),
+        Some(reports.byte_limit())
+    );
+    assert!(session.native_input_pending_report_capacity_bytes() <= reports.byte_limit());
+}
+
+#[test]
 fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_public_api() {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SurfaceId::new(1),

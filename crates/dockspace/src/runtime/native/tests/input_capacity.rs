@@ -1,6 +1,6 @@
 use super::*;
 use crate::model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout};
-use crate::runtime::{DockspaceHostFrame, NativeInputStorageLimit};
+use crate::runtime::{DockspaceHostFrame, NativeInputStorageLimit, NativeReportStorageLimit};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -24,6 +24,73 @@ fn complete(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     frame.commit().unwrap()
+}
+
+#[test]
+fn report_storage_is_promised_before_provider_enrollment_and_rejected_configuration_is_inert() {
+    let mut session = unenrolled_session();
+    let slots = NonZeroUsize::new(1).unwrap();
+    let frontier = session.engine.presentation_identity_frontier();
+    let rejected = limit(4, WORK_BYTES)
+        .with_report_storage_limit(NativeReportStorageLimit::new(slots, slots, 0));
+    assert_eq!(
+        session
+            .enable_managed_native_host_with_input_storage_limit(
+                NativePointerRoster::Exact(Vec::new()),
+                rejected,
+            )
+            .unwrap_err()
+            .native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    assert!(session.native.is_none());
+    assert!(session.engine.backend_ingress_provider().is_none());
+    assert_eq!(session.engine.presentation_identity_frontier(), frontier);
+    assert_eq!(session.native_input_report_storage_reserved_bytes(), None);
+    assert!(session.presentation.is_quiescent());
+    assert!(session.abandoned_native_effects.is_quiescent());
+
+    let report_bytes = crate::runtime::presentation::RuntimePresentationState::reservation_bytes(1)
+        .unwrap()
+        + crate::runtime::native_effect::NativeEffectDropQueue::reservation_bytes(1).unwrap()
+        + session.presentation.owned_data_capacity_bytes()
+        + session.abandoned_native_effects.owned_data_capacity_bytes();
+    let one_byte_short = limit(4, WORK_BYTES).with_report_storage_limit(
+        NativeReportStorageLimit::new(slots, slots, report_bytes - 1),
+    );
+    assert_eq!(
+        session
+            .enable_managed_native_host_with_input_storage_limit(
+                NativePointerRoster::Exact(Vec::new()),
+                one_byte_short,
+            )
+            .unwrap_err()
+            .native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    assert!(session.engine.backend_ingress_provider().is_none());
+    assert_eq!(session.engine.presentation_identity_frontier(), frontier);
+    let reports = NativeReportStorageLimit::new(slots, slots, report_bytes);
+    session
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            limit(4, WORK_BYTES).with_report_storage_limit(reports),
+        )
+        .unwrap();
+    assert_eq!(
+        session.native_input_report_storage_reserved_bytes(),
+        Some(report_bytes)
+    );
+    assert!(session.native_input_pending_report_capacity_bytes() <= report_bytes);
+    complete(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    assert_eq!(
+        session.native_input_report_storage_reserved_bytes(),
+        Some(report_bytes)
+    );
 }
 
 #[test]

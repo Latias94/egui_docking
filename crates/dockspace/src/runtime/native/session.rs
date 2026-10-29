@@ -151,6 +151,9 @@ impl DockspaceSession {
         initial_pointer_roster: NativePointerRoster,
         limit: NativeInputStorageLimit,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
+        if let Some(reports) = limit.report_storage_limit() {
+            reports.validate()?;
+        }
         crate::backend_ingress::BackendIngressRecorder::preflight_native_transport_configuration(
             limit.record_slots(),
             limit.byte_limit(),
@@ -239,6 +242,31 @@ impl DockspaceSession {
         if self.native.is_some() {
             return Err(NativePlatformError::ProviderAlreadyEnabled.into());
         }
+        let report_storage = storage_limit
+            .and_then(NativeInputStorageLimit::report_storage_limit)
+            .map(|limit| {
+                limit.validate()?;
+                if !self.presentation.is_quiescent()
+                    || !self.abandoned_native_effects.is_quiescent()
+                {
+                    return Err(NativePlatformError::InputPending);
+                }
+                limit.validate_replacement(
+                    self.presentation
+                        .owned_data_capacity_bytes()
+                        .saturating_add(self.abandoned_native_effects.owned_data_capacity_bytes()),
+                )?;
+                Ok((
+                    limit,
+                    super::super::presentation::RuntimePresentationState::with_capacity_limit(
+                        limit.presentation_slots().get(),
+                    )?,
+                    super::super::native_effect::NativeEffectDropQueue::with_capacity_limit(
+                        limit.effect_slots().get(),
+                    )?,
+                ))
+            })
+            .transpose()?;
         let watermark = PointerEdgeSequence::new(0);
         let checkpoint_journal = pointer_checkpoint
             .map(|checkpoint| {
@@ -274,6 +302,11 @@ impl DockspaceSession {
         let mut native = RuntimeNativeState::new(recorder, profile);
         let initial_commit = native.commit(&self.engine);
         self.native = Some(native);
+        if let Some((limit, presentation, effects)) = report_storage {
+            self.presentation = presentation;
+            self.abandoned_native_effects = effects;
+            self.native_report_storage_limit = Some(limit);
+        }
         Ok(initial_commit.bindings)
     }
 

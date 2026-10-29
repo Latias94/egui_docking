@@ -51,7 +51,7 @@ pub use pointer::{
     NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
     NativeScrollSequenceId,
 };
-pub use storage::NativeInputStorageLimit;
+pub use storage::{NativeInputStorageLimit, NativeReportStorageLimit};
 
 /// Adapter-owned opaque native-window token.
 ///
@@ -735,8 +735,8 @@ pub(super) enum NativePlatformError {
     /// Earlier accepted native facts have not yet reached the publication prefix.
     #[error("earlier native input must commit before application input")]
     InputPending,
-    /// Native input transport could not retain another record or allocate its backing.
-    #[error("native input transport capacity is unavailable")]
+    /// Native input or future terminal-report storage could not fit its allowance.
+    #[error("native input or terminal-report capacity is unavailable")]
     InputCapacity,
     /// A binding is still live and therefore cannot be declared permanently quiescent.
     #[error("native surface {surface} is still live and cannot be quiesced")]
@@ -1018,17 +1018,9 @@ impl RuntimeNativeState {
         &mut self,
         abandoned: &super::native_effect::NativeEffectDropQueue,
     ) -> Result<(), NativePlatformError> {
-        let mut pending = abandoned
-            .take_for(self.provider())
-            .map_err(|()| NativePlatformError::ProtocolInvariant)?
-            .into_iter();
-        while let Some(result) = pending.next() {
-            if let Err(error) = self.record_effect_result(result.result) {
-                abandoned.restore_front(std::iter::once(result).chain(pending));
-                return Err(error);
-            }
-        }
-        Ok(())
+        abandoned.record_for(self.provider(), |result| {
+            self.record_effect_result(result.result)
+        })
     }
 
     fn next_snapshot_generation(&self) -> Result<u64, NativePlatformError> {

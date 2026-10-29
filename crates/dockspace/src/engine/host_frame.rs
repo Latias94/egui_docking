@@ -1088,6 +1088,7 @@ impl CoreHostFrame {
         let tick_policy = candidate.policy.clone();
         let application_base = candidate.version;
         let mut frame = Self {
+            platform_effect_delivery_limit: None,
             authority_domain,
             presentation_host,
             workspace: admission_workspace,
@@ -2758,6 +2759,10 @@ impl CoreHostFrame {
 }
 
 impl CoreHostPresentationFrame {
+    pub(crate) fn with_platform_effect_delivery_limit(mut self, limit: Option<usize>) -> Self {
+        self.frame.platform_effect_delivery_limit = limit;
+        self
+    }
     #[cfg(feature = "serde")]
     pub(crate) fn item_identity_scope_matches(&self, expected: &BTreeSet<ItemId>) -> bool {
         self.frame.item_identity_scope.as_deref() == Some(expected)
@@ -2921,6 +2926,12 @@ impl PreparedHostFrameCommit<'_> {
 }
 
 impl OwnedPreparedHostFrameCommit {
+    pub(crate) fn has_new_undelivered_platform_effects(&self, engine: &DockEngine) -> bool {
+        self.candidate
+            .viewport
+            .effects()
+            .has_undelivered_request_after(engine.viewport.latest_effect_id())
+    }
     /// Returns the exact transition which will be published on commit.
     #[must_use]
     pub const fn transition(&self) -> &EngineTransition {

@@ -1,6 +1,5 @@
 //! Private final-presentation sidecar for the public runtime facade.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
@@ -11,15 +10,16 @@ use crate::engine::{DockEngine, EngineError};
 use crate::ids::SurfaceId;
 use crate::intent::Authority;
 use crate::presentation_observation::{
-    HostFrameKey, HostPresentationCaptureGeneration, HostPresentationEmission,
-    HostPresentationEndpoint, HostPresentationObservation, HostPresentationObservationEntry,
+    HostFrameKey, HostPresentationCaptureGeneration, HostPresentationEndpoint,
+    HostPresentationObservation, HostPresentationObservationEntry,
     HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationOutputPayload,
     HostPresentationProgress, HostPresentationStreamId, HostPresentationStreamObservation,
     NativeStagingPresentation, NativeStagingPresentationPhase as CoreNativeStagingPhase,
+    PresentationStreamQuiescence,
 };
 use crate::transition::EngineTransition;
 
-use super::native::NativeSurfaceBinding;
+use super::native::{NativePlatformError, NativeSurfaceBinding};
 
 /// Affine record for one complete surface emission accepted by the host sink.
 ///
@@ -32,7 +32,7 @@ use super::native::NativeSurfaceBinding;
 #[must_use = "report this exact output's final disposition or drop it to retire the emission"]
 pub struct PaintedSurfaceOutput {
     output: HostPresentationOutput,
-    abandoned: PresentationDropQueue,
+    abandoned: PresentationOutputs,
     armed: bool,
 }
 
@@ -188,7 +188,7 @@ impl NativeStagingPaintRequest {
 pub struct PaintedNativeStagingOutput {
     output: HostPresentationOutput,
     request: NativeStagingPaintRequest,
-    abandoned: PresentationDropQueue,
+    abandoned: PresentationOutputs,
     armed: bool,
 }
 
@@ -241,7 +241,7 @@ impl Eq for PaintedNativeStagingOutput {}
 impl Drop for PaintedNativeStagingOutput {
     fn drop(&mut self) {
         if self.armed {
-            self.abandoned.push(self.output);
+            self.abandoned.abandon(self.output);
         }
     }
 }
@@ -300,7 +300,7 @@ impl Eq for PaintedSurfaceOutput {}
 impl Drop for PaintedSurfaceOutput {
     fn drop(&mut self) {
         if self.armed {
-            self.abandoned.push(self.output);
+            self.abandoned.abandon(self.output);
         }
     }
 }
@@ -396,31 +396,80 @@ pub(super) enum PresentationObservationError {
 
 #[derive(Debug, Default)]
 pub(super) struct RuntimePresentationState {
-    pending: BTreeMap<HostPresentationStreamId, Vec<HostPresentationOutput>>,
-    results: BTreeMap<HostPresentationStreamId, BTreeMap<HostFrameKey, SurfacePresentationResult>>,
-    capture_generations: BTreeMap<HostPresentationStreamId, HostPresentationCaptureGeneration>,
-    backend_recorded: BTreeMap<HostPresentationStreamId, RecordedPresentationReport>,
-    abandoned: PresentationDropQueue,
+    pending: PresentationOutputs,
+    streams: Vec<RuntimePresentationStream>,
+    slot_limit: Option<usize>,
 }
 
-/// Session-owned sink for painted outputs abandoned after core emission.
-///
-/// This is a small private terminal-result queue. It prevents a forgotten
-/// affine output from blocking every newer result in the same ordered stream.
-#[derive(Debug, Clone, Default)]
-struct PresentationDropQueue(Arc<Mutex<Vec<HostPresentationOutput>>>);
+#[derive(Debug, Clone, Copy)]
+struct PendingPresentationOutput {
+    output: HostPresentationOutput,
+    result: Option<SurfacePresentationResult>,
+}
 
-impl PresentationDropQueue {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<HostPresentationOutput>> {
+/// The original pending output is also its terminal-result slot. Affine handles
+/// share this store so Drop never allocates or creates another result owner.
+#[derive(Debug, Clone, Default)]
+struct PresentationOutputs(Arc<Mutex<Vec<PendingPresentationOutput>>>);
+
+impl PresentationOutputs {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<PendingPresentationOutput>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push(&self, output: HostPresentationOutput) {
-        self.lock().push(output);
+    fn is_empty(&self) -> bool {
+        self.lock().is_empty()
     }
 
-    fn take(&self) -> Vec<HostPresentationOutput> {
-        std::mem::take(&mut *self.lock())
+    fn streams(&self) -> Vec<HostPresentationStreamId> {
+        let pending = self.lock();
+        let mut streams = Vec::with_capacity(pending.len());
+        streams.extend(pending.iter().map(|entry| entry.output.stream()));
+        streams.sort_unstable();
+        streams.dedup();
+        streams
+    }
+
+    fn record(&self, output: HostPresentationOutput, result: SurfacePresentationResult) -> bool {
+        let mut pending = self.lock();
+        let Some(entry) = pending.iter_mut().find(|entry| entry.output == output) else {
+            return false;
+        };
+        if entry.result.is_some() {
+            return false;
+        }
+        entry.result = Some(result);
+        true
+    }
+
+    fn abandon(&self, output: HostPresentationOutput) {
+        let _ = self.record(output, SurfacePresentationResult::Dropped);
+    }
+}
+
+pub(super) struct PreparedPresentationEmissions {
+    pending: PresentationOutputs,
+    entries: Vec<PendingPresentationOutput>,
+    streams: Vec<RuntimePresentationStream>,
+    surfaces: Vec<PaintedSurfaceOutput>,
+    staging: Vec<PaintedNativeStagingOutput>,
+}
+
+impl PreparedPresentationEmissions {
+    /// Installation follows core publication; all backing was admitted earlier.
+    pub(super) fn commit(
+        mut self,
+        state: &mut RuntimePresentationState,
+    ) -> (Vec<PaintedSurfaceOutput>, Vec<PaintedNativeStagingOutput>) {
+        state.streams.append(&mut self.streams);
+        self.pending.lock().append(&mut self.entries);
+        for output in &mut self.surfaces {
+            output.armed = true;
+        }
+        for output in &mut self.staging {
+            output.armed = true;
+        }
+        (self.surfaces, self.staging)
     }
 }
 
@@ -443,6 +492,27 @@ impl PendingPresentationReport {
     }
 }
 
+fn submitted_retirement(
+    outcome: &HostPresentationObservationOutcome,
+    submitted: &SubmittedPresentationObservation,
+) -> Option<(HostPresentationStreamId, HostFrameKey)> {
+    let HostPresentationObservationOutcome::Retired {
+        stream,
+        generation,
+        settled_through,
+        presented,
+        ..
+    } = outcome
+    else {
+        return None;
+    };
+    let (submitted_generation, report) = submitted.get(*stream)?;
+    (generation == &submitted_generation
+        && settled_through == &report.settled_through
+        && presented == &report.authority())
+        .then_some((*stream, *settled_through))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecordedPresentationReport {
     provider: BackendIngressLease,
@@ -450,54 +520,106 @@ struct RecordedPresentationReport {
     report: PendingPresentationReport,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RuntimePresentationStream {
+    stream: HostPresentationStreamId,
+    generation: HostPresentationCaptureGeneration,
+    recorded: Option<RecordedPresentationReport>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct SubmittedPresentationObservation {
-    captured: BTreeMap<
+    captured: Vec<(
         HostPresentationStreamId,
-        (HostPresentationCaptureGeneration, PendingPresentationReport),
-    >,
+        HostPresentationCaptureGeneration,
+        PendingPresentationReport,
+    )>,
+}
+
+impl SubmittedPresentationObservation {
+    fn with_capacity(streams: usize) -> Self {
+        Self {
+            captured: Vec::with_capacity(streams),
+        }
+    }
+
+    fn get(
+        &self,
+        stream: HostPresentationStreamId,
+    ) -> Option<(HostPresentationCaptureGeneration, PendingPresentationReport)> {
+        self.captured
+            .iter()
+            .find_map(|(candidate, generation, report)| {
+                (*candidate == stream).then_some((*generation, *report))
+            })
+    }
 }
 
 impl RuntimePresentationState {
-    /// Counts sidecar entries and vector capacities, including its shared drop queue once.
+    /// Counts the original pending store and its in-place result slots once.
     pub(super) fn owned_data_capacity_bytes(&self) -> usize {
-        let pending = self.pending.values().fold(0usize, |bytes, outputs| {
-            bytes.saturating_add(
-                outputs
-                    .capacity()
-                    .saturating_mul(size_of::<HostPresentationOutput>()),
-            )
-        });
-        let results =
-            self.results.values().fold(0usize, |bytes, reports| {
-                bytes.saturating_add(reports.len().saturating_mul(
-                    size_of::<HostFrameKey>() + size_of::<SurfacePresentationResult>(),
-                ))
-            });
         size_of::<Self>()
-            .saturating_add(self.pending.len().saturating_mul(
-                size_of::<HostPresentationStreamId>() + size_of::<Vec<HostPresentationOutput>>(),
-            ))
-            .saturating_add(pending)
-            .saturating_add(self.results.len().saturating_mul(
-                size_of::<HostPresentationStreamId>()
-                    + size_of::<BTreeMap<HostFrameKey, SurfacePresentationResult>>(),
-            ))
-            .saturating_add(results)
-            .saturating_add(self.capture_generations.len().saturating_mul(
-                size_of::<HostPresentationStreamId>()
-                    + size_of::<HostPresentationCaptureGeneration>(),
-            ))
-            .saturating_add(self.backend_recorded.len().saturating_mul(
-                size_of::<HostPresentationStreamId>() + size_of::<RecordedPresentationReport>(),
-            ))
-            .saturating_add(size_of::<Mutex<Vec<HostPresentationOutput>>>())
+            .saturating_add(size_of::<Mutex<Vec<PendingPresentationOutput>>>())
             .saturating_add(
-                self.abandoned
+                self.pending
                     .lock()
                     .capacity()
-                    .saturating_mul(size_of::<HostPresentationOutput>()),
+                    .saturating_mul(size_of::<PendingPresentationOutput>()),
             )
+            .saturating_add(
+                self.streams
+                    .capacity()
+                    .saturating_mul(size_of::<RuntimePresentationStream>()),
+            )
+    }
+
+    pub(super) fn with_capacity_limit(slots: usize) -> Result<Self, NativePlatformError> {
+        let mut pending = Vec::new();
+        pending
+            .try_reserve_exact(slots)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        if pending.capacity() > slots {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        let mut streams = Vec::new();
+        streams
+            .try_reserve_exact(slots)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        if streams.capacity() > slots {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        Ok(Self {
+            pending: PresentationOutputs(Arc::new(Mutex::new(pending))),
+            streams,
+            slot_limit: Some(slots),
+        })
+    }
+
+    pub(super) fn is_quiescent(&self) -> bool {
+        self.pending.is_empty() && self.streams.is_empty()
+    }
+
+    /// Covers retained slots, the complete prepared emission, returned handles
+    /// and per-stream report construction/settlement alongside retained history.
+    pub(super) fn reservation_bytes(slots: usize) -> Option<usize> {
+        let per_slot = 2 * size_of::<PendingPresentationOutput>()
+            + size_of::<PaintedSurfaceOutput>().max(size_of::<PaintedNativeStagingOutput>())
+            + 4 * size_of::<HostPresentationStreamId>()
+            + 2 * size_of::<RuntimePresentationStream>()
+            + size_of::<(
+                HostPresentationStreamId,
+                HostPresentationCaptureGeneration,
+                PendingPresentationReport,
+            )>()
+            + size_of::<HostPresentationObservationEntry>()
+            + size_of::<SurfacePresentationCommit>()
+            + size_of::<PresentationStreamQuiescence>();
+        size_of::<Self>()
+            .checked_add(size_of::<Mutex<Vec<PendingPresentationOutput>>>())?
+            .checked_add(size_of::<PreparedPresentationEmissions>())?
+            .checked_add(size_of::<SubmittedPresentationObservation>())?
+            .checked_add(4 * size_of::<Vec<HostPresentationObservationEntry>>())?
+            .checked_add(slots.checked_mul(per_slot)?)
     }
 
     pub(super) fn reclaim_quiescent_streams(
@@ -505,17 +627,13 @@ impl RuntimePresentationState {
         engine: &mut DockEngine,
         host: crate::presentation_observation::PresentationHostLease,
     ) -> Result<(), super::DockspaceRuntimeError> {
-        let candidates = self
-            .capture_generations
-            .keys()
-            .copied()
-            .filter(|stream| {
-                !self.pending.contains_key(stream)
-                    && !self.results.contains_key(stream)
-                    && !self.backend_recorded.contains_key(stream)
-            })
-            .collect::<Vec<_>>();
-        let mut quiescences = Vec::new();
+        let pending_streams = self.pending.streams();
+        let mut candidates = Vec::with_capacity(self.streams.len());
+        candidates.extend(self.streams.iter().filter_map(|state| {
+            (!pending_streams.contains(&state.stream) && state.recorded.is_none())
+                .then_some(state.stream)
+        }));
+        let mut quiescences = Vec::with_capacity(candidates.len());
         for stream in candidates {
             if let Some(quiescence) =
                 engine.try_prepare_presentation_stream_quiescence(host, stream)?
@@ -532,44 +650,32 @@ impl RuntimePresentationState {
 
     pub(super) fn reclaim_compacted_streams(&mut self, engine: &DockEngine) {
         let retained = engine.presentation_retention_manifest();
-        self.capture_generations
-            .retain(|stream, _| retained.retains_stream(*stream));
-        self.backend_recorded
-            .retain(|stream, _| retained.retains_stream(*stream));
+        self.streams
+            .retain(|state| retained.retains_stream(state.stream));
     }
 
     #[cfg(test)]
     pub(super) fn retained_capture_generation_count(&self) -> usize {
-        self.capture_generations.len()
-    }
-
-    fn drain_abandoned(&mut self) {
-        for output in self.abandoned.take() {
-            let is_pending = self
-                .pending
-                .get(&output.stream())
-                .is_some_and(|pending| pending.contains(&output));
-            if is_pending {
-                self.results
-                    .entry(output.stream())
-                    .or_default()
-                    .entry(output.key())
-                    .or_insert(SurfacePresentationResult::Dropped);
-            }
-        }
+        self.streams
+            .iter()
+            .filter(|state| state.generation != HostPresentationCaptureGeneration::default())
+            .count()
     }
 
     fn compile_report(
         &self,
         stream: HostPresentationStreamId,
     ) -> Option<PendingPresentationReport> {
-        let pending = self.pending.get(&stream)?;
-        let results = self.results.get(&stream)?;
+        let pending = self.pending.lock();
         let mut report: Option<PendingPresentationReport> = None;
-        for output in pending {
-            let Some(result) = results.get(&output.key()).copied() else {
+        for entry in pending
+            .iter()
+            .filter(|entry| entry.output.stream() == stream)
+        {
+            let Some(result) = entry.result else {
                 break;
             };
+            let output = entry.output;
             match &mut report {
                 Some(report) => report.record(output.key(), result),
                 None => {
@@ -585,14 +691,33 @@ impl RuntimePresentationState {
     }
 
     pub(super) fn has_unrecorded_backend_report(&mut self) -> bool {
-        self.drain_abandoned();
-        self.pending.keys().any(|stream| {
-            self.compile_report(*stream).is_some_and(|report| {
-                self.backend_recorded
-                    .get(stream)
+        self.pending.streams().into_iter().any(|stream| {
+            self.compile_report(stream).is_some_and(|report| {
+                self.streams
+                    .iter()
+                    .find(|state| state.stream == stream)
+                    .and_then(|state| state.recorded)
                     .is_none_or(|recorded| recorded.report != report)
             })
         })
+    }
+
+    fn observation_scope(
+        &self,
+        prelude: &CoreHostFramePrelude,
+    ) -> Result<Vec<HostPresentationStreamId>, PresentationObservationError> {
+        let mut scope = Vec::with_capacity(self.streams.len());
+        for stream in prelude.pending_presentation_streams() {
+            if scope.len() == self.streams.len() {
+                return Err(PresentationObservationError::PendingRosterMismatch);
+            }
+            scope.push(stream);
+        }
+        scope.sort_unstable();
+        if scope != self.pending.streams() {
+            return Err(PresentationObservationError::PendingRosterMismatch);
+        }
+        Ok(scope)
     }
 
     /// Submits the rendering host's bootstrap observation and records terminal
@@ -610,28 +735,24 @@ impl RuntimePresentationState {
         engine: &DockEngine,
         recorder: &mut BackendIngressRecorder,
     ) -> Result<(SubmittedPresentationObservation, bool), super::DockspaceRuntimeError> {
-        self.drain_abandoned();
-        let scope = prelude
-            .pending_presentation_streams()
-            .collect::<BTreeSet<_>>();
-        if scope != self.pending.keys().copied().collect() {
-            return Err(PresentationObservationError::PendingRosterMismatch.into());
-        }
+        let scope = self.observation_scope(prelude)?;
         prelude.submit_presentation_observation(HostPresentationObservation::NoUpdate)?;
 
         let provider = recorder.lease();
-        let mut submitted = SubmittedPresentationObservation::default();
+        let mut submitted = SubmittedPresentationObservation::with_capacity(scope.len());
         let mut capacity_blocked = false;
         for stream in scope {
-            let generation = self
-                .capture_generations
-                .get(&stream)
-                .copied()
-                .unwrap_or_default()
+            let state = self
+                .streams
+                .iter()
+                .find(|state| state.stream == stream)
+                .ok_or(PresentationObservationError::PendingRosterMismatch)?;
+            let generation = state
+                .generation
                 .checked_next()
                 .ok_or(PresentationObservationError::CaptureGenerationExhausted)?;
 
-            let recorded = self.backend_recorded.get(&stream).copied();
+            let recorded = state.recorded;
             let report = match recorded {
                 Some(recorded)
                     if recorded.provider == provider && recorded.generation == generation =>
@@ -670,18 +791,19 @@ impl RuntimePresentationState {
                         }
                         Err(error) => return Err(error.into()),
                     }
-                    self.backend_recorded.insert(
-                        stream,
-                        RecordedPresentationReport {
-                            provider,
-                            generation,
-                            report,
-                        },
-                    );
+                    self.streams
+                        .iter_mut()
+                        .find(|state| state.stream == stream)
+                        .expect("the pending stream owns its report metadata")
+                        .recorded = Some(RecordedPresentationReport {
+                        provider,
+                        generation,
+                        report,
+                    });
                     report
                 }
             };
-            submitted.captured.insert(stream, (generation, report));
+            submitted.captured.push((stream, generation, report));
         }
         Ok((submitted, capacity_blocked))
     }
@@ -690,13 +812,7 @@ impl RuntimePresentationState {
         &mut self,
         prelude: &mut CoreHostFramePrelude,
     ) -> Result<SubmittedPresentationObservation, PresentationObservationError> {
-        self.drain_abandoned();
-        let scope = prelude
-            .pending_presentation_streams()
-            .collect::<BTreeSet<_>>();
-        if scope != self.pending.keys().copied().collect() {
-            return Err(PresentationObservationError::PendingRosterMismatch);
-        }
+        let scope = self.observation_scope(prelude)?;
         if scope.is_empty() {
             prelude
                 .submit_presentation_observation(HostPresentationObservation::NoUpdate)
@@ -704,18 +820,19 @@ impl RuntimePresentationState {
             return Ok(SubmittedPresentationObservation::default());
         }
 
-        let mut submitted = SubmittedPresentationObservation::default();
+        let mut submitted = SubmittedPresentationObservation::with_capacity(scope.len());
         let mut entries = Vec::with_capacity(scope.len());
         for stream in scope {
             let observation = if let Some(report) = self.compile_report(stream) {
                 let generation = self
-                    .capture_generations
-                    .get(&stream)
-                    .copied()
-                    .unwrap_or_default()
+                    .streams
+                    .iter()
+                    .find(|state| state.stream == stream)
+                    .ok_or(PresentationObservationError::PendingRosterMismatch)?
+                    .generation
                     .checked_next()
                     .ok_or(PresentationObservationError::CaptureGenerationExhausted)?;
-                submitted.captured.insert(stream, (generation, report));
+                submitted.captured.push((stream, generation, report));
                 HostPresentationStreamObservation::Captured {
                     generation,
                     progress: HostPresentationProgress::Retired {
@@ -745,17 +862,9 @@ impl RuntimePresentationState {
     ) -> Result<(), SurfacePresentationReportError> {
         let mut output = output;
         let raw_output = output.output;
-        let Some(pending) = self.pending.get(&raw_output.stream()) else {
-            return Err(SurfacePresentationReportError { output });
-        };
-        if !pending.contains(&raw_output) {
+        if !self.pending.record(raw_output, result) {
             return Err(SurfacePresentationReportError { output });
         }
-        let stream = raw_output.stream();
-        self.results
-            .entry(stream)
-            .or_default()
-            .insert(raw_output.key(), result);
         output.disarm();
         Ok(())
     }
@@ -771,22 +880,13 @@ impl RuntimePresentationState {
     ) -> Result<(), NativeStagingPresentationReportError> {
         let mut output = output;
         let raw_output = output.raw_output();
-        let Some(pending) = self.pending.get(&raw_output.stream()) else {
-            return Err(NativeStagingPresentationReportError { output });
-        };
-        if !pending.contains(&raw_output)
-            || !matches!(
-                raw_output.payload(),
-                HostPresentationOutputPayload::NativeStaging { .. }
-            )
+        if !matches!(
+            raw_output.payload(),
+            HostPresentationOutputPayload::NativeStaging { .. }
+        ) || !self.pending.record(raw_output, result)
         {
             return Err(NativeStagingPresentationReportError { output });
         }
-        let stream = raw_output.stream();
-        self.results
-            .entry(stream)
-            .or_default()
-            .insert(raw_output.key(), result);
         output.disarm();
         Ok(())
     }
@@ -797,7 +897,7 @@ impl RuntimePresentationState {
         transition: &EngineTransition,
         submitted: &SubmittedPresentationObservation,
     ) -> Vec<SurfacePresentationCommit> {
-        let mut commits = Vec::new();
+        let mut commits = Vec::with_capacity(submitted.captured.len());
         for outcome in transition.presentation_observations() {
             let HostPresentationObservationOutcome::Retired {
                 stream,
@@ -810,88 +910,149 @@ impl RuntimePresentationState {
             else {
                 continue;
             };
-            let Some((submitted_generation, report)) = submitted.captured.get(stream) else {
+            let Some((submitted_generation, report)) = submitted.get(*stream) else {
                 continue;
             };
-            if generation != submitted_generation
+            if generation != &submitted_generation
                 || settled_through != &report.settled_through
                 || presented != &report.authority()
             {
                 continue;
             }
             let presented_artifact = report.presented.and_then(|presented| {
-                self.pending.get(stream).and_then(|outputs| {
-                    outputs
-                        .iter()
-                        .find(|output| output.key() == presented)
-                        .copied()
-                        .filter(|output| {
-                            *promotion_eligible && engine.scene().retains_observed_emission(*output)
-                        })
-                        .map(|output| SurfacePresentationArtifact { output })
-                })
+                self.pending
+                    .lock()
+                    .iter()
+                    .map(|entry| entry.output)
+                    .find(|output| output.stream() == *stream && output.key() == presented)
+                    .filter(|output| {
+                        *promotion_eligible && engine.scene().retains_observed_emission(*output)
+                    })
+                    .map(|output| SurfacePresentationArtifact { output })
             });
             commits.push(SurfacePresentationCommit::new(
                 *stream,
                 *settled_through,
                 presented_artifact,
             ));
-            self.capture_generations.insert(*stream, *generation);
-            let remove_stream = if let Some(outputs) = self.pending.get_mut(stream)
-                && let Some(index) = outputs
-                    .iter()
-                    .position(|output| output.key() == *settled_through)
-            {
-                outputs.drain(..=index);
-                outputs.is_empty()
-            } else {
-                false
-            };
-            if remove_stream {
-                self.pending.remove(stream);
-            }
-            let remove_results = self.results.get_mut(stream).is_some_and(|results| {
-                results.retain(|output, _| *output > *settled_through);
-                results.is_empty()
+            let state = self
+                .streams
+                .iter_mut()
+                .find(|state| state.stream == *stream)
+                .expect("the submitted observation retains its stream metadata");
+            state.generation = *generation;
+            state.recorded = None;
+            self.pending.lock().retain(|entry| {
+                entry.output.stream() != *stream || entry.output.key() > *settled_through
             });
-            if remove_results {
-                self.results.remove(stream);
-            }
-            self.backend_recorded.remove(stream);
         }
         commits
     }
 
-    pub(super) fn retain_emissions(
+    pub(super) fn prepare_emissions(
         &mut self,
-        emissions: &[HostPresentationEmission],
-    ) -> (Vec<PaintedSurfaceOutput>, Vec<PaintedNativeStagingOutput>) {
+        transition: &EngineTransition,
+        submitted: &SubmittedPresentationObservation,
+    ) -> Result<PreparedPresentationEmissions, NativePlatformError> {
+        let emissions = transition.presentation_emissions();
+        let mut pending = self.pending.lock();
+        let surviving = pending
+            .iter()
+            .filter(|entry| {
+                !transition
+                    .presentation_observations()
+                    .iter()
+                    .filter_map(|outcome| submitted_retirement(outcome, submitted))
+                    .any(|(stream, through)| {
+                        entry.output.stream() == stream && entry.output.key() <= through
+                    })
+            })
+            .count();
+        let total = surviving
+            .checked_add(emissions.len())
+            .ok_or(NativePlatformError::InputCapacity)?;
+        if let Some(limit) = self.slot_limit {
+            if total > limit {
+                return Err(NativePlatformError::InputCapacity);
+            }
+        }
+        // Stream metadata is retained until core compaction, independently of
+        // whether any output currently awaits a terminal report.
+        let is_new_stream = |index: usize| {
+            let stream = emissions[index].output().stream();
+            !self.streams.iter().any(|state| state.stream == stream)
+                && !emissions[..index]
+                    .iter()
+                    .any(|emission| emission.output().stream() == stream)
+        };
+        let new_stream_count = (0..emissions.len())
+            .filter(|index| is_new_stream(*index))
+            .count();
+        let stream_count = self
+            .streams
+            .len()
+            .checked_add(new_stream_count)
+            .ok_or(NativePlatformError::InputCapacity)?;
+        if self.slot_limit.is_some_and(|limit| stream_count > limit) {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        let mut streams = Vec::new();
+        streams
+            .try_reserve_exact(new_stream_count)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        for index in (0..emissions.len()).filter(|index| is_new_stream(*index)) {
+            streams.push(RuntimePresentationStream {
+                stream: emissions[index].output().stream(),
+                generation: HostPresentationCaptureGeneration::default(),
+                recorded: None,
+            });
+        }
+        self.streams
+            .try_reserve_exact(streams.len())
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        let additional = total.saturating_sub(pending.len());
+        pending
+            .try_reserve_exact(additional)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        drop(pending);
+        let mut entries = Vec::new();
         let mut surfaces = Vec::new();
         let mut staging = Vec::new();
+        entries
+            .try_reserve_exact(emissions.len())
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        let surface_count = emissions
+            .iter()
+            .filter(|emission| {
+                matches!(
+                    emission.output().payload(),
+                    HostPresentationOutputPayload::Paint { .. }
+                )
+            })
+            .count();
+        surfaces
+            .try_reserve_exact(surface_count)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        staging
+            .try_reserve_exact(emissions.len() - surface_count)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
         for emission in emissions {
             let output = emission.output();
-            self.pending
-                .entry(output.stream())
-                .or_default()
-                .push(output);
+            entries.push(PendingPresentationOutput {
+                output,
+                result: None,
+            });
             match output.payload() {
                 HostPresentationOutputPayload::Paint { .. } => {
                     surfaces.push(PaintedSurfaceOutput {
                         output,
-                        abandoned: self.abandoned.clone(),
-                        armed: true,
+                        abandoned: self.pending.clone(),
+                        armed: false,
                     })
                 }
                 HostPresentationOutputPayload::NativeStaging { presentation } => {
-                    // The public request is reconstructed from the exact core
-                    // payload; no caller-supplied surface or phase is trusted.
-                    let binding = match output.endpoint() {
-                        HostPresentationEndpoint::Native(binding) => binding,
-                        HostPresentationEndpoint::Headless => {
-                            debug_assert!(false, "native staging output has a native endpoint");
-                            self.abandoned.push(output);
-                            continue;
-                        }
+                    let HostPresentationEndpoint::Native(binding) = output.endpoint() else {
+                        return Err(NativePlatformError::ProtocolInvariant);
                     };
                     staging.push(PaintedNativeStagingOutput {
                         output,
@@ -902,21 +1063,23 @@ impl RuntimePresentationState {
                             ),
                             presentation,
                         ),
-                        abandoned: self.abandoned.clone(),
-                        armed: true,
+                        abandoned: self.pending.clone(),
+                        armed: false,
                     });
                 }
                 HostPresentationOutputPayload::Bootstrap
                 | HostPresentationOutputPayload::Unavailable => {
-                    debug_assert!(
-                        false,
-                        "bootstrap/unavailable output cannot be painted by runtime"
-                    );
-                    self.abandoned.push(output);
+                    return Err(NativePlatformError::ProtocolInvariant);
                 }
             }
         }
-        (surfaces, staging)
+        Ok(PreparedPresentationEmissions {
+            pending: self.pending.clone(),
+            entries,
+            streams,
+            surfaces,
+            staging,
+        })
     }
 }
 
@@ -997,6 +1160,104 @@ mod tests {
     }
 
     #[test]
+    fn bounded_output_rejection_preserves_publication_and_one_slot_can_retire_and_reemit() {
+        let mut session = single_surface_session();
+        session.presentation = RuntimePresentationState::with_capacity_limit(1).unwrap();
+        measure_single_surface(&mut session);
+        let first = paint_single_surface(&mut session);
+        let artifact = first.presentation_artifact();
+        let frontier = session.engine.presentation_identity_frontier();
+        let version = session.version();
+        let capacity = session.presentation.pending.lock().capacity();
+        let mut frame = session.begin_host_frame().unwrap();
+        let receipt = frame
+            .paint_plan(SurfaceId::new(1))
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        frame.confirm_surface_painted(receipt).unwrap();
+        let error = frame.commit().unwrap_err();
+        assert_eq!(
+            error.native_kind(),
+            Some(super::super::NativeHostErrorKind::InputCapacity)
+        );
+        assert_eq!(session.version(), version);
+        assert_eq!(session.engine.presentation_identity_frontier(), frontier);
+        assert_eq!(session.presentation.pending.lock().capacity(), capacity);
+        assert_eq!(session.presentation.pending.lock().len(), 1);
+        assert!(session.presentation.pending.lock()[0].result.is_none());
+
+        session
+            .report_surface_presentation(first, SurfacePresentationResult::Presented)
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        let receipt = frame
+            .paint_plan(SurfaceId::new(1))
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        frame.confirm_surface_painted(receipt).unwrap();
+        let mut report = frame.commit().unwrap();
+        assert!(report.surface_presentation_commits()[0].presents(artifact));
+        assert_eq!(session.presentation.pending.lock().capacity(), capacity);
+        assert_eq!(session.presentation.pending.lock().len(), 1);
+        let replacement = report.take_painted_outputs().pop().unwrap();
+        let replacement_artifact = replacement.presentation_artifact();
+        let before_drop = session.presentation.owned_data_capacity_bytes();
+        std::thread::spawn(move || drop(replacement))
+            .join()
+            .unwrap();
+        assert_eq!(
+            session.presentation.owned_data_capacity_bytes(),
+            before_drop
+        );
+        assert!(
+            settle_presentations(&mut session).surface_presentation_commits()[0]
+                .retires(replacement_artifact)
+        );
+        assert_eq!(session.presentation.pending.lock().capacity(), capacity);
+        assert!(session.presentation.pending.is_empty());
+    }
+
+    #[test]
+    fn late_cross_thread_drop_keeps_its_slot_after_an_earlier_prefix_settles() {
+        let mut session = single_surface_session();
+        session.presentation = RuntimePresentationState::with_capacity_limit(3).unwrap();
+        measure_single_surface(&mut session);
+        let first = paint_single_surface(&mut session);
+        let second = paint_single_surface(&mut session);
+        let third = paint_single_surface(&mut session);
+        let third_artifact = third.presentation_artifact();
+        let capacity = session.presentation.pending.lock().capacity();
+        drop(first);
+        session
+            .report_surface_presentation(second, SurfacePresentationResult::Presented)
+            .unwrap();
+        settle_presentations(&mut session);
+        assert_eq!(session.presentation.pending.lock().len(), 1);
+        assert_eq!(session.presentation.pending.lock().capacity(), capacity);
+        let fourth = paint_single_surface(&mut session);
+        let fourth_artifact = fourth.presentation_artifact();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        std::thread::spawn(move || drop(third)).join().unwrap();
+        frame.commit().unwrap();
+        assert_eq!(session.presentation.pending.lock().capacity(), capacity);
+        session
+            .report_surface_presentation(fourth, SurfacePresentationResult::Presented)
+            .unwrap();
+        let report = settle_presentations(&mut session);
+        assert!(report.surface_presentation_commits()[0].retires(third_artifact));
+        assert!(report.surface_presentation_commits()[0].presents(fourth_artifact));
+        assert_eq!(session.presentation.pending.lock().capacity(), capacity);
+        assert!(session.presentation.pending.is_empty());
+    }
+
+    #[test]
     fn full_native_prelude_keeps_later_recorded_stream_in_exact_commit_settlement() {
         let mut builder = Workspace::builder();
         for index in 1..=2 {
@@ -1055,7 +1316,15 @@ mod tests {
         drop(session.begin_host_frame().unwrap());
         let recorded = session.native_input_recorded_count();
         assert_eq!(recorded, before.get() + 1);
-        assert_eq!(session.presentation.backend_recorded.len(), 1);
+        assert_eq!(
+            session
+                .presentation
+                .streams
+                .iter()
+                .filter(|state| state.recorded.is_some())
+                .count(),
+            1
+        );
         assert_eq!(session.engine.backend_ingress_committed_through(), before);
 
         session
@@ -1074,7 +1343,13 @@ mod tests {
         };
         assert!(later_commit.presents(later_artifact));
         assert_eq!(session.native_input_recorded_count(), recorded);
-        assert!(session.presentation.backend_recorded.is_empty());
+        assert!(
+            session
+                .presentation
+                .streams
+                .iter()
+                .all(|state| state.recorded.is_none())
+        );
 
         let report = settle_presentations(&mut session);
         assert!(!report.native_input_pending());
@@ -1084,7 +1359,6 @@ mod tests {
         assert!(earlier_commit.presents(earlier_artifact));
         assert_eq!(session.native_input_recorded_count(), recorded + 1);
         assert!(session.presentation.pending.is_empty());
-        assert!(session.presentation.results.is_empty());
         assert!(
             settle_presentations(&mut session)
                 .surface_presentation_commits()

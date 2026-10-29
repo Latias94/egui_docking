@@ -43,6 +43,7 @@ pub struct DockspaceSession {
     #[cfg(feature = "serde")]
     pub(super) document: Option<crate::document::BoundDocumentState>,
     pub(super) abandoned_native_effects: native_effect::NativeEffectDropQueue,
+    pub(super) native_report_storage_limit: Option<native::NativeReportStorageLimit>,
     pub(super) committed_source_sequence: u64,
 }
 
@@ -137,6 +138,7 @@ impl DockspaceSession {
             #[cfg(feature = "serde")]
             document: None,
             abandoned_native_effects: native_effect::NativeEffectDropQueue::default(),
+            native_report_storage_limit: None,
             committed_source_sequence: 0,
         }
     }

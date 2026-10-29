@@ -44,15 +44,15 @@ fn pending_report_capacity_tracks_exact_emissions_and_shared_abandonment_once() 
     );
     drop(output);
     let abandoned = session.native_input_pending_report_capacity_bytes();
-    assert!(
-        abandoned > pending,
-        "the exact abandoned output is queued before poll"
+    assert_eq!(
+        abandoned, pending,
+        "Drop fills the original prepaid output slot"
     );
     commit_managed_frame(&mut session);
     let settled = session.native_input_pending_report_capacity_bytes();
     assert!(
-        settled < abandoned,
-        "exact settlement removes the emission and report entries"
+        settled >= baseline,
+        "settlement keeps reusable report backing charged"
     );
     commit_managed_frame(&mut session);
     assert_eq!(

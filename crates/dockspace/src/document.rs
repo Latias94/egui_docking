@@ -626,6 +626,13 @@ pub(crate) struct PreparedRuntimeDocumentPublication {
 }
 
 impl PreparedRuntimeDocumentPublication {
+    pub(crate) fn has_new_undelivered_platform_effects(&self, engine: &DockEngine) -> bool {
+        self.core.has_new_undelivered_platform_effects(engine)
+    }
+    pub(crate) const fn transition(&self) -> &EngineTransition {
+        self.core.transition()
+    }
+
     pub(crate) fn commit(
         self,
         engine: &mut DockEngine,

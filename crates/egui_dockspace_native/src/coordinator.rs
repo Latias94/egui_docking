@@ -355,6 +355,28 @@ impl NativeCoordinator {
         initial_pointer_roster: NativePointerRoster,
         storage_limit: Option<NativeInputStorageLimit>,
     ) -> Result<Self, NativeRuntimeError> {
+        let mut pending_effect_results = VecDeque::new();
+        if let Some(reports) = storage_limit.and_then(NativeInputStorageLimit::report_storage_limit)
+        {
+            let slot_bytes = size_of::<PendingNativeEffectResult>();
+            let reserved_slot_bytes =
+                size_of::<(NativeEffectResult, Option<NativeHostErrorKind>)>();
+            if slot_bytes > reserved_slot_bytes
+                || reports
+                    .effect_slots()
+                    .get()
+                    .checked_mul(slot_bytes)
+                    .is_none_or(|bytes| bytes > reports.byte_limit())
+            {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+            }
+            pending_effect_results
+                .try_reserve_exact(reports.effect_slots().get())
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if pending_effect_results.capacity() > reports.effect_slots().get() {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+            }
+        }
         if let Some(limit) = storage_limit {
             session.enable_managed_native_host_with_input_storage_limit(
                 initial_pointer_roster,
@@ -374,7 +396,7 @@ impl NativeCoordinator {
             deferred_viewports: DeferredViewportDriver::default(),
             receivers: NativeReceiverStore::default(),
             effects: NativeEffectCoordinator::default(),
-            pending_effect_results: VecDeque::new(),
+            pending_effect_results,
             pending_presentation_transitions: Vec::new(),
             callback_errors: VecDeque::new(),
             pointer_translator: NativePointerTranslator::default(),
@@ -1040,51 +1062,47 @@ impl NativeCoordinator {
             return (false, None);
         }
         let mut reported = false;
-        let mut deferred_stale = VecDeque::new();
-        let pending_count = self.pending_effect_results.len();
-        for _ in 0..pending_count {
-            let Some(mut pending) = self.pending_effect_results.pop_front() else {
-                break;
-            };
+        let mut index = 0;
+        while index < self.pending_effect_results.len() {
+            let pending = &self.pending_effect_results[index];
             let binding = pending.result.binding();
             if pending.last_rejection == Some(NativeHostErrorKind::StaleBinding) {
                 if !self.session.recognizes_native_binding(binding) {
+                    let _ = self.pending_effect_results.remove(index);
                     continue;
                 }
                 if self.bridge.retirement_is_quiescence_candidate(binding) {
-                    deferred_stale.push_back(pending);
+                    index += 1;
                     continue;
                 }
             }
+            let mut pending = self
+                .pending_effect_results
+                .remove(index)
+                .expect("the indexed pending result remains owned until its attempt");
             if let Err(error) = self.session.report_native_effect_result(pending.result) {
                 let (kind, result) = error.into_parts();
                 pending.result = result;
                 pending.last_rejection = Some(kind);
                 if kind == NativeHostErrorKind::StaleBinding {
-                    // The existing quiescence lane consumes this stale affine result.
-                    // Its create receipt still waits for a later complete boundary.
                     self.bridge.retirement_mark_create_failure_recorded(binding);
                     if !self.session.recognizes_native_binding(binding) {
                         continue;
                     }
                     if self.bridge.retirement_is_quiescence_candidate(binding) {
-                        deferred_stale.push_back(pending);
+                        self.pending_effect_results.insert(index, pending);
+                        index += 1;
                         continue;
                     }
                 }
-                self.pending_effect_results.push_front(pending);
-                while let Some(stale) = deferred_stale.pop_back() {
-                    self.pending_effect_results.push_front(stale);
-                }
+                // Restore into the same backing and original ordered position.
+                self.pending_effect_results.insert(index, pending);
                 let error = (!native_effect_submission_rejection_is_recoverable(kind))
                     .then(|| NativeHostProtocolError::NativeEffectResultRejected(kind).into());
                 return (reported, error);
             }
             self.bridge.retirement_mark_create_failure_recorded(binding);
             reported = true;
-        }
-        while let Some(stale) = deferred_stale.pop_back() {
-            self.pending_effect_results.push_front(stale);
         }
         (reported, None)
     }

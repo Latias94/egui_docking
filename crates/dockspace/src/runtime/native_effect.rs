@@ -1,10 +1,11 @@
 //! Affine native-effect requests exposed by the renderer-neutral runtime.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
-use super::native::{NativeHostErrorKind, NativeSurfaceBinding};
+use super::native::{NativeHostErrorKind, NativePlatformError, NativeSurfaceBinding};
 use crate::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
     EffectIndeterminateReason, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
@@ -178,14 +179,25 @@ pub struct NativeEffectRequest {
     correlation: NativeEffectCorrelationKind,
     cleanup: Option<CleanupObservationToken>,
     destructive_cleanup: bool,
-    abandoned: Option<NativeEffectDropQueue>,
+    storage: Option<NativeEffectStorageLease>,
+    armed: bool,
 }
 
 impl NativeEffectRequest {
+    #[cfg(test)]
     pub(super) fn from_emission(
         emission: &PlatformEffectEmission,
         abandoned: NativeEffectDropQueue,
     ) -> Self {
+        abandoned
+            .prepare_emissions(std::slice::from_ref(emission))
+            .expect("test native-effect storage can be reserved")
+            .commit()
+            .pop()
+            .expect("one prepared emission yields one request")
+    }
+
+    fn prepare_emission(emission: &PlatformEffectEmission) -> Self {
         let binding = emission.effect().binding();
         let native_binding = NativeSurfaceBinding::from_binding(emission.provider(), binding);
         let (operation, correlation) = match emission.effect() {
@@ -297,7 +309,8 @@ impl NativeEffectRequest {
             correlation,
             cleanup: emission.cleanup_observation_token(),
             destructive_cleanup: emission.effect().is_destructive_cleanup(),
-            abandoned: Some(abandoned),
+            storage: None,
+            armed: false,
         }
     }
 
@@ -313,7 +326,7 @@ impl NativeEffectRequest {
     /// lifecycle facts rather than a property acknowledgement.
     #[must_use]
     pub fn accepted(mut self) -> Option<NativeEffectAcknowledgement> {
-        self.abandoned = None;
+        self.storage = None;
         match self.correlation {
             NativeEffectCorrelationKind::Input => Some(NativeEffectAcknowledgement::Input(
                 NativeInputEffectAcknowledgement {
@@ -370,12 +383,12 @@ impl NativeEffectRequest {
     }
 
     fn result(mut self, result: EffectDispatchResult) -> NativeEffectResult {
-        self.abandoned = None;
         NativeEffectResult {
             provider: self.provider,
             binding: self.binding,
             result: EffectResult::new(self.effect, self.epoch, result),
             cleanup_relay_eligible: self.destructive_cleanup,
+            storage: self.storage.take(),
         }
     }
 }
@@ -395,10 +408,13 @@ impl PartialEq for NativeEffectRequest {
 
 impl Drop for NativeEffectRequest {
     fn drop(&mut self) {
-        let Some(abandoned) = self.abandoned.take() else {
+        if !self.armed {
+            return;
+        }
+        let Some(storage) = self.storage.take() else {
             return;
         };
-        abandoned.push(NativeEffectResult {
+        storage.enqueue(NativeEffectResult {
             provider: self.provider,
             binding: self.binding,
             result: EffectResult::new(
@@ -407,8 +423,65 @@ impl Drop for NativeEffectRequest {
                 EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
             ),
             cleanup_relay_eligible: self.destructive_cleanup,
+            storage: None,
         });
     }
+}
+
+/// Requests whose failure storage is reserved before core publication.
+///
+/// Dropping this preparation only releases reservations. Requests become
+/// responsible for terminal reporting when publication succeeds and commits it.
+#[must_use = "prepared native effects must be committed after publication or dropped"]
+#[derive(Debug)]
+pub(super) struct PreparedNativeEffectRequests {
+    requests: Vec<NativeEffectRequest>,
+}
+
+impl PreparedNativeEffectRequests {
+    pub(super) fn commit(mut self) -> Vec<NativeEffectRequest> {
+        for request in &mut self.requests {
+            request.armed = true;
+        }
+        self.requests
+    }
+}
+
+/// One prepaid terminal slot held by a prepared request or an explicit result.
+#[derive(Debug)]
+struct NativeEffectStorageLease {
+    queue: NativeEffectDropQueue,
+    active: bool,
+}
+
+impl NativeEffectStorageLease {
+    fn enqueue(mut self, result: NativeEffectResult) {
+        let mut state = self.queue.lock();
+        debug_assert!(result.storage.is_none());
+        debug_assert!(state.pending.len() < state.outstanding);
+        debug_assert!(state.pending.len() < state.pending.capacity());
+        state.pending.push_back(result);
+        // Queued entries own the reservation through the count, without an Arc
+        // back to their own queue. Recording releases it under the same lock.
+        self.active = false;
+    }
+}
+
+impl Drop for NativeEffectStorageLease {
+    fn drop(&mut self) {
+        if self.active {
+            let mut state = self.queue.lock();
+            debug_assert!(state.outstanding > state.pending.len());
+            state.outstanding -= 1;
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct NativeEffectDropState {
+    pending: VecDeque<NativeEffectResult>,
+    outstanding: usize,
+    limit: Option<usize>,
 }
 
 /// Session-owned sink for affine requests abandoned after core delivery.
@@ -417,48 +490,155 @@ impl Drop for NativeEffectRequest {
 /// dispatcher. The next joined backend frame records the terminal result in
 /// the same ordered ingress stream as ordinary host results.
 #[derive(Debug, Clone, Default)]
-pub(super) struct NativeEffectDropQueue(Arc<Mutex<Vec<NativeEffectResult>>>);
+pub(super) struct NativeEffectDropQueue(Arc<Mutex<NativeEffectDropState>>);
 
 impl NativeEffectDropQueue {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<NativeEffectResult>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, NativeEffectDropState> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push(&self, result: NativeEffectResult) {
-        self.lock().push(result);
+    pub(super) fn with_capacity_limit(slots: usize) -> Result<Self, NativePlatformError> {
+        let mut pending = VecDeque::new();
+        pending
+            .try_reserve_exact(slots)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        if pending.capacity() > slots {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        Ok(Self(Arc::new(Mutex::new(NativeEffectDropState {
+            pending,
+            outstanding: 0,
+            limit: Some(slots),
+        }))))
+    }
+
+    /// Returns a conservative finite-profile reservation, including inline data.
+    ///
+    /// Counts two queue owners, mutex states and full result backings for
+    /// replacement overlap; two request vectors (published and prepared), each
+    /// including its header and full backing; and the adapter's result deque,
+    /// including its header and `(NativeEffectResult, Option<NativeHostErrorKind>)`
+    /// slots with alignment padding. Leases are inline and counted there.
+    /// Allocator metadata and Arc control blocks are excluded, as in the resident
+    /// capacity query. Actual allocator-provided queue capacity must also fit the
+    /// profile; an older unbounded store needs its actual capacity checked.
+    pub(super) fn reservation_bytes(slots: usize) -> Option<usize> {
+        let result_bytes = slots.checked_mul(size_of::<NativeEffectResult>())?;
+        let queue_bytes = size_of::<Self>()
+            .checked_add(size_of::<Mutex<NativeEffectDropState>>())?
+            .checked_add(result_bytes)?;
+        let request_bytes = size_of::<PreparedNativeEffectRequests>()
+            .checked_add(slots.checked_mul(size_of::<NativeEffectRequest>())?)?;
+        let adapter_result_bytes =
+            size_of::<VecDeque<(NativeEffectResult, Option<NativeHostErrorKind>)>>().checked_add(
+                slots
+                    .checked_mul(size_of::<(NativeEffectResult, Option<NativeHostErrorKind>)>())?,
+            )?;
+        queue_bytes
+            .checked_mul(2)?
+            .checked_add(request_bytes.checked_mul(2)?)?
+            .checked_add(adapter_result_bytes)
+    }
+
+    pub(super) fn prepare_emissions(
+        &self,
+        emissions: &[PlatformEffectEmission],
+    ) -> Result<PreparedNativeEffectRequests, NativePlatformError> {
+        let mut state = self.lock();
+        let outstanding = state
+            .outstanding
+            .checked_add(emissions.len())
+            .ok_or(NativePlatformError::InputCapacity)?;
+        if state.limit.is_some_and(|limit| outstanding > limit) {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        outstanding
+            .checked_mul(size_of::<NativeEffectResult>())
+            .and_then(|result_bytes| {
+                emissions
+                    .len()
+                    .checked_mul(size_of::<NativeEffectRequest>())?
+                    .checked_add(result_bytes)
+            })
+            .ok_or(NativePlatformError::InputCapacity)?;
+
+        let mut requests = Vec::new();
+        requests
+            .try_reserve_exact(emissions.len())
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        if state.limit.is_some_and(|limit| requests.capacity() > limit) {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        // Reserve for every active request/result as well as entries already
+        // queued. Future request drops must never grow this backing.
+        let additional = outstanding - state.pending.len();
+        state
+            .pending
+            .try_reserve_exact(additional)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        for emission in emissions {
+            requests.push(NativeEffectRequest::prepare_emission(emission));
+        }
+
+        state.outstanding = outstanding;
+        for request in &mut requests {
+            request.storage = Some(NativeEffectStorageLease {
+                queue: self.clone(),
+                active: true,
+            });
+        }
+        Ok(PreparedNativeEffectRequests { requests })
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        !self.lock().is_empty()
+        !self.lock().pending.is_empty()
+    }
+
+    pub(super) fn available_slots(&self) -> Option<usize> {
+        let state = self.lock();
+        state.limit.map(|limit| limit - state.outstanding)
+    }
+
+    pub(super) fn is_quiescent(&self) -> bool {
+        let state = self.lock();
+        state.pending.is_empty() && state.outstanding == 0
     }
 
     /// Counts the one session-owned queue behind all affine request handles.
     pub(super) fn owned_data_capacity_bytes(&self) -> usize {
         size_of::<Self>()
-            .saturating_add(size_of::<Mutex<Vec<NativeEffectResult>>>())
+            .saturating_add(size_of::<Mutex<NativeEffectDropState>>())
             .saturating_add(
                 self.lock()
+                    .pending
                     .capacity()
                     .saturating_mul(size_of::<NativeEffectResult>()),
             )
     }
 
-    pub(super) fn take_for(
+    /// Records the successful prefix in place, retaining the failing front entry.
+    ///
+    /// The callback may append to native ingress but must not reenter this queue.
+    pub(super) fn record_for(
         &self,
         provider: PlatformObservationLease,
-    ) -> Result<Vec<NativeEffectResult>, ()> {
-        let mut queue = self.lock();
-        if queue.iter().any(|result| result.provider != provider) {
-            return Err(());
+        mut record: impl FnMut(&NativeEffectResult) -> Result<(), NativePlatformError>,
+    ) -> Result<(), NativePlatformError> {
+        let mut state = self.lock();
+        if state
+            .pending
+            .iter()
+            .any(|result| result.provider != provider)
+        {
+            return Err(NativePlatformError::ProtocolInvariant);
         }
-        Ok(std::mem::take(&mut *queue))
-    }
-
-    pub(super) fn restore_front(&self, results: impl IntoIterator<Item = NativeEffectResult>) {
-        let mut queue = self.lock();
-        let mut restored = results.into_iter().collect::<Vec<_>>();
-        restored.append(&mut queue);
-        *queue = restored;
+        while let Some(result) = state.pending.front() {
+            debug_assert!(result.storage.is_none());
+            record(result)?;
+            drop(state.pending.pop_front());
+            state.outstanding -= 1;
+        }
+        Ok(())
     }
 }
 
@@ -539,6 +719,7 @@ impl NativeCleanupObservation {
                 predecessor.result.result(),
             ),
             cleanup_relay_eligible: true,
+            storage: predecessor.storage,
         })
     }
 }
@@ -561,12 +742,22 @@ impl NativeCleanupCorrelationFailure {
 
 /// Retryable negative or indeterminate effect result for a later host frame.
 #[must_use = "native effect results must be reported or retained for cleanup correlation"]
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct NativeEffectResult {
     pub(super) provider: PlatformObservationLease,
     pub(super) binding: ViewportBinding,
     pub(super) result: EffectResult,
     cleanup_relay_eligible: bool,
+    storage: Option<NativeEffectStorageLease>,
+}
+
+impl PartialEq for NativeEffectResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.provider == other.provider
+            && self.binding == other.binding
+            && self.result == other.result
+            && self.cleanup_relay_eligible == other.cleanup_relay_eligible
+    }
 }
 
 impl NativeEffectResult {
@@ -677,6 +868,9 @@ impl From<NativeIndeterminateReason> for EffectIndeterminateReason {
 }
 
 #[cfg(test)]
+mod storage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::effect::{EffectLedger, PlatformEffect};
@@ -783,18 +977,18 @@ mod tests {
             abandoned.clone(),
         ));
 
-        let results = abandoned
-            .take_for(provider)
+        let mut recorded = 0;
+        abandoned
+            .record_for(provider, |result| {
+                recorded += 1;
+                assert_eq!(result.result.effect(), effect);
+                assert_eq!(result.binding, binding);
+                Ok(())
+            })
             .expect("the active provider owns every abandoned result");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].result.effect(), effect);
-        assert_eq!(results[0].binding, binding);
-        assert!(
-            abandoned
-                .take_for(provider)
-                .expect("the empty queue remains provider-compatible")
-                .is_empty()
-        );
+        assert_eq!(recorded, 1);
+        assert!(!abandoned.has_pending());
+        assert!(abandoned.is_quiescent());
     }
 
     #[test]
@@ -835,17 +1029,22 @@ mod tests {
             .expect("the successor provider activates");
 
         assert!(
-            abandoned.take_for(successor).is_err(),
+            abandoned.record_for(successor, |_| Ok(())).is_err(),
             "a successor cannot consume an uncorrelated predecessor result"
         );
         assert_eq!(abandoned.owned_data_capacity_bytes(), retained_capacity);
-        let retained = abandoned
-            .take_for(predecessor)
-            .expect("the failed take leaves the original queue intact");
-        assert_eq!(retained.len(), 1);
-        assert_eq!(retained[0].provider, predecessor);
-        assert!(retained[0].can_be_correlated_by_cleanup());
-        assert_eq!(abandoned.owned_data_capacity_bytes(), empty_capacity);
+        let mut recorded = 0;
+        abandoned
+            .record_for(predecessor, |result| {
+                recorded += 1;
+                assert_eq!(result.provider, predecessor);
+                assert!(result.can_be_correlated_by_cleanup());
+                Ok(())
+            })
+            .expect("the failed record leaves the original queue intact");
+        assert_eq!(recorded, 1);
+        assert!(abandoned.is_quiescent());
+        assert_eq!(abandoned.owned_data_capacity_bytes(), retained_capacity);
     }
 
     #[test]
@@ -869,12 +1068,12 @@ mod tests {
             .expect("the destructive effect emits")
             .pop()
             .expect("one destructive emission exists");
-        let delayed = NativeEffectRequest::from_emission(
-            &predecessor_emission,
-            NativeEffectDropQueue::default(),
-        )
-        .dispatch_failed(NativeDispatchFailure::WindowUnavailable);
+        let abandoned =
+            NativeEffectDropQueue::with_capacity_limit(2).expect("two terminal slots preallocate");
+        let delayed = NativeEffectRequest::from_emission(&predecessor_emission, abandoned.clone())
+            .dispatch_failed(NativeDispatchFailure::WindowUnavailable);
         assert!(delayed.can_be_correlated_by_cleanup());
+        assert_eq!(abandoned.lock().outstanding, 1);
 
         let replacement = providers
             .begin_replacement(first_provider)
@@ -895,17 +1094,22 @@ mod tests {
             .expect("the cleanup observation emits")
             .pop()
             .expect("one cleanup observation exists");
-        let request = NativeEffectRequest::from_emission(
-            &observation_emission,
-            NativeEffectDropQueue::default(),
-        );
+        let request = NativeEffectRequest::from_emission(&observation_emission, abandoned.clone());
+        assert_eq!(abandoned.lock().outstanding, 2);
         let observation_binding = request.operation().binding();
         let Some(NativeEffectAcknowledgement::Cleanup(observation)) = request.accepted() else {
             panic!("cleanup continuation yields one observation capability");
         };
+        assert_eq!(abandoned.lock().outstanding, 1);
         let correlated = observation
             .correlate(delayed)
             .expect("the delayed result matches the exact cleanup continuation");
+        assert_eq!(abandoned.lock().outstanding, 1);
+        assert!(matches!(
+            abandoned
+                .prepare_emissions(&[predecessor_emission.clone(), observation_emission.clone(),]),
+            Err(NativePlatformError::InputCapacity)
+        ));
 
         assert!(
             correlated
@@ -914,6 +1118,13 @@ mod tests {
         );
         assert_eq!(correlated.result.effect(), predecessor);
         assert!(correlated.result.is_cleanup_observation());
+        let failed =
+            NativeEffectSubmissionError::new(NativePlatformError::InputCapacity, correlated);
+        let (_, retry) = failed.into_parts();
+        assert_eq!(abandoned.lock().outstanding, 1);
+        drop(retry);
+        assert!(abandoned.is_quiescent());
+        assert!(!abandoned.has_pending());
     }
 
     #[test]
@@ -996,11 +1207,7 @@ mod tests {
 
         assert_eq!(request.accepted(), None);
 
-        assert!(
-            abandoned
-                .take_for(provider)
-                .expect("the empty queue remains provider-compatible")
-                .is_empty()
-        );
+        assert!(!abandoned.has_pending());
+        assert!(abandoned.is_quiescent());
     }
 }

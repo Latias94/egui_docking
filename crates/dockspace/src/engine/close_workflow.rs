@@ -358,6 +358,24 @@ impl DockEngine {
                 | ClosePlanPhase::Indeterminate => {}
             }
         }
+        let close = &self.close;
+        self.viewport
+            .reconcile_unemitted_native_close_resolutions(|request, edge, resolution| {
+                if close.native_edge(request) != Some(edge) {
+                    return false;
+                }
+                let Some(plan) = close.plan(request) else {
+                    return false;
+                };
+                match resolution {
+                    NativeCloseResolution::Accept => plan.phase() == ClosePlanPhase::Approved,
+                    NativeCloseResolution::Cancel => matches!(
+                        plan.cancellation_state(),
+                        crate::close_plan::CloseCancellationState::Requested
+                            | crate::close_plan::CloseCancellationState::Indeterminate
+                    ),
+                }
+            });
         Ok(())
     }
 

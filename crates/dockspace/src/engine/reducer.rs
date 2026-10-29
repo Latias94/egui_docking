@@ -198,6 +198,7 @@ impl DockEngine {
         frame: CoreHostFrame,
     ) -> Result<OwnedPreparedHostFrameCommit, EngineError> {
         let CoreHostFrame {
+            platform_effect_delivery_limit,
             authority_domain,
             presentation_host,
             workspace,
@@ -502,6 +503,7 @@ impl DockEngine {
             presentation_dispositions,
             staged_presentation_outputs,
             surface_contributions,
+            platform_effect_delivery_limit,
         )?;
         Ok(OwnedPreparedHostFrameCommit {
             fence,
@@ -641,6 +643,7 @@ impl DockEngine {
         presentation_dispositions: Vec<HostPresentationDispositionOutcome>,
         staged_presentation_outputs: Vec<StagedPresentationOutput>,
         surface_contributions: BTreeMap<SurfaceId, PreparedSurfaceContribution>,
+        platform_effect_delivery_limit: Option<usize>,
     ) -> Result<(DockEngine, EngineTransition), EngineError> {
         let before = self.version;
         let before_presentation_identity = self.presentation_identity;
@@ -850,7 +853,7 @@ impl DockEngine {
 
         let platform_effects = candidate
             .viewport
-            .try_take_new_effects()
+            .try_take_new_effects_with_limit(platform_effect_delivery_limit)
             .map_err(|source| EngineError::Viewport {
                 input: candidate.last_input,
                 source,
@@ -861,6 +864,8 @@ impl DockEngine {
             platform_effects
                 .iter()
                 .any(|request| request.id() == *effect)
+                || platform_effect_delivery_limit.is_some()
+                    && candidate.viewport.effects().is_awaiting_delivery(*effect)
         }));
         let presentation_emissions = candidate.emit_staged_presentation_outputs(
             presentation_host,

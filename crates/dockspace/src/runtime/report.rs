@@ -10,7 +10,7 @@ use super::{
     HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommit,
     NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
     NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput, SurfacePointerId,
-    SurfacePresentationCommit, WorkspaceVersion, native_effect,
+    SurfacePresentationCommit, WorkspaceVersion,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
@@ -27,7 +27,7 @@ impl HostFrameReport {
         painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
         surface_presentation_commits: Vec<SurfacePresentationCommit>,
         native_commit: Option<super::native::NativeHostCommit>,
-        abandoned_native_effects: native_effect::NativeEffectDropQueue,
+        native_effects: Vec<NativeEffectRequest>,
     ) -> Self {
         let (native_admissions, native_bindings, native_provider, native_input_pending) =
             native_commit.map_or_else(
@@ -299,13 +299,6 @@ impl HostFrameReport {
             .filter_map(|delta| delta.requires_repaint().then_some(delta.surface()))
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .collect();
-        let native_effects = transition
-            .platform_effects()
-            .iter()
-            .map(|emission| {
-                NativeEffectRequest::from_emission(emission, abandoned_native_effects.clone())
-            })
             .collect();
         Self {
             before: transition.before(),

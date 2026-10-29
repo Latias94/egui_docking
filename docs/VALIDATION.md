@@ -15,6 +15,90 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 prepaid terminal reporting and effect backpressure
+
+`NativeInputStorageLimit::with_report_storage_limit` now selects a separate
+`NativeReportStorageLimit` for unsettled presentation outputs, retained stream
+metadata and externally delivered effect failure reports. Enrollment validates
+the report allowance and existing-store replacement overlap, preallocates the
+finite backing, and only then publishes its native provider. An insufficient
+allowance leaves provider identity, published state and watermarks unchanged.
+The public reserved-byte query exposes that fixed promise so native hosts can
+combine it with transport and their existing lifecycle/resource allowances.
+The generic/default path remains unlimited.
+
+Host-frame commit prepares the complete core transition before publication,
+including document restore, and admits its affine outputs/effects there.
+Presentation results occupy the original shared pending-output slot. Explicit
+reporting and cross-thread Drop fill that slot without allocating another map
+or queue. Generation/recorded metadata and submitted observations use flat
+storage with explicit vector capacities. Successfully retiring output prefixes
+can fund new emissions in the same frame; failed preparation returns no armed
+output and a dropped candidate preserves every original obligation.
+
+Effect requests prepay their future abandoned-result backing before external
+delivery. A storage lease moves into explicit negative results and survives
+submission rejection and cleanup correlation. Request Drop transfers its slot
+into the existing session queue without a self-owning Arc cycle. Queue recording
+consumes only a successful prefix in place; the first rejected result and the
+remaining ordered suffix retain their backing and reservation. The adapter's
+selected finite pending-result deque preallocates its complete slot set and
+retries in the same backing. Accepted dispatch releases the failure-report
+promise; successful-observation facts keep their original host command/lifetime
+owners, whose storage is part of the remaining combined admission work.
+
+Independent review exposed two progress failures in the first finite-report
+design. First, a failed/abandoned ShowWindow behind full ingress could hold the
+last report slot while accepted staging-close input required CompensatingClose.
+Core now limits actual external delivery to available report slots and retains
+the undelivered suffix as Requested on its original effect ledger. The accepted
+native prefix can commit before the old result enters freed ingress, after which
+the same compensation identity is delivered once. New application-only
+operations requiring unavailable effect delivery still reject atomically.
+Second, a delayed native close Accept could outlive cancellation of its plan.
+After input reduction, queued close resolutions are reconciled against their
+exact current plan; obsolete undelivered Accepts are invalidated, while already
+delivered requests retain their causal role. Only the matching Cancel is then
+delivered.
+
+Fresh core qualification passes 1,801 all-feature workspace tests, 85 external
+public-host tests, ten doctests, strict rustdoc and correctness/suspicious
+Clippy. The five enrollment/atomic-application/staging-progress/deferred-close
+regressions also pass with dockspace debug assertions disabled. Public-host
+coverage includes one-slot reject/retry, same-frame retirement/re-emission and
+cross-thread Drop with no report-backing growth. Core tests additionally cover
+capacity difference of one byte, unpublished preparations, partial abandoned
+drain, result leases and exact cleanup transfer. Both real staging progress
+variants preserve producer watermarks and original source resources through
+dropped candidates; root cancellation delivers only one exact Cancel.
+Results are recorded in `/tmp/dockspace-report-storage-core-qualification.json`.
+
+The matching local unpublished-fork native workspace passes 344 tests normally
+and 344 with native debug assertions disabled, plus correctness/suspicious
+Clippy. Its macOS programmatic tear-off, first-live, redock and retirement
+journey exits 0 with a sampled root-boundary high-water mark of 2,385,865 owned
+input-data bytes. Results are recorded in
+`/tmp/dockspace-report-storage-native-qualification.json`. This sample is not
+configured-cap saturation or a physical-input/mixed-DPI certification. Tracked
+fork pins still name the earlier public baseline. Final independent close/
+backpressure review found no further concrete blocker after the fixes.
+
+Two disposable-snapshot controls separately disable effect-delivery backpressure
+and obsolete close-resolution invalidation. Each matching behavioral regression
+fails (exit 100). Restoring both exact source files passes all three staging/
+deferred-close regressions (exit 0); snapshot/source bytes match again. Results
+are recorded in `/tmp/dockspace-report-storage-control.json`. An initial control
+command was rejected during locked metadata resolution because the native
+override did not match the root workspace lockfile; source was restored before
+retrying with the root's ordinary configuration. That preflight failure was not
+counted as a behavioral negative result.
+
+This qualifies the selected core report primitive and its progress semantics,
+not the complete product 4 MiB profile. Producer and lifetime-owner bounds,
+roster/work-area conversion and replacement peaks still require combined
+admission before product enablement, configured-cap load/soak and native scoped
+input qualification. Physical platform certification remains separate.
+
 ## 2026-10-29 U7 pointer translation capacity and terminal storage
 
 The native bridge now promises pointer translation storage before accepting a

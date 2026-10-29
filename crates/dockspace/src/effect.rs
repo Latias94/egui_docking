@@ -435,6 +435,8 @@ pub enum EffectInvalidation {
     NativeCreateAborted,
     /// A pre-admission close was authoritatively cleared before its cleanup reached the adapter.
     PreAdmissionCloseCleared,
+    /// A close plan withdrew a resolution before it reached the adapter.
+    NativeClosePlanChanged { request: CloseRequestId },
     /// The provider which owns this request's causal predecessor was replaced before dispatch.
     PlatformProviderReplaced { provider: PlatformObservationLease },
 }
@@ -774,7 +776,7 @@ impl EffectLedger {
 
     /// Adds one native close resolution to the dedicated causality-aware lane.
     ///
-    /// The request remains unpublished until [`Self::take_new_requests`] receives an
+    /// The request remains unpublished until [`Self::take_new_requests_after`] receives an
     /// authoritative close observation for the exact edge. `after_effect` is an
     /// opaque predecessor identity: the ledger preserves it exactly and never infers causality
     /// from numeric effect identity ordering.
@@ -901,6 +903,32 @@ impl EffectLedger {
         EffectInvalidationTransition::Applied
     }
 
+    /// Reconciles queued resolutions with their original plan after all inputs.
+    /// Already delivered requests retain their exact causal predecessor role.
+    pub(crate) fn reconcile_unemitted_native_close_resolutions(
+        &mut self,
+        mut current: impl FnMut(CloseRequestId, NativeCloseEdge, NativeCloseResolution) -> bool,
+    ) {
+        for record in self.records.values_mut() {
+            if record.delivery.is_some() || !matches!(record.phase, EffectPhase::Requested) {
+                continue;
+            }
+            let PlatformEffect::ResolveNativeClose {
+                request,
+                edge,
+                resolution,
+            } = *record.request.effect()
+            else {
+                continue;
+            };
+            if !current(request, edge, resolution) {
+                record.phase = EffectPhase::Invalidated {
+                    cause: EffectInvalidation::NativeClosePlanChanged { request },
+                };
+            }
+        }
+    }
+
     /// Invalidates every queued causal successor of effects delivered to `provider`.
     ///
     /// The closure is transitive: a queued successor of another newly invalidated successor is
@@ -962,6 +990,7 @@ impl EffectLedger {
     /// Returns a typed error without mutating the ledger when the provider was revoked or any
     /// delivery-lane predecessor was not delivered to this exact provider. An observation-only
     /// cleanup's destructive subject is identity evidence, not a delivery-lane predecessor.
+    #[cfg(test)]
     pub(crate) fn take_new_requests<F>(
         &mut self,
         provider: PlatformObservationLease,
@@ -993,7 +1022,65 @@ impl EffectLedger {
         boundary: EffectId,
         provider: PlatformObservationLease,
         inventory_generation: InventoryGeneration,
+        close_authority: F,
+    ) -> Result<Vec<PlatformEffectEmission>, EffectLedgerError>
+    where
+        F: FnMut(NativeCloseEdge) -> bool,
+    {
+        self.take_new_requests_after_with_limit(
+            boundary,
+            provider,
+            inventory_generation,
+            close_authority,
+            None,
+        )
+    }
+
+    /// Keeps a nondelivered suffix on its original ledger records. Limiting
+    /// delivery never acknowledges, cancels or reissues those requests.
+    pub(crate) fn take_new_requests_with_limit<F>(
+        &mut self,
+        provider: PlatformObservationLease,
+        inventory_generation: InventoryGeneration,
+        close_authority: F,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlatformEffectEmission>, EffectLedgerError>
+    where
+        F: FnMut(NativeCloseEdge) -> bool,
+    {
+        self.take_new_requests_after_with_limit(
+            EffectId::default(),
+            provider,
+            inventory_generation,
+            close_authority,
+            limit,
+        )
+    }
+
+    pub(crate) fn has_undelivered_request_after(&self, boundary: EffectId) -> bool {
+        self.records
+            .range((
+                std::ops::Bound::Excluded(boundary),
+                std::ops::Bound::Unbounded,
+            ))
+            .any(|(_, record)| {
+                record.delivery.is_none() && matches!(record.phase, EffectPhase::Requested)
+            })
+    }
+
+    pub(crate) fn is_awaiting_delivery(&self, effect: EffectId) -> bool {
+        self.records.get(&effect).is_some_and(|record| {
+            record.delivery.is_none() && matches!(record.phase, EffectPhase::Requested)
+        })
+    }
+
+    fn take_new_requests_after_with_limit<F>(
+        &mut self,
+        boundary: EffectId,
+        provider: PlatformObservationLease,
+        inventory_generation: InventoryGeneration,
         mut close_authority: F,
+        limit: Option<usize>,
     ) -> Result<Vec<PlatformEffectEmission>, EffectLedgerError>
     where
         F: FnMut(NativeCloseEdge) -> bool,
@@ -1001,11 +1088,14 @@ impl EffectLedger {
         if self.revoked_providers.contains(&provider) {
             return Err(EffectLedgerError::ProviderAuthorityRevoked { provider });
         }
-        let mut pending = Vec::new();
+        let mut pending = Vec::with_capacity(limit.unwrap_or(0).min(self.records.len()));
         for (id, record) in self.records.range((
             std::ops::Bound::Excluded(boundary),
             std::ops::Bound::Unbounded,
         )) {
+            if limit.is_some_and(|limit| pending.len() == limit) {
+                break;
+            }
             debug_assert_eq!(*id, record.request.id());
             if record.delivery.is_none() && matches!(record.phase, EffectPhase::Requested) {
                 if let PlatformEffect::ResolveNativeClose { edge, .. } = &record.request.effect {

@@ -891,6 +891,47 @@ finite profile: later adapter route admission cannot retroactively bound an
 already published core registration. These are implementation requirements,
 not new allocator registries or another lifecycle authority.
 
+The core report-prepayment implementation now prepares the final transition
+before publication, including document restore. Presentation output/result
+storage is one shared pending slot; Drop fills that slot directly. Retained
+generation/recorded metadata and submitted observations use flat backing with
+explicit capacities. The selected `NativeReportStorageLimit` separately bounds
+unsettled outputs, retained stream history and externally delivered effect
+failure-report capabilities. Enrollment validates current replacement overlap
+and preallocates before publishing a provider; the generic/default path remains
+unlimited.
+
+Effect requests prepay their complete future abandoned-result capacity, transfer
+that reservation into explicit negative results and cleanup correlation, and
+release it only at successful recording, intentional result disposal or accepted
+dispatch. Shared queue draining and adapter retry preserve their existing backing.
+Accepted-dispatch acknowledgements keep their existing identity and lifetime
+owners; the remaining owner/lifetime growth boundary must combine their storage
+with the selected report and transport allowances.
+
+Finite report backpressure cannot roll back an accepted native prefix forever.
+Core takes only the delivery prefix that has report storage, leaving its suffix
+Requested and undelivered on the original effect ledger. An accepted prefix can
+commit first so an older failed/abandoned result can enter freed ingress; the
+existing effect is then delivered without a new identity. New application-only
+operations which require unavailable effect delivery still reject atomically.
+After all inputs, queued native close resolutions are reconciled against their
+exact current plan: cancellation invalidates an undelivered Accept, while an
+already delivered request keeps its causal predecessor role. Targeted real
+staging-show/close and deferred-root-Accept cancellation regressions exercise the
+full-prefix rollback/retry, original resources and once-only delivery. Complete
+fresh qualification is recorded separately in validation.
+The frozen source passes 1,801 all-feature workspace tests, 85 public-host tests,
+ten doctests, strict docs and correctness/suspicious Clippy. Five report/progress
+regressions also pass without core debug assertions. Native gates pass 344
+normally and 344 without native debug assertions, plus Clippy and macOS
+programmatic redock. These qualify report storage/progress; producer/lifetime
+and constructor overlap, combined-profile load/soak and native scoped input
+remain open.
+Negative controls independently omit delivery backpressure and obsolete-close
+invalidation; each fails its regression and exact restoration passes the three
+progress/cancellation cases. No physical or complete-budget claim follows.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

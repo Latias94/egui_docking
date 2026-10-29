@@ -18,6 +18,7 @@ use std::num::NonZeroUsize;
 pub struct NativeInputStorageLimit {
     record_slots: NonZeroUsize,
     byte_limit: usize,
+    report_storage: Option<NativeReportStorageLimit>,
 }
 
 impl NativeInputStorageLimit {
@@ -30,7 +31,22 @@ impl NativeInputStorageLimit {
         Self {
             record_slots,
             byte_limit,
+            report_storage: None,
         }
+    }
+
+    /// Also bounds future presentation and native-effect terminal reporting.
+    /// This is a separate allowance from the recorded/replay transport bytes.
+    #[must_use]
+    pub const fn with_report_storage_limit(mut self, limit: NativeReportStorageLimit) -> Self {
+        self.report_storage = Some(limit);
+        self
+    }
+
+    /// Returns the separately selected terminal-report allowance, if any.
+    #[must_use]
+    pub const fn report_storage_limit(self) -> Option<NativeReportStorageLimit> {
+        self.report_storage
     }
 
     /// Returns the maximum number of retained input records.
@@ -43,6 +59,90 @@ impl NativeInputStorageLimit {
     #[must_use]
     pub const fn byte_limit(self) -> usize {
         self.byte_limit
+    }
+}
+
+/// Optional storage promised before affine native output/effect delivery.
+///
+/// Presentation slots bound unsettled outputs and retained presentation stream
+/// history; effect slots bound requests, retryable negative results and queued
+/// abandoned requests. The byte allowance covers their retained backing,
+/// complete preparation/settlement work and overlapping returned capabilities.
+/// It excludes renderer artifacts, core authority and host lifecycle/command
+/// owners, including successful-dispatch acknowledgement facts. Those owners
+/// must be reserved separately by a host enforcing a combined input budget.
+/// Select this profile before issuing presentation outputs; existing output
+/// stream history and effect capabilities must be quiescent at enrollment.
+/// Arbitrarily retained caller-owned report containers are outside the quota.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeReportStorageLimit {
+    presentation_slots: NonZeroUsize,
+    effect_slots: NonZeroUsize,
+    byte_limit: usize,
+}
+
+impl NativeReportStorageLimit {
+    /// Selects complete output/effect bounds and a prepaid byte allowance.
+    /// Enrollment rejects insufficient bytes before publishing a provider.
+    #[must_use]
+    pub const fn new(
+        presentation_slots: NonZeroUsize,
+        effect_slots: NonZeroUsize,
+        byte_limit: usize,
+    ) -> Self {
+        Self {
+            presentation_slots,
+            effect_slots,
+            byte_limit,
+        }
+    }
+
+    /// Returns the unsettled-output and retained-stream bound.
+    #[must_use]
+    pub const fn presentation_slots(self) -> NonZeroUsize {
+        self.presentation_slots
+    }
+
+    /// Returns the outstanding native-effect failure-report bound.
+    #[must_use]
+    pub const fn effect_slots(self) -> NonZeroUsize {
+        self.effect_slots
+    }
+
+    /// Returns the separately promised report-storage bytes.
+    #[must_use]
+    pub const fn byte_limit(self) -> usize {
+        self.byte_limit
+    }
+
+    fn required_bytes(self) -> Option<usize> {
+        super::super::presentation::RuntimePresentationState::reservation_bytes(
+            self.presentation_slots.get(),
+        )
+        .and_then(|bytes| {
+            super::super::native_effect::NativeEffectDropQueue::reservation_bytes(
+                self.effect_slots.get(),
+            )
+            .and_then(|effects| bytes.checked_add(effects))
+        })
+    }
+
+    pub(super) fn validate(self) -> Result<(), NativePlatformError> {
+        self.validate_replacement(0)
+    }
+
+    pub(super) fn validate_replacement(
+        self,
+        old_backing: usize,
+    ) -> Result<(), NativePlatformError> {
+        if self
+            .required_bytes()
+            .and_then(|required| required.checked_add(old_backing))
+            .is_none_or(|required| required > self.byte_limit)
+        {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        Ok(())
     }
 }
 
@@ -71,6 +171,17 @@ impl RuntimeNativeState {
 }
 
 impl DockspaceSession {
+    /// Returns the fixed allowance promised for native terminal-report storage.
+    /// Its bytes are separate from the recorded/replay transport allowance and
+    /// must be combined with host-side reservations before claiming a total cap.
+    #[must_use]
+    pub const fn native_input_report_storage_reserved_bytes(&self) -> Option<usize> {
+        match self.native_report_storage_limit {
+            Some(limit) => Some(limit.byte_limit()),
+            None => None,
+        }
+    }
+
     /// Returns the owned data capacity of native effect and presentation reporting.
     ///
     /// Includes pending emission/result entries, retained capture generations,

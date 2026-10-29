@@ -278,10 +278,11 @@ Use the frame query while a frame is open so its cursor or commit guard is
 included. Sessions without native input report zero.
 
 `native_input_pending_report_capacity_bytes()` separately measures the native
-presentation and effect report sidecars, including their shared abandoned-result
-queues once through the session owner. It includes retained entry data and spare
-vector capacity, with the same allocator/Arc metadata exclusions. Querying or
-cloning an affine handle does not duplicate its shared queue charge.
+presentation and effect report sidecars once through the session owner. A
+presentation terminal fills its original pending slot; abandoned effect requests
+use a shared prepaid queue. The query includes spare vector capacity, with the
+same allocator/Arc metadata exclusions. Shared handles do not duplicate backing
+charges.
 
 A host can select `NativeInputStorageLimit` during
 `enable_managed_native_host_with_input_storage_limit`. This optional recorded
@@ -291,6 +292,33 @@ unlimited. `InputCapacity` preserves unaccepted data for retry after draining
 accepted input. It does not include the separately measured pending report
 sidecars or the host's callback/resource owners; combine those before advertising
 a total input-memory limit.
+
+Add `with_report_storage_limit(NativeReportStorageLimit::new(...))` to select a
+separate terminal-report allowance during the same atomic enrollment. It bounds
+unsettled presentation outputs, retained presentation stream metadata and
+outstanding native-effect failure-report capabilities. Its byte quota reserves
+complete preparation, returned capabilities and report/settlement overlap before
+core publication. `native_input_report_storage_reserved_bytes()` returns that
+fixed promise for combination with a host's other allowances. Insufficient
+enrollment storage publishes no provider. Select the profile before issuing
+presentation outputs; existing report capabilities and stream history must be
+quiescent before selecting a new finite store.
+
+Frame commit prepares and admits the complete presentation/effect emission set
+before publishing the core candidate, including document restore. Report-capacity
+rejection of a new application operation leaves the candidate unpublished and
+returns no affine outputs. Already accepted native input can still commit when
+effect reports are full: the original core effect ledger retains the ordered
+undelivered suffix until report capacity is available. It does not create an
+external request, synthetic result or duplicate dispatch. This lets an ingress
+prefix commit before an older failure result retries into that freed ingress.
+A successfully retiring presentation prefix can release slots for new outputs in
+that same frame. Existing terminal reports and cross-thread output Drop fill
+their original slots without growing backing. Effect requests retain their
+failure-report reservation through negative-result conversion, rejected
+submission and cleanup correlation; successful recording or accepted dispatch
+ends that failure-report promise. Successful-dispatch acknowledgement facts
+still belong to the host's separately reserved lifecycle/command owners.
 
 Buffered hosts can call `prepare_native_pointer_capacity()` before beginning
 their own translation iterator. It reclaims committed transport and returns an

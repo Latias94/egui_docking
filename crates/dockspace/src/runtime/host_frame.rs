@@ -31,6 +31,16 @@ use super::{
 pub(super) const APPLICATION_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(0x64_6f_63_6b_73_70_61_63);
 
+fn has_ordinary_application_input(transition: &crate::transition::EngineTransition) -> bool {
+    transition.reduced_inputs().iter().any(|input| {
+        input.source() == APPLICATION_INPUT_SOURCE
+            && !matches!(
+                input.outcome(),
+                crate::transition::InputOutcome::NativeInputCancelledForOverload
+            )
+    })
+}
+
 /// One affine, rollbackable application host frame.
 ///
 /// Dropping this value discards the private candidate and leaves the published
@@ -615,6 +625,8 @@ impl DockspaceHostFrame<'_> {
             document_restore,
         } = self;
         let frame_attempt = frame.presentation_attempt();
+        let accepted_native_prefix =
+            frame.backend_ingress_through() > session.engine.backend_ingress_committed_through();
         let mut frame = frame.into_presentation()?;
         let mut obligations = BTreeMap::new();
         for obligation in frame.take_presentation_obligations()? {
@@ -652,19 +664,68 @@ impl DockspaceHostFrame<'_> {
                 ),
             )?;
         }
+        // Report backpressure delays external delivery on the original effect
+        // ledger. It must not stop an already accepted native prefix from
+        // committing and freeing ingress for an older terminal result.
+        let effect_capacity = session.abandoned_native_effects.available_slots();
+        let frame = frame.with_platform_effect_delivery_limit(effect_capacity);
         #[cfg(feature = "serde")]
-        let transition = if let Some(restore) = document_restore {
+        let (transition, presentation, effects) = if let Some(restore) = document_restore {
             let prepared = restore
                 .prepare_publication(frame, &session.engine)
                 .map_err(DockspacePersistenceError::session)?;
+            if effect_capacity
+                .is_some_and(|limit| prepared.transition().platform_effects().len() == limit)
+                && prepared.has_new_undelivered_platform_effects(&session.engine)
+            {
+                return Err(NativePlatformError::InputCapacity.into());
+            }
+            let presentation = session
+                .presentation
+                .prepare_emissions(prepared.transition(), &submitted_presentation)?;
+            let effects = session
+                .abandoned_native_effects
+                .prepare_emissions(prepared.transition().platform_effects())?;
             let (transition, binding) = prepared.commit(&mut session.engine)?;
             session.document = Some(binding);
-            transition
+            (transition, presentation, effects)
         } else {
-            frame.finish(&mut session.engine)?
+            let prepared = frame.prepare_owned(&session.engine)?;
+            if !accepted_native_prefix
+                && has_ordinary_application_input(prepared.transition())
+                && effect_capacity
+                    .is_some_and(|limit| prepared.transition().platform_effects().len() == limit)
+                && prepared.has_new_undelivered_platform_effects(&session.engine)
+            {
+                return Err(NativePlatformError::InputCapacity.into());
+            }
+            let presentation = session
+                .presentation
+                .prepare_emissions(prepared.transition(), &submitted_presentation)?;
+            let effects = session
+                .abandoned_native_effects
+                .prepare_emissions(prepared.transition().platform_effects())?;
+            (prepared.commit(&mut session.engine)?, presentation, effects)
         };
         #[cfg(not(feature = "serde"))]
-        let transition = frame.finish(&mut session.engine)?;
+        let (transition, presentation, effects) = {
+            let prepared = frame.prepare_owned(&session.engine)?;
+            if !accepted_native_prefix
+                && has_ordinary_application_input(prepared.transition())
+                && effect_capacity
+                    .is_some_and(|limit| prepared.transition().platform_effects().len() == limit)
+                && prepared.has_new_undelivered_platform_effects(&session.engine)
+            {
+                return Err(NativePlatformError::InputCapacity.into());
+            }
+            let presentation = session
+                .presentation
+                .prepare_emissions(prepared.transition(), &submitted_presentation)?;
+            let effects = session
+                .abandoned_native_effects
+                .prepare_emissions(prepared.transition().platform_effects())?;
+            (prepared.commit(&mut session.engine)?, presentation, effects)
+        };
         session.committed_source_sequence = next_source_sequence;
         let mut native_commit = session.native.as_mut().map(|native| {
             let mut committed = native.commit(&session.engine);
@@ -676,9 +737,9 @@ impl DockspaceHostFrame<'_> {
             &transition,
             &submitted_presentation,
         );
-        let (painted_outputs, painted_native_staging_outputs) = session
-            .presentation
-            .retain_emissions(transition.presentation_emissions());
+        let (painted_outputs, painted_native_staging_outputs) =
+            presentation.commit(&mut session.presentation);
+        let native_effects = effects.commit();
         if let Some(committed) = native_commit.as_mut() {
             committed.input_pending |= session.abandoned_native_effects.has_pending()
                 || session.presentation.has_unrecorded_backend_report();
@@ -690,7 +751,7 @@ impl DockspaceHostFrame<'_> {
             painted_native_staging_outputs,
             surface_presentation_commits,
             native_commit,
-            session.abandoned_native_effects.clone(),
+            native_effects,
         ))
     }
 

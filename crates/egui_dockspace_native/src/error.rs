@@ -60,6 +60,8 @@ pub(crate) enum NativeHostProtocolError {
     ViewportCreateFailureWithoutEffect,
     #[error("dockspace rejected a native effect result: {0:?}")]
     NativeEffectResultRejected(NativeHostErrorKind),
+    #[error("native terminal-report storage could not be reserved")]
+    NativeReportStorageUnavailable,
     #[error("a terminal native output is waiting for its affine painted output")]
     OutputAwaitingAttachment,
     #[error("the final egui pass changed its native output or logical surface")]
@@ -124,7 +126,9 @@ impl NativeHostProtocolError {
             Self::OutputTokenUnavailable | Self::RootSurfaceUnavailable(_) => {
                 NativeRuntimeErrorKind::InvalidConfiguration
             }
-            Self::MultipassLocalActionConflict => NativeRuntimeErrorKind::OperationConflict,
+            Self::MultipassLocalActionConflict | Self::NativeReportStorageUnavailable => {
+                NativeRuntimeErrorKind::OperationConflict
+            }
             Self::NativeEffectResultRejected(kind) => kind.runtime_error_kind(),
             Self::OutputBudgetUnavailable
             | Self::CallbackRecordPending
@@ -173,6 +177,12 @@ impl NativeRuntimeError {
         matches!(&self.source,
             NativeRuntimeErrorSource::Dockspace(error)
                 if matches!(error.native_kind(), Some(NativeHostErrorKind::InputCapacity)))
+            || matches!(
+                self.source,
+                NativeRuntimeErrorSource::HostProtocol(
+                    NativeHostProtocolError::NativeReportStorageUnavailable
+                )
+            )
     }
 
     /// Returns the stable product-level failure category.

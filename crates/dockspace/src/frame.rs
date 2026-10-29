@@ -40,7 +40,7 @@ use self::recovery_replacement::{
 };
 
 use crate::backend_ingress::BackendIngressDrainReceipt;
-use crate::close_plan::NativeCloseEdge;
+use crate::close_plan::{CloseRequestId, NativeCloseEdge};
 use crate::coordinates::{
     CoordinateUnavailable, RecoveryCoordinateSnapshot, ViewportPlacementProof,
 };
@@ -48,8 +48,8 @@ use crate::coordinates::{
 use crate::effect::EffectRequest;
 use crate::effect::{
     EffectDispatchResult, EffectId, EffectInvalidation, EffectLedger, EffectLedgerError,
-    EffectPhase, EffectRecord, EffectResult, EffectTransition, PlatformEffect,
-    PlatformEffectEmission,
+    EffectPhase, EffectRecord, EffectResult, EffectTransition, NativeCloseResolution,
+    PlatformEffect, PlatformEffectEmission,
 };
 use crate::geometry::LogicalRect;
 pub use crate::ids::NativeCreateSagaId;
@@ -3004,6 +3004,14 @@ impl ViewportCoordinator {
             .map_err(ViewportCoordinatorError::Effect)
     }
 
+    pub(crate) fn reconcile_unemitted_native_close_resolutions(
+        &mut self,
+        current: impl FnMut(CloseRequestId, NativeCloseEdge, NativeCloseResolution) -> bool,
+    ) {
+        self.effects
+            .reconcile_unemitted_native_close_resolutions(current);
+    }
+
     pub(crate) fn mark_native_close_awaiting_destroyed(
         &mut self,
         binding: ViewportBinding,
@@ -3025,18 +3033,30 @@ impl ViewportCoordinator {
     pub(crate) fn try_take_new_effects(
         &mut self,
     ) -> Result<Vec<PlatformEffectEmission>, ViewportCoordinatorError> {
+        self.try_take_new_effects_with_limit(None)
+    }
+
+    pub(crate) fn try_take_new_effects_with_limit(
+        &mut self,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlatformEffectEmission>, ViewportCoordinatorError> {
         let Some(provider) = self.platform_provider.active() else {
             return Ok(Vec::new());
         };
         let inventory_generation = self.registry.inventory_generation();
         let registry = &self.registry;
         self.effects
-            .take_new_requests(provider, inventory_generation, |edge| {
-                matches!(
-                    registry.native_close_edge_disposition(edge),
-                    NativeCloseEdgeDisposition::ExactPending
-                )
-            })
+            .take_new_requests_with_limit(
+                provider,
+                inventory_generation,
+                |edge| {
+                    matches!(
+                        registry.native_close_edge_disposition(edge),
+                        NativeCloseEdgeDisposition::ExactPending
+                    )
+                },
+                limit,
+            )
             .map_err(ViewportCoordinatorError::Effect)
     }
 

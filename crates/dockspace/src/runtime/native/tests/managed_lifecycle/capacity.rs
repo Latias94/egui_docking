@@ -3,6 +3,9 @@ use std::num::NonZeroUsize;
 
 fn pending_programmatic_create() -> (DockspaceSession, crate::runtime::NativeEffectRequest) {
     let (mut session, _) = programmatic_tear_off_session();
+    assert!(session.abandoned_native_effects.is_quiescent());
+    session.abandoned_native_effects =
+        crate::runtime::native_effect::NativeEffectDropQueue::with_capacity_limit(1).unwrap();
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
@@ -41,6 +44,7 @@ fn bounded_effect_submission_returns_the_affine_result_until_accepted_input_drai
     let failed = request.dispatch_failed(NativeDispatchFailure::WindowUnavailable);
     let binding = failed.binding();
     let epoch = failed.receipt_epoch();
+    assert!(!session.abandoned_native_effects.is_quiescent());
     limit_recorder(&mut session, 1);
     session
         .record_native_pointer(unknown_native_pointer_input(91, NativePointerEvent::Moved))
@@ -52,9 +56,12 @@ fn bounded_effect_submission_returns_the_affine_result_until_accepted_input_drai
     assert_eq!(failed.binding(), binding);
     assert_eq!(failed.receipt_epoch(), epoch);
     assert_eq!(session.native_input_recorded_count(), recorded);
+    assert!(!session.abandoned_native_effects.is_quiescent());
 
     commit_managed_frame(&mut session);
+    assert!(!session.abandoned_native_effects.is_quiescent());
     session.report_native_effect_result(failed).unwrap();
+    assert!(session.abandoned_native_effects.is_quiescent());
     assert_eq!(session.native_input_recorded_count(), recorded + 1);
     let mut report = commit_managed_frame_report(&mut session);
     assert!(!report.native_input_pending());
@@ -62,6 +69,70 @@ fn bounded_effect_submission_returns_the_affine_result_until_accepted_input_drai
     assert_eq!(session.view().item(ITEM).unwrap().surface(), SURFACE);
     commit_managed_frame(&mut session);
     assert_eq!(session.native_input_recorded_count(), recorded + 1);
+}
+
+#[test]
+fn effect_report_storage_rejection_rolls_back_the_complete_programmatic_tear_off() {
+    let (mut session, _) = programmatic_tear_off_session();
+    assert!(session.abandoned_native_effects.is_quiescent());
+    session.abandoned_native_effects =
+        crate::runtime::native_effect::NativeEffectDropQueue::with_capacity_limit(0).unwrap();
+    let version = session.version();
+    let frontier = session.engine.presentation_identity_frontier();
+    let recorded = session.native_input_recorded_count();
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .move_root_to_new_window_current(
+            ROOT,
+            NativeWindowPlacement::new(PhysicalRect::new(920.0, 120.0, 420.0, 320.0).unwrap()),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert_eq!(
+        frame.commit().unwrap_err().native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    assert_eq!(session.version(), version);
+    assert_eq!(session.engine.presentation_identity_frontier(), frontier);
+    assert_eq!(session.native_input_recorded_count(), recorded);
+    assert_eq!(session.view().item(ITEM).unwrap().surface(), SURFACE);
+    assert!(session.abandoned_native_effects.is_quiescent());
+
+    session.abandoned_native_effects =
+        crate::runtime::native_effect::NativeEffectDropQueue::with_capacity_limit(1).unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .move_root_to_new_window_current(
+            ROOT,
+            NativeWindowPlacement::new(PhysicalRect::new(920.0, 120.0, 420.0, 320.0).unwrap()),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame.commit().unwrap();
+    let request = take_only_native_effect(&mut report);
+    assert!(matches!(
+        request.operation(),
+        NativeEffectOperation::CreateWindow { .. }
+    ));
+    assert!(!session.abandoned_native_effects.is_quiescent());
+    let capacity = session.abandoned_native_effects.owned_data_capacity_bytes();
+    drop(request);
+    assert_eq!(
+        session.abandoned_native_effects.owned_data_capacity_bytes(),
+        capacity
+    );
+    assert!(!session.abandoned_native_effects.is_quiescent());
+    commit_managed_frame(&mut session);
+    assert!(session.abandoned_native_effects.is_quiescent());
+    assert_eq!(session.view().item(ITEM).unwrap().surface(), SURFACE);
 }
 
 #[test]
