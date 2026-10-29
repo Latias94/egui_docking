@@ -15,6 +15,69 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 explicit bounded application and lifecycle model
+
+`NativeStorageLimit` is an explicit public application choice. It validates the
+same complete combined profile as the coordinator constructor, including
+independent resource, command and close bounds. `NativeDockspaceApp` accepts it
+through `new_with_storage_limit`; existing constructors retain their unlimited
+storage choice. The application reports selected reservations separately from
+current resident capacity. These quantities cover the documented native input
+and lifecycle data, excluding the core workspace, renderer/receiver data,
+application actions, diagnostics and allocator metadata.
+
+The programmatic smoke selects `bounded` or `unlimited` through
+`EGUI_DOCKSPACE_NATIVE_SMOKE_STORAGE`. The bounded choice uses the same 4 MiB,
+I512/768 KiB, W16/A8/128 KiB, R64/E16/256 KiB and M48/C32/L16 configuration as
+the combined admission regression. Every root update requires
+`resident <= reserved <= 4 MiB`; terminal logging labels the selected profile
+and reports both sampled peaks. Sampling is at host boundaries, while the
+existing admission promises cover accepted construction overlap.
+
+The byte-saturation regression now commits the freeze prelude, drains the exact
+accepted source prefix, retries a dropped prefix candidate, and drops/retries
+the independent overload cancellation. Raw coalescing and retained core pointer
+reduction share one dispatch budget. Cancellation commits once, releases the
+existing promises and permits a fresh capture without increasing the quota.
+An additional callback after freeze cannot mint another source identity.
+
+A separate 10,000-lifetime model constructs one bounded coordinator and session
+before the loop. Each cycle registers a root, captures its exact Destroyed fact,
+retires core authority through public layout reset, commits the original
+destroyed tombstone, retires the route and reports quiescence once. It resolves
+the next rebased surface through a stable application item. Periodic candidate
+and retirement-preparation drops exercise exact retry. A single retained
+predecessor supplies late facts; no history of reports or callbacks accumulates.
+Every cycle requires zero remaining route/retirement/reference obligations,
+unchanged prepaid producer backing, plateaued idle resident/reserved capacity
+and the same 4 MiB allowance. The model reuses the numeric host token with fresh
+winit IDs; it does not qualify physical window creation or same-winit-ID aliasing.
+
+Fresh gates pass 442 tests in the complete normal native workspace plus one
+additional public-only storage-profile integration test, and 443 tests in the
+complete workspace with native debug assertions disabled. Both complete runs
+execute all 10,000 model lifetimes. The public test rejects missing subprofiles
+and the complete initial requirement minus one before consuming a session,
+constructs an app at the exact requirement and verifies the default has no
+selected reservation. Correctness/suspicious Clippy, strict rustdoc and formatting
+also pass. Qualification is recorded in
+`/tmp/dockspace-bounded-host-qualification.json`, with 418 frozen Rust source
+files matching the tested snapshot.
+
+Both macOS programmatic redock runs complete first-live and retirement. The
+bounded run's root-boundary resident peak is 3,005,859 bytes and its reservation
+peak is 4,122,680 bytes, below the selected 4,194,304-byte limit. The default run
+is explicitly labelled unlimited and samples a 2,750,705-byte resident peak.
+Independent model/recovery and constructor reviews find no remaining concrete
+blocker within this slice. The unpublished egui fork remains unchanged at
+`bac446e142f93a5dc92695ab32e15a12e6dc7453`; tracked remote pins still name the
+older public baseline. A separately prepared Linux-only handler-forwarding fix
+is excluded from this source qualification.
+
+This explicit opt-in does not certify full U7/U8: full ordinary-output pressure, active 1,000 Hz input
+and release timing, native scoped/stationary continuity, configured-cap terminal
+fanout and the physical platform matrix remain separate gates.
+
 ## 2026-10-29 U7 initial combined-storage admission
 
 Raw journal and both complete roster payloads now use fallible vector

@@ -2,6 +2,79 @@
 
 use super::*;
 
+/// Complete storage limits for the fork-backed native input/lifecycle host.
+///
+/// Limits cover owned input data and promised construction capacity, excluding
+/// allocator metadata, core workspace/reducer state, renderer/receiver data,
+/// application actions and diagnostics. Generic hosting remains unlimited unless
+/// this value is supplied at application construction.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeStorageLimit {
+    pub(crate) combined: NativeCombinedStorageLimit,
+}
+
+impl NativeStorageLimit {
+    /// Selects a combined byte allowance and independent host-owner bounds.
+    ///
+    /// `input` must select producer and report storage limits. Resource entries
+    /// are keyed by exact viewport/binding, ordinary commands and native closes
+    /// have independent limits, and retired obligations keep their original
+    /// slots until settlement. These counts are not inferred from window count.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing subprofile bounds, overflow, or a total allowance too
+    /// small for complete initial native backing and future owner promises.
+    pub fn new(
+        input: NativeInputStorageLimit,
+        byte_limit: usize,
+        resource_slots: usize,
+        command_slots: usize,
+        close_slots: usize,
+    ) -> Result<Self, NativeRuntimeError> {
+        let producer = input
+            .producer_storage_limit()
+            .ok_or(NativeHostProtocolError::NativeOwnerStorageConfiguration)?;
+        let reports = input
+            .report_storage_limit()
+            .ok_or(NativeHostProtocolError::NativeOwnerStorageConfiguration)?;
+        let owner_bytes = NativeOwnerStorageLimit::required_bytes(
+            producer.binding_slots().get(),
+            reports.effect_slots().get(),
+            resource_slots,
+            command_slots,
+            close_slots,
+        )
+        .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let combined = NativeCombinedStorageLimit {
+            input,
+            byte_limit,
+            owners: NativeOwnerStorageLimit {
+                resource_slots,
+                command_slots,
+                close_slots,
+                byte_limit: owner_bytes,
+            },
+        };
+        combined.validate()?;
+        Ok(Self { combined })
+    }
+
+    /// Returns the complete selected native input-data byte allowance.
+    #[must_use]
+    pub const fn byte_limit(self) -> usize {
+        self.combined.byte_limit
+    }
+
+    /// Returns the checked initial backing and future-work reservation.
+    #[must_use]
+    pub fn initial_reserved_bytes(self) -> usize {
+        self.combined
+            .initial_required_bytes()
+            .expect("validated native storage limits retain their initial promise")
+    }
+}
+
 /// A separately selected total native input-data promise. Production enablement
 /// additionally requires configured-cap load and lifecycle qualification.
 #[derive(Debug, Clone, Copy)]

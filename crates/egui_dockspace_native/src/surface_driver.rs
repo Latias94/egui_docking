@@ -233,6 +233,7 @@ struct NativeShutdownState {
 }
 
 impl<P: PaneView> NativeRuntimeState<P> {
+    #[cfg(test)]
     pub(crate) fn new(
         instance_id: Id,
         session: dockspace::runtime::DockspaceSession,
@@ -241,11 +242,39 @@ impl<P: PaneView> NativeRuntimeState<P> {
         style: DockStyle,
         close_policy: NativeWindowClosePolicy,
     ) -> Result<Self, NativeRuntimeError> {
+        Self::new_with_storage_limit(
+            instance_id,
+            session,
+            root_surface,
+            panes,
+            style,
+            close_policy,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_storage_limit(
+        instance_id: Id,
+        session: dockspace::runtime::DockspaceSession,
+        root_surface: SurfaceId,
+        panes: P,
+        style: DockStyle,
+        close_policy: NativeWindowClosePolicy,
+        storage: Option<crate::NativeStorageLimit>,
+    ) -> Result<Self, NativeRuntimeError> {
         if session.view().surface(root_surface).is_none() {
             return Err(NativeHostProtocolError::RootSurfaceUnavailable(root_surface).into());
         }
-        let mut coordinator =
-            NativeCoordinator::new(session, dockspace::runtime::NativePointerRoster::Unknown)?;
+        let mut coordinator = match storage {
+            Some(limit) => NativeCoordinator::new_with_combined_storage_limit(
+                session,
+                dockspace::runtime::NativePointerRoster::Unknown,
+                limit.combined,
+            )?,
+            None => {
+                NativeCoordinator::new(session, dockspace::runtime::NativePointerRoster::Unknown)?
+            }
+        };
         coordinator.register_native_root(root_surface, ROOT_WINDOW_TOKEN)?;
         Ok(Self {
             coordinator,
@@ -263,6 +292,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
 
     pub(crate) fn native_host_handler(&self) -> std::sync::Arc<dyn eframe::NativeHostHandler> {
         self.coordinator.native_host_handler()
+    }
+
+    pub(crate) fn input_storage_reserved_bytes(&self) -> Option<usize> {
+        self.coordinator.combined_storage_reserved_bytes()
     }
 
     pub(crate) const fn root_surface(&self) -> SurfaceId {

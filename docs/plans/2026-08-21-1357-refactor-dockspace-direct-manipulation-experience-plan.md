@@ -1153,6 +1153,36 @@ does not yet select the combined profile: real finite execution, saturation
 recovery, full-output pressure, 1,000 Hz/release timing and 10,000-cycle soak
 remain its enablement gates. No full U7/U8 or physical readiness follows.
 
+The bounded-host qualification slice exposes `NativeStorageLimit` as an explicit
+application choice, reusing the same combined constructor rather than changing
+generic/default hosting. The app can report selected reserved bytes separately
+from resident capacity. The smoke accepts bounded or unlimited storage through
+one environment selector; bounded root boundaries require resident <= reserved
+<= 4 MiB, and its output labels the selected profile. A preliminary bounded
+macOS redock completes first-live and retirement under that same limit.
+
+The saturation regression now drains the exact accepted prefix, retries a
+dropped prefix frame, drops/retries cancellation, requires one overload terminal
+and verifies fresh input can enter without raising the allowance. Coalescing and
+retained core pointer reduction share one budget, after committing the freeze
+prelude before raw replay. A separate 10,000-lifetime model reuses one coordinator,
+resolves rebased surfaces through a stable application item and checks exact
+Destroyed/tombstone/route/quiescence ownership and plateaued idle capacity.
+Periodic candidate/preparation drops and late predecessor callbacks exercise
+retry and incarnation isolation. Fresh qualification passes 442 complete normal
+native workspace tests plus one public-only profile test, 443 complete tests
+with native debug assertions disabled, correctness/suspicious Clippy and strict
+rustdoc. Both complete runs execute the 10,000-lifetime model. The bounded
+macOS redock completes first-live and retirement with sampled resident peak
+3,005,859 bytes and reservation peak 4,122,680 bytes under the selected
+4,194,304-byte limit; the explicitly unlimited comparison samples 2,750,705
+resident bytes. This qualifies explicit bounded application construction,
+finite real-window redock, byte-saturation recovery and external-root model
+lifetimes. It does not qualify physical input, full O256 pressure, configured-cap
+child/staging fanout, 1,000 Hz/release timing, native scoped/stationary behavior
+or complete U7/U8. The separate Linux-only handler-forwarding correction is not
+included in these gates.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

@@ -82,13 +82,64 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         style: DockStyle,
         close_policy: NativeWindowClosePolicy,
     ) -> Result<Self, NativeRuntimeError> {
-        let state = NativeRuntimeState::new(
+        Self::new_configured(
             instance_id,
             session,
             root_surface,
             panes,
             style,
             close_policy,
+            None,
+        )
+    }
+
+    /// Creates a native application with complete finite input/lifecycle storage.
+    ///
+    /// Ordinary ingress freezes before it can exceed the selected byte, record
+    /// or age allowance. Previously accepted input and terminal obligations
+    /// retain their original ordered recovery path.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration or enrollment failure before returning a host
+    /// handler, including invalid core subprofile storage allowances.
+    pub fn new_with_storage_limit(
+        instance_id: Id,
+        session: DockspaceSession,
+        root_surface: SurfaceId,
+        panes: P,
+        style: DockStyle,
+        close_policy: NativeWindowClosePolicy,
+        storage: crate::NativeStorageLimit,
+    ) -> Result<Self, NativeRuntimeError> {
+        Self::new_configured(
+            instance_id,
+            session,
+            root_surface,
+            panes,
+            style,
+            close_policy,
+            Some(storage),
+        )
+    }
+
+    fn new_configured(
+        instance_id: Id,
+        session: DockspaceSession,
+        root_surface: SurfaceId,
+        panes: P,
+        style: DockStyle,
+        close_policy: NativeWindowClosePolicy,
+        storage: Option<crate::NativeStorageLimit>,
+    ) -> Result<Self, NativeRuntimeError> {
+        let state = NativeRuntimeState::new_with_storage_limit(
+            instance_id,
+            session,
+            root_surface,
+            panes,
+            style,
+            close_policy,
+            storage,
         )?;
         let native_host = state.native_host_handler();
         let state = Arc::new(Mutex::new(state));
@@ -186,6 +237,16 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// native payload contract of the recorder.
     pub fn input_storage_capacity_bytes(&self) -> Result<usize, NativeRuntimeError> {
         lock_state(&self.state).owned_input_capacity_bytes()
+    }
+
+    /// Returns current retained data plus prepaid native construction promises.
+    ///
+    /// Returns `None` for the unlimited constructor. This query uses the same
+    /// combined allowance as ingress admission; it is distinct from resident
+    /// capacity and does not certify physical-input timing or renderer memory.
+    #[must_use]
+    pub fn input_storage_reserved_bytes(&self) -> Option<usize> {
+        lock_state(&self.state).input_storage_reserved_bytes()
     }
 
     /// Queues one complete-root dock action for the next final root pass.

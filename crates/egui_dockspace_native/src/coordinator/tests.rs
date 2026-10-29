@@ -19,6 +19,7 @@ use crate::viewport_callback::NativeViewportVisibilityRecord;
 mod budget;
 mod callback_prefix;
 mod close;
+mod combined_soak;
 mod focus;
 mod held_close;
 mod ingress_create;

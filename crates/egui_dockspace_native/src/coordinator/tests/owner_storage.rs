@@ -7,7 +7,7 @@ use dockspace::runtime::{
 use super::*;
 use crate::input_control::NativePointerPassthroughRecord;
 
-fn layout() -> DockspaceLayout {
+pub(super) fn layout() -> DockspaceLayout {
     DockspaceLayout::new([1, 2].map(|id| {
         DockspaceSurfaceLayout::new(
             SurfaceId::new(id),
@@ -228,7 +228,7 @@ fn finite_no_frame_preparation_reuses_one_ready_backing_and_keeps_the_exact_owne
     assert_eq!(native.owned_input_capacity_bytes().unwrap(), baseline);
 }
 
-fn combined_profile() -> NativeCombinedStorageLimit {
+pub(super) fn combined_profile() -> NativeCombinedStorageLimit {
     let windows = 16;
     let effects = 16;
     NativeCombinedStorageLimit {
@@ -365,4 +365,117 @@ fn selected_combined_allowance_freezes_pointer_ingress_before_minting_an_unfunde
         )));
     assert_eq!(native.combined_storage_reserved_bytes(), Some(before));
     assert_eq!(native.bridge.captured_through_for_test(), captured);
+
+    let context = egui::Context::default();
+    // Freezing first retains the complete pre-existing core boundary. Commit
+    // that prelude before attempting to consume its frozen callback prefix.
+    let mut prelude = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    prelude
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert!(
+        !prelude
+            .commit()
+            .unwrap()
+            .inputs()
+            .contains(&HostInputOutcome::NativeInputCancelledForOverload)
+    );
+    let mut dropped_prefix = false;
+    let mut consumed = 0;
+    while native.bridge.front_event().is_some() {
+        let mut budget = test_budget();
+        let remaining = budget.remaining_records();
+        assert!(
+            native
+                .reduce_callback_prefix(&context, &mut budget)
+                .unwrap()
+                .is_some()
+        );
+        let mut frame = native
+            .poll_host_frame(&mut budget, |_| NativeReceiverAnswer::Unknown)
+            .unwrap()
+            .expect("the same dispatch budget also reduces the retained core pointer edge");
+        consumed += remaining - budget.remaining_records();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        if !dropped_prefix {
+            let version = frame.frame.version();
+            drop(frame);
+            assert_eq!(native.session.version(), version);
+            dropped_prefix = true;
+            let mut retry = native
+                .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            retry
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            assert!(
+                !retry
+                    .commit()
+                    .unwrap()
+                    .inputs()
+                    .contains(&HostInputOutcome::NativeInputCancelledForOverload)
+            );
+        } else {
+            assert!(
+                !frame
+                    .commit()
+                    .unwrap()
+                    .inputs()
+                    .contains(&HostInputOutcome::NativeInputCancelledForOverload)
+            );
+        }
+        assert!(native.combined_storage_reserved_bytes().unwrap() <= 4 * 1024 * 1024);
+    }
+    assert_eq!(consumed, accepted);
+    assert_eq!(native.bridge.captured_through_for_test(), captured);
+    assert_eq!(
+        native.bridge.admission_dispatch(),
+        NativeDispatch::Cancel { boundary: captured }
+    );
+    let mut cancelled = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    cancelled
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(cancelled);
+    assert_eq!(
+        native.bridge.admission_dispatch(),
+        NativeDispatch::Cancel { boundary: captured }
+    );
+    let mut retry = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    retry
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = retry.commit().unwrap();
+    assert_eq!(
+        report
+            .inputs()
+            .iter()
+            .filter(|outcome| **outcome == HostInputOutcome::NativeInputCancelledForOverload)
+            .count(),
+        1
+    );
+    assert_eq!(native.bridge.admission_dispatch(), NativeDispatch::Idle);
+    assert!(native.combined_storage_reserved_bytes().unwrap() < before);
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            6000,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::CursorLeft {
+                device_id: DeviceId::dummy(),
+            },
+        )));
+    assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
+    assert_eq!(native.bridge.front_event().unwrap().ordinal(), 6000);
+    assert!(native.combined_storage_reserved_bytes().unwrap() <= 4 * 1024 * 1024);
 }

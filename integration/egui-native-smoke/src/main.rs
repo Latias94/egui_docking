@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::io;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -14,11 +15,14 @@ use dockspace::model::{
     NativeWindowPlacement, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::runtime::DockspaceSession;
+use dockspace::runtime::{
+    DockspaceSession, NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit,
+};
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::{
-    NativeActionRequestError, NativeCloseProgress, NativeDockspaceApp, NativeWindowClosePolicy,
+    NativeActionRequestError, NativeCloseProgress, NativeDockspaceApp, NativeStorageLimit,
+    NativeWindowClosePolicy,
 };
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
@@ -29,25 +33,33 @@ const MAIN_ITEM: ItemId = ItemId::new(1);
 const CHILD_ITEM: ItemId = ItemId::new(2);
 const CHILD_DETAIL: ItemId = ItemId::new(3);
 const SCENARIO_ENV: &str = "EGUI_DOCKSPACE_NATIVE_SMOKE_SCENARIO";
+const STORAGE_ENV: &str = "EGUI_DOCKSPACE_NATIVE_SMOKE_STORAGE";
+const STORAGE_BYTE_LIMIT: usize = 4 * 1024 * 1024;
 const CLOSE_READY_TITLE: &str = "Dockspace native close ready";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let scenario = configured_scenario()?;
-    eprintln!("native-smoke: scenario {scenario:?}");
+    let storage_profile = configured_storage_profile()?;
+    eprintln!(
+        "native-smoke: scenario {scenario:?}; storage profile {}",
+        storage_profile.name()
+    );
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let session = DockspaceSession::from_layout(smoke_layout(), policy)?;
-    let dockspace = new_dockspace(scenario, session)?;
+    let dockspace = new_dockspace(scenario, storage_profile, session)?;
     let native_host = dockspace.native_host_handler();
     let outcome = Arc::new(Mutex::new(None));
     let reported_outcome = Arc::clone(&outcome);
     let smoke = SmokeApp {
         dockspace,
         scenario,
+        storage_profile,
         phase: SmokePhase::AwaitRootPresentation,
         deadline: Instant::now() + Duration::from_secs(30),
         outcome: reported_outcome,
         input_capacity_high_water: 0,
+        input_reserved_high_water: 0,
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([720.0, 520.0]),
@@ -72,6 +84,64 @@ fn main() -> Result<(), Box<dyn Error>> {
             Err(io::Error::other("native smoke exited before reaching a terminal phase").into())
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SmokeStorageProfile {
+    #[default]
+    Unlimited,
+    Bounded,
+}
+
+impl SmokeStorageProfile {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Unlimited => "unlimited",
+            Self::Bounded => "bounded",
+        }
+    }
+}
+
+fn select_storage_profile(environment: Option<&str>) -> Result<SmokeStorageProfile, String> {
+    match environment {
+        None | Some("unlimited") => Ok(SmokeStorageProfile::Unlimited),
+        Some("bounded") => Ok(SmokeStorageProfile::Bounded),
+        Some(value) => Err(format!(
+            "unknown {STORAGE_ENV} value {value:?}; expected bounded or unlimited"
+        )),
+    }
+}
+
+fn configured_storage_profile() -> Result<SmokeStorageProfile, io::Error> {
+    let environment = match env::var(STORAGE_ENV) {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{STORAGE_ENV} must contain Unicode text"),
+            ));
+        }
+    };
+    select_storage_profile(environment.as_deref())
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))
+}
+
+fn bounded_storage_limit() -> Result<NativeStorageLimit, egui_dockspace_native::NativeRuntimeError>
+{
+    let slots = |count| NonZeroUsize::new(count).expect("smoke storage bounds are nonzero");
+    let input = NativeInputStorageLimit::new(slots(512), 768 * 1024)
+        .with_producer_storage_limit(NativeProducerStorageLimit::new(
+            slots(16),
+            slots(8),
+            128 * 1024,
+        ))
+        .with_report_storage_limit(NativeReportStorageLimit::new(
+            slots(64),
+            slots(16),
+            256 * 1024,
+        ));
+    NativeStorageLimit::new(input, STORAGE_BYTE_LIMIT, 48, 32, 16)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -149,11 +219,23 @@ fn select_scenario(args: &[String], environment: Option<&str>) -> Result<SmokeSc
 
 fn new_dockspace(
     scenario: SmokeScenario,
+    storage_profile: SmokeStorageProfile,
     session: DockspaceSession,
 ) -> Result<NativeDockspaceApp<SmokePanes>, egui_dockspace_native::NativeRuntimeError> {
     let instance = egui::Id::unique("egui-native-smoke");
     let panes = SmokePanes::new();
     let style = DockStyle::default();
+    if storage_profile == SmokeStorageProfile::Bounded {
+        return NativeDockspaceApp::new_with_storage_limit(
+            instance,
+            session,
+            ROOT_SURFACE,
+            panes,
+            style,
+            scenario.explicit_close_policy().unwrap_or_default(),
+            bounded_storage_limit()?,
+        );
+    }
     match scenario.explicit_close_policy() {
         Some(close_policy) => NativeDockspaceApp::new_with_close_policy(
             instance,
@@ -194,10 +276,12 @@ enum SmokePhase {
 struct SmokeApp {
     dockspace: NativeDockspaceApp<SmokePanes>,
     scenario: SmokeScenario,
+    storage_profile: SmokeStorageProfile,
     phase: SmokePhase,
     deadline: Instant,
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
     input_capacity_high_water: usize,
+    input_reserved_high_water: usize,
 }
 
 impl eframe::App for SmokeApp {
@@ -220,11 +304,31 @@ impl SmokeApp {
         match self.dockspace.input_storage_capacity_bytes() {
             Ok(bytes) => {
                 self.input_capacity_high_water = self.input_capacity_high_water.max(bytes);
-                if bytes > 4 * 1024 * 1024 {
-                    self.finish(context, Err(format!(
-                        "native input data at a root boundary exceeded the 4 MiB smoke profile: {bytes} bytes"
-                    )));
-                    return;
+                match self.storage_profile {
+                    SmokeStorageProfile::Bounded => {
+                        let Some(reserved) = self.dockspace.input_storage_reserved_bytes() else {
+                            self.finish(
+                                context,
+                                Err("bounded storage profile has no native reservation".to_owned()),
+                            );
+                            return;
+                        };
+                        self.input_reserved_high_water =
+                            self.input_reserved_high_water.max(reserved);
+                        if bytes > reserved || reserved > STORAGE_BYTE_LIMIT {
+                            self.finish(context, Err(format!(
+                                "bounded storage at a root boundary violated resident <= reserved <= {STORAGE_BYTE_LIMIT}: resident={bytes}, reserved={reserved} bytes"
+                            )));
+                            return;
+                        }
+                    }
+                    SmokeStorageProfile::Unlimited if bytes > STORAGE_BYTE_LIMIT => {
+                        self.finish(context, Err(format!(
+                            "unlimited storage root-boundary sample exceeded the 4 MiB sampling threshold: resident={bytes} bytes; no storage limit is selected"
+                        )));
+                        return;
+                    }
+                    SmokeStorageProfile::Unlimited => {}
                 }
             }
             Err(error) => {
@@ -577,15 +681,26 @@ impl SmokeApp {
     }
 
     fn fail_without_context(&mut self, message: String) {
+        self.report_storage_peaks();
         *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(Err(message));
         self.phase = SmokePhase::Done;
     }
 
+    fn report_storage_peaks(&self) {
+        match self.storage_profile {
+            SmokeStorageProfile::Bounded => eprintln!(
+                "native-smoke: storage profile bounded; root-boundary peaks resident={} bytes, reserved={} bytes; selected limit={STORAGE_BYTE_LIMIT} bytes",
+                self.input_capacity_high_water, self.input_reserved_high_water
+            ),
+            SmokeStorageProfile::Unlimited => eprintln!(
+                "native-smoke: storage profile unlimited; peak resident sample at root boundaries={} bytes; no storage reservation selected",
+                self.input_capacity_high_water
+            ),
+        }
+    }
+
     fn finish(&mut self, context: &egui::Context, outcome: Result<(), String>) {
-        eprintln!(
-            "native-smoke: peak input data at root boundaries = {} bytes",
-            self.input_capacity_high_water
-        );
+        self.report_storage_peaks();
         match &outcome {
             Ok(()) => eprintln!("native-smoke: complete"),
             Err(message) => eprintln!("native-smoke: failed: {message}"),
@@ -714,6 +829,31 @@ impl PaneView for SmokePanes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_environment_defaults_to_unlimited_and_accepts_explicit_profiles() {
+        assert_eq!(
+            select_storage_profile(None).unwrap(),
+            SmokeStorageProfile::Unlimited
+        );
+        assert_eq!(
+            select_storage_profile(Some("unlimited")).unwrap(),
+            SmokeStorageProfile::Unlimited
+        );
+        assert_eq!(
+            select_storage_profile(Some("bounded")).unwrap(),
+            SmokeStorageProfile::Bounded
+        );
+    }
+
+    #[test]
+    fn storage_environment_rejects_unknown_empty_and_padded_values() {
+        for value in ["", "Bounded", "bounded ", " unlimited", "finite"] {
+            let error = select_storage_profile(Some(value)).unwrap_err();
+            assert!(error.contains(STORAGE_ENV));
+            assert!(error.contains("expected bounded or unlimited"));
+        }
+    }
 
     #[test]
     fn scenario_selection_defaults_to_redock_and_cli_overrides_the_environment() {

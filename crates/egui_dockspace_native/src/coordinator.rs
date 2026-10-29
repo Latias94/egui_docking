@@ -65,6 +65,7 @@ mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
 mod storage;
+pub use storage::NativeStorageLimit;
 pub(crate) use storage::{
     NativeCombinedStorageLimit, NativeOwnerStorageLimit, NativeSnapshotStorageLimit,
 };
