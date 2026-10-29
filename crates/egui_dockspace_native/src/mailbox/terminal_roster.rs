@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_snapshot_settlement_frees_backing_for_terminal_recapture() {
+    fn ordinary_snapshot_backpressure_recaptures_without_input_overload() {
         let bridge = NativeHostBridge::with_clock(
             NativeViewportMap::default(),
             NativeMonotonicClock::new(|| Duration::ZERO),
@@ -427,7 +427,7 @@ mod tests {
         assert!(bridge.settle_viewport_roster(&first, true));
         drop(first);
 
-        {
+        let reserved = {
             let mut records = bridge.lock();
             records.invalidate_viewport_roster();
             let payload = records
@@ -443,11 +443,16 @@ mod tests {
                     .capture_backing_with(|_| panic!("both ordinary backings remain shared"))
                     .is_none()
             );
-            records.freeze_ordinary();
+            for _ in 0..3 {
+                records.defer_ordinary_roster_capture();
+            }
             assert_eq!(records.journal.captured_through(), ordinal);
-            assert!(records.event_boundary_pending);
+            assert_eq!(records.admission, crate::mailbox::NativeAdmission::Running);
+            assert!(!records.event_boundary_pending);
             assert!(records.terminal_roster.needs_capture());
-        }
+            assert_eq!(records.terminal_roster.required_generation, 1);
+            records.terminal_roster.reserved_payload_capacity_bytes()
+        };
 
         // The already accepted snapshot settles without a newer root capture.
         // Its baseline replacement releases the old backing for the obligation.
@@ -458,9 +463,50 @@ mod tests {
         bridge.commit_frame_boundary(false);
         assert!(bridge.settle_viewport_roster(&second, true));
         drop(second);
+        {
+            let mut records = bridge.lock();
+            let recaptured = records.terminal_roster.capture_with(|_| true).unwrap();
+            assert_eq!(Arc::as_ptr(&recaptured), first_identity);
+            assert!(records.record_terminal_viewport_roster(recaptured));
+            assert!(!records.terminal_roster.needs_capture());
+            assert!(records.terminal_roster.has_pending());
+            records.defer_ordinary_roster_capture();
+            assert_eq!(records.terminal_roster.required_generation, 1);
+        }
+        let recaptured = bridge.front_viewport_roster().unwrap();
+        assert!(recaptured.is_terminal());
+        assert!(bridge.acknowledge_viewport_roster(&recaptured));
+        assert!(bridge.settle_viewport_roster(&recaptured, true));
+        assert!(bridge.lock().terminal_roster.has_pending());
+        bridge.commit_frame_boundary(false);
+        let records = bridge.lock();
+        assert!(!records.terminal_roster.has_pending());
+        assert_eq!(records.admission, crate::mailbox::NativeAdmission::Running);
+        assert_eq!(
+            records.terminal_roster.reserved_payload_capacity_bytes(),
+            reserved
+        );
+    }
+
+    #[test]
+    fn ordinary_roster_window_capacity_exhaustion_still_freezes_ingress() {
+        let bridge = NativeHostBridge::with_clock(
+            NativeViewportMap::default(),
+            NativeMonotonicClock::new(|| Duration::ZERO),
+        );
         let mut records = bridge.lock();
-        let recaptured = records.terminal_roster.capture_with(|_| true).unwrap();
-        assert_eq!(Arc::as_ptr(&recaptured), first_identity);
+        assert!(
+            records
+                .terminal_roster
+                .capture_backing_with(|_| false)
+                .is_none()
+        );
+        records.defer_ordinary_roster_capture();
+        assert_eq!(
+            records.admission,
+            crate::mailbox::NativeAdmission::Draining { boundary: 0 },
+        );
+        assert!(records.event_boundary_pending);
         assert!(records.terminal_roster.needs_capture());
     }
 

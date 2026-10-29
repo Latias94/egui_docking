@@ -2155,7 +2155,8 @@ impl NativeHostState {
             self.window_resources.hidden_binding(token.viewport_id()) == Some(binding)
         });
         let prepaid_output = !output_capacity_available
-            || matches!(self.admission, NativeAdmission::Draining { .. });
+            || matches!(self.admission, NativeAdmission::Draining { .. })
+            || self.terminal_roster.has_pending();
         let mut reservation = if prepaid_output {
             let promised_staging = binding.filter(|binding| {
                 token.viewport_id() != ViewportId::ROOT
@@ -2782,6 +2783,17 @@ impl NativeHostState {
                 .iter()
                 .chain(self.owner_ingress().map(ReservedHostRecord::record))
                 .any(|record| matches!(record, HostRecord::ViewportRoster(envelope) if known(&envelope.key)))
+    }
+
+    fn defer_ordinary_roster_capture(&mut self) {
+        if self.terminal_roster.window_capacity_exceeded() {
+            self.freeze_ordinary();
+        } else if !self.terminal_roster.has_pending() {
+            // A baseline and an accepted snapshot can borrow both backings.
+            // Drain that snapshot and recapture fresh framework facts through
+            // the existing protected receipt without cancelling the gesture.
+            self.terminal_roster.require();
+        }
     }
 
     fn record_viewport_roster(
@@ -4603,10 +4615,7 @@ impl NativeHostBridge {
                         if let Some(payload) = payload {
                             records.record_viewport_roster(payload);
                         } else {
-                            // Drain the already accepted snapshot before a
-                            // protected recapture. Neither ordinary nor terminal
-                            // ingress may allocate a third payload backing.
-                            records.freeze_ordinary();
+                            records.defer_ordinary_roster_capture();
                             records
                                 .output_resources
                                 .get_mut(&token)

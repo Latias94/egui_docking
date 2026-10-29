@@ -15,6 +15,55 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 bounded roster recapture and X11 physical recovery
+
+Ordinary complete-roster capture now distinguishes a borrowed payload backing
+from exhausted window capacity. When a committed baseline and an accepted
+snapshot retain both prepaid backings, the host requests one fresh recapture
+through its existing protected roster receipt. Repeated deferred passes do not
+mint another generation. Already accepted facts drain in order; root control
+passes retain the previous framebuffer and suppress semantic/application
+actions until the fresh snapshot passes both full commit and exact settlement.
+An ordinary output abandoned at the first failed capture is also recognized as
+control. Existing promised child staging keeps its protected path. No third
+payload, additional lifecycle authority or relaxed input/output cap is added.
+Actual roster window-capacity exhaustion still freezes ordinary ingress.
+
+All 11 roster protocol tests pass, including ordinary-backing reuse without
+overload, coalesced recapture, exact settlement barriers, fixed reservation
+capacity and genuine window-capacity overload. The unchanged Linux physical
+driver now completes its actual XTest drag-out, child first-live, drag-back,
+exact child DestroyNotify, semantic inventory removal and final quiescence
+journey under Xvfb/Openbox/software GL. The production drag-out preview precedes
+release (steps 29/30); the drag-back Center-guide preview precedes release
+(steps 114/116). These are observed steps, not fixed frame-count assertions.
+The build uses the unpublished local egui fork at
+`86feb7f8cc49217bff54a8924b2cb525f4af3285` through explicit source overrides.
+The 420-source hash manifest and physical log are retained in
+`/tmp/dockspace-roster-backpressure-snapshot.json` and
+`/tmp/dockspace-roster-backpressure-physical-x11.log`.
+
+The same frozen native slice passes 444 tests normally and 444 with native
+debug assertions disabled, including the same-instance 10,000-lifetime model
+in each run. Correctness/suspicious Clippy, strict rustdoc, formatting and
+default/bounded macOS programmatic redock pass. All three real output-pressure
+journeys pass on macOS and Linux, retaining the existing O256/control2 staging
+and exact terminal-order assertions. macOS pressure samples 2,843,172 resident /
+3,807,664 reserved bytes; Linux samples 2,843,140 resident / at most 3,809,080
+reserved bytes. Bounded macOS redock samples 3,005,859 / 4,155,496 bytes. Each
+remains below 4,194,304 bytes; pressure-proxy backing is separately 18,576 bytes.
+Results are recorded in `/tmp/dockspace-roster-backpressure-qualification.json`
+and `/tmp/dockspace-roster-backpressure-linux-qualification.json`. The core and
+fork implementation are unchanged in this qualified slice; their earlier
+independent gates are not reported as newly rerun.
+
+This supersedes the earlier missing-preview blocker recorded below. It proves
+this physical journey, including a Center-guide redock; it does not qualify the
+full non-guide-point matrix, mixed-DPI platforms, 1,000 Hz/release timing,
+configured-cap roster/output cross-saturation or native scoped/stationary input.
+Fatal cleanup before a staging/first-live terminal remains separate work.
+U7/U8 remain incomplete.
+
 ## 2026-10-29 U7 real output-owner pressure
 
 The new `egui-native-output-pressure` binary uses actual eframe output tokens
@@ -127,7 +176,8 @@ Logs and frozen source identities are retained in
 `/tmp/dockspace-linux-handler-{tests,build,bounded-redock,physical}.log` and
 `/tmp/dockspace-linux-handler-snapshot.json`.
 
-The physical XTest journey is **not qualified**: real press, threshold crossing,
+At this migration checkpoint the physical XTest journey was **not qualified**:
+real press, threshold crossing,
 routed outside motion and the pass-through Applied ACK are observed, but the
 production native preview is absent before release. The driver fails at
 `drag-out-x11-events`; this remains a release blocker under investigation.
@@ -140,8 +190,8 @@ payload backings borrowed. That path freezes ordinary ingress and commits
 expired age or exhausted output capacity. The diagnostic changes only the first
 freeze and Cancelled-event logging in a disposable snapshot;
 `/tmp/dockspace-native-freeze-diagnostic-run.log` records the direct cause.
-Replacing this transient roster-pressure cancellation with bounded recapture
-backpressure is the next implementation slice, not a completed physical claim.
+The subsequent bounded roster-recapture qualification above replaces this
+transient cancellation and closes this specific physical missing-preview blocker.
 
 ## 2026-10-29 U7 explicit bounded application and lifecycle model
 

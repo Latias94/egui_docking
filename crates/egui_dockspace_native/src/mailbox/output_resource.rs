@@ -163,9 +163,8 @@ impl NativeOutputResources {
             .as_ref()
             .is_some_and(|(key, _)| *key == token)
             || self
-                .child_controls
-                .iter()
-                .any(|(key, resource)| *key == token && resource.reservation.abandoned)
+                .get(&token)
+                .is_some_and(|resource| resource.reservation.abandoned)
     }
 
     pub(super) fn get(&self, token: &NativeOutputToken) -> Option<&NativeOutputResource> {

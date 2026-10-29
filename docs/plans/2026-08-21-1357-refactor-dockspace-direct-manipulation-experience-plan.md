@@ -1187,7 +1187,7 @@ The subsequent Linux-only physical harness migration preserves the inner close
 disposition, forwards property-command retirement and rejects Retired pointer
 commands as unapplied. Its actual Linux build and 29 unit tests pass; bounded
 Xvfb/Openbox redock completes with resident/reservation peaks of 3,005,827 /
-4,123,712 bytes under 4 MiB. The current XTest journey still fails before release
+4,123,712 bytes under 4 MiB. At this checkpoint the XTest journey fails before release
 because the production native preview is missing after observed press,
 threshold, routed outside motion and pass-through ACK. This physical blocker
 remains open; callback migration does not certify U7/U8.
@@ -1195,8 +1195,22 @@ Subsequent minimal tracing directly identifies the premature cancellation:
 ordinary fresh-roster recapture has both fixed backings borrowed with two
 retained records and 2.67 ms oldest age, while byte/raw/output checks pass.
 That transient shortage currently freezes ingress and commits InputOverload.
-The next slice must preserve the gesture through existing bounded roster
-recapture/control ownership, without adding another payload or loosening caps.
+The subsequent roster-backpressure slice preserves the gesture through the
+existing protected roster receipt and prepaid root control outputs. A borrowed
+backing requests one coalesced fresh recapture; true window-capacity exhaustion
+still freezes admission. The first abandoned ordinary output also suppresses
+semantic/application work. No third payload or relaxed cap is introduced.
+All 11 roster protocol tests pass. The unchanged real X11/XTest driver now
+completes drag-out preview-before-release, child first-live, Center-guide
+drag-back preview-before-release, exact DestroyNotify, inventory removal and
+quiescence under Xvfb/Openbox/software GL. Frozen identities and the physical
+log are retained in `/tmp/dockspace-roster-backpressure-snapshot.json` and
+`/tmp/dockspace-roster-backpressure-physical-x11.log`. This closes the specific
+missing-preview blocker; non-guide-point and mixed-DPI certification remain open.
+The same frozen slice passes native 444/444 normal/assertion-disabled tests,
+including both same-instance 10,000-lifetime model runs, Clippy, strict docs,
+default/bounded macOS redock and all three macOS/Linux O256 pressure journeys.
+The physical journey and delayed-output journeys remain separate evidence.
 
 The next output-pressure slice uses a dedicated real-window binary with actual
 eframe token/result callbacks and a bounded 258-result test proxy. After one
@@ -1235,7 +1249,7 @@ under Xvfb/Openbox/software GL, sampling 2,843,140 resident / 3,808,176 reserved
 bytes under the same 4 MiB profile. This confirms real-window delayed output
 delivery on that backend without claiming physical pointer qualification.
 Staging without a captured terminal at fatal,
-physical X11, 1,000 Hz/release latency and native scoped/stationary continuation
+the broader physical matrix, 1,000 Hz/release latency and native scoped/stationary continuation
 remain explicit work. No complete U7/U8 claim follows from this slice.
 
 The adjacent native prerequisite measures actual raw backing capacity and
