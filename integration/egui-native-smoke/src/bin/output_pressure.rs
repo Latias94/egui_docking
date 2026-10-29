@@ -50,6 +50,7 @@ enum Scenario {
     Ordered,
     Duplicate,
     Reordered,
+    LateStaging,
 }
 
 impl Scenario {
@@ -60,9 +61,10 @@ impl Scenario {
             [value] if value == "ordered" => Ok(Self::Ordered),
             [value] if value == "duplicate" => Ok(Self::Duplicate),
             [value] if value == "reordered" => Ok(Self::Reordered),
+            [value] if value == "late-staging" => Ok(Self::LateStaging),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "expected one output-pressure scenario: ordered, duplicate, reordered",
+                "expected one output-pressure scenario: ordered, duplicate, reordered, late-staging",
             )),
         }
     }
@@ -102,6 +104,7 @@ struct PressureState {
     peak_reserved: usize,
     forwarded: usize,
     final_terminal_checked: bool,
+    late_terminal_after_fatal: bool,
     outcome: Option<Result<(), String>>,
 }
 
@@ -128,6 +131,7 @@ impl PressureState {
             peak_reserved: 0,
             forwarded: 0,
             final_terminal_checked: false,
+            late_terminal_after_fatal: false,
             outcome: None,
         }
     }
@@ -151,6 +155,10 @@ impl PressureState {
         }
         self.phase = Phase::Done;
         context.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+    }
+
+    fn requests_external_repaint(&self) -> bool {
+        !(self.scenario == Scenario::LateStaging && self.late_terminal_after_fatal)
     }
 }
 
@@ -226,7 +234,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .spawn(move || {
                     let deadline = Instant::now() + Duration::from_secs(60);
                     loop {
-                        {
+                        let request_repaint = {
                             let state = lock(&demand_shared);
                             if state.phase == Phase::Done {
                                 break;
@@ -243,10 +251,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 );
                                 std::process::exit(1);
                             }
-                        }
+                            state.requests_external_repaint()
+                        };
                         // Repaint demand is the test workload. A separate clock
                         // also bounds cases where Defer prevents another UI pass.
-                        context.request_repaint_of(ViewportId::ROOT);
+                        if request_repaint {
+                            context.request_repaint_of(ViewportId::ROOT);
+                        }
                         std::thread::sleep(Duration::from_millis(5));
                     }
                 })?;
@@ -264,6 +275,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(shared.peak_control, 2);
     assert!(shared.full_root_defer_seen && shared.protected_child_seen);
     assert!(shared.final_terminal_checked);
+    if scenario == Scenario::LateStaging {
+        assert!(shared.late_terminal_after_fatal);
+        assert_eq!(shared.forwarded, BUFFERED_TERMINALS);
+    }
     let backlog = lock(&runtime).output_backlog();
     let runtime = lock(&runtime);
     assert_eq!(backlog.ordinary(), 0, "window exit retains ordinary owners");
@@ -317,7 +332,7 @@ impl eframe::App for PressureApp {
             state.finish(ui.ctx(), Err(error));
         }
         // Test demand produces actual native outputs; it does not mint identities.
-        if state.phase != Phase::Done {
+        if state.phase != Phase::Done && state.requests_external_repaint() {
             ui.ctx().request_repaint_after(Duration::from_millis(1));
         }
     }
@@ -359,6 +374,22 @@ impl PressureApp {
                 return Err(format!("unexpected runtime error {error:?}"));
             }
             if runtime.output_backlog().ordinary() == 0 && runtime.is_shutdown_drained() {
+                if state.scenario == Scenario::LateStaging {
+                    if !state.late_terminal_after_fatal {
+                        return Err("shutdown drained before the withheld staging terminal".into());
+                    }
+                    let source_preserved = runtime.with_view(|view| {
+                        view.item(CHILD_ITEM)
+                            .is_some_and(|item| item.surface() == ROOT_SURFACE)
+                    });
+                    if source_preserved != Some(true)
+                        || state
+                            .child_surface
+                            .is_some_and(|surface| runtime.is_surface_presented(surface))
+                    {
+                        return Err("late staging terminal transferred the preserved source".into());
+                    }
+                }
                 state.finish(context, Ok(()));
             }
             return Ok(());

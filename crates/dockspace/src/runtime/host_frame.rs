@@ -11,6 +11,7 @@ use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::{
     CoreHostFrame, EngineInput, HostPresentationSlot, HostPresentationUnavailableReason,
 };
+use crate::frame::NativeCreatePhase;
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
 use crate::policy::DockPolicy;
@@ -37,6 +38,7 @@ fn has_ordinary_application_input(transition: &crate::transition::EngineTransiti
             && !matches!(
                 input.outcome(),
                 crate::transition::InputOutcome::NativeInputCancelledForOverload
+                    | crate::transition::InputOutcome::NativeCreateCancelled { .. }
             )
     })
 }
@@ -86,6 +88,45 @@ impl DockspaceHostFrame<'_> {
         let attempt = self.frame.presentation_attempt();
         let sequence = self.append_identified(input)?;
         Ok(DockspaceSubmittedAction::new(attempt, sequence))
+    }
+
+    /// Explicitly cancels at most one native create before ownership transfer.
+    ///
+    /// Selects the next eligible saga from this frame's current candidate and
+    /// preserves its source content through the existing cleanup protocol.
+    /// Creates awaiting first-live presentation are skipped. Returns whether
+    /// one cancellation input was appended; dropping or failing to commit the
+    /// frame publishes no cancellation. Hosts account for each appended input
+    /// against their own lifecycle work budget. Appending does not reserve
+    /// effect-report storage; compensation stays in the existing effect ledger
+    /// until delivery capacity is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when native input remains pending, the input phase has
+    /// closed, the private source sequence is exhausted, or core rejects cleanup.
+    pub fn cancel_next_native_create(&mut self) -> Result<bool, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        let saga = self
+            .frame
+            .view()
+            .viewport()
+            .native_create_sagas()
+            .find_map(|(id, saga)| {
+                (!matches!(
+                    saga.phase(),
+                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                ))
+                .then_some(id)
+            });
+        let Some(saga) = saga else {
+            return Ok(false);
+        };
+        self.append(EngineInput::CancelNativeCreate {
+            expected: self.frame.view().version(),
+            saga,
+        })?;
+        Ok(true)
     }
 
     /// Returns whether native input or report submission remains after this prefix.

@@ -169,6 +169,31 @@ impl NativeCoordinator {
             }
         };
         let native_input_pending = host_frame.native_input_pending();
+        let mut native_create_cancelled = false;
+        let cleanup_deferred = !native_input_pending && budget.is_exhausted();
+        if !native_input_pending && !cleanup_deferred {
+            // One cancellation per boundary bounds its compensating effects
+            // independently of the number of unfinished creates.
+            match host_frame.frame.cancel_next_native_create() {
+                Ok(false) => {}
+                Ok(true) => {
+                    // Direct frame input is reduced immediately rather than
+                    // replayed by the native journal. Charge it once to the
+                    // same dispatch allowance as the accepted callback prefix.
+                    budget.complete_unsequenced_records(1);
+                    native_create_cancelled = true;
+                }
+                Err(error) => {
+                    errors.push(error.into());
+                    return NativeShutdownAdvance::partial_with_repaints(
+                        progress,
+                        presentation_transitions,
+                        errors,
+                        no_frame_invalidations.repaint_viewports,
+                    );
+                }
+            }
+        }
         let prepared_retirements = if native_input_pending {
             None
         } else {
@@ -266,6 +291,7 @@ impl NativeCoordinator {
         let pointer_passthrough_pending = pointer_passthrough.is_some();
 
         let transition_progress = progress
+            || native_create_cancelled
             || had_inputs
             || native_snapshot_applied
             || native_close_settled
@@ -279,12 +305,13 @@ impl NativeCoordinator {
             || pointer_passthrough_pending;
         let progress = transition_progress || repaint_requested;
         let transition_source_exhausted = !native_input_pending
+            && !cleanup_deferred
             && !transition_progress
             && errors.is_empty()
             && presentation_transitions.is_empty()
             && self.is_quiescent();
         let mut repaint_viewports = repaint_viewports;
-        if native_input_pending {
+        if native_input_pending || cleanup_deferred || native_create_cancelled {
             repaint_viewports.push(ViewportId::ROOT);
         }
         NativeShutdownAdvance {

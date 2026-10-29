@@ -356,6 +356,339 @@ fn duplicate_programmatic_native_root_tear_off_is_rejected_atomically() {
 }
 
 #[test]
+fn native_create_cleanup_cancels_only_one_create_from_the_current_candidate() {
+    let (mut session, _) = programmatic_tear_off_session();
+    let source = session.engine.workspace().clone();
+    let source_sequence = session.committed_source_sequence;
+    let placement = NativeWindowPlacement::new(
+        PhysicalRect::new(920.0, 120.0, 420.0, 320.0).expect("the requested placement validates"),
+    );
+    assert!(
+        session
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .next()
+            .is_none()
+    );
+
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the cleanup frame begins");
+    assert!(!frame.cancel_next_native_create().unwrap());
+    assert_eq!(frame.next_source_sequence, source_sequence);
+    for root in [RootId::new(2), ROOT] {
+        frame
+            .move_root_to_new_window_current(root, placement)
+            .unwrap();
+    }
+    let creates = frame
+        .frame
+        .view()
+        .viewport()
+        .native_create_sagas()
+        .map(|(id, saga)| (id, saga.binding()))
+        .collect::<Vec<_>>();
+    assert_eq!(creates.len(), 2);
+
+    assert!(frame.cancel_next_native_create().unwrap());
+    assert_eq!(frame.next_source_sequence, source_sequence + 3);
+    let remaining = frame
+        .frame
+        .view()
+        .viewport()
+        .native_create_sagas()
+        .map(|(id, saga)| (id, saga.binding()))
+        .collect::<Vec<_>>();
+    assert_eq!(remaining, creates[1..]);
+    assert_eq!(frame.frame.view().workspace(), &source);
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame
+        .commit()
+        .expect("only the selected cancellation publishes");
+    let create = take_only_native_effect(&mut report);
+    assert!(matches!(
+        create.operation(),
+        NativeEffectOperation::CreateWindow { binding, .. } if binding.binding == creates[1].1
+    ));
+    assert!(
+        session
+            .engine
+            .viewport()
+            .native_create_saga(creates[0].0)
+            .is_none()
+    );
+    assert!(
+        session
+            .engine
+            .viewport()
+            .native_create_saga(creates[1].0)
+            .is_some()
+    );
+    assert_eq!(session.engine.workspace(), &source);
+}
+
+#[test]
+fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once() {
+    let (mut session, root_binding) = programmatic_tear_off_session();
+    assert!(session.abandoned_native_effects.is_quiescent());
+    session.abandoned_native_effects = NativeEffectDropQueue::with_capacity_limit(1)
+        .expect("the single effect-report slot preallocates");
+    let source = session.engine.workspace().clone();
+    let placement =
+        PhysicalRect::new(920.0, 120.0, 420.0, 320.0).expect("the requested placement validates");
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the native create frame begins");
+    frame
+        .move_root_to_new_window_current(ROOT, NativeWindowPlacement::new(placement))
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame.commit().expect("the native create publishes");
+    let create = take_only_native_effect(&mut report);
+    let child = create.operation().binding();
+    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted() else {
+        panic!("create must return its exact presentation acknowledgement");
+    };
+    session
+        .report_managed_native_snapshot(
+            [
+                (root_binding, root_window_facts()),
+                (
+                    child,
+                    NativeWindowFacts::live()
+                        .with_content_bounds(placement)
+                        .with_outer_bounds(placement)
+                        .with_native_scale_factor(native_scale())
+                        .with_presentation_scale_factor(native_scale())
+                        .with_input(NativeWindowInputState::ReceivesInput, None)
+                        .with_presentation(
+                            NativeWindowPresentationState::Hidden,
+                            Some(acknowledgement),
+                        )
+                        .with_close(NativeCloseState::Clear, None),
+                ),
+            ],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("the hidden child snapshot records");
+    commit_managed_frame(&mut session);
+    let pre_show = paint_staging(&mut session, child, NativeStagingPresentationPhase::PreShow);
+    session
+        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
+        .expect("the pre-show terminal records");
+    let mut report = commit_managed_frame_report(&mut session);
+    let show = take_only_native_effect(&mut report);
+    assert!(matches!(
+        show.operation(),
+        NativeEffectOperation::ShowWindow { binding } if *binding == child
+    ));
+    let (saga, before) = session
+        .engine
+        .viewport()
+        .native_create_sagas()
+        .map(|(id, saga)| (id, saga.clone()))
+        .next()
+        .expect("the hidden child retains its exact saga");
+    let retained = session
+        .engine
+        .viewport()
+        .retained_native_staging_resources()
+        .cloned()
+        .collect::<Vec<_>>();
+    let source_sequence = session.committed_source_sequence;
+    let version = session.version();
+    let committed = session.engine.backend_ingress_committed_through();
+
+    let mut rollback = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the rollbackable cleanup frame begins");
+    assert!(rollback.cancel_next_native_create().unwrap());
+    assert!(
+        rollback
+            .frame
+            .view()
+            .viewport()
+            .native_create_saga(saga)
+            .is_none()
+    );
+    assert_eq!(rollback.frame.view().workspace(), &source);
+    rollback
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(rollback);
+
+    assert_eq!(
+        session.engine.viewport().native_create_saga(saga),
+        Some(&before)
+    );
+    assert!(
+        session
+            .engine
+            .viewport()
+            .binding_retirements()
+            .next()
+            .is_none()
+    );
+    assert_eq!(session.committed_source_sequence, source_sequence);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .cloned()
+            .collect::<Vec<_>>(),
+        retained
+    );
+
+    assert_eq!(session.abandoned_native_effects.available_slots(), Some(0));
+    let mut blocked = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the mixed cleanup and application frame begins");
+    assert!(blocked.cancel_next_native_create().unwrap());
+    blocked.select_item_current(SECOND_ITEM).unwrap();
+    blocked
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let error = blocked
+        .commit()
+        .expect_err("ordinary application input still requires effect delivery capacity");
+    assert_eq!(
+        error.native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    assert_eq!(
+        session.engine.viewport().native_create_saga(saga),
+        Some(&before)
+    );
+    assert_eq!(session.committed_source_sequence, source_sequence);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.engine.workspace(), &source);
+    assert!(
+        session
+            .engine
+            .viewport()
+            .binding_retirements()
+            .next()
+            .is_none()
+    );
+    let mut retry = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the next frame retries the same cleanup");
+    assert_eq!(retry.frame.backend_ingress_through(), committed);
+    assert!(retry.cancel_next_native_create().unwrap());
+    assert!(!retry.cancel_next_native_create().unwrap());
+    assert_eq!(retry.next_source_sequence, source_sequence + 1);
+    retry
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = retry.commit().expect("the exact cancellation commits");
+    assert!(report.presentation_transitions().is_empty());
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(session.abandoned_native_effects.available_slots(), Some(0));
+    assert!(session.engine.viewport().native_create_saga(saga).is_none());
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.committed_source_sequence, source_sequence + 1);
+    let retirement = session
+        .engine
+        .viewport()
+        .binding_retirements()
+        .find_map(|(binding, retirement)| (binding == child.binding).then_some(retirement))
+        .expect("the exact child retains its cleanup owner");
+    assert_eq!(
+        retirement.origin(),
+        crate::frame::BindingRetirementOrigin::NativeCreateAborted {
+            create: before.create()
+        }
+    );
+    let crate::frame::BindingRetirementStatus::CleanupRequested { effect } = retirement.status()
+    else {
+        panic!("the cancelled child must retain one exact compensation");
+    };
+    let queued = session.engine.viewport().effects().record(effect).unwrap();
+    assert_eq!(queued.phase(), crate::effect::EffectPhase::Requested);
+    assert!(!queued.was_emitted());
+    assert!(queued.delivery().is_none());
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .cloned()
+            .collect::<Vec<_>>(),
+        retained
+    );
+    session
+        .engine
+        .viewport()
+        .validate_native_staging_resource_conservation()
+        .unwrap();
+
+    let Some(NativeEffectAcknowledgement::Presentation(_)) = show.accepted() else {
+        panic!("the show dispatch releases its original report slot");
+    };
+    assert_eq!(session.abandoned_native_effects.available_slots(), Some(1));
+    let mut delivery_report = commit_managed_frame_report(&mut session);
+    let compensation = take_only_native_effect(&mut delivery_report);
+    assert!(matches!(
+        compensation.operation(),
+        NativeEffectOperation::CompensatingClose { binding } if *binding == child
+    ));
+    let delivery = session
+        .engine
+        .viewport()
+        .effects()
+        .record(effect)
+        .unwrap()
+        .delivery();
+    assert!(delivery.is_some());
+    assert_eq!(session.committed_source_sequence, source_sequence + 1);
+
+    let mut next = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the next cleanup probe begins");
+    assert!(!next.cancel_next_native_create().unwrap());
+    next.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = next.commit().expect("the quiet cleanup probe commits");
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(session.committed_source_sequence, source_sequence + 1);
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .effects()
+            .record(effect)
+            .unwrap()
+            .delivery(),
+        delivery
+    );
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .effects()
+            .records()
+            .filter(|(_, record)| matches!(
+                record.request().effect(),
+                PlatformEffect::CompensatingClose { binding, .. } if *binding == child.binding
+            ))
+            .count(),
+        1
+    );
+    let Some(NativeEffectAcknowledgement::Close(_)) = compensation.accepted() else {
+        panic!("compensation retains its exact close acknowledgement");
+    };
+}
+
+#[test]
 fn programmatic_native_root_tear_off_rejects_when_it_would_remove_the_recovery_host() {
     let (mut session, _) = managed_tear_off_session();
     let before = session.version();
@@ -395,6 +728,125 @@ fn programmatic_native_root_tear_off_rejects_when_it_would_remove_the_recovery_h
         session.view().item(SECOND_ITEM).map(|item| item.surface()),
         Some(SURFACE)
     );
+}
+
+#[inline(never)]
+fn assert_cleanup_skips_transferred_candidate(session: &mut DockspaceSession) {
+    let saga = session
+        .engine
+        .viewport()
+        .native_create_sagas()
+        .next()
+        .unwrap()
+        .0;
+    assert!(matches!(
+        session
+            .engine
+            .viewport()
+            .native_create_saga(saga)
+            .unwrap()
+            .phase(),
+        crate::frame::NativeCreatePhase::AwaitingPostShowPresentation { .. }
+    ));
+    let source_sequence = session.committed_source_sequence;
+    let mut transfer = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the post-show terminal transfers ownership in this candidate");
+    assert!(matches!(
+        transfer
+            .frame
+            .view()
+            .viewport()
+            .native_create_saga(saga)
+            .unwrap()
+            .phase(),
+        crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+    ));
+    assert!(!transfer.cancel_next_native_create().unwrap());
+    assert_eq!(transfer.next_source_sequence, source_sequence);
+    transfer
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = transfer
+        .commit()
+        .expect("cleanup skips the transferred candidate");
+    assert!(report.native_admissions().is_empty());
+}
+
+#[inline(never)]
+fn assert_dropped_redock_preserves_transition(
+    session: &mut DockspaceSession,
+    child_binding: NativeSurfaceBinding,
+    child_root: RootId,
+) {
+    let mut dropped_redock = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the redock with a dropped target begins");
+    dropped_redock
+        .dock_root_current(
+            child_root,
+            DockPlacement::Center(DockAnchor::Item(SECOND_ITEM)),
+        )
+        .unwrap();
+    assert!(!dropped_redock.cancel_next_native_create().unwrap());
+    dropped_redock
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = dropped_redock
+        .commit()
+        .expect("the pending redock publishes");
+    let [
+        super::super::super::HostInputOutcome::ProductPresentationActionRequested {
+            transition,
+            ..
+        },
+    ] = report.inputs()
+    else {
+        panic!("the redock must retain its original transition identity");
+    };
+    let requested_transition = *transition;
+    measure_all_surfaces(session);
+    let mut paint = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the redock preview paint begins");
+    let receipt = execute_surface_program(&mut paint, SURFACE);
+    paint.confirm_surface_painted(receipt).unwrap();
+    paint
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = paint.commit().expect("the target preview output publishes");
+    let outputs = report.take_painted_outputs();
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].surface(), SURFACE);
+    drop(outputs);
+
+    let mut cleanup = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the dropped target terminal enters the cleanup candidate");
+    assert!(!cleanup.cancel_next_native_create().unwrap());
+    cleanup
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = cleanup
+        .commit()
+        .expect("the original rehome terminal commits");
+    assert!(matches!(
+        report.presentation_transitions(),
+        [transition]
+            if transition.id() == requested_transition
+                && transition.root() == child_root
+                && transition.source_surface() == child_binding.surface()
+                && transition.target_surface() == SURFACE
+                && transition.result()
+                    == crate::runtime::DockspacePresentationTransitionResult::TargetNotPresented
+    ));
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(
+        session.view().item(ITEM).unwrap().surface(),
+        child_binding.surface()
+    );
+    let report = paint_and_present_all_native_surfaces(session);
+    assert!(report.presentation_transitions().is_empty());
 }
 
 #[test]
@@ -519,12 +971,13 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
     session
         .report_native_staging_presentation(post_show, SurfacePresentationResult::Presented)
         .expect("the post-show staging result records");
-    commit_managed_frame(&mut session);
+    assert_cleanup_skips_transferred_candidate(&mut session);
 
     measure_all_surfaces(&mut session);
     let mut first_live = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the first-live paint frame begins");
+    assert!(!first_live.cancel_next_native_create().unwrap());
     assert!(
         first_live
             .paint_plan(child_binding.surface())
@@ -636,6 +1089,8 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         "recovery scene after complete presentation: {:?}",
         session.engine.scene().surface(SURFACE),
     );
+
+    assert_dropped_redock_preserves_transition(&mut session, child_binding, child_root);
 
     let mut redock = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

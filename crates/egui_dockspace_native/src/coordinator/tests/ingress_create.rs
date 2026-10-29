@@ -1698,3 +1698,303 @@ fn assert_pre_admission_compensating_close(frozen: bool) {
         "the close acknowledgement is retained until an exact Destroyed callback"
     );
 }
+
+mod fatal_pre_transfer {
+    //! Tokenless lifecycle models, not real-window Created/Destroyed qualification.
+    //!
+    //! The existing drag fixture presents real core paint outputs before fatal.
+    //! These cases never mint fork output tokens or confirm child staging paint.
+    //! Window capture and late create acknowledgement are modeled through the
+    //! existing route receipt and affine effect; Destroyed uses for_test_ingress.
+
+    use super::*;
+
+    fn captured_child() -> (
+        NativeCoordinator,
+        NativeSurfaceBinding,
+        NativeSurfaceBinding,
+        WindowId,
+    ) {
+        let mut native = tear_off_coordinator();
+        let source = register_source(&mut native);
+        publish_desktop_authority(&mut native, source);
+        let receiver = measure_and_present_source(&mut native);
+        let child = request_native_child(&mut native, receiver);
+        let viewport = viewport_id_for(child);
+        let window = WindowId::from(96);
+        native.bridge.with_viewports_mut(|routes| {
+            // Capture the existing window owner directly: no opaque fork
+            // attempt or Created output token is fabricated by this model.
+            routes
+                .capture_output_window(viewport, child, window, None)
+                .unwrap();
+            assert!(routes.has_window_receipt(viewport, child));
+            assert!(routes.has_create_lifetime_owner(viewport, child));
+        });
+        assert!(native.effects.references_binding(child));
+        assert_eq!(native.bridge.create_binding(viewport), Some(child));
+        (native, source, child, window)
+    }
+
+    fn hidden_create_roster(
+        native: &mut NativeCoordinator,
+        source: NativeSurfaceBinding,
+        child: NativeSurfaceBinding,
+        window: WindowId,
+    ) -> NativeViewportRosterRecord {
+        let viewport = viewport_id_for(child);
+        let placement = native.deferred_viewport_specs()[0].placement();
+        native
+            .attach_viewport_window(viewport, child, window)
+            .expect("the captured model window publishes its exact route");
+        let create = native
+            .effects
+            .take_for_output(viewport, child)
+            .expect("the original create request survives until its late acknowledgement");
+        let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted()
+        else {
+            panic!("the exact create supplies its presentation acknowledgement");
+        };
+        assert!(native.bridge.clear_create(viewport, child));
+        native.bridge.invalidate_viewport_roster();
+        let scale = ScaleFactor::new(1.0).unwrap();
+        // The compiled for_test snapshot carries the real effect acknowledgement
+        // directly; it does not claim production Created callback coverage.
+        NativeViewportRosterRecord::for_test_with_backend_and_work_areas(
+            [
+                CompiledWindowObservation::new(source, ready_window_facts(0.0)),
+                CompiledWindowObservation::new(
+                    child,
+                    NativeWindowFacts::live()
+                        .with_content_bounds(placement)
+                        .with_outer_bounds(placement)
+                        .with_native_scale_factor(scale)
+                        .with_presentation_scale_factor(scale)
+                        .with_input(NativeWindowInputState::ReceivesInput, None)
+                        .with_presentation(
+                            NativeWindowPresentationState::Hidden,
+                            Some(acknowledgement),
+                        )
+                        .with_close(NativeCloseState::Clear, None),
+                ),
+            ],
+            FrozenWorkAreaRoster::Unknown,
+            eframe::NativeWindowingBackend::X11,
+        )
+    }
+
+    fn assert_source_retained(native: &NativeCoordinator, source: NativeSurfaceBinding) {
+        let view = native.session.view();
+        let item = view
+            .item(SOURCE_ITEM)
+            .expect("fatal cleanup retains the source item");
+        assert_eq!(item.surface(), SOURCE_SURFACE);
+        assert_eq!(item.root(), SOURCE_ROOT);
+        assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(source));
+        assert_eq!(native.lifecycle_progress().first_live_admissions(), 0);
+        assert_eq!(native.bridge.pending_output_count(), 0);
+    }
+
+    fn assert_repeated_shutdown_waits_for_destroyed(
+        native: &mut NativeCoordinator,
+        source: NativeSurfaceBinding,
+        child: NativeSurfaceBinding,
+    ) {
+        let viewport = viewport_id_for(child);
+        let recorded = native.session.native_input_recorded_count();
+        let version = native.session.version();
+        for _ in 0..3 {
+            let mut budget = test_budget();
+            let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut budget);
+            assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+            assert!(!advance.transition_source_exhausted);
+            assert!(!advance.commands_dispatched);
+            assert!(advance.abandoned_outputs.is_empty());
+            assert_eq!(budget.remaining_records(), 256);
+            assert_eq!(native.session.native_input_recorded_count(), recorded);
+            assert_eq!(native.session.version(), version);
+            assert_eq!(native.viewport_binding(viewport), Some(child));
+            assert!(native.session.recognizes_native_binding(child));
+            assert!(!native.bridge.retirement_can_begin_release(viewport, child));
+            assert!(native.deferred_viewport_specs().is_empty());
+            assert!(!native.effects.references_binding(child));
+            assert_eq!(native.output_backlog().awaiting_staging(), 0);
+            assert_source_retained(native, source);
+        }
+    }
+
+    fn finish_model_destroyed(
+        native: &mut NativeCoordinator,
+        source: NativeSurfaceBinding,
+        child: NativeSurfaceBinding,
+        window: WindowId,
+    ) {
+        let viewport = viewport_id_for(child);
+        let destroyed = native.bridge.with_viewports_mut(|routes| {
+            NativeWindowEventRecord::for_test_ingress(
+                97,
+                window,
+                Some(viewport),
+                WindowEvent::Destroyed,
+                routes,
+            )
+        });
+        assert_eq!(destroyed.binding(), Some(child));
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(destroyed.clone()));
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(destroyed));
+        let advance =
+            native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
+        assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+        assert!(!advance.transition_source_exhausted);
+        assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
+        assert_eq!(native.viewport_binding(viewport), Some(child));
+        let observations = native.bridge.retirement_destroyed_observations();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].0, child);
+        assert_ne!(
+            observations[0].1,
+            NativeWindowFacts::destroyed(),
+            "the single compensation retains its exact close acknowledgement"
+        );
+
+        // Capture after the Destroyed boundary invalidates roster context. The
+        // adapter adds the tombstone from its receipt, never from test facts.
+        native.bridge.push_terminal_viewport_roster(
+            NativeViewportRosterRecord::for_test_with_backend_and_work_areas(
+                [CompiledWindowObservation::new(
+                    source,
+                    ready_window_facts(0.0),
+                )],
+                FrozenWorkAreaRoster::Unknown,
+                eframe::NativeWindowingBackend::X11,
+            ),
+        );
+        let exhausted = (0..8).any(|_| {
+            let advance =
+                native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
+            assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+            assert!(!advance.commands_dispatched);
+            assert!(advance.abandoned_outputs.is_empty());
+            assert_source_retained(native, source);
+            advance.transition_source_exhausted
+        });
+        assert!(
+            exhausted,
+            "exact model facts drain without another child paint"
+        );
+        assert_eq!(native.viewport_binding(viewport), None);
+        assert!(!native.session.recognizes_native_binding(child));
+        assert!(!native.bridge.references_binding(child));
+        assert!(native.bridge.retirement_destroyed_observations().is_empty());
+        assert!(native.pending_effect_results.is_empty());
+        assert_eq!(native.lifecycle_progress().quiescent_retirements(), 1);
+        assert!(native.is_quiescent());
+        for _ in 0..2 {
+            let advance =
+                native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
+            assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+            assert!(advance.transition_source_exhausted);
+            assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
+            assert_eq!(native.lifecycle_progress().quiescent_retirements(), 1);
+            assert_source_retained(native, source);
+        }
+    }
+
+    #[test]
+    fn model_shutdown_cancels_pre_show_without_staging_terminal() {
+        let (mut native, source, child, window) = captured_child();
+        let roster = hidden_create_roster(&mut native, source, child, window);
+        native.bridge.push_viewport_roster(roster);
+        assert!(
+            native
+                .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+                .unwrap()
+                .is_some()
+        );
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        assert!(
+            frame
+                .frame
+                .native_staging_paints()
+                .any(|request| request.binding() == child)
+        );
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = frame.commit().unwrap();
+        assert!(report.take_painted_outputs().is_empty());
+        assert!(report.take_painted_native_staging_outputs().is_empty());
+        assert!(report.take_native_effects().is_empty());
+        assert!(native.settle_host_frame_report(&report).unwrap());
+        assert_eq!(native.output_backlog().awaiting_staging(), 1);
+        assert_source_retained(&native, source);
+
+        assert!(native.quarantine_after_fatal().is_empty());
+        let mut budget = test_budget();
+        budget.complete_unsequenced_records(255);
+        let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut budget);
+        assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+        assert!(advance.progress);
+        assert!(!advance.transition_source_exhausted);
+        assert!(advance.repaint_viewports.contains(&ViewportId::ROOT));
+        assert_eq!(
+            budget.remaining_records(),
+            0,
+            "one cancellation spends the last credit"
+        );
+        assert_repeated_shutdown_waits_for_destroyed(&mut native, source, child);
+        finish_model_destroyed(&mut native, source, child, window);
+    }
+
+    #[test]
+    fn model_shutdown_late_captured_create_resumes_after_budget_exhaustion() {
+        let (mut native, source, child, window) = captured_child();
+        let viewport = viewport_id_for(child);
+        for _ in 0..2 {
+            assert!(native.quarantine_after_fatal().is_empty());
+            assert!(native.effects.references_binding(child));
+            assert_eq!(native.bridge.create_binding(viewport), Some(child));
+        }
+        let mut budget = test_budget();
+        budget.complete_unsequenced_records(256);
+        let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut budget);
+        assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+        assert!(!advance.transition_source_exhausted);
+        assert!(advance.repaint_viewports.contains(&ViewportId::ROOT));
+        assert!(native.effects.references_binding(child));
+        assert!(native.bridge.retirement_can_begin_release(viewport, child));
+        assert_source_retained(&native, source);
+
+        let roster = hidden_create_roster(&mut native, source, child, window);
+        // A late Created callback in quarantine requires this protected capture;
+        // the tokenless model supplies only its acknowledgement and hidden facts.
+        native.bridge.require_terminal_roster();
+        native.bridge.push_terminal_viewport_roster(roster);
+        let mut budget = test_budget();
+        budget.complete_unsequenced_records(255);
+        let advance = native.advance_shutdown_boundary(&egui::Context::default(), &mut budget);
+        assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+        assert!(!advance.transition_source_exhausted);
+        assert!(advance.repaint_viewports.contains(&ViewportId::ROOT));
+        assert_eq!(budget.remaining_records(), 0);
+        assert!(native.queued_snapshot.is_none());
+        assert!(native.session.is_current_native_binding(child));
+        assert!(native.bridge.retirement_can_begin_release(viewport, child));
+        assert_source_retained(&native, source);
+
+        let advance =
+            native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
+        assert!(advance.errors.is_empty(), "{:#?}", advance.errors);
+        assert!(advance.progress);
+        assert!(advance.repaint_viewports.contains(&ViewportId::ROOT));
+        assert!(native.queued_snapshot.is_none());
+        assert_repeated_shutdown_waits_for_destroyed(&mut native, source, child);
+        finish_model_destroyed(&mut native, source, child, window);
+    }
+}

@@ -1248,9 +1248,36 @@ The same source subsequently passes all three pressure journeys on Linux/arm64
 under Xvfb/Openbox/software GL, sampling 2,843,140 resident / 3,808,176 reserved
 bytes under the same 4 MiB profile. This confirms real-window delayed output
 delivery on that backend without claiming physical pointer qualification.
-Staging without a captured terminal at fatal,
+Transferred first-live without a captured terminal at fatal,
 the broader physical matrix, 1,000 Hz/release latency and native scoped/stationary continuation
 remain explicit work. No complete U7/U8 claim follows from this slice.
+
+The following fatal-cleanup slice adds one explicit host-frame cancellation for
+an untransferred native create, selected from the current candidate and routed
+through the original abort/BindingCleanup protocol. Pure cleanup commits under
+occupied effect-report storage while ordinary application input keeps its
+capacity gate. Native shutdown cancels at most one create per complete input
+boundary, charges the shared dispatch allowance and preserves overload terminal
+ordering. Focused core/model regressions cover rollback, report backpressure,
+late captured-create facts, repeated shutdown and exact retirement. The real
+Linux `late-staging` pressure journey also passes: the protected original
+terminal returns only after fatal quarantine, source ownership remains intact,
+and cleanup drains after test repaint demand stops. Earlier production source
+with all 258 terminals returned still times out in Draining. Frozen source and
+logs are retained under `/tmp/dockspace-late-staging-*`. This does not recover an
+already transferred first-live create and does not complete U7/U8.
+Final frozen gates pass workspace1,815/public86/doctest10, native446/446
+normal/assertion-disabled, both 10,000-lifetime model runs, Clippy, strict docs,
+default/bounded macOS redock and all four macOS/Linux output-pressure scenarios.
+The unchanged Linux physical journey also passes. A subsequent design audit
+requires the transferred-first-live recovery slice to use the exact existing
+bound obligation, native-admission barrier and retained resource, followed by
+ordinary vacancy/BindingCleanup. If its recovery host is Stale, shutdown's
+Deferred frames cannot rebuild measurement authority: obtain actual current
+host measurements in a committed measurement-only boundary before retrying
+recovery. Do not use stale fallback geometry, fabricate Presented/Destroyed,
+or add unconditional per-frame retries for a blocked recovery. Multiple
+simultaneous transferred reservations need their own exact-authority tests.
 
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement

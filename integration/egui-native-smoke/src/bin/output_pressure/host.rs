@@ -40,15 +40,72 @@ impl PressureHost {
             self.inner.on_output(second);
         }
         loop {
+            let result = {
+                let mut state = lock(&self.shared);
+                if scenario == Scenario::LateStaging
+                    && state
+                        .buffered
+                        .front()
+                        .is_some_and(|result| Some(result.token()) == state.protected_child)
+                {
+                    // The root control terminal must already have released its
+                    // prepaid owner so a real UI pass can enter fatal quarantine.
+                    assert!(
+                        state
+                            .buffered
+                            .iter()
+                            .all(|result| { Some(result.token()) != state.root_control })
+                    );
+                    eprintln!(
+                        "output-pressure: withholding staging terminal until fatal quarantine"
+                    );
+                    break;
+                }
+                let Some(result) = state.buffered.pop_front() else {
+                    break;
+                };
+                result
+            };
+            self.inner.on_output(result);
+            lock(&self.shared).forwarded += 1;
+            if matches!(scenario, Scenario::Duplicate | Scenario::LateStaging)
+                && lock(&self.shared).forwarded == 1
+            {
+                self.inner.on_output(result);
+            }
+        }
+    }
+
+    fn flush_late_staging_after_fatal(&self) {
+        {
+            let state = lock(&self.shared);
+            if state.scenario != Scenario::LateStaging
+                || state.phase != Phase::Draining
+                || state.buffered.is_empty()
+            {
+                return;
+            }
+        }
+        {
+            let runtime = lock(&self.runtime);
+            runtime.with_errors(|primary, cleanup| {
+                assert!(primary.is_some_and(|error| error.is_output_order_violation()));
+                assert!(cleanup.is_empty());
+            });
+            assert_eq!(runtime.output_backlog().protected_staging(), 0);
+            assert!(!runtime.is_shutdown_drained());
+        }
+        // These are the original real terminals, delivered after quarantine
+        // abandoned their affine paint and before the current later terminal.
+        loop {
             let Some(result) = lock(&self.shared).buffered.pop_front() else {
                 break;
             };
             self.inner.on_output(result);
             lock(&self.shared).forwarded += 1;
-            if scenario == Scenario::Duplicate && lock(&self.shared).forwarded == 1 {
-                self.inner.on_output(result);
-            }
         }
+        lock(&self.shared).late_terminal_after_fatal = true;
+        eprintln!("output-pressure: original staging terminal delivered after fatal quarantine");
     }
 }
 
@@ -202,6 +259,7 @@ impl NativeHostHandler for PressureHost {
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
+        self.flush_late_staging_after_fatal();
         {
             let mut state = lock(&self.shared);
             if state.phase == Phase::AwaitChild && result.token().viewport_id() != ViewportId::ROOT

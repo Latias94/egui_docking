@@ -15,6 +15,70 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 fatal cleanup before native ownership transfer
+
+`DockspaceHostFrame::cancel_next_native_create` selects at most one eligible
+create from the current frame candidate and uses the existing
+`CancelNativeCreate -> abort_native_create -> BindingCleanup` transaction.
+It preserves source ownership and skips creates already awaiting first-live
+presentation. Frame drop and failed commit publish neither cancellation nor
+source-sequence advancement. Pure lifecycle cancellation may commit while
+effect-report capacity is occupied; its compensating effect stays in the
+original ledger until delivery capacity returns. Mixing ordinary application
+input into that frame retains the existing capacity restriction.
+
+Fatal shutdown invokes this operation only after its accepted input prefix is
+complete and no overload terminal has closed that frame's input phase. It
+cancels at most one create per complete boundary, charges one unit to the same
+256-record/2-ms allowance and wakes root for continuation. Exhausted budgets
+defer the operation. Exact late window facts, input restoration, compensating
+close, Destroyed, tombstone and binding quiescence retain their existing owners.
+No additional lifecycle registry or cancellation authority is introduced.
+
+Targeted core regressions cover current-candidate selection, rollback/retry,
+occupied effect reports, ordinary-input rejection and exact first-live/rehome
+boundaries. Native lifecycle models cover pre-show without a staging terminal
+and a captured create whose acknowledgement/hidden facts arrive after fatal,
+including budget exhaustion, repeated shutdown and once-only retirement. They
+do not fabricate opaque fork output tokens or certify physical OS delivery.
+
+The real-window `late-staging` output-pressure scenario withholds the original
+protected child terminal until fatal quarantine has abandoned its affine paint.
+All 258 original terminals then return in order. Success requires the exact
+output-order primary error, no cleanup error, unchanged source ownership,
+no child first-live promotion, zero output owners and drained shutdown. After
+the late terminal returns, both UI and background test repaint demand stop;
+the remaining cleanup uses production wakes. The background thread retains
+only its timeout watchdog. Linux/arm64 Xvfb/Openbox/software GL passes this
+scenario. The earlier production source fails its negative control with all
+258 terminals returned and no ordinary output left, but shutdown still stuck
+in Draining. That negative control retained external repaint demand, so its
+failure was not caused by an absent test wake.
+
+Source identities and initial focused results are retained in
+`/tmp/dockspace-late-staging-snapshot.json`,
+`/tmp/dockspace-late-staging-core-targeted.log`,
+`/tmp/dockspace-late-staging-native-targeted.log`,
+`/tmp/dockspace-late-staging-linux-run.log` and
+`/tmp/dockspace-late-staging-negative-qualification.json`.
+The final frozen slice passes 1,815 workspace tests, 86 public-consumer tests,
+10 doctests, core/native correctness/suspicious Clippy, strict core/native
+rustdoc and formatting. Native normal and assertion-disabled configurations
+each pass 446 tests, including their same-instance 10,000-lifetime model runs.
+Default/bounded macOS redock and all four pressure scenarios pass. Linux passes
+the unchanged physical XTest journey and all four pressure scenarios. macOS
+late-staging samples 2,843,172 resident / 3,807,664 reserved bytes; Linux samples
+2,843,140 / 3,808,560 bytes, with the 18,576-byte test proxy charged separately.
+Results are recorded in `/tmp/dockspace-late-staging-qualification.json` and
+`/tmp/dockspace-late-staging-linux-qualification.json`. No fork implementation
+changes were needed; these runs still use the explicit unpublished local fork
+override rather than the older tracked remote pin.
+
+This closes pre-transfer cleanup only. A create whose durable ownership has
+already transferred but whose first-live output lacks a terminal still needs
+explicit recovery through its existing bound recovery obligation; the new
+cancellation API intentionally cannot abort it. No full U7/U8 claim follows.
+
 ## 2026-10-29 bounded roster recapture and X11 physical recovery
 
 Ordinary complete-roster capture now distinguishes a borrowed payload backing
@@ -61,7 +125,8 @@ This supersedes the earlier missing-preview blocker recorded below. It proves
 this physical journey, including a Center-guide redock; it does not qualify the
 full non-guide-point matrix, mixed-DPI platforms, 1,000 Hz/release timing,
 configured-cap roster/output cross-saturation or native scoped/stationary input.
-Fatal cleanup before a staging/first-live terminal remains separate work.
+The later qualification above closes pre-transfer staging cleanup; transferred
+first-live recovery remains separate work.
 U7/U8 remain incomplete.
 
 ## 2026-10-29 U7 real output-owner pressure
