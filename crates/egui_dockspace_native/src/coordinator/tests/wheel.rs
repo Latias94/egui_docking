@@ -1,11 +1,10 @@
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
-    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativeReceiverAnswer, NativeScrollCancelReason,
-    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
-    NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding,
-    SurfaceUnavailableReason,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativeReceiverAnswer, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
+    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId,
+    NativeSurfaceBinding, SurfaceUnavailableReason,
 };
 use eframe::egui::{self, ViewportId};
 use winit::dpi::PhysicalPosition;
@@ -149,7 +148,6 @@ fn device_removal_forgets_mouse_and_scroll_without_reusing_their_identities() {
     translator.forget_removed_devices();
     assert!(translator.can_coalesce_idle_cursor_moves());
     assert!(!translator.references_binding(binding));
-    assert!(!translator.has_pending_provider_tail());
     assert_eq!(
         translator.translate_for_test_device(&press, 303, |_| None),
         NativePointerTranslation::Input(NativePointerInput::new(
@@ -217,7 +215,7 @@ fn removed_device_ignores_wheel_moved_and_ended_until_a_new_phase_begins() {
 }
 
 #[test]
-fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
+fn destroyed_delivery_binding_suppresses_tails_before_a_successor_sequence() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
     let first_window = WindowId::from(51);
@@ -240,34 +238,19 @@ fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
     assert!(translator.references_binding(first));
     assert!(!translator.references_binding(second));
 
-    let expected_retired = phaseful_scroll_input(
-        None,
-        NativeScrollPhase::Cancel {
-            sequence: NativeScrollSequenceId::new(1),
-            reason: NativeScrollCancelReason::BindingRetired,
-        },
-    );
-    assert_eq!(
-        translator.cancel_destroyed_binding(first),
-        vec![expected_retired]
-    );
-    assert!(translator.references_binding(first));
-    assert!(translator.has_pending_provider_tail());
-    assert!(translator.cancel_destroyed_binding(first).is_empty());
-
-    let expected_reset = phaseful_scroll_input(
-        None,
-        NativeScrollPhase::Cancel {
-            sequence: NativeScrollSequenceId::new(1),
-            reason: NativeScrollCancelReason::ProviderReset,
-        },
-    );
-    assert_eq!(
-        translator.reset_destroyed_binding(first),
-        vec![expected_reset]
-    );
-    assert!(!translator.has_pending_provider_tail());
+    translator.retire_binding(first);
     assert!(!translator.references_binding(first));
+    let retired = format!("{translator:?}");
+    translator.retire_binding(first);
+    assert_eq!(format!("{translator:?}"), retired);
+    for phase in [TouchPhase::Moved, TouchPhase::Ended, TouchPhase::Cancelled] {
+        let tail = phaseful_scroll_record(4, first_window, first, phase, 2.0);
+        assert_eq!(
+            translator.translate(&tail, |_| None),
+            NativePointerTranslation::Ignored,
+            "retired provider tails cannot reopen a discrete scroll lane"
+        );
+    }
 
     let expected_second = phaseful_scroll_input(
         Some(second),
@@ -336,30 +319,7 @@ fn destroying_one_binding_preserves_another_devices_live_scroll_sequence() {
         ))
     );
 
-    assert_eq!(
-        translator.cancel_destroyed_binding(first),
-        vec![phaseful_scroll_input_for_device(
-            NativePointerId::new(1),
-            NativeScrollDeviceId::new(1),
-            None,
-            NativeScrollPhase::Cancel {
-                sequence: NativeScrollSequenceId::new(1),
-                reason: NativeScrollCancelReason::BindingRetired,
-            },
-        )]
-    );
-    assert_eq!(
-        translator.reset_destroyed_binding(first),
-        vec![phaseful_scroll_input_for_device(
-            NativePointerId::new(1),
-            NativeScrollDeviceId::new(1),
-            None,
-            NativeScrollPhase::Cancel {
-                sequence: NativeScrollSequenceId::new(1),
-                reason: NativeScrollCancelReason::ProviderReset,
-            },
-        )]
-    );
+    translator.retire_binding(first);
     assert!(!translator.references_binding(first));
     assert!(translator.references_binding(second));
 
@@ -432,14 +392,7 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
         NativePointerTranslation::Input(_)
     ));
 
-    assert_eq!(
-        translator.cancel_destroyed_binding(mouse_binding),
-        vec![cancelled_pointer_input(
-            NativePointerId::new(1),
-            NativePointerCancelReason::BindingRetired,
-        )]
-    );
-    assert!(translator.reset_destroyed_binding(mouse_binding).is_empty());
+    translator.retire_binding(mouse_binding);
     assert!(!translator.references_binding(mouse_binding));
     assert!(translator.references_binding(scroll_binding));
 
@@ -481,47 +434,15 @@ fn destroyed_binding_retires_mouse_and_scroll_before_reuse() {
         NativePointerTranslation::Input(_)
     ));
 
-    assert_eq!(
-        translator.cancel_destroyed_binding(binding),
-        vec![
-            cancelled_pointer_input(
-                NativePointerId::new(1),
-                NativePointerCancelReason::BindingRetired,
-            ),
-            phaseful_scroll_input_for_device(
-                NativePointerId::new(2),
-                NativeScrollDeviceId::new(2),
-                None,
-                NativeScrollPhase::Cancel {
-                    sequence: NativeScrollSequenceId::new(1),
-                    reason: NativeScrollCancelReason::BindingRetired,
-                },
-            ),
-        ]
-    );
-    assert!(
-        translator.cancel_destroyed_binding(binding).is_empty(),
-        "both independent identities already entered their retired tails"
-    );
-    assert_eq!(
-        translator.reset_destroyed_binding(binding),
-        vec![phaseful_scroll_input_for_device(
-            NativePointerId::new(2),
-            NativeScrollDeviceId::new(2),
-            None,
-            NativeScrollPhase::Cancel {
-                sequence: NativeScrollSequenceId::new(1),
-                reason: NativeScrollCancelReason::ProviderReset,
-            },
-        )],
-        "the following boundary closes only the retired scroll provider tail"
-    );
-    assert!(!translator.has_pending_provider_tail());
+    translator.retire_binding(binding);
+    let retired = format!("{translator:?}");
+    translator.retire_binding(binding);
+    assert_eq!(format!("{translator:?}"), retired);
     assert!(!translator.references_binding(binding));
 }
 
 #[test]
-fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
+fn destroyed_input_retirement_survives_a_later_close_correlation_failure() {
     let mut native = coordinator();
     let (binding, survivor) = register_roots(&mut native);
     let viewport = ViewportId::ROOT;
@@ -596,22 +517,21 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
             Some(binding),
             WindowEvent::Destroyed,
         )));
-    assert!(
-        native
-            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect("the binding-retired boundary records first")
-            .is_some()
-    );
-    assert!(native.pointer_translator.has_pending_provider_tail());
-    commit_unpainted_frame(&mut native);
-
+    let recorded = native.session.native_input_recorded_count();
     native
         .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
         .expect_err("the unrelated window cannot settle the accepted close");
     assert!(
-        !native.pointer_translator.has_pending_provider_tail(),
-        "the accepted provider reset publishes before the later lifecycle failure"
+        !native.pointer_translator.references_binding(binding),
+        "local suppression publishes before the later lifecycle failure"
     );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(native.session.has_pending_native_input());
+    assert!(native.bridge.callback_boundary_pending());
+    assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 22);
+    let retired = format!("{:?}", native.pointer_translator);
+    commit_unpainted_frame(&mut native);
+    assert!(!native.session.has_pending_native_input());
 
     let matching_destroyed = NativeWindowEventRecord::for_test(
         22,
@@ -629,9 +549,12 @@ fn destroyed_scroll_reset_survives_a_later_close_correlation_failure() {
     assert!(
         native
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect("the same raw destroyed callback retries without another cancel")
+            .expect("the same raw destroyed callback retries without another fact")
             .is_some()
     );
+    assert!(!native.session.has_pending_native_input());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert_eq!(format!("{:?}", native.pointer_translator), retired);
     commit_unpainted_frame(&mut native);
 }
 
@@ -699,23 +622,6 @@ fn mouse_press_record(
             button: winit::event::MouseButton::Left,
             facts: PointerEventFacts::default(),
         },
-    )
-}
-
-fn cancelled_pointer_input(
-    pointer: NativePointerId,
-    reason: NativePointerCancelReason,
-) -> NativePointerInput {
-    NativePointerInput::new(
-        pointer,
-        NativePointerEvent::StreamCancelled(reason),
-        NativeDesktopPointerLocation::new(
-            NativeDesktopPosition::Unknown,
-            NativePointerHover::Unknown,
-            None,
-        ),
-        NativePointerOwner::Unknown,
-        NativePointerOwner::Unknown,
     )
 }
 

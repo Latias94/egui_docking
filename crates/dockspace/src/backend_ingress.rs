@@ -620,6 +620,11 @@ pub enum BackendIngressPayload {
     PlatformEffectResult(EffectResult),
     /// Removal of native input devices resets this provider's live input streams.
     NativeInputDeviceRemoval,
+    /// One exact native binding can no longer deliver input or provider tails.
+    NativeInputBindingRetired {
+        /// The complete binding incarnation whose dependent live input ends.
+        binding: ViewportBinding,
+    },
     /// One narrow non-pointer semantic action captured by the backend event loop.
     SemanticInput(Box<EngineInput>),
     /// One presentation-stream fact captured at this exact backend position.
@@ -1262,6 +1267,17 @@ impl BackendIngressRecorder {
         self.push(BackendIngressPayload::NativeInputDeviceRemoval)
     }
 
+    /// Records input termination for one exact native binding.
+    ///
+    /// This does not destroy, release or declare the binding quiescent. It
+    /// preserves pointer sequence and previously accepted output obligations.
+    pub fn record_native_input_binding_retired(
+        &mut self,
+        binding: ViewportBinding,
+    ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        self.push(BackendIngressPayload::NativeInputBindingRetired { binding })
+    }
+
     /// Records one non-pointer semantic action at the next backend position.
     ///
     /// Platform facts must use their typed lanes and configuration remains a
@@ -1544,6 +1560,7 @@ impl BackendIngressRecorder {
                 | BackendIngressPayload::GlobalFocusObservation { .. }
                 | BackendIngressPayload::PlatformEffectResult(_)
                 | BackendIngressPayload::NativeInputDeviceRemoval
+                | BackendIngressPayload::NativeInputBindingRetired { .. }
                 | BackendIngressPayload::SemanticInput(_)
                 | BackendIngressPayload::PresentationObservation { .. }
                 | BackendIngressPayload::PointerSegment(_) => None,

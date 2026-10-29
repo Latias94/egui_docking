@@ -4,7 +4,7 @@
 //! Every edge carries the facts observed at that edge, so reducers do not have to
 //! reconstruct event order from an end-of-frame pointer snapshot.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -1943,8 +1943,14 @@ pub struct PointerEdgeTicket {
 struct JournalPointerAuthority {
     buttons_complete: bool,
     unavailable_reason: AuthorityUnavailableReason,
-    pressed_buttons: BTreeSet<(PointerId, PointerButton)>,
-    captures: BTreeMap<PointerId, Authority<PointerCaptureOwner>>,
+    pressed_buttons: BTreeMap<(PointerId, PointerButton), Option<ViewportBinding>>,
+    captures: BTreeMap<PointerId, JournalPointerCapture>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JournalPointerCapture {
+    observed: Authority<PointerCaptureOwner>,
+    retained_native_binding: Option<ViewportBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

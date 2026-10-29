@@ -4,8 +4,9 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceSession, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind,
-    NativeInputStorageLimit, NativePointerEvent, NativePointerHover, NativePointerId,
+    DockspaceSession, HostInputOutcome, HostWindowToken, NativeDesktopPointerLocation,
+    NativeDesktopPosition, NativeHostCapabilities, NativeHostErrorKind, NativeInputStorageLimit,
+    NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
     NativePointerInput, NativePointerOwner, NativePointerRoster, SurfaceUnavailableReason,
 };
 use std::num::NonZeroUsize;
@@ -103,4 +104,84 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
             session.record_native_pointer(moved).unwrap();
         }
     }
+}
+
+#[test]
+fn one_public_binding_terminal_fact_fits_one_slot_after_five_independent_pressed_streams() {
+    let surface = SurfaceId::new(1);
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        surface,
+        DockspaceRootLayout::new(
+            RootId::new(1),
+            DockspaceNode::central_tabs([ItemId::new(1)]),
+        ),
+    )])
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    session
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            NativeInputStorageLimit::new(NonZeroUsize::new(1).unwrap(), 1 << 20),
+        )
+        .unwrap();
+    session
+        .configure_managed_native_capabilities(NativeHostCapabilities::none_supported())
+        .unwrap();
+    let commit = |session: &mut DockspaceSession| {
+        let mut frame = session
+            .begin_native_host_frame(|_| {
+                panic!("unknown desktop positions cannot query presentation receivers")
+            })
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap()
+    };
+    commit(&mut session);
+    session
+        .register_native_root(surface, HostWindowToken::new(1))
+        .unwrap();
+    let report = commit(&mut session);
+    let [HostInputOutcome::NativeSurfaceRegistered { binding }] = report.inputs() else {
+        panic!("registration must return its exact binding");
+    };
+    let binding = *binding;
+    let press = |pointer| {
+        NativePointerInput::new(
+            NativePointerId::new(pointer),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::Unknown,
+                None,
+            ),
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::Unknown,
+        )
+    };
+    for pointer in 1..=5 {
+        session.record_native_pointer(press(pointer)).unwrap();
+        commit(&mut session);
+    }
+    let before = session.native_input_recorded_count();
+    let version = session.version();
+    session
+        .report_native_input_binding_retired(binding)
+        .unwrap();
+    assert_eq!(session.native_input_recorded_count(), before + 1);
+    assert_eq!(session.prepare_native_pointer_capacity().unwrap(), Some(0));
+    drop(session.begin_native_host_frame(|_| unreachable!()).unwrap());
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.version(), version);
+    let report = commit(&mut session);
+    assert_eq!(
+        report.inputs(),
+        [HostInputOutcome::NativeInputBindingRetired { binding }]
+    );
+    assert!(!session.has_pending_native_input());
+    assert!(session.is_current_native_binding(binding));
+    session.record_native_pointer(press(1)).unwrap();
+    commit(&mut session);
+    assert_eq!(session.native_input_recorded_count(), before + 2);
 }

@@ -23,6 +23,7 @@ pub(crate) struct NativeWindowReceipt {
     binding: NativeSurfaceBinding,
     attempt: Option<NativeViewportCreateAttempt>,
     destroyed: DestroyedReceiptState,
+    input_retired: bool,
     destroyed_ingress: Option<ReservedHostRecord>,
 }
 
@@ -39,6 +40,7 @@ impl NativeWindowReceipt {
             binding,
             attempt,
             destroyed: DestroyedReceiptState::Awaiting,
+            input_retired: false,
             destroyed_ingress: None,
         }
     }
@@ -92,6 +94,20 @@ impl NativeWindowReceipt {
 
     pub(crate) fn received_destroyed(&self, ordinal: u64) -> bool {
         self.destroyed == DestroyedReceiptState::Received(ordinal)
+    }
+
+    /// The exact received callback owns this progress even if later reduction fails.
+    pub(crate) fn retire_input<E>(
+        &mut self,
+        retire: impl FnOnce() -> Result<(), E>,
+    ) -> Result<bool, E> {
+        debug_assert!(matches!(self.destroyed, DestroyedReceiptState::Received(_)));
+        if self.input_retired {
+            return Ok(false);
+        }
+        retire()?;
+        self.input_retired = true;
+        Ok(true)
     }
 
     pub(crate) fn transfer_destroyed(&mut self, ordinal: u64) -> bool {

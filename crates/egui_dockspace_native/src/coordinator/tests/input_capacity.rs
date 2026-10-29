@@ -167,7 +167,7 @@ fn bounded_cursor_prefix_clips_yields_when_full_and_resumes_the_same_stream() {
 }
 
 #[test]
-fn an_oversized_terminal_group_without_preceding_input_returns_capacity_instead_of_spinning() {
+fn five_pressed_devices_retire_with_one_fact_in_four_slots_and_replay_a_dropped_frame() {
     let (mut native, binding) = bounded_coordinator(4);
     for device in 1..=5 {
         let press = pointer_record(&native, binding, device, true);
@@ -180,35 +180,143 @@ fn an_oversized_terminal_group_without_preceding_input_returns_capacity_instead_
         native.session.record_native_pointer(input).unwrap();
         commit_boundary(&mut native);
     }
-    let destroyed = native.bridge.with_viewports_mut(|routes| {
-        NativeWindowEventRecord::for_test_ingress(
-            100,
-            WindowId::from(11),
-            Some(ViewportId::ROOT),
-            WindowEvent::Destroyed,
-            routes,
-        )
-    });
+    // Capture through the physical receipt; a detached synthetic record cannot
+    // authorize binding retirement or own its once-only retry progress.
+    let destroyed = NativeWindowEventRecord::for_test(
+        100,
+        WindowId::from(11),
+        Some(ViewportId::ROOT),
+        Some(binding),
+        WindowEvent::Destroyed,
+    );
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
     let recorded = native.session.native_input_recorded_count();
     let version = native.session.version();
-    let translator = format!("{:?}", native.pointer_translator);
     assert!(!native.session.has_pending_native_input());
-    for _ in 0..2 {
-        let error = native
+    assert_eq!(
+        native
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect_err("four slots cannot admit the exact five-edge terminal group");
-        assert!(error.is_input_capacity());
-        assert!(
-            !native.bridge.callback_boundary_pending(),
-            "an empty core cannot promise progress through another empty frame"
-        );
-        assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 100);
-        assert_eq!(native.session.native_input_recorded_count(), recorded);
-        assert_eq!(native.session.version(), version);
-        assert_eq!(format!("{:?}", native.pointer_translator), translator);
-        assert!(!native.session.has_pending_native_input());
+            .unwrap(),
+        Some(NonZeroUsize::MIN)
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert_eq!(
+        native.session.prepare_native_pointer_capacity().unwrap(),
+        Some(3)
+    );
+    assert!(native.session.has_pending_native_input());
+    assert!(native.bridge.callback_boundary_pending());
+    assert!(native.next_window_event().unwrap().is_none());
+    assert!(!native.pointer_translator.references_binding(binding));
+    let translator = format!("{:?}", native.pointer_translator);
+
+    {
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
     }
+    assert_eq!(native.session.version(), version);
+    assert!(native.session.has_pending_native_input());
+    assert!(native.bridge.retirement_destroyed_observations().is_empty());
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert_eq!(format!("{:?}", native.pointer_translator), translator);
+
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert_eq!(
+        report.inputs(),
+        [HostInputOutcome::NativeInputBindingRetired { binding }],
+        "one backend fact replaces every per-pointer cancellation and reset"
+    );
+    assert!(!native.session.has_pending_native_input());
+    assert!(!native.bridge.callback_boundary_pending());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert_eq!(
+        native.session.prepare_native_pointer_capacity().unwrap(),
+        Some(4)
+    );
+    assert_eq!(native.bridge.retirement_destroyed_observations().len(), 1);
+}
+
+#[test]
+fn full_transport_keeps_destroyed_callback_and_translator_retryable_until_capacity_commits() {
+    let (mut native, binding) = bounded_coordinator(4);
+    let press = pointer_record(&native, binding, 1, true);
+    let NativePointerTranslation::Input(input) =
+        native.pointer_translator.translate(&press, |_| None)
+    else {
+        panic!("the pressed pointer must produce a live stream");
+    };
+    native.session.record_native_pointer(input).unwrap();
+    commit_boundary(&mut native);
+
+    let movement_record = pointer_record(&native, binding, 2, false);
+    let NativePointerTranslation::Input(movement) = native
+        .pointer_translator
+        .clone()
+        .translate(&movement_record, |_| None)
+    else {
+        panic!("the live pointer must retain its movement stream");
+    };
+    native
+        .session
+        .record_native_pointer_sequence([movement; 4])
+        .unwrap();
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            3,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::Destroyed,
+        )));
+    let recorded = native.session.native_input_recorded_count();
+    let version = native.session.version();
+    let translator = format!("{:?}", native.pointer_translator);
+    let mut budget = test_budget();
+    let allowance = budget.remaining_records();
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut budget)
+            .unwrap()
+            .is_none()
+    );
+    assert!(native.bridge.callback_boundary_pending());
+    assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 3);
+    assert_eq!(native.session.native_input_recorded_count(), recorded);
+    assert_eq!(native.session.version(), version);
+    assert_eq!(format!("{:?}", native.pointer_translator), translator);
+    assert_eq!(budget.remaining_records(), allowance);
+    assert!(native.bridge.retirement_destroyed_observations().is_empty());
+
+    commit_boundary(&mut native);
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    assert!(native.next_window_event().unwrap().is_none());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(!native.pointer_translator.references_binding(binding));
+    commit_boundary(&mut native);
+    assert!(!native.session.has_pending_native_input());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
 }

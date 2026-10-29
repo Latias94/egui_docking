@@ -25,7 +25,7 @@ use crate::close_control::{
     NativeCloseCallbackAdmission, NativeCloseCaptureAdmission, NativeCloseControl,
     NativeViewportCloseCancellationRecord,
 };
-use crate::error::{NativeHostProtocolError, NativeViewportBindingError};
+use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeViewportBindingError};
 use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWindowEventRecord};
 use crate::focus_control::{NativeGlobalFocusRecord, NativeViewportFocusRecord};
 use crate::input_control::NativePointerPassthroughRecord;
@@ -3324,19 +3324,6 @@ impl NativeHostBridge {
         matches
     }
 
-    pub(crate) fn hold_event_for_next_boundary(&self, ordinal: u64) -> bool {
-        let mut records = self.lock();
-        let matches = !records.event_boundary_pending
-            && matches!(
-                records.front_dispatch_record(),
-                Some(HostRecord::WindowEvent(event)) if event.ordinal() == ordinal
-            );
-        if matches {
-            records.event_boundary_pending = true;
-        }
-        matches
-    }
-
     pub(crate) fn acknowledge_global_focus(&self, expected: NativeGlobalFocusRecord) -> bool {
         let mut records = self.lock();
         let matches = matches!(
@@ -4137,6 +4124,39 @@ impl NativeHostBridge {
 
     pub(crate) fn retirement_is_quiescence_candidate(&self, binding: NativeSurfaceBinding) -> bool {
         self.lock().retirements.is_quiescence_candidate(binding)
+    }
+
+    /// Records input retirement once under the exact physical callback owner.
+    pub(crate) fn retire_destroyed_input(
+        &self,
+        record: &NativeWindowEventRecord,
+        retire: impl FnOnce() -> Result<(), NativeRuntimeError>,
+    ) -> Result<(), NativeRuntimeError> {
+        let mut records = self.lock();
+        let (Some(viewport), Some(binding)) = (record.viewport_id(), record.binding()) else {
+            return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
+        };
+        if !matches!(record.event(), winit::event::WindowEvent::Destroyed) {
+            return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
+        }
+        let window = record.window_id();
+        let ordinal = record.ordinal();
+        let receipt = if records.retirements.owns_window(window, Some(viewport)) {
+            records
+                .retirements
+                .received_destroyed_receipt_mut(viewport, binding, window, ordinal)
+        } else {
+            records
+                .viewports
+                .received_destroyed_receipt_mut(viewport, binding, window, ordinal)
+        }
+        .ok_or(NativeHostProtocolError::WindowEventAcknowledgementMismatch)?;
+        if receipt.retire_input(retire)? {
+            // A later lifecycle failure retains the raw callback, but the new
+            // core fact must still be allowed to reach its commit boundary.
+            records.event_boundary_pending = true;
+        }
+        Ok(())
     }
 
     pub(crate) fn retirement_observe_destroyed(

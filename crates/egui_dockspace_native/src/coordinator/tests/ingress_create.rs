@@ -539,7 +539,7 @@ fn request_native_child(
 }
 
 #[test]
-fn destroyed_scroll_resets_without_a_future_pointer_event() {
+fn destroyed_scroll_retires_in_one_boundary_without_a_future_pointer_event() {
     let mut native = tear_off_coordinator();
     let binding = register_source(&mut native);
     publish_desktop_authority(&mut native, binding);
@@ -564,17 +564,9 @@ fn destroyed_scroll_resets_without_a_future_pointer_event() {
     drop(pointer_frame(&mut native, receiver));
     assert!(native.pointer_translator.references_binding(binding));
 
+    let recorded = native.session.native_input_recorded_count();
     push_window_event(&mut native, 71, WindowEvent::Destroyed);
-    assert!(native.pointer_translator.has_pending_provider_tail());
-    drop(pointer_frame(&mut native, receiver));
-
-    assert!(
-        native
-            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect("the provider reset and destroyed facts record")
-            .is_some()
-    );
-    assert!(!native.pointer_translator.has_pending_provider_tail());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
     assert!(!native.pointer_translator.references_binding(binding));
     drop(pointer_frame(&mut native, receiver));
     assert!(

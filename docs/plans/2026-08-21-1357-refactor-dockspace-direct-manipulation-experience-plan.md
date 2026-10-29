@@ -680,6 +680,7 @@ updates/cancellation without self-invalidation or redundant compilation.
 - **Storage implementation direction:** Reuse the serialized callback boundary for a bounded raw backing and one shared core/replay work allowance, instead of reserving a complete core payload copy for every queued source or introducing per-allocation authority tokens. Reclaim committed recorder payloads before the next raw transfer, or charge their actual overlap. Effect/presentation preludes and whole atomic terminal groups use the same allowance; the 256-record scheduling limit is not an atomic-group storage bound. Prospective complete-roster size must be checked from borrowed facts before capture, and existing terminal owners must reserve variable backing when their obligation is admitted. The final implementation must state and enforce the maximum complete roster and terminal fanout it can retain, without truncating Exact facts or dropping accepted terminals. Shared roster data is counted by allocation identity through its existing owners, without a persistent address registry.
 - **Core capacity boundary:** Keep generic/core host recording unbounded unless its host selects a limit. The optional native profile can preallocate a finite recorder buffer and reserve batch, guard and retirement-receipt transport space for its complete admitted record set, including whole atomic groups. Final admission belongs at the recorder's single append boundary; finite snapshot/checkpoint construction also needs prospective checks. Capacity rejection preserves the existing producer/output owner and allows already accepted input to replay instead of trapping poll in a full-prelude error loop. Enrollment must reject insufficient storage before publishing an ownerless provider, without panic. Resource/adapter data and shared core allowance must be combined before claiming the total 4 MiB gate.
 - **Prepared pointer transfer:** The public batch/sequence path uses bounded prepared journals, reserves their handle buffer, and charges journal contents once as they move into the recorder. Prospective final append may subtract only the safely reclaimable committed prefix; the staging peak retains all existing payloads, including committed data. A suspended replay receives no retirement credit. Recording stops at the first nonadmissible item and completes caller iteration and destruction before maintenance or append. Iterator panic, capacity rejection, and invalid later facts preserve the published workspace and producer watermarks. This closes the iterator-collection prerequisite, not the combined 4 MiB gate.
+- **Binding terminal fact:** Destroyed-window input termination records one fixed-size exact-binding backend fact. Core derives affected held-button/capture streams and closes their scroll provider tails without adapter-generated pointer fanout. The original physical-window receipt retains once-only recording progress across later lifecycle failures and retirement moves; independent destruction/output/quiescence barriers remain authoritative. Do not reserve a synthetic pointer-record group per active device for this platform fact.
 - **Test scenarios:** Covers AE7/AE11/AE14. Retry after a rejected batch, 10,000 interleaved records, sustained 1,000 Hz drag, overload, local touch coordinates, and scope/provider changes preserve one terminal release.
 - **Verification:** Resource budgets hold and no unbounded journal or forced desktop-only local route remains.
 
@@ -767,6 +768,27 @@ mark of 2,024,952 bytes. Physical input and mixed-DPI qualification remain open.
 A disposable-snapshot control removes only cursor-prefix capacity clipping and
 fails the bounded transfer regression; restoring clipping passes that test.
 
+The subsequent binding-input slice removes Destroyed cancellation/reset vectors
+and their separate pointer-prefix boundaries. One exact-binding backend fact
+uses retained held-button origins, capture dependency across Unknown, and initial
+scroll delivery to terminate only matching live input and provider tails. A
+physical-window receipt retains once-only recording progress through later
+failure and retirement migration. Other windows, pending release/output owners,
+pointer sequence and lifecycle/quiescence barriers survive. One-slot/five-stream
+core/public regressions, exact-scope/ABA cases and the existing real presented
+receiver and pending-release matrix exercise this path. Product recording stays
+unlimited until the shared host/core allowance, remaining terminal promises and
+constructor peaks are enforced and qualified.
+Fresh gates pass 1,786 all-feature workspace tests, 81 public-host tests, ten
+doctests, strict docs and correctness/suspicious Clippy. Local native gates pass
+332 tests normally and 332 without native debug assertions. The macOS
+programmatic redock journey completes with a sampled root-boundary high-water
+mark of 2,024,888 bytes. These results do not qualify the total allowance or
+physical input.
+A disposable-snapshot control omits only binding-fact staged-ledger sync and
+fails the real presented-receiver same-batch regression with
+`ButtonAlreadyPressed`; restoring synchronization passes the same regression.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
@@ -807,7 +829,8 @@ records. One exact-provider backend fact invokes the shared live-input reset
 kernel, preserves pointer sequence and accepted release/output obligations,
 keeps the frame open for subsequent input and supports fresh roster recovery.
 Adapter state is forgotten only after recording succeeds. Destroy-binding
-fanout and caller atomic groups still need bounded shared work admission.
+fanout is superseded by the single binding-terminal fact above; caller atomic
+groups and remaining variable terminal data still need shared work admission.
 Qualification passes 1,753 workspace tests, 79 public-host tests, strict docs
 and Clippy, 316 native tests in both normal and no-debug-assertion builds, and
 the macOS programmatic real-window redock. A real presented-receiver regression

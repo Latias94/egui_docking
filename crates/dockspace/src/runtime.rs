@@ -221,6 +221,11 @@ pub enum HostInputOutcome {
     /// The provider and accepted release/output obligations remain live. Button
     /// and capture facts become Unknown until fresh host facts establish them.
     NativeInputDeviceRemoval,
+    /// Input depending on one exact native binding ended without retiring its outputs.
+    NativeInputBindingRetired {
+        /// Complete binding incarnation whose pointer and scroll dependencies ended.
+        binding: NativeSurfaceBinding,
+    },
     /// Managed input ended at this frame's terminal overload boundary.
     ///
     /// The provider and all previously accepted release obligations remain live.

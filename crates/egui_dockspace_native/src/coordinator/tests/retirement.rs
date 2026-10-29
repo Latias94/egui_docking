@@ -1,8 +1,7 @@
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerCancelReason,
-    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
 };
 use eframe::egui::ViewportCommand;
 use winit::dpi::PhysicalPosition;
@@ -168,7 +167,7 @@ fn cross_window_capture_fixture() -> CrossWindowCaptureFixture {
 }
 
 #[test]
-fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
+fn destroyed_binding_retires_pressed_pointer_before_successor_press() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
     let first_window = WindowId::from(11);
@@ -219,18 +218,11 @@ fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
     assert!(
         native
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect("the binding-retired pointer terminal records first")
+            .expect("one binding-retirement fact records with the destroyed callback")
             .is_some()
     );
-    assert!(native.pointer_translator.has_pending_provider_tail());
-    commit_pending_pointer_frame(&mut native);
-    assert!(
-        native
-            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect("the retained destroyed callback completes on the next boundary")
-            .is_some()
-    );
-    assert!(!native.pointer_translator.has_pending_provider_tail());
+    assert!(!native.pointer_translator.references_binding(first));
+    assert!(native.next_window_event().unwrap().is_none());
     commit_pending_pointer_frame(&mut native);
 
     let late_release = NativeWindowEventRecord::for_test(
@@ -304,13 +296,9 @@ fn idle_delivery_does_not_become_a_persistent_pointer_owner() {
         NativePointerTranslation::Input(_)
     ));
     assert!(!native.pointer_translator.references_binding(binding));
-    assert!(
-        native
-            .pointer_translator
-            .cancel_destroyed_binding(binding)
-            .is_empty(),
-        "an idle delivery route is not a live pointer owner"
-    );
+    let before = format!("{:?}", native.pointer_translator);
+    native.pointer_translator.retire_binding(binding);
+    assert_eq!(format!("{:?}", native.pointer_translator), before);
 }
 
 #[test]
@@ -339,13 +327,9 @@ fn released_button_no_longer_keeps_its_press_binding_live() {
     }
 
     assert!(!native.pointer_translator.references_binding(binding));
-    assert!(
-        native
-            .pointer_translator
-            .cancel_destroyed_binding(binding)
-            .is_empty(),
-        "a normally released button must not synthesize a later cancellation"
-    );
+    let before = format!("{:?}", native.pointer_translator);
+    native.pointer_translator.retire_binding(binding);
+    assert_eq!(format!("{:?}", native.pointer_translator), before);
 }
 
 #[test]
@@ -406,10 +390,8 @@ fn pressed_delivery_and_capture_bindings_remain_independent() {
     ));
     assert!(native.pointer_translator.references_binding(delivery));
     assert!(!native.pointer_translator.references_binding(captured));
-    assert_eq!(
-        native.pointer_translator.cancel_destroyed_binding(delivery),
-        vec![retired_pointer_input()]
-    );
+    native.pointer_translator.retire_binding(delivery);
+    assert!(!native.pointer_translator.references_binding(delivery));
 }
 
 #[test]
@@ -445,17 +427,30 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
         NativePointerTranslation::Input(_)
     ));
     assert!(native.pointer_translator.references_binding(captured));
-    assert_eq!(
-        native.pointer_translator.cancel_destroyed_binding(captured),
-        vec![retired_pointer_input()]
-    );
-    assert_eq!(
-        native.pointer_translator.reset_destroyed_binding(captured),
-        Vec::new()
-    );
+    let unknown_capture = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            2,
+            unknown_window,
+            None,
+            WindowEvent::PointerCaptureChanged {
+                device_id: DeviceId::dummy(),
+                capture: PointerWindowRoute::Unknown,
+            },
+            routes,
+        )
+    });
+    assert!(matches!(
+        native
+            .pointer_translator
+            .translate(&unknown_capture, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(native.pointer_translator.references_binding(captured));
+    native.pointer_translator.retire_binding(captured);
+    assert!(!native.pointer_translator.references_binding(captured));
 
     let late_release = NativeWindowEventRecord::for_test(
-        2,
+        3,
         unknown_window,
         None,
         None,
@@ -491,11 +486,7 @@ fn binding_retirement_keeps_button_tombstones_isolated_by_device() {
         NativePointerTranslation::Input(_)
     ));
 
-    assert_eq!(
-        translator.cancel_destroyed_binding(first),
-        vec![retired_pointer_input_for(NativePointerId::new(1))]
-    );
-    assert!(translator.reset_destroyed_binding(first).is_empty());
+    translator.retire_binding(first);
     assert!(!translator.references_binding(first));
     assert!(translator.references_binding(second));
 
@@ -514,7 +505,7 @@ fn binding_retirement_keeps_button_tombstones_isolated_by_device() {
 }
 
 #[test]
-fn binding_retirement_returns_terminals_in_adapter_identity_order() {
+fn binding_retirement_preserves_device_identities_in_any_device_key_order() {
     let mut native = coordinator();
     let (binding, _) = register_roots(&mut native);
     let window = WindowId::from(61);
@@ -531,18 +522,31 @@ fn binding_retirement_returns_terminals_in_adapter_identity_order() {
         NativePointerTranslation::Input(_)
     ));
 
-    assert_eq!(
-        translator.cancel_destroyed_binding(binding),
-        vec![
-            retired_pointer_input_for(NativePointerId::new(1)),
-            retired_pointer_input_for(NativePointerId::new(2)),
-        ],
-        "terminal order follows first-seen adapter identities rather than device-key ordering"
-    );
+    translator.retire_binding(binding);
+    assert!(!translator.references_binding(binding));
+    for (record, device, pointer) in [
+        (&first_press, 901, NativePointerId::new(1)),
+        (&second_press, 303, NativePointerId::new(2)),
+    ] {
+        assert_eq!(
+            translator.translate_for_test_device(record, device, |_| None),
+            NativePointerTranslation::Input(NativePointerInput::new(
+                pointer,
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                NativeDesktopPointerLocation::new(
+                    NativeDesktopPosition::Unknown,
+                    NativePointerHover::Unknown,
+                    None,
+                ),
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::Unknown,
+            )),
+        );
+    }
 }
 
 #[test]
-fn destroyed_callback_records_all_device_terminals_in_one_boundary() {
+fn destroyed_callback_records_one_binding_fact_for_all_devices() {
     let mut native = coordinator();
     let (binding, _) = register_roots(&mut native);
     let window = WindowId::from(71);
@@ -566,6 +570,7 @@ fn destroyed_callback_records_all_device_terminals_in_one_boundary() {
     }
     commit_pending_pointer_frame(&mut native);
 
+    let recorded = native.session.native_input_recorded_count();
     native
         .bridge
         .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
@@ -578,10 +583,12 @@ fn destroyed_callback_records_all_device_terminals_in_one_boundary() {
     assert!(
         native
             .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
-            .expect("the ordered device terminal batch records")
+            .expect("one binding-retirement fact records")
             .is_some()
     );
-    assert!(native.pointer_translator.has_pending_provider_tail());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(native.next_window_event().unwrap().is_none());
     commit_pending_pointer_frame(&mut native);
 }
 
@@ -602,24 +609,6 @@ fn pointer_button_record(
             button: MouseButton::Left,
             facts: PointerEventFacts::default(),
         },
-    )
-}
-
-fn retired_pointer_input() -> NativePointerInput {
-    retired_pointer_input_for(NativePointerId::new(1))
-}
-
-fn retired_pointer_input_for(pointer: NativePointerId) -> NativePointerInput {
-    NativePointerInput::new(
-        pointer,
-        NativePointerEvent::StreamCancelled(NativePointerCancelReason::BindingRetired),
-        NativeDesktopPointerLocation::new(
-            NativeDesktopPosition::Unknown,
-            NativePointerHover::Unknown,
-            None,
-        ),
-        NativePointerOwner::Unknown,
-        NativePointerOwner::Unknown,
     )
 }
 
@@ -702,21 +691,25 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
         native.pointer_translator.references_binding(child_binding),
         "ReleaseChild cannot replace the provider's terminal scroll edge"
     );
-    assert!(
-        native
-            .pointer_translator
-            .cancel_destroyed_binding(child_binding)
-            .len()
-            == 1,
-        "the later Destroyed callback can still retire the semantic owner"
+    native.pointer_translator.retire_binding(child_binding);
+    assert!(!native.pointer_translator.references_binding(child_binding));
+    let late_terminal = NativeWindowEventRecord::for_test(
+        10,
+        child_window,
+        Some(child),
+        Some(child_binding),
+        WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: TouchPhase::Ended,
+            facts: PointerEventFacts::default(),
+        },
     );
-    assert!(
+    assert_eq!(
         native
             .pointer_translator
-            .reset_destroyed_binding(child_binding)
-            .len()
-            == 1,
-        "the following boundary can still close the provider tail"
+            .translate(&late_terminal, |_| None),
+        NativePointerTranslation::Ignored,
     );
 }
 

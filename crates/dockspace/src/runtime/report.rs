@@ -73,6 +73,13 @@ impl HostFrameReport {
                     InputOutcome::NativeInputDeviceRemoval => {
                         Some(HostInputOutcome::NativeInputDeviceRemoval)
                     }
+                    InputOutcome::NativeInputBindingRetired { binding } => {
+                        native_provider.map(|provider| {
+                            HostInputOutcome::NativeInputBindingRetired {
+                                binding: NativeSurfaceBinding::from_binding(provider, *binding),
+                            }
+                        })
+                    }
                     InputOutcome::NativeInputCancelledForOverload => {
                         Some(HostInputOutcome::NativeInputCancelledForOverload)
                     }

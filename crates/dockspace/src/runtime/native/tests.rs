@@ -16,6 +16,7 @@ use crate::runtime::{
 };
 use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
+mod binding_retired;
 mod budget_replay;
 mod device_removal;
 mod input_capacity;

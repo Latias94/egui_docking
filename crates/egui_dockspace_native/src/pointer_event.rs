@@ -49,7 +49,6 @@ enum NativePhysicalDeviceKey {
 struct NativePointerDeviceState {
     pointer: NativePointerId,
     scroll_device: NativeScrollDeviceId,
-    stream_live: bool,
     mouse: NativeMouseState,
     scroll: NativeScrollState,
 }
@@ -60,7 +59,6 @@ struct NativeMouseState {
     button_origins: BTreeMap<NativePointerButton, NativeSurfaceBinding>,
     cancelled_buttons: BTreeSet<NativePointerButton>,
     capture: Option<NativeSurfaceBinding>,
-    retired_tail: Option<NativeSurfaceBinding>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -72,12 +70,8 @@ enum NativeScrollState {
         sequence: NativeScrollSequenceId,
         delivery: Option<NativeSurfaceBinding>,
     },
-    /// The semantic binding retired while provider tail events may still arrive.
-    RetiredTail {
-        sequence: NativeScrollSequenceId,
-        binding: NativeSurfaceBinding,
-        semantic_cancelled_by_pointer: bool,
-    },
+    /// Core closed the provider tail; ignore late phases until an explicit start.
+    Retired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -145,33 +139,23 @@ impl NativePointerTranslator {
         self.devices.clear();
     }
 
-    /// Terminates the semantic owner while preserving provider-tail correlation.
+    /// Installs local tail suppression after core records binding retirement.
     ///
-    /// Mouse and scroll identities retain their explicit tail state. Touch
-    /// contacts instead retire into the input tombstone set because a contact
-    /// has no independent reset callback after its delivery binding disappears.
-    pub(crate) fn cancel_destroyed_binding(
-        &mut self,
-        binding: NativeSurfaceBinding,
-    ) -> Vec<NativePointerInput> {
-        let mut terminals = Vec::new();
-        let mut retired_touches = Vec::new();
-        for (key, device) in &mut self.devices {
-            let Some(input) = device.cancel_destroyed_binding(binding) else {
-                continue;
-            };
-            terminals.push((device.pointer, input));
-            if matches!(key, NativeInputDeviceKey::Touch { .. }) {
-                retired_touches.push(*key);
+    /// Mouse and scroll lanes keep their identities. Touch contacts move into
+    /// the existing tombstone set so contact ID reuse allocates a fresh identity.
+    pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
+        let Self {
+            devices,
+            removed_inputs,
+            ..
+        } = self;
+        devices.retain(|key, device| {
+            if device.retire_binding(binding) && matches!(key, NativeInputDeviceKey::Touch { .. }) {
+                let _ = removed_inputs.insert(*key);
+                return false;
             }
-        }
-        for key in retired_touches {
-            let removed = self.devices.remove(&key);
-            debug_assert!(removed.is_some());
-            let _ = self.removed_inputs.insert(key);
-        }
-        terminals.sort_by_key(|(pointer, _)| *pointer);
-        terminals.into_iter().map(|(_, input)| input).collect()
+            true
+        });
     }
 
     /// Forgets adapter identities after the provider-wide removal fact records.
@@ -189,30 +173,6 @@ impl NativePointerTranslator {
         self.devices
             .values()
             .any(|device| device.references_binding(binding))
-    }
-
-    pub(crate) fn has_pending_provider_tail(&self) -> bool {
-        self.devices
-            .values()
-            .any(NativePointerDeviceState::has_pending_provider_tail)
-    }
-
-    /// Closes retired provider tails at the next causal boundary.
-    pub(crate) fn reset_destroyed_binding(
-        &mut self,
-        binding: NativeSurfaceBinding,
-    ) -> Vec<NativePointerInput> {
-        let mut terminals = self
-            .devices
-            .values_mut()
-            .filter_map(|device| {
-                device
-                    .reset_destroyed_binding(binding)
-                    .map(|input| (device.pointer, input))
-            })
-            .collect::<Vec<_>>();
-        terminals.sort_by_key(|(pointer, _)| *pointer);
-        terminals.into_iter().map(|(_, input)| input).collect()
     }
 
     pub(crate) fn translate(
@@ -392,12 +352,6 @@ impl NativePointerTranslator {
         if !device.mouse.observe(event, routes) {
             return NativePointerTranslation::Ignored;
         }
-        device.stream_live = !matches!(
-            event,
-            NativePointerEvent::ContactEnded(_)
-                | NativePointerEvent::StreamEnded
-                | NativePointerEvent::StreamCancelled(_)
-        );
         let position = native_position(desktop_position);
         let hover = native_hover(routes.hover());
         NativePointerTranslation::Input(NativePointerInput::new(
@@ -466,7 +420,6 @@ impl NativePointerTranslator {
         );
         let position = native_position(facts.desktop_position);
         let hover = native_hover(routes.hover());
-        device.stream_live = true;
         NativePointerTranslation::Input(NativePointerInput::new(
             device.pointer,
             NativePointerEvent::Scrolled(event),
@@ -504,7 +457,7 @@ fn translate_scroll_phase(
     next_scroll_sequence: &mut u64,
 ) -> Option<(NativeScrollPhase, NativeScrollState)> {
     match (state, phase) {
-        (NativeScrollState::Idle, TouchPhase::Started) => {
+        (NativeScrollState::Idle | NativeScrollState::Retired, TouchPhase::Started) => {
             let sequence = allocate_scroll_sequence(next_scroll_sequence)?;
             Some((
                 NativeScrollPhase::Begin {
@@ -524,38 +477,21 @@ fn translate_scroll_phase(
             NativeScrollPhase::Update { sequence, delta },
             NativeScrollState::Live { sequence, delivery },
         )),
-        (
-            NativeScrollState::Live { sequence, .. }
-            | NativeScrollState::RetiredTail { sequence, .. },
-            TouchPhase::Ended,
-        ) => Some((
+        (NativeScrollState::Live { sequence, .. }, TouchPhase::Ended) => Some((
             NativeScrollPhase::End {
                 sequence,
                 delta: Some(delta),
             },
             NativeScrollState::Idle,
         )),
-        (
-            NativeScrollState::Live { sequence, .. }
-            | NativeScrollState::RetiredTail { sequence, .. },
-            TouchPhase::Cancelled,
-        ) => Some((
+        (NativeScrollState::Live { sequence, .. }, TouchPhase::Cancelled) => Some((
             NativeScrollPhase::Cancel {
                 sequence,
                 reason: NativeScrollCancelReason::PlatformCancelled,
             },
             NativeScrollState::Idle,
         )),
-        (
-            NativeScrollState::RetiredTail { sequence, .. },
-            TouchPhase::Started | TouchPhase::Moved,
-        ) => Some((
-            NativeScrollPhase::Cancel {
-                sequence,
-                reason: NativeScrollCancelReason::ProviderReset,
-            },
-            NativeScrollState::Idle,
-        )),
+        (NativeScrollState::Retired, _) => None,
         (NativeScrollState::Idle, TouchPhase::Moved) => Some((
             NativeScrollPhase::Discrete { delta },
             NativeScrollState::Idle,
@@ -579,86 +515,32 @@ impl NativePointerDeviceState {
         Self {
             pointer: NativePointerId::new(identity),
             scroll_device: NativeScrollDeviceId::new(identity),
-            stream_live: false,
             mouse: NativeMouseState::default(),
             scroll: NativeScrollState::Idle,
         }
     }
 
     fn is_idle(&self) -> bool {
-        self.mouse.is_idle() && matches!(self.scroll, NativeScrollState::Idle)
+        self.mouse.is_idle()
+            && matches!(
+                self.scroll,
+                NativeScrollState::Idle | NativeScrollState::Retired
+            )
     }
 
-    fn cancel_destroyed_binding(
-        &mut self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<NativePointerInput> {
-        if self.mouse.cancel(binding) {
-            if let NativeScrollState::Live { sequence, .. } = self.scroll {
-                self.scroll = NativeScrollState::RetiredTail {
-                    sequence,
-                    binding,
-                    semantic_cancelled_by_pointer: true,
-                };
-            }
-            if !self.stream_live {
-                return None;
-            }
-            self.stream_live = false;
-            return Some(pointer_cancel_input(
-                self.pointer,
-                NativePointerCancelReason::BindingRetired,
-            ));
+    fn retire_binding(&mut self, binding: NativeSurfaceBinding) -> bool {
+        let mouse_retired = self.mouse.retire_binding(binding);
+        let scroll_retired = matches!(
+            self.scroll,
+            NativeScrollState::Live {
+                delivery: Some(delivery),
+                ..
+            } if delivery == binding
+        );
+        if scroll_retired {
+            self.scroll = NativeScrollState::Retired;
         }
-        let NativeScrollState::Live {
-            sequence,
-            delivery: Some(delivery),
-        } = self.scroll
-        else {
-            return None;
-        };
-        if delivery != binding {
-            return None;
-        }
-        self.scroll = NativeScrollState::RetiredTail {
-            sequence,
-            binding,
-            semantic_cancelled_by_pointer: false,
-        };
-        Some(scroll_cancel_input(
-            self.pointer,
-            self.scroll_device,
-            sequence,
-            NativeScrollCancelReason::BindingRetired,
-        ))
-    }
-
-    fn reset_destroyed_binding(
-        &mut self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<NativePointerInput> {
-        self.mouse.reset_destroyed_binding(binding);
-        let NativeScrollState::RetiredTail {
-            sequence,
-            binding: retired,
-            semantic_cancelled_by_pointer,
-        } = self.scroll
-        else {
-            return None;
-        };
-        if retired != binding {
-            return None;
-        }
-        self.scroll = NativeScrollState::Idle;
-        if semantic_cancelled_by_pointer {
-            return None;
-        }
-        Some(scroll_cancel_input(
-            self.pointer,
-            self.scroll_device,
-            sequence,
-            NativeScrollCancelReason::ProviderReset,
-        ))
+        mouse_retired || scroll_retired
     }
 
     fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -670,18 +552,6 @@ impl NativePointerDeviceState {
                     ..
                 } if delivery == binding
             )
-            || matches!(
-                self.scroll,
-                NativeScrollState::RetiredTail {
-                    binding: retired,
-                    ..
-                } if retired == binding
-            )
-    }
-
-    const fn has_pending_provider_tail(&self) -> bool {
-        self.mouse.has_pending_provider_tail()
-            || matches!(self.scroll, NativeScrollState::RetiredTail { .. })
     }
 }
 
@@ -697,7 +567,6 @@ impl NativeMouseState {
             && self.button_origins.is_empty()
             && self.cancelled_buttons.is_empty()
             && self.capture.is_none()
-            && self.retired_tail.is_none()
     }
 
     fn observe(&mut self, event: NativePointerEvent, routes: NativePointerRoutes) -> bool {
@@ -713,10 +582,6 @@ impl NativeMouseState {
         ) {
             return false;
         }
-        if self.retired_tail.is_some() {
-            return true;
-        }
-
         match event {
             NativePointerEvent::ButtonPressed(button) => {
                 let _ = self.cancelled_buttons.remove(&button);
@@ -765,13 +630,11 @@ impl NativeMouseState {
     }
 
     fn observe_routes(&mut self, routes: NativePointerRoutes) {
-        if self.retired_tail.is_none() {
-            self.capture = updated_binding(self.capture, routes.capture());
-        }
+        self.capture = updated_binding(self.capture, routes.capture());
     }
 
-    fn cancel(&mut self, binding: NativeSurfaceBinding) -> bool {
-        if self.retired_tail.is_some() || !self.references_binding(binding) {
+    fn retire_binding(&mut self, binding: NativeSurfaceBinding) -> bool {
+        if !self.references_binding(binding) {
             return false;
         }
         self.cancelled_buttons
@@ -779,14 +642,7 @@ impl NativeMouseState {
         self.active_buttons.clear();
         self.button_origins.clear();
         self.capture = None;
-        self.retired_tail = Some(binding);
         true
-    }
-
-    fn reset_destroyed_binding(&mut self, binding: NativeSurfaceBinding) {
-        if self.retired_tail == Some(binding) {
-            self.retired_tail = None;
-        }
     }
 
     fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -794,11 +650,6 @@ impl NativeMouseState {
             .values()
             .any(|origin| *origin == binding)
             || self.capture == Some(binding)
-            || self.retired_tail == Some(binding)
-    }
-
-    const fn has_pending_provider_tail(&self) -> bool {
-        self.retired_tail.is_some()
     }
 }
 
@@ -811,47 +662,6 @@ fn updated_binding(
         NativePointerRouteSnapshot::None | NativePointerRouteSnapshot::Foreign => None,
         NativePointerRouteSnapshot::Unknown => current,
     }
-}
-
-fn pointer_cancel_input(
-    pointer: NativePointerId,
-    reason: NativePointerCancelReason,
-) -> NativePointerInput {
-    NativePointerInput::new(
-        pointer,
-        NativePointerEvent::StreamCancelled(reason),
-        NativeDesktopPointerLocation::new(
-            NativeDesktopPosition::Unknown,
-            NativePointerHover::Unknown,
-            None,
-        ),
-        NativePointerOwner::Unknown,
-        NativePointerOwner::Unknown,
-    )
-}
-
-fn scroll_cancel_input(
-    pointer: NativePointerId,
-    device: NativeScrollDeviceId,
-    sequence: NativeScrollSequenceId,
-    reason: NativeScrollCancelReason,
-) -> NativePointerInput {
-    NativePointerInput::new(
-        pointer,
-        NativePointerEvent::Scrolled(NativeScrollEvent::new(
-            device,
-            NativeScrollPhase::Cancel { sequence, reason },
-            NativeScrollMomentum::Unknown,
-            NativeScrollModifiers::Unknown,
-        )),
-        NativeDesktopPointerLocation::new(
-            NativeDesktopPosition::Unknown,
-            NativePointerHover::Unknown,
-            None,
-        ),
-        NativePointerOwner::Unknown,
-        NativePointerOwner::Unknown,
-    )
 }
 
 fn pointer_device(event: &WindowEvent) -> Option<NativeInputDeviceKey> {

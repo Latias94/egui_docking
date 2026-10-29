@@ -653,6 +653,15 @@ impl ViewportCoordinator {
             .map_err(binding_cleanup_error)
     }
 
+    /// Input terminal facts may name a current or still-retained exact incarnation.
+    pub(crate) fn recognizes_input_binding(&self, binding: ViewportBinding) -> bool {
+        self.registry
+            .record(binding.surface())
+            .is_some_and(|record| record.binding() == binding)
+            || self.binding_cleanup.contains_key(&binding)
+            || self.binding_cleanup.was_destroyed(binding)
+    }
+
     #[cfg(test)]
     pub(crate) fn record_destroyed_binding_guard_for_test(
         &mut self,

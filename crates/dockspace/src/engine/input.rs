@@ -304,6 +304,13 @@ pub enum EngineInput {
         /// Exact joined provider whose live pointer and scroll streams are cancelled.
         provider: BackendIngressLease,
     },
+    /// Ends input depending on one exact retired native binding.
+    ObserveNativeInputBindingRetired {
+        /// Exact joined provider which observed the binding's terminal input boundary.
+        provider: BackendIngressLease,
+        /// Complete window incarnation, independent of its logical surface's successor.
+        binding: ViewportBinding,
+    },
     /// Bind an existing adapter window to a current logical surface.
     RegisterViewport {
         /// Exact platform provider enrolling this native binding.
@@ -747,6 +754,7 @@ impl EngineInput {
             | Self::PublishNativeCloseObservation { .. }
             | Self::PublishGlobalFocusObservation { .. }
             | Self::ObserveNativeInputDeviceRemoval { .. }
+            | Self::ObserveNativeInputBindingRetired { .. }
             | Self::ReportPlatformEffect { .. } => InputPriority::PlatformObservation,
             Self::PublishPaneFocusObservation { .. }
             | Self::PublishPaneFocusRequestObservation { .. } => InputPriority::PlatformObservation,
@@ -808,6 +816,7 @@ impl EngineInput {
                 | Self::PublishNativeCloseObservation { .. }
                 | Self::PublishGlobalFocusObservation { .. }
                 | Self::ObserveNativeInputDeviceRemoval { .. }
+                | Self::ObserveNativeInputBindingRetired { .. }
                 | Self::ReportPlatformEffect { .. }
         )
     }

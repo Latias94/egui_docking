@@ -15,6 +15,58 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 fixed-size binding input termination
+
+`report_native_input_binding_retired(binding)` records one provider-bound
+backend fact for an exact window incarnation. Core retains held-button origins,
+the preceding native capture dependency across Unknown reports, and each smooth
+scroll sequence's initial native delivery through semantic termination. The fact
+ends only matching live pointer streams and closes matching scroll provider
+tails. Idle delivery and a successor with the same surface/token are not
+ownership. Other bindings retain their streams and complete button knowledge;
+already accepted releases keep their exact preview/output obligations.
+
+The fact does not advance the pointer watermark, end the host-frame input phase,
+publish window destruction or declare callback quiescence. Staged pointer state
+is synchronized before subsequent same-batch input. Enrollment checkpoints
+cannot be replayed to restore retired dependencies, while an existing explicit
+recovery opportunity keeps its normal fresh-roster contract.
+
+The native adapter records the fact through the original physical-window
+receipt and retains once-only progress there across route-to-retirement moves.
+Only successful recording installs local tail suppression. Later close/effect
+failure cannot enqueue the same fact again. The adapter no longer allocates
+per-device cancellation/reset vectors or a temporary retired-touch key vector,
+and no longer splits one Destroyed callback across synthetic pointer prefixes.
+Retired scroll lanes reject late phases until an explicit start; their local
+tombstone does not retain an already closed core provider tail or dead binding.
+
+Regressions cover one record slot ending five pressed streams after a dropped
+frame, a surviving sixth stream on another binding, Unknown capture, held
+origins after later delivery elsewhere, idle delivery, token/incarnation ABA,
+checkpoint invalidation, suppressed scroll sequences, same-batch presented
+receiver reuse, and pending dock/contained release preservation. Native tests
+exercise the physical receipt, full-transport retry and later close-correlation
+failure instead of authorizing retirement from an unowned synthetic event.
+
+Fresh serialized qualification passes 1,786 all-feature workspace tests,
+81 external public-host tests, ten doctests, strict rustdoc, and
+correctness/suspicious Clippy. The local unpublished-fork native workspace passes
+332 tests normally and 332 with native debug assertions disabled, plus its
+correctness/suspicious Clippy. The macOS programmatic tear-off, first-live,
+redock and retirement journey exits 0 with a sampled root-boundary high-water
+mark of 2,024,888 owned input-data bytes. Results are recorded in
+`/tmp/dockspace-binding-input-qualification.json`. A disposable-snapshot control
+removes only staged-ledger synchronization for the binding fact; the real
+presented-receiver same-batch regression fails with `ButtonAlreadyPressed`
+(exit 100), while restoration passes (exit 0). Control results are recorded in
+`/tmp/dockspace-binding-input-control.json`.
+
+The shared 4 MiB allowance, remaining variable terminal storage, constructor
+peaks, scoped native input and load/soak qualification remain open. The product
+default is still unlimited; this removes Destroyed-binding record fanout rather
+than qualifying the complete admission profile.
+
 ## 2026-10-29 U7 native core-capacity backpressure
 
 The native coordinator can exercise the facade's selected transport limit

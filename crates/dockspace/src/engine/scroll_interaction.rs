@@ -144,6 +144,9 @@ enum ActiveScrollDisposition {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ActiveScrollSession {
     id: ScrollSessionId,
+    // Preserve the initial native delivery through semantic termination. The
+    // receiver or its geometry may already be unavailable when the window dies.
+    native_delivery_binding: Option<ViewportBinding>,
     disposition: ActiveScrollDisposition,
 }
 
@@ -417,6 +420,49 @@ impl DockEngine {
         }
     }
 
+    pub(super) fn terminate_native_binding_scroll_input(
+        &mut self,
+        cause: ReductionCause,
+        binding: ViewportBinding,
+        retired_streams: &[PointerStreamId],
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) {
+        let keys = self
+            .scroll_interaction
+            .active
+            .iter()
+            .filter(|(key, session)| {
+                session.native_delivery_binding == Some(binding)
+                    || retired_streams.contains(&key.stream)
+            })
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        for key in keys {
+            let session = self
+                .scroll_interaction
+                .retire(key)
+                .expect("binding-dependent scroll keys came from the same candidate");
+            if !scroll_session_is_semantically_active(&session) {
+                continue;
+            }
+            interaction_events.push(InteractionEvent::new_caused(
+                cause,
+                self.version,
+                InteractionEventKind::ScrollTerminated {
+                    session: session.id,
+                    receiver: scroll_session_receiver(session),
+                    reason: if retired_streams.contains(&key.stream) {
+                        ScrollTerminationReason::StreamCancelled
+                    } else {
+                        ScrollTerminationReason::Cancelled(
+                            crate::pointer_journal::ScrollCancelReason::BindingRetired,
+                        )
+                    },
+                },
+            ));
+        }
+    }
+
     pub(super) fn reconcile_scroll_lifecycle(
         &mut self,
         cause: ReductionCause,
@@ -500,6 +546,7 @@ impl DockEngine {
                     key,
                     ActiveScrollSession {
                         id: session,
+                        native_delivery_binding: native_scroll_delivery_binding(edge),
                         disposition: ActiveScrollDisposition::Owned(owner),
                     },
                 );
@@ -521,6 +568,7 @@ impl DockEngine {
                     key,
                     ActiveScrollSession {
                         id: session,
+                        native_delivery_binding: native_scroll_delivery_binding(edge),
                         disposition: ActiveScrollDisposition::Suppressed(suppressed),
                     },
                 );
@@ -1468,6 +1516,13 @@ const fn scroll_session_receiver(session: ActiveScrollSession) -> Option<Present
     }
 }
 
+fn native_scroll_delivery_binding(edge: &PointerEdge) -> Option<ViewportBinding> {
+    match edge.delivery_owner() {
+        Authority::Known(PointerEventDeliveryOwner::Native(binding)) => Some(binding),
+        Authority::Known(_) | Authority::Unknown(_) => None,
+    }
+}
+
 fn scroll_owner_probe_point(owner: ScrollOwner) -> LogicalPoint {
     let rect = owner.hit.hit().rect();
     let min = rect.min();
@@ -1798,6 +1853,7 @@ mod tests {
             key,
             ActiveScrollSession {
                 id: ScrollSessionId::new(1),
+                native_delivery_binding: None,
                 disposition: ActiveScrollDisposition::Suppressed(SuppressedScrollSession {
                     reason: ScrollSuppressionReason::ReceiverUnknown,
                     endpoint: None,
@@ -1846,6 +1902,7 @@ mod tests {
                 key,
                 ActiveScrollSession {
                     id: ScrollSessionId::new(identity),
+                    native_delivery_binding: None,
                     disposition: ActiveScrollDisposition::AwaitingProviderTerminal(
                         AwaitingScrollProviderTerminal {
                             receiver: None,
@@ -1910,6 +1967,7 @@ mod tests {
             successor_key,
             ActiveScrollSession {
                 id: ScrollSessionId::new(2),
+                native_delivery_binding: None,
                 disposition: ActiveScrollDisposition::AwaitingProviderTerminal(
                     AwaitingScrollProviderTerminal {
                         receiver: None,

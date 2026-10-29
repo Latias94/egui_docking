@@ -2,6 +2,7 @@ use super::*;
 
 mod continuation;
 mod metadata;
+mod native_binding;
 use crate::backend_ingress::BackendIngressRecorder;
 use crate::geometry::{PhysicalRect, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};

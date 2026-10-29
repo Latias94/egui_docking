@@ -13,22 +13,49 @@ use std::time::Duration;
 enum FiniteReset {
     Overload,
     DeviceRemoval,
+    BindingRetired,
 }
 
 impl FiniteReset {
     const ALL: [Self; 2] = [Self::Overload, Self::DeviceRemoval];
+    // Binding retirement preserves unknown and unrelated scroll streams.
+    const RELEASE_RESETS: [Self; 3] = [Self::Overload, Self::DeviceRemoval, Self::BindingRetired];
 
     const fn recorded_delta(self) -> u64 {
         match self {
             Self::Overload => 0,
-            Self::DeviceRemoval => 1,
+            Self::DeviceRemoval | Self::BindingRetired => 1,
+        }
+    }
+
+    fn record_backend_fact(self, session: &mut DockspaceSession) -> Option<HostInputOutcome> {
+        match self {
+            Self::Overload => None,
+            Self::DeviceRemoval => {
+                session.report_native_input_device_removal().unwrap();
+                Some(HostInputOutcome::NativeInputDeviceRemoval)
+            }
+            Self::BindingRetired => {
+                let binding = session
+                    .native
+                    .as_ref()
+                    .unwrap()
+                    .bindings
+                    .get(&SURFACE)
+                    .copied()
+                    .unwrap();
+                session
+                    .report_native_input_binding_retired(binding)
+                    .unwrap();
+                Some(HostInputOutcome::NativeInputBindingRetired { binding })
+            }
         }
     }
 
     const fn gesture_cause(self) -> crate::interaction::InteractionCancelReason {
         match self {
             Self::Overload => crate::interaction::InteractionCancelReason::InputOverload,
-            Self::DeviceRemoval => {
+            Self::DeviceRemoval | Self::BindingRetired => {
                 crate::interaction::InteractionCancelReason::PointerStreamCancelled
             }
         }
@@ -259,15 +286,13 @@ fn cancel_and_commit(session: &mut DockspaceSession) -> HostFrameReport {
 fn reset_and_commit(session: &mut DockspaceSession, reset: FiniteReset) -> HostFrameReport {
     let recorded = session.native_input_recorded_count();
     let through = session.native.as_ref().unwrap().recorder.pointer_through();
-    if matches!(reset, FiniteReset::DeviceRemoval) {
-        session.report_native_input_device_removal().unwrap();
-    }
+    let backend_outcome = reset.record_backend_fact(session);
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the finite input-reset frame begins");
     let submitted = match reset {
         FiniteReset::Overload => Some(frame.cancel_native_input_for_overload().unwrap()),
-        FiniteReset::DeviceRemoval => None,
+        FiniteReset::DeviceRemoval | FiniteReset::BindingRetired => None,
     };
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -279,13 +304,15 @@ fn reset_and_commit(session: &mut DockspaceSession, reset: FiniteReset) -> HostF
             Some(&HostInputOutcome::NativeInputCancelledForOverload)
         );
     } else {
+        let expected = backend_outcome.unwrap();
         assert_eq!(
             report
                 .inputs()
                 .iter()
-                .filter(|input| matches!(input, HostInputOutcome::NativeInputDeviceRemoval))
+                .filter(|input| *input == &expected)
                 .count(),
-            1
+            1,
+            "reset={reset:?}"
         );
     }
     assert_eq!(
@@ -311,54 +338,56 @@ fn paint_and_commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
 }
 
 #[test]
-fn device_removal_then_same_pointer_press_rebinds_the_presented_receiver_in_one_batch() {
-    let (mut session, binding, receiver) = pressed_session();
-    let previous = session.engine.interaction().active_stream().unwrap();
-    let recorded = session.native_input_recorded_count();
-    let pointer = session.native.as_ref().unwrap().recorder.pointer_through();
-    session.report_native_input_device_removal().unwrap();
-    session
-        .record_native_pointer(native_input(
-            binding,
-            1,
-            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
-            receiver.center(),
-        ))
-        .unwrap();
-    let mut frame = session
-        .begin_native_host_frame(|query| receiver_answer(query, receiver))
-        .expect("reset and fresh press share the original exact presented receiver");
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let report = frame.commit().unwrap();
-    assert!(
-        report
-            .inputs()
-            .iter()
-            .any(|outcome| matches!(outcome, HostInputOutcome::NativeInputDeviceRemoval))
-    );
-    assert!(report.manipulation_feedback().iter().any(|feedback| {
-        feedback.status()
-            == DockspaceManipulationStatus::Cancelled(
-                crate::interaction::InteractionCancelReason::PointerStreamCancelled,
-            )
-    }));
-    let current = session.engine.interaction().active_stream().unwrap();
-    assert_eq!(current.lease(), previous.lease());
-    assert_eq!(current.pointer(), previous.pointer());
-    assert!(current.incarnation() > previous.incarnation());
-    assert_eq!(session.native_input_recorded_count(), recorded + 2);
-    assert_eq!(
+fn backend_reset_then_same_pointer_press_rebinds_the_presented_receiver_in_one_batch() {
+    for reset in [FiniteReset::DeviceRemoval, FiniteReset::BindingRetired] {
+        let (mut session, binding, receiver) = pressed_session();
+        let previous = session.engine.interaction().active_stream().unwrap();
+        let recorded = session.native_input_recorded_count();
+        let pointer = session.native.as_ref().unwrap().recorder.pointer_through();
+        let expected = reset.record_backend_fact(&mut session).unwrap();
         session
-            .native
-            .as_ref()
-            .unwrap()
-            .recorder
-            .pointer_through()
-            .get(),
-        pointer.get() + 1,
-    );
+            .record_native_pointer(native_input(
+                binding,
+                1,
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                receiver.center(),
+            ))
+            .unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|query| receiver_answer(query, receiver))
+            .expect("reset and fresh press share the original exact presented receiver");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        assert_eq!(
+            report
+                .inputs()
+                .iter()
+                .filter(|outcome| *outcome == &expected)
+                .count(),
+            1,
+            "reset={reset:?}"
+        );
+        assert!(report.manipulation_feedback().iter().any(|feedback| {
+            feedback.status() == DockspaceManipulationStatus::Cancelled(reset.gesture_cause())
+        }));
+        let current = session.engine.interaction().active_stream().unwrap();
+        assert_eq!(current.lease(), previous.lease());
+        assert_eq!(current.pointer(), previous.pointer());
+        assert!(current.incarnation() > previous.incarnation());
+        assert_eq!(session.native_input_recorded_count(), recorded + 2);
+        assert_eq!(
+            session
+                .native
+                .as_ref()
+                .unwrap()
+                .recorder
+                .pointer_through()
+                .get(),
+            pointer.get() + 1,
+        );
+    }
 }
 
 #[test]
@@ -695,9 +724,7 @@ fn assert_release_survives_reset(
     let workspace = session.engine.workspace().clone();
     let recorded = session.native_input_recorded_count();
     let through = session.native.as_ref().unwrap().recorder.pointer_through();
-    if matches!(reset, FiniteReset::DeviceRemoval) {
-        session.report_native_input_device_removal().unwrap();
-    }
+    let backend_outcome = reset.record_backend_fact(&mut session);
     {
         let mut frame = session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -720,16 +747,17 @@ fn assert_release_survives_reset(
     );
     let report = match reset {
         FiniteReset::Overload => cancel_and_commit(&mut session),
-        FiniteReset::DeviceRemoval => {
+        FiniteReset::DeviceRemoval | FiniteReset::BindingRetired => {
             let report = commit_managed_frame_report(&mut session);
+            let expected = backend_outcome.unwrap();
             assert_eq!(
                 report
                     .inputs()
                     .iter()
-                    .filter(|input| matches!(input, HostInputOutcome::NativeInputDeviceRemoval))
+                    .filter(|input| *input == &expected)
                     .count(),
                 1,
-                "the dropped removal replays its original single backend record"
+                "the dropped reset replays its original single backend record: {reset:?}"
             );
             report
         }
@@ -794,7 +822,7 @@ fn assert_release_survives_reset(
 
 #[test]
 fn overload_cancel_preserves_pending_contained_release_and_its_exact_output() {
-    for reset in FiniteReset::ALL {
+    for reset in FiniteReset::RELEASE_RESETS {
         let (mut session, binding) = programmatic_tear_off_session();
         let receiver = contained_resize_receiver(&mut session);
         let moved = LogicalPoint::new(receiver.center().x() + 32.0, receiver.center().y()).unwrap();
@@ -892,7 +920,7 @@ fn overload_cancel_cannot_be_recorded_as_an_ordinary_backend_action() {
 
 #[test]
 fn overload_cancel_preserves_pending_drag_release_and_its_exact_output() {
-    for reset in FiniteReset::ALL {
+    for reset in FiniteReset::RELEASE_RESETS {
         let mut builder = Workspace::builder();
         let source_tabs = builder.insert_node(Node::tabs([ITEM, SECOND_ITEM]));
         let target_tabs = builder.insert_node(Node::tabs([ItemId::new(3)]));

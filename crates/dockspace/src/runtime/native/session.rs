@@ -479,6 +479,49 @@ impl DockspaceSession {
         Ok(())
     }
 
+    /// Records the input terminal boundary of one exact native binding.
+    ///
+    /// A destroyed window can no longer own held buttons, capture or a smooth
+    /// scroll sequence. One fixed-size backend fact ends only input which
+    /// depends on this binding, including its retained provider scroll tails.
+    /// Unknown capture reports preserve their preceding binding dependency.
+    /// Other windows and already accepted release/output obligations survive.
+    ///
+    /// This does not publish window destruction or declare callback quiescence.
+    /// Those lifecycle facts retain their separate exact commit barriers. The
+    /// pointer watermark and provider incarnation do not change. Rejected or
+    /// dropped frames replay the recorded fact at its original backend position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a managed host, for a foreign or unrecognized
+    /// binding, or when the selected transport cannot admit the fact. Rejection
+    /// leaves the caller responsible for its original platform callback.
+    pub fn report_native_input_binding_retired(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        let native = self
+            .native
+            .as_ref()
+            .ok_or(NativePlatformError::ProviderUnavailable)?;
+        if binding.provider != native.provider() {
+            return Err(NativePlatformError::ProviderSuperseded.into());
+        }
+        if !native.recognizes_binding(binding) {
+            return Err(NativePlatformError::StaleSurface {
+                surface: binding.surface(),
+            }
+            .into());
+        }
+        self.native_state_mut()?
+            .recorder
+            .record_native_input_binding_retired(binding.binding)
+            .map_err(NativePlatformError::from_ingress)?;
+        Ok(())
+    }
+
     /// Records an explicit Unknown native-window inventory tombstone.
     ///
     /// This revokes retained inventory authority without guessing that any

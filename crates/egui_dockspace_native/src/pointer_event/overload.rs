@@ -342,8 +342,8 @@ fn overload_preserves_device_removal_gates_and_binding_retired_tail_policy() {
         translator.translate(&start, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert_eq!(translator.cancel_destroyed_binding(binding).len(), 1);
-    assert!(translator.has_pending_provider_tail());
+    translator.retire_binding(binding);
+    assert!(!translator.references_binding(binding));
     let tail = NativeWindowEventRecord::for_test(
         2,
         WindowId::from(1),
@@ -353,25 +353,12 @@ fn overload_preserves_device_removal_gates_and_binding_retired_tail_policy() {
     );
     assert_eq!(
         translator.translate(&tail, |_| None),
-        NativePointerTranslation::Input(NativePointerInput::new(
-            NativePointerId::new(3),
-            NativePointerEvent::Scrolled(NativeScrollEvent::new(
-                NativeScrollDeviceId::new(3),
-                NativeScrollPhase::End {
-                    sequence: NativeScrollSequenceId::new(1),
-                    delta: Some(NativeScrollDelta::Lines { x: 0.0, y: 2.0 })
-                },
-                NativeScrollMomentum::Unknown,
-                NativeScrollModifiers::Unknown,
-            )),
-            NativeDesktopPointerLocation::new(
-                NativeDesktopPosition::Unknown,
-                NativePointerHover::Unknown,
-                None
-            ),
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Unknown,
-        )),
+        NativePointerTranslation::Ignored,
     );
-    assert!(!translator.has_pending_provider_tail());
+    translator.finish_overload_cancellation();
+    assert_eq!(
+        translator.translate(&tail, |_| None),
+        NativePointerTranslation::Ignored,
+        "overload preserves local suppression after binding retirement"
+    );
 }

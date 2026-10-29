@@ -36,7 +36,7 @@ use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
     NativeViewportBindingError,
 };
-use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventRecord};
+use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWindowEventRecord};
 use crate::focus_control::{
     NativeFocusControl, NativeFocusResultDisposition, NativeFocusTermination,
 };
@@ -423,7 +423,6 @@ impl NativeCoordinator {
             && self.pending_presentation_transitions.is_empty()
             && self.callback_errors.is_empty()
             && !self.bridge.retirement_has_pending_work()
-            && !self.pointer_translator.has_pending_provider_tail()
             && !self.focus_control.has_pending_work()
             && !self.input_control.has_pending_work()
     }
@@ -1429,34 +1428,29 @@ impl NativeCoordinator {
         let Some(record) = self.next_window_event()? else {
             return Ok(None);
         };
-        let mut candidate = self.pointer_translator.clone();
         if matches!(record.event(), winit::event::WindowEvent::Destroyed)
             && let Some(binding) = record.binding()
         {
-            let cancellations = candidate.cancel_destroyed_binding(binding);
-            if !cancellations.is_empty() {
-                self.record_pointer_batch(cancellations)?;
-                // Keep the raw callback at the mailbox head while this first
-                // causal boundary commits. Core intentionally requires the
-                // provider reset to arrive in a later pointer prefix.
-                self.pointer_translator = candidate;
-                if !self.bridge.hold_event_for_next_boundary(record.ordinal()) {
-                    return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
-                }
-                return Ok(Some(std::num::NonZeroUsize::MIN));
-            }
-            let resets = candidate.reset_destroyed_binding(binding);
-            if !resets.is_empty() {
-                self.record_pointer_batch(resets)?;
-                // The recorder now owns the replayable reset. Publish it before
-                // later destroyed-sidecar work can fail, so retrying the raw
-                // callback cannot enqueue the same edge twice.
-                self.pointer_translator = candidate.clone();
-            }
+            let bridge = Arc::clone(&self.bridge);
+            bridge.retire_destroyed_input(&record, || {
+                self.session.report_native_input_binding_retired(binding)?;
+                // Install local suppression and receipt progress before any
+                // close correlation, effect settlement, or retirement can fail.
+                self.pointer_translator.retire_binding(binding);
+                Ok(())
+            })?;
         }
+        if NativeWindowEventClass::classify(record.event()) != NativeWindowEventClass::Pointer {
+            self.reduce_non_pointer_event(&record)?;
+            self.acknowledge_window_event(record.ordinal())?;
+            return Ok(Some(std::num::NonZeroUsize::MIN));
+        }
+        let mut candidate = self.pointer_translator.clone();
         let work_areas = &self.work_areas;
         match candidate.translate(&record, |point| work_areas.binding_at(point)) {
-            NativePointerTranslation::NotPointer => self.reduce_non_pointer_event(&record)?,
+            NativePointerTranslation::NotPointer => {
+                unreachable!("pointer translation follows the same immutable event classification")
+            }
             NativePointerTranslation::Ignored => budget.complete_unsequenced_records(1),
             NativePointerTranslation::Input(input) => self.record_pointer(input)?,
         }
@@ -2219,14 +2213,6 @@ impl NativeCoordinator {
     /// the active provider sequence.
     pub fn record_pointer(&mut self, input: NativePointerInput) -> Result<(), NativeRuntimeError> {
         self.session.record_native_pointer(input)?;
-        Ok(())
-    }
-
-    fn record_pointer_batch(
-        &mut self,
-        inputs: impl IntoIterator<Item = NativePointerInput>,
-    ) -> Result<(), NativeRuntimeError> {
-        self.session.record_native_pointer_batch(inputs)?;
         Ok(())
     }
 

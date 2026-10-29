@@ -1015,6 +1015,24 @@ impl NativeViewportMap {
                 })
         })
     }
+
+    pub(crate) fn received_destroyed_receipt_mut(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+        event_ordinal: u64,
+    ) -> Option<&mut NativeWindowReceipt> {
+        let route = self.viewports.get_mut(&viewport)?;
+        if route.binding != binding || route.window != Some(window) {
+            return None;
+        }
+        route.terminal.as_mut().filter(|receipt| {
+            receipt.binding() == binding
+                && receipt.matches_window(window, Some(viewport))
+                && receipt.received_destroyed(event_ordinal)
+        })
+    }
 }
 
 #[cfg(test)]

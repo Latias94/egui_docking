@@ -337,6 +337,16 @@ in the same frame. A fresh complete pointer roster can recover authority after
 the reset commits. The native reference adapter uses this path and retains late
 device-tail tombstones and monotonic identity counters.
 
+When one exact window stops delivering input, use
+`report_native_input_binding_retired(binding)`. Its single fixed-size backend
+fact ends streams with a held-button origin or retained capture at that binding
+and closes its smooth-scroll provider tails. Unknown capture does not erase
+the preceding dependency or grant observed capture authority; idle delivery
+alone is not ownership. Other bindings and accepted release/output obligations
+survive. No synthetic pointer edge advances the pointer watermark. Input
+termination does not publish window destruction or declare callback quiescence;
+the host still completes those exact lifecycle barriers separately.
+
 The cancellation API does not itself impose ingress record/byte/age caps or
 reserve a host overload latch. Those adapter responsibilities, release latency,
 and physical OS behavior remain separate qualification work.

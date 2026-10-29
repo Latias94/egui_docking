@@ -103,7 +103,7 @@ fn continuation_requires_existing_exact_stream_and_rejects_suffix_atomically() {
         ledger
             .authority
             .pressed_buttons
-            .contains(&(owner.pointer(), PointerButton::Primary))
+            .contains_key(&(owner.pointer(), PointerButton::Primary))
     );
     assert_eq!(ledger.last_stream_incarnation.0, owner.incarnation());
 }
@@ -148,7 +148,7 @@ fn continuation_keeps_buttons_clock_and_stream_until_a_real_terminal_edge() {
             ledger
                 .authority
                 .pressed_buttons
-                .contains(&(owner.pointer(), PointerButton::Primary))
+                .contains_key(&(owner.pointer(), PointerButton::Primary))
         );
     }
     let before = ledger.clone();

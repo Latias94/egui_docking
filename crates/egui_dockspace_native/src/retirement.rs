@@ -379,6 +379,24 @@ impl NativeRetirementState {
             .is_some_and(|pending| pending.viewport == viewport)
     }
 
+    pub(crate) fn received_destroyed_receipt_mut(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+        ordinal: u64,
+    ) -> Option<&mut NativeWindowReceipt> {
+        self.pending
+            .get_mut(&binding)
+            .filter(|pending| {
+                pending.viewport == viewport
+                    && pending.window.binding() == binding
+                    && pending.window.matches_window(window, Some(viewport))
+                    && pending.window.received_destroyed(ordinal)
+            })
+            .map(|pending| &mut pending.window)
+    }
+
     pub(crate) fn transfer_destroyed(
         &mut self,
         binding: NativeSurfaceBinding,

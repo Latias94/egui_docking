@@ -67,6 +67,48 @@ impl DockEngine {
         Ok(InputOutcome::NativeInputDeviceRemoval)
     }
 
+    pub(super) fn observe_native_input_binding_retired(
+        &mut self,
+        _input: InputSequence,
+        cause: ReductionCause,
+        provider: BackendIngressLease,
+        binding: ViewportBinding,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        self.require_managed_input_provider(provider)?;
+        if !self.viewport.recognizes_input_binding(binding) {
+            return Err(EngineError::Viewport {
+                input: self.last_input,
+                source: ViewportCoordinatorError::Registry(
+                    crate::viewport_registry::ViewportRegistryError::StaleBinding { binding },
+                ),
+            });
+        }
+        let retired_streams = self
+            .pointer_journal
+            .retire_native_binding_input(provider.pointer_provider(), binding)
+            .map_err(|source| EngineError::PointerJournal { source })?;
+        if let Some(owner) = self
+            .interaction
+            .active_owner()
+            .filter(|owner| retired_streams.contains(owner))
+        {
+            let _ = self.cancel_gesture_owner(
+                cause,
+                owner,
+                InteractionCancelReason::PointerStreamCancelled,
+                interaction_events,
+            )?;
+        }
+        self.terminate_native_binding_scroll_input(
+            cause,
+            binding,
+            &retired_streams,
+            interaction_events,
+        );
+        Ok(InputOutcome::NativeInputBindingRetired { binding })
+    }
+
     fn cancel_managed_live_input(
         &mut self,
         input: InputSequence,
@@ -75,14 +117,7 @@ impl DockEngine {
         reasons: (InteractionCancelReason, ScrollTerminationReason),
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<(), EngineError> {
-        if self.backend_ingress.active() != Some(provider)
-            || self.pointer_provider() != Some(provider.pointer_provider())
-            || self.platform_provider() != Some(provider.platform_provider())
-        {
-            return Err(EngineError::ReductionCauseInvariant {
-                detail: "managed input cancellation requires the exact current managed provider",
-            });
-        }
+        self.require_managed_input_provider(provider)?;
 
         self.pointer_journal
             .cancel_live_streams_for_reset(provider.pointer_provider())
@@ -98,6 +133,22 @@ impl DockEngine {
         self.terminate_all_scroll_sessions_input(input, scroll_reason, interaction_events);
         // Pending releases own their previews and outputs independently of live input.
         // Normal input-close projection refresh restores only an unconsumed gesture.
+        Ok(())
+    }
+
+    fn require_managed_input_provider(
+        &self,
+        provider: BackendIngressLease,
+    ) -> Result<(), EngineError> {
+        if self.backend_ingress.active() != Some(provider)
+            || self.pointer_provider() != Some(provider.pointer_provider())
+            || self.platform_provider() != Some(provider.platform_provider())
+        {
+            return Err(EngineError::ReductionCauseInvariant {
+                detail: "managed input cancellation requires the exact current managed provider",
+            });
+        }
+
         Ok(())
     }
 }

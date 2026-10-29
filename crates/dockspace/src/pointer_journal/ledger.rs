@@ -121,7 +121,7 @@ impl JournalPointerAuthority {
         Self {
             buttons_complete: false,
             unavailable_reason: reason,
-            pressed_buttons: BTreeSet::new(),
+            pressed_buttons: BTreeMap::new(),
             captures: BTreeMap::new(),
         }
     }
@@ -133,12 +133,15 @@ impl JournalPointerAuthority {
             Authority::Known(pointers) => {
                 self.buttons_complete = true;
                 for pointer in pointers {
+                    let capture = JournalPointerCapture::new(pointer.capture_owner());
                     for button in pointer.pressed_buttons() {
-                        let _ = self.pressed_buttons.insert((pointer.pointer(), *button));
+                        // A complete roster reports held buttons and capture,
+                        // not the delivery endpoint of their original press.
+                        let _ = self
+                            .pressed_buttons
+                            .insert((pointer.pointer(), *button), None);
                     }
-                    let _ = self
-                        .captures
-                        .insert(pointer.pointer(), pointer.capture_owner());
+                    let _ = self.captures.insert(pointer.pointer(), capture);
                 }
             }
             Authority::Unknown(reason) => {
@@ -150,20 +153,27 @@ impl JournalPointerAuthority {
 
     fn apply_edge(&mut self, edge: &PointerEdge) -> Result<(), PointerJournalLedgerError> {
         let pointer = edge.pointer();
-        let _ = self.captures.insert(pointer, edge.capture_owner());
+        self.captures
+            .entry(pointer)
+            .and_modify(|capture| capture.observe(edge.capture_owner()))
+            .or_insert_with(|| JournalPointerCapture::new(edge.capture_owner()));
         match edge.kind() {
             PointerEdgeKind::ButtonPressed(button) => {
-                if self.pressed_buttons.contains(&(pointer, button)) {
+                if self.pressed_buttons.contains_key(&(pointer, button)) {
                     return Err(PointerJournalLedgerError::ButtonAlreadyPressed {
                         pointer,
                         button,
                         sequence: edge.sequence(),
                     });
                 }
-                let _ = self.pressed_buttons.insert((pointer, button));
+                let origin = match edge.delivery_owner() {
+                    Authority::Known(PointerEventDeliveryOwner::Native(binding)) => Some(binding),
+                    Authority::Known(_) | Authority::Unknown(_) => None,
+                };
+                let _ = self.pressed_buttons.insert((pointer, button), origin);
             }
             PointerEdgeKind::ButtonReleased(button) | PointerEdgeKind::ContactEnded(button) => {
-                let was_pressed = self.pressed_buttons.remove(&(pointer, button));
+                let was_pressed = self.pressed_buttons.remove(&(pointer, button)).is_some();
                 if !was_pressed && self.buttons_complete {
                     return Err(PointerJournalLedgerError::ButtonNotPressed {
                         pointer,
@@ -174,7 +184,7 @@ impl JournalPointerAuthority {
             }
             PointerEdgeKind::StreamCancelled(_) => {
                 self.pressed_buttons
-                    .retain(|(active, _)| *active != pointer);
+                    .retain(|(active, _), _| *active != pointer);
                 let _ = self.captures.remove(&pointer);
             }
             PointerEdgeKind::Moved
@@ -188,8 +198,19 @@ impl JournalPointerAuthority {
 
     fn retire_stream(&mut self, pointer: PointerId) {
         self.pressed_buttons
-            .retain(|(active, _)| *active != pointer);
+            .retain(|(active, _), _| *active != pointer);
         let _ = self.captures.remove(&pointer);
+    }
+
+    fn references_native_binding(&self, pointer: PointerId, binding: ViewportBinding) -> bool {
+        self.captures
+            .get(&pointer)
+            .is_some_and(|capture| capture.retained_native_binding == Some(binding))
+            || self
+                .pressed_buttons
+                .range((pointer, PointerButton::Primary)..)
+                .take_while(|((active, _), _)| *active == pointer)
+                .any(|(_, origin)| *origin == Some(binding))
     }
 
     fn edge_authority_after(
@@ -199,7 +220,7 @@ impl JournalPointerAuthority {
         let capture = self
             .captures
             .get(&pointer)
-            .copied()
+            .map(|capture| capture.observed)
             .unwrap_or(Authority::Unknown(
                 AuthorityUnavailableReason::ProviderUnavailable,
             ));
@@ -208,7 +229,7 @@ impl JournalPointerAuthority {
 
     fn pointer_has_pressed_buttons(&self, pointer: PointerId) -> bool {
         self.pressed_buttons
-            .iter()
+            .keys()
             .any(|(active, _)| *active == pointer)
     }
 
@@ -219,6 +240,31 @@ impl JournalPointerAuthority {
             AnyButtonDownAuthority::KnownAllReleased
         } else {
             AnyButtonDownAuthority::Unknown(self.unavailable_reason)
+        }
+    }
+}
+
+impl JournalPointerCapture {
+    fn new(observed: Authority<PointerCaptureOwner>) -> Self {
+        let retained_native_binding = match observed {
+            Authority::Known(PointerCaptureOwner::Native(binding)) => Some(binding),
+            Authority::Known(_) | Authority::Unknown(_) => None,
+        };
+        Self {
+            observed,
+            retained_native_binding,
+        }
+    }
+
+    fn observe(&mut self, observed: Authority<PointerCaptureOwner>) {
+        self.observed = observed;
+        if let Authority::Known(owner) = observed {
+            self.retained_native_binding = match owner {
+                PointerCaptureOwner::Native(binding) => Some(binding),
+                PointerCaptureOwner::ProviderEndpoint
+                | PointerCaptureOwner::Foreign
+                | PointerCaptureOwner::None => None,
+            };
         }
     }
 }
@@ -498,6 +544,43 @@ impl PointerJournalLedger {
         self.last_checkpoint = None;
         self.version = next_version;
         Ok(())
+    }
+
+    /// Ends only streams with a held-button origin or retained capture at this binding.
+    ///
+    /// A last idle delivery is not ownership. Unknown capture keeps its preceding
+    /// dependency without granting observed capture authority. Complete button
+    /// knowledge for unrelated streams survives this narrower terminal fact.
+    pub(crate) fn retire_native_binding_input(
+        &mut self,
+        lease: PointerInputLease,
+        binding: ViewportBinding,
+    ) -> Result<Vec<PointerStreamId>, PointerJournalLedgerError> {
+        self.require_active(lease)?;
+        let next_version = self.next_version()?;
+        let pointers = self
+            .authority
+            .captures
+            .keys()
+            .copied()
+            .filter(|pointer| self.authority.references_native_binding(*pointer, binding))
+            .collect::<Vec<_>>();
+        let mut streams = Vec::with_capacity(pointers.len());
+        for pointer in pointers {
+            if let Some(stream) = self.active_streams.remove(&pointer) {
+                streams.push(stream.id);
+            }
+            self.authority.retire_stream(pointer);
+        }
+        if matches!(
+            self.authority_checkpoint_boundary,
+            Some(PointerAuthorityCheckpointBoundary::Enrollment(_))
+        ) {
+            self.authority_checkpoint_boundary = None;
+        }
+        self.last_checkpoint = None;
+        self.version = next_version;
+        Ok(streams)
     }
 
     /// Validates a fresh recovery report without changing published authority.

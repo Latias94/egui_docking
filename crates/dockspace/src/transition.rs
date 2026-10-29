@@ -56,6 +56,11 @@ pub enum InputOutcome {
     NativeInputCancelledForOverload,
     /// Native input device removal cancelled live input without ending input capture.
     NativeInputDeviceRemoval,
+    /// Live input depending on one exact native binding reached its terminal boundary.
+    NativeInputBindingRetired {
+        /// Complete native binding whose input was terminated.
+        binding: ViewportBinding,
+    },
     /// A programmatic content-close request opened or reused one exact plan.
     ContentCloseRequested {
         /// Stable target supplied by the caller.

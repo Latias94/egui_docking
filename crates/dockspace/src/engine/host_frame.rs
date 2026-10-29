@@ -1636,6 +1636,15 @@ impl CoreHostFrame {
                     EngineInput::ObserveNativeInputDeviceRemoval { provider },
                 )?;
             }
+            BackendIngressPayload::NativeInputBindingRetired { binding } => {
+                let provider = self
+                    .backend_ingress
+                    .expect("validated backend ingress remains frozen");
+                self.append_backend_input(
+                    ordinal,
+                    EngineInput::ObserveNativeInputBindingRetired { provider, binding },
+                )?;
+            }
             BackendIngressPayload::SemanticInput(input) => {
                 self.append_backend_semantic_input(ordinal, *input)?;
             }
@@ -2263,7 +2272,11 @@ impl CoreHostFrame {
             } else {
                 false
             };
-        let device_removal = matches!(&input, EngineInput::ObserveNativeInputDeviceRemoval { .. });
+        let native_input_reset = matches!(
+            &input,
+            EngineInput::ObserveNativeInputDeviceRemoval { .. }
+                | EngineInput::ObserveNativeInputBindingRetired { .. }
+        );
         if self.pending_pointer_segment.is_some() {
             return self.reject(CoreHostFrameError::PointerReceiverReceiptsMissingBeforeInput);
         }
@@ -2323,6 +2336,7 @@ impl CoreHostFrame {
                 | EngineInput::PublishNativeCloseObservation { .. }
                 | EngineInput::PublishGlobalFocusObservation { .. }
                 | EngineInput::ObserveNativeInputDeviceRemoval { .. }
+                | EngineInput::ObserveNativeInputBindingRetired { .. }
                 | EngineInput::ReplaceWorkspace(_)
                 | EngineInput::RestoreWorkspace(_)
         );
@@ -2381,7 +2395,7 @@ impl CoreHostFrame {
         if overload_cancellation {
             self.input_terminated_for_overload = true;
         }
-        if overload_cancellation || device_removal {
+        if overload_cancellation || native_input_reset {
             self.staged_pointer_journal = self.candidate.pointer_journal.clone();
         }
         Ok(())

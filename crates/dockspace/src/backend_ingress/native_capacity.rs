@@ -37,6 +37,7 @@ impl BackendIngressPayload {
                 _ => Err(BackendIngressError::UnsupportedNativePayloadCapacity),
             },
             Self::NativeInputDeviceRemoval
+            | Self::NativeInputBindingRetired { .. }
             | Self::PlatformBindingQuiesced { .. }
             | Self::NativeCloseObservation { .. }
             | Self::GlobalFocusObservation { .. }

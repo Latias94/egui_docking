@@ -82,6 +82,85 @@ fn destroyed(ordinal: u64, window: WindowId) -> HostRecord {
 }
 
 #[test]
+fn destroyed_input_retirement_requires_received_owner_and_moves_once_only_progress() {
+    let binding = binding();
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(8);
+    let mut routes = NativeViewportMap::default();
+    routes.bind(viewport, window, binding).unwrap();
+    let (bridge, _) = bridge_with_clock(routes);
+    let uncaptured = NativeWindowEventRecord::for_test(
+        90,
+        window,
+        Some(viewport),
+        Some(binding),
+        WindowEvent::Destroyed,
+    );
+    bridge
+        .retire_destroyed_input(&uncaptured, || {
+            panic!("a synthetic callback cannot authorize a core fact")
+        })
+        .unwrap_err();
+    bridge.push_record(HostRecord::WindowEvent(uncaptured));
+    let record = bridge.front_event().unwrap();
+    for (event_window, event_viewport, event_ordinal) in [
+        (WindowId::from(9), viewport, 90),
+        (
+            window,
+            ViewportId::from_hash_of("foreign-destroyed-owner"),
+            90,
+        ),
+        (window, viewport, 91),
+    ] {
+        let unrelated = NativeWindowEventRecord::for_test(
+            event_ordinal,
+            event_window,
+            Some(event_viewport),
+            Some(binding),
+            WindowEvent::Destroyed,
+        );
+        bridge
+            .retire_destroyed_input(&unrelated, || {
+                panic!("only the exact received physical callback can record a fact")
+            })
+            .unwrap_err();
+    }
+    let mut attempts = 0;
+    bridge
+        .retire_destroyed_input(&record, || {
+            attempts += 1;
+            Err(NativeHostProtocolError::NativeCloseCorrelationChanged.into())
+        })
+        .unwrap_err();
+    assert_eq!(bridge.front_event().unwrap().ordinal(), 90);
+    bridge
+        .retire_destroyed_input(&record, || {
+            attempts += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        attempts, 2,
+        "a failed record leaves the same callback retryable"
+    );
+    assert_eq!(
+        bridge.retirement_observe_destroyed(viewport, binding, window, 90),
+        DestroyedObservation::Recorded,
+    );
+    bridge
+        .retire_destroyed_input(&record, || {
+            panic!("moving the receipt into retirement must preserve recorded progress")
+        })
+        .unwrap();
+    assert!(bridge.acknowledge_event(90));
+    bridge.commit_frame_boundary(false);
+    assert_eq!(
+        bridge.retirement_destroyed_observations(),
+        [(binding, NativeWindowFacts::destroyed())]
+    );
+}
+
+#[test]
 fn destroyed_capture_survives_created_window_index_publication() {
     let binding = binding();
     let viewport = ViewportId::ROOT;

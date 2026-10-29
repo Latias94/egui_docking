@@ -1206,6 +1206,7 @@ impl DockEngine {
                     InputOutcome::ViewportRegistered { .. }
                     | InputOutcome::NativeInputCancelledForOverload
                     | InputOutcome::NativeInputDeviceRemoval
+                    | InputOutcome::NativeInputBindingRetired { .. }
                     | InputOutcome::ViewportRegistrationRejected { .. }
                     | InputOutcome::NativeCloseObservationPublished { .. }
                     | InputOutcome::PlatformSnapshotStale { .. }
@@ -1755,6 +1756,14 @@ impl DockEngine {
                     input.sequence,
                     cause,
                     *provider,
+                    interaction_events,
+                ),
+            EngineInput::ObserveNativeInputBindingRetired { provider, binding } => self
+                .observe_native_input_binding_retired(
+                    input.sequence,
+                    cause,
+                    *provider,
+                    *binding,
                     interaction_events,
                 ),
             EngineInput::RequestSurfaceClose {

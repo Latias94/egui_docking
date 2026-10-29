@@ -218,17 +218,8 @@ fn destroyed_touch_binding_tombstones_late_terminal_before_contact_id_reuse() {
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
         ))
     );
-    assert_eq!(
-        translator.cancel_destroyed_binding(binding),
-        vec![authority_free_pointer_input(
-            NativePointerId::new(1),
-            NativePointerEvent::StreamCancelled(NativePointerCancelReason::BindingRetired),
-        )]
-    );
-    assert!(
-        translator.reset_destroyed_binding(binding).is_empty(),
-        "the touch cancellation already closes its provider lifetime"
-    );
+    translator.retire_binding(binding);
+    assert!(!translator.references_binding(binding));
     assert_eq!(
         translator.translate(
             &touch_record(2, window, binding, device, 10, TouchPhase::Ended),
