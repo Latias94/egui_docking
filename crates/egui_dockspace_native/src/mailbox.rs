@@ -1790,13 +1790,31 @@ impl NativeHostState {
         viewports: NativeViewportMap,
         clock: NativeMonotonicClock,
     ) -> Result<Self, NativeHostProtocolError> {
+        Self::try_with_clock_and_capacity(
+            viewports,
+            clock,
+            terminal_roster::DEFAULT_WINDOW_CAPACITY,
+            terminal_roster::DEFAULT_WORK_AREA_CAPACITY,
+        )
+    }
+
+    fn try_with_clock_and_capacity(
+        viewports: NativeViewportMap,
+        clock: NativeMonotonicClock,
+        windows: usize,
+        work_areas: usize,
+    ) -> Result<Self, NativeHostProtocolError> {
+        NativeHostBridge::initial_storage_bytes(windows, work_areas)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let journal = HostIngressJournal::try_new(clock)?;
         let output_resources = output_resource::NativeOutputResources::try_new()?;
+        let terminal_roster = TerminalRosterState::try_with_capacity(windows, work_areas)?;
         Ok(Self {
             viewports,
             attachment: HostAttachmentState::Available,
             mode: HostIngressMode::Active,
             admission: NativeAdmission::default(),
-            journal: HostIngressJournal::new(clock),
+            journal,
             output_resources,
             input_storage_allowance: None,
             pointer_translation_reserved_bytes: NativePointerTranslator::default()
@@ -1815,7 +1833,7 @@ impl NativeHostState {
             submitted_output_prefix: 0,
             output_order_invalid: false,
             event_boundary_pending: false,
-            terminal_roster: TerminalRosterState::default(),
+            terminal_roster,
         })
     }
 
@@ -3171,9 +3189,39 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn try_new(viewports: NativeViewportMap) -> Result<Self, NativeHostProtocolError> {
-        let clock = NativeMonotonicClock::system();
+        Self::try_new_with_capacity(
+            viewports,
+            terminal_roster::DEFAULT_WINDOW_CAPACITY,
+            terminal_roster::DEFAULT_WORK_AREA_CAPACITY,
+        )
+    }
+
+    pub(crate) fn try_new_with_capacity(
+        viewports: NativeViewportMap,
+        windows: usize,
+        work_areas: usize,
+    ) -> Result<Self, NativeHostProtocolError> {
+        Self::try_new_with_capacity_and_clock(
+            viewports,
+            windows,
+            work_areas,
+            NativeMonotonicClock::system(),
+        )
+    }
+
+    pub(crate) fn try_new_with_capacity_and_clock(
+        viewports: NativeViewportMap,
+        windows: usize,
+        work_areas: usize,
+        clock: NativeMonotonicClock,
+    ) -> Result<Self, NativeHostProtocolError> {
         Ok(Self {
-            records: Mutex::new(NativeHostState::try_with_clock(viewports, clock.clone())?),
+            records: Mutex::new(NativeHostState::try_with_clock_and_capacity(
+                viewports,
+                clock.clone(),
+                windows,
+                work_areas,
+            )?),
             output_pass_finalizer: OnceLock::new(),
             clock,
         })
@@ -3473,6 +3521,11 @@ impl NativeHostBridge {
     pub(crate) fn has_pending_coordinator_work(&self) -> bool {
         let records = self.lock();
         records.viewports.has_pending_create_receipts() || records.has_pending_coordinator_work()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn captured_through_for_test(&self) -> u64 {
+        self.lock().journal.captured_through()
     }
 
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {

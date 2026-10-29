@@ -65,7 +65,9 @@ mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
 mod storage;
-pub(crate) use storage::{NativeOwnerStorageLimit, NativeSnapshotStorageLimit};
+pub(crate) use storage::{
+    NativeCombinedStorageLimit, NativeOwnerStorageLimit, NativeSnapshotStorageLimit,
+};
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
 
@@ -96,6 +98,7 @@ pub(crate) struct NativeCoordinator {
     queued_snapshot: Option<QueuedNativeSnapshot>,
     snapshot_storage: Option<NativeSnapshotStorageLimit>,
     owner_storage: Option<NativeOwnerStorageLimit>,
+    combined_storage_limit: Option<usize>,
     close_observation_settlement: (bool, bool),
     close_decision_scratch: Vec<dockspace::close::CloseRequestId>,
     deferred_viewports: DeferredViewportDriver,
@@ -374,10 +377,58 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn new_with_storage_limits(
-        mut session: DockspaceSession,
+        session: DockspaceSession,
         initial_pointer_roster: NativePointerRoster,
         storage_limit: Option<NativeInputStorageLimit>,
         owner_limit: Option<NativeOwnerStorageLimit>,
+    ) -> Result<Self, NativeRuntimeError> {
+        Self::new_with_storage_allowance(
+            session,
+            initial_pointer_roster,
+            storage_limit,
+            owner_limit,
+            None,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_combined_storage_limit(
+        session: DockspaceSession,
+        initial_pointer_roster: NativePointerRoster,
+        limit: NativeCombinedStorageLimit,
+    ) -> Result<Self, NativeRuntimeError> {
+        Self::new_with_combined_storage_limit_and_clock(
+            session,
+            initial_pointer_roster,
+            limit,
+            dockspace::runtime::NativeMonotonicClock::system(),
+        )
+    }
+
+    pub(crate) fn new_with_combined_storage_limit_and_clock(
+        session: DockspaceSession,
+        initial_pointer_roster: NativePointerRoster,
+        limit: NativeCombinedStorageLimit,
+        clock: dockspace::runtime::NativeMonotonicClock,
+    ) -> Result<Self, NativeRuntimeError> {
+        limit.validate()?;
+        Self::new_with_storage_allowance(
+            session,
+            initial_pointer_roster,
+            Some(limit.input),
+            Some(limit.owners),
+            Some(limit),
+            Some(clock),
+        )
+    }
+
+    fn new_with_storage_allowance(
+        session: DockspaceSession,
+        initial_pointer_roster: NativePointerRoster,
+        storage_limit: Option<NativeInputStorageLimit>,
+        owner_limit: Option<NativeOwnerStorageLimit>,
+        combined: Option<NativeCombinedStorageLimit>,
+        clock: Option<dockspace::runtime::NativeMonotonicClock>,
     ) -> Result<Self, NativeRuntimeError> {
         let binding_slots = storage_limit
             .and_then(NativeInputStorageLimit::producer_storage_limit)
@@ -399,7 +450,31 @@ impl NativeCoordinator {
             )?,
             None => DeferredViewportDriver::default(),
         };
-        let bridge = Arc::new(NativeHostBridge::try_new(NativeViewportMap::default())?);
+        let bridge = Arc::new(match combined {
+            Some(limit) => {
+                let producer = limit
+                    .input
+                    .producer_storage_limit()
+                    .expect("the combined profile validates producer bounds");
+                NativeHostBridge::try_new_with_capacity_and_clock(
+                    NativeViewportMap::default(),
+                    producer.binding_slots().get(),
+                    producer.work_area_slots().get(),
+                    clock.expect("the combined constructor supplies its monotonic clock"),
+                )?
+            }
+            None => NativeHostBridge::try_new(NativeViewportMap::default())?,
+        });
+        if let Some(limit) = combined {
+            if !bridge.configure_input_storage_allowance(
+                limit.byte_limit,
+                limit
+                    .external_reserved_bytes()
+                    .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?,
+            ) {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+            }
+        }
         let mut close_decision_scratch = Vec::new();
         if let Some(owners) = owner_limit {
             let bindings = binding_slots.expect("owner storage validates the binding bound");
@@ -439,21 +514,13 @@ impl NativeCoordinator {
                 return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
             }
         }
-        if let Some(limit) = storage_limit {
-            session.enable_managed_native_host_with_input_storage_limit(
-                initial_pointer_roster,
-                limit,
-            )?;
-        } else {
-            session.enable_managed_native_host(initial_pointer_roster)?;
-        }
-        session.report_native_inventory_unknown()?;
         let mut native = Self {
             session,
             bridge,
             queued_snapshot: None,
             snapshot_storage: None,
             owner_storage: owner_limit,
+            combined_storage_limit: combined.map(|limit| limit.byte_limit),
             close_observation_settlement: (false, false),
             close_decision_scratch,
             deferred_viewports,
@@ -482,6 +549,19 @@ impl NativeCoordinator {
                 byte_limit,
             })?;
         }
+        if let Some(limit) = storage_limit {
+            native
+                .session
+                .enable_managed_native_host_with_input_storage_limit(
+                    initial_pointer_roster,
+                    limit,
+                )?;
+        } else {
+            native
+                .session
+                .enable_managed_native_host(initial_pointer_roster)?;
+        }
+        native.session.report_native_inventory_unknown()?;
         Ok(native)
     }
 

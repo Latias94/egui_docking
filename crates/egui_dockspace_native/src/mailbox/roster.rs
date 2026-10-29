@@ -72,16 +72,49 @@ impl FrozenWindowObservation {
 }
 
 impl NativeViewportRosterRecord {
+    #[cfg(test)]
     pub(super) fn with_capacity(window_slots: usize, work_area_slots: usize) -> Self {
-        Self {
-            observations: Vec::with_capacity(window_slots),
+        Self::try_with_capacity(window_slots, work_area_slots)
+            .expect("native test roster backing is available")
+    }
+
+    /// Reserves both payload buffers before any borrowed facts are captured.
+    pub(super) fn try_with_capacity(
+        window_slots: usize,
+        work_area_slots: usize,
+    ) -> Result<Self, NativeHostProtocolError> {
+        let error = NativeHostProtocolError::NativeReportStorageUnavailable;
+        Self::reservation_bytes(window_slots, work_area_slots).ok_or(error)?;
+        let mut observations = Vec::new();
+        observations
+            .try_reserve_exact(window_slots)
+            .map_err(|_| error)?;
+        if observations.capacity() > window_slots {
+            return Err(error);
+        }
+        let mut work_area_spare = Vec::new();
+        work_area_spare
+            .try_reserve_exact(work_area_slots)
+            .map_err(|_| error)?;
+        if work_area_spare.capacity() > work_area_slots {
+            return Err(error);
+        }
+        Ok(Self {
+            observations,
             work_areas: Ok(FrozenWorkAreaRoster::Unknown),
-            work_area_spare: Vec::with_capacity(work_area_slots),
+            work_area_spare,
             work_area_capacity_exceeded: false,
             backend: NativeWindowingBackend::Other,
             #[cfg(test)]
             compiled_override: None,
-        }
+        })
+    }
+
+    /// Includes the payload header and its single window/work-area backings.
+    pub(super) fn reservation_bytes(window_slots: usize, work_area_slots: usize) -> Option<usize> {
+        size_of::<Self>()
+            .checked_add(window_slots.checked_mul(size_of::<FrozenWindowObservation>())?)?
+            .checked_add(work_area_slots.checked_mul(size_of::<FrozenWorkArea>())?)
     }
 
     /// Counts only exact mapped windows; unrelated backend windows need no storage.
@@ -385,6 +418,9 @@ impl NativeViewportRosterEnvelope {
         self.terminal_generation.is_some()
     }
 }
+
+#[cfg(test)]
+mod capacity_tests;
 
 #[cfg(test)]
 mod tests {

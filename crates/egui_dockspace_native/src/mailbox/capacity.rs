@@ -84,18 +84,23 @@ impl NativeHostState {
 
     pub(super) fn can_reserve_input_data(&self, additional: usize) -> bool {
         self.input_storage_allowance.is_none_or(|allowance| {
-            self.owned_input_capacity_bytes(None)
-                .checked_add(size_of::<NativeHostBridge>() - size_of::<NativeHostState>())
-                .and_then(|bytes| {
-                    bytes.checked_add(self.reserved_pointer_translation_capacity_bytes())
-                })
-                .and_then(|bytes| bytes.checked_add(self.snapshot_storage_reserved_bytes))
-                .and_then(|bytes| bytes.checked_add(self.window_resource_staging_reserved_bytes))
-                .and_then(|bytes| bytes.checked_add(self.host_owner_external_reserved_bytes))
-                .and_then(|bytes| bytes.checked_add(allowance.external_reserved_bytes))
+            self.reserved_input_data_bytes()
                 .and_then(|bytes| bytes.checked_add(additional))
                 .is_some_and(|bytes| bytes <= allowance.byte_limit)
         })
+    }
+
+    fn reserved_input_data_bytes(&self) -> Option<usize> {
+        self.owned_input_capacity_bytes(None)
+            .checked_add(size_of::<NativeHostBridge>() - size_of::<NativeHostState>())?
+            .checked_add(self.reserved_pointer_translation_capacity_bytes())?
+            .checked_add(self.snapshot_storage_reserved_bytes)?
+            .checked_add(self.window_resource_staging_reserved_bytes)?
+            .checked_add(self.host_owner_external_reserved_bytes)?
+            .checked_add(
+                self.input_storage_allowance
+                    .map_or(0, |allowance| allowance.external_reserved_bytes),
+            )
     }
 
     /// Every accepted raw pointer promises its worst-case state growth before
@@ -170,6 +175,26 @@ impl NativeHostState {
 }
 
 impl NativeHostBridge {
+    pub(crate) fn selected_storage_reserved_bytes(&self) -> Option<usize> {
+        let state = self.lock();
+        state.input_storage_allowance?;
+        state.reserved_input_data_bytes()
+    }
+
+    /// Fresh bridge inline state and all initial transport backing. Empty
+    /// route/resource owners are inline; their later promises are separate.
+    pub(crate) fn initial_storage_bytes(windows: usize, work_areas: usize) -> Option<usize> {
+        size_of::<Self>()
+            .checked_sub(size_of::<HostIngressJournal>())?
+            .checked_sub(size_of::<NativeOutputResources>())?
+            .checked_sub(size_of::<super::TerminalRosterState>())?
+            .checked_add(HostIngressJournal::reservation_bytes()?)?
+            .checked_add(NativeOutputResources::reservation_bytes()?)?
+            .checked_add(super::TerminalRosterState::reservation_bytes(
+                windows, work_areas,
+            )?)
+    }
+
     pub(crate) fn lifecycle_storage_bytes(bindings: usize, closes: usize) -> Option<usize> {
         NativeRetirementState::reservation_bytes(bindings)?
             .checked_add(NativeCloseControl::reservation_bytes(closes)?)?
@@ -335,6 +360,30 @@ mod tests {
         DeviceId, MouseScrollDelta, PointerEventFacts, Touch, TouchPhase, WindowEvent,
     };
     use winit::window::WindowId;
+
+    #[test]
+    fn fresh_bridge_query_matches_all_initial_backing_before_any_owner_or_capture() {
+        for (windows, areas) in [(0, 0), (1, 2), (7, 3), (256, 64)] {
+            let bridge = NativeHostBridge::try_new_with_capacity(
+                NativeViewportMap::default(),
+                windows,
+                areas,
+            )
+            .unwrap();
+            assert_eq!(
+                NativeHostBridge::initial_storage_bytes(windows, areas),
+                Some(bridge.owned_input_capacity_bytes(None))
+            );
+            assert_eq!(bridge.captured_through_for_test(), 0);
+            assert!(!bridge.has_pending_coordinator_work());
+            assert_eq!(bridge.selected_storage_reserved_bytes(), None);
+        }
+        assert_eq!(NativeHostBridge::initial_storage_bytes(usize::MAX, 1), None);
+        assert!(matches!(
+            NativeHostBridge::try_new_with_capacity(NativeViewportMap::default(), usize::MAX, 1),
+            Err(NativeHostProtocolError::NativeReportStorageUnavailable)
+        ));
+    }
 
     #[test]
     fn lifecycle_installation_checks_shared_constructor_peak_before_replacing_any_owner() {

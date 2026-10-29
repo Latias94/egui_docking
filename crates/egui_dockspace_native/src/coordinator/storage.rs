@@ -2,6 +2,83 @@
 
 use super::*;
 
+/// A separately selected total native input-data promise. Production enablement
+/// additionally requires configured-cap load and lifecycle qualification.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NativeCombinedStorageLimit {
+    pub(crate) input: NativeInputStorageLimit,
+    pub(crate) owners: NativeOwnerStorageLimit,
+    pub(crate) byte_limit: usize,
+}
+
+impl NativeCombinedStorageLimit {
+    fn dimensions(self) -> Option<(usize, usize)> {
+        self.input.producer_storage_limit().map(|producer| {
+            (
+                producer.binding_slots().get(),
+                producer.work_area_slots().get(),
+            )
+        })
+    }
+
+    pub(super) fn external_reserved_bytes(self) -> Option<usize> {
+        Self::coordinator_inline_bytes()?
+            .checked_add(self.input.byte_limit())?
+            .checked_add(self.input.producer_storage_limit()?.byte_limit())?
+            .checked_add(self.input.report_storage_limit()?.byte_limit())
+    }
+
+    /// The complete fresh bridge and all selected future owner promises coexist
+    /// during initial construction. Keeping the old empty inline lifecycle and
+    /// resource headers also covers their replacement-construction overlap.
+    pub(crate) fn initial_required_bytes(self) -> Option<usize> {
+        let (windows, areas) = self.dimensions()?;
+        NativeHostBridge::initial_storage_bytes(windows, areas)?
+            .checked_add(NativePointerTranslator::default().reserved_translation_capacity_bytes())?
+            .checked_add(NativeSnapshotStorageLimit::required_bytes(windows, areas)?)?
+            .checked_add(self.owners.byte_limit)?
+            .checked_add(self.external_reserved_bytes()?)
+    }
+
+    fn coordinator_inline_bytes() -> Option<usize> {
+        // The selected O/S/R promises already own these headers. Preserve all
+        // other inline fields and padding, including the permanent translator;
+        // its separate bridge promise holds the overlapping retry copy.
+        size_of::<NativeCoordinator>()
+            .checked_sub(size_of::<DockspaceSession>())?
+            .checked_sub(size_of::<NativeReceiverStore>())?
+            .checked_sub(size_of::<Vec<DockspacePresentationTransition>>())?
+            .checked_sub(size_of::<VecDeque<NativeRuntimeError>>())?
+            .checked_sub(size_of::<Option<NativeOwnerStorageLimit>>())?
+            .checked_sub(size_of::<NativeInputControl>())?
+            .checked_sub(size_of::<NativeEffectCoordinator>())?
+            .checked_sub(size_of::<DeferredViewportDriver>())?
+            .checked_sub(size_of::<Vec<dockspace::close::CloseRequestId>>())?
+            .checked_sub(size_of::<NativeWorkAreaState>())?
+            .checked_sub(size_of::<QueuedNativeSnapshot>())?
+            .checked_sub(size_of::<VecDeque<PendingNativeEffectResult>>())
+    }
+
+    pub(super) fn validate(self) -> Result<(), NativeRuntimeError> {
+        let (windows, _) = self
+            .dimensions()
+            .ok_or(NativeHostProtocolError::NativeOwnerStorageConfiguration)?;
+        let reports = self
+            .input
+            .report_storage_limit()
+            .ok_or(NativeHostProtocolError::NativeOwnerStorageConfiguration)?;
+        self.owners
+            .validate(Some(windows), Some(reports.effect_slots().get()))?;
+        if self
+            .initial_required_bytes()
+            .is_none_or(|bytes| bytes > self.byte_limit)
+        {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+        }
+        Ok(())
+    }
+}
+
 /// Independent host-owner bounds; window lifetimes and effect leases do not
 /// imply a fixed number of retained resource or ordinary command entries.
 #[derive(Debug, Clone, Copy)]
@@ -137,6 +214,11 @@ impl QueuedNativeSnapshot {
 }
 
 impl NativeCoordinator {
+    pub(crate) fn combined_storage_reserved_bytes(&self) -> Option<usize> {
+        self.combined_storage_limit?;
+        self.bridge.selected_storage_reserved_bytes()
+    }
+
     /// Select before the first snapshot; exact terminal owners never compete
     /// for new conversion space after their original obligation is admitted.
     pub(crate) fn configure_snapshot_storage_limit(

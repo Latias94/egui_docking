@@ -6,6 +6,7 @@ use eframe::NativeViewportRoster;
 
 use super::journal::ReservedHostRecord;
 use super::roster::NativeViewportRosterRecord;
+use crate::error::NativeHostProtocolError;
 use crate::viewport_map::NativeViewportMap;
 
 pub(super) const DEFAULT_WINDOW_CAPACITY: usize = 256;
@@ -38,6 +39,7 @@ pub(super) struct TerminalRosterState {
     work_area_capacity_exceeded: bool,
 }
 
+#[cfg(test)]
 impl Default for TerminalRosterState {
     fn default() -> Self {
         Self::with_capacity(DEFAULT_WINDOW_CAPACITY, DEFAULT_WORK_AREA_CAPACITY)
@@ -45,22 +47,40 @@ impl Default for TerminalRosterState {
 }
 
 impl TerminalRosterState {
+    #[cfg(test)]
     pub(super) fn with_capacity(window_slots: usize, work_area_slots: usize) -> Self {
-        Self {
+        Self::try_with_capacity(window_slots, work_area_slots)
+            .expect("native test terminal roster backing is available")
+    }
+
+    /// Reserves both complete payloads before publishing either shared owner.
+    /// Vector failures return an error; Arc allocation can still abort on OOM.
+    pub(super) fn try_with_capacity(
+        window_slots: usize,
+        work_area_slots: usize,
+    ) -> Result<Self, NativeHostProtocolError> {
+        Self::reservation_bytes(window_slots, work_area_slots)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let first = NativeViewportRosterRecord::try_with_capacity(window_slots, work_area_slots)?;
+        let second = NativeViewportRosterRecord::try_with_capacity(window_slots, work_area_slots)?;
+        Ok(Self {
             required_generation: 0,
             settled_generation: 0,
             receipt: None,
-            backings: std::array::from_fn(|_| {
-                Arc::new(NativeViewportRosterRecord::with_capacity(
-                    window_slots,
-                    work_area_slots,
-                ))
-            }),
+            backings: [Arc::new(first), Arc::new(second)],
             window_slots,
             work_area_slots,
             window_capacity_exceeded: false,
             work_area_capacity_exceeded: false,
-        }
+        })
+    }
+
+    /// Includes inline state and both complete payloads, excluding Arc metadata.
+    pub(super) fn reservation_bytes(window_slots: usize, work_area_slots: usize) -> Option<usize> {
+        size_of::<Self>().checked_add(
+            NativeViewportRosterRecord::reservation_bytes(window_slots, work_area_slots)?
+                .checked_mul(2)?,
+        )
     }
 
     pub(super) fn window_capacity(&self) -> usize {
@@ -260,6 +280,9 @@ impl TerminalRosterState {
         self.receipt = None;
     }
 }
+
+#[cfg(test)]
+mod capacity_tests;
 
 #[cfg(test)]
 mod tests {

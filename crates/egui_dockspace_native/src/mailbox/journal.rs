@@ -7,6 +7,7 @@ use std::time::Duration;
 use dockspace::runtime::NativeMonotonicClock;
 
 use super::{HostRecord, admission::RECORD_LIMIT};
+use crate::error::NativeHostProtocolError;
 
 #[derive(Debug)]
 pub(crate) struct ReservedHostRecord {
@@ -50,14 +51,32 @@ pub(crate) struct HostIngressJournal {
 }
 
 impl HostIngressJournal {
+    #[cfg(test)]
     pub(crate) fn new(clock: NativeMonotonicClock) -> Self {
-        Self {
+        Self::try_new(clock).expect("native test journal backing is available")
+    }
+
+    /// Prepays the complete raw queue before any ingress identity is minted.
+    pub(crate) fn try_new(clock: NativeMonotonicClock) -> Result<Self, NativeHostProtocolError> {
+        let error = NativeHostProtocolError::NativeReportStorageUnavailable;
+        Self::reservation_bytes().ok_or(error)?;
+        let mut queue = VecDeque::new();
+        queue.try_reserve_exact(RECORD_LIMIT).map_err(|_| error)?;
+        if queue.capacity() > RECORD_LIMIT {
+            return Err(error);
+        }
+        Ok(Self {
             clock,
-            queue: VecDeque::with_capacity(RECORD_LIMIT),
+            queue,
             last_ordinal: 0,
             transferred_count: 0,
             transferred_oldest: None,
-        }
+        })
+    }
+
+    /// Includes the journal header and fixed raw backing, excluding descendants.
+    pub(super) fn reservation_bytes() -> Option<usize> {
+        size_of::<Self>().checked_add(RECORD_LIMIT.checked_mul(size_of::<ReservedHostRecord>())?)
     }
 
     pub(super) fn len(&self) -> usize {
@@ -185,6 +204,9 @@ impl HostIngressJournal {
         self.transferred_oldest = None;
     }
 }
+
+#[cfg(test)]
+mod capacity_tests;
 
 #[cfg(test)]
 mod tests {

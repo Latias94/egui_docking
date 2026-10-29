@@ -227,3 +227,142 @@ fn finite_no_frame_preparation_reuses_one_ready_backing_and_keeps_the_exact_owne
         .unwrap();
     assert_eq!(native.owned_input_capacity_bytes().unwrap(), baseline);
 }
+
+fn combined_profile() -> NativeCombinedStorageLimit {
+    let windows = 16;
+    let effects = 16;
+    NativeCombinedStorageLimit {
+        input: NativeInputStorageLimit::new(NonZeroUsize::new(512).unwrap(), 768 * 1024)
+            .with_producer_storage_limit(NativeProducerStorageLimit::new(
+                NonZeroUsize::new(windows).unwrap(),
+                NonZeroUsize::new(8).unwrap(),
+                128 * 1024,
+            ))
+            .with_report_storage_limit(NativeReportStorageLimit::new(
+                NonZeroUsize::new(64).unwrap(),
+                NonZeroUsize::new(effects).unwrap(),
+                256 * 1024,
+            )),
+        owners: NativeOwnerStorageLimit {
+            resource_slots: 48,
+            command_slots: 32,
+            close_slots: 16,
+            byte_limit: NativeOwnerStorageLimit::required_bytes(windows, effects, 48, 32, 16)
+                .unwrap(),
+        },
+        byte_limit: 4 * 1024 * 1024,
+    }
+}
+
+fn combined() -> NativeCoordinator {
+    NativeCoordinator::new_with_combined_storage_limit_and_clock(
+        DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap(),
+        NativePointerRoster::Exact(Vec::new()),
+        combined_profile(),
+        dockspace::runtime::NativeMonotonicClock::new(|| std::time::Duration::ZERO),
+    )
+    .unwrap()
+}
+
+#[test]
+fn combined_initial_admission_checks_the_full_promise_before_any_provider_can_be_returned() {
+    let profile = combined_profile();
+    let required = profile.initial_required_bytes().unwrap();
+    assert!(
+        required <= profile.byte_limit,
+        "complete initial promise {required} exceeds {}",
+        profile.byte_limit
+    );
+    let mut short = profile;
+    short.byte_limit = required - 1;
+    assert!(
+        NativeCoordinator::new_with_combined_storage_limit(
+            DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap(),
+            NativePointerRoster::Exact(Vec::new()),
+            short,
+        )
+        .unwrap_err()
+        .is_input_capacity()
+    );
+    let mut exact = profile;
+    exact.byte_limit = required;
+    let native = NativeCoordinator::new_with_combined_storage_limit(
+        DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap(),
+        NativePointerRoster::Exact(Vec::new()),
+        exact,
+    )
+    .unwrap();
+    assert_eq!(native.combined_storage_limit, Some(required));
+    let reserved = native.combined_storage_reserved_bytes().unwrap();
+    assert!(reserved <= required);
+    assert!(native.owned_input_capacity_bytes().unwrap() <= reserved);
+    assert_eq!(
+        native
+            .session
+            .native_input_producer_storage_reserved_bytes(),
+        Some(128 * 1024)
+    );
+    assert_eq!(
+        native.session.native_input_report_storage_reserved_bytes(),
+        Some(256 * 1024)
+    );
+}
+
+#[test]
+fn selected_combined_allowance_freezes_pointer_ingress_before_minting_an_unfunded_source() {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, PointerEventFacts};
+
+    let mut native = combined();
+    let (binding, _) = register_roots(&mut native);
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), binding)
+        .unwrap();
+    let version = native.session.version();
+    let recorded = native.session.native_input_recorded_count();
+    let mut accepted = 0;
+    for ordinal in 1..=4096 {
+        let captured_before = native.bridge.captured_through_for_test();
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+                ordinal,
+                WindowId::from(11),
+                Some(ViewportId::ROOT),
+                Some(binding),
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(ordinal as f64, 20.0),
+                    facts: PointerEventFacts::default(),
+                },
+            )));
+        let reserved = native.combined_storage_reserved_bytes().unwrap();
+        assert!(reserved <= 4 * 1024 * 1024);
+        assert!(native.owned_input_capacity_bytes().unwrap() <= reserved);
+        if !native.bridge.output_order_is_valid() {
+            panic!("capacity rejection must not alter output order");
+        }
+        if native.bridge.captured_through_for_test() == captured_before {
+            break;
+        }
+        accepted += 1;
+    }
+    assert!((1..4096).contains(&accepted));
+    assert_eq!(native.session.version(), version);
+    assert_eq!(native.session.native_input_recorded_count(), recorded);
+    let before = native.combined_storage_reserved_bytes().unwrap();
+    let captured = native.bridge.captured_through_for_test();
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            5000,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::CursorLeft {
+                device_id: DeviceId::dummy(),
+            },
+        )));
+    assert_eq!(native.combined_storage_reserved_bytes(), Some(before));
+    assert_eq!(native.bridge.captured_through_for_test(), captured);
+}

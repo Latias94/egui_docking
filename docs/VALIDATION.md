@@ -15,6 +15,73 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 initial combined-storage admission
+
+Raw journal and both complete roster payloads now use fallible vector
+preallocation, actual-capacity checks and checked initial reservation queries.
+The production bridge constructor uses those paths together with the already
+prepaid output owner. Its fresh storage query includes bridge inline data,
+4,096 raw entries, both complete roster backings and ordinary/control output
+backing before any capture or route owner. Selected combined construction
+allocates roster backing directly for W/A; generic construction retains its
+existing default bounds. Empty retained storage remains charged. This does not
+make Arc allocation or all framework/allocator OOM behavior recoverable.
+
+The private `NativeCombinedStorageLimit` checks the complete initial promise
+before allocating native owner backing or enabling the core provider:
+
+```text
+initial = fresh_bridge + pointer_retry + snapshot + owners
+        + coordinator_uncovered_inline + transport + producer + reports
+```
+
+Every sum is checked. The last three terms use the selected complete byte
+allowances rather than current resident samples. Already promised O/S/R headers
+are deducted from the coordinator inline term while their padding and unrelated
+fields remain. The permanent translator header stays there; the separate bridge
+pointer promise pays the retry header and overlapping dynamic data. Fresh bridge
+inline retains its old empty lifecycle/resource headers alongside the complete
+owner promise, covering initial replacement overlap. After installation, those
+owners' actual backing, staging and external promise remainder share the same
+host allowance. The complete O is not added a second time.
+
+All host preparation now precedes core enable: combined allowance, lifecycle,
+resource, pending-result and snapshot/work-area stores. Core enrollment still
+validates I/P/R subprofile requirements and exact existing-state replacement
+before its own publication. A separate selected-reservation query exposes the
+current host baseline plus future work promises, while the existing resident
+query keeps its narrower meaning.
+
+Fresh native gates pass 439 tests normally and 439 without native debug
+assertions, plus correctness/suspicious Clippy. The 11 additional tests cover
+initial raw/roster allocation, full two-roster construction arithmetic, empty
+spare backing, actual capacity, fresh bridge accounting, and complete combined
+admission. The finite fixture selects 4 MiB total, 512 core transport slots with
+768 KiB, W16/A8 with 128 KiB producer allowance, 64 presentation/16 effect slots
+with 256 KiB report allowance, and M48/C32/L16 host entries with their computed
+owner allowance. Initial required bytes minus one rejects; the exact requirement
+enrolls successfully and resident bytes remain within selected reservations.
+A zero monotonic clock isolates byte admission from the age gate: pointer source
+growth exhausts the combined allowance before the raw record bound, and refusal
+mints no further capture identity or core watermark.
+
+Removing only the pending pointer-growth promise in a disposable snapshot makes
+that finite regression fail (exit 100). Exact restoration passes all 15 selected
+initial/owner cases (exit 0), with snapshot/source bytes equal again. Results are
+recorded in `/tmp/dockspace-initial-storage-control.json` and the complete gate
+report in `/tmp/dockspace-initial-storage-qualification.json`. All 416 frozen
+source files match the tested snapshot. Two independent initial-constructor
+reviews found no remaining concrete blocker in their checked scope.
+
+The macOS programmatic redock still uses the default host path and passes with
+a sampled root-boundary peak of 2,750,841 owned input-data bytes. It does not
+qualify the selected combined configuration. The app entry remains unlimited;
+finite real-window execution, saturation recovery, full-output pressure,
+1,000 Hz/release timing and the 10,000-cycle soak still precede product enablement.
+The combined constructor and byte rejection are qualified primitives, not full
+U7/U8 readiness. Scoped input, native showcase and physical platform gates remain
+open; core/local adapter sources and the unpublished fork are unchanged.
+
 ## 2026-10-29 U7 output-prefix and fatal-cleanup construction
 
 Output-prefix preparation now freezes the continuous Output segment by capture

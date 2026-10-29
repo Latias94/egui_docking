@@ -1133,6 +1133,26 @@ captured-create regression; exact restoration passes the four selected create/
 replacement/shutdown cases. Initial-constructor primitives are prepared in a
 separate unqualified slice and are excluded from this tested source state.
 
+The following initial-storage slice replaces raw journal and both roster
+payloads' infallible vector allocation with checked fallible preparation and
+actual-capacity validation. A fresh bridge reservation query accounts for all
+initial backing. The private combined profile checks fresh bridge, pointer retry,
+snapshot, complete owner and core I/P/R allowances plus uncovered coordinator
+inline before allocating owners or publishing a provider. The existing bridge
+allowance carries all selected promises afterwards without recharging complete
+O, P or R resident state. Snapshot/work-area preparation now also precedes core
+enable. A controlled-clock 4 MiB fixture proves complete initial difference-of-one
+rejection, exact enrollment and pointer-growth refusal before capture identity.
+
+Fresh gates pass 439 native tests normally and 439 without native debug
+assertions, correctness/suspicious Clippy and the default-path macOS programmatic
+redock. A negative control removing pending pointer growth fails the finite
+regression; exact restoration passes 15 selected initial/owner tests. Two
+independent constructor reviews report no remaining concrete blocker. The app
+does not yet select the combined profile: real finite execution, saturation
+recovery, full-output pressure, 1,000 Hz/release timing and 10,000-cycle soak
+remain its enablement gates. No full U7/U8 or physical readiness follows.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
