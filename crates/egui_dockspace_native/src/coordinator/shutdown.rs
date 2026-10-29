@@ -117,8 +117,8 @@ impl NativeCoordinator {
             self.report_pending_effect_results_until_blocked();
         let mut errors = pending_effect_error.into_iter().collect::<Vec<_>>();
         let output_prefix_pending = self.bridge.has_pending_output_prefix();
-        let (quiescence_recorded, quiescence_errors) = self.try_report_retirement_quiescence_all();
-        errors.extend(quiescence_errors);
+        let quiescence_recorded =
+            self.try_report_retirement_quiescence_into(|error| errors.push(error));
         let mut progress = pending_effect_reported
             || input_enable_cancelled
             || output_prefix_pending

@@ -54,7 +54,7 @@ use crate::mailbox::{
 use crate::mailbox::{HostRecord, OutputReservation};
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::receiver::NativeReceiverStore;
-use crate::retirement::{CleanupResultRetentionError, CommittedRetirement, DestroyedObservation};
+use crate::retirement::{CleanupResultRetentionError, DestroyedObservation};
 use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
@@ -100,6 +100,7 @@ pub(crate) struct NativeCoordinator {
     snapshot_storage: Option<NativeSnapshotStorageLimit>,
     owner_storage: Option<NativeOwnerStorageLimit>,
     close_observation_settlement: (bool, bool),
+    close_decision_scratch: Vec<dockspace::close::CloseRequestId>,
     deferred_viewports: DeferredViewportDriver,
     receivers: NativeReceiverStore,
     effects: NativeEffectCoordinator,
@@ -279,10 +280,7 @@ struct QueuedNativeSnapshot {
     work_areas: PreparedWorkAreaRoster,
 }
 
-pub(crate) struct PreparedNativeRetirements {
-    committed: Vec<CommittedRetirement>,
-    routes: PreparedRouteRetirements,
-}
+pub(crate) type PreparedNativeRetirements = PreparedRouteRetirements;
 
 impl std::fmt::Debug for NativeCoordinator {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -380,11 +378,20 @@ impl NativeCoordinator {
             None => DeferredViewportDriver::default(),
         };
         let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
+        let mut close_decision_scratch = Vec::new();
         if let Some(owners) = owner_limit {
+            let bindings = binding_slots.expect("owner storage validates the binding bound");
+            bridge.configure_lifecycle_storage(bindings, owners.close_slots)?;
+            close_decision_scratch
+                .try_reserve_exact(owners.close_slots)
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if close_decision_scratch.capacity() > owners.close_slots {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+            }
             bridge.configure_window_resource_storage(
                 owners.resource_slots,
                 owners
-                    .external_reserved_bytes()
+                    .external_reserved_bytes(bindings)
                     .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?,
             )?;
         }
@@ -428,6 +435,7 @@ impl NativeCoordinator {
             snapshot_storage: None,
             owner_storage: owner_limit,
             close_observation_settlement: (false, false),
+            close_decision_scratch,
             deferred_viewports,
             receivers: NativeReceiverStore::default(),
             effects,
@@ -873,17 +881,7 @@ impl NativeCoordinator {
     pub(crate) fn prepare_committed_retirements(
         &self,
     ) -> Result<Option<PreparedNativeRetirements>, NativeRuntimeError> {
-        let committed = self.bridge.retirement_committed_routes();
-        if committed.is_empty() {
-            return Ok(None);
-        }
-        let routes = self
-            .bridge
-            .prepare_route_retirements(&committed)
-            .map_err(|binding| {
-                NativeHostProtocolError::RetiredViewportRouteChanged(binding.surface())
-            })?;
-        Ok(Some(PreparedNativeRetirements { committed, routes }))
+        self.bridge.prepare_committed_route_retirements()
     }
 
     #[must_use = "retired output tokens must be abandoned by every output-owned sidecar"]
@@ -891,8 +889,7 @@ impl NativeCoordinator {
         &mut self,
         prepared: PreparedNativeRetirements,
     ) -> Vec<NativeOutputToken> {
-        let PreparedNativeRetirements { committed, routes } = prepared;
-        let abandoned = routes.commit();
+        let (committed, abandoned) = prepared.commit_with_routes();
         for retirement in &committed {
             let binding = retirement.binding();
             self.pending_presentation_acknowledgements.remove(&binding);
@@ -1113,29 +1110,35 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn try_report_retirement_quiescence(&mut self) -> Result<bool, NativeRuntimeError> {
-        let (recorded, errors) = self.try_report_retirement_quiescence_all();
-        match errors.into_iter().next() {
+        let mut first_error = None;
+        let recorded = self.try_report_retirement_quiescence_into(|error| {
+            first_error.get_or_insert(error);
+        });
+        match first_error {
             Some(error) => Err(error),
             None => Ok(recorded),
         }
     }
 
-    fn try_report_retirement_quiescence_all(&mut self) -> (bool, Vec<NativeRuntimeError>) {
+    fn try_report_retirement_quiescence_into(
+        &mut self,
+        mut on_error: impl FnMut(NativeRuntimeError),
+    ) -> bool {
         self.bridge.admission_dispatch();
         if !self.bridge.permits_unscheduled_input() {
-            return (false, Vec::new());
+            return false;
         }
-        let candidates = self.bridge.retirement_quiescence_candidates();
         let mut recorded = false;
-        let mut errors = Vec::new();
-        for binding in candidates {
+        let mut after = None;
+        while let Some(binding) = self.bridge.next_retirement_quiescence_candidate(after) {
+            after = Some(binding);
             if self.binding_has_retained_host_references(binding) {
                 continue;
             }
             if self.session.recognizes_native_binding(binding)
                 && let Err(error) = self.session.report_native_binding_quiescence(binding)
             {
-                errors.push(error.into());
+                on_error(error.into());
                 continue;
             }
             let finished = self.bridge.retirement_finish_quiescence(binding);
@@ -1147,7 +1150,7 @@ impl NativeCoordinator {
             }
             recorded = true;
         }
-        (recorded, errors)
+        recorded
     }
 
     fn binding_has_retained_host_references(&self, binding: NativeSurfaceBinding) -> bool {

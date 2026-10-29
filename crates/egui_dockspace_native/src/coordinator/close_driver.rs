@@ -53,23 +53,57 @@ impl NativeCoordinator {
         if self.bridge.callback_boundary_pending() || self.bridge.has_unsubmitted_output_prefix() {
             return Ok(false);
         }
-        let requests = self.bridge.with_close_control(|control| {
-            control
-                .unsubmitted_requests()
-                .take(budget.remaining_records())
-                .collect::<Vec<_>>()
-        });
-        let decision_requests = self.bridge.with_close_control(|control| {
-            control
+        let mut scratch = std::mem::take(&mut self.close_decision_scratch);
+        let result = self.drive_close_policy_with_scratch(
+            context,
+            policy,
+            external_root,
+            budget,
+            &mut scratch,
+        );
+        scratch.clear();
+        self.close_decision_scratch = scratch;
+        result
+    }
+
+    fn drive_close_policy_with_scratch(
+        &mut self,
+        context: &eframe::egui::Context,
+        policy: NativeWindowClosePolicy,
+        external_root: SurfaceId,
+        budget: &mut NativeInputBudget,
+        decision_requests: &mut Vec<dockspace::close::CloseRequestId>,
+    ) -> Result<bool, NativeRuntimeError> {
+        self.bridge.with_close_control(|control| {
+            let count = control
                 .decision_requests()
                 .take(budget.remaining_records())
-                .collect::<Vec<_>>()
-        });
+                .count();
+            if let Some(limit) = self.owner_storage {
+                if count > limit.close_slots || decision_requests.capacity() < count {
+                    return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+                }
+            } else {
+                decision_requests
+                    .try_reserve_exact(count)
+                    .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            }
+            decision_requests.extend(control.decision_requests().take(count));
+            Ok(())
+        })?;
         let mut recorded = false;
-        for close in requests {
+        // Appending policy input does not consume the reduction budget until
+        // poll. Freeze this admission count before selecting requests one by one.
+        for _ in 0..budget.remaining_records() {
             if budget.is_exhausted() {
                 break;
             }
+            let Some(close) = self
+                .bridge
+                .with_close_control(|control| control.unsubmitted_requests().next())
+            else {
+                break;
+            };
             match policy.request(close.surface() == external_root) {
                 Some(action) => self.session.request_native_surface_close(close, action)?,
                 None => self.session.cancel_native_surface_close(close)?,
@@ -106,25 +140,37 @@ impl NativeCoordinator {
             &mut self.receivers,
             None,
         );
-        let mut completed_requests = Vec::new();
+        let mut completed = 0;
         if !frame.frame.native_input_pending() {
-            for request in decision_requests {
+            for index in 0..decision_requests.len() {
                 if budget.is_exhausted() {
                     break;
                 }
-                let decisions = frame
-                    .frame
-                    .pending_close_decisions(request)
-                    .take(budget.remaining_records())
-                    .collect::<Vec<_>>();
-                for item in decisions {
+                let request = decision_requests[index];
+                loop {
                     if budget.is_exhausted() {
                         break;
                     }
+                    let token = frame
+                        .frame
+                        .pending_close_decisions(request)
+                        .next()
+                        .map(|item| item.token());
+                    let Some(token) = token else {
+                        break;
+                    };
                     frame
                         .frame
-                        .resolve_close(request, item.token(), CloseDecision::Allow)?;
+                        .resolve_close(request, token, CloseDecision::Allow)?;
                     budget.complete_unsequenced_records(1);
+                    if frame
+                        .frame
+                        .pending_close_decisions(request)
+                        .next()
+                        .is_some_and(|item| item.token() == token)
+                    {
+                        return Err(NativeHostProtocolError::NativeCloseCorrelationChanged.into());
+                    }
                 }
                 if frame
                     .frame
@@ -132,14 +178,16 @@ impl NativeCoordinator {
                     .next()
                     .is_none()
                 {
-                    completed_requests.push(request);
+                    decision_requests[completed] = request;
+                    completed += 1;
                 }
             }
         }
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let report = frame.commit()?;
-        self.bridge
-            .with_close_control(|control| control.settle_decision_requests(&completed_requests));
+        self.bridge.with_close_control(|control| {
+            control.settle_decision_requests(&decision_requests[..completed])
+        });
         self.finish_internal_report(context, report)?;
         self.rearm_deferred_close_policy(context)?;
         Ok(true)

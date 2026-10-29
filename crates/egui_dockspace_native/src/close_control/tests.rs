@@ -309,8 +309,7 @@ fn one_successor_waits_for_received_transferred_and_committed_clear() {
             );
         }
         control
-            .pending
-            .get_mut(&binding)
+            .pending_for_binding_mut(binding)
             .unwrap()
             .cancellation_receipt = Some(receipt);
         assert_eq!(
@@ -337,8 +336,7 @@ fn one_successor_waits_for_received_transferred_and_committed_clear() {
         assert_eq!(control.settle_clear(true), 0);
 
         let receipt = control
-            .pending
-            .get_mut(&binding)
+            .pending_for_binding_mut(binding)
             .unwrap()
             .cancellation_receipt
             .as_mut()
@@ -461,8 +459,7 @@ fn promoted_successor_keeps_its_owner_and_capture_until_exact_take() {
         assert_eq!(control.deferred_ingress().count(), 0);
         assert!(
             control
-                .pending
-                .get(&binding)
+                .pending_for_binding(binding)
                 .unwrap()
                 .cancellation_receipt
                 .is_none()

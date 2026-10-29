@@ -200,6 +200,128 @@ fn new_window_lifetimes_require_complete_roster_capacity_before_route_or_create_
 }
 
 #[test]
+fn admitted_window_retains_prepaid_retirement_backing_through_terminal_retry() {
+    let [first, second, _] = three_bindings();
+    let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
+    bridge.configure_lifecycle_storage(1, 1).unwrap();
+    bridge.lock().terminal_roster = TerminalRosterState::with_capacity(1, 1);
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(11);
+    let backing = bridge.lock().retirements.owned_data_capacity_bytes();
+    bridge.bind_viewport_route(viewport, window, first).unwrap();
+    assert_eq!(
+        bridge.lock().retirements.owned_data_capacity_bytes(),
+        backing
+    );
+    assert!(matches!(
+        bridge.reserve_viewport_route(ViewportId::from_hash_of(2), second),
+        Err(NativeViewportBindingError::CapacityExceeded { limit: 1 }),
+    ));
+    bridge.unbind_viewport_route(viewport, first).unwrap();
+    assert_eq!(
+        bridge.lock().retirements.owned_data_capacity_bytes(),
+        backing
+    );
+    let captured = bridge.lock().journal.captured_through();
+    bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+        41,
+        window,
+        Some(viewport),
+        Some(first),
+        WindowEvent::Destroyed,
+    )));
+    assert_eq!(bridge.lock().journal.captured_through(), captured + 1);
+    assert_eq!(
+        bridge.retirement_observe_destroyed(viewport, first, window, 41),
+        DestroyedObservation::Recorded,
+    );
+    assert!(bridge.acknowledge_event(41));
+    bridge.commit_frame_boundary(true);
+    assert!(!bridge.retirement_requires_snapshot());
+    assert_eq!(
+        bridge.lock().retirements.owned_data_capacity_bytes(),
+        backing
+    );
+    bridge.commit_frame_boundary(false);
+    assert!(bridge.retirement_requires_snapshot());
+    bridge.retirement_mark_snapshot_queued();
+    bridge.retirement_settle_snapshot(false);
+    assert!(bridge.retirement_requires_snapshot());
+    bridge.retirement_mark_snapshot_queued();
+    bridge.retirement_settle_snapshot(true);
+    let prepared = bridge
+        .prepare_committed_route_retirements()
+        .unwrap()
+        .unwrap();
+    drop(prepared);
+    assert_eq!(bridge.next_retirement_quiescence_candidate(None), None);
+    let prepared = bridge
+        .prepare_committed_route_retirements()
+        .unwrap()
+        .unwrap();
+    let (routes, abandoned) = prepared.commit_with_routes();
+    assert!(abandoned.is_empty());
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].binding(), first);
+    bridge.retirement_commit_routes(&routes);
+    assert_eq!(
+        bridge.next_retirement_quiescence_candidate(None),
+        Some(first)
+    );
+    assert_eq!(
+        bridge.next_retirement_quiescence_candidate(Some(first)),
+        None
+    );
+    assert!(bridge.retirement_finish_quiescence(first));
+    assert_eq!(
+        bridge.lock().retirements.owned_data_capacity_bytes(),
+        backing
+    );
+    bridge.reserve_viewport_route(viewport, second).unwrap();
+    assert_eq!(
+        bridge.lock().retirements.owned_data_capacity_bytes(),
+        backing
+    );
+}
+
+#[test]
+fn full_close_owner_refuses_new_capture_before_journal_identity_and_keeps_duplicates() {
+    let [first, second, _] = three_bindings();
+    let bridge = NativeHostBridge::new(NativeViewportMap::default());
+    bridge.configure_lifecycle_storage(2, 1).unwrap();
+    let first_viewport = ViewportId::ROOT;
+    let second_viewport = ViewportId::from_hash_of(2);
+    bridge
+        .bind_viewport_route(first_viewport, WindowId::from(11), first)
+        .unwrap();
+    bridge
+        .bind_viewport_route(second_viewport, WindowId::from(22), second)
+        .unwrap();
+    let close = |binding, viewport, window, ordinal| {
+        NativeWindowEventRecord::for_test(
+            ordinal,
+            window,
+            Some(viewport),
+            Some(binding),
+            WindowEvent::CloseRequested,
+        )
+    };
+    let mut state = bridge.lock();
+    let backing = state.close_control.owned_data_capacity_bytes();
+    assert!(state.capture_window_event(close(first, first_viewport, WindowId::from(11), 1)));
+    let captured = state.journal.captured_through();
+    let progress = state.close_control.progress();
+    assert!(!state.capture_window_event(close(second, second_viewport, WindowId::from(22), 2)));
+    assert_eq!(state.journal.captured_through(), captured);
+    assert_eq!(state.close_control.progress(), progress);
+    assert!(!state.close_control.references_binding(second));
+    assert!(state.capture_window_event(close(first, first_viewport, WindowId::from(11), 1)));
+    assert_eq!(state.journal.captured_through(), captured);
+    assert_eq!(state.close_control.progress(), progress);
+    assert_eq!(state.close_control.owned_data_capacity_bytes(), backing);
+}
+
+#[test]
 fn quarantine_cannot_grow_raw_storage_or_capture_a_new_close_owner() {
     let (bridge, _, binding, window) = bridge_with_clock();
     for ordinal in 1..=admission::RECORD_LIMIT as u64 {

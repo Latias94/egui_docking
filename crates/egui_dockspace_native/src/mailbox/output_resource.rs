@@ -86,6 +86,14 @@ impl Default for NativeOutputResources {
 }
 
 impl NativeOutputResources {
+    pub(super) const fn maximum_token_count(&self) -> usize {
+        ORDINARY_OUTPUT_CAPACITY + 1 + self.child_controls.capacity()
+    }
+
+    pub(super) const fn default_maximum_token_count() -> usize {
+        ORDINARY_OUTPUT_CAPACITY + 1 + super::terminal_roster::DEFAULT_WINDOW_CAPACITY
+    }
+
     pub(super) const fn ordinary_entry_data_bytes() -> usize {
         size_of::<NativeOutputToken>() + size_of::<NativeOutputResource>()
     }

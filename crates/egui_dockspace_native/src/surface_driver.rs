@@ -619,10 +619,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
             coordinator.settle_native_admissions(report.native_admissions())?;
         let retirement_committed = prepared_retirements.is_some();
         if let Some(prepared_retirements) = prepared_retirements {
+            let mut first_error = None;
             for token in coordinator.commit_retirements(prepared_retirements) {
-                self.pass_actions
-                    .abandon(token)
-                    .map_err(map_pass_action_error)?;
+                if let Err(error) = self.pass_actions.abandon(token) {
+                    first_error.get_or_insert_with(|| map_pass_action_error(error));
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
             }
         }
         if surface == self.root_surface {

@@ -15,6 +15,73 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-29 U7 prepaid retirement, close and viewport-route owners
+
+The selected private owner allowance now prepays one W retirement backing shared
+by materialized windows and failed creates, one W route backing and one W exact
+retirement-marker backing, plus an independent L close-entry store. Retirement
+entries exclude another entry for the same physical lifetime across both kinds;
+exact provider/viewport mismatches cannot acquire an existing release owner.
+Refused release and failed-create transfers return the original acknowledgement
+and receipt. Route/create admission reserves the eventual terminal backing before
+accepting that lifetime. Callback transfer, full commit, tombstone publication
+and successful quiescence append retain their existing distinct boundaries.
+
+The route owner is now one flat Vec. Window publication, pointer suppression and
+focus reportability live on that original entry; reverse maps and the separate
+focus set are removed. Captured windows retain their former fallback semantics
+until reducer publication. Prepared retirement markers remain exact and can
+outlive replacement of their viewport route. Whole-batch validation and backing
+reservation precede marker installation; rejection installs no partial marker.
+Close entries retain exact binding keys, one current capture, one successor and
+inline cancellation ingress. Finite saturation refuses a new capture before Hold
+or journal identity, while exact duplicates and existing-owner terminals remain
+admissible. Empty reusable backing remains charged.
+
+Retirement preparation owns one route Vec and one token sink, sized by the
+existing complete output-owner bound rather than by W. It reserves both before
+installing markers; commit moves both buffers and no longer collects a temporary
+token vector for each binding. Drop removes the original markers for retry.
+Exact receiver retirement drops its affine paints directly from their output
+owners without a token copy. Quiescence copies one candidate at a time, skips
+blocked entries, preserves append-rejected owners and reports errors directly
+into the caller's existing sink. Surface-driver token cleanup processes every
+notification before returning its first error.
+
+Close policy no longer collects request or item vectors. It freezes a finite
+request-admission count, copies one decision token at a time and compresses
+completed request IDs into one prepaid L scratch buffer. Every Result return
+restores that scratch, and only a successful frame commit settles those IDs.
+Partial budgets and deferred decisions retain their original owners.
+
+Fresh qualification passes 410 native tests normally and 410 with native debug
+assertions disabled, plus correctness/suspicious Clippy. The macOS programmatic
+tear-off, first-live, redock and retirement journey exits 0 and samples 2,391,049
+owned input-data bytes at root boundaries. The tested disposable snapshot matches
+all 410 frozen Rust source files. Results are recorded in
+`/tmp/dockspace-lifecycle-storage-qualification.json`. The core and egui local
+sources are unchanged from the preceding 1,813 workspace/86 public-host gates;
+this qualification reruns the changed native workspace.
+
+The 23 added regressions exercise shared W retirement saturation and capability
+return, full-commit and rejected-snapshot retry, mixed quiescence cursors, L close
+saturation/duplicates/successors, route replacement, unpublished capture, batch
+marker rollback, exact constructor byte difference of one and actual backing
+preservation. Two preliminary failures were fixture defects: the largest
+non-overflowing integer quotient was mistaken for overflow, and independent
+journals supplied duplicate ordinals to one retirement owner. The corrected
+fixtures use an overflowing successor count and one shared journal, respectively.
+No implementation change was inferred from those failed assumptions.
+
+Independent retirement, route and close-driver reviews found no remaining
+concrete blocker in this slice. Semantic wake storage, presentation/no-frame
+ACK ownership and remaining output/construction backing still precede combined
+profile enablement. The complete 4 MiB profile remains disabled; configured-cap
+load/release latency, lifecycle soak, native scoped input, native editor showcase
+and physical platform certification remain open. The fork is unchanged from
+local unpublished `bac446e142f93a5dc92695ab32e15a12e6dc7453`; tracked pins
+still name the earlier public baseline.
+
 ## 2026-10-29 U7 prepaid resource, input, effect and deferred owners
 
 The selected private `NativeOwnerStorageLimit` now combines independent M exact

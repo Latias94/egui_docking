@@ -2705,6 +2705,33 @@ impl NativeHostState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> Vec<NativeOutputToken> {
+        let mut abandoned = Vec::new();
+        self.retire_deferred_binding_into(viewport, binding, |token| abandoned.push(token));
+        abandoned
+    }
+
+    fn retire_deferred_binding_into(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        mut abandoned: impl FnMut(NativeOutputToken),
+    ) {
+        self.retire_deferred_binding_resources(viewport, binding);
+        for (token, reservation) in self.output_resources.iter_mut() {
+            if reservation.reservation.binding() == Some(binding)
+                && !reservation.reservation.terminal_recorded
+                && reservation.reservation.abandon()
+            {
+                abandoned(*token);
+            }
+        }
+    }
+
+    fn retire_deferred_binding_resources(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
         // The viewport may already name a successor physical window.
         if self
             .window_resources
@@ -2714,16 +2741,6 @@ impl NativeHostState {
             self.ready_semantic_viewports.remove(&viewport);
         }
         self.window_resources.retire(viewport, binding);
-        let mut abandoned = Vec::new();
-        for (token, reservation) in self.output_resources.iter_mut() {
-            if reservation.reservation.binding() == Some(binding)
-                && !reservation.reservation.terminal_recorded
-                && reservation.reservation.abandon()
-            {
-                abandoned.push(*token);
-            }
-        }
-        abandoned
     }
 
     fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -2833,21 +2850,36 @@ impl Drop for NativeDispatchBudget<'_> {
 pub(crate) struct PreparedRouteRetirements {
     bridge: Arc<NativeHostBridge>,
     routes: Vec<CommittedRetirement>,
+    abandoned: Vec<NativeOutputToken>,
     active: bool,
 }
 
 impl PreparedRouteRetirements {
-    pub(crate) fn commit(mut self) -> Vec<NativeOutputToken> {
+    #[cfg(test)]
+    pub(crate) fn commit(self) -> Vec<NativeOutputToken> {
+        self.commit_with_routes().1
+    }
+
+    pub(crate) fn commit_with_routes(
+        mut self,
+    ) -> (Vec<CommittedRetirement>, Vec<NativeOutputToken>) {
         let mut records = self.bridge.lock();
-        let mut abandoned = Vec::new();
         for retirement in &self.routes {
-            abandoned.extend(
-                records.retire_deferred_binding(retirement.viewport(), retirement.binding()),
+            records.retire_deferred_binding_into(
+                retirement.viewport(),
+                retirement.binding(),
+                |token| {
+                    assert!(self.abandoned.len() < self.abandoned.capacity());
+                    self.abandoned.push(token);
+                },
             );
         }
         records.viewports.commit_retirements(&self.routes);
         self.active = false;
-        abandoned
+        (
+            std::mem::take(&mut self.routes),
+            std::mem::take(&mut self.abandoned),
+        )
     }
 }
 
@@ -3540,13 +3572,10 @@ impl NativeHostBridge {
             if result_recorded {
                 receipt.mark_failure_recorded();
             }
-            let inserted = records
+            records
                 .retirements
-                .begin_unmaterialized_quiescence(expected.binding(), receipt);
-            debug_assert!(
-                inserted,
-                "preflighted failed create transfers its sole receipt"
-            );
+                .begin_unmaterialized_quiescence(expected.binding(), receipt)
+                .expect("preflighted failed create transfers its sole receipt");
             records.transfer_front_record();
             records.event_boundary_pending = true;
         }
@@ -3742,12 +3771,52 @@ impl NativeHostBridge {
         self.lock().retire_deferred_binding(viewport, binding)
     }
 
-    pub(crate) fn prepare_route_retirements(
-        self: &Arc<Self>,
-        retirements: &[CommittedRetirement],
-    ) -> Result<PreparedRouteRetirements, NativeSurfaceBinding> {
+    /// Receiver retirement already removes every exact binding artifact. Drop
+    /// affine paints in their original output slots without a token copy.
+    pub(crate) fn retire_deferred_binding_paints(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
         let mut records = self.lock();
-        for retirement in retirements {
+        records.retire_deferred_binding_resources(viewport, binding);
+        for (_, resource) in records.output_resources.iter_mut() {
+            if resource.reservation.binding() == Some(binding)
+                && !resource.reservation.terminal_recorded
+                && resource.reservation.abandon()
+            {
+                resource.paint.take();
+            }
+        }
+    }
+
+    pub(crate) fn prepare_committed_route_retirements(
+        self: &Arc<Self>,
+    ) -> Result<Option<PreparedRouteRetirements>, NativeRuntimeError> {
+        let mut records = self.lock();
+        let count = records.retirements.committed_routes().count();
+        if count == 0 {
+            return Ok(None);
+        }
+        let slots = records.retirements.capacity_limit().unwrap_or(count);
+        let mut routes = Vec::new();
+        routes
+            .try_reserve_exact(slots)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if count > slots || routes.capacity() > slots {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+        }
+        routes.extend(records.retirements.committed_routes());
+        self.prepare_route_retirements_locked(&mut records, routes)
+            .map(Some)
+    }
+
+    fn prepare_route_retirements_locked(
+        self: &Arc<Self>,
+        records: &mut NativeHostState,
+        routes: Vec<CommittedRetirement>,
+    ) -> Result<PreparedRouteRetirements, NativeRuntimeError> {
+        for retirement in &routes {
             if !records
                 .retirements
                 .can_retire_committed_route_for_replacement(
@@ -3755,15 +3824,45 @@ impl NativeHostBridge {
                     retirement.binding(),
                 )
             {
-                return Err(retirement.binding());
+                return Err(NativeHostProtocolError::RetiredViewportRouteChanged(
+                    retirement.binding().surface(),
+                )
+                .into());
             }
         }
-        records.viewports.prepare_retirements(retirements)?;
+        let token_slots = records.output_resources.maximum_token_count();
+        let mut abandoned = Vec::new();
+        abandoned
+            .try_reserve_exact(token_slots)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if abandoned.capacity() > token_slots {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+        }
+        records
+            .viewports
+            .prepare_retirements(&routes)
+            .map_err(|binding| {
+                NativeHostProtocolError::RetiredViewportRouteChanged(binding.surface())
+            })?;
         Ok(PreparedRouteRetirements {
             bridge: self.clone(),
-            routes: retirements.to_vec(),
+            routes,
+            abandoned,
             active: true,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepare_route_retirements(
+        self: &Arc<Self>,
+        retirements: &[CommittedRetirement],
+    ) -> Result<PreparedRouteRetirements, NativeRuntimeError> {
+        let mut routes = Vec::new();
+        routes
+            .try_reserve_exact(retirements.len())
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        routes.extend_from_slice(retirements);
+        self.prepare_route_retirements_locked(&mut self.lock(), routes)
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -4245,8 +4344,9 @@ impl NativeHostBridge {
         self.lock().retirements.has_pending_work()
     }
 
+    #[cfg(test)]
     pub(crate) fn retirement_committed_routes(&self) -> Vec<CommittedRetirement> {
-        self.lock().retirements.committed_routes()
+        self.lock().retirements.committed_routes().collect()
     }
 
     pub(crate) fn retirement_commit_routes(&self, committed: &[CommittedRetirement]) {
@@ -4257,8 +4357,16 @@ impl NativeHostBridge {
         self.lock().retirements.settle_snapshot(applied)
     }
 
+    #[cfg(test)]
     pub(crate) fn retirement_quiescence_candidates(&self) -> Vec<NativeSurfaceBinding> {
         self.lock().retirements.quiescence_candidates().collect()
+    }
+
+    pub(crate) fn next_retirement_quiescence_candidate(
+        &self,
+        after: Option<NativeSurfaceBinding>,
+    ) -> Option<NativeSurfaceBinding> {
+        self.lock().retirements.next_quiescence_candidate(after)
     }
 
     pub(crate) fn retirement_references_cleanup(&self, binding: NativeSurfaceBinding) -> bool {
@@ -4407,6 +4515,8 @@ impl NativeHostBridge {
         records
             .retirements
             .begin_release(viewport, binding, acknowledgement, window)
+            .expect("admitted lifetime retains prepaid retirement storage");
+        true
     }
 
     pub(crate) fn retirement_can_retire_committed_route_for_replacement(

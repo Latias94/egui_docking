@@ -1052,6 +1052,33 @@ Subsequent route, semantic-wake and ACK owners require their own admission:
 current routes are a W subset, but retained exact-binding presentation and
 no-frame obligations cannot inherit W or the released effect lease bound E.
 
+The local lifecycle-owner implementation now uses one sorted retirement Vec
+for Window and Unmaterialized receipt kinds, with exact-binding lookup and
+lifetime exclusion across both kinds. Route/create admission prepares the
+future terminal backing before accepting the obligation. Refused release and
+failed-create transfers return their original capabilities. The selected finite
+close store prepays an independent L exact-entry bound and keeps each current
+capture, cancellation receipt and parked successor inline; full storage still
+admits existing-owner terminals and exact duplicates.
+
+Current viewport routes use one W-sized Vec, with window publication,
+pointer suppression and focus reportability on the original route. Surface
+and window reverse maps and the focus set are deleted. A W-sized exact marker
+Vec preserves retirement guards even after a successor occupies the viewport.
+Whole-batch validation and backing preparation precede marker installation.
+The retirement guard owns a single routes Vec plus an output-owner-sized token
+sink; commit moves both buffers instead of cloning routes or collecting one
+temporary token Vec per binding. Quiescence visits exact candidates individually
+and retains blocked or append-rejected owners. Close policy selects requests and
+decision tokens individually, compresses completed IDs into its one prepaid L
+buffer, and settles those IDs only after frame commit. Fresh native gates pass
+410 tests normally and 410 without native debug assertions, correctness/suspicious
+Clippy and the macOS programmatic real-window redock. Independent retirement,
+route and close-driver reviews report no remaining concrete blocker in this
+slice. Semantic wakes, presentation/no-frame ACK ownership and remaining output/
+construction backing still precede combined profile enablement; the complete
+4 MiB, configured-cap load/latency, soak and physical gates remain open.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

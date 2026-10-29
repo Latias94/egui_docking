@@ -4,9 +4,9 @@
 //! acknowledgement and the exact eframe route until the operating system
 //! reports destruction and the corresponding core frame commits.
 
-use std::collections::BTreeMap;
 use std::mem::size_of;
 
+use crate::error::NativeHostProtocolError;
 use crate::mailbox::journal::ReservedHostRecord;
 use crate::viewport_map::{NativeCreateReceipt, NativeWindowReceipt};
 use dockspace::runtime::{
@@ -15,6 +15,9 @@ use dockspace::runtime::{
 };
 use eframe::egui::ViewportId;
 use winit::window::WindowId;
+
+#[cfg(test)]
+mod capacity_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetirementPhase {
@@ -114,6 +117,48 @@ struct PendingRetirement {
     cleanup: CleanupRelay,
 }
 
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Terminal capabilities share prepaid inline backing without separate allocations."
+)]
+enum RetirementKind {
+    Window(PendingRetirement),
+    Unmaterialized(NativeCreateReceipt),
+}
+
+#[derive(Debug)]
+struct RetirementEntry {
+    binding: NativeSurfaceBinding,
+    kind: RetirementKind,
+}
+
+impl RetirementEntry {
+    fn pending(&self) -> Option<&PendingRetirement> {
+        match &self.kind {
+            RetirementKind::Window(pending) => Some(pending),
+            RetirementKind::Unmaterialized(_) => None,
+        }
+    }
+
+    fn pending_mut(&mut self) -> Option<&mut PendingRetirement> {
+        match &mut self.kind {
+            RetirementKind::Window(pending) => Some(pending),
+            RetirementKind::Unmaterialized(_) => None,
+        }
+    }
+
+    fn is_quiescence_candidate(&self) -> bool {
+        match &self.kind {
+            RetirementKind::Window(pending) => {
+                pending.phase == RetirementPhase::RouteRetired
+                    && pending.window.destroyed_committed()
+            }
+            RetirementKind::Unmaterialized(receipt) => receipt.is_committed(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CommittedRetirement {
     viewport: ViewportId,
@@ -132,34 +177,82 @@ impl CommittedRetirement {
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeRetirementState {
-    pending: BTreeMap<NativeSurfaceBinding, PendingRetirement>,
-    unmaterialized: BTreeMap<NativeSurfaceBinding, NativeCreateReceipt>,
+    entries: Vec<RetirementEntry>,
+    entry_limit: Option<usize>,
 }
 
 impl NativeRetirementState {
-    /// Counts inline storage and retained entry data, excluding B-tree node overhead.
+    /// Prepays the shared bound for materialized and failed-create lifetimes.
+    pub(crate) fn with_capacity_limit(entries: usize) -> Result<Self, NativeHostProtocolError> {
+        Self::reservation_bytes(entries)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let mut backing = Vec::new();
+        backing
+            .try_reserve_exact(entries)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if backing.capacity() > entries {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        Ok(Self {
+            entries: backing,
+            entry_limit: Some(entries),
+        })
+    }
+
+    /// Includes inline state and the selected backing, without allocator metadata.
+    pub(crate) fn reservation_bytes(entries: usize) -> Option<usize> {
+        size_of::<Self>().checked_add(entries.checked_mul(size_of::<RetirementEntry>())?)
+    }
+
+    pub(crate) const fn capacity_limit(&self) -> Option<usize> {
+        self.entry_limit
+    }
+
+    /// Initial configuration cannot replace a selected finite promise or owner.
+    pub(crate) fn can_configure_capacity_limit(&self) -> bool {
+        self.entry_limit.is_none() && self.entries.is_empty()
+    }
+
+    /// Prepares terminal backing before a route or create attempt is admitted.
+    /// The caller supplies its existing lifetime union; reserving backing does
+    /// not create a second lifecycle registry or release any existing owner.
+    pub(crate) fn prepare_capacity_for_retained_lifetimes(
+        &mut self,
+        required: usize,
+    ) -> Result<(), NativeHostProtocolError> {
+        Self::reservation_bytes(required)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if self.entry_limit.is_some_and(|limit| required > limit) {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        let maximum_capacity = self.entries.capacity().max(required);
+        if required > self.entries.capacity() {
+            self.entries
+                .try_reserve_exact(required - self.entries.len())
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        }
+        if self.entries.capacity() > maximum_capacity {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        Ok(())
+    }
+
+    /// Counts inline state and actual backing, including retained spare slots.
     /// Receipts, cleanup capabilities, and supported ingress payloads are inline.
     pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
-        size_of::<Self>()
-            .saturating_add(
-                self.pending.len().saturating_mul(
-                    size_of::<NativeSurfaceBinding>() + size_of::<PendingRetirement>(),
-                ),
-            )
-            .saturating_add(self.unmaterialized.len().saturating_mul(
-                size_of::<NativeSurfaceBinding>() + size_of::<NativeCreateReceipt>(),
-            ))
+        size_of::<Self>().saturating_add(
+            self.entries
+                .capacity()
+                .saturating_mul(size_of::<RetirementEntry>()),
+        )
     }
 
     pub(crate) fn bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
-        self.pending
-            .keys()
-            .chain(self.unmaterialized.keys())
-            .copied()
+        self.entries.iter().map(|entry| entry.binding)
     }
 
     pub(crate) fn has_pending_work(&self) -> bool {
-        !self.pending.is_empty() || !self.unmaterialized.is_empty()
+        !self.entries.is_empty()
     }
 
     /// Retains a native lifetime which definitively failed before an OS window
@@ -169,68 +262,86 @@ impl NativeRetirementState {
         &mut self,
         binding: NativeSurfaceBinding,
         receipt: NativeCreateReceipt,
-    ) -> bool {
-        if self.pending_for_lifetime(binding).is_some()
+    ) -> Result<(), NativeCreateReceipt> {
+        if self.has_quiescence_owner(binding)
             || self
-                .unmaterialized
-                .keys()
-                .any(|candidate| candidate.same_window_lifetime(binding))
+                .prepare_capacity_for_retained_lifetimes(self.entries.len() + 1)
+                .is_err()
         {
-            return false;
+            return Err(receipt);
         }
-        self.unmaterialized.insert(binding, receipt).is_none()
+        let index = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .expect_err("a new lifetime has no exact retirement owner");
+        self.entries.insert(
+            index,
+            RetirementEntry {
+                binding,
+                kind: RetirementKind::Unmaterialized(receipt),
+            },
+        );
+        Ok(())
     }
 
     pub(crate) fn has_quiescence_owner(&self, binding: NativeSurfaceBinding) -> bool {
-        self.pending_for_lifetime(binding).is_some()
-            || self
-                .unmaterialized
-                .keys()
-                .any(|candidate| candidate.same_window_lifetime(binding))
+        self.entries
+            .iter()
+            .any(|entry| entry.binding.same_window_lifetime(binding))
     }
 
     pub(crate) fn is_quiescence_candidate(&self, binding: NativeSurfaceBinding) -> bool {
-        self.unmaterialized
-            .get(&binding)
-            .is_some_and(NativeCreateReceipt::is_committed)
-            || self.pending.get(&binding).is_some_and(|pending| {
-                pending.phase == RetirementPhase::RouteRetired
-                    && pending.window.destroyed_committed()
-            })
+        self.entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .ok()
+            .is_some_and(|index| self.entries[index].is_quiescence_candidate())
     }
 
     pub(crate) fn mark_create_failure_recorded(&mut self, binding: NativeSurfaceBinding) {
-        if let Some(receipt) = self.unmaterialized.get_mut(&binding) {
+        if let Ok(index) = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            && let RetirementKind::Unmaterialized(receipt) = &mut self.entries[index].kind
+        {
             receipt.mark_failure_recorded();
         }
     }
 
     pub(crate) fn commit_create_failures(&mut self) {
-        for receipt in self.unmaterialized.values_mut() {
-            receipt.commit_failure();
+        for entry in &mut self.entries {
+            if let RetirementKind::Unmaterialized(receipt) = &mut entry.kind {
+                receipt.commit_failure();
+            }
         }
     }
 
     pub(crate) fn create_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.unmaterialized
-            .values()
-            .filter_map(NativeCreateReceipt::ingress)
+        self.entries.iter().filter_map(|entry| match &entry.kind {
+            RetirementKind::Unmaterialized(receipt) => receipt.ingress(),
+            RetirementKind::Window(_) => None,
+        })
     }
 
     pub(crate) fn take_create_ingress(
         &mut self,
         capture_ordinal: u64,
     ) -> Option<ReservedHostRecord> {
-        self.unmaterialized
-            .values_mut()
-            .find_map(|receipt| receipt.take_ingress(capture_ordinal))
+        self.entries
+            .iter_mut()
+            .find_map(|entry| match &mut entry.kind {
+                RetirementKind::Unmaterialized(receipt) => receipt.take_ingress(capture_ordinal),
+                RetirementKind::Window(_) => None,
+            })
     }
 
     pub(crate) fn requires_snapshot(&self) -> bool {
-        self.pending.values().any(|pending| {
-            pending.phase == RetirementPhase::DestroyedObserved
-                && pending.window.destroyed_committed()
-        })
+        self.entries
+            .iter()
+            .filter_map(RetirementEntry::pending)
+            .any(|pending| {
+                pending.phase == RetirementPhase::DestroyedObserved
+                    && pending.window.destroyed_committed()
+            })
     }
 
     pub(crate) fn can_begin_release(
@@ -238,12 +349,23 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        !self.unmaterialized.contains_key(&binding)
-            && self.pending_for_lifetime(binding).is_none_or(|pending| {
-                pending.viewport == viewport
-                    && pending.phase == RetirementPhase::AwaitingDestroyed
-                    && pending.acknowledgement.is_none()
-            })
+        match self
+            .entries
+            .iter()
+            .find(|entry| entry.binding.same_window_lifetime(binding))
+        {
+            Some(entry) => {
+                entry.binding == binding
+                    && entry.pending().is_some_and(|pending| {
+                        pending.viewport == viewport
+                            && pending.phase == RetirementPhase::AwaitingDestroyed
+                            && pending.acknowledgement.is_none()
+                    })
+            }
+            None => self
+                .entry_limit
+                .is_none_or(|limit| self.entries.len() < limit),
+        }
     }
 
     pub(crate) fn begin_release(
@@ -252,33 +374,53 @@ impl NativeRetirementState {
         binding: NativeSurfaceBinding,
         acknowledgement: NativeCloseEffectAcknowledgement,
         window: Option<NativeWindowReceipt>,
-    ) -> bool {
+    ) -> Result<
+        (),
+        (
+            NativeCloseEffectAcknowledgement,
+            Option<NativeWindowReceipt>,
+        ),
+    > {
         if !self.can_begin_release(viewport, binding) {
-            return false;
+            return Err((acknowledgement, window));
         }
-        if let Some(pending) = self.pending.get_mut(&binding) {
-            if pending.viewport != viewport || window.is_some() {
-                return false;
+        if let Some(pending) = self.pending_for_binding_mut(binding) {
+            if window.is_some() {
+                return Err((acknowledgement, window));
             }
             pending.acknowledgement = Some(acknowledgement);
-            return true;
+            return Ok(());
         }
-        let Some(window) = window else {
-            return false;
+        let Some(receipt) = window.as_ref() else {
+            return Err((acknowledgement, window));
         };
-        debug_assert_eq!(window.viewport(), viewport);
-        debug_assert_eq!(window.binding(), binding);
-        self.pending.insert(
-            binding,
-            PendingRetirement {
-                viewport,
-                window,
-                acknowledgement: Some(acknowledgement),
-                phase: RetirementPhase::AwaitingDestroyed,
-                cleanup: CleanupRelay::default(),
+        if receipt.viewport() != viewport
+            || receipt.binding() != binding
+            || self.owns_window(receipt.window(), None)
+            || self
+                .prepare_capacity_for_retained_lifetimes(self.entries.len() + 1)
+                .is_err()
+        {
+            return Err((acknowledgement, window));
+        }
+        let index = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .expect_err("a new lifetime has no exact retirement owner");
+        self.entries.insert(
+            index,
+            RetirementEntry {
+                binding,
+                kind: RetirementKind::Window(PendingRetirement {
+                    viewport,
+                    window: window.expect("the new retirement retains its supplied window"),
+                    acknowledgement: Some(acknowledgement),
+                    phase: RetirementPhase::AwaitingDestroyed,
+                    cleanup: CleanupRelay::default(),
+                }),
             },
         );
-        true
+        Ok(())
     }
 
     pub(crate) fn observe_destroyed(
@@ -288,7 +430,7 @@ impl NativeRetirementState {
         window: WindowId,
         ordinal: u64,
     ) -> DestroyedObservation {
-        if let Some(pending) = self.pending.get_mut(&binding) {
+        if let Some(pending) = self.pending_for_binding_mut(binding) {
             if pending.viewport != viewport
                 || pending.window.window() != window
                 || !pending.window.received_destroyed(ordinal)
@@ -310,7 +452,11 @@ impl NativeRetirementState {
         binding: NativeSurfaceBinding,
         window: WindowId,
     ) -> bool {
-        !self.has_quiescence_owner(binding) && !self.owns_window(window, None)
+        !self.has_quiescence_owner(binding)
+            && !self.owns_window(window, None)
+            && self
+                .entry_limit
+                .is_none_or(|limit| self.entries.len() < limit)
     }
 
     pub(crate) fn retain_window(
@@ -318,17 +464,28 @@ impl NativeRetirementState {
         window: NativeWindowReceipt,
     ) -> Result<(), NativeWindowReceipt> {
         let binding = window.binding();
-        if !self.can_retain_window(binding, window.window()) {
+        if !self.can_retain_window(binding, window.window())
+            || self
+                .prepare_capacity_for_retained_lifetimes(self.entries.len() + 1)
+                .is_err()
+        {
             return Err(window);
         }
-        self.pending.insert(
-            binding,
-            PendingRetirement {
-                viewport: window.viewport(),
-                window,
-                acknowledgement: None,
-                phase: RetirementPhase::AwaitingDestroyed,
-                cleanup: CleanupRelay::default(),
+        let index = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .expect_err("a new lifetime has no exact retirement owner");
+        self.entries.insert(
+            index,
+            RetirementEntry {
+                binding,
+                kind: RetirementKind::Window(PendingRetirement {
+                    viewport: window.viewport(),
+                    window,
+                    acknowledgement: None,
+                    phase: RetirementPhase::AwaitingDestroyed,
+                    cleanup: CleanupRelay::default(),
+                }),
             },
         );
         Ok(())
@@ -342,10 +499,14 @@ impl NativeRetirementState {
         reserve: impl FnOnce(ViewportId, NativeSurfaceBinding) -> ReservedHostRecord,
     ) -> Option<(ViewportId, NativeSurfaceBinding)> {
         let (binding, pending) = self
-            .pending
+            .entries
             .iter_mut()
+            .filter_map(|entry| {
+                let binding = entry.binding;
+                Some((binding, entry.pending_mut()?))
+            })
             .find(|(_, pending)| pending.window.matches_window(window, viewport))?;
-        let owner = (pending.viewport, *binding);
+        let owner = (pending.viewport, binding);
         pending
             .window
             .receive_destroyed(ordinal, || reserve(owner.0, owner.1))
@@ -353,8 +514,9 @@ impl NativeRetirementState {
     }
 
     pub(crate) fn window_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.pending
-            .values()
+        self.entries
+            .iter()
+            .filter_map(RetirementEntry::pending)
             .filter_map(|pending| pending.window.ingress())
     }
 
@@ -362,20 +524,21 @@ impl NativeRetirementState {
         &mut self,
         capture_ordinal: u64,
     ) -> Option<ReservedHostRecord> {
-        self.pending
-            .values_mut()
+        self.entries
+            .iter_mut()
+            .filter_map(RetirementEntry::pending_mut)
             .find_map(|pending| pending.window.take_ingress(capture_ordinal))
     }
 
     pub(crate) fn owns_window(&self, window: WindowId, viewport: Option<ViewportId>) -> bool {
-        self.pending
-            .values()
+        self.entries
+            .iter()
+            .filter_map(RetirementEntry::pending)
             .any(|pending| pending.window.matches_window(window, viewport))
     }
 
     pub(crate) fn has_window(&self, viewport: ViewportId, binding: NativeSurfaceBinding) -> bool {
-        self.pending
-            .get(&binding)
+        self.pending_for_binding(binding)
             .is_some_and(|pending| pending.viewport == viewport)
     }
 
@@ -386,8 +549,7 @@ impl NativeRetirementState {
         window: WindowId,
         ordinal: u64,
     ) -> Option<&mut NativeWindowReceipt> {
-        self.pending
-            .get_mut(&binding)
+        self.pending_for_binding_mut(binding)
             .filter(|pending| {
                 pending.viewport == viewport
                     && pending.window.binding() == binding
@@ -403,20 +565,23 @@ impl NativeRetirementState {
         window: WindowId,
         ordinal: u64,
     ) -> bool {
-        self.pending
-            .get_mut(&binding)
+        self.pending_for_binding_mut(binding)
             .filter(|pending| pending.window.window() == window)
             .is_some_and(|pending| pending.window.transfer_destroyed(ordinal))
     }
 
     pub(crate) fn commit_destroyed_callbacks(&mut self) {
-        for pending in self.pending.values_mut() {
+        for pending in self
+            .entries
+            .iter_mut()
+            .filter_map(RetirementEntry::pending_mut)
+        {
             pending.window.commit_destroyed();
         }
     }
 
     pub(crate) fn retire_unrecognized_destroyed(&mut self, binding: NativeSurfaceBinding) {
-        if let Some(pending) = self.pending.get_mut(&binding)
+        if let Some(pending) = self.pending_for_binding_mut(binding)
             && pending.phase == RetirementPhase::DestroyedObserved
         {
             pending.cleanup.finish_destroyed_snapshot();
@@ -427,9 +592,28 @@ impl NativeRetirementState {
         }
     }
 
+    fn pending_for_binding(&self, binding: NativeSurfaceBinding) -> Option<&PendingRetirement> {
+        let index = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .ok()?;
+        self.entries[index].pending()
+    }
+
+    fn pending_for_binding_mut(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<&mut PendingRetirement> {
+        let index = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .ok()?;
+        self.entries[index].pending_mut()
+    }
+
     fn pending_for_lifetime(&self, binding: NativeSurfaceBinding) -> Option<&PendingRetirement> {
         self.pending_lifetime_key(binding)
-            .and_then(|key| self.pending.get(&key))
+            .and_then(|key| self.pending_for_binding(key))
     }
 
     fn pending_for_lifetime_mut(
@@ -437,14 +621,14 @@ impl NativeRetirementState {
         binding: NativeSurfaceBinding,
     ) -> Option<&mut PendingRetirement> {
         let key = self.pending_lifetime_key(binding)?;
-        self.pending.get_mut(&key)
+        self.pending_for_binding_mut(key)
     }
 
     fn pending_lifetime_key(&self, binding: NativeSurfaceBinding) -> Option<NativeSurfaceBinding> {
-        self.pending
-            .keys()
-            .copied()
-            .find(|candidate| candidate.same_window_lifetime(binding))
+        self.entries
+            .iter()
+            .find(|entry| entry.binding.same_window_lifetime(binding) && entry.pending().is_some())
+            .map(|entry| entry.binding)
     }
 
     fn adopt_successor_binding(
@@ -455,18 +639,38 @@ impl NativeRetirementState {
         if predecessor == successor {
             return true;
         }
-        if self.pending.contains_key(&successor) {
+        if !predecessor.same_window_lifetime(successor)
+            || self
+                .entries
+                .binary_search_by_key(&successor, |entry| entry.binding)
+                .is_ok()
+        {
             return false;
         }
-        let Some(mut pending) = self.pending.remove(&predecessor) else {
+        let Ok(index) = self
+            .entries
+            .binary_search_by_key(&predecessor, |entry| entry.binding)
+        else {
             return false;
         };
+        if self.entries[index].pending().is_none() {
+            return false;
+        }
+        let mut entry = self.entries.remove(index);
+        let pending = entry
+            .pending_mut()
+            .expect("the predecessor retains its exact window owner");
         // A provider handoff invalidates the old close acknowledgement. The
         // successor may only publish a plain Destroyed tombstone until it
         // obtains a new exact acknowledgement from core.
         pending.acknowledgement = None;
         pending.window.rebind(successor);
-        self.pending.insert(successor, pending);
+        entry.binding = successor;
+        let index = self
+            .entries
+            .binary_search_by_key(&successor, |entry| entry.binding)
+            .expect_err("the provider successor has no exact retirement owner");
+        self.entries.insert(index, entry);
         true
     }
 
@@ -548,7 +752,8 @@ impl NativeRetirementState {
     pub(crate) fn destroyed_observations(
         &self,
     ) -> impl Iterator<Item = (NativeSurfaceBinding, NativeWindowFacts)> + '_ {
-        self.pending.iter().filter_map(|(binding, pending)| {
+        self.entries.iter().filter_map(|entry| {
+            let pending = entry.pending()?;
             (pending.phase == RetirementPhase::DestroyedObserved
                 && pending.window.destroyed_committed())
             .then(|| {
@@ -556,13 +761,17 @@ impl NativeRetirementState {
                     NativeWindowFacts::destroyed,
                     NativeWindowFacts::destroyed_after,
                 );
-                (*binding, facts)
+                (entry.binding, facts)
             })
         })
     }
 
     pub(crate) fn mark_snapshot_queued(&mut self) {
-        for pending in self.pending.values_mut() {
+        for pending in self
+            .entries
+            .iter_mut()
+            .filter_map(RetirementEntry::pending_mut)
+        {
             if pending.phase == RetirementPhase::DestroyedObserved
                 && pending.window.destroyed_committed()
             {
@@ -572,7 +781,11 @@ impl NativeRetirementState {
     }
 
     pub(crate) fn settle_snapshot(&mut self, applied: bool) {
-        for pending in self.pending.values_mut() {
+        for pending in self
+            .entries
+            .iter_mut()
+            .filter_map(RetirementEntry::pending_mut)
+        {
             if pending.phase == RetirementPhase::SnapshotQueued {
                 pending.phase = if applied {
                     pending.cleanup.finish_destroyed_snapshot();
@@ -584,18 +797,16 @@ impl NativeRetirementState {
         }
     }
 
-    pub(crate) fn committed_routes(&self) -> Vec<CommittedRetirement> {
-        self.pending
-            .iter()
-            .filter(|(_, pending)| {
-                pending.phase == RetirementPhase::TombstoneCommitted
-                    && pending.window.destroyed_committed()
-            })
-            .map(|(binding, pending)| CommittedRetirement {
+    pub(crate) fn committed_routes(&self) -> impl Iterator<Item = CommittedRetirement> + '_ {
+        self.entries.iter().filter_map(|entry| {
+            let pending = entry.pending()?;
+            (pending.phase == RetirementPhase::TombstoneCommitted
+                && pending.window.destroyed_committed())
+            .then_some(CommittedRetirement {
                 viewport: pending.viewport,
-                binding: *binding,
+                binding: entry.binding,
             })
-            .collect()
+        })
     }
 
     pub(crate) fn can_retire_committed_route_for_replacement(
@@ -603,7 +814,7 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        self.pending.get(&binding).is_some_and(|pending| {
+        self.pending_for_binding(binding).is_some_and(|pending| {
             pending.viewport == viewport
                 && pending.phase == RetirementPhase::TombstoneCommitted
                 && pending.window.destroyed_committed()
@@ -615,7 +826,7 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        let Some(pending) = self.pending.get_mut(&binding) else {
+        let Some(pending) = self.pending_for_binding_mut(binding) else {
             return false;
         };
         if pending.viewport != viewport || pending.phase != RetirementPhase::TombstoneCommitted {
@@ -628,8 +839,7 @@ impl NativeRetirementState {
     pub(crate) fn commit_routes(&mut self, committed: &[CommittedRetirement]) {
         for committed in committed {
             let pending = self
-                .pending
-                .get_mut(&committed.binding)
+                .pending_for_binding_mut(committed.binding)
                 .expect("preflighted retirement remains pending");
             debug_assert_eq!(pending.viewport, committed.viewport);
             debug_assert_eq!(pending.phase, RetirementPhase::TombstoneCommitted);
@@ -638,35 +848,41 @@ impl NativeRetirementState {
     }
 
     pub(crate) fn quiescence_candidates(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
-        self.pending
+        self.entries
             .iter()
-            .filter_map(|(binding, pending)| {
-                (pending.phase == RetirementPhase::RouteRetired
-                    && pending.window.destroyed_committed())
-                .then_some(*binding)
-            })
-            .chain(
-                self.unmaterialized
-                    .iter()
-                    .filter_map(|(binding, receipt)| receipt.is_committed().then_some(*binding)),
-            )
+            .filter(|entry| entry.is_quiescence_candidate())
+            .map(|entry| entry.binding)
     }
 
+    /// Visits terminal owners in exact binding order without owning a snapshot.
+    /// Advancing past a blocked candidate does not release that candidate.
+    pub(crate) fn next_quiescence_candidate(
+        &self,
+        after: Option<NativeSurfaceBinding>,
+    ) -> Option<NativeSurfaceBinding> {
+        let start = after.map_or(0, |binding| {
+            self.entries
+                .partition_point(|entry| entry.binding <= binding)
+        });
+        self.entries[start..]
+            .iter()
+            .find(|entry| entry.is_quiescence_candidate())
+            .map(|entry| entry.binding)
+    }
+
+    /// The caller invokes this only after its exact quiescence append succeeds.
+    /// Removing the owner keeps prepaid backing available for the next lifetime.
     pub(crate) fn finish_quiescence(&mut self, binding: NativeSurfaceBinding) -> bool {
-        if self
-            .unmaterialized
-            .get(&binding)
-            .is_some_and(NativeCreateReceipt::is_committed)
-        {
-            self.unmaterialized.remove(&binding);
-            return true;
-        }
-        if !self.pending.get(&binding).is_some_and(|pending| {
-            pending.phase == RetirementPhase::RouteRetired && pending.window.destroyed_committed()
-        }) {
+        let Ok(index) = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+        else {
+            return false;
+        };
+        if !self.entries[index].is_quiescence_candidate() {
             return false;
         }
-        self.pending.remove(&binding);
+        self.entries.remove(index);
         true
     }
 }
@@ -689,7 +905,7 @@ mod tests {
     use crate::mailbox::HostRecord;
     use crate::mailbox::journal::HostIngressJournal;
 
-    fn destroyed_ingress(
+    pub(super) fn destroyed_ingress(
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
         window: WindowId,
@@ -713,7 +929,7 @@ mod tests {
         ingress
     }
 
-    fn binding() -> NativeSurfaceBinding {
+    pub(super) fn registered_session() -> (DockspaceSession, NativeSurfaceBinding) {
         let surface = SurfaceId::new(1);
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             surface,
@@ -737,7 +953,7 @@ mod tests {
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("registration frame settles");
-        frame
+        let binding = frame
             .commit()
             .expect("registration frame commits")
             .inputs()
@@ -746,7 +962,12 @@ mod tests {
                 HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
                 _ => None,
             })
-            .expect("registration emits one binding")
+            .expect("registration emits one binding");
+        (session, binding)
+    }
+
+    pub(super) fn binding() -> NativeSurfaceBinding {
+        registered_session().1
     }
 
     #[test]
@@ -838,10 +1059,10 @@ mod tests {
         state.commit_destroyed_callbacks();
         assert!(state.requires_snapshot());
         assert_eq!(state.destroyed_observations().count(), 1);
-        assert!(state.committed_routes().is_empty());
+        assert!(state.committed_routes().next().is_none());
 
         state.mark_snapshot_queued();
-        assert!(state.committed_routes().is_empty());
+        assert!(state.committed_routes().next().is_none());
         state.settle_snapshot(false);
         assert!(state.requires_snapshot());
         assert_eq!(state.destroyed_observations().count(), 1);
@@ -850,14 +1071,14 @@ mod tests {
         state.settle_snapshot(true);
         assert!(!state.requires_snapshot());
         assert_eq!(state.owned_data_capacity_bytes(), retained);
-        let committed = state.committed_routes();
+        let committed = state.committed_routes().collect::<Vec<_>>();
         assert_eq!(committed.len(), 1);
         state.commit_routes(&committed);
         assert_eq!(state.quiescence_candidates().collect::<Vec<_>>(), [binding]);
         assert_eq!(state.owned_data_capacity_bytes(), retained);
         assert!(state.finish_quiescence(binding));
         assert!(state.quiescence_candidates().next().is_none());
-        assert_eq!(state.owned_data_capacity_bytes(), empty);
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
     }
 
     #[test]
@@ -896,7 +1117,9 @@ mod tests {
         );
         let ordinal = receipt.ingress().unwrap().ordinal();
         assert!(receipt.transfer(None, failed));
-        assert!(state.begin_unmaterialized_quiescence(failed_binding, receipt));
+        state
+            .begin_unmaterialized_quiescence(failed_binding, receipt)
+            .unwrap();
         let retained = state.owned_data_capacity_bytes();
         assert!(retained > pending);
         state.mark_create_failure_recorded(failed_binding);
@@ -910,7 +1133,7 @@ mod tests {
         assert!(state.is_quiescence_candidate(failed_binding));
         assert_eq!(state.owned_data_capacity_bytes(), retained);
         assert!(state.finish_quiescence(failed_binding));
-        assert_eq!(state.owned_data_capacity_bytes(), pending);
+        assert_eq!(state.owned_data_capacity_bytes(), retained);
         assert!(state.has_window(viewport, materialized));
     }
 

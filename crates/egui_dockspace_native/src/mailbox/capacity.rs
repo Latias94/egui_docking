@@ -156,17 +156,83 @@ impl NativeHostState {
             .count()
     }
 
-    pub(super) fn can_admit_binding(&self, incoming: NativeSurfaceBinding) -> bool {
-        self.viewports
+    pub(super) fn can_admit_binding(&mut self, incoming: NativeSurfaceBinding) -> bool {
+        let already_retained = self
+            .viewports
             .bindings()
             .chain(self.retirements.bindings())
             .chain(self.window_resources.bindings())
-            .any(|binding| binding.same_window_lifetime(incoming))
-            || self.retained_lifetime_count() < self.terminal_roster.window_capacity()
+            .any(|binding| binding.same_window_lifetime(incoming));
+        let Some(required) = self
+            .retained_lifetime_count()
+            .checked_add(usize::from(!already_retained))
+        else {
+            return false;
+        };
+        let Some(growth) = NativeRetirementState::reservation_bytes(required)
+            .map(|bytes| bytes.saturating_sub(self.retirements.owned_data_capacity_bytes()))
+        else {
+            return false;
+        };
+        required <= self.terminal_roster.window_capacity()
+            && self.can_reserve_input_data(growth)
+            && self
+                .retirements
+                .prepare_capacity_for_retained_lifetimes(required)
+                .is_ok()
     }
 }
 
 impl NativeHostBridge {
+    pub(crate) fn lifecycle_storage_bytes(bindings: usize, closes: usize) -> Option<usize> {
+        NativeRetirementState::reservation_bytes(bindings)?
+            .checked_add(NativeCloseControl::reservation_bytes(closes)?)?
+            .checked_add(NativeViewportMap::reservation_bytes(bindings)?)
+    }
+
+    pub(crate) fn retirement_preparation_storage_bytes(bindings: usize) -> Option<usize> {
+        size_of::<super::PreparedRouteRetirements>()
+            .checked_add(
+                bindings.checked_mul(size_of::<crate::retirement::CommittedRetirement>())?,
+            )?
+            .checked_add(
+                NativeOutputResources::default_maximum_token_count()
+                    .checked_mul(size_of::<eframe::NativeOutputToken>())?,
+            )
+    }
+
+    /// Initial lifecycle backing covers every route's future terminal move.
+    /// A late callback only fills its original receipt and cannot need a slot.
+    pub(crate) fn configure_lifecycle_storage(
+        &self,
+        bindings: usize,
+        closes: usize,
+    ) -> Result<(), NativeHostProtocolError> {
+        let mut state = self.lock();
+        if !state.retirements.can_configure_capacity_limit()
+            || !state.close_control.can_configure_capacity_limit()
+            || !state.viewports.can_configure_capacity_limit()
+            || state.journal.captured_through() != 0
+            || state.output_context.is_some()
+        {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        let additional = Self::lifecycle_storage_bytes(bindings, closes)
+            .and_then(|bytes| bytes.checked_add(NativeOutputResources::ordinary_entry_data_bytes()))
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        // Existing backing remains live until all replacements have succeeded.
+        if !state.can_reserve_input_data(additional) {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        let retirements = NativeRetirementState::with_capacity_limit(bindings)?;
+        let close_control = NativeCloseControl::with_capacity_limit(closes)?;
+        let viewports = NativeViewportMap::with_capacity_limit(bindings)?;
+        state.retirements = retirements;
+        state.close_control = close_control;
+        state.viewports = viewports;
+        Ok(())
+    }
+
     pub(crate) fn window_resource_storage_bytes(slots: usize) -> Option<usize> {
         NativeWindowResources::reservation_bytes(slots)
     }
@@ -285,6 +351,42 @@ mod tests {
         DeviceId, MouseScrollDelta, PointerEventFacts, Touch, TouchPhase, WindowEvent,
     };
     use winit::window::WindowId;
+
+    #[test]
+    fn lifecycle_installation_checks_shared_constructor_peak_before_replacing_any_owner() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let baseline = bridge.owned_input_capacity_bytes(None);
+        let pointer = bridge.lock().reserved_pointer_translation_capacity_bytes();
+        let output = NativeOutputResources::ordinary_entry_data_bytes();
+        let candidate = NativeHostBridge::lifecycle_storage_bytes(2, 1).unwrap();
+        let required = baseline + pointer + candidate + output;
+        assert!(bridge.configure_input_storage_allowance(required - 1, 0));
+        assert_eq!(
+            bridge.configure_lifecycle_storage(2, 1),
+            Err(NativeHostProtocolError::NativeReportStorageUnavailable),
+        );
+        assert_eq!(bridge.owned_input_capacity_bytes(None), baseline);
+        {
+            let state = bridge.lock();
+            assert!(state.retirements.can_configure_capacity_limit());
+            assert!(state.close_control.can_configure_capacity_limit());
+            assert!(state.viewports.can_configure_capacity_limit());
+            assert_eq!(state.journal.captured_through(), 0);
+        }
+        assert!(bridge.configure_input_storage_allowance(required, 0));
+        bridge.configure_lifecycle_storage(2, 1).unwrap();
+        let inline = size_of::<NativeRetirementState>()
+            + size_of::<NativeCloseControl>()
+            + size_of::<NativeViewportMap>();
+        assert_eq!(
+            bridge.owned_input_capacity_bytes(None),
+            baseline + candidate - inline
+        );
+        assert_eq!(
+            bridge.configure_lifecycle_storage(2, 1),
+            Err(NativeHostProtocolError::NativeReportStorageUnavailable),
+        );
+    }
 
     #[test]
     fn resource_and_external_owner_storage_share_output_headroom_before_initial_installation() {

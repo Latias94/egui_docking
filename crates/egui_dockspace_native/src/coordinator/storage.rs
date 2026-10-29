@@ -8,17 +8,22 @@ use super::*;
 pub(crate) struct NativeOwnerStorageLimit {
     pub(crate) resource_slots: usize,
     pub(crate) command_slots: usize,
+    pub(crate) close_slots: usize,
     pub(crate) byte_limit: usize,
 }
 
 impl NativeOwnerStorageLimit {
-    pub(super) fn external_reserved_bytes(self) -> Option<usize> {
+    pub(super) fn external_reserved_bytes(self, bindings: usize) -> Option<usize> {
         self.byte_limit
             .checked_sub(NativeHostBridge::window_resource_storage_bytes(
                 self.resource_slots,
             )?)?
             .checked_sub(NativeHostBridge::window_resource_staging_bytes(
                 self.resource_slots,
+            )?)?
+            .checked_sub(NativeHostBridge::lifecycle_storage_bytes(
+                bindings,
+                self.close_slots,
             )?)
     }
 
@@ -27,10 +32,17 @@ impl NativeOwnerStorageLimit {
         effects: usize,
         resources: usize,
         commands: usize,
+        closes: usize,
     ) -> Option<usize> {
         size_of::<Option<Self>>()
             .checked_add(NativeHostBridge::window_resource_storage_bytes(resources)?)?
             .checked_add(NativeHostBridge::window_resource_staging_bytes(resources)?)?
+            .checked_add(NativeHostBridge::lifecycle_storage_bytes(bindings, closes)?)?
+            .checked_add(NativeHostBridge::retirement_preparation_storage_bytes(
+                bindings,
+            )?)?
+            .checked_add(size_of::<Vec<dockspace::close::CloseRequestId>>())?
+            .checked_add(closes.checked_mul(size_of::<dockspace::close::CloseRequestId>())?)?
             .checked_add(NativeInputControl::reservation_bytes(
                 Some(bindings),
                 Some(effects),
@@ -52,8 +64,14 @@ impl NativeOwnerStorageLimit {
         let (Some(bindings), Some(effects)) = (bindings, effects) else {
             return Err(NativeHostProtocolError::NativeOwnerStorageConfiguration.into());
         };
-        if Self::required_bytes(bindings, effects, self.resource_slots, self.command_slots)
-            .is_none_or(|required| required > self.byte_limit)
+        if Self::required_bytes(
+            bindings,
+            effects,
+            self.resource_slots,
+            self.command_slots,
+            self.close_slots,
+        )
+        .is_none_or(|required| required > self.byte_limit)
         {
             return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
         }
@@ -224,6 +242,11 @@ impl NativeCoordinator {
                 self.pending_effect_results
                     .capacity()
                     .saturating_mul(size_of::<PendingNativeEffectResult>()),
+            )
+            .saturating_add(
+                self.close_decision_scratch
+                    .capacity()
+                    .saturating_mul(size_of::<dockspace::close::CloseRequestId>()),
             ))
     }
 }

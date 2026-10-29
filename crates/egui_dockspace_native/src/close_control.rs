@@ -1,7 +1,6 @@
 //! Exact native close correlation owned by the eframe adapter.
 
 use dockspace::close::{CloseItemDecisionState, CloseRequestId};
-use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use dockspace::runtime::{
@@ -11,9 +10,12 @@ use dockspace::runtime::{
 use eframe::{NativeViewportCloseRequest, egui::ViewportId};
 use winit::window::WindowId;
 
+use crate::error::NativeHostProtocolError;
 use crate::event::NativeWindowEventRecord;
 use crate::mailbox::journal::ReservedHostRecord;
 
+#[cfg(test)]
+mod storage_tests;
 #[cfg(test)]
 mod tests;
 
@@ -169,6 +171,14 @@ impl CapturedNativeClose {
             window: event.window_id(),
         })
     }
+
+    fn matches(&self, incoming: &Self) -> bool {
+        if incoming.held_request.is_some() {
+            self.held_request == incoming.held_request
+        } else {
+            self == incoming
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -243,19 +253,72 @@ impl PendingNativeClose {
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeCloseControl {
-    pending: BTreeMap<NativeSurfaceBinding, PendingNativeClose>,
+    pending: Vec<(NativeSurfaceBinding, PendingNativeClose)>,
+    entry_limit: Option<usize>,
     progress: crate::lifecycle_progress::NativeCloseProgress,
 }
 
 impl NativeCloseControl {
-    /// Counts inline storage and fixed metadata for each retained close owner.
-    /// Inline receipts are counted once; B-tree node and allocator overhead are excluded.
+    /// Allows the first finite configuration only before any retained close.
+    /// Selected limits and cumulative lifecycle progress cannot be reset.
+    pub(crate) fn can_configure_capacity_limit(&self) -> bool {
+        self.entry_limit.is_none()
+            && self.pending.is_empty()
+            && self.progress.requests_retained() == 0
+    }
+
+    /// Prepays independent exact-key slots, including retained provider aliases.
+    pub(crate) fn with_capacity_limit(entries: usize) -> Result<Self, NativeHostProtocolError> {
+        Self::reservation_bytes(entries)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        let mut pending = Vec::new();
+        pending
+            .try_reserve_exact(entries)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if pending.capacity() > entries {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        Ok(Self {
+            pending,
+            entry_limit: Some(entries),
+            progress: crate::lifecycle_progress::NativeCloseProgress::default(),
+        })
+    }
+
+    /// Includes inline state and selected backing, without allocator metadata.
+    pub(crate) fn reservation_bytes(entries: usize) -> Option<usize> {
+        size_of::<Self>().checked_add(
+            entries.checked_mul(size_of::<(NativeSurfaceBinding, PendingNativeClose)>())?,
+        )
+    }
+
+    /// Counts inline state and actual capacity, including vacant reusable slots.
+    /// Receipts, parked ingress and decision metadata remain inline in each entry.
     pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
         size_of::<Self>().saturating_add(
-            self.pending.len().saturating_mul(
-                size_of::<NativeSurfaceBinding>() + size_of::<PendingNativeClose>(),
-            ),
+            self.pending
+                .capacity()
+                .saturating_mul(size_of::<(NativeSurfaceBinding, PendingNativeClose)>()),
         )
+    }
+
+    fn pending_for_binding(&self, binding: NativeSurfaceBinding) -> Option<&PendingNativeClose> {
+        let index = self
+            .pending
+            .binary_search_by_key(&binding, |(binding, _)| *binding)
+            .ok()?;
+        Some(&self.pending[index].1)
+    }
+
+    fn pending_for_binding_mut(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<&mut PendingNativeClose> {
+        let index = self
+            .pending
+            .binary_search_by_key(&binding, |(binding, _)| *binding)
+            .ok()?;
+        Some(&mut self.pending[index].1)
     }
 
     pub(crate) const fn progress(&self) -> crate::lifecycle_progress::NativeCloseProgress {
@@ -267,7 +330,9 @@ impl NativeCloseControl {
     }
 
     pub(crate) fn has_unsettled_clear(&self) -> bool {
-        self.pending.values().any(|pending| pending.clear_recorded)
+        self.pending
+            .iter()
+            .any(|(_, pending)| pending.clear_recorded)
     }
 
     pub(crate) fn retains_request(
@@ -278,23 +343,19 @@ impl NativeCloseControl {
         let Some(capture) = CapturedNativeClose::from_event(event, binding) else {
             return false;
         };
-        self.pending.get(&binding).is_some_and(|pending| {
-            let matches = |existing: &CapturedNativeClose| {
-                if capture.held_request.is_some() {
-                    existing.held_request == capture.held_request
-                } else {
-                    *existing == capture
-                }
-            };
-            matches(&pending.capture) || pending.successor.as_ref().is_some_and(matches)
+        self.pending_for_binding(binding).is_some_and(|pending| {
+            pending.capture.matches(&capture)
+                || pending
+                    .successor
+                    .as_ref()
+                    .is_some_and(|successor| successor.matches(&capture))
         })
     }
 
-    /// Reserves one exact close before ingress returns HoldClose.
-    ///
-    /// Only cancellation permits one newer capture on the same physical window.
-    /// That successor cannot publish Requested or bind core until Clear settles.
-    pub(crate) fn capture_request(
+    /// Validates and reserves backing before ingress promises HoldClose. This
+    /// does not capture the request or advance progress; the caller must keep
+    /// admission and capture serialized on this owner before returning Hold.
+    pub(crate) fn preflight_capture(
         &mut self,
         event: &NativeWindowEventRecord,
         binding: NativeSurfaceBinding,
@@ -309,20 +370,23 @@ impl NativeCloseControl {
         }) {
             return NativeCloseCaptureAdmission::Conflict;
         }
-        let Some(pending) = self.pending.get_mut(&binding) else {
-            self.pending
-                .insert(binding, PendingNativeClose::new(capture));
-            self.progress.record_request();
+        let Some(pending) = self.pending_for_binding(binding) else {
+            if self
+                .entry_limit
+                .is_some_and(|limit| self.pending.len() >= limit)
+                || self.pending.len() == self.pending.capacity()
+                    && (self.entry_limit.is_some() || self.pending.try_reserve(1).is_err())
+            {
+                return NativeCloseCaptureAdmission::Conflict;
+            }
             return NativeCloseCaptureAdmission::First;
         };
-        let matches = |existing: &CapturedNativeClose| {
-            if capture.held_request.is_some() {
-                existing.held_request == capture.held_request
-            } else {
-                *existing == capture
-            }
-        };
-        if matches(&pending.capture) || pending.successor.as_ref().is_some_and(matches) {
+        if pending.capture.matches(&capture)
+            || pending
+                .successor
+                .as_ref()
+                .is_some_and(|successor| successor.matches(&capture))
+        {
             return NativeCloseCaptureAdmission::Duplicate;
         }
         if pending.accepted
@@ -335,7 +399,32 @@ impl NativeCloseControl {
         {
             return NativeCloseCaptureAdmission::Conflict;
         }
-        pending.successor = Some(capture);
+        NativeCloseCaptureAdmission::First
+    }
+
+    /// Captures one exact close before ingress returns HoldClose. Full storage
+    /// still admits exact duplicates and the existing owner's successor slot.
+    /// Only cancellation permits that successor; Requested waits for Clear.
+    pub(crate) fn capture_request(
+        &mut self,
+        event: &NativeWindowEventRecord,
+        binding: NativeSurfaceBinding,
+    ) -> NativeCloseCaptureAdmission {
+        let admission = self.preflight_capture(event, binding);
+        if admission != NativeCloseCaptureAdmission::First {
+            return admission;
+        }
+        let capture = CapturedNativeClose::from_event(event, binding)
+            .expect("preflight validated the exact close capture");
+        match self
+            .pending
+            .binary_search_by_key(&binding, |(binding, _)| *binding)
+        {
+            Ok(index) => self.pending[index].1.successor = Some(capture),
+            Err(index) => self
+                .pending
+                .insert(index, (binding, PendingNativeClose::new(capture))),
+        }
         self.progress.record_request();
         NativeCloseCaptureAdmission::First
     }
@@ -351,7 +440,7 @@ impl NativeCloseControl {
         else {
             return Err(record);
         };
-        let Some(pending) = self.pending.get_mut(&binding) else {
+        let Some(pending) = self.pending_for_binding_mut(binding) else {
             return Err(record);
         };
         if pending.successor.as_ref() != Some(&capture) || pending.successor_ingress.is_some() {
@@ -363,12 +452,12 @@ impl NativeCloseControl {
 
     pub(crate) fn parked_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
         self.pending
-            .values()
-            .filter_map(|pending| pending.successor_ingress.as_ref())
+            .iter()
+            .filter_map(|(_, pending)| pending.successor_ingress.as_ref())
     }
 
     pub(crate) fn callback_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.pending.values().flat_map(|pending| {
+        self.pending.iter().flat_map(|(_, pending)| {
             pending
                 .cancellation_receipt
                 .as_ref()
@@ -379,7 +468,7 @@ impl NativeCloseControl {
     }
 
     pub(crate) fn take_callback_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
-        self.pending.values_mut().find_map(|pending| {
+        self.pending.iter_mut().find_map(|(_, pending)| {
             if let Some(ingress) = pending
                 .cancellation_receipt
                 .as_mut()
@@ -399,7 +488,7 @@ impl NativeCloseControl {
     }
 
     pub(crate) fn deferred_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.pending.values().flat_map(|pending| {
+        self.pending.iter().flat_map(|(_, pending)| {
             pending
                 .successor_ingress
                 .iter()
@@ -415,7 +504,7 @@ impl NativeCloseControl {
         let Some(capture) = CapturedNativeClose::from_event(event, binding) else {
             return false;
         };
-        self.pending.get(&binding).is_some_and(|pending| {
+        self.pending_for_binding(binding).is_some_and(|pending| {
             pending.capture == capture
                 && !pending.request_recorded
                 && !pending.accepted
@@ -432,8 +521,7 @@ impl NativeCloseControl {
         if !self.needs_request_recording(event, binding) {
             return false;
         }
-        self.pending
-            .get_mut(&binding)
+        self.pending_for_binding_mut(binding)
             .expect("the exact unrecorded capture remains present")
             .request_recorded = true;
         true
@@ -451,7 +539,7 @@ impl NativeCloseControl {
     }
 
     pub(crate) fn bind_request(&mut self, request: NativeSurfaceCloseRequest) -> Result<bool, ()> {
-        let Some(pending) = self.pending.get_mut(&request.binding()) else {
+        let Some(pending) = self.pending_for_binding_mut(request.binding()) else {
             return Ok(false);
         };
         if !pending.request_recorded {
@@ -470,7 +558,7 @@ impl NativeCloseControl {
     pub(crate) fn unresolved_requests(
         &self,
     ) -> impl Iterator<Item = NativeSurfaceCloseRequest> + '_ {
-        self.pending.values().filter_map(|pending| {
+        self.pending.iter().filter_map(|(_, pending)| {
             (!pending.accepted && !pending.clear_recorded && pending.cancellation.is_none())
                 .then_some(pending.request)
                 .flatten()
@@ -481,14 +569,13 @@ impl NativeCloseControl {
         &self,
     ) -> impl Iterator<Item = NativeSurfaceCloseRequest> + '_ {
         self.unresolved_requests().filter(|request| {
-            self.pending
-                .get(&request.binding())
+            self.pending_for_binding(request.binding())
                 .is_some_and(|pending| !pending.policy_recorded)
         })
     }
 
     pub(crate) fn mark_policy_recorded(&mut self, request: NativeSurfaceCloseRequest) {
-        if let Some(pending) = self.pending.get_mut(&request.binding())
+        if let Some(pending) = self.pending_for_binding_mut(request.binding())
             && pending.request == Some(request)
         {
             pending.policy_recorded = true;
@@ -500,7 +587,7 @@ impl NativeCloseControl {
         request: NativeSurfaceCloseRequest,
         plan: &DockspaceClosePlan,
     ) {
-        if let Some(pending) = self.pending.get_mut(&request.binding())
+        if let Some(pending) = self.pending_for_binding_mut(request.binding())
             && pending.request == Some(request)
             && pending.policy_recorded
             && !pending.accepted
@@ -517,13 +604,18 @@ impl NativeCloseControl {
 
     pub(crate) fn decision_requests(&self) -> impl Iterator<Item = CloseRequestId> + '_ {
         self.pending
-            .values()
-            .filter_map(|pending| pending.decision_request)
+            .iter()
+            .filter_map(|(_, pending)| pending.decision_request)
+    }
+
+    /// Counts retained decision identifiers without constructing a snapshot.
+    pub(crate) fn decision_count(&self) -> usize {
+        self.decision_requests().count()
     }
 
     /// Releases only requests proven complete by a successfully committed frame.
     pub(crate) fn settle_decision_requests(&mut self, requests: &[CloseRequestId]) {
-        for pending in self.pending.values_mut() {
+        for (_, pending) in &mut self.pending {
             if pending
                 .decision_request
                 .is_some_and(|request| requests.contains(&request))
@@ -537,22 +629,22 @@ impl NativeCloseControl {
         self.unsubmitted_requests().next().is_some()
             || self
                 .pending
-                .values()
-                .any(|pending| pending.decision_request.is_some())
+                .iter()
+                .any(|(_, pending)| pending.decision_request.is_some())
     }
 
     pub(crate) fn request_for_binding(
         &self,
         binding: NativeSurfaceBinding,
     ) -> Option<NativeSurfaceCloseRequest> {
-        self.pending.get(&binding)?.request
+        self.pending_for_binding(binding)?.request
     }
 
     pub(crate) fn held_request(
         &self,
         request: NativeSurfaceCloseRequest,
     ) -> Option<NativeViewportCloseRequest> {
-        let pending = self.pending.get(&request.binding())?;
+        let pending = self.pending_for_binding(request.binding())?;
         (pending.request == Some(request)
             && !pending.accepted
             && pending.cancellation.is_none()
@@ -566,7 +658,7 @@ impl NativeCloseControl {
         binding: NativeSurfaceBinding,
         request: NativeViewportCloseRequest,
     ) -> bool {
-        let Some(pending) = self.pending.get_mut(&binding) else {
+        let Some(pending) = self.pending_for_binding_mut(binding) else {
             return false;
         };
         if pending.capture.held_request != Some(request)
@@ -587,7 +679,7 @@ impl NativeCloseControl {
         binding: NativeSurfaceBinding,
         request: NativeViewportCloseRequest,
     ) {
-        if let Some(pending) = self.pending.get_mut(&binding)
+        if let Some(pending) = self.pending_for_binding_mut(binding)
             && pending.capture.held_request == Some(request)
             && pending.cancellation.is_none()
             && pending
@@ -605,9 +697,9 @@ impl NativeCloseControl {
         reserve: impl FnOnce() -> ReservedHostRecord,
     ) -> NativeCloseCallbackAdmission {
         self.pending
-            .values_mut()
-            .find(|pending| pending.matches_cancellation(record))
-            .and_then(|pending| pending.cancellation_receipt.as_mut())
+            .iter_mut()
+            .find(|(_, pending)| pending.matches_cancellation(record))
+            .and_then(|(_, pending)| pending.cancellation_receipt.as_mut())
             .map_or(NativeCloseCallbackAdmission::Unreserved, |receipt| {
                 receipt.receive(reserve)
             })
@@ -616,7 +708,7 @@ impl NativeCloseControl {
     /// Full frame boundaries alone commit a transferred cancellation callback.
     /// Semantic Clear settlement remains a separate requirement for releasing it.
     pub(crate) fn commit_transferred_callbacks(&mut self) {
-        for pending in self.pending.values_mut() {
+        for (_, pending) in &mut self.pending {
             if let Some(receipt) = pending.cancellation_receipt.as_mut() {
                 receipt.commit_transferred();
             }
@@ -628,7 +720,7 @@ impl NativeCloseControl {
         request: NativeSurfaceCloseRequest,
         acknowledgement: NativeCloseEffectAcknowledgement,
     ) -> Option<ViewportId> {
-        let pending = self.pending.get_mut(&request.binding())?;
+        let pending = self.pending_for_binding_mut(request.binding())?;
         if pending.request != Some(request)
             || pending.accepted
             || pending.cancellation.is_some()
@@ -641,7 +733,7 @@ impl NativeCloseControl {
     }
 
     pub(crate) fn accept_close(&mut self, request: NativeSurfaceCloseRequest) -> bool {
-        let Some(pending) = self.pending.get_mut(&request.binding()) else {
+        let Some(pending) = self.pending_for_binding_mut(request.binding()) else {
             return false;
         };
         if pending.request != Some(request)
@@ -661,7 +753,7 @@ impl NativeCloseControl {
         event: &NativeWindowEventRecord,
         binding: NativeSurfaceBinding,
     ) -> Result<bool, ()> {
-        let Some(pending) = self.pending.get(&binding) else {
+        let Some(pending) = self.pending_for_binding(binding) else {
             return Ok(false);
         };
         if !pending.accepted {
@@ -679,14 +771,17 @@ impl NativeCloseControl {
         event: &NativeWindowEventRecord,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        if !self
+        let Ok(index) = self
             .pending
-            .get(&binding)
-            .is_some_and(|pending| pending.matches_destroyed(event, binding))
-        {
+            .binary_search_by_key(&binding, |(binding, _)| *binding)
+        else {
+            return false;
+        };
+        if !self.pending[index].1.matches_destroyed(event, binding) {
             return false;
         }
-        self.pending.remove(&binding).is_some()
+        self.pending.remove(index);
+        true
     }
 
     pub(crate) fn cancellation_observation(
@@ -710,7 +805,7 @@ impl NativeCloseControl {
     }
 
     pub(crate) fn mark_clear_recorded(&mut self, binding: NativeSurfaceBinding) -> bool {
-        let Some(pending) = self.pending.get_mut(&binding) else {
+        let Some(pending) = self.pending_for_binding_mut(binding) else {
             return false;
         };
         if pending.cancellation.is_none()
@@ -733,12 +828,12 @@ impl NativeCloseControl {
         if !applied {
             return self
                 .pending
-                .values()
-                .filter(|pending| pending.clear_recorded)
+                .iter()
+                .filter(|(_, pending)| pending.clear_recorded)
                 .count();
         }
         let mut count = 0;
-        self.pending.retain(|_, pending| {
+        self.pending.retain_mut(|(_, pending)| {
             if !pending.clear_can_settle() {
                 return true;
             }
@@ -759,11 +854,16 @@ impl NativeCloseControl {
     /// Retires close correlation after the exact native route reaches its
     /// terminal destroyed state.
     pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
-        self.pending.remove(&binding);
+        if let Ok(index) = self
+            .pending
+            .binary_search_by_key(&binding, |(binding, _)| *binding)
+        {
+            self.pending.remove(index);
+        }
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        self.pending.contains_key(&binding)
+        self.pending_for_binding(binding).is_some()
     }
 }
 
@@ -784,7 +884,7 @@ mod capacity_tests {
     use super::*;
     use crate::mailbox::{HostRecord, journal::HostIngressJournal};
 
-    fn commit(session: &mut DockspaceSession) -> HostFrameReport {
+    pub(super) fn commit(session: &mut DockspaceSession) -> HostFrameReport {
         let mut frame = session.begin_host_frame().unwrap();
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -792,7 +892,7 @@ mod capacity_tests {
         frame.commit().unwrap()
     }
 
-    fn fixture(item_count: u64) -> (DockspaceSession, NativeSurfaceBinding) {
+    pub(super) fn fixture(item_count: u64) -> (DockspaceSession, NativeSurfaceBinding) {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             SurfaceId::new(1),
             DockspaceRootLayout::new(
@@ -831,7 +931,7 @@ mod capacity_tests {
         (session, binding)
     }
 
-    fn request(
+    pub(super) fn request(
         session: &mut DockspaceSession,
         binding: NativeSurfaceBinding,
     ) -> NativeSurfaceCloseRequest {
@@ -873,9 +973,10 @@ mod capacity_tests {
         let one = control.owned_data_capacity_bytes();
         assert!(one > empty);
         assert!(control.observe_request(&event(other), other));
-        assert_eq!(control.owned_data_capacity_bytes() - one, one - empty);
+        let retained = control.owned_data_capacity_bytes();
+        assert!(retained >= one);
         control.retire_binding(other);
-        assert_eq!(control.owned_data_capacity_bytes(), one);
+        assert_eq!(control.owned_data_capacity_bytes(), retained);
 
         session.cancel_native_surface_close(close).unwrap();
         let effect = commit(&mut session).take_native_effects().pop().unwrap();
@@ -894,23 +995,23 @@ mod capacity_tests {
             NativeCloseCallbackAdmission::First,
         );
         control
-            .pending
-            .get_mut(&binding)
+            .pending_for_binding_mut(binding)
             .unwrap()
             .cancellation_receipt = Some(receipt);
         let ordinal = control.callback_ingress().next().unwrap().ordinal();
-        assert_eq!(control.owned_data_capacity_bytes(), one);
+        assert_eq!(control.owned_data_capacity_bytes(), retained);
         control.commit_transferred_callbacks();
-        assert_eq!(control.owned_data_capacity_bytes(), one);
+        assert_eq!(control.owned_data_capacity_bytes(), retained);
         assert!(control.take_callback_ingress(ordinal).is_some());
         assert!(control.mark_clear_recorded(binding));
         assert_eq!(control.settle_clear(false), 1);
         assert_eq!(control.settle_clear(true), 0);
-        assert_eq!(control.owned_data_capacity_bytes(), one);
+        assert_eq!(control.owned_data_capacity_bytes(), retained);
         control.commit_transferred_callbacks();
-        assert_eq!(control.owned_data_capacity_bytes(), one);
+        assert_eq!(control.owned_data_capacity_bytes(), retained);
         assert_eq!(control.settle_clear(true), 1);
-        assert_eq!(control.owned_data_capacity_bytes(), empty);
+        assert!(!control.has_pending_work());
+        assert_eq!(control.owned_data_capacity_bytes(), retained);
     }
 
     #[test]
@@ -962,7 +1063,7 @@ mod capacity_tests {
             );
             assert!(control.references_binding(binding));
             control.retire_binding(binding);
-            assert_eq!(control.owned_data_capacity_bytes(), empty);
+            assert_eq!(control.owned_data_capacity_bytes(), inline);
             assert_eq!(control.request_for_binding(binding), None);
             assert!(control.decision_requests().next().is_none());
             assert!(!control.references_binding(binding));

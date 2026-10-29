@@ -125,10 +125,8 @@ impl NativeCoordinator {
         self.effects.remove_commands(binding);
         self.retain_retired_input_results(binding);
         self.receivers.retire_binding(binding);
-        for token in self.bridge.retire_deferred_binding(viewport, binding) {
-            self.bridge.take_pending_output(token);
-            self.receivers.abandon(token);
-        }
+        self.bridge
+            .retire_deferred_binding_paints(viewport, binding);
     }
 
     fn accept_retirement_effect(

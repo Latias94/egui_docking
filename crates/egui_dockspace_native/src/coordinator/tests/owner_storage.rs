@@ -38,7 +38,8 @@ fn owners(resources: usize, commands: usize) -> NativeOwnerStorageLimit {
     NativeOwnerStorageLimit {
         resource_slots: resources,
         command_slots: commands,
-        byte_limit: NativeOwnerStorageLimit::required_bytes(2, 2, resources, commands).unwrap(),
+        close_slots: 2,
+        byte_limit: NativeOwnerStorageLimit::required_bytes(2, 2, resources, commands, 2).unwrap(),
     }
 }
 
@@ -86,7 +87,7 @@ fn owner_configuration_requires_real_producer_and_report_bounds_and_the_complete
         .unwrap_err()
         .is_input_capacity()
     );
-    assert!(NativeOwnerStorageLimit::required_bytes(2, 2, usize::MAX, 2).is_none());
+    assert!(NativeOwnerStorageLimit::required_bytes(2, 2, usize::MAX, 2, 2).is_none());
     let native = bounded(2, 2);
     assert_eq!(native.owner_storage.unwrap().byte_limit, config.byte_limit);
     assert!(
