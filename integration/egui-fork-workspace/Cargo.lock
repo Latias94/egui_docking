@@ -484,6 +484,7 @@ dependencies = [
  "egui_dockspace",
  "egui_dockspace_native",
  "egui_inspection",
+ "winit",
  "x11rb",
 ]
 

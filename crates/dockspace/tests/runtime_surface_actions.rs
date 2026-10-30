@@ -1684,6 +1684,63 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
 }
 
 #[test]
+fn contained_release_owns_pending_presentation_after_the_gesture_ends() {
+    let mut session = contained_session(DockPolicy::default());
+    install_ready_candidate(&mut session);
+    present_pointer_surface(&mut session);
+    let original = contained_rect(&session);
+    let point = inspect_surface(&mut session, |plan| {
+        let contained = plan
+            .contained()
+            .find(|contained| contained.floating() == FLOATING)
+            .unwrap();
+        let east = contained
+            .resize()
+            .find(|resize| resize.direction() == ContainedResizeDirection::East)
+            .unwrap();
+        plan.receiver_for_contained_resize(contained, east)
+            .unwrap()
+            .center()
+    });
+    let moved = LogicalPoint::new(point.x() + 18.0, point.y()).unwrap();
+    let report = submit_host_edges(
+        &mut session,
+        &[
+            (
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                Some(point),
+            ),
+            (SurfacePointerEvent::Moved, Some(moved)),
+            (
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                Some(moved),
+            ),
+        ],
+    );
+    assert!(!session.has_active_gesture());
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(SURFACE));
+    assert!(!session.surface_requires_presentation(TARGET_SURFACE));
+    assert!(report.repaint_surfaces().contains(&SURFACE));
+    assert_eq!(contained_rect(&session), original);
+
+    let output = paint_pointer_surface(&mut session);
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(SURFACE));
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut settle = session.begin_host_frame().unwrap();
+    settle
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert!(settle.commit().unwrap().workspace_changed());
+    assert!(!session.has_pending_presentation());
+    assert!(!session.surface_requires_presentation(SURFACE));
+    assert!(contained_rect(&session).width() > original.width());
+}
+
+#[test]
 fn rear_contained_resize_press_raises_before_host_transform_motion() {
     let mut session = stacked_contained_session();
     install_ready_candidate(&mut session);

@@ -2,7 +2,7 @@
 title: Dockspace engine host architecture and direct manipulation - Plan
 type: refactor
 date: 2026-08-21
-revised: 2026-10-30
+revised: 2026-10-31
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -23,6 +23,16 @@ review_status: independent-coherence-and-feasibility-reviewed
 | Execution profile | Breaking replacement. Close the current correctness defects, establish the engine host contract, modernize egui, then converge interaction and optional native lifecycle owners. |
 | Stop conditions | Reject duplicate topology owners, renderer-selected targets, traversal receipts presented as GPU proof, lost input boundaries, stale output authority, and capabilities inferred from missing facts. |
 | Completion owner | Each implementation unit owns its replacement behavior, meaningful verification, obsolete-path deletion, and documentation. No compatibility layer is required. |
+
+Current readiness (2026-10-31): the complete plan remains in progress. The
+renderer-neutral public host and local/contained egui behavior have their own
+qualified checkpoints. Optional native completion still requires the remaining
+capacity/service-time and platform matrices, the native showcase, and U9
+dependency/package/documentation closure. The new continuous-X11-input and
+pending-presentation-wake slice is locally qualified; it does not replace
+those remaining acceptance gates. Open-GPUI and the user's actual engine remain
+outside the completion dependencies. Exact current results and failed attempts
+are recorded in `docs/VALIDATION.md`.
 
 ---
 
@@ -1726,6 +1736,29 @@ attempts remain in the detailed evidence. These three points are finite native
 smoke additions, not shared L03 complete60-case coverage. Non-guide edges,
 nested-target competition and high-rate input remain subsequent work; this
 does not close U7/U8 or the full native matrix.
+
+The continuous-X11-input follow-up (2026-10-31) is locally qualified.
+Its optional 1,000-motion XTest load now releases immediately after injection,
+without an inspection or idle-drain barrier. It exposed raw backlog cancelled
+at the original 250 ms age limit and a separate missing pending-release wake.
+One token now drains multiple individually committed prefixes within its
+original 256-record/2-ms budget. Core derives pending-presentation queries and
+missing-paint report entries from its existing release/rehome state; the native
+adapter retains exact semantic and output-terminal wakes and counts those
+obligations in quiescence. No second registry or synthetic pointer edge is added.
+Six optimized, 2-CPU, single-thread-software-GL runs each match all 1,000 native
+callback points at 989-1,005 Hz and bound release-to-model commit at approximately
+30-70 ms, then verify real tabs, destruction, retirement and quiescence. All 37
+main and six supplemental gates pass: workspace1,894, public130/serde137,
+product114/official15, native496/496 with both 10,000-lifetime soaks, runner37,
+doctest10, strict docs/lints/formatting, core packaging/dependency isolation,
+macOS default/bounded redock, four non-load X11 journeys and five pressure
+cases per platform. The final 440-source manifest and exact measurements are
+in the validation evidence. Earlier
+debug, overload, idle-stall and renderer-contention failures remain recorded.
+This finite XTest profile is not hardware polling or the separate 2 ms service,
+maximum-roster/O256, edge/nested/mixed-DPI or automatic stationary qualification.
+See `docs/VALIDATION.md` for exact profile and evidence. U7/U8 remains open.
 
 ### U8. Consolidate optional viewport hosting and certify native readiness
 

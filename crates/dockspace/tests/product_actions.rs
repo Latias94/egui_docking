@@ -1098,6 +1098,7 @@ fn native_root_tear_off_reports_an_unavailable_host_without_native_enrollment() 
 #[test]
 fn live_native_root_to_contained_preserves_multi_item_product_state_until_exact_transfer() {
     let (mut session, child_binding) = live_managed_native_root();
+    assert!(!session.has_pending_presentation());
     let before = session.version();
     let source_tabs = session
         .view()
@@ -1142,6 +1143,11 @@ fn live_native_root_to_contained_preserves_multi_item_product_state_until_exact_
     };
     assert_eq!(staged.before(), before);
     assert_eq!(staged.after(), before);
+    assert!(!session.has_active_gesture());
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(MAIN_SURFACE));
+    assert!(!session.surface_requires_presentation(NATIVE_SOURCE_SURFACE));
+    assert!(staged.repaint_surfaces().contains(&MAIN_SURFACE));
     assert!(staged.take_native_effects().is_empty());
     assert!(session.is_current_native_binding(child_binding));
     for item in [NATIVE_FIRST, NATIVE_SECOND] {
@@ -1162,6 +1168,9 @@ fn live_native_root_to_contained_preserves_multi_item_product_state_until_exact_
 
     let mut settled =
         present_surfaces_with_report(&mut session, &[MAIN_SURFACE, NATIVE_SOURCE_SURFACE]);
+    assert!(!session.has_pending_presentation());
+    assert!(!session.surface_requires_presentation(MAIN_SURFACE));
+    assert!(!session.surface_requires_presentation(NATIVE_SOURCE_SURFACE));
     assert_one_revision_advance(before, settled.after());
     let floating = match settled.presentation_transitions() {
         [terminal]

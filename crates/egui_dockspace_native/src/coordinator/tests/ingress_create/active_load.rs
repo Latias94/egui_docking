@@ -381,6 +381,113 @@ fn controlled_one_kilohertz_active_drag_preserves_all_edges_and_delivers_release
 }
 
 #[test]
+fn pending_release_prevents_native_quiescence_until_matching_presentation_commits() {
+    let clock = NativeMonotonicClock::new(|| Duration::ZERO);
+    let (mut native, receivers) = fixture(clock.clone());
+    let press = receivers.source.center();
+    let press = PhysicalPoint::new(press.x(), press.y()).unwrap();
+    let target = PhysicalPoint::new(400.0, 220.0).unwrap();
+    assert!(native.is_quiescent());
+
+    capture(&native, 1, press, Some(ElementState::Pressed));
+    assert!(
+        dispatch(&mut native, receivers, &clock, 1, false, None)
+            .0
+            .is_empty()
+    );
+    capture(&native, 2, target, None);
+    let (feedback, preview, _) = dispatch(&mut native, receivers, &clock, 1, false, None);
+    assert!(feedback.is_empty() && preview && native.session.has_active_gesture());
+    capture(&native, 3, target, Some(ElementState::Released));
+    let (feedback, preview, output) = dispatch(&mut native, receivers, &clock, 1, false, None);
+    let [pending] = feedback.as_slice() else {
+        panic!("the unpainted release must publish one pending result: {feedback:?}");
+    };
+    assert_eq!(
+        pending.status(),
+        DockspaceManipulationStatus::Pending(
+            DockspaceManipulationPendingReason::AwaitingPresentation
+        )
+    );
+    assert!(preview && output.is_none());
+    assert!(!native.session.has_active_gesture());
+    assert_eq!(
+        native.session.view().item(SOURCE_ITEM).unwrap().root(),
+        SOURCE_ROOT
+    );
+
+    // Settle the undispatched property effects through their real failure path. Empty native
+    // queues must leave the core release obligation as the reason this host is not quiescent.
+    for _ in 0..8 {
+        if let Some(command) = native.pointer_passthrough_command() {
+            assert!(native.fail_pointer_passthrough_dispatch(command));
+        }
+        native.try_report_pending_effect_results().unwrap();
+        let (feedback, preview, output) = dispatch(&mut native, receivers, &clock, 0, false, None);
+        assert!(feedback.is_empty() && preview && output.is_none());
+        if native.pending_effect_results.is_empty() && !native.input_control.has_pending_work() {
+            break;
+        }
+    }
+    assert!(native.pending_effect_results.is_empty());
+    assert!(!native.input_control.has_pending_work());
+    assert!(!native.effects.has_pending_work());
+    assert!(!native.bridge.has_pending_coordinator_work());
+    assert!(!native.receivers.has_pending_commit());
+    assert!(native.queued_snapshot.is_none());
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    assert!(!native.session.has_pending_native_input());
+    assert!(!native.session.has_pending_native_create());
+    assert!(native.session.has_pending_presentation());
+    assert!(native.session.surface_requires_presentation(SOURCE_SURFACE));
+    assert!(
+        !native.is_quiescent(),
+        "an idle gesture and empty native queues do not settle an unpainted release"
+    );
+
+    // The helper executes the real surface program and retains its affine output in the
+    // session as Presented. That terminal fact still needs its own successful core commit.
+    let (feedback, preview, output) = dispatch(&mut native, receivers, &clock, 0, true, None);
+    assert!(feedback.is_empty() && preview);
+    let output = output.expect("the pending release must emit its exact preview artifact");
+    assert!(native.session.has_pending_presentation());
+    assert!(!native.is_quiescent());
+    assert_eq!(
+        native.session.view().item(SOURCE_ITEM).unwrap().root(),
+        SOURCE_ROOT,
+        "reporting Presented alone cannot transfer source ownership"
+    );
+
+    let (feedback, _, output) = dispatch(&mut native, receivers, &clock, 0, false, Some(output));
+    assert!(output.is_none());
+    let [terminal] = feedback.as_slice() else {
+        panic!("the matching presentation must deliver one terminal result: {feedback:?}");
+    };
+    assert_eq!(
+        terminal.status(),
+        DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
+    );
+    assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
+    assert_eq!(
+        native.session.view().item(SOURCE_ITEM).unwrap().root(),
+        TARGET_ROOT
+    );
+    assert_eq!(
+        native.session.view().item(SIBLING_ITEM).unwrap().root(),
+        SOURCE_ROOT
+    );
+    assert!(!native.session.has_active_gesture());
+    assert!(!native.session.has_pending_native_input());
+    assert!(!native.session.has_pending_presentation());
+    assert!(!native.session.surface_requires_presentation(SOURCE_SURFACE));
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    assert!(
+        native.is_quiescent(),
+        "the exact presented release and its native owners have reached their terminal boundary"
+    );
+}
+
+#[test]
 fn combined_pressure_preserves_an_accepted_release_and_reserved_terminals_through_retry() {
     use crate::mailbox::NativeDispatch;
     use eframe::{NativeHostHandler, NativeHostWake, NativeViewportPropertyCommandRetirement};

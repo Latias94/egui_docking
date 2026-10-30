@@ -27,6 +27,10 @@ use super::super::assertions::{
     semantic_node, semantic_snapshot_is_stable, semantic_tree_summary, tab_drag_point,
     two_stage_ingress_points, verify_center_preview, viewport_logical_to_desktop,
 };
+use super::super::pointer_load::{
+    POINTER_LOAD_ENV, POINTER_LOAD_MOVES, begin_pointer_load, finish_pointer_load,
+    pointer_load_enabled, verify_pointer_load,
+};
 use super::inspection::{InspectionClient, ViewportTreeSnapshot, viewport_retirement_is_observed};
 use super::x11::{DestroyWatcher, WindowRecord, X11Desktop, x11_window_is_retired};
 
@@ -340,6 +344,11 @@ impl PhysicalDriver {
         deadline: Instant,
     ) -> Result<Self, String> {
         let target = RedockTarget::from_env()?;
+        if pointer_load_enabled()? && !matches!(target, RedockTarget::PaneCenter(_)) {
+            return Err(format!(
+                "{POINTER_LOAD_ENV}=1khz requires an explicit {TARGET_ENV}=pane-center-a, pane-center-b, or pane-center-c"
+            ));
+        }
         Ok(Self {
             shared,
             inspection: InspectionClient::connect(inspection_endpoint, deadline)?,
@@ -419,6 +428,9 @@ impl PhysicalDriver {
             ));
         }
         self.verify_retired_viewport(retirement)?;
+        if pointer_load_enabled()? {
+            verify_pointer_load(&self.shared)?;
+        }
         eprintln!(
             "physical-smoke: target-case={} verified real tabs=[Main,Child], retirement and quiescence",
             self.target.name()
@@ -1248,6 +1260,138 @@ fn wait_for_pane_center_scene(
     ))
 }
 
+fn pointer_load_points(
+    selected: PhysicalPoint,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    scene: &PaneCenterScene,
+) -> Result<[PhysicalPoint; 5], String> {
+    let config = dockspace::runtime::DockPresentationConfig::default();
+    let content = scene.geometry.content;
+    let inset = (1.0 - config.magnetic_center_fraction()) * 0.5;
+    let center = LogicalBounds {
+        min_x: content.min_x + (content.max_x - content.min_x) * inset,
+        min_y: content.min_y + (content.max_y - content.min_y) * inset,
+        max_x: content.max_x - (content.max_x - content.min_x) * inset,
+        max_y: content.max_y - (content.max_y - content.min_y) * inset,
+    };
+    let workspace = scene.geometry.workspace;
+    let band = ((workspace.max_x - workspace.min_x).min(workspace.max_y - workspace.min_y)
+        * config.magnetic_outer_band_fraction())
+    .clamp(
+        config.magnetic_outer_band_minimum(),
+        config.magnetic_outer_band_maximum(),
+    );
+    let margin = 2.0 / f64::from(pixels_per_point);
+    let mut points = [selected; 5];
+    // Check the fixed square against the target client, not the captured source child.
+    for (index, (dx, dy)) in [(-2, -2), (2, -2), (2, 2), (-2, 2), (0, 0)]
+        .into_iter()
+        .enumerate()
+    {
+        let point = PhysicalPoint {
+            x: selected.x + dx,
+            y: selected.y + dy,
+        };
+        let logical = desktop_to_viewport_logical(client, pixels_per_point, point)
+            .map_err(|error| format!("physical load point {point:?}: {error:?}"))?;
+        if !client.contains(point) {
+            return Err(format!(
+                "physical load point {point:?} left target client {client:?}"
+            ));
+        }
+        for (name, bounds, padding) in [
+            ("content", content, margin),
+            ("center basin", center, margin),
+            ("workspace outside root edge band", workspace, band + margin),
+        ] {
+            if logical.x <= bounds.min_x + padding
+                || logical.x >= bounds.max_x - padding
+                || logical.y <= bounds.min_y + padding
+                || logical.y >= bounds.max_y - padding
+            {
+                return Err(format!(
+                    "physical load point {point:?} left {name}: {bounds:?}"
+                ));
+            }
+        }
+        for guide in &scene.guides {
+            let bounds = guide.bounds;
+            if logical.x >= bounds.min_x - margin
+                && logical.x <= bounds.max_x + margin
+                && logical.y >= bounds.min_y - margin
+                && logical.y <= bounds.max_y + margin
+            {
+                return Err(format!(
+                    "physical load point {point:?} approaches guide {guide:?}"
+                ));
+            }
+        }
+        points[index] = point;
+    }
+    Ok(points)
+}
+
+fn inject_pointer_load(
+    shared: &Shared,
+    desktop: &X11Desktop,
+    request: GuideDragRequest<'_>,
+    points: [PhysicalPoint; 5],
+) -> Result<(), String> {
+    const CADENCE: Duration = Duration::from_millis(1);
+    if points[0] == request.routed_ingress {
+        return Err("physical load first move must advance from routed ingress".to_owned());
+    }
+    begin_pointer_load(shared, request.source_viewport, points)?;
+    let started = Instant::now();
+    let mut previous = started;
+    let mut maximum_gap = Duration::ZERO;
+    let mut injected = 0;
+    for step in 1..=POINTER_LOAD_MOVES {
+        // Delay the next slot after a late wake; never catch up by emitting a burst.
+        let scheduled = previous + CADENCE;
+        if scheduled >= request.deadline {
+            return Err(
+                "physical load cannot fit its fixed schedule before the scenario deadline"
+                    .to_owned(),
+            );
+        }
+        loop {
+            let now = Instant::now();
+            if now >= scheduled {
+                break;
+            }
+            let remaining = scheduled.duration_since(now);
+            if remaining > Duration::from_micros(500) {
+                std::thread::sleep(remaining - Duration::from_micros(500));
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+        let now = Instant::now();
+        if now >= request.deadline {
+            return Err(format!(
+                "physical load exceeded its deadline at move {step}"
+            ));
+        }
+        maximum_gap = maximum_gap.max(now.duration_since(previous));
+        previous = now;
+        let point = if step == POINTER_LOAD_MOVES {
+            points[4]
+        } else {
+            points[((step - 1) % 4) as usize]
+        };
+        // Each call keeps the existing checked XTest request and physical pointer query.
+        desktop.move_pointer(point)?;
+        injected += 1;
+    }
+    let elapsed = started.elapsed();
+    eprintln!(
+        "physical-load: injector moves={injected} elapsed={elapsed:?} maximum_start_gap={maximum_gap:?} requested_interval={CADENCE:?} catch_up=false"
+    );
+    finish_pointer_load(shared, injected, elapsed)
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn move_to_pane_center_while_pressed(
     shared: &Shared,
@@ -1296,6 +1440,7 @@ fn move_to_pane_center_while_pressed(
         geometry.content,
         target_scene.guides.len()
     );
+    let load_enabled = pointer_load_enabled()?;
     desktop.move_pointer(selected)?;
     desktop.assert_pointer(selected, Some(true))?;
     let source_step = if request.source_viewport == request.target_viewport {
@@ -1372,6 +1517,17 @@ fn move_to_pane_center_while_pressed(
         target_at_motion.step,
         final_scene.guides.len()
     );
+    if load_enabled {
+        let points = pointer_load_points(
+            selected,
+            final_window.bounds,
+            preview.pixels_per_point,
+            &final_scene,
+        )?;
+        // The scene and all guide exclusions are already proven. Return directly after
+        // the load so the caller releases without inspection or a drain-to-idle wait.
+        inject_pointer_load(shared, desktop, request, points)?;
+    }
     Ok((preview, selected))
 }
 

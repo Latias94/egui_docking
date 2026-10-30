@@ -301,6 +301,18 @@ before release. These finite native smokes do not certify non-guide edges,
 nested targets or the complete local journey matrix. They do not expose core
 geometry or provide a reusable GUI test engine.
 
+The optional high-rate extension sets `EGUI_DOCKSPACE_PHYSICAL_LOAD=1khz`
+together with one explicit pane-center target. It establishes the real Dock
+preview first, sends 1,000 distinct XTest motions with no catch-up burst, then
+releases immediately without an inspection or drain-to-idle barrier. The
+measurement requires the exact source and desktop-point sequence, reports
+actual injection/native callback rates, and bounds release-to-terminal commit
+using the earlier callback and later model observation. The qualified local
+profile is an optimized build with 2 CPU and `LP_NUM_THREADS=1` for software GL;
+unoptimized and renderer-oversubscribed attempts remain recorded failures.
+This is finite XTest/event-loop evidence, not a hardware polling-rate claim or
+the separate 2 ms reducer-service qualification. See `docs/VALIDATION.md`.
+
 ## Packaging and release order
 
 `dockspace` must still be published before `egui_dockspace`, because the

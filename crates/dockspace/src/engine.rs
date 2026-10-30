@@ -2918,6 +2918,75 @@ impl DockEngine {
         &self.interaction
     }
 
+    pub(crate) fn has_pending_presentation(&self) -> bool {
+        self.pending_drag_release.is_some()
+            || self.pending_contained_transform_release.is_some()
+            || self.pending_presentation_rehome.is_some()
+    }
+
+    pub(crate) fn surface_requires_presentation(&self, surface: SurfaceId) -> bool {
+        self.pending_presentation_targets()
+            .any(|(target, _)| target == surface)
+    }
+
+    pub(crate) fn surfaces_requiring_presentation_paint(&self) -> impl Iterator<Item = SurfaceId> {
+        self.pending_presentation_targets()
+            .filter_map(|(surface, needs_paint)| needs_paint.then_some(surface))
+    }
+
+    // The boolean distinguishes a missing paint from an exact output awaiting its terminal.
+    fn pending_presentation_targets(&self) -> impl Iterator<Item = (SurfaceId, bool)> {
+        [
+            self.pending_drag_release
+                .as_ref()
+                .filter(|pending| {
+                    pending.presented_output.is_none() && !pending.presentation_failed
+                })
+                .map(|pending| {
+                    (
+                        pending
+                            .drag
+                            .preview()
+                            .expect("pending release retains its exact preview")
+                            .public()
+                            .visual()
+                            .surface(),
+                        pending.presentation_outputs.is_empty(),
+                    )
+                }),
+            self.pending_contained_transform_release
+                .as_ref()
+                .filter(|pending| {
+                    pending.presented_output.is_none() && !pending.presentation_failed
+                })
+                .map(|pending| {
+                    (
+                        pending
+                            .transform
+                            .preview
+                            .as_ref()
+                            .expect("pending contained release retains its exact preview")
+                            .public()
+                            .surface(),
+                        pending.presentation_outputs.is_empty(),
+                    )
+                }),
+            self.pending_presentation_rehome
+                .as_ref()
+                .filter(|pending| {
+                    pending.presented_output.is_none() && !pending.presentation_failed
+                })
+                .map(|pending| {
+                    (
+                        pending.target_surface,
+                        pending.presentation_outputs.is_empty(),
+                    )
+                }),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// Returns the exact release preview retained until the host proves that it
     /// was presented.
     #[must_use]

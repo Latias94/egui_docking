@@ -11,6 +11,10 @@ mod assertions;
 mod driver;
 
 #[cfg(target_os = "linux")]
+#[path = "physical_x11/pointer_load.rs"]
+mod pointer_load;
+
+#[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     app::run()
 }

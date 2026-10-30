@@ -171,9 +171,9 @@ const fn should_retain_previous_output(
 const fn retained_pass_requires_semantic_retry(
     retain_previous_output: bool,
     surface_is_presented: bool,
-    application_action_queued: bool,
+    presentation_work_pending: bool,
 ) -> bool {
-    retain_previous_output && (!surface_is_presented || application_action_queued)
+    retain_previous_output && (!surface_is_presented || presentation_work_pending)
 }
 
 #[cfg(test)]
@@ -486,7 +486,29 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut budget = bridge
             .dispatch_budget(token)
             .ok_or(NativeHostProtocolError::OutputBudgetUnavailable)?;
-        self.update_surface_budgeted(ui, surface, &mut budget)
+        loop {
+            let before = budget.remaining_records();
+            let update = self.update_surface_budgeted(ui, surface, &mut budget)?;
+            if update != NativeSurfaceUpdate::RetainPrevious
+                || budget.is_exhausted()
+                || budget.remaining_records() == before
+                || !(self.coordinator.has_pending_callback_records()
+                    || self.coordinator.session().has_pending_native_input())
+            {
+                return Ok(update);
+            }
+            // Output/lifecycle barriers can split active motion into short prefixes.
+            // Commit each through the existing path without paying for another OS
+            // paint cycle. The token keeps its original shared dispatch budget.
+            // Only an inert retained pass can be replaced before the finalizer;
+            // an empty queue must not create a Presented -> paint feedback loop.
+            if !self.pass_actions.is_retained(token) {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+            }
+            self.pass_actions
+                .discard_pass(token)
+                .map_err(map_pass_action_error)?;
+        }
     }
 
     fn update_surface_budgeted(
@@ -803,12 +825,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let semantic_retry_pending = retained_pass_requires_semantic_retry(
             retain_previous_output,
             coordinator.session().presented_surface(surface).is_some(),
-            self.application_actions.has_queued(),
+            self.application_actions.has_queued() || report.repaint_surfaces().contains(&surface),
         );
         let durable_armed = internal_action_settled
             || native_input_pending
             || application_action_settled
             || native_admission_settled
+            || !report.repaint_surfaces().is_empty()
             || semantic_retry_pending;
         require_durable_root_cycle(coordinator, token, durable_armed)?;
         Ok(if retain_previous_output {

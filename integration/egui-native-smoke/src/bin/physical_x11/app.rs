@@ -5,6 +5,7 @@ use std::error::Error;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs as _};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::Instant;
 
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
@@ -18,6 +19,7 @@ use egui_dockspace_native::NativeDockspaceApp;
 
 use super::assertions::{POINTER_DIAGNOSTIC_LABEL, PhysicalBounds, ROOT_PANE_CONTENT_LABEL};
 use super::driver;
+use super::pointer_load::{PointerLoad, PointerSource, load_storage_limit, pointer_load_enabled};
 
 pub(super) const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
@@ -95,25 +97,42 @@ pub(super) struct SharedState {
     root_roster: Option<RootRosterKey>,
     pub(super) fatal_error: Option<String>,
     pub(super) driver_result: Option<Result<(), String>>,
+    pub(super) last_primary_press: Option<PointerSource>,
+    pub(super) pointer_load: Option<PointerLoad>,
 }
 
 pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let inspection_endpoint = inspection_endpoint_from_env()?;
+    let measure_pointer_load = pointer_load_enabled()?;
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let session = DockspaceSession::from_layout(smoke_layout(), policy)?;
-    let dockspace = NativeDockspaceApp::new(
-        egui::Id::unique("egui-native-physical-smoke"),
-        session,
-        ROOT_SURFACE,
-        SmokePanes::new(),
-        DockStyle::default(),
-    )?;
+    let id = egui::Id::unique("egui-native-physical-smoke");
+    let dockspace = if measure_pointer_load {
+        NativeDockspaceApp::new_with_storage_limit(
+            id,
+            session,
+            ROOT_SURFACE,
+            SmokePanes::new(),
+            DockStyle::default(),
+            Default::default(),
+            load_storage_limit()?,
+        )?
+    } else {
+        NativeDockspaceApp::new(
+            id,
+            session,
+            ROOT_SURFACE,
+            SmokePanes::new(),
+            DockStyle::default(),
+        )?
+    };
     let shared = Arc::new((Mutex::new(SharedState::default()), Condvar::new()));
     let native_host = dockspace.native_host_handler();
     let native_host: Arc<dyn eframe::NativeHostHandler> = Arc::new(DiagnosticNativeHost {
         inner: native_host,
         shared: Arc::clone(&shared),
+        measure_pointer_load,
     });
     let app_shared = Arc::clone(&shared);
     let options = eframe::NativeOptions {
@@ -152,6 +171,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 dockspace,
                 child_surface: None,
                 shared: Arc::clone(&app_shared),
+                measure_pointer_load,
             }))
         }),
     )?;
@@ -227,6 +247,7 @@ impl egui::Plugin for PhysicalSemanticProbe {
 struct DiagnosticNativeHost {
     inner: Arc<dyn eframe::NativeHostHandler>,
     shared: Shared,
+    measure_pointer_load: bool,
 }
 
 impl eframe::NativeHostHandler for DiagnosticNativeHost {
@@ -260,10 +281,30 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         &self,
         event: eframe::NativeWindowEvent<'_>,
     ) -> eframe::NativeWindowEventDisposition {
+        if self.measure_pointer_load {
+            let observed_at = Instant::now();
+            self.shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .observe_pointer_event(
+                    event.viewport_id(),
+                    event.window_id(),
+                    event.event(),
+                    observed_at,
+                );
+        }
         self.inner.on_window_event(event)
     }
 
     fn on_device_removed(&self, removal: eframe::NativeDeviceRemoval) {
+        if self.measure_pointer_load {
+            self.shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .observe_device_removal();
+        }
         self.inner.on_device_removed(removal);
     }
 
@@ -456,11 +497,25 @@ struct PhysicalSmokeApp {
     dockspace: NativeDockspaceApp<SmokePanes>,
     child_surface: Option<SurfaceId>,
     shared: Shared,
+    measure_pointer_load: bool,
 }
 
 impl eframe::App for PhysicalSmokeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let started = self.measure_pointer_load.then(Instant::now);
         <NativeDockspaceApp<SmokePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
+        if let Some(started) = started {
+            if let Some(load) = self
+                .shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pointer_load
+                .as_mut()
+            {
+                load.max_root_update = load.max_root_update.max(started.elapsed());
+            }
+        }
         self.publish_observation();
         let driver_finished = {
             let (lock, _) = &*self.shared;
@@ -536,8 +591,30 @@ impl PhysicalSmokeApp {
             .dockspace
             .error_kind()
             .map(|kind| format!("native runtime entered fatal state: {kind:?}"));
+        let load_active = self.measure_pointer_load
+            && self
+                .shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pointer_load
+                .is_some();
+        let load_storage = if load_active {
+            Some((
+                self.dockspace.input_storage_capacity_bytes(),
+                self.dockspace.input_storage_reserved_bytes(),
+            ))
+        } else {
+            None
+        };
         let (lock, changed) = &*self.shared;
         let mut shared = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(load) = &mut shared.pointer_load {
+            load.observe_model(center_merge_verified, Instant::now());
+            if let Some((owned, reserved)) = &load_storage {
+                load.observe_storage(owned.as_ref().ok().copied(), *reserved);
+            }
+        }
         let observation_changed = shared.observation != observation;
         let fatal_changed = shared.fatal_error != fatal_error;
         if observation_changed {
@@ -686,7 +763,6 @@ fn publish_pointer_diagnostic(ui: &egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn physical_drag_payload_starts_selected() {
         let session = DockspaceSession::from_layout(smoke_layout(), DockPolicy::default())

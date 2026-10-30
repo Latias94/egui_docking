@@ -101,8 +101,15 @@ committed input watermark unchanged.
 A complete press/move/release batch can finish input processing before its
 preview is presented. The core freezes the release, then waits for the exact
 preview output's presentation result. Hosts continue rendering pending feedback
-without inventing more pointer events. Complete contained sources and resize
-previews include real content, chrome, hit and semantic geometry in the surface
+without inventing more pointer events. `has_pending_presentation()` remains true
+after the active gesture ends and until a successful frame settles its release
+or presentation-gated root rehome. `surface_requires_presentation(surface)`
+identifies the target even while an exact emitted output awaits its renderer
+result. `HostFrameReport::repaint_surfaces()` includes a pending target only
+while its exact output has not been emitted; once emitted, preserve a commit
+continuation for its final disposition instead of repeatedly painting it.
+Neither query grants input or presentation authority. Complete contained sources
+and resize previews include real content, chrome, hit and semantic geometry in the surface
 program. Renderers should not add a second ghost shell when a preview reports
 `is_layout_projected()`. Only terminal delivery writes the durable rectangle.
 The independent public consumer verifies

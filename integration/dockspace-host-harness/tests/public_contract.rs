@@ -947,6 +947,9 @@ fn host_pointer_same_batch_release_waits_for_the_actual_target_preview() {
             !session.has_active_gesture(),
             "release must relinquish the active pointer owner"
         );
+        assert!(session.has_pending_presentation());
+        assert!(session.surface_requires_presentation(B));
+        assert!(!session.surface_requires_presentation(A));
 
         let settled = settle_pointer_outputs(&mut session, &mut report, target_result);
         let presented = target_result == ResultKind::Presented;
@@ -959,6 +962,8 @@ fn host_pointer_same_batch_release_waits_for_the_actual_target_preview() {
         assert_eq!(session.view().item(THIRD).unwrap().surface(), B);
         assert_eq!(session.view().item(FOURTH).unwrap().surface(), B);
         assert!(!session.has_active_gesture());
+        assert!(!session.has_pending_presentation());
+        assert!(!session.surface_requires_presentation(B));
         assert!(session.disable_host_pointer().unwrap().is_some());
         assert!(session.disable_host_pointer().unwrap().is_none());
     }
@@ -982,6 +987,10 @@ fn host_pointer_unselected_source_continues_same_batch_drag_after_selection() {
     assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
     assert!(session.view().item(SECOND).unwrap().is_selected());
     assert!(!session.has_active_gesture());
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(B));
+    assert!(!session.surface_requires_presentation(A));
+    assert!(input_report.repaint_surfaces().contains(&B));
 
     // The committed measurements become Ready for a separate real paint pass.
     let mut paint_frame = session.begin_host_frame().unwrap();
@@ -990,6 +999,8 @@ fn host_pointer_unselected_source_continues_same_batch_drag_after_selection() {
     let mut report = paint_frame.commit().unwrap();
     assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
     assert!(!session.has_active_gesture());
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(B));
 
     let settled = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
     assert!(settled.workspace_changed());
@@ -1010,6 +1021,8 @@ fn host_pointer_unselected_source_continues_same_batch_drag_after_selection() {
         1,
     );
     assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+    assert!(!session.surface_requires_presentation(B));
 }
 
 #[test]

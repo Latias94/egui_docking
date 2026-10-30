@@ -679,12 +679,15 @@ impl HostFrameReport {
         std::mem::take(&mut self.native_effects)
     }
 
-    /// Returns every logical surface whose semantic scene requires repainting.
+    /// Returns every logical surface whose scene or pending presentation needs paint.
     ///
     /// The roster is sorted and deduplicated. Presentation-provenance changes
     /// remain visible through [`Self::affected_surfaces`] but are omitted here
-    /// when scene, coordinates, and endpoint stay equivalent. A renderer should
-    /// schedule a new paint for each entry; it must not infer repaint from
+    /// when scene, coordinates, and endpoint stay equivalent. Pending release and
+    /// root-rehome targets are included while they lack an exact emitted output.
+    /// An output awaiting its terminal result requires a commit continuation,
+    /// rather than repeated paint requests for the same obligation. A renderer
+    /// should schedule a new paint for each entry; it must not infer repaint from
     /// callback absence.
     #[must_use]
     pub fn repaint_surfaces(&self) -> &[SurfaceId] {

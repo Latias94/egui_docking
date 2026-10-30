@@ -233,7 +233,7 @@ fn dragging_fixture() -> (DockspaceSession, LogicalPoint, DockspacePreviewVisual
     (session, target, preview)
 }
 
-fn release(session: &mut DockspaceSession, target: LogicalPoint) {
+fn release(session: &mut DockspaceSession, target: LogicalPoint) -> HostFrameReport {
     let hit = session.host_pointer_hit(SURFACE, target);
     let surface = hit.map(|hit| hit.surface());
     let hover = hit.and_then(|hit| hit.hover());
@@ -259,7 +259,92 @@ fn release(session: &mut DockspaceSession, target: LogicalPoint) {
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("release does not replace the candidate by remeasurement");
-    frame.commit().expect("release commits");
+    frame.commit().expect("release commits")
+}
+
+#[test]
+fn pending_release_requests_paint_until_an_exact_output_is_emitted() {
+    let (mut session, target, _) = dragging_fixture();
+    let unrelated = SurfaceId::new(99);
+    assert!(session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+    assert!(!session.surface_requires_presentation(SURFACE));
+
+    let report = release(&mut session, target);
+    assert!(!session.has_active_gesture());
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(SURFACE));
+    assert!(!session.surface_requires_presentation(unrelated));
+    assert_eq!(report.repaint_surfaces(), &[SURFACE]);
+    assert!(!report.workspace_changed());
+
+    let mut discarded = session.begin_host_frame().expect("paint retry begins");
+    let receipt = discarded
+        .paint_plan(SURFACE)
+        .unwrap()
+        .unwrap()
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .unwrap();
+    discarded.confirm_surface_painted(receipt).unwrap();
+    drop(discarded);
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(SURFACE));
+    assert_eq!(settle(&mut session).repaint_surfaces(), &[SURFACE]);
+
+    let output = paint(&mut session);
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(SURFACE));
+    assert!(
+        settle(&mut session).repaint_surfaces().is_empty(),
+        "an exact output in flight needs a terminal commit, not another paint"
+    );
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(SURFACE));
+
+    let discarded = session.begin_host_frame().expect("settlement retry begins");
+    drop(discarded);
+    assert!(session.has_pending_presentation());
+    assert!(session.surface_requires_presentation(SURFACE));
+
+    assert!(settle(&mut session).workspace_changed());
+    assert!(!session.has_pending_presentation());
+    assert!(!session.surface_requires_presentation(SURFACE));
+    assert!(session.view().contained(FLOATING).is_none());
+    assert_eq!(session.view().item(DRAGGED).unwrap().root(), MAIN_ROOT);
+}
+
+#[test]
+fn dropped_pending_release_output_clears_the_obligation_without_replaying_release() {
+    for explicit_terminal in [false, true] {
+        let (mut session, target, _) = dragging_fixture();
+        release(&mut session, target);
+        let output = paint(&mut session);
+        assert!(session.has_pending_presentation());
+        if explicit_terminal {
+            session
+                .report_surface_presentation(output, SurfacePresentationResult::Dropped)
+                .unwrap();
+        } else {
+            drop(output);
+        }
+        assert!(session.has_pending_presentation());
+        assert!(!settle(&mut session).workspace_changed());
+        assert!(!session.has_pending_presentation());
+        assert!(!session.surface_requires_presentation(SURFACE));
+        assert_eq!(session.view().item(DRAGGED).unwrap().root(), FLOATING_ROOT);
+
+        let later = paint(&mut session);
+        session
+            .report_surface_presentation(later, SurfacePresentationResult::Presented)
+            .unwrap();
+        settle(&mut session);
+        assert!(!session.has_pending_presentation());
+        assert!(!session.surface_requires_presentation(SURFACE));
+        assert_eq!(session.view().item(DRAGGED).unwrap().root(), FLOATING_ROOT);
+    }
 }
 
 #[test]
@@ -284,6 +369,17 @@ fn exact_presented_preview_survives_promotion_and_releases_without_another_paint
         "positive promotion must preserve the exact preview and its visible source projection"
     );
     assert!(session.host_pointer_hit(SURFACE, target).is_some());
+
+    // The first preview promotion changes interaction semantics. A subsequent
+    // equivalent presentation must not keep a Presented -> repaint cycle alive.
+    let equivalent = paint(&mut session);
+    session
+        .report_surface_presentation(equivalent, SurfacePresentationResult::Presented)
+        .unwrap();
+    assert!(
+        settle(&mut session).repaint_surfaces().is_empty(),
+        "equivalent Presented provenance must not create a repaint loop"
+    );
 
     release(&mut session, target);
     assert!(

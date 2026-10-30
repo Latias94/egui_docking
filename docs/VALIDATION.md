@@ -15,6 +15,103 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 continuous X11 input and pending-release wake
+
+This slice is locally qualified. The real X11/XTest extension uses
+`EGUI_DOCKSPACE_PHYSICAL_LOAD=1khz` with an explicit pane-center-a/b/c target.
+All actual content/workspace/guide exclusions and the real painted Dock preview
+stabilize before the measured load. It then sends 1,000 distinct motions through
+the original checked XTest requests and physical pointer queries, and immediately
+releases without a subsequent inspection or idle drain. Starts are at least
+1 ms apart; late wakes shift later starts without catch-up. Actual average rates
+and maximum start gap are reported; this is not a fixed absolute clock grid.
+
+The smoke-only probe retains one source identity and five fixed desktop points,
+not an event history or another input owner. It requires the exact viewport,
+window, device, desktop-point order and callback count. A new primary press,
+source destruction or uncorrelated device removal before model observation
+invalidates the measurement; normal source retirement after commit is allowed.
+Native roster changes during injection fail. Early model success, incomplete
+injection, missing callback facts and unavailable/invalid storage samples also
+fail rather than borrowing a later gesture or an earlier successful sample.
+Ordinary runs do not execute the optional callback timer or diagnostic mutex.
+
+The measured interval is conservative:
+native release callback <= accepted release <= typed Delivered/model atomic
+commit <= first root model observation. It does not directly timestamp accepted
+input or typed feedback, and callback counts do not prove every motion was
+accepted by the adapter. Root UI duration is reported separately, and owned /
+reserved maxima are root-frame-boundary samples of input data, not RSS or
+instantaneous process peaks. Same-tabs model order, exact DestroyNotify,
+semantic retirement and full quiescence remain required.
+
+The load exposed two production gaps. One UI invocation consumed only one
+short callback prefix despite output/lifecycle barriers splitting active motion;
+raw backlog reached 250 records and the original 250 ms age limit cancelled the
+drag. The adapter now commits multiple original prefixes using one unchanged
+256-record/2-ms token budget, replaces only an inert RetainPrevious staged pass,
+and exits on no progress, exhaustion, an empty queue or semantic paint. It does
+not merge barriers or refresh the deadline. Separately, idle release obligations
+were omitted from quiescence and could lose the next semantic/terminal wake.
+Core now derives pending queries from its existing drag/contained/rehome state,
+requests missing target paint, and avoids requesting duplicate paint once an
+exact output is in flight. Native retains a precise after-current wake for
+those outputs and for missing semantic work. No new registry or output owner is
+introduced.
+
+The final three high-rate runs use an optimized build, Docker
+Linux/arm64, Rust 1.95, Xvfb/Openbox, a 2-CPU/4-GiB container and software GL with
+`LP_NUM_THREADS=1`:
+
+| Target | Injected / matched native callbacks | Injection / callback Hz | Release-to-model upper bound |
+| --- | --- | --- | --- |
+| pane-center-a | 1,000 / 1,000 | 990.2 / 989.3 | 69.195875 ms |
+| pane-center-b | 1,000 / 1,000 | 999.8 / 999.7 | 36.474208 ms |
+| pane-center-c | 1,000 / 1,000 | 999.8 / 1,000.2 | 37.324750 ms |
+
+The first three successful runs report 992-1,005 callback Hz and 30-51 ms
+release bounds; the final runs above retain every measurement instead of
+selecting the fastest sample. Across all six, sampled input data reaches at
+most 2,304,279 owned / 3,455,936 reserved bytes under the unchanged 4 MiB profile;
+largest root UI update is 1.097583 ms. Failed attempts
+remain explicit: an absolute-slot injector failed immediately, unoptimized
+builds exceeded the original age limit, immediate-release runs exposed overload
+or idle settlement stalls, and the fixed production source with unrestricted
+software-renderer threads completed docking at only 669 Hz and correctly
+failed its rate gate. None counts as a high-rate qualification.
+
+All 37 main gates and six supplemental gates pass. The main workspace passes
+1,894 tests; the external public consumer passes 130 default / 137 serde tests,
+including the refreshed cross-surface pending-target assertions. Product and
+official-egui consumers pass 114 and 15 tests. Native normal and assertion-disabled
+workspaces each pass 496 tests, including both same-coordinator 10,000-lifetime
+soaks. The Linux runner passes 37 tests. Ten doctests, strict core/native rustdoc,
+correctness/suspicious Clippy on host and Linux, formatting, core dependency
+isolation and verified core packaging pass. macOS default/bounded real-window
+redock, all four non-load X11 physical journeys, and all five pressure cases on
+each platform pass. Independent static review confirms the prefix/owner/wake
+boundaries; a failed later candidate preserves already committed earlier prefixes
+and the same budget. It does not make an entire UI invocation atomic.
+
+An added no-repaint regression initially treated the first preview promotion as
+equivalent; that promotion changes interaction semantics. The corrected case
+actually presents the same program again before requiring no repaint. The two
+new release tests also cover rollback of paint and settlement, Dropped output,
+and later output not replaying a cancelled release. Contained and root-rehome
+tests cover the shared pending query. The native regression isolates pending
+release as the only remaining reason not to report quiescence.
+
+Final evidence is `/tmp/dockspace-physical-load-complete-snapshot.json`,
+`/tmp/dockspace-physical-load-final-qualification.json` and
+`/tmp/dockspace-physical-load-supplement-qualification.json`; exploratory and
+failed logs retain the same prefix. All 440 Rust sources match the final source
+manifest. The only post-freeze test change was the public consumer assertions,
+which were rerun in both configurations. Native qualification still uses explicit unpublished local
+fork overrides. This finite profile does not certify hardware 1 kHz, the 2 ms
+reducer service boundary, maximum-roster/O256 cross-saturation, non-guide edge
+and nested native targets, mixed DPI, or automatic stationary capture. Full
+U7/U8/U9 remains open.
+
 ## 2026-10-30 combined native capacity and accepted release
 
 One test now composes actual obligations in the same bounded 4 MiB profile:

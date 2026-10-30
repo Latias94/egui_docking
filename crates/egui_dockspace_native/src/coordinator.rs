@@ -619,6 +619,7 @@ impl NativeCoordinator {
 
     pub(crate) fn is_quiescent(&self) -> bool {
         !self.session.has_pending_native_create()
+            && !self.session.has_pending_presentation()
             && !self.bridge.has_pending_coordinator_work()
             && !self.bridge.has_pending_lifecycle_output(&self.session)
             && !self.receivers.has_pending_commit()
@@ -2767,7 +2768,8 @@ impl NativeCoordinator {
                 output,
             ));
         }
-        let requires_lifecycle_wake = self.session.presented_surface(output.surface()).is_none();
+        let requires_commit_wake = self.session.presented_surface(output.surface()).is_none()
+            || self.session.surface_requires_presentation(output.surface());
         if self
             .receivers
             .stage(context, token, binding, &output, paint)
@@ -2787,7 +2789,7 @@ impl NativeCoordinator {
                 output,
             ));
         }
-        if requires_lifecycle_wake && !self.bridge.require_output_wake_after_current(token) {
+        if requires_commit_wake && !self.bridge.require_output_wake_after_current(token) {
             self.receivers.abandon(token);
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::BindingMismatch,

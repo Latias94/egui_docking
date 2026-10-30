@@ -812,7 +812,7 @@ impl DockspaceHostFrame<'_> {
             committed.input_pending |= session.abandoned_native_effects.has_pending()
                 || session.presentation.has_unrecorded_backend_report();
         }
-        Ok(HostFrameReport::from_transition(
+        let mut report = HostFrameReport::from_transition(
             frame_attempt,
             &transition,
             painted_outputs,
@@ -820,7 +820,13 @@ impl DockspaceHostFrame<'_> {
             surface_presentation_commits,
             native_commit,
             native_effects,
-        ))
+        );
+        report
+            .repaint_surfaces
+            .extend(session.engine.surfaces_requiring_presentation_paint());
+        report.repaint_surfaces.sort_unstable();
+        report.repaint_surfaces.dedup();
+        Ok(report)
     }
 
     pub(super) fn append(&mut self, input: EngineInput) -> Result<(), DockspaceRuntimeError> {

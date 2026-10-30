@@ -196,6 +196,34 @@ impl DockspaceSession {
         )
     }
 
+    /// Returns whether a release or root rehome still owns a presentation obligation.
+    ///
+    /// This derives from pending drag releases, contained-transform releases, and
+    /// presentation-gated root rehomes in the committed core state. It remains
+    /// true until a host-frame commit delivers or cancels the obligation, including
+    /// while an exact output awaits its final result. Hosts must keep a commit
+    /// continuation for that result even after the active gesture becomes idle.
+    /// Active gestures and native creation are separate from this query.
+    #[must_use]
+    pub fn has_pending_presentation(&self) -> bool {
+        self.engine.has_pending_presentation()
+    }
+
+    /// Returns whether an existing obligation still needs presentation on this surface.
+    ///
+    /// An already emitted output awaiting its final result still counts. Reporting
+    /// a renderer result only queues it; a successful host-frame commit must accept
+    /// the exact presentation or cancellation before the committed query clears.
+    /// An obligation already proven presented or failed needs settlement, not paint.
+    /// This query neither grants presentation authority nor includes ordinary scene
+    /// changes, active gestures, or native creation. Use
+    /// [`HostFrameReport::repaint_surfaces`](super::HostFrameReport::repaint_surfaces)
+    /// to distinguish a missing paint from an output already awaiting its result.
+    #[must_use]
+    pub fn surface_requires_presentation(&self, surface: crate::model::SurfaceId) -> bool {
+        self.engine.surface_requires_presentation(surface)
+    }
+
     /// Returns presentation commands for one stable root in the current published state.
     ///
     /// Each command is preflighted by the same core topology, policy, presentation, and native
