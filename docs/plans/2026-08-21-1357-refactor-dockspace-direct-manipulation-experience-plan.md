@@ -25,8 +25,8 @@ review_status: independent-coherence-and-feasibility-reviewed
 | Completion owner | Each implementation unit owns its replacement behavior, meaningful verification, obsolete-path deletion, and documentation. No compatibility layer is required. |
 
 Current readiness (2026-10-31): the complete plan remains in progress. The
-renderer-neutral public host and local/contained egui behavior have their own
-qualified checkpoints. Optional native completion still requires the remaining
+renderer-neutral public host, local/contained egui behavior, and U3c complete
+single-batch Burst matrix have qualified checkpoints. Optional native completion still requires the remaining
 capacity/service-time and platform matrices, the native showcase, and U9
 dependency/package/documentation closure. The new continuous-X11-input and
 pending-presentation-wake slice is locally qualified; it does not replace

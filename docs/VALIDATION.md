@@ -15,6 +15,34 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 L03 single-batch Burst qualification
+
+The formerly known-invalid egui product Burst gate now passes on the current
+source. The complete test sends pointer move, press, threshold move, target
+move and release in one raw egui packet for every L03 basin and normalized
+non-guide sample. The product executor publishes the magnetic Dock preview
+and then settles the exact output and one terminal workspace mutation; no
+compensating input frame, fixed-frame wait, guide targeting or ignored test is
+used.
+
+The focused fresh gate is recorded in
+`/tmp/dockspace-l03-burst-qualification.json` and
+`/tmp/dockspace-l03-burst.log`:
+
+```text
+cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml \
+  --all-targets --all-features --locked --offline --test-threads=1 \
+  --no-fail-fast \
+  -E 'test(shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics)'
+```
+
+The focused result is 1/1 passed, 0 ignored. The complete product harness
+also passes 114/114 with no ignored tests. This closes the U3c Burst gate and
+updates the L03 product executor from the previous 45-case cadence subset to
+the complete 60-case matrix: five basins, three normalized non-guide samples
+and four cadences. The remaining physical edge/nested/mixed-DPI native matrix
+is a separate optional-host qualification.
+
 ## 2026-10-31 continuous X11 input and pending-release wake
 
 This slice is locally qualified. The real X11/XTest extension uses
@@ -5140,7 +5168,7 @@ new public engine-host harness remain implementation work under U15 and U13.
 | --- | --- | --- | --- | --- | --- | --- |
 | L01 | Tab body; below-threshold select or threshold-crossing drag | None before selection | Select without drag; source remains owner | Selected tab; local quiescence | Burst, Stepwise | `core-host` and `egui-product-headless` characterize selection; exact human threshold remains product evidence |
 | L02 | Tab body; semantic tab gap before/after a sibling | Visible insertion candidate | Reorder once; local target owns the tab | Moved tab; local quiescence | Burst, Stepwise, ReleaseWithFinalMove, DiscardBeforeRelease | Both existing shared product/core paths cover the local command spine; product drag evidence is normative, pass-count details are not |
-| L03 | Tab body; pane center plus north/south/east/west basins | Magnetic candidate, independent of guide targeting | Center merge or edge split; target owns payload | Moved tab; local quiescence | Burst, Stepwise, Hesitant, ReleaseWithFinalMove | `core-host` passes all 60 finite cases; `egui-product-headless` passes the 45 Stepwise/Hesitant/ReleaseWithFinalMove cases. A crate-private renderer receipt proves each product point remains outside every registered guide receiver. A single-call product Burst remains an explicit blocker because no Dock preview is published before the causal budget expires. |
+| L03 | Tab body; pane center plus north/south/east/west basins | Magnetic candidate, independent of guide targeting | Center merge or edge split; target owns payload | Moved tab; local quiescence | Burst, Stepwise, Hesitant, ReleaseWithFinalMove | `core-host` and `egui-product-headless` pass all 60 finite cases. A crate-private renderer receipt proves each product point remains outside every registered guide receiver; the black-box Burst executor also publishes the preview from the same raw packet. |
 | L04 | Contained title/edge; surface free space and eligible pane basin | Full contained-window projection | Move/resize/re-dock commits once; contained or target owner | Moved item; local quiescence | Stepwise, Hesitant, ReleaseWithFinalMove | Durable placement and ownership are covered; full-window projection remains an intentional known-invalid baseline |
 | L05 | Tab body; current basin can become stale or disappear | Candidate is cleared while source stays recoverable | Cancel/reject and restore source without partial mutation | Preserve source focus; local quiescence | Stepwise, TargetDisappears | `core-host` stale-target and target-destruction fixtures provide the current normative evidence |
 | L06 | Tab body; center/edge basin with release barrier | Exact candidate must be presented before release commits | Commit presented candidate or restore source | Moved item or preserved source; local quiescence | Burst, Hesitant, ReleaseWithFinalMove, DiscardBeforeRelease | Discarded-preview rejection is normative; release-wait and ordinary fixed-hover tests remain characterization or known-invalid until causal readiness replaces fixed frames |
@@ -5160,7 +5188,7 @@ with a diagnostic upper bound.
 - `crates/dockspace_host_conformance/src/tests.rs::shared_l03_magnetic_docking_scenario_maps_to_core_host_semantics`
 - `crates/egui_dockspace/src/product_dockspace_tests.rs::shared_l03_supported_points_use_renderer_registered_magnetic_receivers`
 - `integration/egui-product-harness/tests/product.rs::shared_l03_supported_magnetic_docking_maps_to_egui_product_semantics`
-- `integration/egui-product-harness/tests/product.rs::shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics` (ignored known-invalid Burst gate)
+- `integration/egui-product-harness/tests/product.rs::shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics` (fresh 60-case Burst-inclusive gate; 1/1 focused and 114/114 complete harness)
 - `crates/dockspace_host_conformance/src/tests.rs::shared_local_interaction_scenario_maps_to_core_host_semantics`
 - `integration/egui-product-harness/tests/product.rs::shared_local_interaction_scenario_maps_to_egui_product_headless_semantics`
 
@@ -5227,7 +5255,7 @@ gap is written as such instead of being given a synthetic test name.
 | U1-19 | P01 physical drag barriers | characterization-only | `integration/egui-native-smoke/src/bin/physical_x11/driver/scenario.rs::perform_drag_out`; `::move_to_center_guide_while_pressed`; `::native_drag_preview_barrier` | X11 is evidence to requalify, not a portable authority |
 | U1-20 | P01 missing native facts | known-invalid | `integration/egui-product-harness/tests/product.rs::shared_local_interaction_scenario_maps_to_egui_product_headless_semantics` (admission assertion only) | No executor performs the physical gesture, reports the exact missing native facts, and proves source ownership unchanged; keep the gap explicit |
 | U1-21 | L03 ordinary magnetic basin matrix | normative | `crates/dockspace_host_conformance/src/tests.rs::shared_l03_magnetic_docking_scenario_maps_to_core_host_semantics`; `crates/egui_dockspace/src/product_dockspace_tests.rs::shared_l03_supported_points_use_renderer_registered_magnetic_receivers`; `integration/egui-product-harness/tests/product.rs::shared_l03_supported_magnetic_docking_maps_to_egui_product_semantics` | Core-host proves 5 basins × 3 normalized non-guide samples × 4 cadences; the crate-private product receipt proves the 45 supported product cases remain outside every renderer-registered guide receiver; the black-box product executor proves preview, true same-call ReleaseWithFinalMove, normalized docking, and stable quiescence |
-| U1-22 | L03 single-call product Burst | known-invalid | `integration/egui-product-harness/tests/product.rs::shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics` (ignored; run explicitly) | The product executor reaches the first Burst case without a magnetic Dock preview after eight causal observations; retain the failing gate for the later manipulation-kernel replacement rather than substituting guide or fixed-frame success |
+| U1-22 | L03 single-call product Burst | normative | `integration/egui-product-harness/tests/product.rs::shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics`; fresh evidence `/tmp/dockspace-l03-burst-qualification.json` | Every basin/sample/cadence publishes the magnetic preview from the same raw packet and commits one terminal docking mutation; no ignored gate or compensating input frame |
 
 The N01 rows deliberately do **not** classify “native ownership before
 first-live” as known-invalid. The existing fixture demonstrates a sequence,
@@ -5239,7 +5267,7 @@ That comparison belongs to the later lifecycle replacement unit.
 | Executor | L01–L08 | N01 | P01 |
 | --- | --- | --- | --- |
 | `core-host` | L03 full 60-case matrix and L08 shared command scenario pass | Programmatic lifecycle scenario passes | Unsupported without `NativePhysicalAuthority` |
-| `egui-product-headless` | L03 Stepwise/Hesitant/ReleaseWithFinalMove 45-case matrix and L08 shared command scenario pass; L03 Burst is known-invalid | Capability-negative | Capability-negative |
+| `egui-product-headless` | L03 complete 60-case matrix, including same-packet Burst, and L08 shared command scenario pass | Capability-negative | Capability-negative |
 | `egui-official-harness` | Public local facade; the caller-owned demo supports exact terminal-output settlement, while unmodified eframe examples remain capability-negative | Capability-negative | Capability-negative |
 | `native-coordinator-trace` / `egui-native-smoke` | Adapter-specific evidence | Programmatic lifecycle evidence | Physical X11 evidence only |
 
