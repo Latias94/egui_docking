@@ -68,6 +68,27 @@ impl PaneEdgeCase {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TabHalfCase {
+    Before,
+    After,
+}
+
+impl TabHalfCase {
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::Before => "tab-half-before",
+            Self::After => "tab-half-after",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TabHalfGeometry {
+    pub(super) tab: LogicalBounds,
+    close: LogicalBounds,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PaneCenterGeometry {
     pub(super) content: LogicalBounds,
@@ -102,6 +123,8 @@ pub(super) enum PaneCenterError {
     OutsideContent,
     OutsideCenterBasin,
     OutsideEdgeBasin,
+    OutsideTabHalf,
+    ControlCovered,
     InsideRootEdgeBand,
     GuideCovered {
         label: &'static str,
@@ -429,6 +452,101 @@ pub(super) fn pane_center_geometry(
         error,
     })?;
     Ok(PaneCenterGeometry { content, workspace })
+}
+
+pub(super) fn tab_half_geometry(tree: &TreeUpdate) -> Result<TabHalfGeometry, PaneCenterError> {
+    let read = |role, label| {
+        semantic_bounds(
+            tree,
+            SemanticSelector {
+                role,
+                text: SemanticText::Label(label),
+            },
+        )
+        .map_err(|error| PaneCenterError::Semantic { label, error })
+    };
+    Ok(TabHalfGeometry {
+        tab: {
+            let node = semantic_node(
+                tree,
+                SemanticSelector {
+                    role: Role::Label,
+                    text: SemanticText::Label("Dockspace tab bounds Main"),
+                },
+            )
+            .map_err(|error| PaneCenterError::Semantic {
+                label: "Dockspace tab bounds Main",
+                error,
+            })?;
+            require_passive(node, "Dockspace tab bounds Main")?;
+            checked_node_bounds(node).map_err(|error| PaneCenterError::Semantic {
+                label: "Dockspace tab bounds Main",
+                error,
+            })?
+        },
+        close: read(Role::Button, "Close Main")?,
+    })
+}
+
+pub(super) fn tab_half_point(
+    case: TabHalfCase,
+    geometry: TabHalfGeometry,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    guides: &[ActualGuideHit],
+) -> Result<(PhysicalPoint, LogicalPoint), PaneCenterError> {
+    let tab = geometry.tab;
+    let candidate = LogicalPoint {
+        x: match case {
+            TabHalfCase::Before => (tab.min_x + tab.center().x) * 0.5,
+            TabHalfCase::After => (tab.center().x + geometry.close.min_x.min(tab.max_x)) * 0.5,
+        },
+        y: tab.center().y,
+    };
+    let physical = viewport_logical_to_desktop(client, pixels_per_point, candidate)
+        .map_err(PaneCenterError::Coordinates)?;
+    let point = desktop_to_viewport_logical(client, pixels_per_point, physical)
+        .map_err(PaneCenterError::Coordinates)?;
+    let margin = 2.0 / f64::from(pixels_per_point);
+    let inside_half = match case {
+        TabHalfCase::Before => point.x < tab.center().x - margin,
+        TabHalfCase::After => point.x > tab.center().x + margin,
+    };
+    if !client.contains(physical) || !strictly_inside(tab, point, margin) || !inside_half {
+        return Err(PaneCenterError::OutsideTabHalf);
+    }
+    let overlaps = |bounds: LogicalBounds| {
+        point.x >= bounds.min_x - margin
+            && point.x <= bounds.max_x + margin
+            && point.y >= bounds.min_y - margin
+            && point.y <= bounds.max_y + margin
+    };
+    if overlaps(geometry.close) {
+        return Err(PaneCenterError::ControlCovered);
+    }
+    for guide in guides {
+        if overlaps(guide.bounds) {
+            return Err(PaneCenterError::GuideCovered { label: guide.label });
+        }
+    }
+    Ok((physical, point))
+}
+
+pub(super) fn verify_tab_half_preview(
+    case: TabHalfCase,
+    geometry: TabHalfGeometry,
+    preview: DockPreviewEmission,
+    pixels_per_point: f32,
+) -> Result<(), PaneCenterError> {
+    // The finite target has one fully visible Main tab and no overflow chrome.
+    let width = dockspace::runtime::DockPresentationConfig::default().splitter_thickness();
+    let mut expected = geometry.tab;
+    expected.min_x = match case {
+        TabHalfCase::Before => expected.min_x,
+        TabHalfCase::After => expected.max_x - width * 0.5,
+    };
+    expected.max_x = expected.min_x + width;
+    verify_preview_bounds(expected, preview, pixels_per_point)
 }
 
 fn require_passive(
@@ -908,6 +1026,119 @@ mod tests {
     use eframe::egui::accesskit::{Node, NodeId, Rect, TreeId, TreeInfo};
 
     use super::*;
+
+    #[test]
+    fn tab_half_points_use_full_tab_bounds_and_exclude_close_after_rounding() {
+        let geometry = TabHalfGeometry {
+            tab: LogicalBounds {
+                min_x: 28.0,
+                min_y: 0.0,
+                max_x: 110.0,
+                max_y: 28.0,
+            },
+            close: LogicalBounds {
+                min_x: 92.0,
+                min_y: 4.0,
+                max_x: 108.0,
+                max_y: 24.0,
+            },
+        };
+        let client = PhysicalBounds {
+            min_x: 300,
+            min_y: 400,
+            max_x: 1020,
+            max_y: 920,
+        };
+        for case in [TabHalfCase::Before, TabHalfCase::After] {
+            let (physical, logical) = tab_half_point(case, geometry, client, 1.5, &[]).unwrap();
+            assert_eq!(
+                desktop_to_viewport_logical(client, 1.5, physical).unwrap(),
+                logical
+            );
+            assert_eq!(
+                logical.x < geometry.tab.center().x,
+                case == TabHalfCase::Before
+            );
+            assert!(!geometry.close.contains(logical));
+            let guide = ActualGuideHit {
+                label: "test guide",
+                bounds: geometry.tab,
+            };
+            assert_eq!(
+                tab_half_point(case, geometry, client, 1.5, &[guide]),
+                Err(PaneCenterError::GuideCovered {
+                    label: "test guide"
+                })
+            );
+        }
+        let blocked = TabHalfGeometry {
+            close: LogicalBounds {
+                min_x: 68.0,
+                ..geometry.close
+            },
+            ..geometry
+        };
+        assert_eq!(
+            tab_half_point(TabHalfCase::After, blocked, client, 1.5, &[]),
+            Err(PaneCenterError::OutsideTabHalf)
+        );
+    }
+
+    #[test]
+    fn tab_insertion_preview_rejects_the_other_half_and_pane_center() {
+        let geometry = TabHalfGeometry {
+            tab: LogicalBounds {
+                min_x: 28.0,
+                min_y: 0.0,
+                max_x: 110.0,
+                max_y: 28.0,
+            },
+            close: LogicalBounds {
+                min_x: 92.0,
+                min_y: 4.0,
+                max_x: 108.0,
+                max_y: 24.0,
+            },
+        };
+        let before = DockPreviewEmission {
+            bounds: LogicalBounds {
+                max_x: 29.0,
+                ..geometry.tab
+            },
+        };
+        let after = DockPreviewEmission {
+            bounds: LogicalBounds {
+                min_x: 109.5,
+                max_x: 110.5,
+                ..geometry.tab
+            },
+        };
+        assert_eq!(
+            verify_tab_half_preview(TabHalfCase::Before, geometry, before, 1.5),
+            Ok(())
+        );
+        assert_eq!(
+            verify_tab_half_preview(TabHalfCase::After, geometry, after, 1.5),
+            Ok(())
+        );
+        for (case, wrong) in [(TabHalfCase::Before, after), (TabHalfCase::After, before)] {
+            assert_eq!(
+                verify_tab_half_preview(case, geometry, wrong, 1.5),
+                Err(PaneCenterError::PreviewBoundsMismatch)
+            );
+            assert_eq!(
+                verify_tab_half_preview(
+                    case,
+                    geometry,
+                    DockPreviewEmission {
+                        bounds: geometry.tab
+                    },
+                    1.5
+                ),
+                Err(PaneCenterError::PreviewBoundsMismatch)
+            );
+        }
+    }
 
     fn tree(nodes: impl IntoIterator<Item = (NodeId, Node)>) -> TreeUpdate {
         let root = NodeId::from(1_u64);

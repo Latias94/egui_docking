@@ -20,13 +20,14 @@ use super::super::app::{
 use super::super::assertions::{
     ActualGuideHit, DockPreviewEmission, LogicalBounds, PaneCenterCase, PaneCenterError,
     PaneCenterGeometry, PaneEdgeCase, PhysicalBounds, PhysicalPoint, SemanticLookupError,
-    SemanticSelector, SemanticStabilitySample, SemanticText, actual_guide_hits,
-    choose_outside_points, desktop_to_viewport_logical, dock_preview_emission,
+    SemanticSelector, SemanticStabilitySample, SemanticText, TabHalfCase, TabHalfGeometry,
+    actual_guide_hits, choose_outside_points, desktop_to_viewport_logical, dock_preview_emission,
     native_drag_preview_observation, pane_center_geometry, pane_center_point, pane_edge_point,
     point_towards, pointer_barrier_is_satisfied, pointer_observation_for_barrier,
     semantic_baseline_after_missing, semantic_bounds, semantic_node, semantic_snapshot_is_stable,
-    semantic_tree_summary, tab_drag_point, two_stage_ingress_points, verify_center_preview,
-    verify_edge_preview, viewport_logical_to_desktop,
+    semantic_tree_summary, tab_drag_point, tab_half_geometry, tab_half_point,
+    two_stage_ingress_points, verify_center_preview, verify_edge_preview, verify_tab_half_preview,
+    viewport_logical_to_desktop,
 };
 use super::super::pointer_load::{
     POINTER_LOAD_ENV, POINTER_LOAD_MOVES, begin_pointer_load, finish_pointer_load,
@@ -42,6 +43,7 @@ enum RedockTarget {
     GuideControl,
     PaneCenter(PaneCenterCase),
     PaneEdge(PaneEdgeCase),
+    TabHalf(TabHalfCase),
 }
 
 impl RedockTarget {
@@ -62,8 +64,10 @@ impl RedockTarget {
             "pane-edge-south" => Ok(Self::PaneEdge(PaneEdgeCase::South)),
             "pane-edge-east" => Ok(Self::PaneEdge(PaneEdgeCase::East)),
             "pane-edge-west" => Ok(Self::PaneEdge(PaneEdgeCase::West)),
+            "tab-half-before" => Ok(Self::TabHalf(TabHalfCase::Before)),
+            "tab-half-after" => Ok(Self::TabHalf(TabHalfCase::After)),
             _ => Err(format!(
-                "invalid {TARGET_ENV}={value:?}; unset for guide-control or choose pane-center-a, pane-center-b, pane-center-c, pane-edge-north, pane-edge-south, pane-edge-east, pane-edge-west"
+                "invalid {TARGET_ENV}={value:?}; unset for guide-control or choose pane-center-a, pane-center-b, pane-center-c, pane-edge-north, pane-edge-south, pane-edge-east, pane-edge-west, tab-half-before, tab-half-after"
             )),
         }
     }
@@ -73,6 +77,7 @@ impl RedockTarget {
             Self::GuideControl => "guide-control",
             Self::PaneCenter(case) => case.name(),
             Self::PaneEdge(case) => case.name(),
+            Self::TabHalf(case) => case.name(),
         }
     }
 
@@ -80,6 +85,8 @@ impl RedockTarget {
         match self {
             Self::GuideControl | Self::PaneCenter(_) => RedockLayout::Center,
             Self::PaneEdge(case) => RedockLayout::Edge(case),
+            Self::TabHalf(TabHalfCase::Before) => RedockLayout::TabBefore,
+            Self::TabHalf(TabHalfCase::After) => RedockLayout::Center,
         }
     }
 }
@@ -88,6 +95,7 @@ impl RedockTarget {
 enum PaneDockTarget {
     Center(PaneCenterCase),
     Edge(PaneEdgeCase),
+    TabHalf(TabHalfCase),
 }
 
 impl PaneDockTarget {
@@ -95,18 +103,21 @@ impl PaneDockTarget {
         match self {
             Self::Center(case) => case.name(),
             Self::Edge(case) => case.name(),
+            Self::TabHalf(case) => case.name(),
         }
     }
 
     fn verify_preview(
         self,
         geometry: PaneCenterGeometry,
+        tab: TabHalfGeometry,
         preview: DockPreviewEmission,
         pixels_per_point: f32,
     ) -> Result<(), PaneCenterError> {
         match self {
             Self::Center(_) => verify_center_preview(geometry, preview, pixels_per_point),
             Self::Edge(case) => verify_edge_preview(case, geometry, preview, pixels_per_point),
+            Self::TabHalf(case) => verify_tab_half_preview(case, tab, preview, pixels_per_point),
         }
     }
 }
@@ -630,10 +641,13 @@ impl PhysicalDriver {
         )?;
         let frozen_pane = match self.target {
             RedockTarget::GuideControl => None,
-            RedockTarget::PaneCenter(_) | RedockTarget::PaneEdge(_) => Some(
-                pane_center_geometry(&root_tree.tree)
-                    .map_err(|error| format!("{} before press: {error:?}", self.target.name()))?,
-            ),
+            RedockTarget::PaneCenter(_) | RedockTarget::PaneEdge(_) | RedockTarget::TabHalf(_) => {
+                Some(
+                    pane_center_geometry(&root_tree.tree).map_err(|error| {
+                        format!("{} before press: {error:?}", self.target.name())
+                    })?,
+                )
+            }
         };
         let refreshed_root_window = self.desktop.window_for_title(ROOT_WINDOW_TITLE)?;
         let (ingress_logical, routed_ingress_logical) = two_stage_ingress_points(root_target);
@@ -1029,6 +1043,18 @@ fn inject_redock_drag(
                 source_ingress_step,
                 &ingress_tree,
             ),
+            RedockTarget::TabHalf(case) => move_to_pane_target_while_pressed(
+                shared,
+                inspection,
+                desktop,
+                request,
+                PaneDockTarget::TabHalf(case),
+                frozen_pane.ok_or_else(|| {
+                    format!("{}: {:?}", case.name(), PaneCenterError::BoundsTooSmall)
+                })?,
+                source_ingress_step,
+                &ingress_tree,
+            ),
         }
     })();
     let release = desktop.set_primary_button(false);
@@ -1186,6 +1212,7 @@ fn root_step_before_drag_route(
 #[derive(Debug, PartialEq)]
 struct PaneCenterScene {
     geometry: PaneCenterGeometry,
+    tab: TabHalfGeometry,
     guides: Vec<ActualGuideHit>,
     preview: Option<DockPreviewEmission>,
 }
@@ -1254,6 +1281,8 @@ fn wait_for_pane_center_scene(
                 snapshot.step
             )
         })?;
+        let tab = tab_half_geometry(&snapshot.tree)
+            .map_err(|error| format!("root Main tab step={}: {error:?}", snapshot.step))?;
         if expected_target.is_some() && preview.is_none() {
             last_pending = format!("step {} has no Dock preview emission", snapshot.step);
             previous = None;
@@ -1267,7 +1296,7 @@ fn wait_for_pane_center_scene(
                 ));
             }
             if let Some(preview) = preview {
-                match target.verify_preview(expected, preview, snapshot.pixels_per_point) {
+                match target.verify_preview(expected, tab, preview, snapshot.pixels_per_point) {
                     Ok(()) => {}
                     Err(PaneCenterError::PreviewBoundsMismatch) => {
                         last_pending = format!(
@@ -1288,6 +1317,7 @@ fn wait_for_pane_center_scene(
         }
         let scene = PaneCenterScene {
             geometry,
+            tab,
             guides,
             preview,
         };
@@ -1489,6 +1519,13 @@ fn move_to_pane_target_while_pressed(
             target_tree.pixels_per_point,
             &target_scene.guides,
         ),
+        PaneDockTarget::TabHalf(case) => tab_half_point(
+            case,
+            target_scene.tab,
+            window.bounds,
+            target_tree.pixels_per_point,
+            &target_scene.guides,
+        ),
     }
     .map_err(|error| format!("{} before motion: {error:?}", target.name()))?;
     if selected == request.routed_ingress {
@@ -1557,11 +1594,19 @@ fn move_to_pane_target_while_pressed(
             preview.pixels_per_point,
             &final_scene.guides,
         ),
+        PaneDockTarget::TabHalf(case) => tab_half_point(
+            case,
+            final_scene.tab,
+            final_window.bounds,
+            preview.pixels_per_point,
+            &final_scene.guides,
+        ),
     }
     .map_err(|error| format!("{} before release: {error:?}", target.name()))?;
     if final_window.bounds != window.bounds
         || preview.pixels_per_point != target_tree.pixels_per_point
         || rechecked != selected
+        || final_scene.tab != target_scene.tab
     {
         return Err(format!(
             "{}: {:?}; target bounds or physical projection changed before release",

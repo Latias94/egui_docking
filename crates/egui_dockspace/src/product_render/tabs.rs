@@ -317,9 +317,24 @@ pub(crate) fn paint_tab(
         selected,
         operable,
     );
+    #[cfg(feature = "native-render-support")]
+    publish_native_tab_bounds_diagnostic(context.ui, id, visible, resource.title.as_str());
     if operable {
         capture_tab_actions(context, tab, resource, &response, focused, !source_gap);
     }
+}
+
+#[cfg(feature = "native-render-support")]
+fn publish_native_tab_bounds_diagnostic(ui: &Ui, tab: Id, visible: egui::Rect, title: &str) {
+    if !super::native_drag_preview_diagnostic_enabled(ui.ctx()) {
+        return;
+    }
+    ui.ctx()
+        .accesskit_node_builder(tab.with("native-tab-bounds"), |node| {
+            node.set_role(Role::Label);
+            node.set_label(format!("Dockspace tab bounds {title}"));
+            node.set_bounds(accesskit_bounds(visible));
+        });
 }
 
 fn tab_id(ui: &Ui, instance_id: Id, tab: TabPaintRecord<'_>) -> Id {
@@ -498,4 +513,50 @@ fn configure_tab_accessibility(
             node.clear_selected();
         }
     });
+}
+
+#[cfg(all(test, feature = "native-render-support"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_tab_diagnostic_is_opt_in_and_passive_without_changing_drag_semantics() {
+        for enabled in [false, true] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            if enabled {
+                super::super::enable_native_drag_preview_diagnostic(&context);
+            }
+            let full = egui::Rect::from_min_max(pos2(28.0, 0.0), pos2(110.0, 28.0));
+            let drag = egui::Rect::from_min_max(pos2(28.0, 0.0), pos2(76.0, 28.0));
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                let id = ui.make_persistent_id("native-tab-diagnostic-test");
+                configure_tab_accessibility(ui, id, drag, "Main", true, true);
+                publish_native_tab_bounds_diagnostic(ui, id, full, "Main");
+            });
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let tab = nodes
+                .iter()
+                .find(|(_, node)| node.role() == Role::Tab && node.label() == Some("Main"))
+                .unwrap();
+            assert_eq!(tab.1.bounds(), Some(accesskit_bounds(drag)));
+            let diagnostic: Vec<_> = nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some("Dockspace tab bounds Main"))
+                .collect();
+            assert_eq!(diagnostic.len(), usize::from(enabled));
+            if let [(_, node)] = diagnostic.as_slice() {
+                assert_eq!(node.role(), Role::Label);
+                assert_eq!(node.bounds(), Some(accesskit_bounds(full)));
+                assert!(!node.supports_action(Action::Click));
+                assert!(!node.supports_action(Action::Focus));
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
 }

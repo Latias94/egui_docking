@@ -297,15 +297,18 @@ creation, staging, first-live admission, redock, and retirement through product
 commands. The X11/XTest smoke locates only read-only semantic receivers, injects
 real OS pointer events through Winit, and proves drag-out, first-live, the exact
 Center-guide control, three non-guide pane-center points and four non-guide
-pane-edge points, real merge/split topology, OS-window destruction, and
+pane-edge points, both tab-half insertion sides, real merge/split topology, OS-window destruction, and
 retirement quiescence. The center cases use
 `EGUI_DOCKSPACE_PHYSICAL_TARGET=pane-center-a`, `pane-center-b` or
 `pane-center-c`; the edge cases use `pane-edge-north`, `pane-edge-south`,
-`pane-edge-east` or `pane-edge-west`. Leaving it unset runs the guide control.
-Each non-guide case excludes all actual guide hit bounds and the outer-root band
+`pane-edge-east` or `pane-edge-west`; tab insertion uses `tab-half-before` or
+`tab-half-after`. Leaving it unset runs the guide control.
+Each pane case excludes all actual guide hit bounds and the outer-root band
 after physical rounding and again before release. Edge cases require the
-matching exact half-root preview and ordered, equal-weight split in the original root. These
-finite native smokes do not certify tab-half insertion, nested targets, mixed
+matching exact half-root preview and ordered, equal-weight split in the original root.
+Tab halves exclude Close Main and actual guides, require the narrow insertion
+marker and verify the precise resulting tab order. These finite native smokes
+do not certify overflowed/clipped tab insertion, nested targets, mixed
 DPI or the complete local journey matrix. They do not expose core
 geometry or provide a reusable GUI test engine.
 

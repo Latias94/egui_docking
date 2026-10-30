@@ -105,9 +105,9 @@ The additional bits are:
 
 These bits must be read separately from the evidence:
 
-| Platform | Recorded qualification through `13dd127` | Remaining platform limit |
+| Platform | Recorded finite qualification | Remaining platform limit |
 | --- | --- | --- |
-| X11 | Eight finite XTest tear-off/first-live/redock/retirement journeys; three center-only high-rate cases; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
+| X11 | Ten finite XTest tear-off/first-live/redock/retirement journeys; three center-only high-rate cases; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
 | macOS | Real-window default/bounded programmatic tear-off, first-live, redock and retirement; five output-pressure cases. Same-window event-time facts have Winit test coverage, and local mouse geometry has deterministic producer/adapter coverage. | Programmatic and same-window fact evidence does not certify a physical cross-window release. `AuthoritativeButtonState` remains absent; cross-surface physical promotion stays fail-closed. Retina/mixed-DPI and the complete physical matrix remain unqualified. |
 | Windows | Conservative capability mapping and shared host/adapter contracts. | No current Windows real-input/platform certification is established by the cited records. Hovered-window, desktop-pointer and authoritative-button bits remain absent; placement/lifecycle bits alone do not qualify cross-window docking. |
 | Wayland | Limited observation/control mapping; deterministic event-time local mouse geometry and Touch position/geometry-pair contracts. | No compositor/physical-input qualification. Managed native lifecycle, global placement, work area and desktop pointer/hover authority remain unavailable in this mapping. Proven local operations need no global desktop lane. |
@@ -130,7 +130,9 @@ document's Work-area roster entry and consumed by
 [`work_area.rs`](../crates/egui_dockspace_native/src/work_area.rs).
 
 The [2026-10-31 edge qualification](VALIDATION.md#2026-10-31-x11-non-guide-pane-edge-docking)
-records all eight finite physical journeys passing at `13dd127`:
+records eight physical journeys at `13dd127`. The subsequent
+[tab-half qualification](VALIDATION.md#2026-10-31-x11-physical-tab-half-insertion)
+adds two and reruns all ten:
 
 | `EGUI_DOCKSPACE_PHYSICAL_TARGET` | Target | Required final layout |
 | --- | --- | --- |
@@ -142,8 +144,10 @@ records all eight finite physical journeys passing at `13dd127`:
 | `pane-edge-south` | Content point `(0.30, 0.84)` | Two singleton tabs leaves, expected vertical order and equal weights. |
 | `pane-edge-east` | Content point `(0.84, 0.25)` | Two singleton tabs leaves, expected horizontal order and equal weights. |
 | `pane-edge-west` | Content point `(0.16, 0.25)` | Two singleton tabs leaves, expected horizontal order and equal weights. |
+| `tab-half-before` | Physical point inside the full Main tab's left half, excluding close/guides | Exact insertion marker and ordered `[Child,Main]` tabs. |
+| `tab-half-after` | Physical point inside its available right half before Close Main | Exact insertion marker and ordered `[Main,Child]` tabs. |
 
-Points are normalized to current pane content. Physical rounding must stay in
+Pane points are normalized to current content. Physical rounding must stay in
 the named inner-pane basin, outside the outer-root band and every actual guide
 hit; the runner rechecks those facts before release. It cannot substitute
 another point or a guide. Every successful journey checks held source input,
@@ -152,14 +156,20 @@ exact child X11 `DestroyNotify`, semantic viewport retirement and quiescence.
 A viewport step is a progress barrier and a painted marker proves emission;
 neither is a native release receipt or GPU presentation proof.
 
+Tab-half selection uses an opt-in passive diagnostic copied from the painted
+tab's complete visible bounds; the Tab accessibility receiver still excludes
+its close button. These diagnostics confer no input or presentation authority.
+The finite single fully visible target has no overflow chrome; clipped and
+overflowed tab-half insertion remain unqualified.
+
 The recorded environment is Linux/arm64, Rust 1.95, Xvfb/Openbox, one X screen,
 scale 1, a 2-CPU/4-GiB container and software GL with one renderer thread.
 [`physical_x11/driver/scenario.rs`](../integration/egui-native-smoke/src/bin/physical_x11/driver/scenario.rs),
 [`driver/x11.rs`](../integration/egui-native-smoke/src/bin/physical_x11/driver/x11.rs)
 and [`assertions.rs`](../integration/egui-native-smoke/src/bin/physical_x11/assertions.rs)
 own the finite scenario, OS evidence and semantic checks. The latest slice also
-records 40 runner tests passing; production gates were carried from the preceding
-qualification because only runner source changed.
+records 42 runner tests, 70 adapter units, 114 product and 15 official tests
+passing. Core/fork production gates retain their previous scope.
 
 The [continuous-input qualification](VALIDATION.md#2026-10-31-continuous-x11-input-and-pending-release-wake)
 adds `EGUI_DOCKSPACE_PHYSICAL_LOAD=1khz` for explicit `pane-center-a/b/c` only.
@@ -256,9 +266,9 @@ artifacts recorded in `VALIDATION.md`; they are not portable checkout assets.
 No runtime or platform qualification was rerun for this documentation snapshot.
 
 Still open are remaining close/create owner
-capacity and native service-time qualification; tab-half insertion, nested and
+capacity and native service-time qualification; overflowed/clipped tab insertion, nested and
 mixed-DPI physical coverage; fresh stationary capture, automatic scheduling and
 native-local/Touch OS evidence; Windows/macOS platform certification; the native
 showcase; and U9 dependency publication, clean-checkout reproduction, package
-and remaining evidence/deletion closure. The existing eight-journey and
+and remaining evidence/deletion closure. The ten-journey and
 center-load results retain their finite scope.

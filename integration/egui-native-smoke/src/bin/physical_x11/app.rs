@@ -56,6 +56,7 @@ pub(super) struct ProductObservation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RedockLayout {
     Center,
+    TabBefore,
     Edge(PaneEdgeCase),
 }
 
@@ -69,7 +70,11 @@ fn observed_redock_layout(view: DockspaceView<'_>) -> Option<RedockLayout> {
     }
     let content = view.surface(ROOT_SURFACE)?.main_root()?.content()?;
     if let Some(tabs) = content.tabs() {
-        return (tabs.items() == [MAIN_ITEM, CHILD_ITEM]).then_some(RedockLayout::Center);
+        return match tabs.items() {
+            [MAIN_ITEM, CHILD_ITEM] => Some(RedockLayout::Center),
+            [CHILD_ITEM, MAIN_ITEM] => Some(RedockLayout::TabBefore),
+            _ => None,
+        };
     }
     let split = content.split()?;
     if split.child_count() != 2
@@ -862,7 +867,10 @@ mod tests {
             DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::tabs([CHILD_ITEM, MAIN_ITEM])),
         )])
         .unwrap();
-        assert_eq!(observed_redock_layout(reversed_center.view()), None);
+        assert_eq!(
+            observed_redock_layout(reversed_center.view()),
+            Some(RedockLayout::TabBefore)
+        );
         let uneven = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             ROOT_SURFACE,
             DockspaceRootLayout::new(

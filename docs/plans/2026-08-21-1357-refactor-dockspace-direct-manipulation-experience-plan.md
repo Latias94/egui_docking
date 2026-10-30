@@ -1812,6 +1812,16 @@ event-loop yield remain outside this segment. Ordinary CI retains deterministic
 clock assertions. Full host-service, broader capacity and native readiness
 qualification remain open.
 
+The physical reference runner now also qualifies both insertion halves of a
+single fully visible Main tab (2026-10-31). It keeps the original Tab semantic
+drag bounds, adds opt-in passive full-visible-tab geometry, excludes close and
+all actual guides after rounding, checks the precise insertion marker before
+physical release and the ordered final tabs after Destroyed/retirement.
+All ten finite X11 journeys and 42 runner tests pass, along with 70 adapter,
+114 product and 15 official-egui tests. This closes the stated finite tab-half
+gap, not clipped/overflow insertion, nested/mixed-DPI or remaining native
+qualification. Exact evidence is recorded in `docs/VALIDATION.md`.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

@@ -15,6 +15,56 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 X11 physical tab-half insertion
+
+The finite X11/XTest runner adds `tab-half-before` and `tab-half-after` to
+`EGUI_DOCKSPACE_PHYSICAL_TARGET`. Each uses the preceding real drag-out,
+first-live, held-source drag-back, exact native DestroyNotify, semantic viewport
+retirement and quiescence journey. The target is the single fully visible Main
+tab without overflow; physical points must lie strictly in its named half and
+outside Close Main and every actual guide hit after rounding and again before
+release. No fallback target is substituted. The high-rate extension still
+rejects these targets before starting the gesture and remains center-only.
+
+The existing AccessKit Tab bounds intentionally describe the drag receiver,
+excluding the close button. An initial after-half attempt incorrectly treated
+that rectangle as the whole tab; it selected the actual left half and observed
+the before marker, then failed waiting for the after marker. The failed log is
+retained. The fix preserves that accessibility contract and adds one passive
+Label per painted tab under the existing opt-in native diagnostic flag. It
+reports `TabPaintRecord::visible_bounds()` directly; it has no action, receiver,
+input authority or output-presentation receipt. Ordinary product use leaves it
+disabled. The new unit test verifies opt-in behavior, exact full bounds and
+unchanged drag semantics.
+
+The runner now reads those full bounds and the original Close Main receiver.
+It selects a point in the left half or the available right-half interval before
+the close control, verifies the actual narrow insertion marker and rechecks
+frozen pane/workspace, tab/close, native client and scale geometry before
+physical release. The measured target points are (47,14) and (71,14) in this
+scale-1 fixture. Before requires marker `[28,29] x [0,28]` and ordered
+`[Child,Main]` tabs; After requires `[101.84375,102.84375] x [0,28]` and ordered
+`[Main,Child]`. A pane-center preview cannot satisfy the insertion marker check,
+even where its final tab order would match After.
+
+Fresh qualification passes 42 Linux runner tests and all ten real journeys:
+the two new tab halves, four edges, three centers and guide control. The
+adapter's 70 all-feature unit tests, all 114 product and 15 official-egui tests
+also pass. Independent read-only review finds no confirmed P1/P2 in the
+geometry diagnostic, half selection, marker, frozen-coordinate or terminal
+checks. Current source hashes and exact commands/results are
+`/tmp/dockspace-physical-tab-half-snapshot.json`,
+`/tmp/dockspace-physical-tab-half-qualification.json` and matching logs.
+
+Only the finite runner and opt-in adapter diagnostic change. Core and fork
+behavior retain their prior qualification; this is not evidence for clipped or
+overflowed tab insertion, nested target competition, mixed DPI, native
+stationary capture, hardware Touch or the complete U7/U8/platform matrix.
+The environment remains Linux/arm64, Rust 1.95, Xvfb/Openbox, one X screen,
+scale 1, a 2-CPU/4-GiB container and software GL with one renderer thread.
+Native execution still requires the unpublished local fork overrides recorded
+in platform support; remote-only dependency reproducibility remains open.
+
 ## 2026-10-31 opt-in release reducer wall-time measurement
 
 The existing internal active-load fixture adds the explicitly ignored
