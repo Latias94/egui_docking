@@ -298,8 +298,11 @@ outside-all authority. Coordinate withdrawal or an incompatible lane cancels
 the old gesture without swallowing its physical terminal. After completion,
 the next gesture on the same pointer can choose its lane again. Local-to-desktop
 handoff and native stationary scheduling remain separate work. The egui native
-reference adapter still uses desktop input pending its event-time local geometry
-seam; the public host API does not establish platform callback qualification.
+reference adapter has a qualified event-time local geometry callback contract;
+the public host API does not establish platform callback qualification. Its
+committed capability, callback geometry and event-generation geometry must all
+agree. Unknown local samples cannot authorize idle compaction; exact samples
+can compare authority with `NativeLocalPointerSample::same_coordinates`.
 
 `native_input_owned_capacity_bytes()` on the session or an open host frame
 reports recorded input transport data: recorder envelopes and buffers, shared

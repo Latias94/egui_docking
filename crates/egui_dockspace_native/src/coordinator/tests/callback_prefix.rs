@@ -21,6 +21,7 @@ fn pointer_record_at(
 ) -> NativeWindowEventRecord {
     let window = WindowId::from(11);
     let facts = PointerEventFacts {
+        geometry: None,
         surface_position: Some(position),
         desktop_position: Some(position),
         modifiers: None,

@@ -23,6 +23,7 @@ fn pointer_record(
     let window = WindowId::from(11);
     let position = PhysicalPosition::new(40.0 + ordinal as f64, 70.0);
     let facts = PointerEventFacts {
+        geometry: None,
         surface_position: Some(position),
         desktop_position: Some(position),
         modifiers: None,

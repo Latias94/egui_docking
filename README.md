@@ -59,6 +59,15 @@ window gates; broader native input and platform readiness remain open. See
 current evidence and remaining gates in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
+Managed engine hosts can also capture native client coordinates from committed
+size and scale facts without desktop position or work areas. The joined recorder
+retains one input order, and each gesture freezes its coordinate lane through
+exact output settlement. The reference adapter now freezes event-time local
+samples at callback capture and accounts for their immutable payloads within the
+same bounded input budget. Its callback contract is qualified; native-local OS
+input, in-gesture local-to-desktop handoff and native stationary scheduling remain
+separate acceptance work.
+
 The experimental native adapter reserves 4,096 raw callback slots and two
 reusable complete-roster payloads. It admits at most 256 simultaneously retained
 native binding lifetimes, including pending retirement; a route/create pair

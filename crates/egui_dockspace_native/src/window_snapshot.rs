@@ -1,6 +1,6 @@
 //! Exact conversion from fork-owned window snapshots into core native facts.
 
-use dockspace::geometry::{PhysicalRect, ScaleFactor};
+use dockspace::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
 use dockspace::runtime::{
     NativeCreateEffectAcknowledgement, NativeCreateReadiness, NativeInputEffectAcknowledgement,
     NativePresentationEffectAcknowledgement, NativeSurfaceBinding, NativeWindowFacts,
@@ -91,6 +91,7 @@ impl CompiledWindowObservation {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SnapshotParts {
+    content_size: [u32; 2],
     inner_rect: Option<NativePhysicalRect>,
     outer_rect: Option<NativePhysicalRect>,
     native_scale_factor: f64,
@@ -103,6 +104,7 @@ struct SnapshotParts {
 impl From<NativeWindowSnapshot> for SnapshotParts {
     fn from(snapshot: NativeWindowSnapshot) -> Self {
         Self {
+            content_size: snapshot.content_size(),
             inner_rect: snapshot.inner_rect(),
             outer_rect: snapshot.outer_rect(),
             native_scale_factor: snapshot.native_scale_factor(),
@@ -140,12 +142,22 @@ fn compile_window_facts(
         .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
     let presentation_scale_factor = ScaleFactor::new(snapshot.presentation_scale_factor)
         .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
+    let content_size = PhysicalSize::new(
+        f64::from(snapshot.content_size[0]),
+        f64::from(snapshot.content_size[1]),
+    )
+    .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
     let mut facts = NativeWindowFacts::live()
+        .with_content_size(content_size)
         .with_native_scale_factor(native_scale_factor)
         .with_presentation_scale_factor(presentation_scale_factor)
         .with_input(input_state(snapshot.input_state), None);
     if let Some(rect) = snapshot.inner_rect {
-        facts = facts.with_content_bounds(physical_rect(rect)?);
+        let content = physical_rect(rect)?;
+        if content.size() != content_size {
+            return Err(NativeHostProtocolError::InvalidWindowSnapshot);
+        }
+        facts = facts.with_content_bounds(content);
     }
     if let Some(rect) = snapshot.outer_rect {
         facts = facts.with_outer_bounds(physical_rect(rect)?);
@@ -244,6 +256,7 @@ mod tests {
 
     fn parts() -> SnapshotParts {
         SnapshotParts {
+            content_size: [800, 600],
             inner_rect: Some(NativePhysicalRect::new(10, 20, 800, 600)),
             outer_rect: Some(NativePhysicalRect::new(2, -10, 816, 638)),
             native_scale_factor: 2.0,
@@ -258,6 +271,7 @@ mod tests {
     fn exact_snapshot_fields_compile_without_inference() {
         let binding = binding();
         let expected = NativeWindowFacts::live()
+            .with_content_size(PhysicalSize::new(800.0, 600.0).unwrap())
             .with_content_bounds(
                 PhysicalRect::new(10.0, 20.0, 800.0, 600.0).expect("content rect validates"),
             )
@@ -281,6 +295,7 @@ mod tests {
     fn missing_snapshot_fields_remain_unknown() {
         let facts = compile_window_facts(
             SnapshotParts {
+                content_size: [640, 480],
                 inner_rect: None,
                 outer_rect: None,
                 native_scale_factor: 1.5,
@@ -296,9 +311,20 @@ mod tests {
         assert_eq!(
             facts,
             NativeWindowFacts::live()
+                .with_content_size(PhysicalSize::new(640.0, 480.0).unwrap())
                 .with_native_scale_factor(ScaleFactor::new(1.5).expect("scale validates"))
                 .with_presentation_scale_factor(ScaleFactor::new(1.25).expect("scale validates"),)
                 .with_input(NativeWindowInputState::ReceivesInput, None)
+        );
+    }
+
+    #[test]
+    fn conflicting_client_size_and_desktop_bounds_reject_before_snapshot_publication() {
+        let mut snapshot = parts();
+        snapshot.content_size = [801, 600];
+        assert_eq!(
+            compile_window_facts(snapshot, None),
+            Err(NativeHostProtocolError::InvalidWindowSnapshot)
         );
     }
 
@@ -325,6 +351,7 @@ mod tests {
         let facts = compile_window_facts(snapshot, None).expect("pass-through snapshot compiles");
 
         let expected = NativeWindowFacts::live()
+            .with_content_size(PhysicalSize::new(800.0, 600.0).unwrap())
             .with_content_bounds(
                 PhysicalRect::new(10.0, 20.0, 800.0, 600.0).expect("content rect validates"),
             )
@@ -345,6 +372,7 @@ mod tests {
         snapshot.minimized = Some(true);
         let facts = compile_window_facts(snapshot, None).expect("minimized snapshot compiles");
         let expected = NativeWindowFacts::live()
+            .with_content_size(PhysicalSize::new(800.0, 600.0).unwrap())
             .with_content_bounds(
                 PhysicalRect::new(10.0, 20.0, 800.0, 600.0).expect("content rect validates"),
             )

@@ -206,6 +206,61 @@ fn snapshot_seen_in_an_earlier_prefix_settles_after_a_final_report_without_snaps
 }
 
 #[test]
+fn pending_native_suffix_does_not_delay_committed_local_coordinate_refresh() {
+    let (mut native, first, second) = presented_local_coordinate_routes();
+    let window = WindowId::from(11);
+    let original = native.session.native_local_coordinates(first).unwrap();
+    native
+        .bridge
+        .push_viewport_roster(NativeViewportRosterRecord::for_test(
+            [
+                (
+                    first,
+                    ready_window_facts(0.0)
+                        .with_presentation_scale_factor(ScaleFactor::new(2.0).unwrap()),
+                ),
+                (second, ready_window_facts(720.0)),
+            ]
+            .map(|(binding, facts)| {
+                crate::window_snapshot::CompiledWindowObservation::new(binding, facts)
+            }),
+            true,
+        ));
+    assert!(native.reduce_next_viewport_roster().unwrap());
+    native
+        .session
+        .record_native_pointer_sequence((0..256).map(|_| unknown_move()))
+        .unwrap();
+    let report = commit_poll(&mut native, &mut test_budget());
+    assert!(report.native_input_pending());
+    assert!(report.inputs().iter().any(|input| matches!(
+        input,
+        HostInputOutcome::NativePlatformSnapshotApplied { .. },
+    )));
+    let committed = native.session.native_local_coordinates(first).unwrap();
+    assert_ne!(committed, original);
+    assert_eq!(
+        native
+            .bridge
+            .with_viewports(|routes| routes.local_coordinates_for_event(window, None)),
+        Some(original),
+    );
+    assert!(!native.settle_host_frame_report(&report).unwrap());
+    assert!(native.queued_snapshot.is_some());
+    assert_eq!(
+        native
+            .bridge
+            .with_viewports(|routes| routes.local_coordinates_for_event(window, None)),
+        Some(committed),
+        "only the committed prefix grants capability while the snapshot envelope awaits its suffix",
+    );
+    let final_report = commit_poll(&mut native, &mut test_budget());
+    assert!(!final_report.native_input_pending());
+    assert!(native.settle_host_frame_report(&final_report).unwrap());
+    assert!(native.queued_snapshot.is_none());
+}
+
+#[test]
 fn atomic_yield_keeps_the_boundary_even_after_every_raw_callback_was_claimed() {
     let mut native = coordinator();
     register_roots(&mut native);

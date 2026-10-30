@@ -206,6 +206,15 @@ pub struct NativeLocalPointerSample {
 }
 
 impl NativeLocalPointerSample {
+    /// Returns whether two captured samples use the same exact coordinate authority.
+    ///
+    /// Positions are deliberately excluded. Hosts may use this comparison to
+    /// compact idle motion without joining different bindings or generations.
+    #[must_use]
+    pub fn same_coordinates(self, other: Self) -> bool {
+        self.coordinates == other.coordinates
+    }
+
     /// Returns the original event-time client point in physical pixels.
     #[must_use]
     pub const fn client_position(self) -> PhysicalPoint {

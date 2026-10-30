@@ -26,6 +26,7 @@ mod held_close;
 mod ingress_create;
 mod input_capacity;
 mod input_control;
+mod local_pointer;
 mod overload;
 mod owner_storage;
 mod replacement;
@@ -431,6 +432,247 @@ fn paint_and_present_all_surfaces(coordinator: &mut NativeCoordinator) -> HostFr
         .settle_native_admissions(report.native_admissions())
         .expect("native roster admissions settle");
     report
+}
+
+fn presented_local_coordinate_routes() -> (
+    NativeCoordinator,
+    NativeSurfaceBinding,
+    NativeSurfaceBinding,
+) {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    for (viewport, window, binding) in [
+        (ViewportId::ROOT, WindowId::from(11), first),
+        (
+            ViewportId::from_hash_of("local-coordinate-peer"),
+            WindowId::from(22),
+            second,
+        ),
+    ] {
+        native.bind_viewport(viewport, window, binding).unwrap();
+    }
+    native
+        .report_snapshot(
+            [
+                (first, ready_window_facts(0.0)),
+                (second, ready_window_facts(720.0)),
+            ],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .unwrap();
+    callback_prefix::commit_boundary(&mut native);
+    let report = paint_and_present_all_surfaces(&mut native);
+    assert!(native.queued_snapshot.is_none());
+    assert!(!native.settle_host_frame_report(&report).unwrap());
+    assert!(native.session.native_local_coordinates(first).is_some());
+    assert!(native.session.native_local_coordinates(second).is_some());
+    (native, first, second)
+}
+
+#[test]
+fn local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_snapshot() {
+    let (mut native, first, second) = presented_local_coordinate_routes();
+    let window = WindowId::from(11);
+    let original = native.session.native_local_coordinates(first).unwrap();
+    let route_coordinates = |native: &NativeCoordinator| {
+        native.bridge.with_viewports(|routes| {
+            routes.local_coordinates_for_event(window, Some(ViewportId::ROOT))
+        })
+    };
+    assert_eq!(route_coordinates(&native), Some(original));
+    native.bridge.with_viewports(|routes| {
+        assert_eq!(
+            routes.local_coordinates_for_event(window, None),
+            Some(original)
+        );
+        assert_eq!(
+            routes.local_coordinates_for_event(
+                window,
+                Some(ViewportId::from_hash_of(
+                    "foreign-local-coordinate-viewport"
+                )),
+            ),
+            None,
+        );
+        assert_eq!(
+            routes.local_coordinates_for_event(WindowId::from(99), None),
+            None
+        );
+    });
+    let bytes = native
+        .bridge
+        .with_viewports(|routes| routes.owned_data_capacity_bytes());
+
+    native
+        .report_snapshot(
+            [
+                (
+                    first,
+                    ready_window_facts(0.0)
+                        .with_presentation_scale_factor(ScaleFactor::new(2.0).unwrap()),
+                ),
+                (second, ready_window_facts(720.0)),
+            ],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .unwrap();
+    native.refresh_local_coordinates();
+    assert_eq!(route_coordinates(&native), Some(original));
+    let mut dropped = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    dropped
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(dropped);
+    native.refresh_local_coordinates();
+    assert_eq!(
+        native.session.native_local_coordinates(first),
+        Some(original)
+    );
+    assert_eq!(route_coordinates(&native), Some(original));
+
+    let mut retry = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    retry
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = retry.commit().unwrap();
+    let updated = native.session.native_local_coordinates(first).unwrap();
+    assert_ne!(updated, original);
+    assert_eq!(route_coordinates(&native), Some(original));
+    assert!(native.queued_snapshot.is_none());
+    assert!(!native.settle_host_frame_report(&report).unwrap());
+    assert_eq!(route_coordinates(&native), Some(updated));
+
+    native
+        .report_snapshot(
+            [
+                (first, NativeWindowFacts::live()),
+                (second, ready_window_facts(720.0)),
+            ],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .unwrap();
+    let mut revoked = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    revoked
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = revoked.commit().unwrap();
+    assert!(native.session.native_local_coordinates(first).is_none());
+    assert_eq!(route_coordinates(&native), Some(updated));
+    assert!(!native.settle_host_frame_report(&report).unwrap());
+    assert_eq!(route_coordinates(&native), None);
+    assert_eq!(
+        native
+            .bridge
+            .with_viewports(|routes| routes.owned_data_capacity_bytes()),
+        bytes,
+        "committed capability changes use only the existing inline route backing",
+    );
+}
+
+#[test]
+fn local_route_coordinates_are_cleared_by_exact_suppression_and_every_successor_path() {
+    let (native, first, second) = presented_local_coordinate_routes();
+    let (replacement, successor, _) = presented_local_coordinate_routes();
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(11);
+    let mut routes = NativeViewportMap::with_capacity_limit(1).unwrap();
+    let bytes = routes.owned_data_capacity_bytes();
+    routes.bind(viewport, window, first).unwrap();
+    assert_eq!(routes.local_coordinates_for_event(window, None), None);
+    routes.refresh_local_coordinates(&native.session);
+    let original = native.session.native_local_coordinates(first).unwrap();
+    assert_eq!(
+        routes.local_coordinates_for_event(window, None),
+        Some(original)
+    );
+    assert!(!routes.suppress_pointer_route(viewport, second));
+    assert_eq!(
+        routes.local_coordinates_for_event(window, None),
+        Some(original)
+    );
+    assert!(routes.suppress_pointer_route(viewport, first));
+    routes.refresh_local_coordinates(&native.session);
+    assert_eq!(routes.pointer_binding_for_event(window, None), None);
+    assert_eq!(routes.local_coordinates_for_event(window, None), None);
+    drop(routes.remove_viewport(viewport, first).unwrap());
+
+    for path in 0..4 {
+        routes.bind(viewport, window, first).unwrap();
+        routes.refresh_local_coordinates(&native.session);
+        assert_eq!(
+            routes.local_coordinates_for_event(window, None),
+            Some(original)
+        );
+        let successor_window = if path == 0 {
+            window
+        } else {
+            WindowId::from(33)
+        };
+        let displaced = match path {
+            0 | 1 => routes
+                .replace(viewport, first, successor_window, successor)
+                .unwrap(),
+            2 => routes
+                .reserve_replacement(viewport, first, successor)
+                .unwrap(),
+            3 => {
+                assert!(routes.suppress_pointer_route(viewport, first));
+                routes
+                    .reserve_retired_replacement(viewport, first, successor)
+                    .unwrap()
+            }
+            _ => unreachable!(),
+        };
+        drop(displaced);
+        if path >= 2 {
+            routes
+                .attach(viewport, successor, successor_window)
+                .unwrap();
+        }
+        assert_eq!(
+            routes.pointer_binding_for_event(successor_window, None),
+            Some(successor)
+        );
+        assert_eq!(
+            routes.local_coordinates_for_event(successor_window, None),
+            None
+        );
+        assert!(!routes.suppress_pointer_route(viewport, first));
+        routes.refresh_local_coordinates(&native.session);
+        assert_eq!(
+            routes.local_coordinates_for_event(successor_window, None),
+            None
+        );
+        routes.refresh_local_coordinates(&replacement.session);
+        let current = replacement
+            .session
+            .native_local_coordinates(successor)
+            .unwrap();
+        assert_eq!(
+            routes.local_coordinates_for_event(successor_window, None),
+            Some(current)
+        );
+        routes.refresh_local_coordinates(&native.session);
+        assert_eq!(
+            routes.local_coordinates_for_event(successor_window, None),
+            None
+        );
+        drop(routes.remove_viewport(viewport, successor).unwrap());
+        assert_eq!(
+            routes.local_coordinates_for_event(successor_window, None),
+            None
+        );
+        assert_eq!(routes.owned_data_capacity_bytes(), bytes);
+    }
 }
 
 fn live_roster(
@@ -1657,6 +1899,7 @@ fn pointer_routes_are_frozen_before_viewport_replacement() {
         state: ElementState::Released,
         button: MouseButton::Left,
         facts: PointerEventFacts {
+            geometry: None,
             surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
             desktop_position: Some(PhysicalPosition::new(110.0, 220.0)),
             modifiers: None,
@@ -1727,6 +1970,7 @@ fn pointer_translation_preserves_delivery_hover_and_capture() {
         state: ElementState::Released,
         button: MouseButton::Left,
         facts: PointerEventFacts {
+            geometry: None,
             surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
             desktop_position: Some(PhysicalPosition::new(110.0, 220.0)),
             modifiers: None,
@@ -1780,6 +2024,7 @@ fn pointer_reduction_acknowledges_only_after_core_acceptance() {
         state: ElementState::Pressed,
         button: MouseButton::Left,
         facts: PointerEventFacts {
+            geometry: None,
             surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
             desktop_position: Some(PhysicalPosition::new(10.0, 20.0)),
             modifiers: None,

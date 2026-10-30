@@ -15,6 +15,82 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 native callback local coordinates
+
+Winit now freezes native scale and client size together with physical mouse
+coordinates on macOS and Wayland. X11, Windows and other unqualified paths keep
+the new optional event geometry absent. eframe independently samples callback
+geometry using one native-scale read and the same `f32` presentation-scale
+calculation as its window snapshots. Client size remains available without a
+desktop origin, and a client resize revokes retained output even without one.
+
+The adapter freezes event/callback/committed geometry into an opaque sample
+under the existing mailbox lock. One immutable shared callback payload owns
+routes and the local location; raw WindowEvent remains inline. Complete payload
+data and worst-case translator growth enter one shared preflight before journal
+identity admission. Retry shares the allocation, and single-event processing
+drops its temporary clone before returning source capacity. Lifecycle callbacks
+do not allocate pointer payloads. The existing viewport row refreshes its
+capability after committed reports, including first-live and partial input
+commits without a queued platform snapshot. There is no capability registry.
+
+Local capture requires explicit original event geometry. Independent review
+found that X11's synthetic focus CursorMoved has neither event geometry nor a
+desktop point; treating missing desktop position as NativeLocal cancelled an
+armed Desktop gesture. Event and complete raw-to-output regressions fail before
+the positive-geometry guard and pass afterward. Unknown local coordinates never
+authorize idle compaction; exact samples compare their coordinate authority
+without comparing positions or allocation addresses.
+
+Current focused evidence passes 34 adapter tests, including three complete
+raw capture/mailbox/translator/core journeys: size-only reorder with frame
+retry and exact output settlement, an old-scale terminal followed by pointer
+reuse, and a Desktop gesture surviving the synthetic X11 focus move. Each uses
+real semantic receiver descriptors and retains original age/device metadata.
+An accepted preview may retire when its delivery changes layout in the same
+commit; exact settlement and one Delivered(Dock) prove the terminal, rather than
+requiring that old preview to remain the new layout's current presentation.
+
+Winit unit tests pass 15 cases on macOS and 36 on Linux (serial cargo test in
+the container, which has no nextest). Eframe passes 87 Glow, 81 WGPU and 87
+assertion-disabled combined-renderer tests, checks both renderers without the
+seam, correctness/suspicious Clippy and strict docs. The initial strict-doc
+command omitted optional features referenced by existing unconditional links;
+its failure and corrected inspection/persistence command are both preserved.
+
+All 29 frozen main/adapter gates pass: 1,874 workspace tests, 105 default / 112
+serde public-consumer tests, 476 native tests both normally and without native
+debug assertions, ten doctests, correctness/suspicious Clippy, strict rustdoc,
+formatting and patch integrity. Each native configuration runs 10,000 lifetimes
+on the same coordinator. An initial native run passed 473/476: three existing
+fact-equality fixtures omitted the newly explicit client-size field. Updating
+only those expectations makes the full native gates pass; the original failed
+attempt is retained. All 433 Rust paths match the native qualification snapshot.
+
+macOS default/bounded programmatic redock, X11/XTest physical tear-off,
+first-live, guide-targeted redock and destruction, and five output-pressure
+scenarios per platform pass. The bounded root-boundary owned-input sample peaks
+at 2,146,235 bytes, with 3,298,688 reserved under the unchanged 4,194,304-byte
+limit and 4,096 raw slots. These figures count input data under the existing
+capacity contract, not whole-process RSS or all possible cross-saturation.
+
+The clean local forks are Winit `e8dd500fd5a78884de0092db81f60e8649da18aa` and
+egui/eframe `154ac8e77e3af81aa7ccb9c8c0f8a7769f339c3f`. Both use explicit local
+overrides for qualification; tracked remote dependency pins do not reproduce
+these unpublished commits. Source hashes and complete commands/results are at
+`/tmp/dockspace-local-callback-final-snapshot.json` and
+`/tmp/dockspace-local-callback-final-qualification.json`; fork evidence is under
+`/tmp/dockspace-local-callback-fork-*` and
+`/tmp/dockspace-winit-local-geometry-*`. X11 focus-gap red/green evidence is
+retained under `/tmp/dockspace-local-callback-x11-gap-red.log` and
+`/tmp/dockspace-local-callback-adapter-green.log`.
+
+This does not qualify real native-local OS input, Wayland presentation, positive
+in-gesture local-to-desktop handoff, native touch/stationary scheduling, combined
+capacity cross-saturation or non-guide physical docking. X11 continues to use
+the existing desktop lane; its cached DPI/size state does not yet justify an
+event-local geometry claim.
+
 ## 2026-10-30 joined native local pointer
 
 The joined backend now freezes a NativeJoined host domain. It accepts desktop

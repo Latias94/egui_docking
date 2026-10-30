@@ -483,6 +483,57 @@ fn paint_child_output(
 }
 
 #[test]
+fn first_live_report_refreshes_local_capability_without_a_queued_snapshot() {
+    let (mut native, _, source, child) = content_ready_child();
+    let viewport = viewport_id_for(child);
+    let window = WindowId::from(33);
+    assert!(native.queued_snapshot.is_none());
+    native.refresh_local_coordinates();
+    assert!(native.session.native_local_coordinates(child).is_none());
+    assert_eq!(
+        native.bridge.with_viewports(|routes| {
+            routes.local_coordinates_for_event(window, Some(viewport))
+        }),
+        None,
+    );
+
+    let output = paint_child_output(&mut native, child);
+    native
+        .session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    assert_source_retained(&native, source, child);
+    let mut frame = native
+        .session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert_eq!(report.native_admissions(), &[child]);
+    let committed = native.session.native_local_coordinates(child).unwrap();
+    assert_eq!(committed.binding(), child);
+    assert_eq!(
+        native.bridge.with_viewports(|routes| {
+            routes.local_coordinates_for_event(window, Some(viewport))
+        }),
+        None,
+        "the route cannot grant capability before its committed report is settled",
+    );
+    assert!(native.queued_snapshot.is_none());
+    assert!(!native.settle_host_frame_report(&report).unwrap());
+    assert_eq!(
+        native.bridge.with_viewports(|routes| {
+            routes.local_coordinates_for_event(window, Some(viewport))
+        }),
+        Some(committed),
+        "output-only first-live admission refreshes the existing event route",
+    );
+    assert!(!native.settle_host_frame_report(&report).unwrap());
+}
+
+#[test]
 fn shutdown_cancelled_child_cannot_admit_a_late_real_pane_output() {
     let (mut native, _, source, child) = content_ready_child();
     let version = native.session.version();

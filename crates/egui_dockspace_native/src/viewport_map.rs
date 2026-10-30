@@ -3,7 +3,7 @@
 use std::mem::size_of;
 
 use dockspace::model::SurfaceId;
-use dockspace::runtime::NativeSurfaceBinding;
+use dockspace::runtime::{DockspaceSession, NativeLocalCoordinates, NativeSurfaceBinding};
 use eframe::{NativeViewportCreateAttempt, egui::ViewportId};
 use winit::window::WindowId;
 
@@ -33,6 +33,7 @@ struct NativeViewportRoute {
     create: Option<NativeCreateReceipt>,
     terminal: Option<NativeWindowReceipt>,
     pointer_suppressed: bool,
+    local_coordinates: Option<NativeLocalCoordinates>,
     focus_reportable: bool,
     semantic_wake: SemanticWake,
 }
@@ -436,6 +437,7 @@ impl NativeViewportMap {
                 .route_mut(viewport)
                 .expect("validated replacement retains its route");
             route.binding = successor;
+            route.local_coordinates = None;
             if let Some(receipt) = route.terminal.as_mut() {
                 receipt.rebind(successor);
             }
@@ -554,6 +556,7 @@ impl NativeViewportMap {
             return false;
         }
         route.pointer_suppressed = true;
+        route.local_coordinates = None;
         true
     }
 
@@ -580,6 +583,31 @@ impl NativeViewportMap {
     ) -> Option<NativeSurfaceBinding> {
         let (_, binding) = self.route_for_event(window, viewport)?;
         (!self.is_pointer_suppressed(binding)).then_some(binding)
+    }
+
+    /// Returns committed local authority only for the exact usable event route.
+    pub(crate) fn local_coordinates_for_event(
+        &self,
+        window: WindowId,
+        viewport: Option<ViewportId>,
+    ) -> Option<NativeLocalCoordinates> {
+        let binding = self.pointer_binding_for_event(window, viewport)?;
+        let (viewport, _) = self.route_for_event(window, viewport)?;
+        let coordinates = self.route(viewport)?.local_coordinates?;
+        (coordinates.binding() == binding && !self.prepared_retirements.contains(&binding))
+            .then_some(coordinates)
+    }
+
+    /// Refreshes the existing route rows exclusively from committed core state.
+    pub(crate) fn refresh_local_coordinates(&mut self, session: &DockspaceSession) {
+        for route in &mut self.viewports {
+            route.local_coordinates =
+                if route.pointer_suppressed || self.prepared_retirements.contains(&route.binding) {
+                    None
+                } else {
+                    session.native_local_coordinates(route.binding)
+                };
+        }
     }
 
     pub(crate) fn binding_for_event(
@@ -1102,6 +1130,7 @@ impl NativeViewportMap {
             terminal: window
                 .map(|window| NativeWindowReceipt::attached(viewport, window, binding, None)),
             pointer_suppressed: false,
+            local_coordinates: None,
             focus_reportable: false,
             semantic_wake: SemanticWake::Idle,
         };

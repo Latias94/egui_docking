@@ -263,6 +263,7 @@ fn pointer_facts(
     capture: PointerWindowRoute,
 ) -> PointerEventFacts {
     PointerEventFacts {
+        geometry: None,
         surface_position: Some(PhysicalPosition::new(desktop.x(), desktop.y())),
         desktop_position: Some(PhysicalPosition::new(desktop.x(), desktop.y())),
         modifiers: None,

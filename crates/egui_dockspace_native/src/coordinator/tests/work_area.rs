@@ -78,6 +78,7 @@ fn outside_all_translation_uses_the_exact_committed_work_area() {
         state: ElementState::Released,
         button: MouseButton::Left,
         facts: PointerEventFacts {
+            geometry: None,
             surface_position: None,
             desktop_position: Some(PhysicalPosition::new(1600.0, 1060.0)),
             modifiers: None,

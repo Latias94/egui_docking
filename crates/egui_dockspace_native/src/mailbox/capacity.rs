@@ -7,7 +7,7 @@ use super::window_resource::NativeWindowResources;
 use super::{HostRecord, NativeHostBridge, NativeHostState, NativeSurfaceBinding};
 use crate::close_control::NativeCloseControl;
 use crate::error::NativeHostProtocolError;
-use crate::event::NativeWindowEventClass;
+use crate::event::{NativeWindowEventClass, NativeWindowEventRecord};
 use crate::pointer_event::NativePointerTranslator;
 use crate::retirement::NativeRetirementState;
 use crate::viewport_map::NativeViewportMap;
@@ -66,6 +66,19 @@ impl NativeHostState {
             )
             .saturating_add(self.output_resources.owned_descendant_capacity_bytes())
             .saturating_add(self.terminal_roster.reserved_payload_capacity_bytes());
+        // Each accepted pointer callback owns one immutable payload. Retries
+        // borrow or clone that same record while it remains in this journal;
+        // lifecycle owner slots never duplicate pointer callbacks.
+        bytes = bytes.saturating_add(
+            self.journal
+                .iter()
+                .chain(self.owner_ingress().map(|ingress| ingress.record()))
+                .filter_map(|record| match record {
+                    HostRecord::WindowEvent(event) => Some(event.owned_descendant_capacity_bytes()),
+                    _ => None,
+                })
+                .fold(0_usize, usize::saturating_add),
+        );
         // Production rosters always belong to the two backing owners. Tests may
         // inject external allocations; compare the existing handles without
         // keeping a persistent allocation-address registry.
@@ -120,8 +133,15 @@ impl NativeHostState {
         )
     }
 
-    pub(super) fn can_reserve_pointer_translation(&self) -> bool {
-        self.can_reserve_input_data(NativePointerTranslator::callback_translation_capacity_bytes())
+    pub(super) fn can_reserve_pointer_capture(&self, payload_bytes: usize) -> bool {
+        payload_bytes
+            .checked_add(NativePointerTranslator::callback_translation_capacity_bytes())
+            .is_some_and(|additional| self.can_reserve_input_data(additional))
+    }
+
+    /// Preflight the complete overlap before allocating callback payload data.
+    pub(super) fn can_capture_pointer_callback(&self) -> bool {
+        self.can_reserve_pointer_capture(NativeWindowEventRecord::pointer_callback_capacity_bytes())
     }
 
     pub(super) fn can_reserve_output_data(&self) -> bool {
@@ -418,6 +438,83 @@ mod tests {
             bridge.configure_lifecycle_storage(2, 1),
             Err(NativeHostProtocolError::NativeReportStorageUnavailable),
         );
+    }
+
+    #[test]
+    fn pointer_capture_admits_payload_and_translation_as_one_complete_overlap() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let baseline = bridge.lock().reserved_input_data_bytes().unwrap();
+        let payload = NativeWindowEventRecord::pointer_callback_capacity_bytes();
+        let translation = NativePointerTranslator::callback_translation_capacity_bytes();
+        let required = baseline + payload + translation;
+        assert!(bridge.configure_input_storage_allowance(required - 1, 0));
+        {
+            let state = bridge.lock();
+            assert!(state.can_reserve_input_data(payload));
+            assert!(state.can_reserve_input_data(translation));
+            assert!(!state.can_capture_pointer_callback());
+            assert_eq!(state.journal.captured_through(), 0);
+            assert!(state.journal.is_empty());
+        }
+        assert!(bridge.configure_input_storage_allowance(required, 0));
+        let mut state = bridge.lock();
+        assert!(state.can_capture_pointer_callback());
+        let record = NativeWindowEventRecord::for_test_snapshot(
+            1,
+            WindowId::from(1),
+            None,
+            WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(10.0, 20.0),
+                facts: winit::event::PointerEventFacts::default(),
+            },
+            &state.viewports,
+        );
+        assert_eq!(record.owned_descendant_capacity_bytes(), payload);
+        let owned_before = state.owned_input_capacity_bytes(None);
+        assert!(state.capture_window_event(record));
+        assert_eq!(state.journal.captured_through(), 1);
+        assert_eq!(
+            state.owned_input_capacity_bytes(None),
+            owned_before + payload
+        );
+        assert_eq!(state.reserved_input_data_bytes(), Some(required));
+        assert!(!state.can_reserve_input_data(1));
+    }
+
+    #[test]
+    fn callback_payload_is_shared_on_retry_and_released_before_source_credit_returns() {
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        let mut state = bridge.lock();
+        let baseline = state.owned_input_capacity_bytes(None);
+        let record = NativeWindowEventRecord::for_test_snapshot(
+            1,
+            WindowId::from(1),
+            None,
+            WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(10.0, 20.0),
+                facts: winit::event::PointerEventFacts::default(),
+            },
+            &state.viewports,
+        );
+        let payload = record.owned_descendant_capacity_bytes();
+        assert!(payload > 0);
+        assert!(state.capture_window_event(record));
+        let HostRecord::WindowEvent(front) = state.journal.iter().next().unwrap() else {
+            panic!("the accepted pointer callback remains at the original journal head");
+        };
+        let retry = front.clone();
+        assert_eq!(state.owned_input_capacity_bytes(None), baseline + payload);
+        assert_eq!(retry.owned_descendant_capacity_bytes(), payload);
+        drop(retry);
+        state.journal.transfer_front(1);
+        assert_eq!(state.owned_input_capacity_bytes(None), baseline);
+        assert_eq!(state.journal.retained_record_count(), 1);
+        assert!(state.journal.oldest_age().is_some());
+        state.journal.commit_transferred();
+        assert_eq!(state.journal.retained_record_count(), 0);
+        assert_eq!(state.journal.oldest_age(), None);
     }
 
     #[test]

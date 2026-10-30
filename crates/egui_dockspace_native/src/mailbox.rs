@@ -2653,7 +2653,7 @@ impl NativeHostState {
             return false;
         }
         if NativeWindowEventClass::classify(record.event()) == NativeWindowEventClass::Pointer
-            && !self.can_reserve_pointer_translation()
+            && !self.can_reserve_pointer_capture(record.owned_descendant_capacity_bytes())
         {
             self.freeze_ordinary();
             return false;
@@ -5398,6 +5398,12 @@ impl NativeHostHandler for NativeHostBridge {
         // after route lookup but before this event became visible.
         let mut records = self.lock();
         if !records.accepts_window_event(event.event()) {
+            return NativeWindowEventDisposition::Continue;
+        }
+        if NativeWindowEventClass::classify(event.event()) == NativeWindowEventClass::Pointer
+            && !records.can_capture_pointer_callback()
+        {
+            records.freeze_ordinary();
             return NativeWindowEventDisposition::Continue;
         }
         let record = NativeWindowEventRecord::from_eframe(event, &mut records.viewports);

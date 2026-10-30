@@ -1015,14 +1015,28 @@ impl NativeCoordinator {
         &mut self,
         inputs: &[HostInputOutcome],
     ) -> Result<bool, NativeRuntimeError> {
-        self.settle_host_frame_inputs_with_pending(inputs, false)
+        let settled = self.settle_host_frame_inputs_with_pending(inputs, false)?;
+        self.refresh_local_coordinates();
+        Ok(settled)
     }
 
     pub(crate) fn settle_host_frame_report(
         &mut self,
         report: &HostFrameReport,
     ) -> Result<bool, NativeRuntimeError> {
-        self.settle_host_frame_inputs_with_pending(report.inputs(), report.native_input_pending())
+        let settled = self.settle_host_frame_inputs_with_pending(
+            report.inputs(),
+            report.native_input_pending(),
+        )?;
+        // First-live output acknowledgements and partial input commits can
+        // change authority without settling a queued platform snapshot.
+        self.refresh_local_coordinates();
+        Ok(settled)
+    }
+
+    fn refresh_local_coordinates(&self) {
+        self.bridge
+            .with_viewports_mut(|viewports| viewports.refresh_local_coordinates(&self.session));
     }
 
     fn settle_host_frame_inputs_with_pending(
@@ -1686,6 +1700,7 @@ impl NativeCoordinator {
         let Some((record, captured_at)) = self.bridge.front_captured_event() else {
             return Ok(None);
         };
+        let ordinal = record.ordinal();
         if matches!(record.event(), winit::event::WindowEvent::Destroyed)
             && let Some(binding) = record.binding()
         {
@@ -1701,7 +1716,10 @@ impl NativeCoordinator {
         }
         if NativeWindowEventClass::classify(record.event()) != NativeWindowEventClass::Pointer {
             self.reduce_non_pointer_event(&record)?;
-            self.acknowledge_window_event(record.ordinal())?;
+            // The raw owner must retain payload accounting until this clone
+            // releases its shared callback facts, including after Destroyed.
+            drop(record);
+            self.acknowledge_window_event(ordinal)?;
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         // Keep the original state until core retention and exact source transfer.
@@ -1717,8 +1735,9 @@ impl NativeCoordinator {
             NativePointerTranslation::Ignored => budget.complete_unsequenced_records(1),
             NativePointerTranslation::Input(input) => self.record_pointer(input)?,
         }
+        drop(record);
         if !self.bridge.acknowledge_translated_event(
-            record.ordinal(),
+            ordinal,
             &mut self.pointer_translator,
             candidate,
         ) {

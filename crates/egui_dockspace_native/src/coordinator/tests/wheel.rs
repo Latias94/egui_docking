@@ -39,6 +39,7 @@ fn wheel_translation_preserves_event_time_routes_position_and_modifiers() {
         delta: MouseScrollDelta::LineDelta(1.25, -3.5),
         phase: TouchPhase::Moved,
         facts: PointerEventFacts {
+            geometry: None,
             surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
             desktop_position: Some(PhysicalPosition::new(110.0, 220.0)),
             modifiers: Some(ModifiersState::SHIFT | ModifiersState::ALT),

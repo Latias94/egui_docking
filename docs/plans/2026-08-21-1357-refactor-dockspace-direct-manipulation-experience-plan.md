@@ -1434,6 +1434,25 @@ Compaction compares frozen coordinate authority, not Arc address or position.
 Actual layout, merged admission, delayed-scale, successor and quiescence tests
 must qualify the implementation; static size estimates are not acceptance.
 
+That callback slice is now qualified (2026-10-30). Winit supplies event-generation
+local geometry on macOS/Wayland, eframe preserves independent callback/client
+geometry, and the adapter freezes the sample in one charged shared payload.
+The route refresh includes first-live and partial-input commits. A positive
+original-geometry guard preserves X11 synthetic focus moves as Desktop(Unknown),
+with an event and full raw-to-output red/green regression. Thirty-four focused
+adapter tests, Winit macOS15/Linux36, eframe Glow87/WGPU81/noassert87, and all 29
+main/adapter gates pass. The latter cover workspace1,874, public105/serde112,
+native476/476 (both same-coordinator 10,000-lifetime soaks), doctest10, Clippy,
+strict docs, formatting, macOS default/bounded redock, X11 physical smoke and
+five pressure scenarios per platform. The bounded root-boundary input sample
+is 2,146,235 owned / 3,298,688 reserved bytes under the unchanged 4 MiB/4,096-slot
+contract. Initial three native fact-equality failures required only client-size
+fixture migration; the original attempt remains recorded. The qualified clean
+local forks are Winit `e8dd500f` and egui/eframe `154ac8e77`; remote pins still do
+not reproduce them. Native-local OS and Wayland claims, handoff and stationary
+work remain separate from this callback contract, and the physical X11 smoke
+continues to use a guide-targeted release.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
@@ -1768,7 +1787,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses an explicit override to local egui fork `86feb7f8cc49217bff54a8924b2cb525f4af3285`. That unpublished local qualification does not establish reproducibility from the tracked remote egui pin. Native dependency packaging remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `154ac8e77e3af81aa7ccb9c8c0f8a7769f339c3f` and Winit fork `e8dd500fd5a78884de0092db81f60e8649da18aa`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.
