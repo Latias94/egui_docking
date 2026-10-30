@@ -15,6 +15,51 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 combined native capacity and accepted release
+
+One test now composes actual obligations in the same bounded 4 MiB profile:
+an active drag, prepared focus/visibility callback receipts, a complete one-window
+roster and raw backlog. Successor command receipts are explicitly rejected while
+the original two remain pending. The source accepts its release before ordinary
+capacity rejects a later motion. Repeating that rejected source spends no ordinal
+or core recorder/version progress. The two reserved command retirements remain
+admissible after the ordinary freeze.
+
+The drain shares one budget from prelude through callback/core polling in each
+pass. It drops the release candidate once and retries that recorded immutable
+edge. Before its exact output settles, every committed report must preserve
+source ownership; a Delivered(Dock) report requires the previously produced
+artifact's matching settlement. The complete trace contains exactly one
+Pending(AwaitingPresentation) and one Delivered(Dock), with the same manipulation
+identity, one output settlement and one overload cancellation. Both commands
+and the recovery terminal roster retire, duplicate command terminals are inert,
+and backlog, pending input/owners and gesture state reach quiescence.
+
+The new combination and the adjacent controlled-1kHz and original capacity-freeze
+regressions pass **3/3 normally and 3/3 without native debug assertions**.
+The combination retains 743 ingress records, two command receipts and one roster
+window; it completes 750 budgeted records and samples 2,780,113 owned input-data
+bytes. The test continuously checks owned <= reserved <= 4 MiB. It does not
+require the 4 MiB profile to fit all 4,096 raw slots. The neighboring controlled
+model retains all 10,000 moves and observes 31 ms release latency on its injected
+clock, with a 16-record/15-ms backlog; this is not real-time or OS input evidence.
+
+Independent review found the first test only aggregated final output/feedback
+counts; the final version adds the per-report settlement/ownership assertions
+above. The five final gates pass: normal/noassert focused tests, Clippy,
+formatting and patch integrity. Only this test file changes; production sources
+are byte-identical to `/tmp/dockspace-physical-basin-snapshot.json`, so the prior
+full core/native/real-window qualification is retained rather than rerun.
+Evidence is in `/tmp/dockspace-combined-pressure-snapshot.json`,
+`/tmp/dockspace-combined-pressure-qualification.json` and matching logs.
+
+The fixture uses real affine core outputs and fork-issued command identities,
+without inventing eframe output tokens. Platform input effects use their actual
+dispatch-failure path; no OS command or GPU presentation is claimed. This
+finite pressure combination is not the O256 output configuration, maximum
+roster/fanout, all-limits simultaneous saturation, RSS or physical 1 kHz latency.
+Those complete U7 acceptance boundaries remain open.
+
 ## 2026-10-30 X11 non-guide pane-center docking
 
 This slice is locally qualified by 36 final gates. The physical X11/XTest

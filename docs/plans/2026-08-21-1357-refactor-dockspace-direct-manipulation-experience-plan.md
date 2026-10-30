@@ -1693,6 +1693,19 @@ also reuses the same pointer after removal in one backend batch and requires a
 new stream incarnation. Removing only DeviceRemoval staged-ledger sync fails
 that regression with ButtonAlreadyPressed; restoring the implementation passes.
 
+The next combined-capacity checkpoint is locally qualified. One original 4 MiB
+fixture simultaneously holds an active drag, two prepared command receipts,
+a complete one-window roster and 743 accepted raw records. A later ordinary
+rejection spends no ordinal; both protected command retirements still record.
+The accepted release candidate drops/retries, retains source ownership until
+its exact output settlement, delivers once and then survives overload cancellation
+and full quiescence. It completes 750 budgeted records and samples 2,780,113
+owned bytes. The new case and adjacent load/freeze cases pass 3/3 normally and
+3/3 without assertions, plus Clippy/format/diff. Production source is unchanged.
+This finite combination does not certify O256 cross-saturation, maximum rosters
+or fanout, real 1 kHz service time or physical release latency; those remain open.
+Detailed assertions and evidence are in `docs/VALIDATION.md`.
+
 The physical pane-center follow-up is locally qualified. It retains the
 existing guide control and exercises three fixed points inside real pane
 content, excluding every actual renderer guide hit after physical rounding and
