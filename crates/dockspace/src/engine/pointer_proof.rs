@@ -92,6 +92,15 @@ pub(super) fn pointer_receiver_candidate_spec(
     edge: &PointerEdge,
     stream: PointerStreamId,
 ) -> PointerReceiverCandidateSpec {
+    if let PointerEdgeKind::Continuation(token) = edge.kind()
+        && (!engine.journal_continuation_is_current(stream, token)
+            || engine
+                .interaction
+                .active_owner()
+                .is_none_or(|owner| !engine.stationary_edge_has_authority(owner, edge)))
+    {
+        return PointerReceiverCandidateSpec::not_applicable(edge.sequence());
+    }
     if let Some(owner) = engine.interaction.active_owner()
         && owner.stream() == stream
         && !engine.journal_edge_matches_gesture_lane(owner, edge)
@@ -593,13 +602,21 @@ impl DockEngine {
         })
     }
 
-    pub(super) fn journal_pointer_hit_device(edge: &PointerEdge) -> PointerDeviceKind {
+    pub(super) fn journal_pointer_hit_device(&self, edge: &PointerEdge) -> PointerDeviceKind {
         match edge.location() {
             PointerEdgeLocation::SurfaceLocal { .. }
             | PointerEdgeLocation::HostLocal { .. }
             | PointerEdgeLocation::NativeLocal { .. }
             | PointerEdgeLocation::NativeLocalToDesktop { .. } => edge.metadata().device(),
-            PointerEdgeLocation::Desktop { .. } => PointerDeviceKind::Unknown,
+            PointerEdgeLocation::Desktop { .. } => {
+                if self.pointer_provider().is_some_and(|provider| {
+                    matches!(provider.scope(), PointerProviderScope::NativeJoined(_))
+                }) {
+                    edge.metadata().device()
+                } else {
+                    PointerDeviceKind::Unknown
+                }
+            }
         }
     }
     pub(crate) fn hover_drop_suppression(&self) -> PresentationHitSuppression {
@@ -916,7 +933,7 @@ impl DockEngine {
                 lane,
                 point,
                 suppression,
-                Self::journal_pointer_hit_device(edge),
+                self.journal_pointer_hit_device(edge),
             )
             .map_err(|_| EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::ReceiverWinnerAmbiguous {
@@ -1071,7 +1088,7 @@ impl DockEngine {
         if !manifest.region_contains_for_device(
             region_record.id(),
             point,
-            Self::journal_pointer_hit_device(edge),
+            self.journal_pointer_hit_device(edge),
         ) {
             return Err(EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::RegionDoesNotCoverPoint {
@@ -1092,7 +1109,7 @@ impl DockEngine {
             lane,
             point,
             suppression,
-            Self::journal_pointer_hit_device(edge),
+            self.journal_pointer_hit_device(edge),
         ) {
             Ok(winner) => winner.map(|winner| winner.id()),
             Err(_) => {

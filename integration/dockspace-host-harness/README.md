@@ -71,6 +71,17 @@ routing and target-output presentation remain independent requirements. The
 public contract is qualified in `docs/VALIDATION.md`; it does not prove
 OS callback emission or native stationary scheduling.
 
+`tests/native_stationary.rs` and `tests/native_stationary_targets.rs` exercise
+the Native-specific continuation projection, hover dwell, Touch long press,
+tap/yield, exact-output edge scrolling and expanded Desktop Touch resize.
+They use fresh fact packets at the requested deadline, rather than replaying
+cached capture or position. Negative journeys cover obsolete tokens after
+handoff, wrong pointer/reused stream, capture loss through button/scroll facts,
+stale receivers, coordinate rebase and whole-frame retry. The handoff fixture
+also verifies cross-window dwell behind confirmed Applied routing. This public
+contract is qualified in `docs/VALIDATION.md`; it does not certify
+adapter scheduling or OS stationary/Touch observation.
+
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,

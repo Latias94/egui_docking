@@ -442,7 +442,7 @@ impl PointerJournalLedger {
     ///
     /// A checkpoint's held-button roster has no press origin. Retained capture
     /// dependencies and another pointer's held buttons grant no handoff proof.
-    pub(crate) fn native_handoff_continuity(
+    pub(crate) fn native_primary_press_continuity(
         &self,
         stream: PointerStreamId,
         binding: ViewportBinding,
@@ -1706,7 +1706,7 @@ mod native_joined_tests {
             Authority::Unknown(AuthorityUnavailableReason::NotReported)
         );
         let stream = commit_next_edge(&mut ledger, lease, moved);
-        assert!(!ledger.native_handoff_continuity(stream, native));
+        assert!(!ledger.native_primary_press_continuity(stream, native));
         let press = edge(
             native,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
@@ -1833,7 +1833,7 @@ mod native_joined_tests {
     }
 
     #[test]
-    fn native_handoff_continuity_is_exact_and_read_only() {
+    fn native_primary_press_continuity_is_exact_and_read_only() {
         let (mut ledger, _, lease) = setup();
         let native = binding(lease.authority_domain(), 1);
         let mut press = edge(
@@ -1854,16 +1854,18 @@ mod native_joined_tests {
         secondary.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
         let secondary_stream = commit_next_edge(&mut ledger, lease, secondary);
         let before = ledger.clone();
-        assert!(ledger.native_handoff_continuity(stream, native));
+        assert!(ledger.native_primary_press_continuity(stream, native));
         assert_eq!(ledger.button_authority(), AnyButtonDownAuthority::KnownDown);
-        assert!(!ledger.native_handoff_continuity(other_stream, native));
-        assert!(!ledger.native_handoff_continuity(secondary_stream, native));
-        assert!(!ledger.native_handoff_continuity(stream, binding(lease.authority_domain(), 2)));
-        assert!(!ledger.native_handoff_continuity(
+        assert!(!ledger.native_primary_press_continuity(other_stream, native));
+        assert!(!ledger.native_primary_press_continuity(secondary_stream, native));
+        assert!(
+            !ledger.native_primary_press_continuity(stream, binding(lease.authority_domain(), 2))
+        );
+        assert!(!ledger.native_primary_press_continuity(
             PointerStreamId::new(lease, stream.pointer(), stream.incarnation() + 1),
             native,
         ));
-        assert!(!ledger.native_handoff_continuity(
+        assert!(!ledger.native_primary_press_continuity(
             PointerStreamId::new(lease, PointerId::new(4), stream.incarnation()),
             native,
         ));
@@ -1872,7 +1874,7 @@ mod native_joined_tests {
             lease.incarnation(),
             lease.scope(),
         );
-        assert!(!ledger.native_handoff_continuity(
+        assert!(!ledger.native_primary_press_continuity(
             PointerStreamId::new(foreign_lease, stream.pointer(), stream.incarnation()),
             native,
         ));
@@ -1880,7 +1882,7 @@ mod native_joined_tests {
     }
 
     #[test]
-    fn native_handoff_continuity_requires_current_observed_capture() {
+    fn native_primary_press_continuity_requires_current_observed_capture() {
         for capture in [
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
             Authority::Known(PointerCaptureOwner::None),
@@ -1894,7 +1896,7 @@ mod native_joined_tests {
             );
             press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
             let stream = commit_next_edge(&mut ledger, lease, press);
-            assert!(ledger.native_handoff_continuity(stream, native));
+            assert!(ledger.native_primary_press_continuity(stream, native));
             let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
             changed.capture_owner = capture;
             assert_eq!(commit_next_edge(&mut ledger, lease, changed), stream);
@@ -1905,7 +1907,7 @@ mod native_joined_tests {
                 );
             }
             let before = ledger.clone();
-            assert!(!ledger.native_handoff_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, native));
             assert_eq!(ledger, before);
             let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
             changed.capture_owner = Authority::Known(PointerCaptureOwner::Native(binding(
@@ -1913,23 +1915,23 @@ mod native_joined_tests {
                 2,
             )));
             commit_next_edge(&mut ledger, lease, changed);
-            assert!(!ledger.native_handoff_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, native));
             let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
             changed.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
             commit_next_edge(&mut ledger, lease, changed);
-            assert!(ledger.native_handoff_continuity(stream, native));
+            assert!(ledger.native_primary_press_continuity(stream, native));
             let mut release = edge(
                 native,
                 PointerEdgeKind::ButtonReleased(PointerButton::Primary),
             );
             release.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
             commit_next_edge(&mut ledger, lease, release);
-            assert!(!ledger.native_handoff_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, native));
         }
     }
 
     #[test]
-    fn native_handoff_continuity_requires_primary_native_press_origin() {
+    fn native_primary_press_continuity_requires_primary_native_press_origin() {
         let (ledger, _, lease) = setup();
         let native = binding(lease.authority_domain(), 1);
         for delivery in [
@@ -1949,7 +1951,7 @@ mod native_joined_tests {
             press.delivery_owner = delivery;
             press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
             let stream = commit_next_edge(&mut ledger, lease, press);
-            assert!(!ledger.native_handoff_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, native));
         }
 
         let mut ledger = ledger;
@@ -1974,11 +1976,11 @@ mod native_joined_tests {
         let prepared = ledger.prepare_candidate(lease, journal).unwrap();
         let stream = ledger.commit_prepared(prepared).unwrap().accepted_edges()[0].stream();
         assert_eq!(ledger.button_authority(), AnyButtonDownAuthority::KnownDown);
-        assert!(!ledger.native_handoff_continuity(stream, native));
+        assert!(!ledger.native_primary_press_continuity(stream, native));
     }
 
     #[test]
-    fn native_handoff_continuity_does_not_survive_stream_or_provider_retirement() {
+    fn native_primary_press_continuity_does_not_survive_stream_or_provider_retirement() {
         let (mut ledger, _, lease) = setup();
         let native = binding(lease.authority_domain(), 1);
         let mut press = edge(
@@ -1987,7 +1989,7 @@ mod native_joined_tests {
         );
         press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
         let stream = commit_next_edge(&mut ledger, lease, press.clone());
-        assert!(ledger.native_handoff_continuity(stream, native));
+        assert!(ledger.native_primary_press_continuity(stream, native));
         let cancelled = edge(
             native,
             PointerEdgeKind::StreamCancelled(
@@ -1995,19 +1997,19 @@ mod native_joined_tests {
             ),
         );
         assert_eq!(commit_next_edge(&mut ledger, lease, cancelled), stream);
-        assert!(!ledger.native_handoff_continuity(stream, native));
+        assert!(!ledger.native_primary_press_continuity(stream, native));
         let successor = commit_next_edge(&mut ledger, lease, press.clone());
         assert_ne!(successor, stream);
-        assert!(ledger.native_handoff_continuity(successor, native));
-        assert!(!ledger.native_handoff_continuity(stream, native));
+        assert!(ledger.native_primary_press_continuity(successor, native));
+        assert!(!ledger.native_primary_press_continuity(stream, native));
         ledger.retire_provider(lease).unwrap();
-        assert!(!ledger.native_handoff_continuity(successor, native));
+        assert!(!ledger.native_primary_press_continuity(successor, native));
         let replacement = ledger
             .create_provider(lease.scope(), PointerEdgeSequence::new(0))
             .unwrap();
         let current = commit_next_edge(&mut ledger, replacement, press);
-        assert!(ledger.native_handoff_continuity(current, native));
-        assert!(!ledger.native_handoff_continuity(successor, native));
+        assert!(ledger.native_primary_press_continuity(current, native));
+        assert!(!ledger.native_primary_press_continuity(successor, native));
     }
 
     #[test]

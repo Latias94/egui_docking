@@ -1505,8 +1505,8 @@ change rejects that old coordinate proof while still consuming the real end.
 Unknown geometry and unqualified backends must remain explicit; callback size
 alone cannot reconstruct original touch authority.
 
-Next, implement the public native stationary contract before adapter automatic
-scheduling. Expose a Native-specific read-only projection of the existing
+The public native stationary contract precedes adapter automatic scheduling.
+It exposes a Native-specific read-only projection of the existing
 `PointerContinuationRequest`, with NativePointerId/event, deadline, target
 surface/point/token, the original source binding and, for NativeLocal only,
 its still-current committed local-coordinate capability. These are scheduling
@@ -1549,6 +1549,51 @@ capture or receivers, coordinate rebase, obsolete tokens and frame drop/retry.
 Only then add adapter deadline/output-result wakes through its existing shared
 input budget. Public fact-based tests do not qualify OS Touch or fresh native
 stationary observation; those seams remain separate work.
+
+The public stationary implementation is now locally qualified against 438
+frozen Rust paths. Native read-only projection, explicit timed/touch lane
+eligibility, exact original press/capture/source, Desktop Touch delivery/hit
+proofs, obsolete-token isolation and per-step output barriers are implemented.
+The recording consumer covers local/desktop hover, Touch, edge scrolling,
+expanded Desktop Touch resize, wrong pointer/reused stream, rollback and real
+terminal handling. A cross-window post-handoff dwell requires confirmed Applied
+routing and retains independent source/target points and source binding.
+Independent review found a non-Primary capture gap; the public Unknown→exact
+recovery trace reproduced old-token resurrection. The shared capture reducer
+now handles those buttons and matching-native scroll facts; scroll keeps its
+ordinary reduction while revoking Touch deadlines. Red/green and the purposely
+interrupted initial gate remain recorded. All 29 fresh gates pass:
+workspace1,889/public130/serde137/native484/484, both same-coordinator
+10,000-lifetime soaks, doctest10, Clippy, strict docs, formatting, macOS
+default/bounded redock, X11 physical smoke and five pressure cases per platform.
+The root-boundary sample remains 2,146,235 owned / 3,298,688 reserved bytes within
+4 MiB/4,096 raw slots. Fourteen new public journeys and independent reviews
+qualify this host contract with no remaining confirmed P1/P2. One final fixture
+line-wrap was mechanically cargo-fmt-only; its original format failure and exact
+refreeze proof remain recorded. Source and commands/results are under
+`/tmp/dockspace-native-stationary-*`. Adapter wakes, fresh native stationary
+observations and OS Touch are not enabled by this public fact-based slice;
+complete U7/U8, non-guide physical input and dependency packaging remain open.
+
+The next adapter seam audit confirms that the root prelude/post-report path,
+output-result wakes, raw barrier, shared clock and NativeInputBudget can own
+deadline scheduling and ordered commits. Winit/eframe currently provide no
+fresh stationary observation request. Add the smallest native request/result
+seam rather than replaying cached event facts: identify the expected window and
+exact native device, then freeze the correlated observed endpoint, desktop
+point or local point/geometry, hover and capture, or explicit
+Unsupported/Unavailable. Keep core continuation/token types in the adapter;
+the fork must not depend on dockspace. Reuse one bounded in-flight owner and
+the existing mailbox admission, original capture time and retry budget. Drain
+accepted raw input and output results, then re-query before requesting facts.
+
+The initial candidate is X11 Desktop Mouse. XI2 has reusable position/button
+and hover queries, but fresh capture continuity has not yet been qualified.
+Current buttons plus an old implicit-owner cache are insufficient evidence.
+Prove the exact device/source/capture boundary before enabling this backend;
+Wayland and Touch active sampling remain explicit Unsupported until their
+native protocols supply a qualified path. This is a next-step design boundary,
+not implemented scheduling or physical qualification.
 
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement

@@ -72,6 +72,13 @@ revoking old target/output state. The reference adapter's same-event packet
 capture/emission and full raw-to-output handoff traces are also qualified;
 real native-local OS handoff evidence remains separate from those contracts.
 
+The public native host API also qualifies explicit stationary hover selection,
+Touch long press/tap/yield and tab-strip edge scrolling through the same gesture
+and exact-output state. Native requests expose scheduling and sampling inputs;
+the host still supplies fresh native facts. Automatic reference-adapter wakes,
+OS stationary/Touch observation and the complete native readiness matrix remain
+unfinished.
+
 The experimental native adapter reserves 4,096 raw callback slots and two
 reusable complete-roster payloads. It admits at most 256 simultaneously retained
 native binding lifetimes, including pending retirement; a route/create pair

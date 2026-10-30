@@ -3,7 +3,149 @@
 use super::*;
 
 impl DockEngine {
+    pub(super) fn pointer_timing_supported(owner: GestureOwner) -> bool {
+        matches!(
+            (owner.lease().scope(), owner.lane()),
+            (PointerProviderScope::HostLocal(_), GestureLane::HostLocal)
+                | (
+                    PointerProviderScope::SurfaceLocal(_),
+                    GestureLane::SurfaceLocal
+                )
+                | (
+                    PointerProviderScope::NativeJoined(_),
+                    GestureLane::NativeLocal { .. } | GestureLane::Desktop
+                )
+        )
+    }
+
+    fn native_stationary_source(&self, owner: GestureOwner) -> Option<ViewportBinding> {
+        let PointerProviderScope::NativeJoined(host) = owner.lease().scope() else {
+            return None;
+        };
+        if self.pointer_provider() != Some(owner.lease())
+            || self.interaction.active_owner() != Some(owner)
+        {
+            return None;
+        }
+        let binding = self
+            .interaction
+            .active_presentation_authority()?
+            .presented
+            .binding()?;
+        let coordinates = self.native_local_coordinate_snapshot(host, binding)?;
+        if let GestureLane::NativeLocal {
+            binding: local_binding,
+            coordinate_generation,
+        } = owner.lane()
+            && (local_binding != binding
+                || coordinates.coordinate_generation() != coordinate_generation)
+        {
+            return None;
+        }
+        (self
+            .pointer_journal
+            .native_primary_press_continuity(owner.stream(), binding)
+            && self.interaction.active_journal_capture_authority()
+                == Some(Authority::Known(PointerCaptureOwner::Native(binding))))
+        .then_some(binding)
+    }
+
+    pub(super) fn pointer_continuation_source_is_current(&self, owner: GestureOwner) -> bool {
+        Self::pointer_timing_supported(owner)
+            && self.pointer_provider() == Some(owner.lease())
+            && (!matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+                || self.native_stationary_source(owner).is_some())
+    }
+
+    pub(super) fn stationary_surface_is_reachable(
+        &self,
+        owner: GestureOwner,
+        surface: SurfaceId,
+    ) -> bool {
+        if !matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_)) {
+            return true;
+        }
+        let Some(source) = self.native_stationary_source(owner) else {
+            return false;
+        };
+        if source.surface() == surface {
+            return true;
+        }
+        owner.is_desktop()
+            && self
+                .viewport
+                .physical_cross_surface_drag_capability()
+                .is_supported()
+            && self.viewport.confirmed_drag_source(owner.pointer()) == Some(source)
+    }
+
+    pub(super) fn stationary_edge_has_authority(
+        &self,
+        owner: GestureOwner,
+        edge: &PointerEdge,
+    ) -> bool {
+        if !Self::pointer_timing_supported(owner) {
+            return false;
+        }
+        if !matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_)) {
+            return true;
+        }
+        self.native_stationary_source(owner).is_some_and(|binding| {
+            edge.pointer() == owner.pointer()
+                && edge.delivery_owner()
+                    == Authority::Known(PointerEventDeliveryOwner::Native(binding))
+                && edge.capture_owner() == Authority::Known(PointerCaptureOwner::Native(binding))
+        })
+    }
+
+    pub(super) fn journal_continuation_is_current(
+        &self,
+        stream: PointerStreamId,
+        token: PointerContinuationToken,
+    ) -> bool {
+        if token.owner != stream || self.interaction.active_stream() != Some(stream) {
+            return false;
+        }
+        match token.session {
+            PointerContinuationSession::Click(session) => {
+                self.interaction.active_click(session).is_ok_and(|click| {
+                    click.touch.as_ref().is_some_and(|touch| {
+                        !touch.armed && touch.request.is_some_and(|request| request.token == token)
+                    })
+                })
+            }
+            PointerContinuationSession::Drag(session) => {
+                self.interaction.active_drag(session).is_ok_and(|drag| {
+                    drag.timed
+                        .as_ref()
+                        .is_some_and(|timed| timed.request().token == token)
+                })
+            }
+        }
+    }
+
+    pub(super) fn clear_pointer_continuation(&mut self, owner: GestureOwner) {
+        if self.interaction.active_owner() != Some(owner) {
+            return;
+        }
+        match self.interaction.status() {
+            InteractionStatus::Pressed { session } => {
+                if let Ok(click) = self.interaction.active_click_mut(session)
+                    && let Some(touch) = click.touch.as_mut()
+                {
+                    touch.request = None;
+                }
+            }
+            InteractionStatus::Dragging { session } => self.clear_drag_continuation(session),
+            _ => {}
+        }
+    }
+
     pub(crate) fn pointer_continuation(&self) -> Option<PointerContinuationRequest> {
+        let owner = self.interaction.active_owner()?;
+        if !self.pointer_continuation_source_is_current(owner) {
+            return None;
+        }
         if let InteractionStatus::Pressed { session } = self.interaction.status() {
             let click = self.interaction.active_click(session).ok()?;
             let touch = click.touch.as_ref()?;
@@ -32,7 +174,11 @@ impl DockEngine {
         if self.pointer_provider() != Some(drag.owner.lease()) || !source_current {
             return None;
         }
-        match drag.timed.as_ref()? {
+        let timed = drag.timed.as_ref()?;
+        if !self.stationary_surface_is_reachable(owner, timed.request().surface) {
+            return None;
+        }
+        match timed {
             DragTimedContinuation::TabStripEdgeScroll(pending) => self
                 .edge_scroll_continuation_is_current(pending)
                 .then_some(pending.request),
@@ -75,6 +221,11 @@ impl DockEngine {
         }
         let (output, authority, point) = (hover.output()?, hover.authority()?, hover.point()?);
         let presentation = snapshot.presentation(output, authority).ok()?;
+        if !self
+            .stationary_surface_is_reachable(self.interaction.active_owner()?, authority.surface())
+        {
+            return None;
+        }
         let current = self.interaction_projection(authority.surface())?;
         (current.authority() == authority).then_some((presentation, point))
     }
@@ -120,9 +271,6 @@ impl DockEngine {
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
     ) -> Result<(), EngineError> {
-        // Local scheduling uses a host clock and logical receiver challenge.
-        // A native desktop host needs independently observed stationary routing
-        // before it can opt into the same contract.
         if self.advance_tab_strip_edge_scroll(cause, owner, session, edge, receipt, snapshot)? {
             return Ok(());
         }
@@ -134,7 +282,7 @@ impl DockEngine {
             self.clear_drag_continuation(session);
             return Ok(());
         };
-        if !owner.lease().scope().is_local() {
+        if !self.stationary_edge_has_authority(owner, edge) {
             self.clear_drag_continuation(session);
             return Ok(());
         }
@@ -211,6 +359,30 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
+        if !self.journal_continuation_is_current(owner.stream(), token) {
+            return Ok(Vec::new());
+        }
+        if !self.stationary_edge_has_authority(owner, edge) {
+            self.clear_pointer_continuation(owner);
+            let (delivery, outcome) = self.gate_journal_delivery_action(
+                cause,
+                owner,
+                edge.delivery_owner(),
+                interaction_events,
+            )?;
+            let mut outcomes = outcome.into_iter().collect::<Vec<_>>();
+            if delivery {
+                let (_, outcome) = self.gate_journal_capture_action(
+                    cause,
+                    owner,
+                    edge.capture_owner(),
+                    false,
+                    interaction_events,
+                )?;
+                outcomes.extend(outcome);
+            }
+            return Ok(outcomes);
+        }
         let PointerContinuationSession::Drag(session) = token.session else {
             return self.reduce_touch_continuation(
                 cause,

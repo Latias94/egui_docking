@@ -245,6 +245,11 @@ impl DockEngine {
                 .into_iter()
                 .collect());
         }
+        if matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+            && matches!(observed, Authority::Unknown(_))
+        {
+            self.clear_pointer_continuation(owner);
+        }
         if !self
             .interaction
             .update_journal_capture_authority(stream, observed)

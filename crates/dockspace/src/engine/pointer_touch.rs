@@ -77,13 +77,19 @@ impl DockEngine {
         if replaced.is_some() {
             return Err(touch_invariant(cause, "touch press replaced another owner"));
         }
-        let deadline = metadata.observed_at().and_then(|now| {
-            now.checked_add(
-                self.presentation_authority
-                    .presentation_config
-                    .touch_long_press_delay(),
-            )
-        });
+        let deadline = metadata
+            .observed_at()
+            .filter(|_| {
+                !matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+                    || self.pointer_continuation_source_is_current(owner)
+            })
+            .and_then(|now| {
+                now.checked_add(
+                    self.presentation_authority
+                        .presentation_config
+                        .touch_long_press_delay(),
+                )
+            });
         let request = deadline
             .map(|deadline| {
                 self.interaction
@@ -164,7 +170,9 @@ impl DockEngine {
         let observed = Self::journal_semantic_press_delivery(cause, receipt, snapshot)?;
         let valid = observed.is_some_and(|(region, presentation)| {
             region == click.region && self.touch_source_presentation_matches(&click, presentation)
-        }) && self.journal_logical_point(edge, None) == Some(touch.current_pointer);
+        }) && self
+            .journal_logical_point(edge, validated_desktop_delivery_route(self, edge))
+            == Some(touch.current_pointer);
         if !valid {
             if let Some(outcome) = self.cancel_gesture_owner(
                 cause,
@@ -248,7 +256,7 @@ impl DockEngine {
             .touch
             .as_ref()
             .expect("the pressed touch state was checked");
-        let point = self.journal_logical_point(edge, None);
+        let point = self.journal_logical_point(edge, validated_desktop_delivery_route(self, edge));
         if point.is_none() {
             // Missing coordinates do not prove movement and cannot activate
             // the frozen source. Stop scheduling the old stationary challenge.

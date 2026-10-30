@@ -15,6 +15,82 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 public native stationary requests
+
+The existing pointer gesture now projects a Native-specific stationary request
+without a second token issuer or scheduling registry. It identifies the original
+source binding, pointer/event/token, target point/deadline and, for NativeLocal,
+the still-current local-coordinate capability. Surface and Native projections
+filter their own provider domains. Pending recorded native input suppresses
+native requests; the adapter must independently drain its accepted mailbox
+before future automatic scheduling.
+
+Timed/touch entry points explicitly admit NativeJoined NativeLocal/Desktop
+lanes while leaving standalone DesktopGlobal and `scope.is_local()` unchanged.
+Native execution requires exact original Primary press, current source binding,
+capture/delivery and local generation. Unknown capture revokes a pending
+challenge; a stale token cannot reinterpret an old coordinate lane or ask new
+receivers. Known native capture loss still cancels the gesture. Desktop Touch
+uses the validated source-delivery point and retains Touch-specific hit geometry.
+
+Public recording-renderer qualification covers hover dwell, Touch
+long press/tap/yield, exact-output edge scrolling, expanded Desktop Touch
+splitters, read-only/domain isolation, coordinate/capture/receiver loss and
+obsolete tokens after handoff. The first two target fixtures needed explicit
+registration of their scroll receiver and correct use of the splitter drag
+lane. Pending release has already consumed the active drag decoration, and an
+obsolete native receiver is conservatively compiled as Unknown; only a current
+but contradictory winner is a protocol error which rolls back the whole frame.
+
+Independent review found a real capture-revocation gap: non-Primary native
+button edges updated ledger capture but did not clear the retained challenge.
+Unknown capture followed by exact capture could therefore restore the old
+deadline. The public regression fails before the fix and passes after routing
+matching native button edges through the shared capture-change reducer. The
+same-pointer scroll path now clears Pressed Touch deadlines and observes capture
+loss while continuing the original scroll reduction. The initial full run was
+intentionally interrupted after this finding; it is not a passing gate. Red,
+green and interrupted evidence are retained under
+`/tmp/dockspace-native-stationary-secondary-*`,
+`/tmp/dockspace-native-stationary-capture-final-green.log` and
+`/tmp/dockspace-native-stationary-before-capture-fix-*`.
+
+Cross-window stationary hover also requires the exact source's confirmed
+Applied route before scheduling or executing on a different surface. Its public
+trace uses different source manipulation and target hover points, preserves A's
+binding through B's dwell selection and restores routing on the real terminal.
+Wrong pointer/reused-stream tokens remain structural journal rejections.
+All 29 fresh gates pass: workspace1,889, public130/serde137, native484/484
+normally and without native debug assertions, ten doctests,
+correctness/suspicious Clippy, strict docs, formatting and patch integrity.
+Both native configurations run 10,000 lifetimes on the same coordinator. The
+core dependency boundary passes. Fourteen new public journeys, parameterized
+across both native lanes and authority failures, qualify the explicit host path.
+Independent runtime and execution reviews find no remaining confirmed P1/P2.
+
+macOS default/bounded programmatic redock, X11/XTest physical tear-off,
+first-live, guide-targeted redock, exact DestroyNotify/inventory retirement and
+quiescence, and five output-pressure cases on each platform pass. The bounded
+root-boundary sample remains 2,146,235 owned / 3,298,688 reserved bytes within
+the unchanged 4 MiB/4,096-raw-slot contract. It is input-data capacity evidence,
+not RSS or complete cross-saturation qualification.
+
+All 438 Rust paths match the native qualification snapshot. The last added
+scroll fixture needed one cargo-fmt-only line wrapping correction after its
+passing semantic gates. Current bytes are verified equal to rustfmt applied
+to that frozen tested file; production source is unchanged. The original format
+failure is retained at
+`/tmp/dockspace-native-stationary-format-public-before-fmt.log`, followed by
+passing format and remaining gates. Source/provenance and full commands/results
+are at `/tmp/dockspace-native-stationary-snapshot.json` and
+`/tmp/dockspace-native-stationary-qualification.json`; detailed logs use
+`/tmp/dockspace-native-stationary-*`.
+
+This slice does not schedule native adapter wakes or claim fresh OS stationary
+observations, native Touch event geometry, native-local OS handoff or complete
+U7/U8 qualification. Unpublished fork overrides and dependency packaging remain
+separate work, as do real-time input load and non-guide physical docking.
+
 ## 2026-10-30 native callback handoff emission
 
 The follow-up adapter slice selects a dual-location packet only for an original

@@ -319,6 +319,25 @@ reference adapter's committed capability, callback geometry and event-generation
 geometry must all agree. Unknown local samples cannot authorize idle compaction;
 exact samples can compare authority with `NativeLocalPointerSample::same_coordinates`.
 
+Native hosts can query `native_pointer_continuation()` for finite hover dwell,
+Touch long press or tab-strip edge scrolling. This read-only request projects
+the existing gesture's pointer/event/token, deadline, target surface/point and
+original source binding. A NativeLocal request also provides its still-current
+coordinate capability for fresh capture. The request is not an observed
+position, native capture or receiver proof. Surface-local getters do not expose
+native requests, and pending recorded native input suppresses scheduling.
+
+At the deadline, first commit accepted input, re-query the request, observe
+fresh native position/delivery/capture facts, then record its event through the
+ordinary native journal with the original clock and current-output receiver
+answers. A different target window additionally requires confirmed Applied
+source routing. Each edge-scroll step waits for exact target-output acceptance.
+Unknown capture revokes the challenge, including capture facts carried by
+secondary buttons or same-pointer scrolling; restoring capture does not revive
+the old token. Obsolete same-stream tokens do not reinterpret an old lane.
+The public contract is locally qualified in `docs/VALIDATION.md`; automatic
+adapter wakes and fresh OS stationary/Touch observations remain separate work.
+
 `native_input_owned_capacity_bytes()` on the session or an open host frame
 reports recorded input transport data: recorder envelopes and buffers, shared
 payload data, replay record buffers, and a pending prefix-retirement receipt.

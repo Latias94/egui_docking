@@ -86,7 +86,7 @@ impl DockEngine {
             || edge.capture_owner() != Authority::Known(PointerCaptureOwner::Native(binding))
             || !self
                 .pointer_journal
-                .native_handoff_continuity(stream, binding)
+                .native_primary_press_continuity(stream, binding)
         {
             return local_fallback;
         }

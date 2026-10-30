@@ -57,6 +57,23 @@ impl DockEngine {
         };
         let status_before = self.interaction.status();
         let matching_owner = self.interaction.active_owner() == Some(owner);
+        if let PointerEdgeKind::Continuation(token) = edge.kind()
+            && !self.journal_continuation_is_current(stream, token)
+        {
+            // A revoked timer cannot reinterpret an old lane or ask receivers
+            // about a newer gesture. Its real native capture loss still counts.
+            if matching_owner
+                && matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+            {
+                return self.reduce_journal_capture_change(
+                    cause,
+                    owner,
+                    capture_authority_after,
+                    interaction_events,
+                );
+            }
+            return Ok(Vec::new());
+        }
         if matching_owner
             && matches!(
                 edge.kind(),
@@ -175,7 +192,34 @@ impl DockEngine {
                 interaction_events,
             ),
             PointerEdgeKind::Scrolled(scroll) => {
-                self.reduce_scroll_edge(cause, stream, edge, scroll, receipt, snapshot)
+                let mut outcomes = if matching_owner
+                    && matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+                {
+                    self.clear_pointer_continuation(owner);
+                    self.reduce_journal_capture_change(
+                        cause,
+                        owner,
+                        capture_authority_after,
+                        interaction_events,
+                    )?
+                } else {
+                    Vec::new()
+                };
+                outcomes.extend(
+                    self.reduce_scroll_edge(cause, stream, edge, scroll, receipt, snapshot)?,
+                );
+                Ok(outcomes)
+            }
+            PointerEdgeKind::ButtonPressed(_) | PointerEdgeKind::ButtonReleased(_)
+                if matching_owner
+                    && matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_)) =>
+            {
+                self.reduce_journal_capture_change(
+                    cause,
+                    owner,
+                    capture_authority_after,
+                    interaction_events,
+                )
             }
             PointerEdgeKind::ButtonPressed(_)
             | PointerEdgeKind::ButtonReleased(_)
@@ -365,7 +409,7 @@ impl DockEngine {
                 policy,
             )?;
             if edge.metadata().device() == crate::pointer_journal::PointerDeviceKind::Touch
-                && owner.lease().scope().is_local()
+                && Self::pointer_timing_supported(owner)
                 && let InteractionStatus::Pressed { session } = self.interaction.status()
             {
                 let threshold_origin =
@@ -388,7 +432,7 @@ impl DockEngine {
         }
         let threshold_origin = self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
         if edge.metadata().device() == crate::pointer_journal::PointerDeviceKind::Touch
-            && owner.lease().scope().is_local()
+            && Self::pointer_timing_supported(owner)
             && Self::touch_wait_region(region.kind())
         {
             return self.arm_journal_touch_press(
@@ -412,7 +456,7 @@ impl DockEngine {
             presentation,
             region,
             point,
-            Self::journal_pointer_hit_device(edge),
+            self.journal_pointer_hit_device(edge),
             policy,
             events,
         )
@@ -860,6 +904,11 @@ impl DockEngine {
         }
         if !capture_authorized {
             return Ok(outcomes);
+        }
+        if matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+            && !self.stationary_edge_has_authority(owner, edge)
+        {
+            self.clear_pointer_continuation(owner);
         }
         if let Some(outcome) = self.cancel_revoked_presentation_caused(cause, interaction_events)? {
             outcomes.push(outcome);

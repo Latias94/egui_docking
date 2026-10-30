@@ -2,6 +2,7 @@
 
 mod budget;
 mod compiler;
+mod continuation;
 mod input_batch;
 mod local_pointer;
 mod pointer;
@@ -42,6 +43,7 @@ use compiler::{
     NativeSnapshotEntry, compile_focus_observation, compile_platform_snapshot,
     compile_unknown_inventory_snapshot, snapshot_descendant_capacity_bytes,
 };
+pub use continuation::NativePointerContinuation;
 pub(super) use input_batch::PendingNativeReplay;
 pub use local_pointer::{
     NativeLocalCoordinateError, NativeLocalCoordinates, NativeLocalGeometry,

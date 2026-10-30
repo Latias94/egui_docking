@@ -63,10 +63,15 @@ impl DockspaceSession {
     /// terminal result, so the normal next frame can accept it and re-query
     /// [`Self::pointer_continuation`]. This is scheduling information only; it
     /// grants no receiver authority and does not request continuous repainting.
+    /// Joined native hosts use [`Self::native_pointer_continuation_awaits_presentation`].
     #[must_use]
     pub fn pointer_continuation_awaits_presentation(&self, surface: SurfaceId) -> bool {
         self.engine
-            .pointer_continuation_awaits_presentation(surface)
+            .pointer_provider()
+            .is_some_and(|provider| provider.scope().is_local())
+            && self
+                .engine
+                .pointer_continuation_awaits_presentation(surface)
     }
 
     /// Returns the current committed gesture's finite stationary wake, if any.
@@ -74,10 +79,12 @@ impl DockspaceSession {
     /// Schedule the deadline on the input provider's clock. After waking, query
     /// this again: a changed gesture, scene, policy or stream may revoke it.
     /// Merely reading or scheduling the request does not advance input or layout.
+    /// Joined native hosts use [`Self::native_pointer_continuation`] instead.
     #[must_use]
     pub fn pointer_continuation(&self) -> Option<DockspacePointerContinuation> {
         self.engine
             .pointer_continuation()
+            .filter(|request| request.token.owner.lease().scope().is_local())
             .map(|request| DockspacePointerContinuation { request })
     }
 }

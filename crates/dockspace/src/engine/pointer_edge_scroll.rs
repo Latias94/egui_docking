@@ -17,7 +17,8 @@ impl DockEngine {
         pending.key.surface() == surface
             && pending.workspace == self.version
             && self.pointer_provider() == Some(drag.owner.lease())
-            && drag.owner.lease().scope().is_local()
+            && self.pointer_continuation_source_is_current(drag.owner)
+            && self.stationary_surface_is_reachable(drag.owner, surface)
             && self
                 .scene()
                 .ready_candidate(surface)
@@ -153,7 +154,7 @@ impl DockEngine {
         let Some(now) = edge
             .metadata()
             .observed_at()
-            .filter(|_| owner.lease().scope().is_local())
+            .filter(|_| self.stationary_edge_has_authority(owner, edge))
         else {
             return Ok(false);
         };
