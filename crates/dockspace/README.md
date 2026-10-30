@@ -296,10 +296,25 @@ native capture and binding-retirement obligations. A finite point outside the
 client area is preserved for the terminal edge, but does not grant desktop
 outside-all authority. Coordinate withdrawal or an incompatible lane cancels
 the old gesture without swallowing its physical terminal. After completion,
-the next gesture on the same pointer can choose its lane again. Local-to-desktop
-handoff and native stationary scheduling remain separate work. The egui native
-reference adapter has a qualified event-time local geometry callback contract;
-the public host API does not establish platform callback qualification. Its
+the next gesture on the same pointer can choose its lane again.
+
+An explicit `NativeLocalToDesktopHandoff` retains the original local sample and
+the desktop position/hover from that same event. Submit it through
+`NativePointerInput::new_handoff`; recording does not inspect the active session
+or grant an upgrade. Only Moved on an active native-local docking drag can
+upgrade after exact source binding/generation, original Primary press, capture
+continuity and same-point mapping through observed desktop content bounds all
+hold. The existing stream, session and semantic source remain the owners. Core
+rebinds its source continuation and discards old preview, target acquisition,
+affordance, timer and position state. A destination on another window uses its
+own desktop hover projection, with separately confirmed physical routing and
+exact target-output presentation. A rejected packet follows its original local
+event; the real release/cancel remains consumable. No ordinary Desktop packet
+implicitly upgrades a native-local gesture. This public host contract is locally
+qualified in `docs/VALIDATION.md`; adapter packet emission and native stationary
+scheduling remain separate work. The egui native reference adapter has a
+qualified event-time local geometry callback contract; the public host API does
+not establish platform callback qualification. Its
 committed capability, callback geometry and event-generation geometry must all
 agree. Unknown local samples cannot authorize idle compaction; exact samples
 can compare authority with `NativeLocalPointerSample::same_coordinates`.

@@ -2004,11 +2004,22 @@ impl CoreHostFrame {
         };
         debug_assert_eq!(journal.edges().len(), commit.accepted_edges().len());
         let mut specs = Vec::with_capacity(journal.edges().len());
+        let mut handoff = None;
         for (edge, accepted) in journal.edges().iter().zip(commit.accepted_edges()) {
-            specs.push(
-                pointer_receiver_candidate_spec(&self.candidate, edge, accepted.stream())
-                    .with_metadata(edge.metadata()),
-            );
+            handoff = self
+                .candidate
+                .prepare_native_handoff_projection(accepted.stream(), edge);
+            let edge_view = handoff.map(|projection| projection.edge_view(edge));
+            let effective = edge_view.as_ref().unwrap_or(edge);
+            let spec = if let Some(projection) =
+                handoff.filter(|projection| projection.upgrades_owner())
+            {
+                self.candidate
+                    .native_handoff_candidate_spec(projection, edge)
+            } else {
+                pointer_receiver_candidate_spec(&self.candidate, effective, accepted.stream())
+            };
+            specs.push(spec.with_metadata(edge.metadata()));
         }
         let attempt = match self
             .pointer_receiver_attempt_issuer
@@ -2039,7 +2050,7 @@ impl CoreHostFrame {
             self.next_causal_ordinal = next_causal_ordinal;
         }
         self.pending_pointer_segment = Some(HostPointerProtocolSegment::new(
-            stamp, provider, journal, candidates,
+            stamp, provider, journal, candidates, handoff,
         ));
         if let Some(commit) = pending_surface_commit {
             self.surface_pointer_commit = Some(commit);

@@ -15,6 +15,62 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 explicit native-local to desktop handoff
+
+`NativeLocalToDesktopHandoff` carries the original local sample and independent
+desktop facts for one event through the existing joined recorder. Recording
+does not inspect the active gesture. Only an ordered Moved edge on an active
+NativeLocal drag can upgrade, after proving the same provider, stream, session,
+source binding/generation, original Primary press and observed/gesture/event
+capture. The source's current observed desktop content origin must map both
+physical samples and their frozen logical conversion exactly. A hover on B is
+queried using B's desktop projection, independently of A's manipulation point.
+
+The private projection retains the raw journal edge and supplies one effective
+view to candidate generation, receiver validation and reduction. All changes
+remain in the existing candidate transaction. Upgrade rebinds the existing
+gesture and its exact source continuation, clears preview/acquisition,
+affordance, timers and lane-sensitive position state, and preserves source
+identity. Invalid upgrades process the original local event; ordinary Desktop
+input cannot promote a Local gesture. Physical cross-window drop still requires
+the existing exact pass-through effect to be observed Applied.
+
+Eleven public traces exercise same-window and confirmed cross-window delivery,
+input/presentation frame retry, Dropped output, inactive-tab source continuation,
+invalid mapping/capture/pointer/origin, coordinate rebase, foreign-batch rejection,
+late local output, wrong-winner suffix rollback, independent A/B points and
+local terminal fallback. The first public run exposed three fixture errors:
+two expected a consumed preview to remain current after layout publication, and
+one requested a newly selected scene before the input commit. The corrected
+fixtures use exact settlement plus Delivered(Dock), and paint the new scene
+after its committed measurements. Initial failures remain recorded at
+`/tmp/dockspace-handoff-public-focused.log` and
+`/tmp/dockspace-handoff-inactive-red.log`.
+
+All 29 frozen gates pass: workspace1,889, public116/serde123, native476/476
+normally and without native debug assertions, ten doctests, correctness/suspicious
+Clippy, strict docs, formatting and patch integrity. Both native configurations
+run 10,000 lifetimes on the same coordinator. The core dependency boundary also
+passes. Independent identity/coordinate and transaction/output reviews find no
+remaining confirmed P1/P2. All 435 Rust paths match the native snapshot.
+
+macOS default/bounded programmatic redock, X11/XTest physical tear-off,
+first-live, guide-targeted redock, exact DestroyNotify/inventory retirement and
+quiescence, and five output-pressure cases per platform pass. The bounded
+root-boundary sample stays at 2,146,235 owned / 3,298,688 reserved bytes under
+the unchanged 4 MiB/4,096-raw-slot contract. These are measured input-data
+capacities, not RSS or complete cross-saturation evidence. Source hashes and
+commands/results are at `/tmp/dockspace-handoff-snapshot.json` and
+`/tmp/dockspace-handoff-qualification.json`; detailed logs use
+`/tmp/dockspace-handoff-*`.
+
+This qualifies the public host handoff contract and its reference regressions.
+It does not yet emit dual-location packets from Winit/eframe, enable native
+stationary scheduling, or prove a native-local OS transition. The unchanged
+unpublished local forks still require explicit overrides, and remote pins do
+not reproduce them. U7/U8, non-guide physical acceptance, dependency packaging
+and the overall plan remain open.
+
 ## 2026-10-30 native callback local coordinates
 
 Winit now freezes native scale and client size together with physical mouse

@@ -47,6 +47,7 @@ pub(super) struct PreparedHostPointerProtocol {
     journal: PointerEdgeJournal,
     candidates: PointerReceiverCandidateRoster,
     receipts: PointerReceiverReceiptBatch,
+    handoff: Option<NativePointerHandoffProjection>,
 }
 
 impl PreparedHostPointerProtocol {
@@ -59,6 +60,7 @@ impl PreparedHostPointerProtocol {
         PointerEdgeJournal,
         PointerReceiverCandidateRoster,
         PointerReceiverReceiptBatch,
+        Option<NativePointerHandoffProjection>,
     ) {
         (
             self.stamp,
@@ -66,6 +68,7 @@ impl PreparedHostPointerProtocol {
             self.journal,
             self.candidates,
             self.receipts,
+            self.handoff,
         )
     }
 }
@@ -76,6 +79,7 @@ pub(super) struct HostPointerProtocolSegment {
     provider: PointerInputLease,
     journal: PointerEdgeJournal,
     candidates: PointerReceiverCandidateRoster,
+    handoff: Option<NativePointerHandoffProjection>,
 }
 
 impl HostPointerProtocolSegment {
@@ -84,12 +88,14 @@ impl HostPointerProtocolSegment {
         provider: PointerInputLease,
         journal: PointerEdgeJournal,
         candidates: PointerReceiverCandidateRoster,
+        handoff: Option<NativePointerHandoffProjection>,
     ) -> Self {
         Self {
             stamp,
             provider,
             journal,
             candidates,
+            handoff,
         }
     }
 
@@ -107,6 +113,7 @@ impl HostPointerProtocolSegment {
             journal: self.journal,
             candidates: self.candidates,
             receipts,
+            handoff: self.handoff,
         }
     }
 }

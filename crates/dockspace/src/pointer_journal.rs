@@ -565,6 +565,16 @@ pub enum PointerEdgeLocation {
         /// Exact native binding and event-time client-to-logical conversion.
         route: Authority<NativeLocalPointerRoute>,
     },
+    /// Client and desktop facts reported for one explicit native handoff.
+    ///
+    /// Recording both locations grants no desktop authority. Core must prove
+    /// gesture continuity and their exact mapping before using a desktop view.
+    NativeLocalToDesktop {
+        /// Immutable event-time client coordinates in the source viewport.
+        local: NativeLocalPointerRoute,
+        /// Independently observed desktop position and native hover facts.
+        desktop: DesktopRouteFact,
+    },
     /// Independent manipulation and hover routes within one presentation host.
     ///
     /// Unknown routes do not imply desktop outside-all authority.
@@ -587,11 +597,12 @@ pub enum PointerEdgeLocation {
 /// Coordinate lane carried by one pointer edge.
 ///
 /// This is exposed in ledger diagnostics so a provider can distinguish a
-/// desktop, native-local, host-local, or surface-local scope mismatch.
+/// desktop, native-local, handoff, host-local, or surface-local scope mismatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerEdgeLocationLane {
     Desktop,
     NativeLocal,
+    NativeLocalToDesktop,
     HostLocal,
     SurfaceLocal,
 }
@@ -601,17 +612,23 @@ impl PointerEdgeLocation {
         match self {
             Self::Desktop { .. } => PointerEdgeLocationLane::Desktop,
             Self::NativeLocal { .. } => PointerEdgeLocationLane::NativeLocal,
+            Self::NativeLocalToDesktop { .. } => PointerEdgeLocationLane::NativeLocalToDesktop,
             Self::HostLocal { .. } => PointerEdgeLocationLane::HostLocal,
             Self::SurfaceLocal { .. } => PointerEdgeLocationLane::SurfaceLocal,
         }
     }
 
     /// Returns the complete desktop route fact for a desktop-global edge.
+    ///
+    /// An explicit handoff returns `None` until core validates a desktop view.
     #[must_use]
     pub const fn desktop_route(self) -> Option<DesktopRouteFact> {
         match self {
             Self::Desktop { route } => Some(route),
-            Self::NativeLocal { .. } | Self::HostLocal { .. } | Self::SurfaceLocal { .. } => None,
+            Self::NativeLocal { .. }
+            | Self::NativeLocalToDesktop { .. }
+            | Self::HostLocal { .. }
+            | Self::SurfaceLocal { .. } => None,
         }
     }
 
@@ -619,7 +636,10 @@ impl PointerEdgeLocation {
     #[must_use]
     pub const fn surface_local_position(self) -> Option<Authority<LogicalPoint>> {
         match self {
-            Self::Desktop { .. } | Self::NativeLocal { .. } | Self::HostLocal { .. } => None,
+            Self::Desktop { .. }
+            | Self::NativeLocal { .. }
+            | Self::NativeLocalToDesktop { .. }
+            | Self::HostLocal { .. } => None,
             Self::SurfaceLocal { position } => Some(position),
         }
     }
@@ -1078,7 +1098,9 @@ impl PointerEdge {
             PointerEdgeLocation::HostLocal { .. } | PointerEdgeLocation::SurfaceLocal { .. } => {
                 Authority::Known(PointerEventDeliveryOwner::ProviderEndpoint)
             }
-            PointerEdgeLocation::Desktop { .. } | PointerEdgeLocation::NativeLocal { .. } => {
+            PointerEdgeLocation::Desktop { .. }
+            | PointerEdgeLocation::NativeLocal { .. }
+            | PointerEdgeLocation::NativeLocalToDesktop { .. } => {
                 Authority::Unknown(AuthorityUnavailableReason::NotReported)
             }
         };
@@ -1164,6 +1186,14 @@ impl PointerEdge {
     #[must_use]
     pub const fn location(&self) -> PointerEdgeLocation {
         self.location
+    }
+
+    /// Creates a reducer-local view while retaining the original event identity.
+    #[must_use]
+    pub(crate) fn with_location(&self, location: PointerEdgeLocation) -> Self {
+        let mut edge = self.clone();
+        edge.location = location;
+        edge
     }
 
     /// Returns the complete desktop route fact when this edge belongs to the

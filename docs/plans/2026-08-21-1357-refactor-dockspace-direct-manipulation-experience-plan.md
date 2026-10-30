@@ -1453,6 +1453,30 @@ not reproduce them. Native-local OS and Wayland claims, handoff and stationary
 work remain separate from this callback contract, and the physical X11 smoke
 continues to use a guide-targeted release.
 
+The explicit public handoff slice is now locally qualified. One immutable
+dual-location packet retains the original NativeLocal sample and independent
+desktop facts without looking up a session at record time. The ordered candidate
+accepts only active Dragging/Moved, exact stream/session/source/binding/generation,
+the original Primary press and complete capture continuity, plus an exact
+same-sample mapping through the current observed source content origin. It
+rebinds the existing source continuation and discards target/timer/position facts
+from the old lane inside the same candidate transaction. The receiver uses the
+destination desktop projection even when source manipulation and hover points
+differ. Rejected upgrades preserve the original local event and terminal;
+cross-window delivery retains its separate observed-Applied route requirement.
+Eleven public traces cover positive same/cross-window delivery, invalid authority,
+output loss/late result, inactive source, whole-frame rollback and exact retry.
+All 29 frozen gates pass: workspace1,889/public116/serde123/native476/476,
+both same-coordinator 10,000-lifetime soaks, doctest10, Clippy, strict docs,
+formatting, macOS default/bounded redock, X11 physical smoke and five pressure
+cases per platform. The bounded sample remains 2,146,235 owned / 3,298,688
+reserved bytes within 4 MiB and 4,096 raw slots. Two independent review lanes
+find no confirmed P1/P2. Source and commands/results are frozen under
+`/tmp/dockspace-handoff-*`; all 435 Rust paths match the native snapshot.
+See the current evidence in `docs/VALIDATION.md`. Winit/eframe dual-location
+emission, native-local OS evidence and stationary scheduling remain subsequent
+work; this implementation alone does not close U7/U8.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

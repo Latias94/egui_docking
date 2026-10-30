@@ -62,6 +62,15 @@ gesture on the same pointer. These public host traces use no desktop origin or
 work area for local operations; they do not qualify Winit/eframe event capture,
 positive in-gesture handoff or native stationary scheduling.
 
+`tests/native_pointer_handoff.rs` adds explicit same-event local/desktop packets
+to the joined journal. Its public journeys retain one gesture through an atomic
+coordinate-lane upgrade, including inactive-tab continuation, frame rollback,
+Dropped and late outputs, exact source/hover mappings and a confirmed cross-window
+drop. Invalid continuity or mapping preserves local terminal handling; physical
+routing and target-output presentation remain independent requirements. The
+public contract is qualified in `docs/VALIDATION.md`; it does not prove
+OS callback emission or native stationary scheduling.
+
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,

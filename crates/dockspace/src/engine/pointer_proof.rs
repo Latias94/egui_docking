@@ -145,6 +145,7 @@ pub(super) fn pointer_receiver_candidate_spec(
                         route.map(NativeLocalPointerRoute::surface_position),
                     )
                 }
+                PointerEdgeLocation::NativeLocalToDesktop { .. } => (None, None),
                 PointerEdgeLocation::Desktop { .. } => {
                     let route = validated_desktop_delivery_route(engine, edge)
                         .and_then(DesktopRouteValidation::dock_route);
@@ -261,6 +262,7 @@ pub(super) fn pointer_receiver_candidate_spec(
                     route.map(NativeLocalPointerRoute::surface_position),
                 )
             }
+            PointerEdgeLocation::NativeLocalToDesktop { .. } => (None, None),
             PointerEdgeLocation::Desktop { .. } => {
                 let route = validated_desktop_delivery_route(engine, edge)
                     .and_then(DesktopRouteValidation::dock_route);
@@ -298,6 +300,12 @@ pub(super) fn journal_position_key(
             manipulation: validated_native_local_route(engine, edge),
             hover: validated_native_local_hover(engine, edge),
         },
+        PointerEdgeLocation::NativeLocalToDesktop { .. } => {
+            ManipulationPositionKey::JournalNativeLocal {
+                manipulation: None,
+                hover: None,
+            }
+        }
         PointerEdgeLocation::Desktop { route } => ManipulationPositionKey::JournalDesktop(
             route.validate_against_registry(engine.authority_domain, engine.viewport.registry()),
         ),
@@ -589,7 +597,8 @@ impl DockEngine {
         match edge.location() {
             PointerEdgeLocation::SurfaceLocal { .. }
             | PointerEdgeLocation::HostLocal { .. }
-            | PointerEdgeLocation::NativeLocal { .. } => edge.metadata().device(),
+            | PointerEdgeLocation::NativeLocal { .. }
+            | PointerEdgeLocation::NativeLocalToDesktop { .. } => edge.metadata().device(),
             PointerEdgeLocation::Desktop { .. } => PointerDeviceKind::Unknown,
         }
     }
@@ -629,7 +638,7 @@ impl DockEngine {
     pub(super) fn validate_pointer_receiver_geometry(
         &self,
         provider: PointerInputLease,
-        journal: &PointerEdgeJournal,
+        edges: &[PointerEdge],
         receipts: &ValidatedPointerReceiverReceiptBatch,
         snapshot: &JournalPresentationSnapshot,
         desktop_hover_routes: &BTreeMap<PointerEdgeSequence, DesktopRouteValidation>,
@@ -650,7 +659,7 @@ impl DockEngine {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        for edge in journal.edges() {
+        for edge in edges {
             let Some((observation, delivery_request)) = receipts.get(&edge.sequence()).copied()
             else {
                 return Err(EngineError::ReductionCauseInvariant {
@@ -1158,6 +1167,7 @@ impl DockEngine {
                 .map(HostLocalPointerRoute::position),
             PointerEdgeLocation::NativeLocal { .. } => validated_native_local_route(self, edge)
                 .map(NativeLocalPointerRoute::surface_position),
+            PointerEdgeLocation::NativeLocalToDesktop { .. } => None,
             PointerEdgeLocation::Desktop { .. } => desktop_route
                 .and_then(DesktopRouteValidation::dock_route)
                 .map(|route| route.surface_position()),
@@ -1338,7 +1348,10 @@ impl DockEngine {
                         )
                         | None => Ok(JournalClickDelivery::Unknown),
                     },
-                    PointerEdgeLocation::NativeLocal { .. } => Ok(JournalClickDelivery::Unknown),
+                    PointerEdgeLocation::NativeLocal { .. }
+                    | PointerEdgeLocation::NativeLocalToDesktop { .. } => {
+                        Ok(JournalClickDelivery::Unknown)
+                    }
                     PointerEdgeLocation::SurfaceLocal { .. }
                     | PointerEdgeLocation::HostLocal { .. } => {
                         Err(EngineError::PointerInteractionInvariant {
@@ -1394,6 +1407,7 @@ impl DockEngine {
                     )) => Ok(JournalClickDelivery::KnownMismatch),
                 },
                 PointerEdgeLocation::NativeLocal { .. }
+                | PointerEdgeLocation::NativeLocalToDesktop { .. }
                 | PointerEdgeLocation::SurfaceLocal { .. }
                 | PointerEdgeLocation::HostLocal { .. } => Ok(JournalClickDelivery::KnownMismatch),
             },
@@ -1541,7 +1555,7 @@ mod tests {
                     .unwrap();
                     let result = engine.validate_pointer_receiver_geometry(
                         provider,
-                        &journal,
+                        journal.edges(),
                         &receipts,
                         &snapshot,
                         &BTreeMap::new(),

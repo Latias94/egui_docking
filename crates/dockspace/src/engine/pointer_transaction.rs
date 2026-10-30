@@ -727,9 +727,12 @@ impl DockEngine {
             }
             PointerEdgeLocation::SurfaceLocal {
                 position: Authority::Unknown(_),
-            } => Err(EngineError::ReductionCauseInvariant {
-                detail: "journal press receiver has no authoritative local point",
-            }),
+            }
+            | PointerEdgeLocation::NativeLocalToDesktop { .. } => {
+                Err(EngineError::ReductionCauseInvariant {
+                    detail: "journal press receiver has no authoritative local point",
+                })
+            }
         }
     }
 
@@ -3556,7 +3559,7 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<crate::transition::ReducedPointerEdge>, EngineError> {
-        let (stamp, provider, journal, candidates, receipts) = protocol.into_parts();
+        let (stamp, provider, journal, candidates, receipts, handoff) = protocol.into_parts();
         // A SurfaceLocal lease freezes a native endpoint, including its window
         // incarnation. The host frame can span a platform or workspace
         // transition, so creation-time validation is not sufficient here.
@@ -3567,9 +3570,22 @@ impl DockEngine {
             .pointer_journal
             .prepare_candidate(provider, journal)
             .map_err(|source| EngineError::PointerJournal { source })?;
-        let desktop_hover_routes = prepared
-            .journal()
-            .edges()
+        let edge_view = if let Some(edge) = prepared.journal().edges().first() {
+            if let Some(projection) = handoff
+                && self.prepare_native_handoff_projection(projection.stream(), edge) != handoff
+            {
+                return Err(EngineError::ReductionCauseInvariant {
+                    detail: "native handoff preparation differs from its ordered segment",
+                });
+            }
+            handoff.map(|projection| projection.edge_view(edge))
+        } else {
+            None
+        };
+        let effective_edges = edge_view
+            .as_ref()
+            .map_or(prepared.journal().edges(), std::slice::from_ref);
+        let desktop_hover_routes = effective_edges
             .iter()
             .filter_map(|edge| {
                 edge.desktop_route().map(|route| {
@@ -3583,9 +3599,7 @@ impl DockEngine {
                 })
             })
             .collect::<BTreeMap<_, _>>();
-        let desktop_delivery_routes = prepared
-            .journal()
-            .edges()
+        let desktop_delivery_routes = effective_edges
             .iter()
             .filter_map(|edge| {
                 validated_desktop_delivery_route(self, edge).map(|route| (edge.sequence(), route))
@@ -3604,7 +3618,7 @@ impl DockEngine {
         })?;
         self.validate_pointer_receiver_geometry(
             provider,
-            prepared.journal(),
+            effective_edges,
             &validated_receipts,
             &snapshot,
             &desktop_hover_routes,
@@ -3639,6 +3653,7 @@ impl DockEngine {
             )?;
             if accepted.ticket().sequence() != edge.sequence()
                 || accepted.stream().pointer() != edge.pointer()
+                || handoff.is_some_and(|projection| projection.stream() != accepted.stream())
             {
                 return Err(EngineError::ReductionCauseInvariant {
                     detail: "accepted pointer identity does not match committed journal edge",
@@ -3657,12 +3672,16 @@ impl DockEngine {
             )?;
             self.last_focus_reducer_generation = focus_generation;
             let focus_causal = FocusCausalStamp::new(focus_generation, cause);
+            if let Some(projection) = handoff {
+                self.apply_native_handoff_projection(projection, edge)?;
+            }
+            let effective = edge_view.as_ref().unwrap_or(edge);
             let mut interaction = self.reduce_journal_pointer_edge(
                 cause,
                 focus_causal,
                 accepted.stream(),
                 accepted.capture_authority_for_reduction(),
-                edge,
+                effective,
                 receipt,
                 &snapshot,
                 desktop_delivery_routes.get(&edge.sequence()).copied(),

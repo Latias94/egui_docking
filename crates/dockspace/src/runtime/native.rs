@@ -48,13 +48,13 @@ pub use local_pointer::{
     NativeLocalPointerFact, NativeLocalPointerLocation, NativeLocalPointerSample,
 };
 pub use pointer::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
-    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerLocation, NativePointerOwner, NativePointerRoster,
-    NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose,
-    NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId,
-    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
-    NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeLocalToDesktopHandoff,
+    NativePointerButton, NativePointerCancelReason, NativePointerEvent, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerLocation, NativePointerOwner,
+    NativePointerRoster, NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer,
+    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
 };
 pub use storage::{NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit};
 

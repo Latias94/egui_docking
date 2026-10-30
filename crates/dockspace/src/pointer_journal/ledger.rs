@@ -438,6 +438,38 @@ impl PointerJournalLedger {
         }
     }
 
+    /// Checks this exact native stream's observed primary-button continuity.
+    ///
+    /// A checkpoint's held-button roster has no press origin. Retained capture
+    /// dependencies and another pointer's held buttons grant no handoff proof.
+    pub(crate) fn native_handoff_continuity(
+        &self,
+        stream: PointerStreamId,
+        binding: ViewportBinding,
+    ) -> bool {
+        self.active_lease() == Some(stream.lease())
+            && matches!(
+                stream.lease().scope(),
+                PointerProviderScope::NativeJoined(_)
+            )
+            && self
+                .active_streams
+                .get(&stream.pointer())
+                .is_some_and(|active| active.id == stream)
+            && self
+                .authority
+                .pressed_buttons
+                .get(&(stream.pointer(), PointerButton::Primary))
+                == Some(&Some(binding))
+            && self
+                .authority
+                .captures
+                .get(&stream.pointer())
+                .is_some_and(|capture| {
+                    capture.observed == Authority::Known(PointerCaptureOwner::Native(binding))
+                })
+    }
+
     pub(crate) fn bind_surface_local_producer(
         &mut self,
         lease: PointerInputLease,
@@ -843,7 +875,9 @@ impl PointerJournalLedger {
                     PointerEdgeLocationLane::Desktop
                 ) | (
                     PointerProviderScope::NativeJoined(_),
-                    PointerEdgeLocationLane::Desktop | PointerEdgeLocationLane::NativeLocal
+                    PointerEdgeLocationLane::Desktop
+                        | PointerEdgeLocationLane::NativeLocal
+                        | PointerEdgeLocationLane::NativeLocalToDesktop
                 ) | (
                     PointerProviderScope::HostLocal(_),
                     PointerEdgeLocationLane::HostLocal
@@ -1043,14 +1077,14 @@ impl PointerJournalLedger {
         lease: PointerInputLease,
         edge: &PointerEdge,
     ) -> Result<(), PointerJournalLedgerError> {
-        let Some(binding) = edge
-            .desktop_route()
-            .and_then(|route| match route.hovered() {
-                Authority::Known(DesktopHoveredWindow::Dock(binding)) => Some(binding),
-                Authority::Known(DesktopHoveredWindow::Foreign | DesktopHoveredWindow::None)
-                | Authority::Unknown(_) => None,
-            })
-        else {
+        let route = match edge.location() {
+            PointerEdgeLocation::Desktop { route }
+            | PointerEdgeLocation::NativeLocalToDesktop { desktop: route, .. } => route,
+            PointerEdgeLocation::NativeLocal { .. }
+            | PointerEdgeLocation::HostLocal { .. }
+            | PointerEdgeLocation::SurfaceLocal { .. } => return Ok(()),
+        };
+        let Authority::Known(DesktopHoveredWindow::Dock(binding)) = route.hovered() else {
             return Ok(());
         };
         if binding.authority_domain() != self.authority_domain {
@@ -1070,11 +1104,17 @@ impl PointerJournalLedger {
         lease: PointerInputLease,
         edge: &PointerEdge,
     ) -> Result<(), PointerJournalLedgerError> {
-        let PointerEdgeLocation::NativeLocal {
-            route: Authority::Known(route),
-        } = edge.location()
-        else {
-            return Ok(());
+        let route = match edge.location() {
+            PointerEdgeLocation::NativeLocal {
+                route: Authority::Known(route),
+            }
+            | PointerEdgeLocation::NativeLocalToDesktop { local: route, .. } => route,
+            PointerEdgeLocation::Desktop { .. }
+            | PointerEdgeLocation::NativeLocal {
+                route: Authority::Unknown(_),
+            }
+            | PointerEdgeLocation::HostLocal { .. }
+            | PointerEdgeLocation::SurfaceLocal { .. } => return Ok(()),
         };
         let binding = route.binding();
         if binding.authority_domain() != self.authority_domain {
@@ -1452,6 +1492,25 @@ mod native_joined_tests {
         }
     }
 
+    fn handoff_location(
+        local_binding: ViewportBinding,
+        hovered_binding: ViewportBinding,
+    ) -> PointerEdgeLocation {
+        let PointerEdgeLocation::NativeLocal {
+            route: Authority::Known(local),
+        } = local_location(local_binding)
+        else {
+            unreachable!("the fixture always supplies exact client coordinates");
+        };
+        PointerEdgeLocation::NativeLocalToDesktop {
+            local,
+            desktop: DesktopRouteFact::dock_from_desktop_position(
+                hovered_binding,
+                Authority::Known(PhysicalPoint::new(440.0, -280.0).expect("desktop point")),
+            ),
+        }
+    }
+
     fn edge(binding: ViewportBinding, kind: PointerEdgeKind) -> PointerEdge {
         PointerEdge::new_with_delivery(
             PointerEdgeSequence::new(1),
@@ -1470,6 +1529,25 @@ mod native_joined_tests {
             vec![edge],
         )
         .expect("complete journal")
+    }
+
+    fn commit_next_edge(
+        ledger: &mut PointerJournalLedger,
+        lease: PointerInputLease,
+        mut edge: PointerEdge,
+    ) -> PointerStreamId {
+        let previous = ledger.retained_committed_through(lease).expect("watermark");
+        edge.sequence = previous.checked_next().expect("test sequence");
+        let journal = PointerEdgeJournal::new(previous, edge.sequence(), vec![edge])
+            .expect("one complete next edge");
+        let prepared = ledger
+            .prepare_candidate(lease, journal)
+            .expect("prepare edge");
+        ledger
+            .commit_prepared(prepared)
+            .expect("commit edge")
+            .accepted_edges()[0]
+            .stream()
     }
 
     fn scroll(endpoint: ScrollDeliveryEndpoint) -> PointerEdgeKind {
@@ -1594,6 +1672,342 @@ mod native_joined_tests {
             ledger.retained_committed_through(lease).expect("watermark"),
             PointerEdgeSequence::new(3)
         );
+    }
+
+    #[test]
+    fn native_handoff_facts_keep_identity_without_authorizing_desktop() {
+        let (mut ledger, _, lease) = setup();
+        let native = binding(lease.authority_domain(), 1);
+        let mut moved = edge(native, PointerEdgeKind::Moved).with_metadata(
+            PointerEventMetadata::new(PointerDeviceKind::Mouse, Duration::from_millis(12)),
+        );
+        moved.location = handoff_location(native, binding(lease.authority_domain(), 2));
+        assert_eq!(moved.desktop_route(), None);
+        assert_eq!(moved.location().surface_local_position(), None);
+        let PointerEdgeLocation::NativeLocalToDesktop { desktop, .. } = moved.location() else {
+            panic!("explicit handoff facts");
+        };
+        let desktop_view = moved.with_location(PointerEdgeLocation::Desktop { route: desktop });
+        let mut expected = moved.clone();
+        expected.location = PointerEdgeLocation::Desktop { route: desktop };
+        assert_eq!(desktop_view, expected);
+        assert_eq!(moved.desktop_route(), None);
+        assert_eq!(desktop_view.desktop_route(), Some(desktop));
+
+        let implicit = PointerEdge::new(
+            moved.sequence(),
+            moved.pointer(),
+            moved.kind(),
+            moved.location(),
+            moved.capture_owner(),
+        );
+        assert_eq!(
+            implicit.delivery_owner(),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported)
+        );
+        let stream = commit_next_edge(&mut ledger, lease, moved);
+        assert!(!ledger.native_handoff_continuity(stream, native));
+        let press = edge(
+            native,
+            PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        );
+        assert_eq!(commit_next_edge(&mut ledger, lease, press), stream);
+        let mut release = edge(
+            native,
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+        );
+        release.location = PointerEdgeLocation::NativeLocal {
+            route: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        };
+        assert_eq!(commit_next_edge(&mut ledger, lease, release), stream);
+        assert_eq!(
+            ledger.retained_committed_through(lease).expect("watermark"),
+            PointerEdgeSequence::new(3)
+        );
+    }
+
+    #[test]
+    fn native_handoff_lane_is_exclusive_to_joined_providers() {
+        let (_, mut presentations, lease) = setup();
+        let host = presentations.create_host().expect("another host");
+        let native = binding(lease.authority_domain(), 1);
+        for scope in [
+            PointerProviderScope::DesktopGlobal,
+            PointerProviderScope::HostLocal(host),
+            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(native.surface()),
+            )),
+            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new_native(
+                host,
+                native,
+                CoordinateGeneration::new(7),
+            )),
+        ] {
+            let mut ledger = PointerJournalLedger::new(lease.authority_domain());
+            let provider = ledger
+                .create_provider(scope, PointerEdgeSequence::new(0))
+                .unwrap();
+            let mut moved = edge(native, PointerEdgeKind::Moved);
+            moved.location = handoff_location(native, native);
+            let before = ledger.clone();
+            assert!(matches!(
+                ledger.prepare_candidate(provider, journal(moved)),
+                Err(PointerJournalLedgerError::LocationScopeMismatch {
+                    submitted: PointerEdgeLocationLane::NativeLocalToDesktop,
+                    ..
+                })
+            ));
+            assert_eq!(ledger, before);
+        }
+    }
+
+    #[test]
+    fn native_handoff_facts_retain_native_scope_and_checkpoint_guards() {
+        let (ledger, _, lease) = setup();
+        let native = binding(lease.authority_domain(), 1);
+        let foreign = binding(EngineAuthorityDomainId::new_for_test(2), 1);
+        let mut moved = edge(native, PointerEdgeKind::Moved);
+        moved.location = handoff_location(foreign, native);
+        let before = ledger.clone();
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(moved)),
+            Err(PointerJournalLedgerError::ForeignNativeLocalRouteBinding { .. })
+        ));
+        let mut moved = edge(native, PointerEdgeKind::Moved);
+        moved.location = handoff_location(native, foreign);
+        assert_eq!(moved.desktop_route(), None);
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(moved)),
+            Err(PointerJournalLedgerError::ForeignDesktopRouteBinding { .. })
+        ));
+        for owner in [
+            PointerCaptureOwner::ProviderEndpoint,
+            PointerCaptureOwner::Native(foreign),
+        ] {
+            let mut moved = edge(native, PointerEdgeKind::Moved);
+            moved.location = handoff_location(native, native);
+            moved.capture_owner = Authority::Known(owner);
+            assert!(matches!(
+                ledger.prepare_candidate(lease, journal(moved)),
+                Err(PointerJournalLedgerError::CaptureScopeMismatch { .. }
+                    | PointerJournalLedgerError::ForeignCaptureBinding { .. })
+            ));
+            let mut moved = edge(native, PointerEdgeKind::Moved);
+            moved.location = handoff_location(native, native);
+            let checkpoint = PointerAuthorityCheckpoint::known(
+                PointerEdgeSequence::new(0),
+                vec![
+                    PointerStateObservation::new(
+                        PointerId::new(1),
+                        Vec::new(),
+                        Authority::Known(owner),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+            let journal = journal(moved)
+                .with_authority_checkpoint(checkpoint)
+                .unwrap();
+            assert!(matches!(
+                ledger.prepare_candidate(lease, journal),
+                Err(PointerJournalLedgerError::CaptureScopeMismatch { .. }
+                    | PointerJournalLedgerError::ForeignCaptureBinding { .. })
+            ));
+        }
+        for owner in [
+            PointerEventDeliveryOwner::ProviderEndpoint,
+            PointerEventDeliveryOwner::Native(foreign),
+        ] {
+            let mut moved = edge(native, PointerEdgeKind::Moved);
+            moved.location = handoff_location(native, native);
+            moved.delivery_owner = Authority::Known(owner);
+            assert!(matches!(
+                ledger.prepare_candidate(lease, journal(moved)),
+                Err(PointerJournalLedgerError::DeliveryScopeMismatch { .. }
+                    | PointerJournalLedgerError::ForeignDeliveryBinding { .. })
+            ));
+        }
+        assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn native_handoff_continuity_is_exact_and_read_only() {
+        let (mut ledger, _, lease) = setup();
+        let native = binding(lease.authority_domain(), 1);
+        let mut press = edge(
+            native,
+            PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        );
+        press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        let stream = commit_next_edge(&mut ledger, lease, press);
+        let mut other_pointer = edge(native, PointerEdgeKind::Moved);
+        other_pointer.pointer = PointerId::new(2);
+        other_pointer.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        let other_stream = commit_next_edge(&mut ledger, lease, other_pointer);
+        let mut secondary = edge(
+            native,
+            PointerEdgeKind::ButtonPressed(PointerButton::Secondary),
+        );
+        secondary.pointer = PointerId::new(3);
+        secondary.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        let secondary_stream = commit_next_edge(&mut ledger, lease, secondary);
+        let before = ledger.clone();
+        assert!(ledger.native_handoff_continuity(stream, native));
+        assert_eq!(ledger.button_authority(), AnyButtonDownAuthority::KnownDown);
+        assert!(!ledger.native_handoff_continuity(other_stream, native));
+        assert!(!ledger.native_handoff_continuity(secondary_stream, native));
+        assert!(!ledger.native_handoff_continuity(stream, binding(lease.authority_domain(), 2)));
+        assert!(!ledger.native_handoff_continuity(
+            PointerStreamId::new(lease, stream.pointer(), stream.incarnation() + 1),
+            native,
+        ));
+        assert!(!ledger.native_handoff_continuity(
+            PointerStreamId::new(lease, PointerId::new(4), stream.incarnation()),
+            native,
+        ));
+        let foreign_lease = PointerInputLease::new(
+            EngineAuthorityDomainId::new_for_test(2),
+            lease.incarnation(),
+            lease.scope(),
+        );
+        assert!(!ledger.native_handoff_continuity(
+            PointerStreamId::new(foreign_lease, stream.pointer(), stream.incarnation()),
+            native,
+        ));
+        assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn native_handoff_continuity_requires_current_observed_capture() {
+        for capture in [
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            Authority::Known(PointerCaptureOwner::None),
+            Authority::Known(PointerCaptureOwner::Foreign),
+        ] {
+            let (mut ledger, _, lease) = setup();
+            let native = binding(lease.authority_domain(), 1);
+            let mut press = edge(
+                native,
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+            );
+            press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            let stream = commit_next_edge(&mut ledger, lease, press);
+            assert!(ledger.native_handoff_continuity(stream, native));
+            let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
+            changed.capture_owner = capture;
+            assert_eq!(commit_next_edge(&mut ledger, lease, changed), stream);
+            if matches!(capture, Authority::Unknown(_)) {
+                assert_eq!(
+                    ledger.authority.captures[&stream.pointer()].retained_native_binding,
+                    Some(native)
+                );
+            }
+            let before = ledger.clone();
+            assert!(!ledger.native_handoff_continuity(stream, native));
+            assert_eq!(ledger, before);
+            let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
+            changed.capture_owner = Authority::Known(PointerCaptureOwner::Native(binding(
+                lease.authority_domain(),
+                2,
+            )));
+            commit_next_edge(&mut ledger, lease, changed);
+            assert!(!ledger.native_handoff_continuity(stream, native));
+            let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
+            changed.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            commit_next_edge(&mut ledger, lease, changed);
+            assert!(ledger.native_handoff_continuity(stream, native));
+            let mut release = edge(
+                native,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            );
+            release.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            commit_next_edge(&mut ledger, lease, release);
+            assert!(!ledger.native_handoff_continuity(stream, native));
+        }
+    }
+
+    #[test]
+    fn native_handoff_continuity_requires_primary_native_press_origin() {
+        let (ledger, _, lease) = setup();
+        let native = binding(lease.authority_domain(), 1);
+        for delivery in [
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            Authority::Known(PointerEventDeliveryOwner::None),
+            Authority::Known(PointerEventDeliveryOwner::Foreign),
+            Authority::Known(PointerEventDeliveryOwner::Native(binding(
+                lease.authority_domain(),
+                2,
+            ))),
+        ] {
+            let mut ledger = ledger.clone();
+            let mut press = edge(
+                native,
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+            );
+            press.delivery_owner = delivery;
+            press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            let stream = commit_next_edge(&mut ledger, lease, press);
+            assert!(!ledger.native_handoff_continuity(stream, native));
+        }
+
+        let mut ledger = ledger;
+        let checkpoint = PointerAuthorityCheckpoint::known(
+            PointerEdgeSequence::new(0),
+            vec![
+                PointerStateObservation::new(
+                    PointerId::new(1),
+                    vec![PointerButton::Primary],
+                    Authority::Known(PointerCaptureOwner::Native(native)),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let mut moved = edge(native, PointerEdgeKind::Moved);
+        moved.location = handoff_location(native, native);
+        moved.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        let journal = journal(moved)
+            .with_authority_checkpoint(checkpoint)
+            .unwrap();
+        let prepared = ledger.prepare_candidate(lease, journal).unwrap();
+        let stream = ledger.commit_prepared(prepared).unwrap().accepted_edges()[0].stream();
+        assert_eq!(ledger.button_authority(), AnyButtonDownAuthority::KnownDown);
+        assert!(!ledger.native_handoff_continuity(stream, native));
+    }
+
+    #[test]
+    fn native_handoff_continuity_does_not_survive_stream_or_provider_retirement() {
+        let (mut ledger, _, lease) = setup();
+        let native = binding(lease.authority_domain(), 1);
+        let mut press = edge(
+            native,
+            PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        );
+        press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        let stream = commit_next_edge(&mut ledger, lease, press.clone());
+        assert!(ledger.native_handoff_continuity(stream, native));
+        let cancelled = edge(
+            native,
+            PointerEdgeKind::StreamCancelled(
+                PointerStreamCancelReason::ExplicitPlatformCancellation,
+            ),
+        );
+        assert_eq!(commit_next_edge(&mut ledger, lease, cancelled), stream);
+        assert!(!ledger.native_handoff_continuity(stream, native));
+        let successor = commit_next_edge(&mut ledger, lease, press.clone());
+        assert_ne!(successor, stream);
+        assert!(ledger.native_handoff_continuity(successor, native));
+        assert!(!ledger.native_handoff_continuity(stream, native));
+        ledger.retire_provider(lease).unwrap();
+        assert!(!ledger.native_handoff_continuity(successor, native));
+        let replacement = ledger
+            .create_provider(lease.scope(), PointerEdgeSequence::new(0))
+            .unwrap();
+        let current = commit_next_edge(&mut ledger, replacement, press);
+        assert!(ledger.native_handoff_continuity(current, native));
+        assert!(!ledger.native_handoff_continuity(successor, native));
     }
 
     #[test]

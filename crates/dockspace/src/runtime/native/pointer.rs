@@ -1,8 +1,8 @@
 //! Product-facing native pointer facts and synchronous receiver queries.
 
 use super::{
-    NativeHostProfile, NativeLocalPointerLocation, NativePlatformError, NativeSurfaceBinding,
-    NativeWorkAreaBinding, RuntimeNativeState,
+    NativeHostProfile, NativeLocalPointerLocation, NativeLocalPointerSample, NativePlatformError,
+    NativeSurfaceBinding, NativeWorkAreaBinding, RuntimeNativeState,
 };
 use crate::geometry::{LogicalPoint, PhysicalPoint};
 use crate::ids::SurfaceId;
@@ -383,6 +383,40 @@ impl NativeDesktopPointerLocation {
     }
 }
 
+/// Local and desktop positions observed for the same native pointer event.
+///
+/// This packet requests an explicit handoff without granting desktop authority.
+/// Core validates gesture continuity and exact coordinate mapping at the event's
+/// reducer ordinal. The local sample retains its original coordinate authority.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeLocalToDesktopHandoff {
+    local: NativeLocalPointerSample,
+    desktop: NativeDesktopPointerLocation,
+}
+
+impl NativeLocalToDesktopHandoff {
+    /// Reports two locations observed for one event without authorizing a handoff.
+    #[must_use]
+    pub const fn new(
+        local: NativeLocalPointerSample,
+        desktop: NativeDesktopPointerLocation,
+    ) -> Self {
+        Self { local, desktop }
+    }
+
+    /// Returns the immutable event-time client coordinate sample.
+    #[must_use]
+    pub const fn local(self) -> NativeLocalPointerSample {
+        self.local
+    }
+
+    /// Returns the independently observed desktop position and native hover.
+    #[must_use]
+    pub const fn desktop(self) -> NativeDesktopPointerLocation {
+        self.desktop
+    }
+}
+
 /// Event-time coordinate lane for one joined native pointer edge.
 ///
 /// A local sample grants no desktop origin, global hover, or outside-all proof.
@@ -392,6 +426,8 @@ pub enum NativePointerLocation {
     Desktop(NativeDesktopPointerLocation),
     /// Client coordinates captured under committed local geometry.
     NativeLocal(NativeLocalPointerLocation),
+    /// Local and desktop facts requesting an explicitly validated handoff.
+    LocalToDesktop(NativeLocalToDesktopHandoff),
 }
 
 /// One native pointer edge. Sequence and receiver receipts are minted by the
@@ -442,6 +478,28 @@ impl NativePointerInput {
             pointer,
             event,
             location: NativePointerLocation::NativeLocal(location),
+            delivery,
+            capture,
+            metadata: crate::runtime::PointerEventMetadata::unknown(),
+        }
+    }
+
+    /// Creates one input carrying both locations for an explicit native handoff.
+    ///
+    /// Recording preserves the original sample, delivery, and capture. It does
+    /// not inspect the current gesture or grant permission to change its lane.
+    #[must_use]
+    pub const fn new_handoff(
+        pointer: NativePointerId,
+        event: NativePointerEvent,
+        packet: NativeLocalToDesktopHandoff,
+        delivery: NativePointerOwner,
+        capture: NativePointerOwner,
+    ) -> Self {
+        Self {
+            pointer,
+            event,
+            location: NativePointerLocation::LocalToDesktop(packet),
             delivery,
             capture,
             metadata: crate::runtime::PointerEventMetadata::unknown(),
@@ -918,24 +976,13 @@ impl RuntimeNativeState {
         location: NativePointerLocation,
     ) -> Result<PointerEdgeLocation, NativePlatformError> {
         match location {
-            NativePointerLocation::Desktop(location) => self.desktop_pointer_location(location),
+            NativePointerLocation::Desktop(location) => Ok(PointerEdgeLocation::Desktop {
+                route: self.desktop_pointer_route(location)?,
+            }),
             NativePointerLocation::NativeLocal(location) => {
                 let route = match location {
                     NativeLocalPointerLocation::Exact(sample) => {
-                        let coordinates = sample.coordinates();
-                        if coordinates.backend() != self.recorder.lease() {
-                            return Err(NativePlatformError::InvalidPointerFacts);
-                        }
-                        self.validate_pointer_binding(coordinates.binding())?;
-                        // Do not reinterpret an old sample using recorder-time
-                        // geometry. Current coordinate authority is checked by
-                        // the reducer at this record's ordinal.
-                        Authority::Known(NativeLocalPointerRoute::new(
-                            coordinates.binding().binding,
-                            coordinates.coordinate_generation(),
-                            sample.client_position(),
-                            sample.surface_position(),
-                        ))
+                        Authority::Known(self.native_local_pointer_route(sample)?)
                     }
                     NativeLocalPointerLocation::Unknown => {
                         Authority::Unknown(AuthorityUnavailableReason::NotReported)
@@ -943,13 +990,38 @@ impl RuntimeNativeState {
                 };
                 Ok(PointerEdgeLocation::NativeLocal { route })
             }
+            NativePointerLocation::LocalToDesktop(packet) => {
+                Ok(PointerEdgeLocation::NativeLocalToDesktop {
+                    local: self.native_local_pointer_route(packet.local())?,
+                    desktop: self.desktop_pointer_route(packet.desktop())?,
+                })
+            }
         }
     }
 
-    fn desktop_pointer_location(
+    fn native_local_pointer_route(
+        &self,
+        sample: NativeLocalPointerSample,
+    ) -> Result<NativeLocalPointerRoute, NativePlatformError> {
+        let coordinates = sample.coordinates();
+        if coordinates.backend() != self.recorder.lease() {
+            return Err(NativePlatformError::InvalidPointerFacts);
+        }
+        self.validate_pointer_binding(coordinates.binding())?;
+        // Do not reinterpret an old sample using recorder-time geometry.
+        // Current coordinate and handoff authority belong to the reducer ordinal.
+        Ok(NativeLocalPointerRoute::new(
+            coordinates.binding().binding,
+            coordinates.coordinate_generation(),
+            sample.client_position(),
+            sample.surface_position(),
+        ))
+    }
+
+    fn desktop_pointer_route(
         &self,
         location: NativeDesktopPointerLocation,
-    ) -> Result<PointerEdgeLocation, NativePlatformError> {
+    ) -> Result<DesktopRouteFact, NativePlatformError> {
         let position = location.position();
         let hover = location.hover();
         let work_area = location.work_area();
@@ -994,7 +1066,7 @@ impl RuntimeNativeState {
                 DesktopRouteFact::unknown(position, AuthorityUnavailableReason::NotReported)
             }
         };
-        Ok(PointerEdgeLocation::Desktop { route })
+        Ok(route)
     }
 
     fn delivery_owner(
@@ -1182,6 +1254,223 @@ fn native_scroll_delta(
         NativeScrollDelta::Lines { .. } => ScrollDelta::Lines(vector),
         NativeScrollDelta::Pages { .. } => ScrollDelta::Pages(vector),
     })
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+    use crate::coordinates::CoordinateSnapshot;
+    use crate::geometry::{PhysicalSize, ScaleFactor};
+    use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use crate::ids::{ItemId, RootId};
+    use crate::platform::WindowCoordinateObservation;
+    use crate::policy::DockPolicy;
+    use crate::runtime::{
+        DockspaceSession, HostInputOutcome, HostWindowToken, NativeCreateStrategy,
+        NativeHostErrorKind, NativeLocalCoordinates, NativeLocalPointerFact, PointerDeviceKind,
+        PointerEventMetadata, SurfaceUnavailableReason,
+    };
+    use crate::viewport::{CoordinateGeneration, CoordinateObservationGeneration};
+    use std::time::Duration;
+
+    fn fixture() -> (
+        DockspaceSession,
+        NativeSurfaceBinding,
+        NativeLocalPointerSample,
+    ) {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().unwrap(),
+            DockPolicy::default(),
+        )
+        .unwrap();
+        session
+            .enable_managed_native_host(
+                NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
+            .unwrap();
+        session
+            .register_native_root(surface, HostWindowToken::new(41))
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        let [HostInputOutcome::NativeSurfaceRegistered { binding }] = report.inputs() else {
+            panic!("the fixture registers one exact native root");
+        };
+        let binding = *binding;
+        let native_scale = ScaleFactor::new(2.0).unwrap();
+        let presentation_scale = ScaleFactor::new(3.0).unwrap();
+        let size = PhysicalSize::new(900.0, 600.0).unwrap();
+        let unknown = Authority::Unknown(AuthorityUnavailableReason::NotReported);
+        let observation = WindowCoordinateObservation::new(
+            binding.binding,
+            CoordinateObservationGeneration::new(3),
+            unknown,
+            unknown,
+            Authority::Known(native_scale),
+            Authority::Known(presentation_scale),
+        )
+        .with_content_size(Authority::Known(size));
+        let snapshot = CoordinateSnapshot::from_observation(
+            binding.binding,
+            CoordinateGeneration::new(7),
+            observation,
+        )
+        .unwrap();
+        // Compilation checks structural ownership only. Current coordinate and
+        // gesture authority are intentionally left for the reducer to prove.
+        let coordinates = NativeLocalCoordinates::new(
+            session.native.as_ref().unwrap().recorder.lease(),
+            binding,
+            snapshot,
+        );
+        let sample = coordinates
+            .capture(
+                binding,
+                NativeLocalPointerFact::new(
+                    PhysicalPoint::new(60.0, 30.0).unwrap(),
+                    size,
+                    native_scale,
+                ),
+                coordinates.geometry(),
+            )
+            .unwrap();
+        (session, binding, sample)
+    }
+
+    fn desktop(binding: NativeSurfaceBinding) -> NativeDesktopPointerLocation {
+        NativeDesktopPointerLocation::new(
+            NativeDesktopPosition::Exact(PhysicalPoint::new(460.0, -270.0).unwrap()),
+            NativePointerHover::Dock(binding),
+            None,
+        )
+    }
+
+    #[test]
+    fn handoff_compilation_preserves_both_facts_without_reading_gesture_authority() {
+        let (session, binding, sample) = fixture();
+        let packet = NativeLocalToDesktopHandoff::new(sample, desktop(binding));
+        assert_eq!(packet.local(), sample);
+        assert_eq!(packet.desktop(), desktop(binding));
+        let metadata =
+            PointerEventMetadata::new(PointerDeviceKind::Mouse, Duration::from_millis(9));
+        let input = NativePointerInput::new_handoff(
+            NativePointerId::new(11),
+            NativePointerEvent::Moved,
+            packet,
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding),
+        )
+        .with_metadata(metadata);
+        assert_eq!(
+            input.location(),
+            NativePointerLocation::LocalToDesktop(packet)
+        );
+        let native = session.native.as_ref().unwrap();
+        let recorded = native.recorder.recorded_through();
+        let through = native.recorder.pointer_through();
+        let journal = native.compile_pointer_journal(input, through).unwrap();
+        let [edge] = journal.edges() else {
+            panic!("one input compiles to one edge")
+        };
+        let PointerEdgeLocation::NativeLocalToDesktop { local, desktop } = edge.location() else {
+            panic!("the raw journal retains the explicit dual location");
+        };
+        assert_eq!(local.binding(), binding.binding);
+        assert_eq!(local.coordinate_generation(), CoordinateGeneration::new(7));
+        assert_eq!(local.client_position(), sample.client_position());
+        assert_eq!(local.surface_position(), sample.surface_position());
+        assert_eq!(
+            desktop.position(),
+            Authority::Known(PhysicalPoint::new(460.0, -270.0).unwrap())
+        );
+        assert_eq!(
+            desktop.hovered(),
+            Authority::Known(crate::pointer_journal::DesktopHoveredWindow::Dock(
+                binding.binding
+            ))
+        );
+        assert_eq!(edge.desktop_route(), None);
+        assert_eq!(edge.pointer(), PointerId::new(11));
+        assert_eq!(edge.kind(), PointerEdgeKind::Moved);
+        assert_eq!(edge.metadata(), metadata);
+        assert_eq!(
+            edge.delivery_owner(),
+            Authority::Known(PointerEventDeliveryOwner::Native(binding.binding))
+        );
+        assert_eq!(
+            edge.capture_owner(),
+            Authority::Known(PointerCaptureOwner::Native(binding.binding))
+        );
+        assert_eq!(native.recorder.recorded_through(), recorded);
+        assert_eq!(native.recorder.pointer_through(), through);
+    }
+
+    #[test]
+    fn foreign_handoff_facts_reject_the_whole_batch_before_recording_a_prefix() {
+        let (mut session, binding, sample) = fixture();
+        let (_, foreign_binding, foreign_sample) = fixture();
+        let valid = NativePointerInput::new_local(
+            NativePointerId::new(11),
+            NativePointerEvent::Moved,
+            NativeLocalPointerLocation::Exact(sample),
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::None,
+        );
+        let native = session.native.as_ref().unwrap();
+        let before = native.recorder.pending_batch().unwrap();
+        let recorded = native.recorder.recorded_through();
+        let through = native.recorder.pointer_through();
+        for packet in [
+            NativeLocalToDesktopHandoff::new(foreign_sample, desktop(binding)),
+            NativeLocalToDesktopHandoff::new(sample, desktop(foreign_binding)),
+        ] {
+            let invalid = NativePointerInput::new_handoff(
+                NativePointerId::new(11),
+                NativePointerEvent::Moved,
+                packet,
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::None,
+            );
+            let error = session
+                .record_native_pointer_batch([valid, invalid])
+                .unwrap_err();
+            assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
+            let native = session.native.as_ref().unwrap();
+            assert_eq!(native.recorder.pending_batch().unwrap(), before);
+            assert_eq!(native.recorder.recorded_through(), recorded);
+            assert_eq!(native.recorder.pointer_through(), through);
+        }
+        let corrected = NativePointerInput::new_handoff(
+            NativePointerId::new(11),
+            NativePointerEvent::Moved,
+            NativeLocalToDesktopHandoff::new(sample, desktop(binding)),
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::None,
+        );
+        session
+            .record_native_pointer_batch([valid, corrected])
+            .unwrap();
+        assert_eq!(
+            session
+                .native
+                .as_ref()
+                .unwrap()
+                .recorder
+                .pointer_through()
+                .get(),
+            through.get() + 2
+        );
+    }
 }
 
 #[cfg(test)]

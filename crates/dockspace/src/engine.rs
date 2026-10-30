@@ -12,6 +12,7 @@ mod native_projection;
 mod native_tear_off;
 mod pointer_contained;
 mod pointer_edge_scroll;
+mod pointer_handoff;
 mod pointer_proof;
 mod pointer_session;
 mod pointer_splitter;
@@ -267,6 +268,7 @@ use crate::viewport_focus::{
     ViewportFocusError,
 };
 use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission, ViewportOwnership};
+use pointer_handoff::NativePointerHandoffProjection;
 
 pub(crate) const BACKEND_INGRESS_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(u64::MAX);

@@ -65,8 +65,11 @@ retains one input order, and each gesture freezes its coordinate lane through
 exact output settlement. The reference adapter now freezes event-time local
 samples at callback capture and accounts for their immutable payloads within the
 same bounded input budget. Its callback contract is qualified; native-local OS
-input, in-gesture local-to-desktop handoff and native stationary scheduling remain
-separate acceptance work.
+input and native stationary scheduling remain separate acceptance work. The
+public engine-host contract now also qualifies explicit local-to-desktop handoff
+within one active drag, preserving its stream, session and semantic source while
+revoking old target/output state. Callback emission of the dual-location packet
+and real OS handoff evidence remain separate from that public contract.
 
 The experimental native adapter reserves 4,096 raw callback slots and two
 reusable complete-roster payloads. It admits at most 256 simultaneously retained
