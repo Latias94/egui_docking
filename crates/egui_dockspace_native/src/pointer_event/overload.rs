@@ -34,6 +34,7 @@ fn touch(phase: TouchPhase) -> WindowEvent {
         device_id: DeviceId::dummy(),
         phase,
         location: PhysicalPosition::new(10.0, 20.0),
+        facts: PointerEventFacts::default(),
         force: None,
         id: 7,
     })
@@ -163,6 +164,7 @@ fn binding_and_provider_terminals_reuse_all_button_contact_and_scroll_slots() {
                 device_id: DeviceId::dummy(),
                 phase: TouchPhase::Started,
                 location: PhysicalPosition::new(10.0, 20.0),
+                facts: PointerEventFacts::default(),
                 force: None,
                 id,
             }),

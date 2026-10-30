@@ -41,7 +41,7 @@ fn bounded_coordinator(slots: usize) -> (NativeCoordinator, NativeSurfaceBinding
 fn selected_host_allowance_drains_every_accepted_contact_before_one_retryable_cancellation() {
     use crate::mailbox::NativeDispatch;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, Touch, TouchPhase};
+    use winit::event::{DeviceId, PointerEventFacts, Touch, TouchPhase};
 
     let (mut native, binding) = bounded_coordinator(4);
     let baseline = native.bridge.owned_input_capacity_bytes(None);
@@ -69,6 +69,7 @@ fn selected_host_allowance_drains_every_accepted_contact_before_one_retryable_ca
                     device_id: DeviceId::dummy(),
                     phase: TouchPhase::Started,
                     location: PhysicalPosition::new(10.0, 20.0),
+                    facts: PointerEventFacts::default(),
                     force: None,
                     id: ordinal,
                 }),

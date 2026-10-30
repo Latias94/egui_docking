@@ -464,12 +464,17 @@ impl NativeWindowEventRecord {
                 hover: NativePointerRouteSnapshot::from_winit(facts.hover, viewports),
                 capture: NativePointerRouteSnapshot::from_winit(facts.capture, viewports),
             }),
+            WindowEvent::Touch(touch) => Some(NativePointerRoutes {
+                delivery,
+                hover: NativePointerRouteSnapshot::from_winit(touch.facts.hover, viewports),
+                capture: NativePointerRouteSnapshot::from_winit(touch.facts.capture, viewports),
+            }),
             WindowEvent::PointerCaptureChanged { capture, .. } => Some(NativePointerRoutes {
                 delivery,
                 hover: NativePointerRouteSnapshot::Unknown,
                 capture: NativePointerRouteSnapshot::from_winit(*capture, viewports),
             }),
-            WindowEvent::PanGesture { .. } | WindowEvent::Touch(_) => Some(NativePointerRoutes {
+            WindowEvent::PanGesture { .. } => Some(NativePointerRoutes {
                 delivery,
                 hover: NativePointerRouteSnapshot::Unknown,
                 capture: NativePointerRouteSnapshot::Unknown,
@@ -478,6 +483,21 @@ impl NativeWindowEventRecord {
         };
         let pointer = pointer_routes.map(|routes| {
             let location = match (&event, local_capture) {
+                (WindowEvent::Touch(touch), local_capture) if touch.facts.geometry.is_some() => {
+                    // Touch keeps one local lane even when desktop facts are present. The
+                    // contact position and its frozen geometry must describe the same point;
+                    // neither current callback geometry nor desktop facts may repair a mismatch.
+                    let location = local_capture
+                        .filter(|_| {
+                            touch.location.x.is_finite()
+                                && touch.location.y.is_finite()
+                                && touch.facts.surface_position == Some(touch.location)
+                        })
+                        .map_or(NativeLocalPointerLocation::Unknown, |capture| {
+                            capture.capture(binding, &touch.facts)
+                        });
+                    CapturedNativePointerLocation::NativeLocal(location)
+                }
                 (WindowEvent::CursorMoved { facts, .. }, Some(local_capture))
                     if facts.geometry.is_some()
                         && facts
@@ -525,6 +545,8 @@ impl NativeWindowEventRecord {
 
 #[cfg(test)]
 mod tests {
+    mod touch;
+
     use super::*;
     use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
     use dockspace::geometry::LogicalPoint;
@@ -1434,6 +1456,7 @@ mod tests {
                     device_id: DeviceId::dummy(),
                     phase,
                     location: PhysicalPosition::new(20.0, 40.0),
+                    facts: PointerEventFacts::default(),
                     force: None,
                     id: 7,
                 }),

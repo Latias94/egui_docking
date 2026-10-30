@@ -683,6 +683,7 @@ mod tests {
                     device_id: DeviceId::dummy(),
                     phase: TouchPhase::Started,
                     location: PhysicalPosition::new(1.0, 2.0),
+                    facts: PointerEventFacts::default(),
                     force: None,
                     id: ordinal,
                 }),

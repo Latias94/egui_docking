@@ -47,6 +47,30 @@ It must not publish known-empty or select a product receiver behind that area.
 Five real ScrollArea tests cover top/bottom edges, nested overscroll, momentum
 reservation, frozen state and candidate order, and non-consuming areas.
 
+### Touch position and geometry provenance
+
+Touch events carry the existing PointerEventFacts rather than a second routing
+schema. Wayland down/motion freezes a complete physical-position/content-geometry
+pair under one window lock. Its original per-seat touch map retains a small Copy
+sample and motion replaces it as one value. Up/cancel carries that last pair,
+because those protocol events have no new coordinate. The shared event
+constructor takes only the saved sample, contact ID and phase; terminal paths
+cannot rescale an old point using current window geometry. A missing window in
+cancel skips that contact while allowing the remaining contacts to finalize.
+
+The adapter validates contact position against the facts and existing local
+coordinate capability. A failed sample remains LocalUnknown, including terminal
+events, so the real contact can end without a new position-based mutation.
+Backends without original geometry retain DesktopUnknown and default facts.
+This does not establish native capture or desktop hover, synthesize a contact
+termination, enable a handoff, or qualify automatic Touch stationary behavior.
+The deterministic producer/adapter tests and physical-evidence limits are
+recorded separately in `docs/VALIDATION.md`.
+
+Remove this fork change when upstream Touch carries an equivalent immutable
+position/geometry pair and preserves the pair through coordinate-less terminal
+events. The renderer-neutral core requires no Winit Touch type.
+
 ### Correlated native pointer observation prerequisite
 
 This local, unpublished seam prepares future deadline-driven input without

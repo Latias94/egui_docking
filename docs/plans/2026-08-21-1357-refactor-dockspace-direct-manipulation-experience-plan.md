@@ -1505,6 +1505,25 @@ change rejects that old coordinate proof while still consuming the real end.
 Unknown geometry and unqualified backends must remain explicit; callback size
 alone cannot reconstruct original touch authority.
 
+The coordinate-pair follow-up is implemented and locally qualified. Touch now
+carries existing PointerEventFacts; Wayland keeps a single private Copy sample
+inside its original touch-map record. Down/motion freezes point and geometry
+under one window lock; motion replaces the whole sample and end/cancel builds
+from it without current-scale conversion. Other backends remain default facts.
+The adapter validates the exact finite position/pair and current coordinate
+capability, remains NativeLocal Unknown on failure, and preserves DesktopUnknown
+for backends without original geometry. No dual handoff, capture capability or
+automatic scheduling is added. Eight adapter cases and forty Linux Winit tests,
+including four production sample/constructor regressions, pass. All 34 affected
+gates pass: native491/491 and both 10,000-lifetime soaks, eframe94/88/Linux89,
+strict docs/lints/formatting, both macOS redock profiles, X11 real query and
+physical guide-targeted redock, and five pressure cases on each platform. The
+bounded sample is 2,302,971 owned / 3,455,424 reserved bytes within 4 MiB.
+All 439 main Rust paths match the snapshot; unchanged core/public source
+preserves its preceding qualification. Winit `6c10c87da2a06871371de7d30fedc656cf7c3681`
+is committed but unpublished. These results do not establish Wayland physical
+Touch, native automatic stationary scheduling or complete U7/U8 qualification.
+
 The public native stationary contract precedes adapter automatic scheduling.
 It exposes a Native-specific read-only projection of the existing
 `PointerContinuationRequest`, with NativePointerId/event, deadline, target
@@ -1959,7 +1978,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `70f7b51712284561d3408950273f128ff556a81b` and Winit fork `98642f5e8460677a5b96bcefb611ac8af437da9b`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `70f7b51712284561d3408950273f128ff556a81b` and Winit fork `6c10c87da2a06871371de7d30fedc656cf7c3681`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.

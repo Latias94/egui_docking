@@ -15,6 +15,59 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 native Touch event-time coordinate pairs
+
+This slice is locally qualified by 34 final gates. The Winit Touch schema now
+carries the existing PointerEventFacts. Wayland down/motion reads physical position and
+content geometry under the same window lock and keeps one private Copy sample
+in the existing per-seat touch map. Motion replaces the complete pair. Up and
+cancel have no new position, so the production event constructor preserves the
+last sample without consulting current size or scale. Cancellation skips a
+missing window and continues processing other contacts. Other backends supply
+default facts; no capture, desktop, hover or modifier capability is inferred.
+The coordinate-less terminal contract follows the
+[Wayland protocol](https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_touch).
+
+The native adapter reads original Touch facts and checks that the finite contact
+position exactly matches its local sample. Original geometry selects NativeLocal;
+failed geometry/capability checks remain LocalUnknown without desktop fallback.
+Missing original geometry preserves the former DesktopUnknown lane. Touch never
+emits a dual-location handoff, and no registry or token issuer is added. Callback
+clones retain the same immutable shared payload, identity and original time.
+
+Eight focused adapter tests pass, including the seven new fact/pair tests and
+an existing touch/pan compatibility case. The Linux Winit library passes all 40
+unit tests, including four production sample/constructor regressions for old
+geometry terminals, independent contacts, whole-pair motion replacement and
+rounding. These are deterministic contract tests, not Wayland compositor or
+physical touch evidence. The first producer filter matched zero tests; that
+attempt is not counted, and the full library run confirms all four tests execute.
+The old-pair adapter regression currently proves translator ContactEnded/tail/ID
+handling; existing core public native Touch tests qualify core terminal semantics.
+
+Affected qualification passes native491/491 normally and without debug
+assertions, including both same-coordinator 10,000-lifetime soaks; eframe
+Glow94/WGPU88/Linux89, no-seam compilation, strict docs, Clippy, formatting,
+macOS default/bounded redock, X11 real observation and physical guide-targeted
+redock, and five output-pressure cases on each platform. The new bounded
+root-boundary sample is 2,302,971 owned / 3,455,424 reserved bytes within the
+same 4 MiB/4,096-raw-slot contract. Its increase reflects actual inline Touch
+facts; capacity formulas continue using full entry sizes without double charging.
+This remains a sampled input-data bound, not combined saturation or RSS proof.
+
+All 439 main Rust paths match the native snapshot. Core/public/official-egui
+sources are unchanged from their prior qualification; those semantic results
+were not rerun here. Source, commands/results and detailed logs are at
+`/tmp/dockspace-native-touch-facts-*`. Initial local-override lock preparation
+failures are preserved and are not passing gates. The excluded generated
+lockfile delta is unchanged from the previous fork prerequisite.
+Independent frozen producer/adapter review finds no remaining confirmed P1/P2.
+The qualified Winit commit is `6c10c87da2a06871371de7d30fedc656cf7c3681`; egui remains at
+`70f7b51712284561d3408950273f128ff556a81b`, both unpublished.
+Fresh native capture and automatic stationary scheduling remain unavailable;
+this slice does not certify OS Touch, other backend implementations, full
+U7/U8 or dependency packaging.
+
 ## 2026-10-30 native pointer observation prerequisite
 
 The new fork seam is locally qualified by 34 final gates. It does not enable
