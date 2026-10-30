@@ -32,11 +32,73 @@ fn validated_host_local_route(
         .then_some(route)
 }
 
+fn native_local_route_matches_authority(
+    route: NativeLocalPointerRoute,
+    authority: PresentedSurfaceAuthority,
+) -> bool {
+    authority.surface() == route.binding().surface()
+        && authority.binding() == Some(route.binding())
+        && authority.coordinate_generation() == route.coordinate_generation()
+}
+
+pub(super) fn validated_native_local_route(
+    engine: &DockEngine,
+    edge: &PointerEdge,
+) -> Option<NativeLocalPointerRoute> {
+    let PointerEdgeLocation::NativeLocal {
+        route: Authority::Known(route),
+    } = edge.location()
+    else {
+        return None;
+    };
+    let PointerProviderScope::NativeJoined(host) = engine.pointer_provider()?.scope() else {
+        return None;
+    };
+    if let Some(owner) = engine.interaction.active_owner()
+        && owner.pointer() == edge.pointer()
+        && !matches!(edge.kind(), PointerEdgeKind::Scrolled(_))
+        && !engine.journal_edge_matches_gesture_lane(owner, edge)
+    {
+        return None;
+    }
+    let coordinates = engine.native_local_coordinate_snapshot(host, route.binding())?;
+    if coordinates.coordinate_generation() != route.coordinate_generation() {
+        return None;
+    }
+    let expected = LogicalPoint::new(
+        route.client_position().x() / coordinates.presentation_scale_factor().get(),
+        route.client_position().y() / coordinates.presentation_scale_factor().get(),
+    )
+    .ok()?;
+    (expected == route.surface_position()).then_some(route)
+}
+
+fn validated_native_local_hover(
+    engine: &DockEngine,
+    edge: &PointerEdge,
+) -> Option<NativeLocalPointerRoute> {
+    let route = validated_native_local_route(engine, edge)?;
+    let projection = engine.interaction_projection(route.binding().surface())?;
+    (native_local_route_matches_authority(route, projection.authority())
+        && projection
+            .plan()
+            .bounds()
+            .contains(route.surface_position()))
+    .then_some(route)
+}
+
 pub(super) fn pointer_receiver_candidate_spec(
     engine: &DockEngine,
     edge: &PointerEdge,
     stream: PointerStreamId,
 ) -> PointerReceiverCandidateSpec {
+    if let Some(owner) = engine.interaction.active_owner()
+        && owner.stream() == stream
+        && !engine.journal_edge_matches_gesture_lane(owner, edge)
+        && !matches!(edge.kind(), PointerEdgeKind::Scrolled(_))
+    {
+        return PointerReceiverCandidateSpec::not_applicable(edge.sequence());
+    }
     if matches!(edge.kind(), PointerEdgeKind::Scrolled(_)) {
         let PointerEdgeKind::Scrolled(scroll) = edge.kind() else {
             unreachable!("the branch is restricted to scroll edges");
@@ -74,6 +136,13 @@ pub(super) fn pointer_receiver_candidate_spec(
                     (
                         route.map(HostLocalPointerRoute::surface),
                         route.map(HostLocalPointerRoute::position),
+                    )
+                }
+                PointerEdgeLocation::NativeLocal { .. } => {
+                    let route = validated_native_local_route(engine, edge);
+                    (
+                        route.map(|route| route.binding().surface()),
+                        route.map(NativeLocalPointerRoute::surface_position),
                     )
                 }
                 PointerEdgeLocation::Desktop { .. } => {
@@ -185,6 +254,13 @@ pub(super) fn pointer_receiver_candidate_spec(
                     route.map(HostLocalPointerRoute::position),
                 )
             }
+            PointerEdgeLocation::NativeLocal { .. } => {
+                let route = validated_native_local_hover(engine, edge);
+                (
+                    route.map(|route| route.binding().surface()),
+                    route.map(NativeLocalPointerRoute::surface_position),
+                )
+            }
             PointerEdgeLocation::Desktop { .. } => {
                 let route = validated_desktop_delivery_route(engine, edge)
                     .and_then(DesktopRouteValidation::dock_route);
@@ -217,6 +293,10 @@ pub(super) fn journal_position_key(
         PointerEdgeLocation::HostLocal { hover, .. } => ManipulationPositionKey::JournalHost {
             manipulation: engine.journal_host_local_manipulation(edge),
             hover: validated_host_local_route(engine, hover),
+        },
+        PointerEdgeLocation::NativeLocal { .. } => ManipulationPositionKey::JournalNativeLocal {
+            manipulation: validated_native_local_route(engine, edge),
+            hover: validated_native_local_hover(engine, edge),
         },
         PointerEdgeLocation::Desktop { route } => ManipulationPositionKey::JournalDesktop(
             route.validate_against_registry(engine.authority_domain, engine.viewport.registry()),
@@ -329,6 +409,14 @@ pub enum PointerReceiverGeometryError {
         #[source]
         source: DesktopRoutePresentationError,
     },
+    /// A native-local receiver belongs to another binding or coordinate generation.
+    #[error(
+        "pointer receipt for edge {sequence} does not match its native-local coordinate authority"
+    )]
+    NativeLocalPresentationMismatch {
+        /// Exact provider edge carrying the receiver claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+    },
     /// A known host-local hover answer does not name the edge's exact route output.
     #[error(
         "pointer hover receipt for edge {sequence} names authority {actual:?}, expected its host-local route {expected:?}"
@@ -390,11 +478,118 @@ pub enum PointerReceiverGeometryError {
 }
 
 impl DockEngine {
+    pub(super) fn journal_gesture_owner(
+        &self,
+        stream: PointerStreamId,
+        edge: &PointerEdge,
+        desktop_route: Option<DesktopRouteValidation>,
+    ) -> Option<GestureOwner> {
+        let lane = match (stream.lease().scope(), edge.location()) {
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerEdgeLocation::Desktop { .. },
+            ) => {
+                desktop_route.and_then(DesktopRouteValidation::dock_route)?;
+                GestureLane::Desktop
+            }
+            (PointerProviderScope::NativeJoined(_), PointerEdgeLocation::NativeLocal { .. }) => {
+                let route = validated_native_local_route(self, edge)?;
+                GestureLane::NativeLocal {
+                    binding: route.binding(),
+                    coordinate_generation: route.coordinate_generation(),
+                }
+            }
+            (PointerProviderScope::HostLocal(_), PointerEdgeLocation::HostLocal { .. }) => {
+                self.journal_host_local_manipulation(edge)?;
+                GestureLane::HostLocal
+            }
+            (
+                PointerProviderScope::SurfaceLocal(_),
+                PointerEdgeLocation::SurfaceLocal {
+                    position: Authority::Known(_),
+                },
+            ) => GestureLane::SurfaceLocal,
+            _ => return None,
+        };
+        Some(GestureOwner::new(stream, lane))
+    }
+
+    pub(crate) fn native_local_coordinate_snapshot(
+        &self,
+        host: PresentationHostLease,
+        binding: ViewportBinding,
+    ) -> Option<CoordinateSnapshot> {
+        let provider = self.backend_ingress_provider()?;
+        if provider.presentation_host() != host
+            || provider.pointer_provider().scope() != PointerProviderScope::NativeJoined(host)
+        {
+            return None;
+        }
+        let (_, owner, endpoint) = self
+            .presentation_authority
+            .presentation
+            .active_surface_scope(binding.surface())?;
+        if owner != host || endpoint != HostPresentationEndpoint::Native(binding) {
+            return None;
+        }
+        let record = self.viewport.viewport(binding.surface())?;
+        if record.binding() != binding || !record.is_routeable() {
+            return None;
+        }
+        let coordinates = record.coordinates()?;
+        (coordinates.content_size().width() > 0.0 && coordinates.content_size().height() > 0.0)
+            .then_some(coordinates)
+    }
+
+    pub(super) fn journal_edge_matches_gesture_lane(
+        &self,
+        owner: GestureOwner,
+        edge: &PointerEdge,
+    ) -> bool {
+        match (owner.lane(), edge.location()) {
+            (GestureLane::Desktop, PointerEdgeLocation::Desktop { .. })
+            | (GestureLane::HostLocal, PointerEdgeLocation::HostLocal { .. })
+            | (GestureLane::SurfaceLocal, PointerEdgeLocation::SurfaceLocal { .. }) => true,
+            (
+                GestureLane::NativeLocal {
+                    binding,
+                    coordinate_generation,
+                },
+                PointerEdgeLocation::NativeLocal {
+                    route: Authority::Known(route),
+                },
+            ) => {
+                route.binding() == binding && route.coordinate_generation() == coordinate_generation
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn validate_journal_native_local_presentation(
+        &self,
+        edge: &PointerEdge,
+        authority: PresentedSurfaceAuthority,
+    ) -> Result<(), EngineError> {
+        if !matches!(edge.location(), PointerEdgeLocation::NativeLocal { .. }) {
+            return Ok(());
+        }
+        if validated_native_local_hover(self, edge)
+            .is_some_and(|route| native_local_route_matches_authority(route, authority))
+        {
+            return Ok(());
+        }
+        Err(EngineError::PointerReceiverGeometry {
+            source: PointerReceiverGeometryError::NativeLocalPresentationMismatch {
+                sequence: edge.sequence(),
+            },
+        })
+    }
+
     pub(super) fn journal_pointer_hit_device(edge: &PointerEdge) -> PointerDeviceKind {
         match edge.location() {
-            PointerEdgeLocation::SurfaceLocal { .. } | PointerEdgeLocation::HostLocal { .. } => {
-                edge.metadata().device()
-            }
+            PointerEdgeLocation::SurfaceLocal { .. }
+            | PointerEdgeLocation::HostLocal { .. }
+            | PointerEdgeLocation::NativeLocal { .. } => edge.metadata().device(),
             PointerEdgeLocation::Desktop { .. } => PointerDeviceKind::Unknown,
         }
     }
@@ -535,6 +730,11 @@ impl DockEngine {
                         }
                     }
                     PointerReceiverProbeReceipt::HoverHit(hover) => {
+                        if matches!(edge.location(), PointerEdgeLocation::NativeLocal { .. })
+                            && let Some(authority) = hover.authority()
+                        {
+                            self.validate_journal_native_local_presentation(edge, authority)?;
+                        }
                         if let PointerEdgeLocation::HostLocal { hover: route, .. } = edge.location()
                             && let Some(actual) = hover.authority()
                         {
@@ -626,7 +826,26 @@ impl DockEngine {
                     })?;
                 (route.surface(), route.position(), None)
             }
-            (PointerProviderScope::DesktopGlobal, PointerEdgeLocation::Desktop { .. }) => {
+            (PointerProviderScope::NativeJoined(_), PointerEdgeLocation::NativeLocal { .. }) => {
+                let authority = authority.ok_or(EngineError::PointerReceiverGeometry {
+                    source: PointerReceiverGeometryError::LogicalPointUnavailable {
+                        sequence: edge.sequence(),
+                    },
+                })?;
+                self.validate_journal_native_local_presentation(edge, authority)?;
+                let route = validated_native_local_route(self, edge).ok_or(
+                    EngineError::PointerReceiverGeometry {
+                        source: PointerReceiverGeometryError::LogicalPointUnavailable {
+                            sequence: edge.sequence(),
+                        },
+                    },
+                )?;
+                (route.binding().surface(), route.surface_position(), None)
+            }
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerEdgeLocation::Desktop { .. },
+            ) => {
                 let Some(route) = desktop_route.and_then(DesktopRouteValidation::dock_route) else {
                     return Err(EngineError::PointerReceiverGeometry {
                         source: PointerReceiverGeometryError::LogicalPointUnavailable {
@@ -749,7 +968,26 @@ impl DockEngine {
                     })?;
                 (route.surface(), route.position(), None)
             }
-            (PointerProviderScope::DesktopGlobal, PointerEdgeLocation::Desktop { .. }) => {
+            (PointerProviderScope::NativeJoined(_), PointerEdgeLocation::NativeLocal { .. }) => {
+                let authority = authority.ok_or(EngineError::PointerReceiverGeometry {
+                    source: PointerReceiverGeometryError::LogicalPointUnavailable {
+                        sequence: edge.sequence(),
+                    },
+                })?;
+                self.validate_journal_native_local_presentation(edge, authority)?;
+                let route = validated_native_local_route(self, edge).ok_or(
+                    EngineError::PointerReceiverGeometry {
+                        source: PointerReceiverGeometryError::LogicalPointUnavailable {
+                            sequence: edge.sequence(),
+                        },
+                    },
+                )?;
+                (route.binding().surface(), route.surface_position(), None)
+            }
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerEdgeLocation::Desktop { .. },
+            ) => {
                 let Some(route) = desktop_route.and_then(DesktopRouteValidation::dock_route) else {
                     return Err(EngineError::PointerReceiverGeometry {
                         source: PointerReceiverGeometryError::LogicalPointUnavailable {
@@ -918,6 +1156,8 @@ impl DockEngine {
             PointerEdgeLocation::HostLocal { .. } => self
                 .journal_host_local_manipulation(edge)
                 .map(HostLocalPointerRoute::position),
+            PointerEdgeLocation::NativeLocal { .. } => validated_native_local_route(self, edge)
+                .map(NativeLocalPointerRoute::surface_position),
             PointerEdgeLocation::Desktop { .. } => desktop_route
                 .and_then(DesktopRouteValidation::dock_route)
                 .map(|route| route.surface_position()),
@@ -1098,6 +1338,7 @@ impl DockEngine {
                         )
                         | None => Ok(JournalClickDelivery::Unknown),
                     },
+                    PointerEdgeLocation::NativeLocal { .. } => Ok(JournalClickDelivery::Unknown),
                     PointerEdgeLocation::SurfaceLocal { .. }
                     | PointerEdgeLocation::HostLocal { .. } => {
                         Err(EngineError::PointerInteractionInvariant {
@@ -1152,7 +1393,8 @@ impl DockEngine {
                         ValidatedDesktopRoute::Dock(_) | ValidatedDesktopRoute::NoWindow { .. },
                     )) => Ok(JournalClickDelivery::KnownMismatch),
                 },
-                PointerEdgeLocation::SurfaceLocal { .. }
+                PointerEdgeLocation::NativeLocal { .. }
+                | PointerEdgeLocation::SurfaceLocal { .. }
                 | PointerEdgeLocation::HostLocal { .. } => Ok(JournalClickDelivery::KnownMismatch),
             },
             PointerReceiverDeliveryDisposition::Blocked => Ok(JournalClickDelivery::Blocked),

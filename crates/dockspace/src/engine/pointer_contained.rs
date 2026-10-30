@@ -335,7 +335,20 @@ impl DockEngine {
                     position: Authority::Known(point),
                 },
             ) if scope.surface() == transform.surface => Ok(point),
-            (PointerProviderScope::DesktopGlobal, PointerEdgeLocation::Desktop { route }) => {
+            (PointerProviderScope::NativeJoined(_), PointerEdgeLocation::NativeLocal { .. }) => {
+                super::pointer_proof::validated_native_local_route(self, edge)
+                    .filter(|route| route.binding().surface() == transform.surface)
+                    .map(NativeLocalPointerRoute::surface_position)
+                    .ok_or(
+                        InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable {
+                            surface: transform.surface,
+                        },
+                    )
+            }
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerEdgeLocation::Desktop { route },
+            ) => {
                 let Authority::Known(position) = route.position() else {
                     return Err(
                         InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable {

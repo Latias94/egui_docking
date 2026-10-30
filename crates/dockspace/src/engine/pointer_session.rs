@@ -19,8 +19,8 @@ impl DockEngine {
         &self,
         owner: GestureOwner,
     ) -> Result<PointerCaptureOwner, EngineError> {
-        let stream = owner;
-        if self.interaction.active_stream() != Some(stream) {
+        let stream = owner.stream();
+        if self.interaction.active_owner() != Some(owner) {
             return Err(EngineError::ReductionCauseInvariant {
                 detail: "journal capture authority was requested for an inactive stream",
             });
@@ -29,13 +29,13 @@ impl DockEngine {
             PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_) => {
                 Ok(PointerCaptureOwner::ProviderEndpoint)
             }
-            PointerProviderScope::DesktopGlobal => self
+            PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_) => self
                 .interaction
                 .active_presentation_authority()
                 .and_then(|presentation| presentation.presented.binding())
                 .map(PointerCaptureOwner::Native)
                 .ok_or(EngineError::ReductionCauseInvariant {
-                    detail: "desktop journal gesture has no press-bound native capture owner",
+                    detail: "native journal gesture has no press-bound native capture owner",
                 }),
         }
     }
@@ -44,8 +44,8 @@ impl DockEngine {
         &self,
         owner: GestureOwner,
     ) -> Result<PointerEventDeliveryOwner, EngineError> {
-        let stream = owner;
-        if self.interaction.active_stream() != Some(stream) {
+        let stream = owner.stream();
+        if self.interaction.active_owner() != Some(owner) {
             return Err(EngineError::ReductionCauseInvariant {
                 detail: "journal delivery authority was requested for an inactive stream",
             });
@@ -54,13 +54,13 @@ impl DockEngine {
             PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_) => {
                 Ok(PointerEventDeliveryOwner::ProviderEndpoint)
             }
-            PointerProviderScope::DesktopGlobal => self
+            PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_) => self
                 .interaction
                 .active_presentation_authority()
                 .and_then(|presentation| presentation.presented.binding())
                 .map(PointerEventDeliveryOwner::Native)
                 .ok_or(EngineError::ReductionCauseInvariant {
-                    detail: "desktop journal gesture has no press-bound native delivery owner",
+                    detail: "native journal gesture has no press-bound native delivery owner",
                 }),
         }
     }
@@ -121,7 +121,7 @@ impl DockEngine {
         observed: Authority<PointerCaptureOwner>,
         release_edge: bool,
     ) -> Result<JournalCaptureActionGate, EngineError> {
-        let stream = owner;
+        let stream = owner.stream();
         if matches!(
             stream.lease().scope(),
             PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_)
@@ -141,7 +141,7 @@ impl DockEngine {
         }
         let required = self.active_journal_required_capture_owner(owner)?;
         let Authority::Known(observed) = observed else {
-            // A desktop provider may lack persistent capture authority while
+            // A native provider may lack persistent capture authority while
             // the native event source still proves exact edge delivery. The
             // caller validates that independent delivery fact first.
             return Ok(JournalCaptureActionGate::Authorized);
@@ -188,7 +188,7 @@ impl DockEngine {
     ) -> Result<(bool, Option<InteractionOutcome>), EngineError> {
         let gate = self.journal_capture_action_gate(owner, observed, release_edge)?;
         if !release_edge || !matches!(observed, Authority::Known(PointerCaptureOwner::None)) {
-            let stream = owner;
+            let stream = owner.stream();
             if !matches!(gate, JournalCaptureActionGate::Lost)
                 && !self
                     .interaction
@@ -221,8 +221,8 @@ impl DockEngine {
         observed: Authority<PointerCaptureOwner>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
-        let stream = owner;
-        if self.interaction.active_stream() != Some(stream) {
+        let stream = owner.stream();
+        if self.interaction.active_owner() != Some(owner) {
             return Ok(Vec::new());
         }
         let required = self.active_journal_required_capture_owner(owner)?;
@@ -282,7 +282,7 @@ impl DockEngine {
         observed: Authority<PointerCaptureOwner>,
         presentation: &JournalSurfacePresentation,
     ) -> Result<Option<InteractionRejection>, EngineError> {
-        let stream = owner;
+        let stream = owner.stream();
         let Authority::Known(actual) = observed else {
             return Ok(None);
         };
@@ -295,7 +295,7 @@ impl DockEngine {
                     PointerCaptureOwner::ProviderEndpoint | PointerCaptureOwner::None
                 ),
             ),
-            PointerProviderScope::DesktopGlobal => {
+            PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_) => {
                 let Some(binding) = presentation.authority().binding() else {
                     return Ok(Some(InteractionRejection::TargetAuthorityInvalid));
                 };
@@ -411,12 +411,14 @@ impl DockEngine {
         if self.interaction.active_owner() != Some(owner) {
             return Ok(None);
         }
-        self.viewport
-            .end_drag_routing(owner.pointer())
-            .map_err(|source| EngineError::Viewport {
-                input: self.last_input,
-                source,
-            })?;
+        if owner.is_desktop() {
+            self.viewport
+                .end_drag_routing(owner.pointer())
+                .map_err(|source| EngineError::Viewport {
+                    input: self.last_input,
+                    source,
+                })?;
+        }
         let status =
             self.interaction
                 .cancel_owner(owner)
@@ -468,20 +470,22 @@ impl DockEngine {
                 InteractionEventKind::Cancelled { status, reason },
             )
         }));
-        let Some(stream) = self
+        let Some(owner) = self
             .interaction
-            .active_stream()
-            .filter(|stream| stream.lease() == provider)
+            .active_owner()
+            .filter(|owner| owner.lease() == provider)
         else {
             return Ok(());
         };
-        self.viewport
-            .end_all_drag_routing()
-            .map_err(|source| EngineError::Viewport {
-                input: self.last_input,
-                source,
-            })?;
-        if let Some(status) = self.interaction.cancel_owner(stream) {
+        if owner.is_desktop() {
+            self.viewport
+                .end_all_drag_routing()
+                .map_err(|source| EngineError::Viewport {
+                    input: self.last_input,
+                    source,
+                })?;
+        }
+        if let Some(status) = self.interaction.cancel_owner(owner) {
             interaction_events.push(InteractionEvent::new_caused(
                 cause,
                 self.version,

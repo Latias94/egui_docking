@@ -21,7 +21,7 @@ impl DockEngine {
             .map_err(presentation_ledger_error)
     }
 
-    /// Atomically enrolls the sole native platform and desktop-pointer provider.
+    /// Atomically enrolls the sole native platform and joined pointer provider.
     ///
     /// The returned non-cloneable recorder is the only constructor of the
     /// provider's cross-lane capture order. Neither underlying provider becomes
@@ -67,7 +67,7 @@ impl DockEngine {
         let pointer = candidate
             .pointer_journal
             .create_provider(
-                PointerProviderScope::DesktopGlobal,
+                PointerProviderScope::NativeJoined(presentation_host),
                 pointer_committed_through,
             )
             .map_err(|source| EngineError::PointerJournal { source })?;
@@ -437,7 +437,9 @@ impl DockEngine {
                 .pointer_journal
                 .active_lease()
                 .filter(|lease| match lease.scope() {
-                    PointerProviderScope::DesktopGlobal => true,
+                    PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_) => {
+                        true
+                    }
                     PointerProviderScope::HostLocal(_) => false,
                     PointerProviderScope::SurfaceLocal(local) => {
                         matches!(local.endpoint(), SurfaceLocalPointerEndpoint::Native(_))
@@ -530,7 +532,7 @@ impl DockEngine {
         Ok((candidate, ticket, transition))
     }
 
-    /// Activates a platform successor together with a fresh desktop pointer and
+    /// Activates a platform successor together with a fresh joined native pointer and
     /// joined backend-order namespace in one atomic authority update.
     ///
     /// The successor pointer watermark is derived from the consumed predecessor recorder rather
@@ -582,7 +584,7 @@ impl DockEngine {
         let pointer = candidate
             .pointer_journal
             .create_provider(
-                PointerProviderScope::DesktopGlobal,
+                PointerProviderScope::NativeJoined(presentation_host),
                 pointer_committed_through,
             )
             .map_err(|source| EngineError::PointerJournal { source })?;
@@ -618,8 +620,8 @@ impl DockEngine {
     ///
     /// # Errors
     ///
-    /// Returns a typed error when `scope` is local or another provider
-    /// is already active.
+    /// Returns a typed error when `scope` requires an affine local producer or
+    /// joined backend enrollment, or another provider is already active.
     #[doc(hidden)]
     pub fn create_pointer_provider(
         &mut self,
@@ -628,6 +630,11 @@ impl DockEngine {
     ) -> Result<PointerInputLease, EngineError> {
         if scope.is_local() {
             return Err(EngineError::SurfaceLocalPointerProducerRequired);
+        }
+        if matches!(scope, PointerProviderScope::NativeJoined(_)) {
+            return Err(EngineError::PointerProviderScope {
+                detail: "native-joined pointer providers require joined backend enrollment".into(),
+            });
         }
         self.create_pointer_provider_inner(scope, committed_through)
     }
@@ -995,7 +1002,9 @@ impl DockEngine {
         &self,
         scope: PointerProviderScope,
     ) -> Result<(), EngineError> {
-        if let PointerProviderScope::HostLocal(host) = scope {
+        if let PointerProviderScope::NativeJoined(host) | PointerProviderScope::HostLocal(host) =
+            scope
+        {
             return self
                 .presentation_authority
                 .presentation
@@ -1205,6 +1214,97 @@ mod host_local_tests {
             SurfacePresentation::with_main(RootId::new(1)),
         );
         DockEngine::new(builder.build().expect("workspace"), DockPolicy::default()).expect("engine")
+    }
+
+    #[test]
+    fn native_joined_scope_requires_atomic_backend_enrollment() {
+        let mut engine = engine();
+        let host = engine.create_presentation_host().expect("joined host");
+        let scope = PointerProviderScope::NativeJoined(host);
+        let before = engine.version();
+        assert!(matches!(
+            engine.create_pointer_provider(scope, PointerEdgeSequence::new(0)),
+            Err(EngineError::PointerProviderScope { .. })
+        ));
+        assert_eq!(engine.version(), before);
+        assert_eq!(engine.pointer_provider(), None);
+        assert_eq!(engine.platform_provider(), None);
+        assert_eq!(engine.backend_ingress_provider(), None);
+        assert!(matches!(
+            engine.create_backend_ingress_provider_initialized(
+                host,
+                PointerEdgeSequence::new(0),
+                crate::platform::NativeCreateStrategy::Staged,
+                |_| Err(BackendIngressError::OrdinalExhausted),
+            ),
+            Err(EngineError::BackendIngress {
+                source: BackendIngressError::OrdinalExhausted
+            })
+        ));
+        assert_eq!(engine.version(), before);
+        assert_eq!(engine.pointer_provider(), None);
+        assert_eq!(engine.platform_provider(), None);
+        assert_eq!(engine.backend_ingress_provider(), None);
+        let recorder = engine
+            .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+            .expect("joined enrollment");
+        assert_eq!(
+            engine.pointer_provider(),
+            Some(recorder.lease().pointer_provider())
+        );
+        assert_eq!(engine.pointer_provider().expect("pointer").scope(), scope);
+        assert_eq!(scope.local_host(), Some(host));
+        assert!(!scope.is_local());
+    }
+
+    #[test]
+    fn native_joined_replacement_freezes_the_successor_host() {
+        let mut engine = engine();
+        let host = engine.create_presentation_host().expect("predecessor host");
+        let recorder = engine
+            .create_backend_ingress_provider(host, PointerEdgeSequence::new(4))
+            .expect("joined predecessor");
+        let predecessor = recorder.lease().pointer_provider();
+        let mut drained = recorder.drain();
+        let (mut ticket, _) = engine
+            .begin_backend_ingress_provider_replacement(&mut drained)
+            .expect("begin replacement")
+            .into_parts();
+        let successor_host = engine.create_presentation_host().expect("successor host");
+        let successor = engine
+            .finish_backend_ingress_provider_replacement(&mut ticket, successor_host)
+            .expect("joined successor");
+        let pointer = successor.lease().pointer_provider();
+        assert_ne!(pointer, predecessor);
+        assert_eq!(
+            pointer.scope(),
+            PointerProviderScope::NativeJoined(successor_host)
+        );
+        assert_eq!(successor.lease().presentation_host(), successor_host);
+        assert_eq!(engine.pointer_provider(), Some(pointer));
+        assert_eq!(successor.pointer_through(), PointerEdgeSequence::new(4));
+    }
+
+    #[test]
+    fn native_joined_foreign_host_rejection_preserves_both_provider_lanes() {
+        let mut engine = engine();
+        let mut other = self::engine();
+        let foreign_host = other.create_presentation_host().expect("foreign host");
+        let before = engine.version();
+        assert!(
+            engine
+                .create_backend_ingress_provider(foreign_host, PointerEdgeSequence::new(0))
+                .is_err()
+        );
+        assert_eq!(engine.version(), before);
+        assert_eq!(engine.pointer_provider(), None);
+        assert_eq!(engine.platform_provider(), None);
+        assert_eq!(engine.backend_ingress_provider(), None);
+        assert!(
+            engine
+                .validate_pointer_provider_scope(PointerProviderScope::NativeJoined(foreign_host))
+                .is_err()
+        );
     }
 
     #[test]

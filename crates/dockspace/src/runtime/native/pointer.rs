@@ -1,18 +1,19 @@
 //! Product-facing native pointer facts and synchronous receiver queries.
 
 use super::{
-    NativeHostProfile, NativePlatformError, NativeSurfaceBinding, NativeWorkAreaBinding,
-    RuntimeNativeState,
+    NativeHostProfile, NativeLocalPointerLocation, NativePlatformError, NativeSurfaceBinding,
+    NativeWorkAreaBinding, RuntimeNativeState,
 };
 use crate::geometry::{LogicalPoint, PhysicalPoint};
 use crate::ids::SurfaceId;
 use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use crate::pointer_journal::{
-    DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PhysicalScrollCoordinates,
-    PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
-    PointerEdgeKind, PointerEdgeLocation, PointerEventDeliveryOwner, PointerStateObservation,
-    PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint, ScrollDelta,
-    ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
+    DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, NativeLocalPointerRoute,
+    PhysicalScrollCoordinates, PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge,
+    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEventDeliveryOwner,
+    PointerStateObservation, PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint,
+    ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
+    ScrollSequenceToken,
 };
 use crate::presentation_hit::PresentationPointerLane;
 
@@ -382,20 +383,31 @@ impl NativeDesktopPointerLocation {
     }
 }
 
+/// Event-time coordinate lane for one joined native pointer edge.
+///
+/// A local sample grants no desktop origin, global hover, or outside-all proof.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NativePointerLocation {
+    /// Desktop position and independently observed native hover facts.
+    Desktop(NativeDesktopPointerLocation),
+    /// Client coordinates captured under committed local geometry.
+    NativeLocal(NativeLocalPointerLocation),
+}
+
 /// One native pointer edge. Sequence and receiver receipts are minted by the
 /// runtime, never supplied by the adapter.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativePointerInput {
     pointer: NativePointerId,
     event: NativePointerEvent,
-    location: NativeDesktopPointerLocation,
+    location: NativePointerLocation,
     delivery: NativePointerOwner,
     capture: NativePointerOwner,
     metadata: crate::runtime::PointerEventMetadata,
 }
 
 impl NativePointerInput {
-    /// Creates one complete event-time native input fact.
+    /// Creates one complete event-time desktop native input fact.
     #[must_use]
     pub const fn new(
         pointer: NativePointerId,
@@ -407,7 +419,29 @@ impl NativePointerInput {
         Self {
             pointer,
             event,
-            location,
+            location: NativePointerLocation::Desktop(location),
+            delivery,
+            capture,
+            metadata: crate::runtime::PointerEventMetadata::unknown(),
+        }
+    }
+
+    /// Creates one native input fact using client-local coordinate authority.
+    ///
+    /// Unknown coordinates retain the original native delivery and capture so
+    /// release and cancellation can still settle the existing pointer stream.
+    #[must_use]
+    pub const fn new_local(
+        pointer: NativePointerId,
+        event: NativePointerEvent,
+        location: NativeLocalPointerLocation,
+        delivery: NativePointerOwner,
+        capture: NativePointerOwner,
+    ) -> Self {
+        Self {
+            pointer,
+            event,
+            location: NativePointerLocation::NativeLocal(location),
             delivery,
             capture,
             metadata: crate::runtime::PointerEventMetadata::unknown(),
@@ -429,7 +463,9 @@ impl NativePointerInput {
         self.event
     }
 
-    pub(super) const fn location(self) -> NativeDesktopPointerLocation {
+    /// Returns the event-time coordinate lane retained by this input.
+    #[must_use]
+    pub const fn location(self) -> NativePointerLocation {
         self.location
     }
 
@@ -878,6 +914,39 @@ impl RuntimeNativeState {
     }
 
     fn pointer_location(
+        &self,
+        location: NativePointerLocation,
+    ) -> Result<PointerEdgeLocation, NativePlatformError> {
+        match location {
+            NativePointerLocation::Desktop(location) => self.desktop_pointer_location(location),
+            NativePointerLocation::NativeLocal(location) => {
+                let route = match location {
+                    NativeLocalPointerLocation::Exact(sample) => {
+                        let coordinates = sample.coordinates();
+                        if coordinates.backend() != self.recorder.lease() {
+                            return Err(NativePlatformError::InvalidPointerFacts);
+                        }
+                        self.validate_pointer_binding(coordinates.binding())?;
+                        // Do not reinterpret an old sample using recorder-time
+                        // geometry. Current coordinate authority is checked by
+                        // the reducer at this record's ordinal.
+                        Authority::Known(NativeLocalPointerRoute::new(
+                            coordinates.binding().binding,
+                            coordinates.coordinate_generation(),
+                            sample.client_position(),
+                            sample.surface_position(),
+                        ))
+                    }
+                    NativeLocalPointerLocation::Unknown => {
+                        Authority::Unknown(AuthorityUnavailableReason::NotReported)
+                    }
+                };
+                Ok(PointerEdgeLocation::NativeLocal { route })
+            }
+        }
+    }
+
+    fn desktop_pointer_location(
         &self,
         location: NativeDesktopPointerLocation,
     ) -> Result<PointerEdgeLocation, NativePlatformError> {

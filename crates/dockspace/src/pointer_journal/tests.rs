@@ -1822,7 +1822,7 @@ fn quiesced_pointer_leases_compact_to_one_fail_closed_incarnation_range() {
     for _ in 0..10_000 {
         let lease = ledger
             .create_provider(
-                PointerProviderScope::DesktopGlobal,
+                PointerProviderScope::NativeJoined(presentation_host),
                 PointerEdgeSequence::new(0),
             )
             .expect("provider incarnation must remain available");
@@ -1904,7 +1904,7 @@ fn quiesced_compaction_version_exhaustion_preserves_the_detailed_tombstone() {
     let mut ledger = PointerJournalLedger::new(domain);
     let lease = ledger
         .create_provider(
-            PointerProviderScope::DesktopGlobal,
+            PointerProviderScope::NativeJoined(presentation_host),
             PointerEdgeSequence::new(7),
         )
         .expect("provider incarnation must remain available");

@@ -1,6 +1,7 @@
 //! Pane focus, reveal, payload focus, and effect acknowledgement tests.
 
 use super::*;
+use crate::pointer_journal::{AnyButtonDownAuthority, PointerStateObservation};
 
 struct FocusRevealFixture {
     engine: DockEngine,
@@ -1100,6 +1101,274 @@ fn platform_restore_reveals_the_exact_hidden_focus_history_item() {
             .is_some()
     );
     assert!(restored.focus_delta().pane_intent().is_some());
+}
+
+fn commit_joined_focus_batch(
+    engine: &mut DockEngine,
+    host: PresentationHostLease,
+    recorder: &BackendIngressRecorder,
+) -> EngineTransition {
+    let batch = recorder
+        .batch_after(engine.backend_ingress_committed_through())
+        .expect("joined focus records must preserve their committed predecessor");
+    let mut frame = begin_test_host_frame(engine, host);
+    submit_empty_backend_batch(&mut frame, batch);
+    complete_host_frame_with_explicit_surface_roster(engine, &mut frame);
+    let transition = frame
+        .finish(engine)
+        .expect("joined focus records must commit through the host frame");
+    assert_eq!(
+        engine.backend_ingress_committed_through(),
+        recorder.recorded_through()
+    );
+    transition
+}
+
+fn joined_focus_restore_fixture(
+    checkpoint: PointerAuthorityCheckpoint,
+) -> (FocusRevealFixture, BackendIngressRecorder) {
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([
+        ItemId::new(1),
+        ItemId::new(2),
+        ItemId::new(3),
+        ItemId::new(4),
+    ]));
+    builder.set_root(SOURCE_ROOT, RootRecord::new(tabs));
+    builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+    let mut engine = DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
+    let presentation_host = engine.create_presentation_host().unwrap();
+    let mut recorder = engine
+        .create_backend_ingress_provider(presentation_host, PointerEdgeSequence::new(0))
+        .expect("focus regression must enroll the actual joined native provider");
+    assert_eq!(
+        engine.pointer_provider().unwrap().scope(),
+        PointerProviderScope::NativeJoined(presentation_host)
+    );
+    recorder
+        .record_viewport_registration(
+            engine.version(),
+            SOURCE_SURFACE,
+            WindowToken::new(1),
+            ViewportRole::Root,
+            None,
+        )
+        .expect("native viewport registration must use the joined recorder");
+    commit_joined_focus_batch(&mut engine, presentation_host, &recorder);
+    let binding = engine
+        .viewport()
+        .viewport(SOURCE_SURFACE)
+        .unwrap()
+        .binding();
+    let mut fixture = FocusRevealFixture {
+        engine,
+        presentation_host,
+        tabs,
+        binding,
+        focus_generation: 1,
+    };
+    let mut capabilities = PlatformCapabilities::default();
+    capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+    capabilities.set_global_focus_observation(PlatformCapability::Supported);
+    capabilities.set_window_activation_control(PlatformCapability::Supported);
+    let snapshot = test_platform_snapshot(
+        capabilities,
+        FocusObservationEnvelope::new(
+            FocusObservationGeneration::new(fixture.focus_generation),
+            Authority::Known(GlobalFocusedWindow::Dock(binding)),
+            Authority::Known(None),
+        ),
+        vec![ObservedWindow::new(binding).with_presentation_observation(
+            WindowPresentationObservation::new(
+                binding,
+                crate::viewport::PresentationObservationGeneration::new(1),
+                Authority::Known(WindowPresentationState::Visible),
+                PresentationEffectAcknowledgement::known(None),
+            ),
+        )],
+        Vec::new(),
+        unknown_work_area_observation(1),
+    )
+    .expect("joined native focus snapshot must be canonical");
+    recorder
+        .record_platform_snapshot(fixture.engine.version().epoch(), snapshot)
+        .expect("initial native focus facts must use the joined recorder");
+    commit_joined_focus_batch(&mut fixture.engine, presentation_host, &recorder);
+
+    recorder
+        .record_semantic_input(EngineInput::PublishPaneFocusObservation {
+            expected_epoch: fixture.engine.version().epoch(),
+            observation: PaneFocusObservation::new(
+                PaneFocusObservationGeneration::new(1),
+                binding,
+                PanelFocus::Item(ItemId::new(2)),
+            ),
+        })
+        .expect("native pane focus history must use the joined recorder");
+    let source = fixture
+        .engine
+        .workspace()
+        .capture_item_source(SOURCE_ROOT, tabs, ItemId::new(1))
+        .expect("first item source must be current");
+    recorder
+        .record_semantic_input(EngineInput::WorkspaceCommand {
+            expected: fixture.engine.version(),
+            command: WorkspaceCommand::Select { source },
+        })
+        .expect("selection must use the joined recorder");
+    fixture.focus_generation += 1;
+    recorder
+        .record_global_focus_observation(
+            fixture.engine.version().epoch(),
+            FocusObservationEnvelope::new(
+                FocusObservationGeneration::new(fixture.focus_generation),
+                Authority::Known(GlobalFocusedWindow::Foreign),
+                Authority::Known(None),
+            ),
+        )
+        .expect("ordinary native focus departure must use the joined recorder");
+    recorder
+        .record_pointer_segment(
+            PointerEdgeJournal::new(
+                PointerEdgeSequence::new(0),
+                PointerEdgeSequence::new(0),
+                Vec::new(),
+            )
+            .unwrap()
+            .with_authority_checkpoint(checkpoint)
+            .expect("focus checkpoint must bind the joined pointer watermark"),
+        )
+        .expect("complete pointer authority must use the joined recorder");
+    commit_joined_focus_batch(&mut fixture.engine, presentation_host, &recorder);
+    assert_eq!(selected_item(&fixture), Some(ItemId::new(1)));
+    assert_eq!(
+        fixture.engine.viewport_focus().panel_focus(SOURCE_SURFACE),
+        PanelFocusRecord::Item(ItemId::new(2))
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
+    (fixture, recorder)
+}
+
+fn restore_joined_native_focus(
+    fixture: &mut FocusRevealFixture,
+    recorder: &mut BackendIngressRecorder,
+) -> EngineTransition {
+    fixture.focus_generation += 1;
+    recorder
+        .record_global_focus_observation(
+            fixture.engine.version().epoch(),
+            FocusObservationEnvelope::new(
+                FocusObservationGeneration::new(fixture.focus_generation),
+                Authority::Known(GlobalFocusedWindow::Dock(fixture.binding)),
+                Authority::Known(None),
+            ),
+        )
+        .expect("ordinary native focus return must use the joined recorder");
+    commit_joined_focus_batch(&mut fixture.engine, fixture.presentation_host, recorder)
+}
+
+#[test]
+fn joined_native_platform_restore_reveals_the_exact_hidden_focus_history_item() {
+    let checkpoint = PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), Vec::new())
+        .expect("empty complete native pointer roster must be canonical");
+    let (mut fixture, mut recorder) = joined_focus_restore_fixture(checkpoint);
+    assert_eq!(
+        fixture.engine.pointer_button_authority(),
+        AnyButtonDownAuthority::KnownAllReleased
+    );
+    let restored = restore_joined_native_focus(&mut fixture, &mut recorder);
+    assert_eq!(selected_item(&fixture), Some(ItemId::new(2)));
+    let intent_change = restored
+        .focus_delta()
+        .pane_intent()
+        .expect("native focus return must publish the historical pane intent");
+    assert!(intent_change.before().is_none());
+    let intent = intent_change
+        .after()
+        .as_ref()
+        .expect("native focus return must install a new pane intent");
+    assert_eq!(intent.surface(), SOURCE_SURFACE);
+    assert_eq!(intent.item(), Some(ItemId::new(2)));
+    assert_eq!(intent.native_guard(), Some(fixture.binding));
+    assert_eq!(
+        intent.source(),
+        crate::viewport_focus::PaneFocusIntentSource::PlatformActivation
+    );
+    assert_eq!(intent.activation(), None);
+    assert_eq!(
+        fixture.engine.viewport_focus().pending_pane_intent(),
+        Some(*intent)
+    );
+}
+
+#[test]
+fn joined_native_platform_restore_is_suppressed_while_a_button_is_down() {
+    let pointer = PointerStateObservation::new(
+        TEST_POINTER,
+        vec![PointerButton::Primary],
+        Authority::Known(PointerCaptureOwner::None),
+    )
+    .unwrap();
+    let checkpoint = PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), vec![pointer])
+        .expect("complete native pointer roster must retain the held button");
+    let (mut fixture, mut recorder) = joined_focus_restore_fixture(checkpoint);
+    assert_eq!(
+        fixture.engine.pointer_button_authority(),
+        AnyButtonDownAuthority::KnownDown
+    );
+    let restored = restore_joined_native_focus(&mut fixture, &mut recorder);
+    assert_eq!(selected_item(&fixture), Some(ItemId::new(1)));
+    assert!(restored.focus_delta().pane_intent().is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .published_pane_intent()
+            .is_none()
+    );
+}
+
+#[test]
+fn joined_native_platform_restore_is_suppressed_without_complete_button_authority() {
+    let checkpoint = PointerAuthorityCheckpoint::unknown(
+        PointerEdgeSequence::new(0),
+        AuthorityUnavailableReason::NotReported,
+    );
+    let (mut fixture, mut recorder) = joined_focus_restore_fixture(checkpoint);
+    assert_eq!(
+        fixture.engine.pointer_button_authority(),
+        AnyButtonDownAuthority::Unknown(AuthorityUnavailableReason::NotReported)
+    );
+    let restored = restore_joined_native_focus(&mut fixture, &mut recorder);
+    assert_eq!(selected_item(&fixture), Some(ItemId::new(1)));
+    assert!(restored.focus_delta().pane_intent().is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .published_pane_intent()
+            .is_none()
+    );
 }
 
 struct PayloadFocusFixture {

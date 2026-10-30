@@ -1575,7 +1575,10 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
             PointerEdgeSequence::new(0),
         )
         .expect("tab pointer provider must mint");
-    let owner = PointerStreamId::new(provider.lease(), TEST_POINTER, 1);
+    let owner = GestureOwner::new(
+        PointerStreamId::new(provider.lease(), TEST_POINTER, 1),
+        GestureLane::SurfaceLocal,
+    );
     let prepared = engine
         .prepare_journal_tab_gesture(&presentation, TabGestureSource::Item(*tab.id()), tab_point)
         .expect("real tab press must prepare");
@@ -1657,7 +1660,10 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
             PointerEdgeSequence::new(0),
         )
         .expect("contained pointer provider must mint");
-    let owner = PointerStreamId::new(provider.lease(), TEST_POINTER, 1);
+    let owner = GestureOwner::new(
+        PointerStreamId::new(provider.lease(), TEST_POINTER, 1),
+        GestureLane::SurfaceLocal,
+    );
     let prepared = engine
         .prepare_journal_contained_gesture(
             &presentation,

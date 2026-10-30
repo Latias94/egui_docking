@@ -189,11 +189,15 @@ impl SurfaceLocalPointerScope {
     }
 }
 
-/// Frozen observation lane of one pointer provider incarnation.
+/// Frozen observation domain of one pointer provider incarnation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PointerProviderScope {
     /// One platform aggregator with a total order across desktop viewports.
     DesktopGlobal,
+    /// One joined native backend with desktop or event-time client coordinates.
+    ///
+    /// Only joined backend enrollment can mint this scope's provider lease.
+    NativeJoined(PresentationHostLease),
     /// One presentation host with routes across its headless surfaces.
     HostLocal(PresentationHostLease),
     /// One presentation host endpoint with no global hover or outside facts.
@@ -203,7 +207,7 @@ pub enum PointerProviderScope {
 impl PointerProviderScope {
     pub(crate) const fn local_host(self) -> Option<PresentationHostLease> {
         match self {
-            Self::HostLocal(host) => Some(host),
+            Self::NativeJoined(host) | Self::HostLocal(host) => Some(host),
             Self::SurfaceLocal(scope) => Some(scope.host()),
             Self::DesktopGlobal => None,
         }
@@ -220,7 +224,7 @@ impl PointerProviderScope {
     pub const fn host_local(self) -> Option<PresentationHostLease> {
         match self {
             Self::HostLocal(host) => Some(host),
-            Self::DesktopGlobal | Self::SurfaceLocal(_) => None,
+            Self::DesktopGlobal | Self::NativeJoined(_) | Self::SurfaceLocal(_) => None,
         }
     }
 
@@ -228,7 +232,7 @@ impl PointerProviderScope {
     #[must_use]
     pub const fn surface_local(self) -> Option<SurfaceLocalPointerScope> {
         match self {
-            Self::DesktopGlobal | Self::HostLocal(_) => None,
+            Self::DesktopGlobal | Self::NativeJoined(_) | Self::HostLocal(_) => None,
             Self::SurfaceLocal(scope) => Some(scope),
         }
     }
@@ -250,6 +254,60 @@ pub struct DesktopDockRoute {
     coordinate_generation: CoordinateGeneration,
     desktop_position: PhysicalPoint,
     surface_position: LogicalPoint,
+}
+
+/// Event-time client coordinates for one exact native viewport incarnation.
+///
+/// The joined runtime retains the physical sample and its logical conversion
+/// together. Core must validate the binding, coordinate generation, and exact
+/// conversion before using the route for manipulation or local hover.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeLocalPointerRoute {
+    binding: ViewportBinding,
+    coordinate_generation: CoordinateGeneration,
+    client_position: PhysicalPoint,
+    surface_position: LogicalPoint,
+}
+
+impl NativeLocalPointerRoute {
+    #[must_use]
+    pub(crate) const fn new(
+        binding: ViewportBinding,
+        coordinate_generation: CoordinateGeneration,
+        client_position: PhysicalPoint,
+        surface_position: LogicalPoint,
+    ) -> Self {
+        Self {
+            binding,
+            coordinate_generation,
+            client_position,
+            surface_position,
+        }
+    }
+
+    /// Returns the exact native viewport incarnation observed with the sample.
+    #[must_use]
+    pub const fn binding(self) -> ViewportBinding {
+        self.binding
+    }
+
+    /// Returns the coordinate generation used for this sample's conversion.
+    #[must_use]
+    pub const fn coordinate_generation(self) -> CoordinateGeneration {
+        self.coordinate_generation
+    }
+
+    /// Returns the physical position relative to the native client area.
+    #[must_use]
+    pub const fn client_position(self) -> PhysicalPoint {
+        self.client_position
+    }
+
+    /// Returns the logical position computed at event time.
+    #[must_use]
+    pub const fn surface_position(self) -> LogicalPoint {
+        self.surface_position
+    }
 }
 
 /// Authoritative classification of the native window under a desktop pointer.
@@ -492,7 +550,7 @@ impl HostLocalPointerRoute {
     }
 }
 
-/// Event-time position and hover facts in one provider's frozen coordinate lane.
+/// Event-time position and hover facts in the coordinate lane carried by one edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PointerEdgeLocation {
     /// Desktop-global physical route facts.
@@ -500,6 +558,13 @@ pub enum PointerEdgeLocation {
     /// A known docking hover includes a binding-incarnation and local point;
     /// the core validates both before it can request or accept a receiver hit.
     Desktop { route: DesktopRouteFact },
+    /// Client coordinates observed by the joined native backend.
+    ///
+    /// This lane proves neither global hover nor desktop outside-all facts.
+    NativeLocal {
+        /// Exact native binding and event-time client-to-logical conversion.
+        route: Authority<NativeLocalPointerRoute>,
+    },
     /// Independent manipulation and hover routes within one presentation host.
     ///
     /// Unknown routes do not imply desktop outside-all authority.
@@ -522,10 +587,11 @@ pub enum PointerEdgeLocation {
 /// Coordinate lane carried by one pointer edge.
 ///
 /// This is exposed in ledger diagnostics so a provider can distinguish a
-/// desktop/global journal from a host-local or surface-local scope mismatch.
+/// desktop, native-local, host-local, or surface-local scope mismatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerEdgeLocationLane {
     Desktop,
+    NativeLocal,
     HostLocal,
     SurfaceLocal,
 }
@@ -534,6 +600,7 @@ impl PointerEdgeLocation {
     const fn lane(self) -> PointerEdgeLocationLane {
         match self {
             Self::Desktop { .. } => PointerEdgeLocationLane::Desktop,
+            Self::NativeLocal { .. } => PointerEdgeLocationLane::NativeLocal,
             Self::HostLocal { .. } => PointerEdgeLocationLane::HostLocal,
             Self::SurfaceLocal { .. } => PointerEdgeLocationLane::SurfaceLocal,
         }
@@ -544,7 +611,7 @@ impl PointerEdgeLocation {
     pub const fn desktop_route(self) -> Option<DesktopRouteFact> {
         match self {
             Self::Desktop { route } => Some(route),
-            Self::HostLocal { .. } | Self::SurfaceLocal { .. } => None,
+            Self::NativeLocal { .. } | Self::HostLocal { .. } | Self::SurfaceLocal { .. } => None,
         }
     }
 
@@ -552,7 +619,7 @@ impl PointerEdgeLocation {
     #[must_use]
     pub const fn surface_local_position(self) -> Option<Authority<LogicalPoint>> {
         match self {
-            Self::Desktop { .. } | Self::HostLocal { .. } => None,
+            Self::Desktop { .. } | Self::NativeLocal { .. } | Self::HostLocal { .. } => None,
             Self::SurfaceLocal { position } => Some(position),
         }
     }
@@ -560,8 +627,8 @@ impl PointerEdgeLocation {
 
 /// Provider-owned, strictly monotonic sequence of pointer edges in one scope.
 ///
-/// This is not a per-device counter. A desktop-global provider assigns a total
-/// order across every pointer and viewport it reports; a local provider orders
+/// This is not a per-device counter. A native provider assigns a total order
+/// across every pointer and viewport it reports; a local provider orders
 /// every pointer delivered through its frozen host or surface endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -601,19 +668,20 @@ impl fmt::Display for PointerEdgeSequence {
 pub enum PointerCaptureOwner {
     /// The endpoint frozen into this local provider lease owns capture.
     ///
-    /// Desktop-global providers cannot report this value because they do not
-    /// have one implicit endpoint. Host-local capture belongs to the host lane;
-    /// manipulation routes identify the presented surface independently. A
-    /// surface-local provider reports this value even when its endpoint is
-    /// backed by a native viewport binding; the exact binding remains part of
-    /// the provider lease instead of being repeated in every edge.
+    /// Desktop-global and joined native providers cannot report this value
+    /// because they do not have one implicit endpoint. Host-local capture
+    /// belongs to the host lane; manipulation routes identify the presented
+    /// surface independently. A surface-local provider reports this value even
+    /// when its endpoint is backed by a native viewport binding; that binding
+    /// remains part of the lease instead of being repeated in every edge.
     ProviderEndpoint,
     /// One exact native viewport binding owns capture.
     ///
-    /// This is reserved for desktop-global providers. The complete binding,
-    /// including its window incarnation, keeps a delayed observation of an old
-    /// window distinct from a successor which reused the same platform token;
-    /// downstream inventory validation must still require the exact binding.
+    /// This is reserved for desktop-global and joined native providers. The
+    /// complete binding, including its window incarnation, keeps a delayed
+    /// observation of an old window distinct from a successor which reused the
+    /// same platform token; downstream inventory validation must still require
+    /// the exact binding.
     Native(ViewportBinding),
     /// A receiver outside this docking engine owns capture.
     Foreign,
@@ -1010,7 +1078,7 @@ impl PointerEdge {
             PointerEdgeLocation::HostLocal { .. } | PointerEdgeLocation::SurfaceLocal { .. } => {
                 Authority::Known(PointerEventDeliveryOwner::ProviderEndpoint)
             }
-            PointerEdgeLocation::Desktop { .. } => {
+            PointerEdgeLocation::Desktop { .. } | PointerEdgeLocation::NativeLocal { .. } => {
                 Authority::Unknown(AuthorityUnavailableReason::NotReported)
             }
         };
@@ -1026,9 +1094,10 @@ impl PointerEdge {
 
     /// Creates one pointer edge with an explicit edge-local delivery fact.
     ///
-    /// Desktop-global providers must use this constructor. [`Self::new`] keeps
-    /// the local provider endpoint implicit for host-local and surface-local
-    /// providers, whose immutable leases identify their delivery lane.
+    /// Desktop-global and joined native providers must use this constructor.
+    /// [`Self::new`] keeps the local provider endpoint implicit for host-local
+    /// and surface-local providers, whose immutable leases identify their
+    /// delivery lane.
     #[must_use]
     pub const fn new_with_delivery(
         sequence: PointerEdgeSequence,
@@ -2138,6 +2207,14 @@ pub enum PointerJournalLedgerError {
         submitted: EngineAuthorityDomainId,
     },
     #[error(
+        "native joined host {host:?} belongs to authority domain {submitted:?}, expected {expected:?}"
+    )]
+    ForeignNativeJoinedHost {
+        host: PresentationHostLease,
+        expected: EngineAuthorityDomainId,
+        submitted: EngineAuthorityDomainId,
+    },
+    #[error(
         "surface-local native binding {binding:?} belongs to authority domain {submitted:?}, expected {expected:?}"
     )]
     ForeignSurfaceLocalBinding {
@@ -2281,6 +2358,16 @@ pub enum PointerJournalLedgerError {
         submitted: EngineAuthorityDomainId,
     },
     #[error(
+        "pointer edge {sequence} native-local route binding {binding:?} for {lease:?} belongs to authority domain {submitted:?}, expected {expected:?}"
+    )]
+    ForeignNativeLocalRouteBinding {
+        lease: PointerInputLease,
+        sequence: PointerEdgeSequence,
+        binding: ViewportBinding,
+        expected: EngineAuthorityDomainId,
+        submitted: EngineAuthorityDomainId,
+    },
+    #[error(
         "scroll edge {sequence} delivery host {host:?} belongs to another engine for provider {lease:?}"
     )]
     ForeignScrollDeliveryHost {
@@ -2297,9 +2384,9 @@ pub enum PointerJournalLedgerError {
         endpoint: ScrollDeliveryEndpoint,
     },
     #[error(
-        "desktop-global scroll edge {sequence} has no native binding in endpoint {endpoint:?} for {lease:?}"
+        "native scroll edge {sequence} has no native binding in endpoint {endpoint:?} for {lease:?}"
     )]
-    DesktopScrollDeliveryBindingMissing {
+    NativeScrollDeliveryBindingMissing {
         lease: PointerInputLease,
         sequence: PointerEdgeSequence,
         endpoint: ScrollDeliveryEndpoint,

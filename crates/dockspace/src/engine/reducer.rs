@@ -365,6 +365,13 @@ impl DockEngine {
                     return Err(EngineError::HostFramePointerReceiverReceiptsMissing { provider });
                 }
                 match provider.scope() {
+                    PointerProviderScope::NativeJoined(_) => {
+                        if backend_ingress.is_none() || surface_pointer_commit.is_some() {
+                            return Err(EngineError::ReductionCauseInvariant {
+                                detail: "joined native host frame lost its backend ingress owner",
+                            });
+                        }
+                    }
                     PointerProviderScope::DesktopGlobal => {
                         if surface_pointer_commit.is_some() {
                             return Err(EngineError::ReductionCauseInvariant {

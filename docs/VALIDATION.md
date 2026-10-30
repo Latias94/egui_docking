@@ -15,6 +15,71 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 joined native local pointer
+
+The joined backend now freezes a NativeJoined host domain. It accepts desktop
+or native-local event locations through the same recorder and sequence. Ordinary
+pointer enrollment cannot mint this scope. Headless HostLocal/SurfaceLocal guards
+remain unchanged, and `is_local()` does not enable native timers. The existing
+gesture owner freezes a lane at a validated press and retains it through pending
+release; the next gesture on the same pointer may choose again.
+
+`NativeLocalCoordinates` is an opaque projection of the committed exact backend,
+binding, existing coordinate generation and local size/scales. It does not retain
+desktop placement or observation sequence. Capture compares the event-generation
+size/native scale against callback geometry and the committed tuple, then freezes
+the physical point and one presentation-scale conversion. The reducer rechecks
+current host, binding, generation and point at the original input ordinal. No
+new coordinate issuer, input producer, gesture map or lifecycle registry is added.
+Continuation tokens keep their stream/session/generation reference while the
+existing gesture retains the lane, avoiding growth of every pointer edge.
+
+Native-local manipulation preserves real Native delivery/capture and binding
+retirement. A local hover can query only that exact endpoint and needs current
+output authority; a source continuation cannot authorize stale hover. Finite
+client-area exit is retained without granting desktop OutsideAll authority.
+Missing or incompatible terminal coordinates cancel the old owner while the
+real edge commits, preserving ordinary pointer reuse and pending-output rules.
+
+All 29 frozen-source gates pass: 1,874 workspace tests, 105 default / 112 serde
+public-consumer tests, 458 native tests both normally and without native debug
+assertions, ten doctests, core/native correctness and suspicious Clippy, strict
+rustdoc, formatting and patch integrity. Each native configuration completes
+10,000 lifetimes on the same coordinator. All 432 Rust paths match between the
+main tree and native snapshot. Nine new public journeys cover size-only reorder
+with deferred exact output and frame
+retry, Dropped output, geometry mismatch, foreign binding/session and atomic
+admission, committed-only capability grant, stale samples behind a new snapshot,
+outside/Unknown terminals, inactive-tab continuation, and choosing Desktop for
+the next gesture on the same pointer. Capability identity also remains stable
+across identical newer observations.
+
+Independent review found a missed native focus gate: NativeJoined with a complete
+empty pointer roster was treated as Unknown. A real recorder/frame regression
+first fails to reveal the historical pane; accepting the joined native domain
+repairs it. The KnownDown and Unknown cases remain suppressed. All three focused
+focus cases pass; red/green logs are under
+`/tmp/dockspace-native-local-focus-{red,green}.log`.
+
+macOS default/bounded programmatic redock and five output-pressure scenarios
+pass. The bounded root-boundary sample remains at 3,000,339 resident / 4,152,792
+reserved bytes under the unchanged 4,194,304-byte limit. X11/XTest physical
+tear-off, first-live, guide-targeted redock and destruction pass, as do its five
+output-pressure scenarios. This does not certify non-guide physical acceptance.
+The source manifest and complete commands/results are retained at
+`/tmp/dockspace-native-local-final-snapshot.json` and
+`/tmp/dockspace-native-local-final-qualification.json`. The qualification uses
+local egui fork `86feb7f8cc49217bff54a8924b2cb525f4af3285` and remote-locked Winit
+`f378b50f29cafafec31cd8675c17646b4ef57d70`; preparation in the separate local Winit
+reference checkout was not used. The tracked remote egui pin still does not
+reproduce the local egui fork.
+
+This slice targets the public engine host. The egui adapter still uses Desktop;
+Winit event-generation geometry, eframe callback geometry and immutable adapter
+sample capture remain to be connected and qualified. Positive local-to-desktop
+handoff, native stationary scheduling and the broader U7/U8/platform gates remain
+open. Existing Desktop real-window regressions do not prove a native-local OS path.
+
 ## 2026-10-30 native local geometry
 
 The existing coordinate envelope now separates required physical client size

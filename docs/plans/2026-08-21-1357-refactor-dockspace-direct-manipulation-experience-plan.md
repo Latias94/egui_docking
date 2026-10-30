@@ -1398,6 +1398,42 @@ physical redock is guide-targeted; non-guide physical acceptance remains open.
 The joined provider, per-gesture local lane, positive handoff and stationary
 scheduling above remain required and are not claimed by this prerequisite.
 
+The following public-input slice is qualified (2026-10-30). Joined enrollment now
+owns a NativeJoined host scope, distinct from standalone DesktopGlobal and
+affine local producers. A press freezes its lane in the existing gesture owner;
+there is no additional pointer/gesture map. An opaque local-coordinate capability
+projects only committed binding/generation/local geometry, and capture checks
+event-generation facts against callback and committed geometry before converting
+once. Delayed translation carries that sample unchanged. Native-local input
+keeps Native delivery/capture, exact endpoint receiver proofs and binding
+retirement; unknown or incompatible terminal coordinates consume the real edge
+and retire the old gesture. Native timers remain disabled. All 29 frozen gates
+pass: 1,874 workspace tests, 105 default / 112 serde public tests, 458 native tests
+in both configurations (each including the same-coordinator 10,000-lifetime
+soak), ten doctests, Clippy, strict docs, formatting, macOS default/bounded
+redock, X11 physical smoke and five output-pressure scenarios per platform.
+Nine public journeys cover exact pending reorder, retry/drop, geometry/identity
+isolation, committed capability grant, stale samples, terminal reuse, inactive
+source continuation and a new Desktop gesture on the same pointer. A real joined
+focus regression repairs ordinary activation after a complete released-button
+roster, while held and unknown buttons continue to suppress restoration.
+The bounded sample remains at 3,000,339 resident / 4,152,792 reserved bytes under
+4 MiB. X11 physical redock remains guide-targeted. The egui adapter still needs
+event-generation geometry from its Winit/eframe callback seam; the public slice
+alone does not certify that seam or positive handoff.
+
+The next adapter slice freezes routes and the local sample in one immutable
+callback payload owned by the existing raw record, rather than enlarging every
+preallocated event slot. Keep the original WindowEvent inline and charge the
+complete shared payload data, including temporary capture/translation peaks,
+before issuing its ordinal. Retry only shares that payload; reclaim its charge
+after the last host-held clone is released. The existing viewport row retains
+the committed capability. Do not add a capability registry, omit allocation
+descendants from accounting, lower slot promises or increase the total budget.
+Compaction compares frozen coordinate authority, not Arc address or position.
+Actual layout, merged admission, delayed-scale, successor and quiescence tests
+must qualify the implementation; static size estimates are not acceptance.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes

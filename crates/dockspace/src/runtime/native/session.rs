@@ -95,6 +95,31 @@ impl DockspaceSession {
             .is_some_and(|native| native.contains_binding(binding))
     }
 
+    /// Returns native client-coordinate authority from the committed engine state.
+    ///
+    /// The exact native binding must be admitted and routable through this joined
+    /// backend's active presentation host, with positive local size and complete
+    /// scales. Desktop origin and work-area authority are not required. Recorded
+    /// but uncommitted snapshots cannot grant or update this capability.
+    #[must_use]
+    pub fn native_local_coordinates(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeLocalCoordinates> {
+        let native = self.native.as_ref()?;
+        let backend = native.recorder.lease();
+        if native.profile != NativeHostProfile::ManagedDesktop
+            || self.engine.backend_ingress_provider() != Some(backend)
+            || !native.contains_binding(binding)
+        {
+            return None;
+        }
+        let snapshot = self
+            .engine
+            .native_local_coordinate_snapshot(backend.presentation_host(), binding.binding)?;
+        Some(NativeLocalCoordinates::new(backend, binding, snapshot))
+    }
+
     /// Returns whether the managed host still owns this exact live or retired binding.
     ///
     /// Retired bindings remain recognized until the host reports exact
@@ -127,14 +152,13 @@ impl DockspaceSession {
         self.enroll_native_host(NativeHostProfile::ObservedRoots, strategy, None, None)
     }
 
-    /// Enrolls the sole desktop-global coordinator for managed native windows.
+    /// Enrolls the sole joined coordinator for managed native windows.
     ///
-    /// The fixed capability profile requires complete window inventory,
-    /// event-time desktop pointer facts, explicit work-area authority, and
-    /// typed effect settlement. The initial pointer roster is enrolled in the
-    /// same operation; no platform or pointer record can precede it. Platforms
-    /// which cannot provide those facts should use surface-local input instead
-    /// of enabling this coordinator.
+    /// Window inventory, pointer facts, and typed effect settlement share one
+    /// causal input order. Desktop pointer input requires independent desktop
+    /// facts; native-local input instead uses committed client geometry from
+    /// [`Self::native_local_coordinates`]. The initial pointer roster is enrolled
+    /// in the same operation; no platform or pointer record can precede it.
     ///
     /// Preparation is selected independently from input capabilities. DirectPrepared
     /// hosts report explicit renderer readiness; Staged hosts accept exact staging
@@ -438,7 +462,7 @@ impl DockspaceSession {
             .and_then(|native| native.work_area_binding(token.into_core()))
     }
 
-    /// Records one desktop-global native pointer edge in host event order.
+    /// Records one desktop or client-local native pointer edge in host event order.
     ///
     /// The runtime assigns the provider sequence and retains the edge until a
     /// host frame resolves its receiver query and commits. A failed frame does

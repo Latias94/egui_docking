@@ -23,9 +23,68 @@ impl DockEngine {
                 detail: "journal edge, stream, and receipt sequence do not agree",
             });
         }
-        let owner = stream;
+        let owner = self
+            .interaction
+            .active_owner()
+            .filter(|owner| owner.stream() == stream)
+            .or_else(|| self.journal_gesture_owner(stream, edge, desktop_delivery_route));
+        let Some(owner) = owner else {
+            return match edge.kind() {
+                PointerEdgeKind::Scrolled(scroll) => {
+                    self.reduce_scroll_edge(cause, stream, edge, scroll, receipt, snapshot)
+                }
+                PointerEdgeKind::StreamCancelled(reason) => self.terminate_journal_stream(
+                    cause,
+                    stream,
+                    if reason == crate::pointer_journal::PointerStreamCancelReason::Escape {
+                        InteractionCancelReason::Escape
+                    } else {
+                        InteractionCancelReason::PointerStreamCancelled
+                    },
+                    ScrollTerminationReason::StreamCancelled,
+                    interaction_events,
+                ),
+                PointerEdgeKind::StreamEnded | PointerEdgeKind::ContactEnded(_) => self
+                    .terminate_journal_stream(
+                        cause,
+                        stream,
+                        InteractionCancelReason::PointerStreamEnded,
+                        ScrollTerminationReason::StreamEnded,
+                        interaction_events,
+                    ),
+                _ => Ok(Vec::new()),
+            };
+        };
         let status_before = self.interaction.status();
         let matching_owner = self.interaction.active_owner() == Some(owner);
+        if matching_owner
+            && matches!(
+                edge.kind(),
+                PointerEdgeKind::Moved
+                    | PointerEdgeKind::Continuation(_)
+                    | PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+                    | PointerEdgeKind::ContactEnded(PointerButton::Primary)
+            )
+            && (!self.journal_edge_matches_gesture_lane(owner, edge)
+                || (matches!(owner.lane(), GestureLane::NativeLocal { .. })
+                    && super::pointer_proof::validated_native_local_route(self, edge).is_none()))
+        {
+            let mut outcomes = self
+                .cancel_gesture_owner(
+                    cause,
+                    owner,
+                    InteractionCancelReason::CoordinateAuthorityUnavailable,
+                    interaction_events,
+                )?
+                .into_iter()
+                .collect::<Vec<_>>();
+            if matches!(edge.kind(), PointerEdgeKind::ContactEnded(_)) {
+                outcomes.extend(
+                    self.terminate_scroll_stream(stream, ScrollTerminationReason::StreamEnded),
+                );
+            }
+            return Ok(outcomes);
+        }
         let event_start = interaction_events.len();
         let mut outcomes = match edge.kind() {
             PointerEdgeKind::ButtonPressed(PointerButton::Primary) => {
@@ -204,15 +263,13 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let mut outcomes = self.terminate_scroll_stream(stream, scroll_reason);
-        if self.interaction.active_stream() == Some(stream) {
-            self.viewport
-                .end_all_drag_routing()
-                .map_err(|source| EngineError::Viewport {
-                    input: self.last_input,
-                    source,
-                })?;
+        if let Some(owner) = self
+            .interaction
+            .active_owner()
+            .filter(|owner| owner.stream() == stream)
+        {
             if let Some(outcome) =
-                self.cancel_gesture_owner(cause, stream, interaction_reason, interaction_events)?
+                self.cancel_gesture_owner(cause, owner, interaction_reason, interaction_events)?
             {
                 outcomes.push(outcome);
             }
@@ -243,21 +300,37 @@ impl DockEngine {
         let Some(point) = self.journal_logical_point(edge, desktop_delivery_route) else {
             return Ok(None);
         };
-        let stream = owner;
-        let expected_delivery = match stream.lease().scope() {
-            PointerProviderScope::SurfaceLocal(_) | PointerProviderScope::HostLocal(_) => {
-                PointerEventDeliveryOwner::ProviderEndpoint
-            }
-            PointerProviderScope::DesktopGlobal => {
-                let binding = desktop_delivery_route
-                    .and_then(DesktopRouteValidation::dock_route)
-                    .map(|route| route.binding())
-                    .ok_or(EngineError::ReductionCauseInvariant {
-                        detail: "desktop primary press has no exact hovered source binding",
-                    })?;
-                PointerEventDeliveryOwner::Native(binding)
-            }
-        };
+        let stream = owner.stream();
+        let expected_delivery =
+            match stream.lease().scope() {
+                PointerProviderScope::SurfaceLocal(_) | PointerProviderScope::HostLocal(_) => {
+                    PointerEventDeliveryOwner::ProviderEndpoint
+                }
+                PointerProviderScope::DesktopGlobal => {
+                    let binding = desktop_delivery_route
+                        .and_then(DesktopRouteValidation::dock_route)
+                        .map(|route| route.binding())
+                        .ok_or(EngineError::ReductionCauseInvariant {
+                            detail: "desktop primary press has no exact hovered source binding",
+                        })?;
+                    PointerEventDeliveryOwner::Native(binding)
+                }
+                PointerProviderScope::NativeJoined(_) => {
+                    let binding = match owner.lane() {
+                    GestureLane::NativeLocal { binding, .. } => binding,
+                    GestureLane::Desktop => desktop_delivery_route
+                        .and_then(DesktopRouteValidation::dock_route)
+                        .map(|route| route.binding())
+                        .ok_or(EngineError::ReductionCauseInvariant {
+                            detail: "joined desktop primary press has no native coordinate route",
+                        })?,
+                    _ => return Err(EngineError::ReductionCauseInvariant {
+                        detail: "joined primary press has a non-native lane",
+                    }),
+                };
+                    PointerEventDeliveryOwner::Native(binding)
+                }
+            };
         if let Some(rejection) =
             self.journal_press_delivery_rejection(edge.delivery_owner(), expected_delivery)?
         {
@@ -617,6 +690,18 @@ impl DockEngine {
                     position: route.position(),
                 })
             }
+            PointerEdgeLocation::NativeLocal { .. } => {
+                let route = super::pointer_proof::validated_native_local_route(self, edge).ok_or(
+                    EngineError::ReductionCauseInvariant {
+                        detail: "native-local press has no current coordinate route",
+                    },
+                )?;
+                Ok(JournalDragThresholdOrigin::NativeLocal {
+                    binding: route.binding(),
+                    coordinate_generation: route.coordinate_generation(),
+                    position: route.surface_position(),
+                })
+            }
             PointerEdgeLocation::Desktop { .. } => {
                 let route = desktop_route
                     .and_then(DesktopRouteValidation::dock_route)
@@ -685,6 +770,28 @@ impl DockEngine {
                 )
             }
             (
+                JournalDragThresholdOrigin::NativeLocal {
+                    binding,
+                    coordinate_generation,
+                    position: initial,
+                },
+                PointerEdgeLocation::NativeLocal { .. },
+            ) => {
+                let Some(current) = super::pointer_proof::validated_native_local_route(self, edge)
+                    .filter(|route| {
+                        route.binding() == binding
+                            && route.coordinate_generation() == coordinate_generation
+                    })
+                else {
+                    return false;
+                };
+                (
+                    current.surface_position().x() - initial.x(),
+                    current.surface_position().y() - initial.y(),
+                    source_logical_threshold,
+                )
+            }
+            (
                 JournalDragThresholdOrigin::DesktopPhysical {
                     position: initial,
                     source_scale,
@@ -723,7 +830,7 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let mut outcomes = Vec::new();
-        if self.interaction.active_stream() != Some(owner) {
+        if self.interaction.active_owner() != Some(owner) {
             return Ok(outcomes);
         }
         let (delivery_authorized, delivery_outcome) = self.gate_journal_delivery_action(
@@ -799,8 +906,7 @@ impl DockEngine {
             let source_surface = armed.source_surface;
             match self.interaction.begin_drag(session, owner, button) {
                 Ok(()) => {
-                    let provider_scope = owner.lease().scope();
-                    if provider_scope == PointerProviderScope::DesktopGlobal
+                    if owner.is_desktop()
                         && self
                             .viewport
                             .physical_cross_surface_drag_capability()
@@ -856,7 +962,7 @@ impl DockEngine {
             ));
             return Ok(outcomes);
         }
-        let stream = owner;
+        let stream = owner.stream();
         let position = journal_position_key(self, stream, edge);
         let evaluation = self.resolve_journal_drag_preview(
             cause,
@@ -986,7 +1092,7 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let mut outcomes = Vec::new();
-        if self.interaction.active_stream() != Some(owner) {
+        if self.interaction.active_owner() != Some(owner) {
             return Ok(outcomes);
         }
         let (delivery_authorized, delivery_outcome) = self.gate_journal_delivery_action(
@@ -1064,7 +1170,7 @@ impl DockEngine {
                         detail: format!("{source:?}"),
                     })?
                     .clone();
-                let stream = owner;
+                let stream = owner.stream();
                 let position = journal_position_key(self, stream, edge);
                 let mut revalidated_preview = None;
                 // Release is always resolved against its own edge facts. This
@@ -1970,16 +2076,21 @@ impl DockEngine {
                 Ok(drag) => drag,
                 Err(error) => return Ok(InteractionOutcome::Rejected(error)),
             };
-        let physical_route = self
-            .viewport
-            .drag_source(owner.pointer())
-            .filter(|binding| binding.surface() == drag.source_surface);
-        self.viewport
-            .end_drag_routing(owner.pointer())
-            .map_err(|source| EngineError::Viewport {
-                input: self.last_input,
-                source,
-            })?;
+        let physical_route = if owner.is_desktop() {
+            let route = self
+                .viewport
+                .drag_source(owner.pointer())
+                .filter(|binding| binding.surface() == drag.source_surface);
+            self.viewport
+                .end_drag_routing(owner.pointer())
+                .map_err(|source| EngineError::Viewport {
+                    input: self.last_input,
+                    source,
+                })?;
+            route
+        } else {
+            None
+        };
         let Some(release_decision) = release_decision else {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::PreviewMissing,
@@ -2283,9 +2394,7 @@ impl DockEngine {
                 PreviewDecision::Clear(PreviewResolutionStatus::UnknownAuthority),
             ));
         }
-        if presentation.surface() != drag.source_surface
-            && drag.owner.lease().scope() == PointerProviderScope::DesktopGlobal
-        {
+        if presentation.surface() != drag.source_surface && drag.owner.is_desktop() {
             let capability = self.viewport.physical_cross_surface_drag_capability();
             if !capability.is_supported() || !self.physical_drag_has_route(drag) {
                 return Ok(PreviewEvaluation::without_affordance(
@@ -2294,6 +2403,7 @@ impl DockEngine {
             }
         }
         Self::validate_journal_desktop_presentation(edge, desktop_route, authority)?;
+        self.validate_journal_native_local_presentation(edge, authority)?;
         let winner = presentation
             .hit_manifest()
             .resolve_exclusive_with_suppression(

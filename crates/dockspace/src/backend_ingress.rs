@@ -2,7 +2,7 @@
 //!
 //! This module owns only transport structure. It does not reduce records or
 //! advance engine authority. A backend recorder binds one exact platform
-//! provider incarnation to one exact desktop-global pointer provider and mints
+//! provider incarnation to one exact joined native pointer provider and mints
 //! opaque ordinals as facts are captured. Immutable batches can then be retried
 //! until a host-frame commit advances the engine-owned watermark.
 
@@ -530,14 +530,20 @@ impl BackendIngressLease {
                 pointer: pointer_domain,
             });
         }
-        if pointer.scope() != PointerProviderScope::DesktopGlobal {
-            return Err(BackendIngressError::PointerProviderNotDesktopGlobal { provider: pointer });
-        }
         let presentation_domain = presentation_host.authority_domain();
         if presentation_domain != platform_domain {
             return Err(BackendIngressError::PresentationAuthorityDomainMismatch {
                 backend: platform_domain,
                 presentation: presentation_domain,
+            });
+        }
+        let PointerProviderScope::NativeJoined(pointer_host) = pointer.scope() else {
+            return Err(BackendIngressError::PointerProviderNotNativeJoined { provider: pointer });
+        };
+        if pointer_host != presentation_host {
+            return Err(BackendIngressError::PresentationHostLeaseMismatch {
+                expected: pointer_host,
+                submitted: presentation_host,
             });
         }
         Ok(Self {
@@ -2187,9 +2193,9 @@ pub enum BackendIngressError {
         /// Authority domain carried by the presentation host.
         presentation: EngineAuthorityDomainId,
     },
-    /// Unified backend ingress requires a desktop-global pointer provider.
-    #[error("backend ingress pointer provider {provider:?} is not desktop-global")]
-    PointerProviderNotDesktopGlobal {
+    /// Unified backend ingress requires a joined native pointer provider.
+    #[error("backend ingress pointer provider {provider:?} is not native-joined")]
+    PointerProviderNotNativeJoined {
         /// Rejected exact pointer-provider incarnation.
         provider: PointerInputLease,
     },
@@ -2402,11 +2408,12 @@ mod tests {
             .expect("test platform provider must mint")
     }
 
-    fn desktop_pointer_provider(
-        domain: EngineAuthorityDomainId,
-        incarnation: u64,
-    ) -> PointerInputLease {
-        PointerInputLease::new(domain, incarnation, PointerProviderScope::DesktopGlobal)
+    fn joined_pointer_provider(host: PresentationHostLease, incarnation: u64) -> PointerInputLease {
+        PointerInputLease::new(
+            host.authority_domain(),
+            incarnation,
+            PointerProviderScope::NativeJoined(host),
+        )
     }
 
     fn presentation_host(domain: EngineAuthorityDomainId) -> PresentationHostLease {
@@ -2418,13 +2425,14 @@ mod tests {
 
     fn recorder(domain: u64) -> BackendIngressRecorder {
         let domain = EngineAuthorityDomainId::new_for_test(domain);
+        let host = presentation_host(domain);
         BackendIngressRecorder::new(
             platform_provider(domain),
-            desktop_pointer_provider(domain, 1),
-            presentation_host(domain),
+            joined_pointer_provider(host, 1),
+            host,
             PointerEdgeSequence::new(0),
         )
-        .expect("matching desktop providers must create a recorder")
+        .expect("matching joined native providers must create a recorder")
     }
 
     fn binding(domain: u64, token: u64) -> ViewportBinding {
@@ -2441,12 +2449,13 @@ mod tests {
         domain: u64,
     ) -> (BackendIngressAuthority, BackendIngressRecorder) {
         let domain = EngineAuthorityDomainId::new_for_test(domain);
+        let host = presentation_host(domain);
         let mut authority = BackendIngressAuthority::new(domain);
         let recorder = authority
             .enroll(
                 platform_provider(domain),
-                desktop_pointer_provider(domain, 1),
-                presentation_host(domain),
+                joined_pointer_provider(host, 1),
+                host,
                 PointerEdgeSequence::new(0),
             )
             .expect("matching backend authority must enroll");
@@ -2518,12 +2527,13 @@ mod tests {
     }
 
     #[test]
-    fn recorder_binds_exact_matching_desktop_provider_incarnations() {
+    fn recorder_binds_exact_matching_native_joined_provider_incarnations() {
         let domain = EngineAuthorityDomainId::new_for_test(1);
+        let host = presentation_host(domain);
         let recorder = BackendIngressRecorder::new(
             platform_provider(domain),
-            desktop_pointer_provider(domain, 7),
-            presentation_host(domain),
+            joined_pointer_provider(host, 7),
+            host,
             PointerEdgeSequence::new(3),
         )
         .expect("matching providers must be admitted");
@@ -2531,14 +2541,19 @@ mod tests {
         assert_eq!(recorder.lease().authority_domain(), domain);
         assert_eq!(recorder.lease().platform_incarnation(), 1);
         assert_eq!(recorder.lease().pointer_incarnation(), 7);
+        assert_eq!(recorder.lease().presentation_host(), host);
+        assert_eq!(
+            recorder.lease().pointer_provider().scope(),
+            PointerProviderScope::NativeJoined(host)
+        );
     }
 
     #[test]
-    fn recorder_rejects_foreign_or_surface_local_pointer_provider() {
+    fn recorder_rejects_foreign_and_non_joined_pointer_providers() {
         let first = EngineAuthorityDomainId::new_for_test(1);
         let second = EngineAuthorityDomainId::new_for_test(2);
         let platform = platform_provider(first);
-        let foreign = desktop_pointer_provider(second, 1);
+        let foreign = joined_pointer_provider(presentation_host(second), 1);
         assert_eq!(
             BackendIngressRecorder::new(
                 platform,
@@ -2557,18 +2572,62 @@ mod tests {
         let host = presentations
             .create_host()
             .expect("test presentation host must mint");
-        let local = PointerInputLease::new(
-            first,
-            2,
+        for scope in [
+            PointerProviderScope::DesktopGlobal,
+            PointerProviderScope::HostLocal(host),
             PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
                 host,
                 SurfaceLocalPointerEndpoint::Logical(SurfaceId::new(1)),
             )),
-        );
+        ] {
+            let local = PointerInputLease::new(first, 2, scope);
+            assert_eq!(
+                BackendIngressRecorder::new(platform, local, host, PointerEdgeSequence::new(0))
+                    .expect_err("non-joined pointer authority must fail"),
+                BackendIngressError::PointerProviderNotNativeJoined { provider: local }
+            );
+        }
+    }
+
+    #[test]
+    fn recorder_rejects_foreign_or_inexact_joined_presentation_hosts() {
+        let domain = EngineAuthorityDomainId::new_for_test(1);
+        let platform = platform_provider(domain);
+        let mut presentations = PresentationLedger::new(domain);
+        let host = presentations.create_host().expect("bound host");
+        let other_host = presentations.create_host().expect("other local host");
+        let pointer = joined_pointer_provider(host, 1);
         assert_eq!(
-            BackendIngressRecorder::new(platform, local, host, PointerEdgeSequence::new(0),)
-                .expect_err("surface-local pointer authority must fail"),
-            BackendIngressError::PointerProviderNotDesktopGlobal { provider: local }
+            BackendIngressRecorder::new(platform, pointer, other_host, PointerEdgeSequence::new(0))
+                .expect_err("another host in the same domain must fail"),
+            BackendIngressError::PresentationHostLeaseMismatch {
+                expected: host,
+                submitted: other_host,
+            }
+        );
+        let foreign_host = presentation_host(EngineAuthorityDomainId::new_for_test(2));
+        assert_eq!(
+            BackendIngressRecorder::new(
+                platform,
+                pointer,
+                foreign_host,
+                PointerEdgeSequence::new(0)
+            )
+            .expect_err("foreign presentation authority must fail"),
+            BackendIngressError::PresentationAuthorityDomainMismatch {
+                backend: domain,
+                presentation: foreign_host.authority_domain(),
+            }
+        );
+        let foreign_scope =
+            PointerInputLease::new(domain, 1, PointerProviderScope::NativeJoined(foreign_host));
+        assert_eq!(
+            BackendIngressRecorder::new(platform, foreign_scope, host, PointerEdgeSequence::new(0))
+                .expect_err("a joined scope cannot smuggle a foreign host"),
+            BackendIngressError::PresentationHostLeaseMismatch {
+                expected: foreign_host,
+                submitted: host,
+            }
         );
     }
 

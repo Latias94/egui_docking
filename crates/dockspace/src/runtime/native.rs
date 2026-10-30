@@ -3,6 +3,7 @@
 mod budget;
 mod compiler;
 mod input_batch;
+mod local_pointer;
 mod pointer;
 mod receiver;
 mod session;
@@ -42,14 +43,18 @@ use compiler::{
     compile_unknown_inventory_snapshot, snapshot_descendant_capacity_bytes,
 };
 pub(super) use input_batch::PendingNativeReplay;
+pub use local_pointer::{
+    NativeLocalCoordinateError, NativeLocalCoordinates, NativeLocalGeometry,
+    NativeLocalPointerFact, NativeLocalPointerLocation, NativeLocalPointerSample,
+};
 pub use pointer::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
     NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativePointerRoster, NativePointerState,
-    NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
-    NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
-    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
-    NativeScrollSequenceId,
+    NativePointerInput, NativePointerLocation, NativePointerOwner, NativePointerRoster,
+    NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose,
+    NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId,
+    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
+    NativeScrollReceiverChallenge, NativeScrollSequenceId,
 };
 pub use storage::{NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit};
 

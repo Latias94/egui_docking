@@ -273,6 +273,34 @@ Receiver queries expose the retained facts through
 `NativeReceiverQuery::metadata()`. These facts identify the edge being resolved;
 they do not grant local coordinates, desktop routing or stationary authority.
 
+Managed native input uses one joined recorder for desktop and native-local
+locations. Obtain `NativeLocalCoordinates` with
+`DockspaceSession::native_local_coordinates(binding)` after the binding's
+positive client size and native/presentation scales have committed. This opaque
+capability uses the existing coordinate generation and exact presentation host;
+recorded but uncommitted facts cannot grant a newer capability.
+
+Freeze `NativeLocalPointerFact` where the physical client point is generated,
+including that event's client size and native scale. At callback capture, pass
+the actual `NativeLocalGeometry` and exact binding to the capability's `capture`
+method. Event geometry, callback geometry and committed geometry must agree.
+The resulting opaque sample retains the original physical point and its one-time
+conversion through the presentation scale. A queued old event cannot be rebound
+to a newer scale. Submit it with `NativePointerInput::new_local`; if coordinates
+cannot be proven, use `NativeLocalPointerLocation::Unknown` while preserving the
+real native delivery and capture facts, particularly for release and cancel.
+
+Each validated press freezes its coordinate lane on the existing gesture owner.
+Native-local input can query only the same native endpoint and retains real
+native capture and binding-retirement obligations. A finite point outside the
+client area is preserved for the terminal edge, but does not grant desktop
+outside-all authority. Coordinate withdrawal or an incompatible lane cancels
+the old gesture without swallowing its physical terminal. After completion,
+the next gesture on the same pointer can choose its lane again. Local-to-desktop
+handoff and native stationary scheduling remain separate work. The egui native
+reference adapter still uses desktop input pending its event-time local geometry
+seam; the public host API does not establish platform callback qualification.
+
 `native_input_owned_capacity_bytes()` on the session or an open host frame
 reports recorded input transport data: recorder envelopes and buffers, shared
 payload data, replay record buffers, and a pending prefix-retirement receipt.
@@ -470,8 +498,8 @@ stable-item commands using size and scales alone. Desktop hover conversion,
 cross-window physical routing, default window placement and spatial recovery
 still require the corresponding observed desktop facts. Missing desktop origin
 returns an explicit coordinate-authority failure; it never becomes `(0, 0)`.
-The managed native pointer API currently accepts desktop input only; the local
-geometry contract is a prerequisite for joined native local gestures.
+Native-local pointer input uses the separately captured capability described
+above; local geometry alone never supplies a desktop route.
 
 Renderer failure and lifecycle cancellation are distinct operations. Dropping
 an affine output reports only that output's failure; an unresolved native create

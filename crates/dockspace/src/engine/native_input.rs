@@ -91,7 +91,7 @@ impl DockEngine {
         if let Some(owner) = self
             .interaction
             .active_owner()
-            .filter(|owner| retired_streams.contains(owner))
+            .filter(|owner| retired_streams.contains(&owner.stream()))
         {
             let _ = self.cancel_gesture_owner(
                 cause,

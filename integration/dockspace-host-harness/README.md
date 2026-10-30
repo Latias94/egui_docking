@@ -53,6 +53,15 @@ conflicting sizes. A desktop-input negative case proves that local geometry
 cannot supply a missing desktop origin. These are recording-renderer geometry
 and command traces; they do not qualify native local pointer gestures.
 
+`tests/native_local_pointer.rs` uses the joined native recorder and opaque
+committed local-coordinate capabilities for full same-window tab reordering.
+It covers exact deferred presentation, dropped frames/outputs, geometry and
+binding isolation, stale samples behind newer snapshots, outside/Unknown
+terminals, inactive-tab source continuation and choosing a new lane for the next
+gesture on the same pointer. These public host traces use no desktop origin or
+work area for local operations; they do not qualify Winit/eframe event capture,
+positive in-gesture handoff or native stationary scheduling.
+
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,

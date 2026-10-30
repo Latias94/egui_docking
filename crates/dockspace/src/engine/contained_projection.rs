@@ -62,6 +62,9 @@ impl DockEngine {
             ManipulationPositionKey::JournalHost { manipulation, .. } => manipulation
                 .filter(|route| route.surface() == surface)?
                 .position(),
+            ManipulationPositionKey::JournalNativeLocal { manipulation, .. } => manipulation
+                .filter(|route| route.binding().surface() == surface)?
+                .surface_position(),
             ManipulationPositionKey::JournalSurface {
                 scope: PointerProviderScope::SurfaceLocal(scope),
                 position: Authority::Known(point),

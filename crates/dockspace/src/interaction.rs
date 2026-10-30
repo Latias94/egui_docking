@@ -34,8 +34,9 @@ use crate::intent::{
 use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use crate::operation::PreparedContentClose;
 use crate::pointer_journal::{
-    DesktopRouteValidation, HostLocalPointerRoute, PointerCaptureOwner, PointerEventDeliveryOwner,
-    PointerProviderScope, PointerStreamId, ScrollCancelReason, ScrollPhase, ScrollSequenceToken,
+    DesktopRouteValidation, HostLocalPointerRoute, NativeLocalPointerRoute, PointerCaptureOwner,
+    PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope, PointerStreamId,
+    ScrollCancelReason, ScrollPhase, ScrollSequenceToken,
 };
 use crate::policy::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
@@ -54,7 +55,7 @@ use crate::tab_strip::{
     PopupRoutingRevision, TabListMenuSessionId, TabStripControlId, TabStripStateKey,
 };
 use crate::transition::WorkspaceVersion;
-use crate::viewport::ViewportBinding;
+use crate::viewport::{CoordinateGeneration, ViewportBinding};
 
 macro_rules! interaction_counter {
     ($constructor_visibility:vis $name:ident, $description:literal) => {
@@ -663,7 +664,7 @@ impl<'state> ActiveResizeView<'state> {
     /// Returns the exact journal stream which owns this resize.
     #[must_use]
     pub const fn journal_stream(self) -> PointerStreamId {
-        self.owner
+        self.owner.stream()
     }
 
     /// Returns the button which owns this resize.
@@ -719,7 +720,7 @@ impl<'state> ActiveDragView<'state> {
     /// Returns the exact journal stream which owns this drag.
     #[must_use]
     pub const fn journal_stream(self) -> PointerStreamId {
-        self.owner
+        self.owner.stream()
     }
 
     /// Returns the pointer button which armed the drag.
@@ -803,7 +804,7 @@ impl<'state> ActiveContainedTransformView<'state> {
     /// Returns the exact journal stream which owns this transform.
     #[must_use]
     pub const fn journal_stream(self) -> PointerStreamId {
-        self.owner
+        self.owner.stream()
     }
 
     /// Returns the pointer button which began the transform.
@@ -884,6 +885,8 @@ pub enum InteractionCancelReason {
     DeliveryAuthorityUnavailable,
     /// An edge was delivered by an endpoint other than the gesture's frozen source.
     DeliveryOwnerLost,
+    /// The edge cannot prove the coordinate lane frozen by the current gesture.
+    CoordinateAuthorityUnavailable,
     /// The platform explicitly terminated the owning pointer stream.
     PointerStreamCancelled,
     /// The provider reported the normal terminal release of an ephemeral stream.
@@ -1167,7 +1170,10 @@ pub enum InteractionRejection {
 
 impl InteractionRejection {
     fn owner_mismatch(expected: GestureOwner, actual: GestureOwner) -> Self {
-        Self::PointerStreamMismatch { expected, actual }
+        Self::PointerStreamMismatch {
+            expected: expected.stream(),
+            actual: actual.stream(),
+        }
     }
 }
 
@@ -1803,6 +1809,10 @@ pub(crate) enum ManipulationPositionKey {
         manipulation: Option<HostLocalPointerRoute>,
         hover: Option<HostLocalPointerRoute>,
     },
+    JournalNativeLocal {
+        manipulation: Option<NativeLocalPointerRoute>,
+        hover: Option<NativeLocalPointerRoute>,
+    },
     JournalDesktop(DesktopRouteValidation),
 }
 
@@ -1811,6 +1821,10 @@ impl ManipulationPositionKey {
         match self {
             Self::JournalHost { hover, .. } => match hover {
                 Some(route) => Some(route.surface()),
+                None => None,
+            },
+            Self::JournalNativeLocal { hover, .. } => match hover {
+                Some(route) => Some(route.binding().surface()),
                 None => None,
             },
             Self::JournalSurface {
@@ -1828,6 +1842,13 @@ impl ManipulationPositionKey {
         match self {
             Self::JournalHost { hover, .. } => match hover {
                 Some(route) => Some(SurfacePointer::new(route.surface(), route.position())),
+                None => None,
+            },
+            Self::JournalNativeLocal { hover, .. } => match hover {
+                Some(route) => Some(SurfacePointer::new(
+                    route.binding().surface(),
+                    route.surface_position(),
+                )),
                 None => None,
             },
             Self::JournalSurface {
@@ -1868,6 +1889,10 @@ impl ManipulationPositionKey {
                 Some(route) => Some(route.surface()),
                 None => None,
             },
+            Self::JournalNativeLocal { hover, .. } => match hover {
+                Some(route) => Some(route.binding().surface()),
+                None => None,
+            },
             Self::JournalSurface {
                 scope: PointerProviderScope::SurfaceLocal(scope),
                 ..
@@ -1895,6 +1920,10 @@ impl ManipulationPositionKey {
         match self {
             Self::JournalHost { hover, .. } => hover.is_some_and(|route| {
                 route.surface() != surface || !source_rect.contains(route.position())
+            }),
+            Self::JournalNativeLocal { hover, .. } => hover.is_some_and(|route| {
+                route.binding().surface() != surface
+                    || !source_rect.contains(route.surface_position())
             }),
             Self::JournalSurface {
                 scope: PointerProviderScope::SurfaceLocal(scope),
@@ -2131,8 +2160,50 @@ impl DragTargetState {
     }
 }
 
-/// Exact journal stream owner of one transient gesture.
-pub(crate) type GestureOwner = PointerStreamId;
+/// Coordinate lane frozen by a validated press for one transient gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum GestureLane {
+    Desktop,
+    NativeLocal {
+        binding: ViewportBinding,
+        coordinate_generation: CoordinateGeneration,
+    },
+    HostLocal,
+    SurfaceLocal,
+}
+
+/// Exact journal stream and coordinate lane owning one transient gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct GestureOwner {
+    stream: PointerStreamId,
+    lane: GestureLane,
+}
+
+impl GestureOwner {
+    pub(crate) const fn new(stream: PointerStreamId, lane: GestureLane) -> Self {
+        Self { stream, lane }
+    }
+
+    pub(crate) const fn stream(self) -> PointerStreamId {
+        self.stream
+    }
+
+    pub(crate) const fn lane(self) -> GestureLane {
+        self.lane
+    }
+
+    pub(crate) const fn pointer(self) -> PointerId {
+        self.stream.pointer()
+    }
+
+    pub(crate) const fn lease(self) -> PointerInputLease {
+        self.stream.lease()
+    }
+
+    pub(crate) const fn is_desktop(self) -> bool {
+        matches!(self.lane, GestureLane::Desktop)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ArmedDrag {
@@ -2165,6 +2236,11 @@ pub(crate) enum JournalDragThresholdOrigin {
     SurfaceLocal(LogicalPoint),
     HostLocal {
         surface: SurfaceId,
+        position: LogicalPoint,
+    },
+    NativeLocal {
+        binding: ViewportBinding,
+        coordinate_generation: CoordinateGeneration,
         position: LogicalPoint,
     },
     DesktopPhysical {
@@ -2543,7 +2619,10 @@ impl InteractionState {
 
     /// Returns the current gesture's journal stream.
     pub(crate) const fn active_stream(&self) -> Option<PointerStreamId> {
-        self.active_owner()
+        match self.active_owner() {
+            Some(owner) => Some(owner.stream()),
+            None => None,
+        }
     }
 
     pub(crate) const fn active_journal_capture_authority(
@@ -3586,7 +3665,7 @@ mod tests {
     use crate::presentation_config::PresentationConfigRevision;
     use crate::presentation_hit::{PresentationHitManifest, PresentationHitRegionKind};
     use crate::presentation_observation::{
-        PresentationOutputSerial, SurfacePresentationOutputTicket,
+        PresentationLedger, PresentationOutputSerial, SurfacePresentationOutputTicket,
     };
     use crate::scene::{
         PresentationPlan, SurfaceProgramRootOperation, SurfaceProgramRootPresentation,
@@ -3594,7 +3673,7 @@ mod tests {
     };
     use crate::scene_manifest::{SurfaceRequirementRevision, SurfaceSceneRevision};
     use crate::tab_strip::{TabStripControlId, TabStripStateKey};
-    use crate::viewport::CoordinateGeneration;
+    use crate::viewport::{CoordinateGeneration, WindowIncarnation, WindowToken};
 
     fn frozen_presentation(
         surface: SurfaceId,
@@ -3678,7 +3757,10 @@ mod tests {
             .expect("compiled control must publish one click region")
             .id();
         let lease = PointerInputLease::new(authority, 1, PointerProviderScope::DesktopGlobal);
-        let owner = PointerStreamId::new(lease, PointerId::new(14), 1);
+        let owner = GestureOwner::new(
+            PointerStreamId::new(lease, PointerId::new(14), 1),
+            GestureLane::Desktop,
+        );
         let action = Arc::new(FrozenClickAction::TabStripControl(
             FrozenTabStripControlClick {
                 key: TabStripStateKey::new(surface, bar),
@@ -3732,6 +3814,136 @@ mod tests {
         assert_eq!(Arc::strong_count(&action), 3);
         drop(clone);
         assert_eq!(Arc::strong_count(&action), 2);
+    }
+
+    #[test]
+    fn a_gesture_freezes_its_lane_but_the_next_gesture_can_reuse_the_stream() {
+        let (mut start, _) = click_start_fixture();
+        let domain = start.owner.lease().authority_domain();
+        let host = PresentationLedger::new(domain)
+            .create_host()
+            .expect("test presentation host must be available");
+        let lease = PointerInputLease::new(domain, 1, PointerProviderScope::NativeJoined(host));
+        let stream = PointerStreamId::new(lease, start.owner.pointer(), 1);
+        let binding = ViewportBinding::new(
+            domain,
+            start.epoch,
+            start.presentation.surface(),
+            WindowToken::new(1),
+            WindowIncarnation::new(1),
+        );
+        let owner = GestureOwner::new(
+            stream,
+            GestureLane::NativeLocal {
+                binding,
+                coordinate_generation: CoordinateGeneration::new(1),
+            },
+        );
+        start.owner = owner;
+        let mut state = InteractionState::default();
+        let (session, _) = state
+            .begin_click(start.clone())
+            .expect("test native-local click must begin");
+        let frozen = state.clone();
+
+        for incompatible in [
+            GestureOwner::new(stream, GestureLane::Desktop),
+            GestureOwner::new(
+                stream,
+                GestureLane::NativeLocal {
+                    binding,
+                    coordinate_generation: CoordinateGeneration::new(2),
+                },
+            ),
+        ] {
+            assert_eq!(state.cancel_owner(incompatible), None);
+            assert_eq!(
+                state.take_click_for_release(session, incompatible, PointerButton::Primary),
+                Err(InteractionRejection::PointerStreamMismatch {
+                    expected: stream,
+                    actual: stream,
+                })
+            );
+            assert_eq!(state, frozen);
+        }
+        assert_eq!(state.active_owner(), Some(owner));
+        assert_eq!(state.active_stream(), Some(stream));
+        assert_eq!(
+            state
+                .take_click_for_release(session, owner, PointerButton::Primary)
+                .expect("the exact owner can release")
+                .owner,
+            owner
+        );
+        assert_eq!(state.active_stream(), None);
+
+        let desktop_owner = GestureOwner::new(stream, GestureLane::Desktop);
+        start.owner = desktop_owner;
+        let (next_session, _) = state
+            .begin_click(start)
+            .expect("the next gesture can choose the desktop lane");
+        assert_ne!(next_session, session);
+        assert_eq!(state.active_stream(), Some(stream));
+        assert_eq!(state.active_owner(), Some(desktop_owner));
+        assert_eq!(state.cancel_owner(owner), None);
+        assert_eq!(state.active_owner(), Some(desktop_owner));
+        state
+            .take_click_for_release(next_session, desktop_owner, PointerButton::Primary)
+            .expect("the new exact owner can release");
+        assert_eq!(state.status(), InteractionStatus::Idle);
+    }
+
+    #[test]
+    fn native_local_hover_never_falls_back_to_manipulation_or_outside_all() {
+        let surface = SurfaceId::new(21);
+        let binding = ViewportBinding::new(
+            EngineAuthorityDomainId::new_for_test(90),
+            WorkspaceEpoch::new(23),
+            surface,
+            WindowToken::new(1),
+            WindowIncarnation::new(1),
+        );
+        let route = |x, y| {
+            NativeLocalPointerRoute::new(
+                binding,
+                CoordinateGeneration::new(1),
+                PhysicalPoint::new(x, y).expect("test client position must be finite"),
+                LogicalPoint::new(x, y).expect("test surface position must be finite"),
+            )
+        };
+        let manipulation = route(100.0, 20.0);
+        let hover = route(20.0, 10.0);
+        let source_rect =
+            LogicalRect::new(0.0, 0.0, 40.0, 20.0).expect("test source rectangle is valid");
+        let position = ManipulationPositionKey::JournalNativeLocal {
+            manipulation: Some(manipulation),
+            hover: Some(hover),
+        };
+        assert_eq!(position.surface(), Some(surface));
+        assert_eq!(position.hover_surface(), Some(surface));
+        assert_eq!(
+            position.hover_probe(),
+            Some(SurfacePointer::new(surface, hover.surface_position()))
+        );
+        assert_eq!(position.logical_point(), Some(hover.surface_position()));
+        assert!(!position.exits_contained_source(surface, source_rect));
+
+        let unavailable_hover = ManipulationPositionKey::JournalNativeLocal {
+            manipulation: Some(manipulation),
+            hover: None,
+        };
+        assert_eq!(unavailable_hover.surface(), None);
+        assert_eq!(unavailable_hover.hover_surface(), None);
+        assert_eq!(unavailable_hover.hover_probe(), None);
+        assert_eq!(unavailable_hover.logical_point(), None);
+        assert!(unavailable_hover.hover_probe_requested());
+        assert!(!unavailable_hover.exits_contained_source(surface, source_rect));
+
+        let outside_contained_source = ManipulationPositionKey::JournalNativeLocal {
+            manipulation: Some(hover),
+            hover: Some(manipulation),
+        };
+        assert!(outside_contained_source.exits_contained_source(surface, source_rect));
     }
 
     #[test]

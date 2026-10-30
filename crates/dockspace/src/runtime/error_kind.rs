@@ -89,7 +89,7 @@ const fn backend_ingress_error_kind(error: &BackendIngressError) -> DockspaceRun
             DockspaceRuntimeErrorKind::Internal
         }
         BackendIngressError::ProviderUnavailable
-        | BackendIngressError::PointerProviderNotDesktopGlobal { .. } => {
+        | BackendIngressError::PointerProviderNotNativeJoined { .. } => {
             DockspaceRuntimeErrorKind::Unsupported
         }
         BackendIngressError::DrainReceiptConsumed
@@ -158,6 +158,7 @@ const fn pointer_journal_error_kind(
         }
         PointerJournalLedgerError::ForeignSurfaceLocalHost { .. }
         | PointerJournalLedgerError::ForeignHostLocalHost { .. }
+        | PointerJournalLedgerError::ForeignNativeJoinedHost { .. }
         | PointerJournalLedgerError::ForeignSurfaceLocalBinding { .. }
         | PointerJournalLedgerError::ForeignLease { .. }
         | PointerJournalLedgerError::UnknownLease { .. }
@@ -178,9 +179,10 @@ const fn pointer_journal_error_kind(
         | PointerJournalLedgerError::ForeignDeliveryBinding { .. }
         | PointerJournalLedgerError::ForeignCaptureBinding { .. }
         | PointerJournalLedgerError::ForeignDesktopRouteBinding { .. }
+        | PointerJournalLedgerError::ForeignNativeLocalRouteBinding { .. }
         | PointerJournalLedgerError::ForeignScrollDeliveryHost { .. }
         | PointerJournalLedgerError::ScrollDeliveryScopeMismatch { .. }
-        | PointerJournalLedgerError::DesktopScrollDeliveryBindingMissing { .. }
+        | PointerJournalLedgerError::NativeScrollDeliveryBindingMissing { .. }
         | PointerJournalLedgerError::ScrollDeliveryOwnerMismatch { .. }
         | PointerJournalLedgerError::ContinuationStreamMismatch { .. }
         | PointerJournalLedgerError::NonMonotonicTime { .. }
@@ -481,6 +483,7 @@ const fn pointer_receiver_geometry_error_kind(
         PointerReceiverGeometryError::LogicalPointUnavailable { .. }
         | PointerReceiverGeometryError::AbsenceSurfaceMismatch { .. }
         | PointerReceiverGeometryError::DesktopRoutePresentationMismatch { .. }
+        | PointerReceiverGeometryError::NativeLocalPresentationMismatch { .. }
         | PointerReceiverGeometryError::HostLocalHoverPresentationMismatch { .. }
         | PointerReceiverGeometryError::SurfaceMismatch { .. }
         | PointerReceiverGeometryError::RegionDoesNotCoverPoint { .. }

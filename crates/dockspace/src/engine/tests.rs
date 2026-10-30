@@ -1381,7 +1381,10 @@ fn joined_replacement_revokes_all_lanes_and_cancels_owned_gesture() {
     let prepared = engine
         .prepare_journal_tab_gesture(&presentation, TabGestureSource::Item(*tab.id()), tab_point)
         .expect("published tab gesture must prepare");
-    let owner = PointerStreamId::new(joined.pointer_provider(), TEST_POINTER, 1);
+    let owner = GestureOwner::new(
+        PointerStreamId::new(joined.pointer_provider(), TEST_POINTER, 1),
+        GestureLane::Desktop,
+    );
     let policy = engine.policy.clone();
     let outcome = engine
         .activate_prepared_journal_tab_gesture(

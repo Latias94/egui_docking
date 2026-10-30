@@ -11,7 +11,9 @@ use super::*;
 /// A token carries no receiver or presentation authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PointerContinuationToken {
-    pub(crate) owner: GestureOwner,
+    // The live gesture retains the lane. Session and token generation bind
+    // this stream reference without enlarging every high-frequency edge.
+    pub(crate) owner: PointerStreamId,
     pub(crate) session: PointerContinuationSession,
     pub(crate) generation: u64,
     pub(crate) deadline: Duration,
@@ -96,7 +98,7 @@ impl InteractionState {
             .checked_add(1)
             .ok_or(InteractionCounterError::ContinuationGenerationExhausted)?;
         Ok(PointerContinuationToken {
-            owner,
+            owner: owner.stream(),
             session,
             generation: self.last_continuation_generation,
             deadline,

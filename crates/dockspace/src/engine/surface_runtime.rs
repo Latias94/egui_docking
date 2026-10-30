@@ -801,7 +801,9 @@ impl DockEngine {
             crate::pointer_journal::AnyButtonDownAuthority::KnownAllReleased
                 if matches!(
                     self.pointer_provider().map(PointerInputLease::scope),
-                    Some(PointerProviderScope::DesktopGlobal)
+                    Some(
+                        PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_)
+                    )
                 ) =>
             {
                 PlatformFocusRestoreGate::KnownAllReleased

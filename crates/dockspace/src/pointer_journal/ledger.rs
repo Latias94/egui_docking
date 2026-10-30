@@ -842,6 +842,9 @@ impl PointerJournalLedger {
                     PointerProviderScope::DesktopGlobal,
                     PointerEdgeLocationLane::Desktop
                 ) | (
+                    PointerProviderScope::NativeJoined(_),
+                    PointerEdgeLocationLane::Desktop | PointerEdgeLocationLane::NativeLocal
+                ) | (
                     PointerProviderScope::HostLocal(_),
                     PointerEdgeLocationLane::HostLocal
                 ) | (
@@ -859,6 +862,7 @@ impl PointerJournalLedger {
             self.validate_capture_scope(lease, edge)?;
             self.validate_delivery_scope(lease, edge)?;
             self.validate_desktop_route_scope(lease, edge)?;
+            self.validate_native_local_route_scope(lease, edge)?;
             self.validate_scroll_scope(lease, edge)?;
         }
         if let Some(checkpoint) = journal.authority_checkpoint()
@@ -967,7 +971,10 @@ impl PointerJournalLedger {
         };
 
         match (lease.scope(), delivery_owner) {
-            (PointerProviderScope::DesktopGlobal, PointerEventDeliveryOwner::ProviderEndpoint)
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerEventDeliveryOwner::ProviderEndpoint,
+            )
             | (PointerProviderScope::HostLocal(_), PointerEventDeliveryOwner::Native(_))
             | (PointerProviderScope::SurfaceLocal(_), PointerEventDeliveryOwner::Native(_)) => {
                 Err(PointerJournalLedgerError::DeliveryScopeMismatch {
@@ -976,9 +983,10 @@ impl PointerJournalLedger {
                     submitted: delivery_owner,
                 })
             }
-            (PointerProviderScope::DesktopGlobal, PointerEventDeliveryOwner::Native(binding))
-                if binding.authority_domain() != self.authority_domain =>
-            {
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerEventDeliveryOwner::Native(binding),
+            ) if binding.authority_domain() != self.authority_domain => {
                 Err(PointerJournalLedgerError::ForeignDeliveryBinding {
                     lease,
                     sequence: edge.sequence(),
@@ -1002,7 +1010,10 @@ impl PointerJournalLedger {
         };
 
         match (lease.scope(), capture_owner) {
-            (PointerProviderScope::DesktopGlobal, PointerCaptureOwner::ProviderEndpoint)
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerCaptureOwner::ProviderEndpoint,
+            )
             | (PointerProviderScope::HostLocal(_), PointerCaptureOwner::Native(_))
             | (PointerProviderScope::SurfaceLocal(_), PointerCaptureOwner::Native(_)) => {
                 Err(PointerJournalLedgerError::CaptureScopeMismatch {
@@ -1011,9 +1022,10 @@ impl PointerJournalLedger {
                     submitted: capture_owner,
                 })
             }
-            (PointerProviderScope::DesktopGlobal, PointerCaptureOwner::Native(binding))
-                if binding.authority_domain() != self.authority_domain =>
-            {
+            (
+                PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_),
+                PointerCaptureOwner::Native(binding),
+            ) if binding.authority_domain() != self.authority_domain => {
                 Err(PointerJournalLedgerError::ForeignCaptureBinding {
                     lease,
                     sequence,
@@ -1053,6 +1065,30 @@ impl PointerJournalLedger {
         Ok(())
     }
 
+    fn validate_native_local_route_scope(
+        &self,
+        lease: PointerInputLease,
+        edge: &PointerEdge,
+    ) -> Result<(), PointerJournalLedgerError> {
+        let PointerEdgeLocation::NativeLocal {
+            route: Authority::Known(route),
+        } = edge.location()
+        else {
+            return Ok(());
+        };
+        let binding = route.binding();
+        if binding.authority_domain() != self.authority_domain {
+            return Err(PointerJournalLedgerError::ForeignNativeLocalRouteBinding {
+                lease,
+                sequence: edge.sequence(),
+                binding,
+                expected: self.authority_domain,
+                submitted: binding.authority_domain(),
+            });
+        }
+        Ok(())
+    }
+
     fn validate_scroll_scope(
         &self,
         lease: PointerInputLease,
@@ -1072,6 +1108,13 @@ impl PointerJournalLedger {
             });
         }
         match lease.scope() {
+            PointerProviderScope::NativeJoined(host) if endpoint.host() != host => {
+                Err(PointerJournalLedgerError::ScrollDeliveryScopeMismatch {
+                    lease,
+                    sequence: edge.sequence(),
+                    endpoint,
+                })
+            }
             PointerProviderScope::HostLocal(host)
                 if endpoint.host() != host || endpoint.binding().is_some() =>
             {
@@ -1092,14 +1135,19 @@ impl PointerJournalLedger {
                     endpoint,
                 })
             }
-            PointerProviderScope::DesktopGlobal if endpoint.binding().is_none() => Err(
-                PointerJournalLedgerError::DesktopScrollDeliveryBindingMissing {
-                    lease,
-                    sequence: edge.sequence(),
-                    endpoint,
-                },
-            ),
+            PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_)
+                if endpoint.binding().is_none() =>
+            {
+                Err(
+                    PointerJournalLedgerError::NativeScrollDeliveryBindingMissing {
+                        lease,
+                        sequence: edge.sequence(),
+                        endpoint,
+                    },
+                )
+            }
             PointerProviderScope::DesktopGlobal
+            | PointerProviderScope::NativeJoined(_)
             | PointerProviderScope::HostLocal(_)
             | PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope { .. }) => {
                 if let (Authority::Known(owner), Some(binding)) =
@@ -1281,6 +1329,18 @@ impl PointerJournalLedger {
     }
 
     fn validate_scope(&self, scope: PointerProviderScope) -> Result<(), PointerJournalLedgerError> {
+        if let PointerProviderScope::NativeJoined(host) = scope {
+            let submitted = host.authority_domain();
+            return if submitted == self.authority_domain {
+                Ok(())
+            } else {
+                Err(PointerJournalLedgerError::ForeignNativeJoinedHost {
+                    host,
+                    expected: self.authority_domain,
+                    submitted,
+                })
+            };
+        }
         if let PointerProviderScope::HostLocal(host) = scope {
             let submitted = host.authority_domain();
             return if submitted == self.authority_domain {
@@ -1347,6 +1407,430 @@ impl PointerJournalLedger {
         self.version
             .checked_next()
             .ok_or(PointerJournalLedgerError::LedgerVersionExhausted)
+    }
+}
+
+#[cfg(test)]
+mod native_joined_tests {
+    use super::*;
+    use crate::ids::WorkspaceEpoch;
+    use crate::presentation_observation::PresentationLedger;
+    use crate::viewport::{WindowIncarnation, WindowToken};
+
+    fn setup() -> (PointerJournalLedger, PresentationLedger, PointerInputLease) {
+        let domain = EngineAuthorityDomainId::new_for_test(1);
+        let mut presentations = PresentationLedger::new(domain);
+        let host = presentations.create_host().expect("joined host");
+        let mut ledger = PointerJournalLedger::new(domain);
+        let lease = ledger
+            .create_provider(
+                PointerProviderScope::NativeJoined(host),
+                PointerEdgeSequence::new(0),
+            )
+            .expect("native joined provider");
+        (ledger, presentations, lease)
+    }
+
+    fn binding(domain: EngineAuthorityDomainId, token: u64) -> ViewportBinding {
+        ViewportBinding::new(
+            domain,
+            WorkspaceEpoch::new(1),
+            SurfaceId::new(token),
+            WindowToken::new(token),
+            WindowIncarnation::new(1),
+        )
+    }
+
+    fn local_location(binding: ViewportBinding) -> PointerEdgeLocation {
+        PointerEdgeLocation::NativeLocal {
+            route: Authority::Known(NativeLocalPointerRoute::new(
+                binding,
+                CoordinateGeneration::new(7),
+                PhysicalPoint::new(40.0, 20.0).expect("physical point"),
+                LogicalPoint::new(20.0, 10.0).expect("logical point"),
+            )),
+        }
+    }
+
+    fn edge(binding: ViewportBinding, kind: PointerEdgeKind) -> PointerEdge {
+        PointerEdge::new_with_delivery(
+            PointerEdgeSequence::new(1),
+            PointerId::new(1),
+            kind,
+            local_location(binding),
+            Authority::Known(PointerEventDeliveryOwner::Native(binding)),
+            Authority::Known(PointerCaptureOwner::None),
+        )
+    }
+
+    fn journal(edge: PointerEdge) -> PointerEdgeJournal {
+        PointerEdgeJournal::new(
+            PointerEdgeSequence::new(0),
+            PointerEdgeSequence::new(1),
+            vec![edge],
+        )
+        .expect("complete journal")
+    }
+
+    fn scroll(endpoint: ScrollDeliveryEndpoint) -> PointerEdgeKind {
+        PointerEdgeKind::Scrolled(
+            ScrollEdge::new(
+                ScrollDeviceId::new(1),
+                None,
+                ScrollPhase::Discrete,
+                Some(ScrollDelta::LogicalPoints(
+                    FiniteScrollVector::new(0.0, 1.0).expect("finite delta"),
+                )),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                Authority::Known(ScrollModifiers::default()),
+                Authority::Known(endpoint),
+            )
+            .expect("scroll sample"),
+        )
+    }
+
+    #[test]
+    fn native_joined_keeps_native_scope_and_event_time_coordinates() {
+        let (_, _, lease) = setup();
+        let host = lease.scope().local_host().expect("joined host");
+        assert_eq!(lease.scope(), PointerProviderScope::NativeJoined(host));
+        assert!(!lease.scope().is_local());
+        assert_eq!(lease.scope().host_local(), None);
+        assert_eq!(lease.scope().surface_local(), None);
+        let binding = binding(lease.authority_domain(), 1);
+        let location = local_location(binding);
+        assert_eq!(location.desktop_route(), None);
+        assert_eq!(location.surface_local_position(), None);
+        let PointerEdgeLocation::NativeLocal {
+            route: Authority::Known(route),
+        } = location
+        else {
+            panic!("native client route");
+        };
+        assert_eq!(route.binding(), binding);
+        assert_eq!(route.coordinate_generation(), CoordinateGeneration::new(7));
+        assert_eq!(
+            route.client_position(),
+            PhysicalPoint::new(40.0, 20.0).unwrap()
+        );
+        assert_eq!(
+            route.surface_position(),
+            LogicalPoint::new(20.0, 10.0).unwrap()
+        );
+        let implicit = PointerEdge::new(
+            PointerEdgeSequence::new(1),
+            PointerId::new(1),
+            PointerEdgeKind::Moved,
+            location,
+            Authority::Known(PointerCaptureOwner::None),
+        );
+        assert_eq!(
+            implicit.delivery_owner(),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported)
+        );
+    }
+
+    #[test]
+    fn native_joined_foreign_host_enrollment_is_atomic() {
+        let domain = EngineAuthorityDomainId::new_for_test(1);
+        let mut ledger = PointerJournalLedger::new(domain);
+        let mut foreign = PresentationLedger::new(EngineAuthorityDomainId::new_for_test(2));
+        let host = foreign.create_host().expect("foreign host");
+        let before = ledger.clone();
+        assert!(matches!(
+            ledger.create_provider(
+                PointerProviderScope::NativeJoined(host),
+                PointerEdgeSequence::new(0)
+            ),
+            Err(PointerJournalLedgerError::ForeignNativeJoinedHost { .. })
+        ));
+        assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn native_joined_mixed_lanes_and_unlocated_release_keep_the_stream() {
+        let (mut ledger, _, lease) = setup();
+        let binding = binding(lease.authority_domain(), 1);
+        let press = edge(
+            binding,
+            PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        );
+        let mut moved = edge(binding, PointerEdgeKind::Moved);
+        moved.sequence = PointerEdgeSequence::new(2);
+        moved.location = PointerEdgeLocation::Desktop {
+            route: DesktopRouteFact::unknown(
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                AuthorityUnavailableReason::NotReported,
+            ),
+        };
+        let mut release = edge(
+            binding,
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+        );
+        release.sequence = PointerEdgeSequence::new(3);
+        release.location = PointerEdgeLocation::NativeLocal {
+            route: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        };
+        let journal = PointerEdgeJournal::new(
+            PointerEdgeSequence::new(0),
+            PointerEdgeSequence::new(3),
+            vec![press, moved, release],
+        )
+        .expect("complete mixed-lane journal");
+        let prepared = ledger
+            .prepare_candidate(lease, journal)
+            .expect("native lanes");
+        let commit = ledger
+            .commit_prepared(prepared)
+            .expect("commit native lanes");
+        let accepted = commit.accepted_edges();
+        assert_eq!(accepted.len(), 3);
+        assert!(
+            accepted
+                .iter()
+                .all(|edge| edge.stream() == accepted[0].stream())
+        );
+        assert_eq!(
+            ledger.retained_committed_through(lease).expect("watermark"),
+            PointerEdgeSequence::new(3)
+        );
+    }
+
+    #[test]
+    fn native_local_lane_cannot_bypass_other_provider_scopes() {
+        let (_, mut presentations, lease) = setup();
+        let host = presentations.create_host().expect("another host");
+        let binding = binding(lease.authority_domain(), 1);
+        for scope in [
+            PointerProviderScope::DesktopGlobal,
+            PointerProviderScope::HostLocal(host),
+            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(binding.surface()),
+            )),
+        ] {
+            let mut ledger = PointerJournalLedger::new(lease.authority_domain());
+            let provider = ledger
+                .create_provider(scope, PointerEdgeSequence::new(0))
+                .expect("provider");
+            let before = ledger.clone();
+            assert!(matches!(
+                ledger.prepare_candidate(provider, journal(edge(binding, PointerEdgeKind::Moved))),
+                Err(PointerJournalLedgerError::LocationScopeMismatch {
+                    submitted: PointerEdgeLocationLane::NativeLocal,
+                    ..
+                })
+            ));
+            assert_eq!(ledger, before);
+        }
+        let (ledger, _, lease) = setup();
+        for location in [
+            PointerEdgeLocation::HostLocal {
+                manipulation: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                hover: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            },
+            PointerEdgeLocation::SurfaceLocal {
+                position: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            },
+        ] {
+            let mut edge = edge(binding, PointerEdgeKind::Moved);
+            edge.location = location;
+            assert!(matches!(
+                ledger.prepare_candidate(lease, journal(edge)),
+                Err(PointerJournalLedgerError::LocationScopeMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn native_joined_rejects_provider_endpoints_and_foreign_native_bindings() {
+        let (ledger, _, lease) = setup();
+        let native = binding(lease.authority_domain(), 1);
+        let foreign = binding(EngineAuthorityDomainId::new_for_test(2), 1);
+        let before = ledger.clone();
+        let mut sample = edge(native, PointerEdgeKind::Moved);
+        sample.delivery_owner = Authority::Known(PointerEventDeliveryOwner::ProviderEndpoint);
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(sample)),
+            Err(PointerJournalLedgerError::DeliveryScopeMismatch { .. })
+        ));
+        let mut sample = edge(native, PointerEdgeKind::Moved);
+        sample.capture_owner = Authority::Known(PointerCaptureOwner::ProviderEndpoint);
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(sample)),
+            Err(PointerJournalLedgerError::CaptureScopeMismatch { .. })
+        ));
+        let mut sample = edge(native, PointerEdgeKind::Moved);
+        sample.delivery_owner = Authority::Known(PointerEventDeliveryOwner::Native(foreign));
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(sample)),
+            Err(PointerJournalLedgerError::ForeignDeliveryBinding { .. })
+        ));
+        let mut sample = edge(native, PointerEdgeKind::Moved);
+        sample.capture_owner = Authority::Known(PointerCaptureOwner::Native(foreign));
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(sample)),
+            Err(PointerJournalLedgerError::ForeignCaptureBinding { .. })
+        ));
+        let mut sample = edge(native, PointerEdgeKind::Moved);
+        sample.location = local_location(foreign);
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(sample)),
+            Err(PointerJournalLedgerError::ForeignNativeLocalRouteBinding { .. })
+        ));
+        for capture in [
+            PointerCaptureOwner::ProviderEndpoint,
+            PointerCaptureOwner::Native(foreign),
+        ] {
+            let checkpoint = PointerAuthorityCheckpoint::known(
+                PointerEdgeSequence::new(0),
+                vec![
+                    PointerStateObservation::new(
+                        PointerId::new(1),
+                        Vec::new(),
+                        Authority::Known(capture),
+                    )
+                    .expect("pointer state"),
+                ],
+            )
+            .expect("checkpoint");
+            let journal = journal(edge(native, PointerEdgeKind::Moved))
+                .with_authority_checkpoint(checkpoint)
+                .expect("checkpoint boundary");
+            assert!(matches!(
+                ledger.prepare_candidate(lease, journal),
+                Err(PointerJournalLedgerError::CaptureScopeMismatch { .. }
+                    | PointerJournalLedgerError::ForeignCaptureBinding { .. })
+            ));
+        }
+        assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn native_joined_scroll_requires_the_exact_host_and_native_delivery() {
+        let (ledger, mut presentations, lease) = setup();
+        let host = lease.scope().local_host().expect("joined host");
+        let other_host = presentations.create_host().expect("another host");
+        let native = binding(lease.authority_domain(), 1);
+        let other_native = binding(lease.authority_domain(), 2);
+        let endpoint = ScrollDeliveryEndpoint::new(
+            host,
+            native.surface(),
+            Some(native),
+            CoordinateGeneration::new(7),
+        )
+        .expect("native endpoint");
+        assert!(
+            ledger
+                .prepare_candidate(lease, journal(edge(native, scroll(endpoint))))
+                .is_ok()
+        );
+        let endpoint = ScrollDeliveryEndpoint::new(
+            other_host,
+            native.surface(),
+            Some(native),
+            CoordinateGeneration::new(7),
+        )
+        .expect("other host endpoint");
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(edge(native, scroll(endpoint)))),
+            Err(PointerJournalLedgerError::ScrollDeliveryScopeMismatch { .. })
+        ));
+        let endpoint =
+            ScrollDeliveryEndpoint::new(host, native.surface(), None, CoordinateGeneration::new(7))
+                .expect("headless endpoint");
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(edge(native, scroll(endpoint)))),
+            Err(PointerJournalLedgerError::NativeScrollDeliveryBindingMissing { .. })
+        ));
+        let endpoint = ScrollDeliveryEndpoint::new(
+            host,
+            other_native.surface(),
+            Some(other_native),
+            CoordinateGeneration::new(7),
+        )
+        .expect("other native endpoint");
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(edge(native, scroll(endpoint)))),
+            Err(PointerJournalLedgerError::ScrollDeliveryOwnerMismatch { .. })
+        ));
+        let mut foreign = PresentationLedger::new(EngineAuthorityDomainId::new_for_test(2));
+        let foreign_host = foreign.create_host().expect("foreign host");
+        let foreign_binding = binding(foreign_host.authority_domain(), 1);
+        let endpoint = ScrollDeliveryEndpoint::new(
+            foreign_host,
+            foreign_binding.surface(),
+            Some(foreign_binding),
+            CoordinateGeneration::new(7),
+        )
+        .expect("foreign endpoint");
+        assert!(matches!(
+            ledger.prepare_candidate(lease, journal(edge(native, scroll(endpoint)))),
+            Err(PointerJournalLedgerError::ForeignScrollDeliveryHost { .. })
+        ));
+    }
+
+    #[test]
+    fn native_local_button_and_capture_keep_their_real_binding_until_retirement() {
+        for capture_only in [false, true] {
+            let (mut ledger, _, lease) = setup();
+            let native = binding(lease.authority_domain(), 1);
+            let mut initial = if capture_only {
+                let mut sample = edge(native, PointerEdgeKind::Moved);
+                sample.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+                sample
+            } else {
+                edge(
+                    native,
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                )
+            };
+            // Capture must remain an independent retirement dependency even
+            // when the event was delivered through another native endpoint.
+            if capture_only {
+                initial.delivery_owner = Authority::Known(PointerEventDeliveryOwner::Native(
+                    binding(lease.authority_domain(), 2),
+                ));
+                initial.location = local_location(binding(lease.authority_domain(), 2));
+            }
+            let prepared = ledger
+                .prepare_candidate(lease, journal(initial))
+                .expect("native input");
+            let commit = ledger
+                .commit_prepared(prepared)
+                .expect("commit native input");
+            let stream = commit.accepted_edges()[0].stream();
+            let mut moved = edge(binding(lease.authority_domain(), 2), PointerEdgeKind::Moved);
+            moved.sequence = PointerEdgeSequence::new(2);
+            moved.capture_owner = Authority::Unknown(AuthorityUnavailableReason::NotReported);
+            moved.location = PointerEdgeLocation::NativeLocal {
+                route: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            };
+            let journal = PointerEdgeJournal::new(
+                PointerEdgeSequence::new(1),
+                PointerEdgeSequence::new(2),
+                vec![moved],
+            )
+            .expect("continuation journal");
+            let prepared = ledger
+                .prepare_candidate(lease, journal)
+                .expect("continuation");
+            ledger
+                .commit_prepared(prepared)
+                .expect("commit continuation");
+            assert_eq!(
+                ledger
+                    .retire_native_binding_input(lease, native)
+                    .expect("binding retirement"),
+                vec![stream]
+            );
+            assert_eq!(ledger.active_lease(), Some(lease));
+            assert!(ledger.active_streams.is_empty());
+            assert_eq!(
+                ledger.retained_committed_through(lease).expect("watermark"),
+                PointerEdgeSequence::new(2)
+            );
+        }
     }
 }
 

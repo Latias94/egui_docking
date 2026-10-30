@@ -1068,7 +1068,7 @@ impl DockEngine {
                 }
                 PointerEventDeliveryOwner::ProviderEndpoint
             }
-            PointerProviderScope::DesktopGlobal => {
+            PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_) => {
                 let Some(binding) = endpoint.binding() else {
                     return Err(scroll_invariant(
                         cause,
