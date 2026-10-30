@@ -169,7 +169,7 @@ fn multiple_pending_children() -> (
             panic!("each public tear-off must request a real native child");
         };
         let (binding, placement) = (*binding, *placement);
-        let Some(NativeEffectAcknowledgement::Presentation(created)) = create.accepted() else {
+        let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
             panic!("each create must return its exact acknowledgement");
         };
         observed.push((
@@ -181,7 +181,11 @@ fn multiple_pending_children() -> (
                 .with_presentation_scale_factor(native_scale())
                 .with_input(NativeWindowInputState::ReceivesInput, None)
                 .with_close(NativeCloseState::Clear, None)
-                .with_presentation(NativeWindowPresentationState::Hidden, Some(created)),
+                .with_presentation(NativeWindowPresentationState::Hidden, None)
+                .with_create_readiness(
+                    crate::runtime::NativeCreateReadiness::Created,
+                    Some(created),
+                ),
         ));
     }
     let mut observed: [_; 2] = observed.try_into().unwrap();
@@ -204,6 +208,7 @@ fn multiple_pending_children() -> (
         };
         observed[index].1 = observed[index]
             .1
+            .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
             .with_presentation(NativeWindowPresentationState::Hidden, Some(shown));
     }
     // Exact show acknowledgements precede the later visibility boundary.

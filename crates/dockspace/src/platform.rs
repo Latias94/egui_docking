@@ -18,6 +18,157 @@ use crate::viewport::{
 };
 use crate::viewport_focus::FocusObservationEnvelope;
 
+/// Window and renderer preparation chosen for one native provider lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeCreateStrategy {
+    /// The host supplies an explicitly prepared visible window and render target.
+    DirectPrepared,
+    /// The host requires exact hidden, pre-show, show and post-show evidence.
+    Staged,
+}
+
+/// Host-observed creation and renderer preparation for one exact binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeCreateReadiness {
+    /// The platform window exists; renderer preparation is not yet established.
+    Created,
+    /// The window and renderer resources can accept a complete semantic output.
+    Prepared,
+    /// Renderer preparation failed after creation; ordinary cleanup owns the window.
+    Failed,
+}
+
+/// Preparation facts use the existing per-window observation sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WindowCreatePreparationObservation {
+    binding: ViewportBinding,
+    generation: CoordinateObservationGeneration,
+    inventory_generation: InventoryGeneration,
+    readiness: Authority<NativeCreateReadiness>,
+    acknowledged_create: Option<EffectId>,
+}
+
+impl WindowCreatePreparationObservation {
+    pub(crate) const fn new(
+        binding: ViewportBinding,
+        generation: CoordinateObservationGeneration,
+        readiness: Authority<NativeCreateReadiness>,
+        acknowledged_create: Option<EffectId>,
+    ) -> Self {
+        Self {
+            binding,
+            generation,
+            inventory_generation: InventoryGeneration::new(0),
+            readiness,
+            acknowledged_create,
+        }
+    }
+
+    pub(crate) const fn with_inventory_generation(
+        mut self,
+        generation: InventoryGeneration,
+    ) -> Self {
+        self.inventory_generation = generation;
+        self
+    }
+
+    pub(crate) const fn binding(self) -> ViewportBinding {
+        self.binding
+    }
+    pub(crate) const fn generation(self) -> CoordinateObservationGeneration {
+        self.generation
+    }
+    pub(crate) const fn inventory_generation(self) -> InventoryGeneration {
+        self.inventory_generation
+    }
+    pub(crate) const fn acknowledged_create(self) -> Option<EffectId> {
+        self.acknowledged_create
+    }
+    pub(crate) const fn known_readiness(self) -> Option<NativeCreateReadiness> {
+        match self.readiness {
+            Authority::Known(value) => Some(value),
+            Authority::Unknown(_) => None,
+        }
+    }
+
+    fn same_provider_envelope(self, other: Self) -> bool {
+        self.binding == other.binding
+            && self.generation == other.generation
+            && self.readiness == other.readiness
+            && self.acknowledged_create == other.acknowledged_create
+    }
+}
+
+/// Preparation stays in the exact binding record, with no independent sequence issuer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WindowCreatePreparationObservationStream {
+    current: Option<WindowCreatePreparationObservation>,
+    last_generation: Option<CoordinateObservationGeneration>,
+    last_envelope: Option<WindowCreatePreparationObservation>,
+    requires_tombstone: bool,
+    prepared_since: Option<CoordinateObservationGeneration>,
+}
+
+impl WindowCreatePreparationObservationStream {
+    pub(crate) fn observe(
+        &mut self,
+        binding: ViewportBinding,
+        observation: Option<WindowCreatePreparationObservation>,
+    ) {
+        let Some(observation) = observation.filter(|observation| observation.binding() == binding)
+        else {
+            self.requires_tombstone |= self.current.is_some();
+            self.current = None;
+            self.prepared_since = None;
+            return;
+        };
+        match self.last_generation {
+            Some(generation) if observation.generation() < generation => return,
+            Some(generation) if observation.generation() == generation => {
+                if self
+                    .last_envelope
+                    .is_none_or(|last| !last.same_provider_envelope(observation))
+                {
+                    self.current = None;
+                    self.prepared_since = None;
+                    self.requires_tombstone = true;
+                }
+                return;
+            }
+            Some(generation) if generation.checked_next() != Some(observation.generation()) => {
+                self.last_generation = Some(observation.generation());
+                self.last_envelope = Some(observation);
+                self.current = None;
+                self.prepared_since = None;
+                self.requires_tombstone = true;
+                return;
+            }
+            Some(_) | None => {}
+        }
+        self.last_generation = Some(observation.generation());
+        self.last_envelope = Some(observation);
+        if self.requires_tombstone && observation.known_readiness().is_some() {
+            self.current = None;
+            self.prepared_since = None;
+            return;
+        }
+        self.requires_tombstone = false;
+        if observation.known_readiness() == Some(NativeCreateReadiness::Prepared) {
+            self.prepared_since.get_or_insert(observation.generation());
+        } else {
+            self.prepared_since = None;
+        }
+        self.current = Some(observation);
+    }
+
+    pub(crate) const fn current(self) -> Option<WindowCreatePreparationObservation> {
+        self.current
+    }
+    pub(crate) const fn prepared_since(self) -> Option<CoordinateObservationGeneration> {
+        self.prepared_since
+    }
+}
+
 /// One independently degradable platform requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PlatformRequirement {
@@ -1289,6 +1440,7 @@ pub struct ObservedWindow {
     input_state: Authority<WindowInputState>,
     input_observation: Option<WindowInputObservation>,
     presentation_observation: Option<WindowPresentationObservation>,
+    create_preparation: Option<WindowCreatePreparationObservation>,
     close_requested: Authority<bool>,
 }
 
@@ -1307,6 +1459,7 @@ impl ObservedWindow {
             input_state: unavailable(),
             input_observation: None,
             presentation_observation: None,
+            create_preparation: None,
             close_requested: unavailable(),
         }
     }
@@ -1334,6 +1487,18 @@ impl ObservedWindow {
     #[must_use]
     pub const fn presentation_observation(&self) -> Option<WindowPresentationObservation> {
         self.presentation_observation
+    }
+
+    pub(crate) const fn create_preparation(&self) -> Option<WindowCreatePreparationObservation> {
+        self.create_preparation
+    }
+
+    pub(crate) fn with_create_preparation(
+        mut self,
+        value: WindowCreatePreparationObservation,
+    ) -> Self {
+        self.create_preparation = Some(value);
+        self
     }
 
     #[must_use]
@@ -1791,6 +1956,17 @@ fn validate_input_observations(windows: &[ObservedWindow]) -> Result<(), Platfor
                 },
             );
         }
+        if let Some(preparation) = window.create_preparation() {
+            if preparation.binding() != binding {
+                return Err(PlatformSnapshotError::CreatePreparationBindingMismatch { binding });
+            }
+            if window
+                .coordinate_observation()
+                .is_none_or(|coordinates| coordinates.generation() != preparation.generation())
+            {
+                return Err(PlatformSnapshotError::CreatePreparationCoordinateMismatch { binding });
+            }
+        }
     }
     Ok(())
 }
@@ -1828,6 +2004,10 @@ fn validate_close_observations(
 /// Malformed complete platform snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum PlatformSnapshotError {
+    #[error("native create preparation does not belong to window {binding:?}")]
+    CreatePreparationBindingMismatch { binding: ViewportBinding },
+    #[error("native create preparation lacks its exact coordinate observation for {binding:?}")]
+    CreatePreparationCoordinateMismatch { binding: ViewportBinding },
     #[error(
         "a complete native-window inventory was supplied without supported inventory capability"
     )]
@@ -1947,6 +2127,118 @@ mod tests {
             CapabilityObservationGeneration::new(generation),
             Authority::Known(roster),
         )
+    }
+
+    #[test]
+    fn renderer_preparation_continuity_survives_compatible_facts_but_not_revocation() {
+        let binding = binding(1);
+        let mut stream = WindowCreatePreparationObservationStream::default();
+        let observation = |generation, readiness| {
+            WindowCreatePreparationObservation::new(
+                binding,
+                CoordinateObservationGeneration::new(generation),
+                readiness,
+                None,
+            )
+        };
+        let first = observation(1, Authority::Known(NativeCreateReadiness::Prepared));
+        stream.observe(binding, Some(first));
+        stream.observe(
+            binding,
+            Some(observation(
+                2,
+                Authority::Known(NativeCreateReadiness::Prepared),
+            )),
+        );
+        assert_eq!(
+            stream.prepared_since(),
+            Some(CoordinateObservationGeneration::new(1))
+        );
+        stream.observe(
+            binding,
+            Some(observation(
+                3,
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            )),
+        );
+        assert_eq!(stream.prepared_since(), None);
+        stream.observe(binding, Some(first));
+        assert_eq!(
+            stream.prepared_since(),
+            None,
+            "a late prepared fact cannot revive revoked readiness"
+        );
+        stream.observe(
+            binding,
+            Some(observation(
+                4,
+                Authority::Known(NativeCreateReadiness::Prepared),
+            )),
+        );
+        assert_eq!(
+            stream.prepared_since(),
+            Some(CoordinateObservationGeneration::new(4))
+        );
+        stream.observe(
+            binding,
+            Some(observation(
+                5,
+                Authority::Known(NativeCreateReadiness::Created),
+            )),
+        );
+        assert_eq!(
+            stream.prepared_since(),
+            None,
+            "creation alone does not retain renderer readiness"
+        );
+    }
+
+    #[test]
+    fn create_preparation_requires_its_exact_binding_and_coordinate_envelope() {
+        let current = binding(1);
+        let reason = AuthorityUnavailableReason::NotReported;
+        let window = ObservedWindow::new(current).with_coordinate_observation(
+            WindowCoordinateObservation::new(
+                current,
+                CoordinateObservationGeneration::new(1),
+                Authority::Unknown(reason),
+                Authority::Unknown(reason),
+                Authority::Unknown(reason),
+                Authority::Unknown(reason),
+            ),
+        );
+        for (binding, generation, expected) in [
+            (
+                binding(2),
+                1,
+                PlatformSnapshotError::CreatePreparationBindingMismatch { binding: current },
+            ),
+            (
+                current,
+                2,
+                PlatformSnapshotError::CreatePreparationCoordinateMismatch { binding: current },
+            ),
+        ] {
+            let malformed =
+                window
+                    .clone()
+                    .with_create_preparation(WindowCreatePreparationObservation::new(
+                        binding,
+                        CoordinateObservationGeneration::new(generation),
+                        Authority::Known(NativeCreateReadiness::Prepared),
+                        None,
+                    ));
+            assert_eq!(
+                snapshot_with_unknown_inventory(
+                    1,
+                    PlatformCapabilities::default(),
+                    vec![malformed],
+                    Vec::new(),
+                    unknown_work_areas(1)
+                ),
+                Err(expected)
+            );
+        }
     }
 
     #[test]

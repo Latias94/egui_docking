@@ -35,6 +35,17 @@ This is public-contract and renderer-neutral input evidence. It does not prove
 physical OS event delivery or actual GPU presentation. The egui complete Burst
 and ordinary-content matrices are qualified separately in `docs/VALIDATION.md`.
 
+`tests/direct_prepared_native.rs` supplies DirectPrepared window and renderer
+readiness through public facts, without egui callbacks, staging paints or
+ShowWindow. Its recording sink verifies complete prospective child content,
+exact first-live publication, cancelled/failed/late output, readiness revocation,
+foreign create acknowledgements, source-version revalidation and replacement
+strategy. A replacement's readiness recovery refreshes its semantic output
+without redundant measurement. A separate Staged journey accepts creation
+before visibility is known while preserving its hidden/output barriers. These
+are host-contract traces; actual platform creation and presentation remain host
+responsibilities and have separately labelled native reference qualification.
+
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,

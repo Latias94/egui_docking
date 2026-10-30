@@ -41,7 +41,7 @@ impl From<ViewportRole> for NativeSurfaceRole {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum NativeEffectOperation {
-    /// Create one hidden native window.
+    /// Create one native window with the enrolled preparation strategy.
     CreateWindow {
         /// Exact logical/native binding to create.
         binding: NativeSurfaceBinding,
@@ -49,13 +49,15 @@ pub enum NativeEffectOperation {
         placement: PhysicalRect,
         /// Requested ownership role.
         role: NativeSurfaceRole,
+        /// Window and renderer preparation required by the enrolled host.
+        strategy: super::NativeCreateStrategy,
     },
     /// Show a previously staged hidden native window.
     ShowWindow {
         /// Exact logical/native binding to show.
         binding: NativeSurfaceBinding,
     },
-    /// Close a staging window created by an operation which did not complete.
+    /// Destroy the exact window whose preparation was cancelled or failed.
     CompensatingClose {
         /// Exact logical/native binding to close.
         binding: NativeSurfaceBinding,
@@ -105,6 +107,8 @@ pub enum NativeEffectOperation {
         placement: PhysicalRect,
         /// Requested ownership role.
         role: NativeSurfaceRole,
+        /// The same provider-frozen preparation strategy as initial creation.
+        strategy: super::NativeCreateStrategy,
     },
     /// Resolve one exact native close edge.
     ResolveNativeClose {
@@ -156,6 +160,7 @@ impl From<NativeCloseResolution> for NativeCloseDisposition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeEffectCorrelationKind {
+    Create,
     Input,
     Presentation,
     Close,
@@ -202,16 +207,18 @@ impl NativeEffectRequest {
         let native_binding = NativeSurfaceBinding::from_binding(emission.provider(), binding);
         let (operation, correlation) = match emission.effect() {
             PlatformEffect::CreateWindow {
-                placement, role, ..
+                placement,
+                role,
+                strategy,
+                ..
             } => (
                 NativeEffectOperation::CreateWindow {
                     binding: native_binding,
                     placement: *placement,
                     role: (*role).into(),
+                    strategy: *strategy,
                 },
-                // A created window must acknowledge the exact hidden
-                // incarnation before the core may advance its bring-up saga.
-                NativeEffectCorrelationKind::Presentation,
+                NativeEffectCorrelationKind::Create,
             ),
             PlatformEffect::ShowWindow { .. } => (
                 NativeEffectOperation::ShowWindow {
@@ -269,16 +276,18 @@ impl NativeEffectRequest {
                 NativeEffectCorrelationKind::ExternalFact,
             ),
             PlatformEffect::RequestReplacement {
-                placement, role, ..
+                placement,
+                role,
+                strategy,
+                ..
             } => (
                 NativeEffectOperation::RequestReplacement {
                     binding: native_binding,
                     placement: *placement,
                     role: (*role).into(),
+                    strategy: *strategy,
                 },
-                // Replacement has the same first-hidden presentation barrier
-                // as an initial create.
-                NativeEffectCorrelationKind::Presentation,
+                NativeEffectCorrelationKind::Create,
             ),
             PlatformEffect::ResolveNativeClose {
                 edge, resolution, ..
@@ -328,6 +337,13 @@ impl NativeEffectRequest {
     pub fn accepted(mut self) -> Option<NativeEffectAcknowledgement> {
         self.storage = None;
         match self.correlation {
+            NativeEffectCorrelationKind::Create => Some(NativeEffectAcknowledgement::Create(
+                NativeCreateEffectAcknowledgement {
+                    provider: self.provider,
+                    binding: self.binding,
+                    effect: self.effect,
+                },
+            )),
             NativeEffectCorrelationKind::Input => Some(NativeEffectAcknowledgement::Input(
                 NativeInputEffectAcknowledgement {
                     provider: self.provider,
@@ -649,6 +665,8 @@ impl NativeEffectDropQueue {
 #[non_exhaustive]
 #[derive(Debug, PartialEq)]
 pub enum NativeEffectAcknowledgement {
+    /// Correlate creation and renderer preparation for the exact requested lifetime.
+    Create(NativeCreateEffectAcknowledgement),
     /// Correlate a later pointer-input property observation.
     Input(NativeInputEffectAcknowledgement),
     /// Correlate a later window-presentation property observation.
@@ -657,6 +675,14 @@ pub enum NativeEffectAcknowledgement {
     Close(NativeCloseEffectAcknowledgement),
     /// Correlate one delayed destructive predecessor result.
     Cleanup(NativeCleanupObservation),
+}
+
+/// Exact create/replacement acknowledgement; dispatch acceptance alone is not readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeCreateEffectAcknowledgement {
+    pub(super) provider: PlatformObservationLease,
+    pub(super) binding: ViewportBinding,
+    pub(super) effect: EffectId,
 }
 
 /// Exact pointer-input effect acknowledgement for one native observation.
@@ -1128,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn create_and_replacement_return_exact_presentation_acknowledgements() {
+    fn create_and_replacement_return_exact_create_acknowledgements() {
         let domain = EngineAuthorityDomainId::new_for_test(94);
         let mut providers = PlatformObservationAuthority::new(domain);
         let provider = providers.create().expect("the test provider mints");
@@ -1147,11 +1173,13 @@ mod tests {
                 binding,
                 placement,
                 role: ViewportRole::Child,
+                strategy: crate::platform::NativeCreateStrategy::Staged,
             },
             PlatformEffect::RequestReplacement {
                 binding,
                 placement,
                 role: ViewportRole::Child,
+                strategy: crate::platform::NativeCreateStrategy::Staged,
             },
         ] {
             let mut ledger = EffectLedger::default();
@@ -1163,10 +1191,9 @@ mod tests {
                 .expect("one emission exists");
             let request =
                 NativeEffectRequest::from_emission(&emission, NativeEffectDropQueue::default());
-            let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) =
-                request.accepted()
+            let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = request.accepted()
             else {
-                panic!("native create and replacement return a presentation acknowledgement");
+                panic!("native create and replacement return a create acknowledgement");
             };
             assert_eq!(acknowledgement.provider, provider);
             assert_eq!(acknowledgement.binding, binding);

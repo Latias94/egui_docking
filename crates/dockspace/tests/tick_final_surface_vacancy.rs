@@ -1,5 +1,6 @@
 use super::support;
 
+use crate::platform::{NativeCreateReadiness, WindowCreatePreparationObservation};
 use dockspace::close::CloseDecision;
 use dockspace::command::{
     ContainedPosition, RootContent, RootPresentationTarget, WorkspaceCommand,
@@ -204,15 +205,35 @@ impl NativeVacancyFixture {
                 .expect("native saga remains queryable")
                 .phase();
             let acknowledged_effect = phase.presentation_correlation_effect();
+            let effect = self
+                .engine
+                .viewport()
+                .effects()
+                .record(acknowledged_effect)
+                .expect("native correlation effect remains queryable")
+                .request()
+                .effect();
+            let acknowledged_create = matches!(
+                effect,
+                PlatformEffect::CreateWindow { .. } | PlatformEffect::RequestReplacement { .. }
+            )
+            .then_some(acknowledged_effect);
+            let acknowledged_show =
+                matches!(effect, PlatformEffect::ShowWindow { .. }).then_some(acknowledged_effect);
             windows.push(
-                observed_native_window(request, generation).with_presentation_observation(
-                    WindowPresentationObservation::new(
+                observed_native_window(request, generation)
+                    .with_create_preparation(WindowCreatePreparationObservation::new(
+                        request.binding(),
+                        CoordinateObservationGeneration::new(generation),
+                        Authority::Known(NativeCreateReadiness::Created),
+                        acknowledged_create,
+                    ))
+                    .with_presentation_observation(WindowPresentationObservation::new(
                         request.binding(),
                         PresentationObservationGeneration::new(generation),
                         Authority::Known(state),
-                        PresentationEffectAcknowledgement::known(Some(acknowledged_effect)),
-                    ),
-                ),
+                        PresentationEffectAcknowledgement::known(acknowledged_show),
+                    )),
             );
         }
         let inventory_observation = support::known_inventory_observation(generation, &windows);

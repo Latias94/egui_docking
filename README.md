@@ -51,9 +51,12 @@ docking and multiview crate.
 Native creation now keeps source ownership through staging and prospective child
 painting. Only an accepted exact first-live content output publishes topology,
 workspace revision and admission together. A dropped frame or output and a
-cancelled pending create preserve source ownership. Fixed hidden staging still
-needs to become an adapter strategy before universal native-host readiness is
-claimed. See the current qualification and remaining gates in
+cancelled pending create preserve source ownership. Native enrollment now selects
+`DirectPrepared` for an engine-prepared window and renderer, or `Staged` for the
+egui reference host. Both feed the same exact first-live publication and cleanup
+owners. This strategy cutover passes the current core, adapter and reference
+window gates; broader native input and platform readiness remain open. See
+current evidence and remaining gates in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 The experimental native adapter reserves 4,096 raw callback slots and two

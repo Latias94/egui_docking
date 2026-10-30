@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use dockspace::runtime::{
-    NativePresentationEffectAcknowledgement, NativeStagingPaintRequest, NativeSurfaceBinding,
+    NativeCreateEffectAcknowledgement, NativePresentationEffectAcknowledgement,
+    NativeStagingPaintRequest, NativeSurfaceBinding,
 };
 use eframe::{
     NativePhysicalRect, NativeViewportFocusCommandToken,
@@ -75,6 +76,8 @@ struct NativeWindowResource {
     hidden_render: bool,
     staging: Option<StagingReceipt>,
     callbacks: NativeCommandCallbacks,
+    created: bool,
+    create_ack: Option<NativeCreateEffectAcknowledgement>,
     presentation_ack: Option<NativePresentationEffectAcknowledgement>,
     no_frame: Option<PendingNoFrameInvalidation>,
 }
@@ -82,6 +85,8 @@ struct NativeWindowResource {
 impl NativeWindowResource {
     fn is_empty(&self) -> bool {
         !self.retained_by_host
+            && (!self.created || self.retired)
+            && self.create_ack.is_none()
             && self.presentation_ack.is_none()
             && self.no_frame.is_none()
             && self.create_rect.is_none()
@@ -95,7 +100,8 @@ impl NativeWindowResource {
     }
 
     fn has_pending_work(&self) -> bool {
-        self.presentation_ack.is_some()
+        self.create_ack.is_some()
+            || self.presentation_ack.is_some()
             || self.no_frame.is_some()
             || self.create_rect.is_some()
             || self.hidden_render
@@ -261,6 +267,64 @@ impl NativeWindowResources {
                 .then_some(resource.presentation_ack)
                 .flatten()
         })
+    }
+
+    /// An outer Some preserves Created even after its acknowledgement is consumed.
+    pub(super) fn created_ack(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<Option<NativeCreateEffectAcknowledgement>> {
+        self.entries
+            .iter()
+            .find(|resource| resource.binding == binding && resource.created)
+            .map(|resource| resource.create_ack)
+    }
+
+    /// The admitted create already prepaid this exact owner; no row is added here.
+    pub(super) fn can_retain_create_ack(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.resource(viewport, binding).is_some() && self.created_ack(binding).is_none()
+    }
+
+    pub(super) fn retain_create_ack(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        acknowledgement: NativeCreateEffectAcknowledgement,
+    ) -> Result<(), NativeCreateEffectAcknowledgement> {
+        if !self.can_retain_create_ack(viewport, binding) {
+            return Err(acknowledgement);
+        }
+        let resource = self
+            .resource_mut(viewport, binding)
+            .expect("create ACK admission requires its exact owner");
+        resource.created = true;
+        resource.create_ack = Some(acknowledgement);
+        Ok(())
+    }
+
+    pub(super) fn clear_create_ack(&mut self, binding: NativeSurfaceBinding) -> bool {
+        let Some(resource) = self
+            .entries
+            .iter_mut()
+            .find(|resource| resource.binding == binding && resource.create_ack.is_some())
+        else {
+            return false;
+        };
+        resource.create_ack = None;
+        let viewport = resource.viewport;
+        self.prune(viewport, binding);
+        true
+    }
+
+    pub(super) fn create_ack_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|resource| resource.create_ack.is_some())
+            .count()
     }
 
     /// Must succeed before taking the affine request that produces its ACK.
@@ -432,6 +496,8 @@ impl NativeWindowResources {
             hidden_render: false,
             staging: None,
             callbacks: NativeCommandCallbacks::default(),
+            created: false,
+            create_ack: None,
             presentation_ack: None,
             no_frame: None,
         });
@@ -948,6 +1014,7 @@ mod tests {
 
     pub(super) fn staging_observations() -> (
         [NativeStagingPaintRequest; 2],
+        NativeCreateEffectAcknowledgement,
         NativePresentationEffectAcknowledgement,
     ) {
         let surface = SurfaceId::new(1);
@@ -969,7 +1036,10 @@ mod tests {
         policy.set_allow_native_surfaces(true);
         let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .unwrap();
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -1049,8 +1119,8 @@ mod tests {
             NativeEffectOperation::CreateWindow { binding, .. } => *binding,
             operation => panic!("unexpected native create effect: {operation:?}"),
         };
-        let Some(NativeEffectAcknowledgement::Presentation(created)) = create.accepted() else {
-            panic!("the create request must provide its presentation acknowledgement")
+        let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
+            panic!("the create request must provide its create acknowledgement")
         };
         let mut acknowledgement = Some(created);
         let requests = std::array::from_fn(|_| {
@@ -1060,8 +1130,9 @@ mod tests {
                 .with_native_scale_factor(scale)
                 .with_presentation_scale_factor(scale)
                 .with_input(NativeWindowInputState::ReceivesInput, None)
-                .with_presentation(
-                    NativeWindowPresentationState::Hidden,
+                .with_presentation(NativeWindowPresentationState::Hidden, None)
+                .with_create_readiness(
+                    dockspace::runtime::NativeCreateReadiness::Created,
                     acknowledgement.take(),
                 )
                 .with_close(NativeCloseState::Clear, None);
@@ -1086,7 +1157,32 @@ mod tests {
             request
         });
         assert_ne!(requests[0], requests[1]);
-        (requests, created)
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let request = frame
+            .native_staging_paints()
+            .find(|request| request.binding() == child)
+            .unwrap();
+        frame.confirm_native_staging_painted(request).unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = frame.commit().unwrap();
+        let output = report.take_painted_native_staging_outputs().pop().unwrap();
+        session
+            .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let mut report = commit_deferred(&mut session);
+        let [show] = report.take_native_effects().try_into().unwrap();
+        assert!(matches!(
+            show.operation(),
+            NativeEffectOperation::ShowWindow { binding } if *binding == child
+        ));
+        let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
+            panic!("the show request must provide its presentation acknowledgement")
+        };
+        (requests, created, shown)
     }
 
     // The private receipt protocol only needs the journal envelope. Callback
@@ -1254,7 +1350,10 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("test session initializes");
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("native host enrolls");
         for id in [1, 2] {
             session

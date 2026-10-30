@@ -58,7 +58,7 @@ fn root_facts() -> NativeWindowFacts {
     )
 }
 
-fn root_session() -> (DockspaceSession, NativeSurfaceBinding) {
+fn root_session(strategy: NativeCreateStrategy) -> (DockspaceSession, NativeSurfaceBinding) {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(
@@ -77,6 +77,7 @@ fn root_session() -> (DockspaceSession, NativeSurfaceBinding) {
     let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
     session
         .enable_managed_native_host_with_input_storage_limit(
+            strategy,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(NonZeroUsize::new(32).unwrap(), 1 << 20)
                 .with_report_storage_limit(NativeReportStorageLimit::new(
@@ -146,7 +147,11 @@ fn root_session() -> (DockspaceSession, NativeSurfaceBinding) {
 /// Mint real affine requests with one core report lease; no opaque effect or
 /// visibility-command identity is reconstructed by the storage tests.
 fn create_fixture() -> CreateFixture {
-    let (mut session, root) = root_session();
+    create_fixture_with_strategy(NativeCreateStrategy::Staged)
+}
+
+fn create_fixture_with_strategy(strategy: NativeCreateStrategy) -> CreateFixture {
+    let (mut session, root) = root_session(strategy);
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
@@ -166,7 +171,7 @@ fn create_fixture() -> CreateFixture {
     let request = requests.pop().unwrap();
     assert!(matches!(
         request.operation(),
-        NativeEffectOperation::CreateWindow { .. }
+        NativeEffectOperation::CreateWindow { strategy: actual, .. } if *actual == strategy
     ));
     CreateFixture {
         session,
@@ -187,9 +192,8 @@ fn show_fixture() -> (DockspaceSession, NativeSurfaceBinding, NativeEffectReques
         } => (*binding, *placement),
         operation => panic!("unexpected fixture operation: {operation:?}"),
     };
-    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = request.accepted()
-    else {
-        panic!("the real create request must carry a presentation acknowledgement");
+    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = request.accepted() else {
+        panic!("the real create request must carry a create acknowledgement");
     };
     session
         .report_managed_native_snapshot(
@@ -198,8 +202,8 @@ fn show_fixture() -> (DockspaceSession, NativeSurfaceBinding, NativeEffectReques
                 (
                     binding,
                     window_facts(placement, NativeWindowPresentationState::Hidden)
-                        .with_presentation(
-                            NativeWindowPresentationState::Hidden,
+                        .with_create_readiness(
+                            dockspace::runtime::NativeCreateReadiness::Created,
                             Some(acknowledgement),
                         ),
                 ),
@@ -233,6 +237,28 @@ fn show_fixture() -> (DockspaceSession, NativeSurfaceBinding, NativeEffectReques
         matches!(request.operation(), NativeEffectOperation::ShowWindow { binding: exact } if *exact == binding)
     );
     (session, binding, request)
+}
+
+#[test]
+fn direct_prepared_create_cannot_acquire_deferred_effect_storage() {
+    let fixture = create_fixture_with_strategy(NativeCreateStrategy::DirectPrepared);
+    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1), Some(0)).unwrap();
+    let baseline = effects.owned_data_capacity_bytes();
+    let backing = effects.pending_viewports.as_ptr();
+    assert!(
+        effects
+            .plan(
+                ViewportId::from_hash_of("unsupported direct create"),
+                &fixture.request
+            )
+            .is_none()
+    );
+    assert!(!effects.has_pending_work());
+    assert_eq!(effects.pending_viewports.as_ptr(), backing);
+    assert_eq!(effects.owned_data_capacity_bytes(), baseline);
+    let _ = fixture
+        .request
+        .unsupported(NativeUnsupportedReason::BackendUnsupported);
 }
 
 #[test]
@@ -407,7 +433,7 @@ fn unlimited_create_and_show_preflight_reserve_backing_before_retaining_requests
 
 #[test]
 fn independent_command_bound_returns_the_original_command_and_drain_keeps_order_and_backing() {
-    let (_session, binding) = root_session();
+    let (_session, binding) = root_session(NativeCreateStrategy::Staged);
     let mut effects = NativeEffectCoordinator::with_storage_limits(Some(0), Some(2)).unwrap();
     let baseline = effects.owned_data_capacity_bytes();
     let backing = effects.pending_commands.as_ptr();

@@ -222,7 +222,10 @@ fn live_managed_native_root() -> (DockspaceSession, NativeSurfaceBinding) {
     let mut session =
         DockspaceSession::from_layout(layout, policy).expect("native rehome session initializes");
     session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("managed native host enrolls");
     session
         .configure_managed_native_capabilities(managed_native_capabilities())

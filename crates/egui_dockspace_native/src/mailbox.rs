@@ -12,9 +12,9 @@ use crate::coordinator::{
 };
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeCleanupObservation,
-    NativeCloseEffectAcknowledgement, NativeEffectResult, NativeInputBudget, NativeMonotonicClock,
-    NativePresentationEffectAcknowledgement, NativeStagingPaintRequest, NativeSurfaceBinding,
-    NativeWindowFacts,
+    NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
+    NativeInputBudget, NativeMonotonicClock, NativePresentationEffectAcknowledgement,
+    NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowFacts,
 };
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
@@ -798,7 +798,10 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("test session initializes");
         session
-            .enable_managed_native_host(dockspace::runtime::NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                dockspace::runtime::NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("native host enrolls");
         session
             .register_native_root(
@@ -3417,6 +3420,35 @@ impl NativeHostBridge {
         self.lock().window_resources.presentation_ack(binding)
     }
 
+    pub(crate) fn can_retain_create_ack(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.lock()
+            .window_resources
+            .can_retain_create_ack(viewport, binding)
+    }
+
+    pub(crate) fn retain_create_ack(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        acknowledgement: NativeCreateEffectAcknowledgement,
+    ) -> Result<(), NativeCreateEffectAcknowledgement> {
+        self.lock()
+            .window_resources
+            .retain_create_ack(viewport, binding, acknowledgement)
+    }
+
+    pub(crate) fn clear_create_ack(&self, binding: NativeSurfaceBinding) -> bool {
+        self.lock().window_resources.clear_create_ack(binding)
+    }
+
+    pub(crate) fn create_ack_count(&self) -> usize {
+        self.lock().window_resources.create_ack_count()
+    }
+
     pub(crate) fn can_retain_presentation_ack(
         &self,
         viewport: ViewportId,
@@ -5030,6 +5062,7 @@ impl NativeHostBridge {
         action: impl FnOnce(
             usize,
             &mut dyn Iterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+            &dyn Fn(NativeSurfaceBinding) -> Option<Option<NativeCreateEffectAcknowledgement>>,
             &dyn Fn(NativeSurfaceBinding) -> Option<NativePresentationEffectAcknowledgement>,
         ) -> R,
     ) -> R {
@@ -5038,6 +5071,7 @@ impl NativeHostBridge {
         action(
             count,
             &mut state.retirements.destroyed_observations(),
+            &|binding| state.window_resources.created_ack(binding),
             &|binding| state.window_resources.presentation_ack(binding),
         )
     }

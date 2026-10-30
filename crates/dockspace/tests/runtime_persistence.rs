@@ -374,7 +374,10 @@ fn standalone_restore_rejects_a_prepared_candidate_when_managed_native_is_active
         })
         .expect("the document prepares before native enrollment");
     target
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the native host enrolls");
     let before = target.version();
 
@@ -399,7 +402,7 @@ fn observed_native_restore_joins_the_host_frame_without_receiver_queries() {
     assert_eq!(first, target_first);
 
     target
-        .enable_observed_native_roots()
+        .enable_observed_native_roots(dockspace::runtime::NativeCreateStrategy::Staged)
         .expect("the observed native host enrolls");
     target
         .register_native_root(SURFACE, HostWindowToken::new(8))
@@ -440,7 +443,10 @@ fn managed_native_restore_joins_the_native_host_frame_atomically() {
     assert_eq!(first, target_first);
 
     target
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed native host enrolls");
     target
         .register_native_root(SURFACE, HostWindowToken::new(7))
@@ -506,7 +512,10 @@ fn managed_restore_rebuilds_a_budget_paused_candidate_with_the_new_identity_scop
     let (mut target, target_first) = persistent_session_with_first_item();
     assert_eq!(first, target_first);
     target
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the native host must enroll");
     let mut initial = target
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -601,7 +610,10 @@ fn managed_restore_reports_the_complete_multi_binding_roster() {
     )
     .expect("the two-surface target builds");
     target
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed native host enrolls");
     target
         .register_native_root(SURFACE, HostWindowToken::new(17))

@@ -142,9 +142,9 @@ fn finite_snapshot_keeps_its_original_source_and_prepared_backing_through_capaci
     assert_eq!(native.session.native_input_recorded_count(), recorded + 5);
     let queued = native.queued_snapshot.as_ref().unwrap();
     assert_eq!(queued.roster, source);
-    assert_eq!(queued.presentation_acknowledgements.capacity(), 2);
+    assert_eq!(queued.acknowledgements.capacity(), 2);
     assert_eq!(queued.focus_reportable.capacity(), 2);
-    let acknowledgements = queued.presentation_acknowledgements.as_ptr();
+    let acknowledgements = queued.acknowledgements.as_ptr();
     let focus = queued.focus_reportable.as_ptr();
     let prepared_bytes = queued.work_areas.owned_data_capacity_bytes();
     let version = native.session.version();
@@ -158,10 +158,7 @@ fn finite_snapshot_keeps_its_original_source_and_prepared_backing_through_capaci
     assert_eq!(native.session.version(), version);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 5);
     let queued = native.queued_snapshot.as_ref().unwrap();
-    assert_eq!(
-        queued.presentation_acknowledgements.as_ptr(),
-        acknowledgements
-    );
+    assert_eq!(queued.acknowledgements.as_ptr(), acknowledgements);
     assert_eq!(queued.focus_reportable.as_ptr(), focus);
     assert_eq!(
         queued.work_areas.owned_data_capacity_bytes(),
@@ -250,7 +247,7 @@ fn finite_snapshot_reserves_the_complete_live_and_destroyed_merge() {
     native.bridge.push_viewport_roster(live_roster([second]));
     assert!(native.reduce_next_viewport_roster().unwrap());
     let queued = native.queued_snapshot.as_ref().unwrap();
-    assert_eq!(queued.presentation_acknowledgements.capacity(), 2);
+    assert_eq!(queued.acknowledgements.capacity(), 2);
     assert_eq!(queued.focus_reportable.capacity(), 2);
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -342,21 +339,22 @@ fn queued_snapshot_sidecars_charge_spare_acknowledgement_and_focus_capacity() {
     assert!(native.reduce_next_viewport_roster().unwrap());
     let before = native.owned_input_capacity_bytes().unwrap();
     let queued = native.queued_snapshot.as_mut().unwrap();
-    let initial_slots =
-        queued.presentation_acknowledgements.capacity() + queued.focus_reportable.capacity();
-    queued.presentation_acknowledgements.reserve_exact(11);
+    let initial_acknowledgements = queued.acknowledgements.capacity();
+    let initial_focus = queued.focus_reportable.capacity();
+    queued.acknowledgements.reserve_exact(11);
     queued.focus_reportable.reserve_exact(13);
-    let added_slots = queued.presentation_acknowledgements.capacity()
-        + queued.focus_reportable.capacity()
-        - initial_slots;
-    assert!(added_slots > 0);
+    let added_acknowledgements = queued.acknowledgements.capacity() - initial_acknowledgements;
+    let added_focus = queued.focus_reportable.capacity() - initial_focus;
+    assert!(added_acknowledgements > 0);
+    assert!(added_focus > 0);
     let retained = native.owned_input_capacity_bytes().unwrap();
     assert_eq!(
         retained - before,
-        added_slots * size_of::<NativeSurfaceBinding>()
+        added_acknowledgements * size_of::<NativeSnapshotAcknowledgements>()
+            + added_focus * size_of::<NativeSurfaceBinding>()
     );
     let queued = native.queued_snapshot.as_mut().unwrap();
-    queued.presentation_acknowledgements.clear();
+    queued.acknowledgements.clear();
     queued.focus_reportable.clear();
     assert_eq!(
         native.owned_input_capacity_bytes().unwrap(),

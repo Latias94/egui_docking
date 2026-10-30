@@ -14,6 +14,7 @@ use crate::intent::Authority;
 use crate::platform::{
     ObservedWindow, ObservedWorkArea, PlatformSnapshot, WindowCloseObservation,
     WindowCloseObservationStream, WindowCloseState, WindowCoordinateObservationStream,
+    WindowCreatePreparationObservation, WindowCreatePreparationObservationStream,
     WindowInputObservation, WindowInputObservationStream, WindowPresentationObservation,
     WindowPresentationObservationStream, WindowPresentationState,
 };
@@ -96,6 +97,7 @@ pub struct ViewportRecord {
     coordinate_observations: WindowCoordinateObservationStream,
     input_observations: WindowInputObservationStream,
     presentation_observations: WindowPresentationObservationStream,
+    create_preparation_observations: WindowCreatePreparationObservationStream,
     close_observations: WindowCloseObservationStream,
     coordinate_generation: CoordinateGeneration,
     ever_observed: bool,
@@ -260,6 +262,14 @@ impl ViewportRecord {
 
     pub(crate) const fn presentation_observation(&self) -> Option<WindowPresentationObservation> {
         self.presentation_observations.current()
+    }
+
+    pub(crate) const fn create_preparation(&self) -> Option<WindowCreatePreparationObservation> {
+        self.create_preparation_observations.current()
+    }
+
+    pub(crate) const fn renderer_prepared_since(&self) -> Option<CoordinateObservationGeneration> {
+        self.create_preparation_observations.prepared_since()
     }
 
     pub(crate) const fn close_observations(&self) -> WindowCloseObservationStream {
@@ -630,6 +640,8 @@ impl ViewportRegistry {
                 coordinate_observations: WindowCoordinateObservationStream::default(),
                 input_observations: WindowInputObservationStream::default(),
                 presentation_observations: WindowPresentationObservationStream::default(),
+                create_preparation_observations: WindowCreatePreparationObservationStream::default(
+                ),
                 close_observations: WindowCloseObservationStream::default(),
                 coordinate_generation,
                 ever_observed: false,
@@ -789,6 +801,8 @@ impl ViewportRegistry {
                 || record.input_observations != WindowInputObservationStream::default()
                 || record.presentation_observations
                     != WindowPresentationObservationStream::default()
+                || record.create_preparation_observations
+                    != WindowCreatePreparationObservationStream::default()
                 || record.close_observations != WindowCloseObservationStream::default()
                 || record.ever_observed
                 || record.pending_close_request.is_some();
@@ -813,6 +827,8 @@ impl ViewportRegistry {
             record.coordinate_observations = WindowCoordinateObservationStream::default();
             record.input_observations = WindowInputObservationStream::default();
             record.presentation_observations = WindowPresentationObservationStream::default();
+            record.create_preparation_observations =
+                WindowCreatePreparationObservationStream::default();
             record.close_observations = WindowCloseObservationStream::default();
             record.ever_observed = false;
             record.pending_close_request = None;
@@ -941,6 +957,12 @@ impl ViewportRegistry {
             record
                 .presentation_observations
                 .observe(record.binding, presentation_observation);
+            record.create_preparation_observations.observe(
+                record.binding,
+                observation
+                    .create_preparation()
+                    .map(|preparation| preparation.with_inventory_generation(generation)),
+            );
             let presentation_changed =
                 previous_presentation != record.presentation_observations.current();
             let coordinates = record
@@ -1290,6 +1312,8 @@ impl ViewportRegistry {
             record.coordinate_generation = generation;
             record.input_observations = WindowInputObservationStream::default();
             record.presentation_observations = WindowPresentationObservationStream::default();
+            record.create_preparation_observations =
+                WindowCreatePreparationObservationStream::default();
             record.close_observations = WindowCloseObservationStream::default();
             record.ever_observed = false;
             record.pending_close_request = None;

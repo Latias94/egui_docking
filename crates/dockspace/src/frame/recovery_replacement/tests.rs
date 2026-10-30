@@ -19,6 +19,7 @@ fn request(destroyed: ViewportBinding, replacement: ViewportBinding) -> Recovery
         SurfaceRecoveryObligationId::new_for_test(1),
         replacement,
         EffectId::new(7),
+        crate::platform::NativeCreateStrategy::Staged,
     )
 }
 

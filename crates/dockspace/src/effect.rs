@@ -122,14 +122,12 @@ impl EffectDelivery {
 /// Exact adapter operation requested by the core.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlatformEffect {
-    /// Create one hidden native window at the exact requested placement.
-    ///
-    /// The adapter must not expose it for input until the core later emits
-    /// [`PlatformEffect::ShowWindow`].
+    /// Create one native window using the provider's frozen preparation strategy.
     CreateWindow {
         binding: ViewportBinding,
         placement: PhysicalRect,
         role: ViewportRole,
+        strategy: crate::platform::NativeCreateStrategy,
     },
     /// Show a previously created hidden window after its exact retained staging output.
     ShowWindow {
@@ -189,6 +187,7 @@ pub enum PlatformEffect {
         binding: ViewportBinding,
         placement: PhysicalRect,
         role: ViewportRole,
+        strategy: crate::platform::NativeCreateStrategy,
     },
     /// Resolve one exact native close edge after it becomes authoritative.
     ResolveNativeClose {
@@ -1748,6 +1747,7 @@ mod tests {
             placement: PhysicalRect::new(0.0, 0.0, 100.0, 80.0)
                 .expect("test placement must be valid"),
             role: ViewportRole::Child,
+            strategy: crate::platform::NativeCreateStrategy::Staged,
         }
     }
 

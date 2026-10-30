@@ -520,7 +520,10 @@ fn managed_native_prefix_and_reset_retry_share_one_publication_boundary() {
 
     let mut session = session(single_pane_layout(FIRST));
     session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .unwrap();
     session
         .register_native_root(SURFACE, HostWindowToken::new(7))

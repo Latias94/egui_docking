@@ -1650,7 +1650,10 @@ impl ManagedLifecycleScenarioFixture {
                 .expect("the lifecycle session initializes"),
         };
         host.session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("the managed lifecycle provider enrolls");
         host.session
             .configure_managed_native_capabilities(full_managed_capabilities())
@@ -1695,7 +1698,7 @@ impl ManagedLifecycleScenarioFixture {
         &mut self,
     ) -> (
         NativeSurfaceBinding,
-        dockspace::runtime::NativePresentationEffectAcknowledgement,
+        dockspace::runtime::NativeCreateEffectAcknowledgement,
     ) {
         let mut frame = self
             .host
@@ -1730,7 +1733,7 @@ impl ManagedLifecycleScenarioFixture {
             operation => panic!("expected one create-window effect, got {operation:?}"),
         };
         let acknowledgement = match effect.accepted() {
-            Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
+            Some(NativeEffectAcknowledgement::Create(acknowledgement)) => acknowledgement,
             acknowledgement => panic!("create returned {acknowledgement:?}"),
         };
         (child, acknowledgement)
@@ -1739,7 +1742,7 @@ impl ManagedLifecycleScenarioFixture {
     fn present_hidden_child(
         &mut self,
         child: NativeSurfaceBinding,
-        acknowledgement: dockspace::runtime::NativePresentationEffectAcknowledgement,
+        acknowledgement: dockspace::runtime::NativeCreateEffectAcknowledgement,
     ) {
         self.host.report_managed_native_snapshot(
             [
@@ -1749,6 +1752,10 @@ impl ManagedLifecycleScenarioFixture {
                     scenario_child_facts(
                         self.child_placement,
                         NativeWindowPresentationState::Hidden,
+                        None,
+                    )
+                    .with_create_readiness(
+                        dockspace::runtime::NativeCreateReadiness::Created,
                         Some(acknowledgement),
                     ),
                 ),
@@ -1997,6 +2004,7 @@ fn scenario_child_facts(
 ) -> NativeWindowFacts {
     let scale = ScaleFactor::new(1.0).expect("the child scale is valid");
     NativeWindowFacts::live()
+        .with_create_readiness(dockspace::runtime::NativeCreateReadiness::Created, None)
         .with_content_bounds(bounds)
         .with_outer_bounds(bounds)
         .with_native_scale_factor(scale)
@@ -2096,7 +2104,10 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
     .expect("the target-destruction layout is valid");
     let mut host = DeterministicHost::new(layout);
     host.session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the deterministic managed-native provider enrolls");
     host.session
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -2953,7 +2964,7 @@ fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
 fn presentation_reports_queue_behind_a_dropped_joined_host_frame() {
     let mut host = DeterministicHost::new(tabs_layout([A]));
     host.session
-        .enable_observed_native_roots()
+        .enable_observed_native_roots(dockspace::runtime::NativeCreateStrategy::Staged)
         .expect("the joined presentation lane is active");
     let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
@@ -3436,7 +3447,7 @@ impl InteractionFixture {
     fn attach_native_surface(&mut self) -> NativeSurfaceBinding {
         self.host
             .session
-            .enable_observed_native_roots()
+            .enable_observed_native_roots(dockspace::runtime::NativeCreateStrategy::Staged)
             .expect("the deterministic host enrolls one native platform provider");
         let registration = self.host.register_native_root(SURFACE, WINDOW);
         let binding = match registration.inputs() {
@@ -3886,7 +3897,10 @@ fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
 fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
     let mut host = DeterministicHost::new(tabs_layout([A, B]));
     host.session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed desktop coordinator enrolls");
     host.session
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -4012,7 +4026,10 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
 fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
     let mut host = DeterministicHost::new(tabs_layout([A, B, C, X]));
     host.session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed desktop coordinator enrolls");
     host.session
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -4214,7 +4231,10 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
 fn unowned_native_scroll_fails_closed_without_receiver_queries() {
     let mut host = DeterministicHost::new(tabs_layout([A, B]));
     host.session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed desktop coordinator enrolls");
     host.session
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -4279,7 +4299,7 @@ fn unowned_native_scroll_fails_closed_without_receiver_queries() {
 fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
     let mut host = DeterministicHost::new(tabs_layout([A, B]));
     host.session
-        .enable_observed_native_roots()
+        .enable_observed_native_roots(dockspace::runtime::NativeCreateStrategy::Staged)
         .expect("the deterministic host enrolls one native platform provider");
 
     let registered_a1 = host.register_native_root(SURFACE, WINDOW);
@@ -4332,7 +4352,7 @@ fn ogc_04_incomplete_snapshot_is_rejected_before_recording() {
     .expect("the two-surface native layout is valid");
     let mut host = DeterministicHost::new(layout);
     host.session
-        .enable_observed_native_roots()
+        .enable_observed_native_roots(dockspace::runtime::NativeCreateStrategy::Staged)
         .expect("the deterministic host enrolls one native platform provider");
 
     let first_registration = host.register_native_root(SURFACE, WINDOW);
@@ -4373,7 +4393,7 @@ fn ogc_04_incomplete_snapshot_is_rejected_before_recording() {
 fn ogc_04_snapshot_waits_for_a_pending_roster_registration() {
     let mut host = DeterministicHost::new(tabs_layout([A]));
     host.session
-        .enable_observed_native_roots()
+        .enable_observed_native_roots(dockspace::runtime::NativeCreateStrategy::Staged)
         .expect("the deterministic host enrolls one native platform provider");
     host.session
         .register_native_root(SURFACE, WINDOW)

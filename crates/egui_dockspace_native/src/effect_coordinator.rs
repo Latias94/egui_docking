@@ -7,8 +7,8 @@
 
 use dockspace::geometry::PhysicalRect;
 use dockspace::runtime::{
-    NativeDispatchFailure, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
-    NativeSurfaceBinding, NativeSurfaceRole, NativeUnsupportedReason,
+    NativeCreateStrategy, NativeDispatchFailure, NativeEffectOperation, NativeEffectRequest,
+    NativeEffectResult, NativeSurfaceBinding, NativeSurfaceRole, NativeUnsupportedReason,
 };
 use eframe::{
     NativeViewportCreateFailureKind, NativeViewportVisibilityCommandToken,
@@ -399,6 +399,7 @@ impl NativeEffectCoordinator {
                 binding,
                 placement,
                 role,
+                strategy: NativeCreateStrategy::Staged,
             } => (
                 *binding,
                 *placement,
@@ -409,6 +410,7 @@ impl NativeEffectCoordinator {
                 binding,
                 placement,
                 role,
+                strategy: NativeCreateStrategy::Staged,
             } => (
                 *binding,
                 *placement,
@@ -523,7 +525,10 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("test session initializes");
         session
-            .enable_managed_native_host(NativePointerRoster::Unknown)
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Unknown,
+            )
             .expect("managed native host enrolls");
         session
             .register_native_root(surface, HostWindowToken::new(1))

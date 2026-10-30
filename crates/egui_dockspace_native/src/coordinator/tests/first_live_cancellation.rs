@@ -123,10 +123,11 @@ fn prepare_child_content(
         NativeEffectOperation::CreateWindow { binding, .. } => *binding,
         operation => panic!("expected the model create, got {operation:?}"),
     };
-    let Some(NativeEffectAcknowledgement::Presentation(mut acknowledgement)) = create.accepted()
-    else {
+    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
         panic!("the create supplies its exact acknowledgement");
     };
+    let mut create_acknowledgement = Some(acknowledgement);
+    let mut show_acknowledgement = None;
     // Reuse public staging receipts and effect acknowledgements, without fork tokens.
     for (phase, presentation) in [
         (
@@ -138,31 +139,38 @@ fn prepare_child_content(
             NativeWindowPresentationState::Visible,
         ),
     ] {
-        let snapshot_acknowledgement = if phase == NativeStagingPresentationPhase::PostShow {
+        if phase == NativeStagingPresentationPhase::PostShow {
             native
                 .session
                 .report_managed_native_snapshot(
                     observations.iter().copied().chain([(
                         child,
-                        ready_window_facts(x).with_presentation(
-                            NativeWindowPresentationState::Hidden,
-                            Some(acknowledgement),
-                        ),
+                        ready_window_facts(x)
+                            .with_create_readiness(
+                                dockspace::runtime::NativeCreateReadiness::Created,
+                                None,
+                            )
+                            .with_presentation(
+                                NativeWindowPresentationState::Hidden,
+                                show_acknowledgement.take(),
+                            ),
                     )]),
                     NativeWorkAreaRoster::Unknown,
                 )
                 .unwrap();
             commit_model_frame(native);
-            None
-        } else {
-            Some(acknowledgement)
-        };
+        }
         native
             .session
             .report_managed_native_snapshot(
                 observations.iter().copied().chain([(
                     child,
-                    ready_window_facts(x).with_presentation(presentation, snapshot_acknowledgement),
+                    ready_window_facts(x)
+                        .with_create_readiness(
+                            dockspace::runtime::NativeCreateReadiness::Created,
+                            create_acknowledgement.take(),
+                        )
+                        .with_presentation(presentation, None),
                 )]),
                 NativeWorkAreaRoster::Unknown,
             )
@@ -199,7 +207,7 @@ fn prepare_child_content(
             let Some(NativeEffectAcknowledgement::Presentation(show_ack)) = show.accepted() else {
                 panic!("the show supplies its exact acknowledgement");
             };
-            acknowledgement = show_ack;
+            show_acknowledgement = Some(show_ack);
         }
     }
     assert_eq!(native.session.version(), version);
@@ -668,7 +676,13 @@ fn shutdown_cancels_content_ready_children_in_saga_order_one_per_boundary() {
         &[
             observations[0],
             observations[1],
-            (first_child, ready_window_facts(1400.0)),
+            (
+                first_child,
+                ready_window_facts(1400.0).with_create_readiness(
+                    dockspace::runtime::NativeCreateReadiness::Created,
+                    None,
+                ),
+            ),
         ],
     );
     for (binding, window) in [

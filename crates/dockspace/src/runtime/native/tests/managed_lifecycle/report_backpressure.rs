@@ -31,8 +31,8 @@ fn pending_staging_show() -> (
         NativeEffectOperation::CreateWindow { binding, .. } => *binding,
         operation => panic!("expected the create request, got {operation:?}"),
     };
-    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted() else {
-        panic!("create must return its exact presentation acknowledgement");
+    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
+        panic!("create must return its exact create acknowledgement");
     };
     assert!(session.abandoned_native_effects.is_quiescent());
     session
@@ -47,8 +47,9 @@ fn pending_staging_show() -> (
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(
-                            NativeWindowPresentationState::Hidden,
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Created,
                             Some(acknowledgement),
                         )
                         .with_close(NativeCloseState::Clear, None),

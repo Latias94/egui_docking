@@ -687,6 +687,10 @@ pub struct PresentedNativeStagingPresentation {
 }
 
 impl PresentedNativeStagingPresentation {
+    pub(crate) const fn output_key(self) -> HostFrameKey {
+        self.output
+    }
+
     pub(crate) const fn mint_observed(
         request: NativeStagingPresentation,
         stream: HostPresentationStreamId,

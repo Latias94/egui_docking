@@ -7,6 +7,7 @@ use support::{
     complete_host_frame_with_retained_or_unavailable, complete_host_frame_with_unavailable,
 };
 
+use crate::platform::{NativeCreateReadiness, WindowCreatePreparationObservation};
 use dockspace::RootPresentationOwner;
 use dockspace::close_plan::NativeCloseEdge;
 use dockspace::command::WorkspaceCommand;
@@ -267,6 +268,7 @@ fn publish_windows_with_presentation_ack(
 ) -> EngineTransition {
     let observation_generation = presentation_host.next_platform_observation_generation();
     let snapshot = platform_snapshot_with_facts_at_generation(
+        engine,
         observation_generation,
         windows,
         Authority::Known(presentation),
@@ -315,6 +317,7 @@ fn publish_windows_with_facts(
 ) -> EngineTransition {
     let observation_generation = presentation_host.next_platform_observation_generation();
     let snapshot = platform_snapshot_with_facts_at_generation(
+        engine,
         observation_generation,
         windows,
         presentation,
@@ -337,11 +340,12 @@ fn publish_windows_with_facts(
 }
 
 fn platform_snapshot_with_facts_at_generation(
+    engine: &DockEngine,
     observation_generation: u64,
     mut windows: Vec<ObservedWindow>,
     presentation: Authority<WindowPresentationState>,
     states: &[(ViewportBinding, WindowCloseState, Option<EffectId>)],
-    presentation_acknowledgements: &[(ViewportBinding, EffectId)],
+    effect_acknowledgements: &[(ViewportBinding, EffectId)],
     capabilities: PlatformCapabilities,
 ) -> PlatformSnapshot {
     for window in &mut windows {
@@ -364,20 +368,48 @@ fn platform_snapshot_with_facts_at_generation(
                 Authority::Unknown(AuthorityUnavailableReason::NotReported),
             ),
         };
+        let acknowledged_effect =
+            effect_acknowledgements
+                .iter()
+                .find_map(|(acknowledged_binding, effect)| {
+                    (*acknowledged_binding == binding).then_some(*effect)
+                });
+        let acknowledged_create = acknowledged_effect.filter(|effect| {
+            engine
+                .viewport()
+                .effects()
+                .record(*effect)
+                .is_some_and(|record| {
+                    matches!(
+                        record.request().effect(),
+                        PlatformEffect::CreateWindow { .. }
+                            | PlatformEffect::RequestReplacement { .. }
+                    )
+                })
+        });
+        let acknowledged_show = acknowledged_effect.filter(|effect| {
+            engine
+                .viewport()
+                .effects()
+                .record(*effect)
+                .is_some_and(|record| {
+                    matches!(record.request().effect(), PlatformEffect::ShowWindow { .. })
+                })
+        });
         *window = window
             .clone()
             .with_coordinate_observation(coordinate_observation)
+            .with_create_preparation(WindowCreatePreparationObservation::new(
+                binding,
+                coordinate_observation.generation(),
+                Authority::Known(NativeCreateReadiness::Created),
+                acknowledged_create,
+            ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 binding,
                 PresentationObservationGeneration::new(observation_generation),
                 presentation,
-                PresentationEffectAcknowledgement::known(
-                    presentation_acknowledgements.iter().find_map(
-                        |(acknowledged_binding, effect)| {
-                            (*acknowledged_binding == binding).then_some(*effect)
-                        },
-                    ),
-                ),
+                PresentationEffectAcknowledgement::known(acknowledged_show),
             ));
     }
     let inventory_observation =
@@ -444,6 +476,7 @@ fn next_destroyed_child_snapshot(fixture: &mut Fixture) -> PlatformSnapshot {
         .presentation_host
         .next_platform_observation_generation();
     platform_snapshot_with_facts_at_generation(
+        &fixture.engine,
         generation,
         vec![unavailable_host_window(fixture.host_binding)],
         Authority::Known(WindowPresentationState::Visible),
@@ -668,6 +701,7 @@ fn request_replacement(transition: &EngineTransition) -> (EffectId, ViewportBind
                 binding,
                 placement,
                 role,
+                strategy: crate::platform::NativeCreateStrategy::Staged,
             } => Some((request.id(), *binding, *placement, *role)),
             _ => None,
         })
@@ -2012,6 +2046,7 @@ fn same_host_frame_pre_admission_close_clear_invalidates_unemitted_cleanup() {
     let expected_epoch = pending.fixture.engine.version().epoch();
     let provider = pending.fixture.presentation_host.platform_provider();
     let requested = platform_snapshot_with_facts_at_generation(
+        &pending.fixture.engine,
         first_generation,
         vec![
             unavailable_host_window(host),
@@ -2023,6 +2058,7 @@ fn same_host_frame_pre_admission_close_clear_invalidates_unemitted_cleanup() {
         platform_capabilities(),
     );
     let cleared = platform_snapshot_with_facts_at_generation(
+        &pending.fixture.engine,
         second_generation,
         vec![
             unavailable_host_window(host),

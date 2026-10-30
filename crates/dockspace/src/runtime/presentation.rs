@@ -1272,7 +1272,10 @@ mod tests {
         )
         .unwrap();
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                crate::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .unwrap();
         let metrics = UniformSurfaceMetrics::new(
             LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
@@ -1482,7 +1485,10 @@ mod tests {
         assert_eq!(session.presentation.retained_capture_generation_count(), 1);
 
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                crate::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("the managed native provider enrolls after headless painting");
         let mut reclaimed = session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

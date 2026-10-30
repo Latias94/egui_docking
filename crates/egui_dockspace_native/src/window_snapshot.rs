@@ -2,8 +2,9 @@
 
 use dockspace::geometry::{PhysicalRect, ScaleFactor};
 use dockspace::runtime::{
-    NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeCreateEffectAcknowledgement, NativeCreateReadiness, NativeInputEffectAcknowledgement,
+    NativePresentationEffectAcknowledgement, NativeSurfaceBinding, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState,
 };
 use eframe::{
     NativePhysicalRect, NativeWindowInputState as EframeNativeWindowInputState,
@@ -17,6 +18,7 @@ pub(crate) struct CompiledWindowObservation {
     binding: NativeSurfaceBinding,
     facts: NativeWindowFacts,
     input_acknowledged: bool,
+    create_acknowledged: bool,
     presentation_acknowledged: bool,
     focus_reportable: bool,
 }
@@ -27,6 +29,7 @@ impl CompiledWindowObservation {
             binding,
             facts,
             input_acknowledged: false,
+            create_acknowledged: false,
             presentation_acknowledged: false,
             focus_reportable: false,
         }
@@ -42,6 +45,10 @@ impl CompiledWindowObservation {
 
     pub(crate) const fn presentation_acknowledged(self) -> bool {
         self.presentation_acknowledged
+    }
+
+    pub(crate) const fn create_acknowledged(self) -> bool {
+        self.create_acknowledged
     }
 
     pub(crate) const fn input_acknowledged(self) -> bool {
@@ -65,6 +72,19 @@ impl CompiledWindowObservation {
     ) -> Self {
         self.facts = self.facts.with_input(state, acknowledgement);
         self.input_acknowledged = acknowledgement.is_some();
+        self
+    }
+
+    /// Creation remains known after its one-shot acknowledgement is settled.
+    /// Renderer readiness still requires the exact pre/post-show paint outputs.
+    pub(crate) const fn with_created(
+        mut self,
+        acknowledgement: Option<NativeCreateEffectAcknowledgement>,
+    ) -> Self {
+        self.facts = self
+            .facts
+            .with_create_readiness(NativeCreateReadiness::Created, acknowledgement);
+        self.create_acknowledged = acknowledgement.is_some();
         self
     }
 }
@@ -106,6 +126,7 @@ pub(crate) fn compile_window_observation(
         binding,
         facts,
         input_acknowledged: false,
+        create_acknowledged: false,
         presentation_acknowledged: acknowledgement.is_some(),
         focus_reportable,
     })
@@ -194,7 +215,10 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("test session initializes");
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("managed native host enrolls");
         session
             .register_native_root(surface, HostWindowToken::new(1))
@@ -276,6 +300,21 @@ mod tests {
                 .with_presentation_scale_factor(ScaleFactor::new(1.25).expect("scale validates"),)
                 .with_input(NativeWindowInputState::ReceivesInput, None)
         );
+    }
+
+    #[test]
+    fn known_creation_survives_missing_presentation_without_preparing_the_renderer() {
+        let mut snapshot = parts();
+        snapshot.visible = None;
+        snapshot.minimized = None;
+        let facts = compile_window_facts(snapshot, None).expect("partial snapshot compiles");
+        let observation = CompiledWindowObservation::new(binding(), facts).with_created(None);
+        assert_eq!(
+            observation.facts(),
+            facts.with_create_readiness(NativeCreateReadiness::Created, None)
+        );
+        assert!(!observation.create_acknowledged());
+        assert!(!observation.presentation_acknowledged());
     }
 
     #[test]

@@ -1138,6 +1138,25 @@ fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
             crate::viewport::PresentationObservationGeneration::new(generation),
             Authority::Known(presentation),
             PresentationEffectAcknowledgement::known(acknowledged_effect),
+        ))
+        .with_create_preparation(crate::platform::WindowCreatePreparationObservation::new(
+            request.binding(),
+            CoordinateObservationGeneration::new(generation),
+            Authority::Known(crate::platform::NativeCreateReadiness::Created),
+            acknowledged_effect.filter(|effect| {
+                fixture
+                    .engine
+                    .viewport()
+                    .effects()
+                    .record(*effect)
+                    .is_some_and(|record| {
+                        matches!(
+                            record.request().effect(),
+                            PlatformEffect::CreateWindow { .. }
+                                | PlatformEffect::RequestReplacement { .. }
+                        )
+                    })
+            }),
         ));
     test_platform_snapshot(
         capabilities,

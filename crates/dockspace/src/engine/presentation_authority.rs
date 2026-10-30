@@ -1656,6 +1656,18 @@ impl DockEngine {
                 promotion.endpoint(),
                 coordinate_generation,
             );
+            if let HostPresentationEndpoint::Native(binding) = promotion.endpoint()
+                && self
+                    .viewport
+                    .viewport(binding.surface())
+                    .is_some_and(|record| {
+                        record.admission() == crate::viewport_registry::ViewportAdmission::Pending
+                    })
+                && !self
+                    .native_first_live_output_requires_follow_up(ticket, promotion.endpoint())?
+            {
+                continue;
+            }
             if let Some(stamp) = self.scene().native_first_live_projection(ticket.surface()) {
                 if self.scene().validate_observed_authority(authority).is_err()
                     || !self.commit_native_first_live_projection(

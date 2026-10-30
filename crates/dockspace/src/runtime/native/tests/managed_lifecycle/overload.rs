@@ -993,7 +993,7 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
     assert_eq!(session.engine.workspace(), &workspace);
     assert_eq!(session.version(), version);
 
-    let Some(NativeEffectAcknowledgement::Presentation(created)) = request.accepted() else {
+    let Some(NativeEffectAcknowledgement::Create(created)) = request.accepted() else {
         panic!("the original accepted create still owns its acknowledgement");
     };
     session
@@ -1014,7 +1014,11 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, Some(created)),
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Created,
+                            Some(created),
+                        ),
                 ),
             ],
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),

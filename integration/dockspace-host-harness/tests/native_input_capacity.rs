@@ -33,6 +33,7 @@ fn public_producer_limit_keeps_accepted_registration_and_quiescence_progress_wit
     let producer = NativeProducerStorageLimit::new(NonZeroUsize::MIN, NonZeroUsize::MIN, 1 << 20);
     session
         .enable_managed_native_host_with_input_storage_limit(
+            dockspace::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(NonZeroUsize::new(4).unwrap(), 1 << 20)
                 .with_producer_storage_limit(producer),
@@ -148,6 +149,7 @@ fn public_report_allowance_rejects_before_publication_and_reuses_a_prepaid_outpu
     let reports = NativeReportStorageLimit::new(one, one, 1 << 20);
     session
         .enable_managed_native_host_with_input_storage_limit(
+            dockspace::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(NonZeroUsize::new(4).unwrap(), 1 << 20)
                 .with_report_storage_limit(reports),
@@ -251,6 +253,7 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
     let slots = NonZeroUsize::new(1).unwrap();
     let refused = session
         .enable_managed_native_host_with_input_storage_limit(
+            dockspace::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(slots, 0),
         )
@@ -266,6 +269,7 @@ fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_pu
     let limit = NativeInputStorageLimit::new(slots, 1 << 20);
     session
         .enable_managed_native_host_with_input_storage_limit(
+            dockspace::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit,
         )
@@ -345,6 +349,7 @@ fn one_public_binding_terminal_fact_fits_one_slot_after_five_independent_pressed
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session
         .enable_managed_native_host_with_input_storage_limit(
+            dockspace::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(NonZeroUsize::new(1).unwrap(), 1 << 20),
         )

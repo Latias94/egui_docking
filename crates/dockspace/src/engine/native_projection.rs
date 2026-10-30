@@ -10,6 +10,7 @@ pub(crate) struct NativeFirstLiveProjectionStamp {
     pub(super) saga: NativeCreateSagaId,
     pub(super) binding: crate::viewport::ViewportBinding,
     pub(super) resource: NativeStagingResourceId,
+    ready_basis: crate::frame::NativeReadyBasis,
     base: WorkspaceVersion,
     config: crate::presentation_config::PresentationConfigRevision,
     policy: crate::scene_manifest::PolicyRevision,
@@ -241,6 +242,7 @@ impl DockEngine {
         stamp: NativeFirstLiveProjectionStamp,
     ) -> bool {
         self.version == stamp.base
+            && self.viewport.native_ready_basis(stamp.binding) == Some(stamp.ready_basis)
             && self.presentation_authority.presentation_config_revision == stamp.config
             && self.policy.revision() == stamp.policy
             && self.workspace.surface(stamp.binding.surface()).is_none()
@@ -274,10 +276,14 @@ impl DockEngine {
         let Some(create) = self.viewport.native_create_saga(saga) else {
             return Ok(None);
         };
+        let Some(ready_basis) = self.viewport.native_ready_basis(create.binding()) else {
+            return Ok(None);
+        };
         let stamp = NativeFirstLiveProjectionStamp {
             saga,
             binding: create.binding(),
             resource: create.resource(),
+            ready_basis,
             base: self.version,
             config: self.presentation_authority.presentation_config_revision,
             policy: self.policy.revision(),

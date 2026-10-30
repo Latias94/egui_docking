@@ -408,7 +408,10 @@ mod tests {
         .unwrap();
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .unwrap();
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(

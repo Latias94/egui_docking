@@ -1176,8 +1176,12 @@ fn settled_presentation_acknowledgement_rearms_identical_roster_capture() {
         .queued_snapshot
         .as_mut()
         .expect("the reduced roster retains one exact snapshot")
-        .presentation_acknowledgements
-        .push(second);
+        .acknowledgements
+        .push(NativeSnapshotAcknowledgements {
+            binding: second,
+            create: false,
+            presentation: true,
+        });
 
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)

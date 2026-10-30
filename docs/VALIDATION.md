@@ -15,6 +15,76 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 native preparation strategies
+
+Native enrollment explicitly freezes DirectPrepared or Staged for the provider
+lifetime; CreateWindow and RequestReplacement carry that strategy. Creation has
+its own typed acknowledgement, independent from Show. Created, Prepared and
+renderer-preparation failure are complete-snapshot facts in the existing binding
+record and use the existing window observation sequence. There is no separate
+readiness registry or sequence issuer.
+
+Both strategies produce one private readiness proof and enter the existing
+prospective-program and exact first-live pipeline. DirectPrepared accepts the
+first Prepared/create acknowledgement in one post-emission snapshot when content
+coordinates and visibility are valid. It emits no staging output or ShowWindow.
+Staged keeps its exact renderer outputs and show fences. Its create acknowledgement
+is now reported through creation facts, rather than a visibility property.
+The duplicated native-create/bringup phase mirror and generic visibility-proof
+getters are removed; query phases project the one private owner state.
+
+Readiness provenance is retained with the prospective scene and first-live
+barrier. Compatible observations keep it stable; withdrawal revokes the output
+floor and resumes preparation without repeating creation. Renderer failure uses
+the same cleanup owner. Waiting-first-live replacements participate in provider
+retirement, and staged replacements retain their Show effect while readiness
+validation still references it.
+
+The independent consumer passes 91 default and 98 serde tests, including twelve
+public preparation journeys:
+same-snapshot readiness, complete content, output/frame drop and retry, late
+cancellation, visibility/coordinate/positive-size requirements, readiness
+withdrawal, foreign create authority, unrelated-root version revalidation,
+renderer-failure cleanup, direct replacement, early Staged creation acknowledgement
+and replacement readiness recovery. The latter two regressions failed before
+their production fixes and pass afterward. Creation now settles before
+visibility/coordinate early returns. Replacement recovery retains valid
+measurements while issuing a new semantic ticket above its new admission floor;
+old outputs cannot admit it, and ordinary repaint needs no extra measurement.
+Focused coordinator regressions for preparation failure, provider handoff and
+terminal-effect retention pass. All 1,842 workspace tests pass on the frozen
+79-path changed-Rust snapshot; all 427 tracked Rust files under crates/integration
+also byte-match the native validation checkout. Native default and
+assertion-disabled configurations each pass 458 tests, including the same-instance
+10,000-lifetime model. All 10 doctests, core/native correctness/suspicious Clippy,
+strict rustdoc, formatting and whitespace gates pass.
+
+macOS programmatic redock passes with unlimited and bounded storage. The bounded
+run samples 3,000,339 resident and 4,152,024 reserved input-data bytes below its
+4,194,304-byte selection. All five real-window output-pressure scenarios pass
+on macOS and X11. X11/XTest passes drag-out, exact semantic child first-live,
+guide-targeted drag-back, exact DestroyNotify and retired viewport/quiescence.
+The fresh Linux run uses Rust 1.95 Linux/arm64, Xvfb/Openbox, software GL and a
+1 CPU / 4 GiB container. A compiler disk-exhaustion failure and Docker's resulting
+stopped-engine EOF were environment failures before test execution; after
+recovery, all 29 frozen-source gates pass. Source/command/result evidence is in
+`/tmp/dockspace-direct-final-snapshot.json` and
+`/tmp/dockspace-direct-final-qualification.json`. The early-ack failure is recorded
+in `/tmp/dockspace-direct-staged-ack-red.json`, its first green run in
+`/tmp/dockspace-direct-final-public-focused.log`, and replacement recovery's
+red/green logs use the `dockspace-direct-replacement-renewal` prefix.
+
+Independent core and adapter reviews find no remaining determined P1/P2 after
+the replacement-output fix. The real Created callback through an Unknown
+visibility production snapshot and frame retry has not been run as one complete
+OS trace; separate public-host, adapter rollback and static reviews cover its
+parts. The current physical smoke deliberately targets the Center guide. Earlier
+descriptions of it as non-guide evidence were incorrect: actual non-guide
+physical acceptance remains open. Native qualification still uses local egui
+`86feb7f8cc49217bff54a8924b2cb525f4af3285` through an explicit override; tracked
+remote pins do not reproduce it. U7 scoped/stationary input, cross-saturation,
+broader physical evidence, native showcase and U9 packaging remain open.
+
 ## 2026-10-30 R15 first-live ownership replacement
 
 The previous native protocol published topology at non-interactive PostShow,
@@ -81,7 +151,7 @@ version, deferred-paint and shutdown-boundary changes reports no P1/P2 findings.
 
 Programmatic macOS redock passes with unlimited and bounded storage. The bounded
 run samples 2,996,883 owned input bytes and 4,145,752 reserved bytes under 4 MiB.
-The X11/XTest physical smoke passes drag-out, exact child first-live, non-guide
+The X11/XTest physical smoke passes drag-out, exact child first-live, guide-targeted
 drag-back, exact DestroyNotify and retired viewport/quiescence checks in the
 Rust 1.95 Linux/arm64 Xvfb/Openbox environment. All five real-window output
 pressure scenarios pass on both macOS and X11: ordered, duplicate, reordered,
@@ -96,7 +166,8 @@ Source hashes, exact commands and outcomes are retained in
 unpublished local egui fork override at
 `86feb7f8cc49217bff54a8924b2cb525f4af3285`; the tracked remote egui pin does not
 reproduce that source. Earlier full-suite results below describe the superseded
-protocol. The direct-prepared host strategy, native scoped/stationary input,
+protocol. The preparation-strategy qualification above supersedes the earlier
+strategy gap; native scoped/stationary input,
 broader physical matrix and complete U7/U8 remain open; R15, U8 and the
 Definition of Done have not been weakened.
 

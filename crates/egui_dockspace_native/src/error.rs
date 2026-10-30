@@ -90,6 +90,8 @@ pub(crate) enum NativeHostProtocolError {
     PresentationAcknowledgementWithoutState,
     #[error("a native viewport effect already has an unobserved presentation acknowledgement")]
     PresentationAcknowledgementAlreadyPending,
+    #[error("a native viewport create already has a retained creation observation")]
+    CreateAcknowledgementAlreadyPending,
     #[error("a deferred viewport effect returned the wrong acknowledgement category")]
     UnexpectedViewportEffectAcknowledgement,
     #[error("a native cleanup observation conflicts with its retained destructive result")]
@@ -167,6 +169,7 @@ impl NativeHostProtocolError {
             | Self::WorkAreaIdentityExhausted
             | Self::PresentationAcknowledgementWithoutState
             | Self::PresentationAcknowledgementAlreadyPending
+            | Self::CreateAcknowledgementAlreadyPending
             | Self::UnexpectedViewportEffectAcknowledgement
             | Self::CleanupRelayConflict
             | Self::NativeInputDispatchChanged

@@ -6,7 +6,7 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceSession, HostFrameReport, HostWindowToken, HostWorkAreaToken,
+    DockspaceSession, HostFrameReport, HostWindowToken, HostWorkAreaToken, NativeCreateReadiness,
     NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
     NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
     NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
@@ -44,7 +44,10 @@ fn managed_capabilities() -> NativeHostCapabilities {
 fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
     let mut session = session();
     session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            dockspace::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed native host enrolls");
     session
         .configure_managed_native_capabilities(managed_capabilities())
@@ -86,7 +89,7 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
     assert_eq!(item_surface(&session, CHILD_ITEM), Some(ROOT_SURFACE));
 
     let create_ack = match create.accepted() {
-        Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
+        Some(NativeEffectAcknowledgement::Create(acknowledgement)) => acknowledgement,
         acknowledgement => panic!("create returned {acknowledgement:?}"),
     };
     session
@@ -96,7 +99,7 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
                 (
                     child_binding,
                     child_window_facts(requested_placement, NativeWindowPresentationState::Hidden)
-                        .with_presentation(NativeWindowPresentationState::Hidden, Some(create_ack)),
+                        .with_create_readiness(NativeCreateReadiness::Created, Some(create_ack)),
                 ),
             ],
             exact_work_areas(),
@@ -295,6 +298,7 @@ fn child_window_facts(
     presentation: NativeWindowPresentationState,
 ) -> NativeWindowFacts {
     NativeWindowFacts::live()
+        .with_create_readiness(NativeCreateReadiness::Created, None)
         .with_content_bounds(bounds)
         .with_outer_bounds(bounds)
         .with_native_scale_factor(scale())

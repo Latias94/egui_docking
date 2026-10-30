@@ -1611,11 +1611,14 @@ impl DockEngine {
                                 });
                             };
                             self.native_admission
+                                .reconcile_pending_creates(&self.viewport);
+                            self.native_admission
                                 .register_native_create(
                                     *saga,
                                     binding,
                                     resource,
                                     self.presentation_authority.last_presentation_output_serial,
+                                    proof.basis(),
                                 )
                                 .map_err(|source| EngineError::ReductionCauseInvariant {
                                     detail: source.detail(),
@@ -1706,16 +1709,23 @@ impl DockEngine {
                             )
                         });
                     self.native_admission
+                        .reconcile_pending_creates(&self.viewport);
+                    let ready_basis = self.viewport.native_ready_basis(*replacement_binding).ok_or(
+                        EngineError::ReductionCauseInvariant { detail: "replacement readiness action lost its current preparation proof" }
+                    )?;
+                    self.native_admission
                         .register_recovery_replacement(
                             *destroyed_binding,
                             *replacement_binding,
                             *recovery_obligation,
                             self.presentation_authority.last_presentation_output_serial,
                             recovery_activation,
+                            ready_basis,
                         )
                         .map_err(|source| EngineError::ReductionCauseInvariant {
                             detail: source.detail(),
                         })?;
+                    self.renew_recovery_first_live_scene(input, *replacement_binding)?;
                 }
                 crate::frame::ViewportLifecycleAction::RecoveryReplacementLost {
                     destroyed_binding,

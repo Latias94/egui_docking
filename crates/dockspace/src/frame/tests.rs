@@ -1,3 +1,5 @@
+mod direct_preparation;
+
 use super::*;
 use crate::close_plan::{CloseAuthority, CloseCoordinator, NativeCloseEdge, SurfaceCloseRequest};
 use crate::effect::{EffectPhase, NativeCloseResolution};
@@ -460,6 +462,12 @@ fn recovery_presentation_snapshot(
             PresentationObservationGeneration::new(generation),
             Authority::Known(state),
             PresentationEffectAcknowledgement::known(acknowledges),
+        ))
+        .with_create_preparation(crate::platform::WindowCreatePreparationObservation::new(
+            binding,
+            CoordinateObservationGeneration::new(generation),
+            Authority::Known(crate::platform::NativeCreateReadiness::Created),
+            acknowledges,
         ));
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -654,6 +662,7 @@ fn ready_recovery_replacement() -> (
             placement: PhysicalRect::new(5.0, 0.0, 310.0, 225.0)
                 .expect("test replacement placement must be valid"),
             role: ViewportRole::Child,
+            strategy: crate::platform::NativeCreateStrategy::Staged,
         })
         .expect("test replacement effect must enter the ledger");
     coordinator
@@ -664,6 +673,7 @@ fn ready_recovery_replacement() -> (
             obligation,
             replacement,
             replacement_effect,
+            crate::platform::NativeCreateStrategy::Staged,
         ))
         .expect("test recovery replacement must register");
     coordinator
@@ -891,7 +901,7 @@ fn workspace_replacement_quarantines_recovery_binding_until_exact_destruction() 
 }
 
 #[test]
-fn pre_admission_close_destruction_returns_replacement_to_recovery_host() {
+fn pre_admission_close_revokes_first_live_once_before_destruction_returns_to_host() {
     let (mut coordinator, destroyed, replacement, obligation) = ready_recovery_replacement();
     let requested = close_observation(replacement, 4, WindowCloseState::LiveRequested);
     let close = coordinator
@@ -921,6 +931,17 @@ fn pre_admission_close_destruction_returns_replacement_to_recovery_host() {
     );
     assert!(close.pre_admission_close_was_consumed(consumed));
 
+    assert!(matches!(
+        close.actions(),
+        [ViewportLifecycleAction::RecoveryReplacementLost {
+            destroyed_binding,
+            replacement_binding,
+            recovery_obligation,
+        }] if *destroyed_binding == destroyed
+            && *replacement_binding == replacement
+            && *recovery_obligation == obligation
+    ));
+
     let destroyed_transition = coordinator
         .publish_snapshot(&snapshot_with_close_at(
             5,
@@ -933,16 +954,10 @@ fn pre_admission_close_destruction_returns_replacement_to_recovery_host() {
         ))
         .expect("replacement destruction must publish");
 
-    assert!(matches!(
-        destroyed_transition.actions(),
-        [ViewportLifecycleAction::RecoveryReplacementLost {
-            destroyed_binding,
-            replacement_binding,
-            recovery_obligation,
-        }] if *destroyed_binding == destroyed
-            && *replacement_binding == replacement
-            && *recovery_obligation == obligation
-    ));
+    assert!(
+        destroyed_transition.actions().is_empty(),
+        "destruction cannot repeat readiness withdrawal"
+    );
     assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
     let pending = coordinator
         .recovery_pending(destroyed.surface())

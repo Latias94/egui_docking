@@ -2,6 +2,7 @@ use super::support;
 
 use std::collections::BTreeMap;
 
+use crate::platform::{NativeCreateReadiness, WindowCreatePreparationObservation};
 use dockspace::RootPresentationOwner;
 use dockspace::close_plan::{NativeCloseEdge, SurfaceCloseRequest};
 use dockspace::command::{
@@ -555,6 +556,15 @@ fn publish_windows_with_baseline_presentation_ack(
             .unwrap_or(WindowPresentationState::Visible);
         *window = window
             .clone()
+            .with_create_preparation(WindowCreatePreparationObservation::new(
+                binding,
+                window
+                    .coordinate_observation()
+                    .map(WindowCoordinateObservation::generation)
+                    .unwrap_or(CoordinateObservationGeneration::new(generation)),
+                Authority::Known(NativeCreateReadiness::Created),
+                None,
+            ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 binding,
                 PresentationObservationGeneration::new(generation),
@@ -873,13 +883,48 @@ fn current_platform_snapshot(
                     })
                     .flatten()
             });
+        let acknowledged_create = acknowledged_effect.filter(|effect| {
+            fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(*effect)
+                .is_some_and(|record| {
+                    matches!(
+                        record.request().effect(),
+                        PlatformEffect::CreateWindow { .. }
+                            | PlatformEffect::RequestReplacement { .. }
+                    )
+                })
+        });
+        let acknowledged_show = acknowledged_effect.filter(|effect| {
+            fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(*effect)
+                .is_some_and(|record| {
+                    matches!(record.request().effect(), PlatformEffect::ShowWindow { .. })
+                })
+        });
         *window = window
             .clone()
+            .with_create_preparation(WindowCreatePreparationObservation::new(
+                binding,
+                window
+                    .coordinate_observation()
+                    .map(WindowCoordinateObservation::generation)
+                    .unwrap_or(CoordinateObservationGeneration::new(
+                        fixture.input_generation,
+                    )),
+                Authority::Known(NativeCreateReadiness::Created),
+                acknowledged_create,
+            ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 binding,
                 PresentationObservationGeneration::new(fixture.input_generation),
                 Authority::Known(state),
-                PresentationEffectAcknowledgement::known(acknowledged_effect),
+                PresentationEffectAcknowledgement::known(acknowledged_show),
             ));
     }
     platform_snapshot_at_generation(fixture.input_generation, focus, windows, close_observations)
@@ -2278,7 +2323,7 @@ fn child_viewport_registration_uses_an_engine_issued_root_recovery_anchor() {
 }
 
 #[test]
-fn create_requires_a_hidden_observation_before_topology_transfer() {
+fn staged_create_acknowledgement_does_not_bypass_hidden_staging() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let before = fixture.engine.workspace().clone();
@@ -2330,7 +2375,8 @@ fn create_requires_a_hidden_observation_before_topology_transfer() {
             .record(request.effect())
             .expect("create effect must remain queryable")
             .phase(),
-        EffectPhase::Requested
+        EffectPhase::ObservedApplied { inventory_generation }
+            if inventory_generation == fixture.engine.viewport().registry().inventory_generation()
     ));
 }
 
@@ -2436,22 +2482,13 @@ fn show_acknowledgement_and_visible_in_one_generation_do_not_transfer_topology()
             ),
         ],
     );
-    let hidden_coordinate_observation_generation = match fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .expect("hidden create saga must remain queryable")
-        .phase()
-    {
-        NativeCreatePhase::AwaitingPreShowPresentation {
-            hidden_coordinate_observation_generation,
-            ..
-        } => hidden_coordinate_observation_generation,
-        phase => panic!("unexpected phase after hidden observation: {phase:?}"),
-    };
     assert_eq!(
-        hidden_coordinate_observation_generation,
-        CoordinateObservationGeneration::new(1)
+        fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_NATIVE)
+            .and_then(|record| record.coordinate_observation_generation()),
+        Some(CoordinateObservationGeneration::new(1))
     );
     let pre_show = fixture
         .engine
@@ -2485,29 +2522,23 @@ fn show_acknowledgement_and_visible_in_one_generation_do_not_transfer_topology()
     assert!(platform_effects(&fixture, &acknowledged_visible).is_empty());
     assert_eq!(fixture.engine.workspace(), &before);
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
-    match fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .expect("show-acknowledged saga must remain queryable")
-        .phase()
-    {
-        NativeCreatePhase::AwaitingVisible {
-            hidden_coordinate_observation_generation,
-            acknowledged_coordinate_observation_generation,
-            ..
-        } => {
-            assert_eq!(
-                hidden_coordinate_observation_generation,
-                CoordinateObservationGeneration::new(1)
-            );
-            assert_eq!(
-                acknowledged_coordinate_observation_generation,
-                CoordinateObservationGeneration::new(2)
-            );
-        }
-        phase => panic!("unexpected phase after show acknowledgement: {phase:?}"),
-    }
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .expect("show-acknowledged saga must remain queryable")
+            .phase(),
+        NativeCreatePhase::AwaitingVisible { .. }
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_NATIVE)
+            .and_then(|record| record.coordinate_observation_generation()),
+        Some(CoordinateObservationGeneration::new(2))
+    );
 
     let later_visible_windows = vec![
         source_window(&fixture),

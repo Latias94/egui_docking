@@ -609,6 +609,84 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
 }
 
 #[test]
+fn create_acknowledgement_survives_a_dropped_snapshot_frame_and_settles_without_show() {
+    let mut native = tear_off_coordinator();
+    let source = register_source(&mut native);
+    publish_desktop_authority(&mut native, source);
+    let receiver = measure_and_present_source(&mut native);
+    let child = request_native_child(&mut native, receiver);
+    let viewport = viewport_id_for(child);
+    let placement = native.deferred_viewport_specs()[0].placement();
+    let create = native.effects.take_for_output(viewport, child).unwrap();
+    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
+        panic!("the create request supplies its exact create acknowledgement");
+    };
+    native
+        .bridge
+        .retain_create_ack(viewport, child, acknowledgement)
+        .unwrap();
+    assert!(native.bridge.clear_create(viewport, child));
+    native.bridge.push_viewport_roster(
+        NativeViewportRosterRecord::for_test_with_backend_and_work_areas(
+            [
+                CompiledWindowObservation::new(source, ready_window_facts(0.0)),
+                CompiledWindowObservation::new(
+                    child,
+                    ready_window_facts(720.0)
+                        .with_content_bounds(placement)
+                        .with_outer_bounds(placement)
+                        .with_presentation(NativeWindowPresentationState::Hidden, None),
+                )
+                .with_created(Some(acknowledgement)),
+            ],
+            FrozenWorkAreaRoster::Unknown,
+            eframe::NativeWindowingBackend::X11,
+        ),
+    );
+    assert!(native.reduce_next_viewport_roster().unwrap());
+    assert!(matches!(
+        native.queued_snapshot.as_ref().unwrap().acknowledgements.as_slice(),
+        [NativeSnapshotAcknowledgements { binding, create: true, presentation: false }]
+            if *binding == child
+    ));
+    let mut frame = native
+        .session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(frame);
+    assert_eq!(native.bridge.create_ack_count(), 1);
+    assert_eq!(native.bridge.presentation_ack_count(), 0);
+    assert!(native.queued_snapshot.is_some());
+
+    let mut frame = native
+        .session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(
+        frame
+            .native_staging_paints()
+            .any(|request| request.binding() == child)
+    );
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame.commit().unwrap();
+    assert!(report.take_native_effects().is_empty());
+    assert!(report.take_painted_native_staging_outputs().is_empty());
+    assert!(native.settle_host_frame_report(&report).unwrap());
+    assert_eq!(native.bridge.create_ack_count(), 0);
+    assert_eq!(native.bridge.presentation_ack_count(), 0);
+    assert!(!native.bridge.can_retain_create_ack(viewport, child));
+    assert!(native.queued_snapshot.is_none());
+    assert!(native.bridge.viewport_roster_dirty());
+    assert!(native.session.has_pending_native_create());
+    assert!(native.session.view().surface(child.surface()).is_none());
+}
+
+#[test]
 fn staging_resource_owner_retains_empty_frames_and_rejects_foreign_batches_atomically() {
     let mut native = tear_off_coordinator();
     let source = register_source(&mut native);
@@ -618,8 +696,8 @@ fn staging_resource_owner_retains_empty_frames_and_rejects_foreign_batches_atomi
     let viewport = viewport_id_for(child);
     let placement = native.deferred_viewport_specs()[0].placement();
     let create = native.effects.take_for_output(viewport, child).unwrap();
-    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted() else {
-        panic!("a create effect supplies its exact presentation acknowledgement");
+    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
+        panic!("a create effect supplies its exact create acknowledgement");
     };
     let scale = ScaleFactor::new(1.0).unwrap();
     native
@@ -635,8 +713,9 @@ fn staging_resource_owner_retains_empty_frames_and_rejects_foreign_batches_atomi
                         .with_native_scale_factor(scale)
                         .with_presentation_scale_factor(scale)
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(
-                            NativeWindowPresentationState::Hidden,
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            dockspace::runtime::NativeCreateReadiness::Created,
                             Some(acknowledgement),
                         )
                         .with_close(NativeCloseState::Clear, None),
@@ -726,8 +805,8 @@ fn delayed_same_value_visibility_callback_cannot_claim_a_later_show_request() {
     let older_token = eframe::queue_native_viewport_visibility(&context, viewport, true);
     let placement = native.deferred_viewport_specs()[0].placement();
     let create = native.effects.take_for_output(viewport, child).unwrap();
-    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted() else {
-        panic!("the exact create request owns its presentation acknowledgement");
+    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
+        panic!("the exact create request owns its create acknowledgement");
     };
     let scale = ScaleFactor::new(1.0).unwrap();
     native
@@ -743,8 +822,9 @@ fn delayed_same_value_visibility_callback_cannot_claim_a_later_show_request() {
                         .with_native_scale_factor(scale)
                         .with_presentation_scale_factor(scale)
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(
-                            NativeWindowPresentationState::Hidden,
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            dockspace::runtime::NativeCreateReadiness::Created,
                             Some(acknowledgement),
                         )
                         .with_close(NativeCloseState::Clear, None),
@@ -1754,9 +1834,8 @@ mod fatal_pre_transfer {
             .effects
             .take_for_output(viewport, child)
             .expect("the original create request survives until its late acknowledgement");
-        let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted()
-        else {
-            panic!("the exact create supplies its presentation acknowledgement");
+        let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
+            panic!("the exact create supplies its create acknowledgement");
         };
         assert!(native.bridge.clear_create(viewport, child));
         native.bridge.invalidate_viewport_roster();
@@ -1774,8 +1853,9 @@ mod fatal_pre_transfer {
                         .with_native_scale_factor(scale)
                         .with_presentation_scale_factor(scale)
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(
-                            NativeWindowPresentationState::Hidden,
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            dockspace::runtime::NativeCreateReadiness::Created,
                             Some(acknowledgement),
                         )
                         .with_close(NativeCloseState::Clear, None),

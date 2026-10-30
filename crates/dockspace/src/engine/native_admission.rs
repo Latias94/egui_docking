@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::frame::{SurfaceVacancyAuthority, ViewportCoordinator};
 use crate::graph::Workspace;
-use crate::ids::{NativeCreateSagaId, SurfaceId};
+use crate::ids::{InputSequence, NativeCreateSagaId, SurfaceId};
 use crate::presentation_observation::{
     HostPresentationEndpoint, NativeStagingResourceId, PresentationOutputSerial,
     SurfacePresentationOutputTicket,
@@ -35,6 +35,7 @@ struct NativeCreateVacancies {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FirstLiveBarrier {
+    ready_basis: crate::frame::NativeReadyBasis,
     owner: FirstLiveOwner,
     resource: Option<NativeStagingResourceId>,
     output_floor: PresentationOutputSerial,
@@ -76,10 +77,10 @@ impl NativeAdmissionError {
 impl NativeAdmissionState {
     pub(super) fn reconcile_pending_creates(&mut self, viewport: &ViewportCoordinator) {
         self.barriers
-            .retain(|binding, barrier| match barrier.owner {
+            .retain(|binding, barrier| viewport.native_ready_basis(*binding) == Some(barrier.ready_basis) && match barrier.owner {
                 FirstLiveOwner::NativeCreate(saga) => viewport
                     .native_create_saga(saga)
-                    .is_some_and(|create| create.binding() == *binding),
+                    .is_some_and(|create| create.binding() == *binding && matches!(create.phase(), crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. })),
                 FirstLiveOwner::RecoveryReplacement { .. } => true,
             });
     }
@@ -121,6 +122,7 @@ impl NativeAdmissionState {
     fn register_barrier(
         &mut self,
         target: ViewportBinding,
+        ready_basis: crate::frame::NativeReadyBasis,
         owner: FirstLiveOwner,
         resource: Option<NativeStagingResourceId>,
         output_floor: PresentationOutputSerial,
@@ -134,6 +136,7 @@ impl NativeAdmissionState {
         self.barriers.insert(
             target,
             FirstLiveBarrier {
+                ready_basis,
                 owner,
                 resource,
                 output_floor,
@@ -149,9 +152,11 @@ impl NativeAdmissionState {
         target: ViewportBinding,
         resource: NativeStagingResourceId,
         output_floor: PresentationOutputSerial,
+        ready_basis: crate::frame::NativeReadyBasis,
     ) -> Result<(), NativeAdmissionError> {
         self.register_barrier(
             target,
+            ready_basis,
             FirstLiveOwner::NativeCreate(saga),
             Some(resource),
             output_floor,
@@ -166,9 +171,11 @@ impl NativeAdmissionState {
         recovery_obligation: SurfaceRecoveryObligationId,
         output_floor: PresentationOutputSerial,
         recovery_activation: Option<(FocusCausalStamp, PaneFocusDisposition)>,
+        ready_basis: crate::frame::NativeReadyBasis,
     ) -> Result<(), NativeAdmissionError> {
         self.register_barrier(
             target,
+            ready_basis,
             FirstLiveOwner::RecoveryReplacement {
                 destroyed_binding,
                 recovery_obligation,
@@ -221,11 +228,11 @@ impl NativeAdmissionState {
         target: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     ) -> Result<(), NativeAdmissionError> {
-        let barrier = self
-            .barriers
-            .get(&target)
-            .copied()
-            .ok_or(NativeAdmissionError::MissingBarrier)?;
+        // Readiness withdrawal may already have revoked this output barrier.
+        // A remaining barrier still requires the exact original recovery owner.
+        let Some(barrier) = self.barriers.get(&target).copied() else {
+            return Ok(());
+        };
         let expected = FirstLiveOwner::RecoveryReplacement {
             destroyed_binding,
             recovery_obligation,
@@ -271,6 +278,54 @@ impl NativeAdmissionState {
 }
 
 impl DockEngine {
+    /// Reuses valid measurements while putting a replacement's next output above its new floor.
+    pub(super) fn renew_recovery_first_live_scene(
+        &mut self,
+        input: InputSequence,
+        binding: ViewportBinding,
+    ) -> Result<(), EngineError> {
+        let surface = binding.surface();
+        let Some(record) = self
+            .viewport
+            .viewport(surface)
+            .filter(|record| record.binding() == binding)
+        else {
+            return Ok(());
+        };
+        let Some(candidate) = self.presentation_authority.scene.ready_candidate(surface) else {
+            return Ok(());
+        };
+        if self
+            .presentation_requirements()
+            .surface(surface)
+            .is_none_or(|requirements| candidate.stamp().requirement() != requirements.ticket())
+            || !Self::coordinate_capture_matches_current(
+                candidate.coordinate_capture(),
+                Some(record),
+                self.viewport.surface_coordinate_authority(surface),
+            )
+        {
+            return Ok(());
+        }
+        let plan = candidate.plan().clone();
+        let coordinates = candidate.coordinate_capture();
+        let serial = self
+            .presentation_authority
+            .last_presentation_output_serial
+            .checked_next()
+            .ok_or(EngineError::PresentationOutputSerialExhausted)?;
+        self.presentation_authority
+            .scene
+            .invalidate_presentation_input(surface)
+            .map_err(|source| Self::scene_revision_error(input, source))?;
+        self.presentation_authority
+            .scene
+            .install_ready(plan, coordinates, self.authority_domain, serial)
+            .map_err(|source| Self::scene_revision_error(input, source))?;
+        self.presentation_authority.last_presentation_output_serial = serial;
+        Ok(())
+    }
+
     pub(super) fn native_source_surface_is_held(&self, surface: SurfaceId) -> bool {
         self.native_admission.source_surface_is_held(surface)
     }
@@ -302,6 +357,9 @@ impl DockEngine {
         let Some(barrier) = self.native_admission.barrier_authorized_by(binding, ticket) else {
             return Ok(None);
         };
+        if self.viewport.native_ready_basis(binding) != Some(barrier.ready_basis) {
+            return Ok(None);
+        }
         let binding_is_admissible = self.viewport.viewport(surface).is_some_and(|record| {
             record.binding() == binding
                 && record.admission() == ViewportAdmission::Pending
@@ -441,6 +499,7 @@ mod tests {
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
+                crate::frame::NativeReadyBasis::for_test(),
             )
             .expect("the first native create barrier registers");
         assert_eq!(
@@ -449,6 +508,7 @@ mod tests {
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
+                crate::frame::NativeReadyBasis::for_test(),
             ),
             Err(NativeAdmissionError::DuplicateBarrier)
         );
@@ -475,6 +535,7 @@ mod tests {
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
+                crate::frame::NativeReadyBasis::for_test(),
             )
             .expect("the native create barrier registers");
 
@@ -512,6 +573,7 @@ mod tests {
                 target,
                 expected_resource,
                 PresentationOutputSerial::default(),
+                crate::frame::NativeReadyBasis::for_test(),
             )
             .expect("the native create barrier registers");
 

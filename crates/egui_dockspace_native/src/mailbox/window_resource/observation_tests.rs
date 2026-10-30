@@ -7,7 +7,7 @@ fn observation() -> (
     NativeSurfaceBinding,
     NativePresentationEffectAcknowledgement,
 ) {
-    let ([request, _], acknowledgement) = staging_observations();
+    let ([request, _], _, acknowledgement) = staging_observations();
     (request.binding(), acknowledgement)
 }
 
@@ -28,6 +28,111 @@ fn no_frame(
 fn pin(resources: &mut NativeWindowResources, viewport: ViewportId, binding: NativeSurfaceBinding) {
     resources.prepare_host_reference(viewport, binding).unwrap();
     resources.commit_host_reference(viewport, binding);
+}
+
+#[test]
+fn creation_stays_known_after_acknowledgement_without_claiming_renderer_preparation() {
+    let ([request, _], created, shown) = staging_observations();
+    let binding = request.binding();
+    let viewport = ViewportId::ROOT;
+    let peer = ViewportId::from_hash_of("created-observation-alias");
+    let mut resources = NativeWindowResources::with_capacity_limit(2).unwrap();
+    let bytes = resources.owned_data_capacity_bytes();
+    let backing = resources.entries.as_ptr();
+    assert!(!resources.can_retain_create_ack(viewport, binding));
+    assert_eq!(
+        resources.retain_create_ack(viewport, binding, created),
+        Err(created)
+    );
+    assert!(resources.entries.is_empty());
+
+    pin(&mut resources, viewport, binding);
+    pin(&mut resources, peer, binding);
+    assert_eq!(
+        resources.created_ack(binding),
+        None,
+        "an external root has no create fact"
+    );
+    assert!(resources.can_retain_create_ack(viewport, binding));
+    resources
+        .retain_create_ack(viewport, binding, created)
+        .unwrap();
+    assert!(!resources.can_retain_create_ack(peer, binding));
+    assert_eq!(resources.created_ack(binding), Some(Some(created)));
+    assert_eq!(resources.create_ack_count(), 1);
+    assert_eq!(resources.presentation_ack_count(), 0);
+    assert!(resources.has_pending_work());
+
+    let facts = dockspace::runtime::NativeWindowFacts::live();
+    let compile = |acknowledgement| {
+        crate::window_snapshot::CompiledWindowObservation::new(binding, facts)
+            .with_created(acknowledgement)
+    };
+    let observation = compile(resources.created_ack(binding).unwrap());
+    assert!(observation.create_acknowledged());
+    assert!(!observation.presentation_acknowledged());
+    assert_eq!(
+        observation.facts(),
+        facts.with_create_readiness(
+            dockspace::runtime::NativeCreateReadiness::Created,
+            Some(created),
+        )
+    );
+    resources
+        .retain_presentation_ack(viewport, binding, shown)
+        .unwrap();
+    assert!(resources.clear_create_ack(binding));
+    assert!(!resources.clear_create_ack(binding));
+    assert_eq!(resources.create_ack_count(), 0);
+    assert_eq!(resources.presentation_ack(binding), Some(shown));
+    assert_eq!(resources.created_ack(binding), Some(None));
+    assert!(!resources.can_retain_create_ack(viewport, binding));
+    let observation = compile(resources.created_ack(binding).unwrap());
+    assert!(!observation.create_acknowledged());
+    assert_eq!(
+        observation.facts(),
+        facts.with_create_readiness(dockspace::runtime::NativeCreateReadiness::Created, None)
+    );
+    assert!(resources.clear_presentation_ack(binding));
+    resources.refresh_host_references(|_, _| false);
+    assert_eq!(resources.created_ack(binding), Some(None));
+    assert!(!resources.has_pending_work());
+    resources.retire(viewport, binding);
+    assert_eq!(resources.created_ack(binding), None);
+    assert!(resources.entries.is_empty());
+    assert_eq!(resources.entries.as_ptr(), backing);
+    assert_eq!(resources.owned_data_capacity_bytes(), bytes);
+}
+
+#[test]
+fn retired_create_ack_keeps_its_exact_owner_until_settlement_beside_the_successor() {
+    let ([first, _], first_ack, _) = staging_observations();
+    let ([next, _], next_ack, _) = staging_observations();
+    let predecessor = first.binding();
+    let successor = next.binding();
+    let viewport = ViewportId::ROOT;
+    let rect = NativePhysicalRect::new(0, 0, 640, 480);
+    let mut resources = NativeWindowResources::with_capacity_limit(2).unwrap();
+    let bytes = resources.owned_data_capacity_bytes();
+    let backing = resources.entries.as_ptr();
+    assert!(resources.reserve_create(viewport, predecessor, rect));
+    resources
+        .retain_create_ack(viewport, predecessor, first_ack)
+        .unwrap();
+    resources.retire(viewport, predecessor);
+    assert!(resources.reserve_create(viewport, successor, rect));
+    resources
+        .retain_create_ack(viewport, successor, next_ack)
+        .unwrap();
+    assert_eq!(resources.created_ack(predecessor), Some(Some(first_ack)));
+    assert_eq!(resources.created_ack(successor), Some(Some(next_ack)));
+    assert_eq!(resources.create_ack_count(), 2);
+    assert!(resources.clear_create_ack(predecessor));
+    assert!(!resources.references_binding(predecessor));
+    assert_eq!(resources.created_ack(successor), Some(Some(next_ack)));
+    assert_eq!(resources.create(viewport).unwrap().binding, successor);
+    assert_eq!(resources.entries.as_ptr(), backing);
+    assert_eq!(resources.owned_data_capacity_bytes(), bytes);
 }
 
 #[test]

@@ -13,8 +13,9 @@ mod tests;
 use thiserror::Error;
 
 use super::native_effect::{
-    NativeCloseEffectAcknowledgement, NativeEffectResult, NativeEffectSubmissionError,
-    NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
+    NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
+    NativeEffectSubmissionError, NativeInputEffectAcknowledgement,
+    NativePresentationEffectAcknowledgement,
 };
 use super::{DockspaceRuntimeError, DockspaceSession};
 use crate::backend_ingress::{
@@ -28,6 +29,7 @@ use crate::platform::{
     CloseEffectAcknowledgement, ObservedWindow, WindowCloseObservation, WindowCloseState,
     WindowInputState, WindowPresentationState,
 };
+pub use crate::platform::{NativeCreateReadiness, NativeCreateStrategy};
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
     CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration,
@@ -505,6 +507,7 @@ pub struct NativeWindowFacts {
     presentation_scale_factor: Option<ScaleFactor>,
     input: Option<NativeInputFact>,
     presentation: Option<NativePresentationFact>,
+    create_readiness: Option<NativeCreateReadinessFact>,
     close: Option<NativeCloseFact>,
 }
 
@@ -529,6 +532,12 @@ struct NativePresentationFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeCreateReadinessFact {
+    state: NativeCreateReadiness,
+    acknowledgement: Option<NativeCreateEffectAcknowledgement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeCloseFact {
     state: NativeCloseState,
     acknowledgement: Option<NativeCloseEffectAcknowledgement>,
@@ -546,6 +555,7 @@ impl NativeWindowFacts {
             presentation_scale_factor: None,
             input: None,
             presentation: None,
+            create_readiness: None,
             close: None,
         }
     }
@@ -606,6 +616,23 @@ impl NativeWindowFacts {
         self
     }
 
+    /// Reports exact creation or renderer preparation using the create request's capability.
+    ///
+    /// Omission explicitly leaves preparation Unknown in this complete snapshot.
+    /// Prepared may be the first observation; Created is not a mandatory pass.
+    #[must_use]
+    pub const fn with_create_readiness(
+        mut self,
+        state: NativeCreateReadiness,
+        acknowledgement: Option<NativeCreateEffectAcknowledgement>,
+    ) -> Self {
+        self.create_readiness = Some(NativeCreateReadinessFact {
+            state,
+            acknowledgement,
+        });
+        self
+    }
+
     /// Adds one exact native-close property observation.
     #[must_use]
     pub const fn with_close(
@@ -636,6 +663,7 @@ impl NativeWindowFacts {
             presentation_scale_factor: None,
             input: None,
             presentation: None,
+            create_readiness: None,
             close: None,
         }
     }
@@ -653,6 +681,7 @@ impl NativeWindowFacts {
             presentation_scale_factor: None,
             input: None,
             presentation: None,
+            create_readiness: None,
             close: None,
         }
     }

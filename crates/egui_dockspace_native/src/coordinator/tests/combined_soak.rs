@@ -220,7 +220,7 @@ fn combined_model_reuses_one_coordinator_for_ten_thousand_quiescent_lifetimes() 
         assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(binding));
         native
             .bridge
-            .with_retirement_destroyed_observations(|count, entries, _| {
+            .with_retirement_destroyed_observations(|count, entries, _, _| {
                 assert_eq!(count, 1);
                 assert_eq!(
                     entries.next(),

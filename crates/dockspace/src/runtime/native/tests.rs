@@ -159,12 +159,15 @@ fn native_root_session_with_profile(
     match profile {
         NativeHostProfile::ObservedRoots => {
             session
-                .enable_observed_native_roots()
+                .enable_observed_native_roots(crate::runtime::NativeCreateStrategy::Staged)
                 .expect("the observed-root provider enrolls");
         }
         NativeHostProfile::ManagedDesktop => {
             session
-                .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+                .enable_managed_native_host(
+                    crate::runtime::NativeCreateStrategy::Staged,
+                    NativePointerRoster::Exact(Vec::new()),
+                )
                 .expect("the managed provider enrolls");
             session
                 .configure_managed_native_capabilities(full_managed_capabilities())
@@ -519,7 +522,7 @@ fn repeated_native_enable_never_reissues_live_bindings() {
     let (mut session, binding) = native_root_session();
 
     let error = session
-        .enable_observed_native_roots()
+        .enable_observed_native_roots(crate::runtime::NativeCreateStrategy::Staged)
         .expect_err("repeated enrollment cannot recapture the current binding roster");
     assert!(matches!(
         error.native_kind(),
@@ -551,7 +554,10 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("the child bootstrap session initializes");
     session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            crate::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed native provider enrolls");
     session
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -802,7 +808,7 @@ fn native_frame_distinguishes_missing_provider_from_wrong_profile() {
     assert_eq!(missing.native_kind(), Some(NativeHostErrorKind::NotEnabled));
 
     session
-        .enable_observed_native_roots()
+        .enable_observed_native_roots(crate::runtime::NativeCreateStrategy::Staged)
         .expect("the observed-root provider enrolls");
     let wrong_profile = match session.begin_native_host_frame(|_| NativeReceiverAnswer::Unknown) {
         Ok(_) => panic!("the observed-root profile cannot drive desktop pointer input"),
@@ -1630,7 +1636,10 @@ fn managed_pointer_enrollment_accepts_explicit_unknown_authority() {
     )
     .expect("the native session initializes");
     session
-        .enable_managed_native_host(NativePointerRoster::Unknown)
+        .enable_managed_native_host(
+            crate::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Unknown,
+        )
         .expect("explicit unavailable authority enrolls atomically");
     let input = NativePointerInput::new(
         NativePointerId::new(1),
@@ -1665,11 +1674,17 @@ fn invalid_native_pointer_roster_is_rejected_before_provider_enrollment() {
         NativePointerOwner::None,
     );
     let error = session
-        .enable_managed_native_host(NativePointerRoster::Exact(vec![duplicate]))
+        .enable_managed_native_host(
+            crate::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(vec![duplicate]),
+        )
         .expect_err("duplicate buttons cannot enroll a provider");
     assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
 
     session
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            crate::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("rejected facts leave provider enrollment available");
 }

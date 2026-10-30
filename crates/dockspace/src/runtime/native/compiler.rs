@@ -12,8 +12,8 @@ use crate::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
     PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
     PresentationEffectAcknowledgement, WindowCloseObservation, WindowCloseState,
-    WindowCoordinateObservation, WindowInputObservation, WindowInventoryObservation,
-    WindowPresentationObservation, WorkAreaRosterObservation,
+    WindowCoordinateObservation, WindowCreatePreparationObservation, WindowInputObservation,
+    WindowInventoryObservation, WindowPresentationObservation, WorkAreaRosterObservation,
 };
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
@@ -320,6 +320,16 @@ pub(super) fn compile_window_fact(
                             facts.presentation,
                             reason,
                         )?,
+                    ))
+                    .with_create_preparation(WindowCreatePreparationObservation::new(
+                        binding,
+                        coordinate_generation,
+                        facts
+                            .create_readiness
+                            .map_or(Authority::Unknown(reason), |fact| {
+                                Authority::Known(fact.state)
+                            }),
+                        create_acknowledgement(provider, binding, facts)?,
                     )),
             ),
             close: WindowCloseObservation::new(
@@ -341,6 +351,7 @@ pub(super) fn compile_window_fact(
                 || facts.presentation_scale_factor.is_some()
                 || facts.input.is_some()
                 || facts.presentation.is_some()
+                || facts.create_readiness.is_some()
                 || facts.close.is_some()
             {
                 return Err(NativePlatformError::DestroyedSurfaceHasLiveFacts {
@@ -389,6 +400,27 @@ fn input_acknowledgement(
             acknowledgement.effect,
         ))),
         None => Ok(InputEffectAcknowledgement::known(None)),
+    }
+}
+
+fn create_acknowledgement(
+    provider: PlatformObservationLease,
+    binding: ViewportBinding,
+    facts: NativeWindowFacts,
+) -> Result<Option<crate::effect::EffectId>, NativePlatformError> {
+    match facts.create_readiness.and_then(|fact| fact.acknowledgement) {
+        Some(acknowledgement) if acknowledgement.provider != provider => {
+            Err(NativePlatformError::EffectAcknowledgementProviderMismatch {
+                surface: binding.surface(),
+            })
+        }
+        Some(acknowledgement) if acknowledgement.binding != binding => {
+            Err(NativePlatformError::EffectAcknowledgementBindingMismatch {
+                surface: binding.surface(),
+            })
+        }
+        Some(acknowledgement) => Ok(Some(acknowledgement.effect)),
+        None => Ok(None),
     }
 }
 

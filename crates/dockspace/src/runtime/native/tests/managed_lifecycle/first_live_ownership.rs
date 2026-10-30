@@ -33,8 +33,8 @@ fn pending_first_live_native_create()
         create.operation(),
         NativeEffectOperation::CreateWindow { .. }
     ));
-    let Some(NativeEffectAcknowledgement::Presentation(created)) = create.accepted() else {
-        panic!("the create request must return a presentation acknowledgement");
+    let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
+        panic!("the create request must return a create acknowledgement");
     };
     let facts = NativeWindowFacts::live()
         .with_content_bounds(placement)
@@ -42,6 +42,7 @@ fn pending_first_live_native_create()
         .with_native_scale_factor(native_scale())
         .with_presentation_scale_factor(native_scale())
         .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
         .with_close(NativeCloseState::Clear, None);
     session
         .report_managed_native_snapshot(
@@ -49,7 +50,12 @@ fn pending_first_live_native_create()
                 (root, root_window_facts()),
                 (
                     child,
-                    facts.with_presentation(NativeWindowPresentationState::Hidden, Some(created)),
+                    facts
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Created,
+                            Some(created),
+                        ),
                 ),
             ],
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),

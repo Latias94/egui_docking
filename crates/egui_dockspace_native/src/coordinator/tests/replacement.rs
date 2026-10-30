@@ -123,6 +123,7 @@ fn request_replacement_on_existing_viewport() -> (
                 binding,
                 placement: _,
                 role: _,
+                strategy: NativeCreateStrategy::Staged,
             } => *binding,
             operation => panic!("expected one replacement request, got {operation:?}"),
         },

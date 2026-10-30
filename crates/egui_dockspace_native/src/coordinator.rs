@@ -8,12 +8,13 @@ use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspacePresentationTransition, DockspaceSession, HostFrameReport, HostInputOutcome,
     HostWindowToken, NativeCloseDisposition, NativeCloseEffectAcknowledgement, NativeCloseState,
-    NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
-    NativeEffectResult, NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind,
-    NativeIndeterminateReason, NativeInputBudget, NativeInputStorageLimit, NativePointerInput,
-    NativePointerRoster, NativePresentationEffectAcknowledgement, NativeReceiverAnswer,
-    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
-    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
+    NativeCreateEffectAcknowledgement, NativeCreateStrategy, NativeDispatchFailure,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
+    NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason,
+    NativeInputBudget, NativeInputStorageLimit, NativePointerInput, NativePointerRoster,
+    NativePresentationEffectAcknowledgement, NativeReceiverAnswer, NativeReceiverQuery,
+    NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts, NativeWorkAreaBinding,
+    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
     SurfaceUnavailableReason,
 };
 use eframe::{
@@ -303,10 +304,18 @@ const fn native_effect_submission_rejection_is_recoverable(kind: NativeHostError
 struct QueuedNativeSnapshot {
     settlement: Option<bool>,
     roster: NativeViewportRosterEnvelope,
-    presentation_acknowledgements: Vec<NativeSurfaceBinding>,
+    acknowledgements: Vec<NativeSnapshotAcknowledgements>,
     input_acknowledgement: Option<NativeSurfaceBinding>,
     focus_reportable: Vec<NativeSurfaceBinding>,
     work_areas: PreparedWorkAreaRoster,
+}
+
+/// One existing snapshot sidecar settles both independent window properties.
+#[derive(Debug, Clone, Copy)]
+struct NativeSnapshotAcknowledgements {
+    binding: NativeSurfaceBinding,
+    create: bool,
+    presentation: bool,
 }
 
 pub(crate) type PreparedNativeRetirements = PreparedRouteRetirements;
@@ -325,15 +334,19 @@ impl std::fmt::Debug for NativeCoordinator {
                 &self.bridge.pending_no_frame_count(),
             )
             .field(
+                "pending_create_acknowledgements",
+                &self.bridge.create_ack_count(),
+            )
+            .field(
                 "pending_presentation_acknowledgements",
                 &self.bridge.presentation_ack_count(),
             )
             .field(
-                "queued_snapshot_presentation_acknowledgements",
+                "queued_snapshot_window_acknowledgements",
                 &self
                     .queued_snapshot
                     .as_ref()
-                    .map_or(0, |queued| queued.presentation_acknowledgements.len()),
+                    .map_or(0, |queued| queued.acknowledgements.len()),
             )
             .field(
                 "queued_snapshot_input_acknowledgement",
@@ -562,13 +575,14 @@ impl NativeCoordinator {
             native
                 .session
                 .enable_managed_native_host_with_input_storage_limit(
+                    NativeCreateStrategy::Staged,
                     initial_pointer_roster,
                     limit,
                 )?;
         } else {
             native
                 .session
-                .enable_managed_native_host(initial_pointer_roster)?;
+                .enable_managed_native_host(NativeCreateStrategy::Staged, initial_pointer_roster)?;
         }
         native.session.report_native_inventory_unknown()?;
         Ok(native)
@@ -978,6 +992,7 @@ impl NativeCoordinator {
         let (committed, abandoned) = prepared.commit_with_routes();
         for retirement in &committed {
             let binding = retirement.binding();
+            self.bridge.clear_create_ack(binding);
             self.bridge.clear_presentation_ack(binding);
             self.effects.remove_show(binding);
             self.terminalize_focus(binding);
@@ -1058,11 +1073,16 @@ impl NativeCoordinator {
             self.bridge.with_viewports_mut(|viewports| {
                 viewports.set_focus_reportable(queued.focus_reportable)
             });
-            let presentation_acknowledged = !queued.presentation_acknowledgements.is_empty();
-            for binding in queued.presentation_acknowledgements {
-                self.bridge.clear_presentation_ack(binding);
+            let window_acknowledged = !queued.acknowledgements.is_empty();
+            for acknowledgement in queued.acknowledgements {
+                if acknowledgement.create {
+                    self.bridge.clear_create_ack(acknowledgement.binding);
+                }
+                if acknowledgement.presentation {
+                    self.bridge.clear_presentation_ack(acknowledgement.binding);
+                }
             }
-            if presentation_acknowledged {
+            if window_acknowledged {
                 self.bridge.invalidate_viewport_roster();
             }
             let input_settled = self
@@ -2040,9 +2060,9 @@ impl NativeCoordinator {
         };
         if !self
             .bridge
-            .can_retain_presentation_ack(created.token().viewport_id(), created.binding())
+            .can_retain_create_ack(created.token().viewport_id(), created.binding())
         {
-            return Err(NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into());
+            return Err(NativeHostProtocolError::CreateAcknowledgementAlreadyPending.into());
         }
         let attach = self.bridge.with_viewports_mut(|viewports| {
             viewports.attach_output(
@@ -2059,17 +2079,16 @@ impl NativeCoordinator {
             .effects
             .take_for_output(created.token().viewport_id(), created.binding())
             .ok_or(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement)?;
-        let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = request.accepted()
-        else {
+        let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = request.accepted() else {
             return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
         };
         self.bridge
-            .retain_presentation_ack(
+            .retain_create_ack(
                 created.token().viewport_id(),
                 created.binding(),
                 acknowledgement,
             )
-            .expect("the exact create callback retained its prepaid presentation slot");
+            .expect("the exact create callback retained its prepaid creation observation");
         self.bridge.invalidate_viewport_roster();
         if !self.bridge.acknowledge_viewport_created(created) {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
@@ -2288,10 +2307,14 @@ impl NativeCoordinator {
         envelope: NativeViewportRosterEnvelope,
     ) -> Result<(), NativeRuntimeError> {
         let compiled = self.bridge.with_retirement_destroyed_observations(
-            |destroyed_count, destroyed, presentation_ack| {
+            |destroyed_count, destroyed, created_ack, presentation_ack| {
                 self.preflight_snapshot_storage(roster, destroyed_count)?;
-                let mut observations =
-                    self.compile_viewport_roster(roster, destroyed_count, presentation_ack)?;
+                let mut observations = self.compile_viewport_roster(
+                    roster,
+                    destroyed_count,
+                    created_ack,
+                    presentation_ack,
+                )?;
                 observations.extend(
                     destroyed
                         .map(|(binding, facts)| CompiledWindowObservation::new(binding, facts)),
@@ -2310,24 +2333,29 @@ impl NativeCoordinator {
         {
             let (core_work_areas, prepared_work_areas) =
                 self.work_areas.prepare(frozen_work_areas)?;
-            let mut presentation_acknowledgements = Vec::new();
+            let mut acknowledgements = Vec::new();
             let mut focus_reportable = Vec::new();
-            for entries in [&mut presentation_acknowledgements, &mut focus_reportable] {
-                entries
-                    .try_reserve_exact(observations.len())
-                    .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
-                if self
-                    .snapshot_storage
-                    .is_some_and(|limit| entries.capacity() > 2 * limit.window_slots)
-                {
-                    return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
-                }
+            acknowledgements
+                .try_reserve_exact(observations.len())
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            focus_reportable
+                .try_reserve_exact(observations.len())
+                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            if self.snapshot_storage.is_some_and(|limit| {
+                acknowledgements.capacity() > 2 * limit.window_slots
+                    || focus_reportable.capacity() > 2 * limit.window_slots
+            }) {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
             }
             let mut input_acknowledgement = None;
             for observation in &observations {
                 let binding = observation.binding();
-                if observation.presentation_acknowledged() {
-                    presentation_acknowledgements.push(binding);
+                if observation.create_acknowledged() || observation.presentation_acknowledged() {
+                    acknowledgements.push(NativeSnapshotAcknowledgements {
+                        binding,
+                        create: observation.create_acknowledged(),
+                        presentation: observation.presentation_acknowledged(),
+                    });
                 }
                 if observation.input_acknowledged() {
                     let previous = input_acknowledgement.replace(binding);
@@ -2351,7 +2379,7 @@ impl NativeCoordinator {
                     self.queued_snapshot = Some(QueuedNativeSnapshot {
                         settlement: None,
                         roster: envelope,
-                        presentation_acknowledgements,
+                        acknowledgements,
                         input_acknowledgement,
                         focus_reportable,
                         work_areas: prepared_work_areas,
@@ -2379,7 +2407,7 @@ impl NativeCoordinator {
         self.queued_snapshot = Some(QueuedNativeSnapshot {
             settlement: None,
             roster: envelope,
-            presentation_acknowledgements: Vec::new(),
+            acknowledgements: Vec::new(),
             input_acknowledgement: None,
             focus_reportable: Vec::new(),
             work_areas: prepared_work_areas,
@@ -2391,6 +2419,9 @@ impl NativeCoordinator {
         &self,
         roster: &NativeViewportRosterRecord,
         destroyed_count: usize,
+        created_ack: &dyn Fn(
+            NativeSurfaceBinding,
+        ) -> Option<Option<NativeCreateEffectAcknowledgement>>,
         presentation_ack: &dyn Fn(
             NativeSurfaceBinding,
         ) -> Option<NativePresentationEffectAcknowledgement>,
@@ -2425,6 +2456,9 @@ impl NativeCoordinator {
                 observation.snapshot(),
                 presentation_ack(observation.binding()),
             )?;
+            let compiled = created_ack(observation.binding()).map_or(compiled, |acknowledgement| {
+                compiled.with_created(acknowledgement)
+            });
             observations.push(self.with_native_input_observation(compiled));
         }
         Ok(observations)
@@ -2856,7 +2890,8 @@ impl NativeCoordinator {
     }
 
     fn requires_terminal_snapshot(&self) -> bool {
-        self.bridge.presentation_ack_count() != 0
+        self.bridge.create_ack_count() != 0
+            || self.bridge.presentation_ack_count() != 0
             || self.input_control.requires_snapshot()
             || self.bridge.retirement_requires_snapshot()
             || self.bridge.viewport_roster_dirty()

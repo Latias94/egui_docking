@@ -71,7 +71,10 @@ fn joined_document_restore_rebases_after_a_workspace_mutating_native_prefix() {
     let (mut target, first, second) = persistent_session();
     assert_eq!((first, second), (source_first, source_second));
     target
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            crate::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed native host enrolls");
     target
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -152,7 +155,10 @@ fn joined_layout_reset_retries_after_a_workspace_mutating_native_prefix() {
     let mut target = DockspaceSession::from_layout(layout(RootId::new(2)), DockPolicy::default())
         .expect("the layout-only session initializes");
     target
-        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .enable_managed_native_host(
+            crate::runtime::NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
         .expect("the managed native host enrolls");
     target
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -453,8 +459,8 @@ fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once(
     let mut report = frame.commit().expect("the native create publishes");
     let create = take_only_native_effect(&mut report);
     let child = create.operation().binding();
-    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = create.accepted() else {
-        panic!("create must return its exact presentation acknowledgement");
+    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
+        panic!("create must return its exact create acknowledgement");
     };
     session
         .report_managed_native_snapshot(
@@ -468,8 +474,9 @@ fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once(
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(
-                            NativeWindowPresentationState::Hidden,
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Created,
                             Some(acknowledgement),
                         )
                         .with_close(NativeCloseState::Clear, None),
@@ -877,7 +884,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         .retained_stream_states();
     let capture_generations_before = session.presentation.retained_capture_generation_count();
     let create_ack = match create.accepted() {
-        Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
+        Some(NativeEffectAcknowledgement::Create(acknowledgement)) => acknowledgement,
         acknowledgement => panic!("create returned the wrong acknowledgement: {acknowledgement:?}"),
     };
     assert_ne!(child_binding.surface(), SURFACE);
@@ -904,7 +911,11 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, Some(create_ack))
+                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Created,
+                            Some(create_ack),
+                        )
                         .with_close(NativeCloseState::Clear, None),
                 ),
             ],
@@ -945,6 +956,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
                         .with_presentation(NativeWindowPresentationState::Hidden, Some(show_ack))
+                        .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
                         .with_close(NativeCloseState::Clear, None),
                 ),
             ],
@@ -966,6 +978,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
                         .with_presentation(NativeWindowPresentationState::Visible, None)
+                        .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
                         .with_close(NativeCloseState::Clear, None),
                 ),
             ],
@@ -1668,13 +1681,17 @@ fn managed_session_from_workspace_with_storage_limit(
     if let Some(limit) = limit {
         session
             .enable_managed_native_host_with_input_storage_limit(
+                crate::runtime::NativeCreateStrategy::Staged,
                 NativePointerRoster::Exact(Vec::new()),
                 limit,
             )
             .expect("the finite managed native provider enrolls");
     } else {
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                crate::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("the managed native provider enrolls");
     }
     session

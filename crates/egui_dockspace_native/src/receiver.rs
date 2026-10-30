@@ -433,7 +433,10 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("receiver test session initializes");
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -1117,7 +1120,10 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("hover receiver session initializes");
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -1478,7 +1484,10 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("scroll receiver session initializes");
         session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(

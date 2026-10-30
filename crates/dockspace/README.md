@@ -426,6 +426,42 @@ and physical OS behavior remain separate qualification work.
 
 ## Native creation failure and recovery
 
+Native enrollment takes an explicit `NativeCreateStrategy`, frozen for the
+provider lifetime and carried by CreateWindow and RequestReplacement. Select
+`DirectPrepared` when the engine prepares its own platform window, render target
+and renderer resources. Select `Staged` for the egui reference host's exact
+hidden/pre-show/show/post-show sequence. DirectPrepared requires no staging
+placeholder output or core ShowWindow request.
+
+Creation requests return `NativeEffectAcknowledgement::Create`, independently
+of Show's `Presentation` acknowledgement. Dispatch acceptance is only the
+correlation capability. Report actual creation through
+`NativeWindowFacts::with_create_readiness(Created, Some(create_ack))`, or report
+`Prepared` immediately when both creation and renderer preparation are complete.
+Created is not a mandatory intermediate pass. DirectPrepared also requires
+current Visible state, exact content bounds, and independent native and
+presentation scale factors. Outer bounds are separate placement/recovery facts;
+they are never inferred from content bounds or the requested placement.
+Geometry observation and readiness are separate;
+an unchanged coordinate authority does not need a fabricated generation bump.
+Creation acknowledgement settles independently of visibility. A Staged host
+can report it while visibility is Unknown and later report Hidden without
+repeating the acknowledgement; its exact staging outputs are still required.
+
+Keep reporting current preparation facts in complete snapshots. In
+DirectPrepared, compatible Prepared observations preserve their readiness basis;
+Unknown, Created, failed preparation, coordinate/visibility authority loss and
+provider retirement revoke it.
+Re-preparation uses the original creation obligation and a fresh first-live
+output floor. It does not reissue a non-idempotent CreateWindow. Staged hosts
+retain their exact output evidence instead of using Prepared to bypass staging.
+Both strategies use the same source reservation, semantic child program,
+first-live publication and exact cleanup owners, including replacement windows.
+A replacement with still-valid measurements receives a fresh semantic output
+ticket when readiness returns, so the next ordinary paint can satisfy its new
+first-live floor. Changed coordinate or requirement authority follows the normal
+measurement path. Old outputs remain ineligible for admission.
+
 Renderer failure and lifecycle cancellation are distinct operations. Dropping
 an affine output reports only that output's failure; an unresolved native create
 still owns its window, staging resource and first-live obligation.
@@ -433,7 +469,7 @@ Drain accepted input before adding lifecycle cleanup. Do not append cleanup
 after an overload cancellation has closed the frame's semantic input phase.
 
 Source content retains its durable surface and root ownership until the exact
-first-live content output is accepted. Native staging placeholders do not move
+first-live content output is accepted. Staged placeholders do not move
 it. A prospective child participates in the normal surface roster, measurement
 and complete semantic paint program through a checked transient projection.
 Measuring, painting, dropping or reporting failure for that projection does not

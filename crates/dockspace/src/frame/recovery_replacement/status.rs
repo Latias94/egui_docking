@@ -4,7 +4,7 @@ use crate::effect::EffectId;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::{InventoryGeneration, ViewportBinding, ViewportRole};
 
-use super::super::native_bringup::{NativeBringupPhase, NativeVisibleProof};
+use super::super::native_bringup::{NativeBringupPhase, NativeReadyProof};
 
 /// Queryable recovery phase after a native surface was authoritatively destroyed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,10 +53,12 @@ pub(super) enum RecoveryReplacementPhase {
     ReplacementRequested {
         binding: ViewportBinding,
         create: EffectId,
+        strategy: crate::platform::NativeCreateStrategy,
     },
     ReplacementIndeterminate {
         binding: ViewportBinding,
         create: EffectId,
+        strategy: crate::platform::NativeCreateStrategy,
     },
     BringingUp {
         binding: ViewportBinding,
@@ -73,7 +75,7 @@ pub(super) enum RecoveryReplacementPhase {
         last_effect: EffectId,
     },
     AwaitingFirstLive {
-        proof: NativeVisibleProof,
+        proof: NativeReadyProof,
     },
     AwaitingCleanup {
         binding: ViewportBinding,
@@ -141,6 +143,12 @@ impl RecoveryReplacementPhase {
                     replacement: create,
                 }
             }
+            Self::BringingUp {
+                phase: NativeBringupPhase::AwaitingPrepared { create },
+                ..
+            } => RecoveryPendingStatus::ReplacementRequested {
+                replacement: create,
+            },
             Self::BringingUp {
                 phase: NativeBringupPhase::AwaitingHidden { .. },
                 ..
@@ -251,7 +259,7 @@ impl RecoveryPending {
         }
     }
 
-    pub(in crate::frame) const fn first_live_proof(&self) -> Option<NativeVisibleProof> {
+    pub(in crate::frame) const fn first_live_proof(&self) -> Option<NativeReadyProof> {
         match self.phase {
             RecoveryReplacementPhase::AwaitingFirstLive { proof, .. } => Some(proof),
             RecoveryReplacementPhase::AwaitingRecoveryHost

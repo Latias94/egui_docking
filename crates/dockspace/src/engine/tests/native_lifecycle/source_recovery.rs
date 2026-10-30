@@ -312,7 +312,15 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
                     WindowPresentationState::Visible,
                     None,
                 ),
-                observed_source_window(binding, generation, 1000.0, presentation, acknowledgement),
+                observed_source_window(binding, generation, 1000.0, presentation, acknowledgement)
+                    .with_create_preparation(
+                        crate::platform::WindowCreatePreparationObservation::new(
+                            binding,
+                            CoordinateObservationGeneration::new(generation),
+                            Authority::Known(crate::platform::NativeCreateReadiness::Created),
+                            acknowledgement.filter(|effect| *effect == create),
+                        ),
+                    ),
             ],
             Vec::new(),
         );

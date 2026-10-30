@@ -30,6 +30,7 @@ fn backend_provider_initializer_failure_does_not_publish_providers_or_checkpoint
         .create_backend_ingress_provider_initialized(
             host,
             PointerEdgeSequence::new(0),
+            crate::platform::NativeCreateStrategy::Staged,
             |recorder| {
                 record_empty_backend_checkpoint(recorder);
                 assert_eq!(recorder.recorded_through().get(), 1);
@@ -57,6 +58,7 @@ fn backend_provider_initializer_failure_does_not_publish_providers_or_checkpoint
         .create_backend_ingress_provider_initialized(
             host,
             PointerEdgeSequence::new(0),
+            crate::platform::NativeCreateStrategy::Staged,
             |recorder| {
                 record_empty_backend_checkpoint(recorder);
                 Ok(())

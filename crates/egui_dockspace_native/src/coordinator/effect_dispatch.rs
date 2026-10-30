@@ -206,12 +206,18 @@ impl NativeCoordinator {
                     binding,
                     placement,
                     role,
+                    strategy,
                 }
                 | NativeEffectOperation::RequestReplacement {
                     binding,
                     placement,
                     role,
+                    strategy,
                 } => {
+                    if *strategy != NativeCreateStrategy::Staged {
+                        self.submit_unsupported_effect(request)?;
+                        continue;
+                    }
                     let binding = *binding;
                     let placement = *placement;
                     let role = *role;

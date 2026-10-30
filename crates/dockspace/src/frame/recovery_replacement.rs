@@ -7,7 +7,7 @@ use crate::ids::SurfaceId;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::{ViewportBinding, ViewportRole};
 
-use super::native_bringup::{NativeBringupPhase, NativeVisibleProof};
+use super::native_bringup::{NativeBringupPhase, NativeReadyProof};
 
 mod abandoned;
 mod status;
@@ -44,6 +44,7 @@ impl RecoveryPendingRequest {
         recovery_obligation: SurfaceRecoveryObligationId,
         binding: ViewportBinding,
         effect: EffectId,
+        strategy: crate::platform::NativeCreateStrategy,
     ) -> Self {
         Self {
             destroyed_binding,
@@ -52,6 +53,7 @@ impl RecoveryPendingRequest {
             phase: RecoveryReplacementPhase::ReplacementRequested {
                 binding,
                 create: effect,
+                strategy,
             },
         }
     }
@@ -111,6 +113,9 @@ impl RecoveryReplacementLifecycle {
                 RecoveryReplacementPhase::BringingUp { phase, .. } => {
                     effects.extend(phase.show_effect());
                 }
+                RecoveryReplacementPhase::AwaitingFirstLive { proof } => {
+                    effects.extend(proof.show());
+                }
                 RecoveryReplacementPhase::Failed { failed_effect, .. } => {
                     effects.insert(failed_effect);
                 }
@@ -125,7 +130,6 @@ impl RecoveryReplacementLifecycle {
                 RecoveryReplacementPhase::AwaitingRecoveryHost
                 | RecoveryReplacementPhase::ReplacementRequested { .. }
                 | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
-                | RecoveryReplacementPhase::AwaitingFirstLive { .. }
                 | RecoveryReplacementPhase::AwaitingCleanup { .. } => {}
             }
         }
@@ -188,11 +192,13 @@ impl RecoveryReplacementLifecycle {
             RecoveryReplacementPhase::ReplacementRequested {
                 binding: owned,
                 create,
+                strategy,
             }
             | RecoveryReplacementPhase::ReplacementIndeterminate {
                 binding: owned,
                 create,
-            } if owned == binding => Some((surface, NativeBringupPhase::AwaitingHidden { create })),
+                strategy,
+            } if owned == binding => Some((surface, NativeBringupPhase::initial(create, strategy))),
             RecoveryReplacementPhase::BringingUp {
                 binding: owned,
                 phase,
@@ -213,19 +219,29 @@ impl RecoveryReplacementLifecycle {
         self.pending
             .iter()
             .filter_map(|(surface, pending)| match pending.phase {
-                RecoveryReplacementPhase::ReplacementRequested { binding, create }
-                | RecoveryReplacementPhase::ReplacementIndeterminate { binding, create } => Some((
+                RecoveryReplacementPhase::ReplacementRequested {
+                    binding,
+                    create,
+                    strategy,
+                }
+                | RecoveryReplacementPhase::ReplacementIndeterminate {
+                    binding,
+                    create,
+                    strategy,
+                } => Some((
                     *surface,
                     binding,
-                    NativeBringupPhase::AwaitingHidden { create },
+                    NativeBringupPhase::initial(create, strategy),
                 )),
                 RecoveryReplacementPhase::BringingUp { binding, phase, .. } => {
                     Some((*surface, binding, phase))
                 }
+                RecoveryReplacementPhase::AwaitingFirstLive { proof } => {
+                    Some((*surface, proof.binding(), proof.resume_preparation()))
+                }
                 RecoveryReplacementPhase::AwaitingRecoveryHost
                 | RecoveryReplacementPhase::Failed { .. }
                 | RecoveryReplacementPhase::ProviderLost { .. }
-                | RecoveryReplacementPhase::AwaitingFirstLive { .. }
                 | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
             })
             .collect()
@@ -246,11 +262,13 @@ impl RecoveryReplacementLifecycle {
             RecoveryReplacementPhase::ReplacementRequested {
                 binding: owned,
                 create,
+                strategy,
             }
             | RecoveryReplacementPhase::ReplacementIndeterminate {
                 binding: owned,
                 create,
-            } => owned == binding && expected == NativeBringupPhase::AwaitingHidden { create },
+                strategy,
+            } => owned == binding && expected == NativeBringupPhase::initial(create, strategy),
             RecoveryReplacementPhase::BringingUp {
                 binding: owned,
                 phase,
@@ -261,7 +279,13 @@ impl RecoveryReplacementLifecycle {
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
         };
-        if !matches_expected || matches!(next, NativeBringupPhase::AwaitingHidden { .. }) {
+        if !matches_expected
+            || matches!(
+                next,
+                NativeBringupPhase::AwaitingHidden { .. }
+                    | NativeBringupPhase::AwaitingPrepared { .. }
+            )
+        {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
         }
         pending.phase = RecoveryReplacementPhase::BringingUp {
@@ -286,19 +310,23 @@ impl RecoveryReplacementLifecycle {
             RecoveryReplacementPhase::ReplacementRequested {
                 binding: owned,
                 create,
+                strategy,
             }
             | RecoveryReplacementPhase::ReplacementIndeterminate {
                 binding: owned,
                 create,
-            } => owned == binding && expected == NativeBringupPhase::AwaitingHidden { create },
+                strategy,
+            } => owned == binding && expected == NativeBringupPhase::initial(create, strategy),
             RecoveryReplacementPhase::BringingUp {
                 binding: owned,
                 phase,
             } => owned == binding && phase == expected,
+            RecoveryReplacementPhase::AwaitingFirstLive { proof } => {
+                proof.binding() == binding && proof.resume_preparation() == expected
+            }
             RecoveryReplacementPhase::AwaitingRecoveryHost
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
-            | RecoveryReplacementPhase::AwaitingFirstLive { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
         };
         if !phase_matches {
@@ -321,26 +349,62 @@ impl RecoveryReplacementLifecycle {
         &mut self,
         binding: ViewportBinding,
         expected: NativeBringupPhase,
-        proof: NativeVisibleProof,
+        proof: NativeReadyProof,
     ) -> Result<RecoveryPending, RecoveryReplacementLifecycleError> {
+        let surface = self.replacement_owner(binding)?;
+        let matches_preparation = self.bringup(binding) == Some((surface, expected));
+        let pending = self
+            .pending
+            .get_mut(&surface)
+            .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
+        if !matches_preparation || proof.binding() != binding {
+            return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
+        }
+        pending.phase = RecoveryReplacementPhase::AwaitingFirstLive { proof };
+        Ok(pending.clone())
+    }
+
+    pub(super) fn resume_preparation(
+        &mut self,
+        binding: ViewportBinding,
+        proof: NativeReadyProof,
+    ) -> Result<(), RecoveryReplacementLifecycleError> {
         let surface = self.replacement_owner(binding)?;
         let pending = self
             .pending
             .get_mut(&surface)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
-        if !matches!(
-            pending.phase,
-            RecoveryReplacementPhase::BringingUp {
-                binding: owned,
-                phase,
-                ..
-            } if owned == binding && phase == expected
-        ) || proof.binding() != binding
+        if pending.phase != (RecoveryReplacementPhase::AwaitingFirstLive { proof })
+            || proof.binding() != binding
         {
-            return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
+            return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
         }
-        pending.phase = RecoveryReplacementPhase::AwaitingFirstLive { proof };
-        Ok(pending.clone())
+        pending.phase = RecoveryReplacementPhase::BringingUp {
+            binding,
+            phase: proof.resume_preparation(),
+        };
+        Ok(())
+    }
+
+    pub(super) fn fail_preparation(
+        &mut self,
+        binding: ViewportBinding,
+        expected: NativeBringupPhase,
+    ) -> Result<(), RecoveryReplacementLifecycleError> {
+        let surface = self.replacement_owner(binding)?;
+        if self.bringup(binding) != Some((surface, expected)) {
+            return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
+        }
+        let pending = self
+            .pending
+            .get_mut(&surface)
+            .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
+        pending.phase = RecoveryReplacementPhase::Failed {
+            binding: Some(binding),
+            replacement_effect: expected.create_effect(),
+            failed_effect: expected.create_effect(),
+        };
+        Ok(())
     }
 
     pub(super) fn observe_replacement_dispatch(
@@ -357,11 +421,17 @@ impl RecoveryReplacementLifecycle {
             return false;
         }
         if indeterminate {
-            if let RecoveryReplacementPhase::ReplacementRequested { binding, create } =
-                pending.phase
+            if let RecoveryReplacementPhase::ReplacementRequested {
+                binding,
+                create,
+                strategy,
+            } = pending.phase
             {
-                pending.phase =
-                    RecoveryReplacementPhase::ReplacementIndeterminate { binding, create };
+                pending.phase = RecoveryReplacementPhase::ReplacementIndeterminate {
+                    binding,
+                    create,
+                    strategy,
+                };
             }
             return true;
         }

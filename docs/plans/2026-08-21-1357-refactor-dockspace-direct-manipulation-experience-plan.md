@@ -1362,6 +1362,22 @@ Only after that contract is executable should native long-press, hover dwell
 and edge-scroll continuations be enabled through current output proofs, after
 accepted raw input, and within the same budget.
 
+Keep these changes in three independently reviewable slices. First, expose the
+joined-native local lane through the public host contract and complete one
+same-endpoint tab reorder without desktop pointer position or work-area facts.
+The gesture retains its lane through pending release; exact output acceptance
+delivers once, and the next gesture on the same pointer may choose again.
+Stale binding/generation, foreign equal-coordinate endpoints, frame retry,
+Dropped output and local exit remain explicit negative gates. Preserve Native
+delivery/capture and their retirement dependencies; standalone local guards
+remain unchanged. Keep local content coordinates distinct from desktop
+placement; an unknown global origin cannot be replaced with invented desktop
+bounds to make a local scene Ready. Second, qualify the positive atomic
+local-to-desktop handoff described above. Third, expose native continuation
+requests and implement their deadline/output-result scheduling for hover, touch
+and edge scrolling. Reuse
+the local/contained U12 qualification throughout these native-only slices.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
@@ -1445,18 +1461,19 @@ Frozen qualification passes 1,837 workspace tests, 86 public-consumer tests and
 including their same-instance 10,000-lifetime model. Core/native
 correctness/suspicious Clippy, strict rustdoc and formatting pass. macOS
 programmatic redock passes with unlimited and 4 MiB bounded storage; the X11
-physical drag-out/first-live/non-guide drag-back/retirement journey and all five
+physical drag-out/first-live/guide-targeted drag-back/retirement journey and all five
 output-pressure scenarios on both macOS and X11 pass. The final independent
 review reports no P1/P2 in the ordered application version, prospective-child
 paint and shutdown-boundary changes. Evidence and local-fork reproducibility
 limits are recorded in `docs/VALIDATION.md`. The previous green transfer/recovery
 results qualify their earlier protocol.
-Direct-prepared hosts and removal of mandatory hidden pre/post-show choreography
-remain required before U8 completion. Native scoped/stationary expansion follows
-this ownership gate; R15, U8 and the Definition of Done remain unchanged.
+The preparation-strategy cutover below closes the universal staging assumption.
+Native scoped/stationary expansion follows this ownership gate; R15, U8 and the
+Definition of Done remain unchanged.
 
-The next preparation-strategy cutover keeps one native create/replacement owner
-with an enrollment-frozen `DirectPrepared | Staged` strategy. A custom engine
+Preparation-strategy cutover (2026-10-30, locally qualified) keeps one native
+create/replacement owner with an enrollment-frozen `DirectPrepared | Staged`
+strategy. A custom engine
 reports exact create acknowledgement, explicit renderer preparation, visibility
 and a complete current coordinate envelope in the existing window snapshot.
 Created and Prepared may arrive in the same post-emission snapshot; unchanged
@@ -1478,6 +1495,27 @@ qualification covers both strategies, failed preparation, cancellation with late
 facts, exact binding/coordinate/readiness revocation, and source-version
 revalidation through successful first-live publication. Staging resource
 conservation and the R15 popup barrier remain mandatory in both strategies.
+
+The implementation removes the create/bringup phase mirror and separates typed
+create acknowledgement from Show acknowledgement. Preparation facts stay inside
+the existing window record with its original observation sequence. Compact
+readiness basis joins scene provenance and first-live barriers; compatibility
+keeps it stable, while withdrawal resets the existing preparation phase and
+output floor without reissuing creation. Failed renderer preparation and
+provider handoff include waiting-first-live replacements in exact cleanup.
+Twelve public preparation journeys and three focused coordinator regressions
+pass. The early Staged acknowledgement and replacement-readiness recovery cases
+have production red/green evidence. Replacement recovery reuses valid measurements
+with a fresh semantic ticket above its new first-live floor. Frozen core gates
+pass 1,842 workspace tests and 91 default / 98 serde independent-consumer tests;
+native default/assertion-disabled gates each pass 458 tests, including both
+10,000-lifetime models. All 10 doctests, core/native Clippy, strict rustdoc and
+formatting pass. macOS unlimited/bounded redock and all five output-pressure
+scenarios on macOS/X11 pass. The X11 physical trace proves guide-targeted redock,
+Destroyed and quiescence; prior non-guide wording was incorrect, and actual
+non-guide physical acceptance remains open. The complete Created/Unknown-visibility
+OS trace, scoped/stationary input and U7/U8 exit criteria remain separate work.
+Native reproducibility still requires the unpublished local fork override.
 
 Local resource-ownership checkpoint (2026-10-29): command/output reservations
 and deferred-window sidecars now have joined owners. An admitted create attempt

@@ -253,7 +253,9 @@ impl NativeSnapshotStorageLimit {
         size_of::<QueuedNativeSnapshot>()
             .checked_add(size_of::<Vec<CompiledWindowObservation>>())?
             .checked_add(observations.checked_mul(size_of::<CompiledWindowObservation>())?)?
-            .checked_add(observations.checked_mul(2 * size_of::<NativeSurfaceBinding>())?)?
+            .checked_add(observations.checked_mul(
+                size_of::<NativeSnapshotAcknowledgements>() + size_of::<NativeSurfaceBinding>(),
+            )?)?
             .checked_add(NativeWorkAreaState::construction_reservation_bytes(
                 work_area_slots,
             )?)
@@ -273,9 +275,9 @@ impl NativeSnapshotStorageLimit {
 
 impl QueuedNativeSnapshot {
     fn owned_descendant_capacity_bytes(&self) -> usize {
-        self.presentation_acknowledgements
+        self.acknowledgements
             .capacity()
-            .saturating_mul(size_of::<NativeSurfaceBinding>())
+            .saturating_mul(size_of::<NativeSnapshotAcknowledgements>())
             .saturating_add(
                 self.focus_reportable
                     .capacity()

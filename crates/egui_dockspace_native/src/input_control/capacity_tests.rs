@@ -54,6 +54,7 @@ fn registered_session(effect_slots: usize) -> (DockspaceSession, NativeSurfaceBi
     let mut session = DockspaceSession::from_layout(layout(), policy).unwrap();
     session
         .enable_managed_native_host_with_input_storage_limit(
+            dockspace::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(NonZeroUsize::new(64).unwrap(), 4 << 20)
                 .with_report_storage_limit(NativeReportStorageLimit::new(

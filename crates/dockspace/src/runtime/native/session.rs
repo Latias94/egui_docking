@@ -112,6 +112,7 @@ impl DockspaceSession {
     /// The method enrolls exactly once and never reissues existing surface
     /// bindings. Provider replacement remains an internal core concern until a
     /// real native coordinator defines a product-level restart operation.
+    /// The selected preparation strategy is frozen for this provider lifetime.
     ///
     /// # Errors
     ///
@@ -121,8 +122,9 @@ impl DockspaceSession {
     /// be retained by the host for future asynchronous facts.
     pub fn enable_observed_native_roots(
         &mut self,
+        strategy: NativeCreateStrategy,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
-        self.enroll_native_host(NativeHostProfile::ObservedRoots, None, None)
+        self.enroll_native_host(NativeHostProfile::ObservedRoots, strategy, None, None)
     }
 
     /// Enrolls the sole desktop-global coordinator for managed native windows.
@@ -134,6 +136,10 @@ impl DockspaceSession {
     /// which cannot provide those facts should use surface-local input instead
     /// of enabling this coordinator.
     ///
+    /// Preparation is selected independently from input capabilities. DirectPrepared
+    /// hosts report explicit renderer readiness; Staged hosts accept exact staging
+    /// requests. Both retain source ownership until semantic first-live presentation.
+    ///
     /// # Errors
     ///
     /// Returns an error when the initial roster is invalid, another native or
@@ -141,10 +147,16 @@ impl DockspaceSession {
     /// platform/input authority.
     pub fn enable_managed_native_host(
         &mut self,
+        strategy: NativeCreateStrategy,
         initial_pointer_roster: NativePointerRoster,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
         let checkpoint = pointer::compile_initial_pointer_authority(initial_pointer_roster)?;
-        self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint), None)
+        self.enroll_native_host(
+            NativeHostProfile::ManagedDesktop,
+            strategy,
+            Some(checkpoint),
+            None,
+        )
     }
 
     /// Enrolls a managed coordinator with bounded recorded-input storage.
@@ -162,6 +174,7 @@ impl DockspaceSession {
     /// initial pointer checkpoint. A failed enrollment publishes no provider.
     pub fn enable_managed_native_host_with_input_storage_limit(
         &mut self,
+        strategy: NativeCreateStrategy,
         initial_pointer_roster: NativePointerRoster,
         limit: NativeInputStorageLimit,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
@@ -181,6 +194,7 @@ impl DockspaceSession {
         let checkpoint = pointer::compile_initial_pointer_authority(initial_pointer_roster)?;
         self.enroll_native_host(
             NativeHostProfile::ManagedDesktop,
+            strategy,
             Some(checkpoint),
             Some(limit),
         )
@@ -250,6 +264,7 @@ impl DockspaceSession {
     fn enroll_native_host(
         &mut self,
         profile: NativeHostProfile,
+        strategy: NativeCreateStrategy,
         pointer_checkpoint: Option<crate::pointer_journal::PointerAuthorityCheckpoint>,
         storage_limit: Option<NativeInputStorageLimit>,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
@@ -303,6 +318,7 @@ impl DockspaceSession {
             .create_backend_ingress_provider_initialized(
                 self.presentation_host,
                 watermark,
+                strategy,
                 |recorder| {
                     if let Some(limit) = storage_limit {
                         recorder.configure_native_transport_capacity(
