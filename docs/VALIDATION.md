@@ -15,6 +15,63 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 simultaneous W16 roster and O256 real outputs
+
+The real output-pressure executable adds the finite `combined` scenario. It
+selects I64/256 KiB, W16/A8/128 KiB, R258/E16/768 KiB and M48/C32/L16 within
+the unchanged 4,194,304-byte native input-data allowance. This is an explicit
+profile combining maximum window count with full ordinary output occupancy;
+it does not saturate every independently configured input, display, effect,
+property or close class at once.
+
+Fourteen satellite roots move through the public application command queue,
+real deferred-window creation, complete semantic content and exact first-live
+acceptance before the fifteenth child enters the original staging-pressure
+journey. Fixture identities come from actual pane output tokens; callbacks do
+not themselves prove first-live. Unlike the five legacy W2 cases, the combined
+case never pauses complete root-roster capture during filling. In the exact
+root `on_output_begin` that returns Defer at O256/control2/protected-staging1,
+its fresh borrowed roster must contain precisely all 16 expected native
+window/viewport pairs once, in the same context. Runtime owned/reserved data
+is checked while that complete occupancy still exists.
+
+The proxy then forwards all 258 original output terminals in completion order.
+Every child redocks through a checked public action, receives its exact native
+`Destroyed` callback and loses semantic surface authority before quiescence.
+The runner requires a fresh one-window root roster, the exact ordered
+`[1..16]` Main tabs, no contained roots and zero ordinary/control output owners
+after the final root terminal. Native Destroyed may omit a viewport identity
+after backend map retirement; the fixture always requires the exact original
+window id and also checks a supplied viewport id. The initial macOS attempt
+reached full combined pressure but was terminated after the fixture incorrectly
+required a nonempty Destroyed viewport; its failed evidence is retained.
+
+The sampled normal macOS journey passes in 6.667 seconds and Linux/X11 in
+13.816 seconds. Both the new combined case and all five preceding pressure
+cases pass on each platform. macOS samples 2,352,033 owned / 3,455,424 reserved
+bytes, Linux samples 2,352,530 / 3,457,752 bytes, beneath 4 MiB. The checked
+initial reservation is 3,455,624 bytes on macOS. These figures exclude
+allocator metadata, workspace/renderer state and fixture storage. The bounded
+terminal proxy reports 18,576 bytes separately, with another 1,424 bytes for
+the fixed satellite/expected-identity fixture. This is delayed real terminal
+delivery, not 256 simultaneous GPU frames or physical input qualification.
+
+The combined journey additionally passes on both platforms with native adapter
+debug assertions disabled, sampling 2,350,249/3,455,424 bytes on macOS and
+2,350,409/3,457,752 bytes on Linux. Independent static review finds no confirmed
+P1/P2 in the combined roster, terminal-order, identity, lock or cleanup paths.
+
+Only the smoke runner and its direct cross-platform Winit import change;
+the latter matches native Destroyed without adding a public seam. Production
+core/adapter/fork sources retain their preceding qualification. Current
+correctness/suspicious Clippy passes. Source hashes, commands and results are
+`/tmp/dockspace-w16-o256-snapshot.json`,
+`/tmp/dockspace-w16-o256-qualification.json` and matching logs. Native execution
+still uses the explicit unpublished local egui/Winit overrides described in
+[platform support](PLATFORM_SUPPORT.md#dependency-reproducibility-and-open-scope).
+Remaining close/create capacity combinations, actual service-time measurement,
+native scoped/stationary input, broader physical coverage and U9 remain open.
+
 ## 2026-10-31 configured maximum roster and terminal fanout
 
 The existing 4 MiB combined model profile now runs with all 16 configured

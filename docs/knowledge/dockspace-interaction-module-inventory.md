@@ -157,7 +157,12 @@ are missing from that tracked pair, so a remote-only clean checkout cannot
 reproduce these native results. Full revisions and evidence are in
 [platform support](../PLATFORM_SUPPORT.md#dependency-reproducibility-and-open-scope).
 
-The remaining combined W16/O256 and close/create capacity, service-time, broader
+The [subsequent W16/O256 real-output record](../VALIDATION.md#2026-10-31-simultaneous-w16-roster-and-o256-real-outputs)
+adds a finite simultaneous window/output profile in the existing smoke runner.
+Its fixed satellite identities are fixture expectations, outside native runtime
+storage, and introduce no production registry or graph.
+
+The remaining close/create capacity, service-time, broader
 physical/platform, stationary capture, native showcase, dependency/package and
 evidence/deletion gates retain their existing owners in the canonical plan.
 This update adds no runtime tool, replacement plan or overall U9 completion claim.

@@ -21,6 +21,12 @@ impl PressureHost {
             assert_eq!(backlog.ordinary(), ORDINARY_OUTPUTS);
             assert_eq!(backlog.control(), 2);
             assert_eq!(backlog.protected_staging(), 1);
+            let resident = runtime.input_storage_capacity_bytes().unwrap();
+            let reserved = runtime.input_storage_reserved_bytes().unwrap();
+            assert!(resident <= reserved && reserved <= BYTE_LIMIT);
+            let mut state = lock(&self.shared);
+            state.peak_resident = state.peak_resident.max(resident);
+            state.peak_reserved = state.peak_reserved.max(reserved);
         }
         let scenario = {
             let mut state = lock(&self.shared);
@@ -174,6 +180,9 @@ impl NativeHostHandler for PressureHost {
         &self,
         event: eframe::NativeWindowEvent<'_>,
     ) -> eframe::NativeWindowEventDisposition {
+        if let Some(combined) = &mut lock(&self.shared).combined {
+            combined.observe_destroyed(event);
+        }
         self.inner.on_window_event(event)
     }
 
@@ -222,6 +231,18 @@ impl NativeHostHandler for PressureHost {
                     .iter()
                     .any(|record| Some(record.viewport_id()) == state.child_viewport);
             }
+            if let Some(combined) = &mut state.combined {
+                if token.viewport_id() == ViewportId::ROOT {
+                    combined.observe_final_roster(token, root_roster);
+                } else if combined.is_satellite(token.viewport_id())
+                    && matches!(
+                        state.phase,
+                        Phase::AwaitChild | Phase::AwaitStaging | Phase::Filling
+                    )
+                {
+                    return NativeOutputAdmission::Defer;
+                }
+            }
             if token.viewport_id() != ViewportId::ROOT && state.phase == Phase::AwaitStaging {
                 state.child_paused = true;
                 return NativeOutputAdmission::Defer;
@@ -235,11 +256,13 @@ impl NativeHostHandler for PressureHost {
                 return NativeOutputAdmission::Defer;
             }
         }
-        // Isolate output-owner pressure from the independent two-roster backing
-        // limit. These borrowed inventory observations have not been admitted;
-        // the next fresh complete roster resumes after terminal delivery. Live
-        // window callbacks and each output's exact snapshot still pass through.
-        let root_roster = if lock(&self.shared).phase == Phase::Filling {
+        // Legacy W2 cases isolate output pressure from roster backing. Combined
+        // W16 pressure keeps every borrowed complete inventory observation.
+        // Live window callbacks and exact output snapshots always pass through.
+        let root_roster = if {
+            let state = lock(&self.shared);
+            state.phase == Phase::Filling && state.combined.is_none()
+        } {
             None
         } else {
             root_roster
@@ -275,6 +298,9 @@ impl NativeHostHandler for PressureHost {
                 && state.root_control_seen
                 && state.protected_child_seen;
             state.full_root_defer_seen |= flush;
+            if flush && let Some(combined) = &mut state.combined {
+                combined.check_full_roster(token, root_roster);
+            }
             flush
         };
         if should_flush {
@@ -340,8 +366,16 @@ impl NativeHostHandler for PressureHost {
         }
         {
             let mut state = lock(&self.shared);
-            if state.phase == Phase::AwaitChild && result.token().viewport_id() != ViewportId::ROOT
+            if state.phase == Phase::AwaitChild
+                && result.token().viewport_id() != ViewportId::ROOT
+                && state
+                    .combined
+                    .as_ref()
+                    .is_none_or(|combined| !combined.is_satellite(result.token().viewport_id()))
             {
+                if let Some(combined) = &mut state.combined {
+                    combined.observe_child(result.token());
+                }
                 state.child_viewport = Some(result.token().viewport_id());
                 state.phase = if state.scenario == Scenario::LateFirstLive {
                     Phase::AwaitFirstLive
@@ -420,12 +454,12 @@ impl NativeHostHandler for PressureHost {
                 assert_eq!(runtime.output_backlog().protected_staging(), 0);
                 assert_eq!(runtime.output_backlog().awaiting_staging(), 0);
             }
-            if state.scenario != Scenario::Ordered {
+            if !state.scenario.expects_success() {
                 assert!(runtime.is_shutdown_drained());
             }
             runtime.with_errors(|primary, cleanup| {
                 assert!(cleanup.is_empty());
-                if state.scenario == Scenario::Ordered {
+                if state.scenario.expects_success() {
                     assert!(primary.is_none());
                 } else {
                     assert!(primary.is_some_and(|error| error.is_output_order_violation()));

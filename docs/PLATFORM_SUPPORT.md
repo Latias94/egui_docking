@@ -193,6 +193,19 @@ It does not combine W16 with the separate W2/R258 O256 real-output profile,
 fill close/create owner classes, prove active-release semantics in this
 cursor-only fixture, or qualify OS timing and the 2 ms reducer-service boundary.
 
+The separate [real W16/O256 qualification](VALIDATION.md#2026-10-31-simultaneous-w16-roster-and-o256-real-outputs)
+now combines 16 actual windows with O256/control2/protected-staging1 under an
+explicit I64/W16/R258 profile. It keeps complete root-roster capture enabled
+and verifies all exact native window identities in the callback that observes
+full occupancy. All 258 original terminals drain, all 15 children redock and
+receive Destroyed, a fresh root-only roster and exact `[1..16]` Main tabs return,
+and final output owners reach zero. The new case and five legacy pressure cases
+pass on both macOS and X11. Sampled owned/reserved bytes are
+2,352,033/3,455,424 on macOS and 2,352,530/3,457,752 on Linux, under 4 MiB;
+fixture storage is reported separately. This finite output/inventory combination
+does not simultaneously fill the profile's remaining owner classes or prove
+input throughput, release latency or the 2 ms service boundary.
+
 ### Native stationary observations
 
 The public [`NativePointerContinuation`](../crates/dockspace/src/runtime/native/continuation.rs)
@@ -232,7 +245,7 @@ and `/tmp/dockspace-physical-load-final-qualification.json` identify local
 artifacts recorded in `VALIDATION.md`; they are not portable checkout assets.
 No runtime or platform qualification was rerun for this documentation snapshot.
 
-Still open are combined W16/O256 saturation, remaining close/create owner
+Still open are remaining close/create owner
 capacity and native service-time qualification; tab-half insertion, nested and
 mixed-DPI physical coverage; fresh stationary capture, automatic scheduling and
 native-local/Touch OS evidence; Windows/macOS platform certification; the native

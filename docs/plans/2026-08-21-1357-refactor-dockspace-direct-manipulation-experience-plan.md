@@ -1789,6 +1789,18 @@ debug assertions, with sampled owned/reserved input data of
 O256 real-output profile is not combined with this W16 fixture, and other owner
 classes and wall-time service remain subsequent acceptance work.
 
+The adjacent real `combined` output-pressure scenario now qualifies an explicit
+I64/W16/R258 profile with full O256/control2/protected-staging1 occupancy and
+all 16 exact window identities in the same fresh root-roster callback. Complete
+roster capture stays enabled throughout filling. All 258 original terminals
+drain, 15 real children redock/Destroy/retire, a fresh one-window roster returns,
+and the exact `[1..16]` Main tabs and final zero output owners are checked.
+The new case and five preceding pressure journeys pass on macOS and X11 under
+4 MiB, with separately reported fixture backing. This closes that finite
+window/output cross-saturation gap, while remaining close/create owner classes,
+actual wall-time service and broader native qualification remain open. See
+`docs/VALIDATION.md` for exact profiles, measurements and source evidence.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

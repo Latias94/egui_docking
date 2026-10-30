@@ -26,6 +26,8 @@ use egui_dockspace_native::{
     NativeDockspaceApp, NativeRuntimeErrorKind, NativeStorageLimit, NativeWindowClosePolicy,
 };
 
+#[path = "output_pressure/combined.rs"]
+mod combined;
 #[path = "output_pressure/host.rs"]
 mod host;
 
@@ -52,6 +54,7 @@ enum Scenario {
     Reordered,
     LateStaging,
     LateFirstLive,
+    Combined,
 }
 
 impl Scenario {
@@ -64,11 +67,16 @@ impl Scenario {
             [value] if value == "reordered" => Ok(Self::Reordered),
             [value] if value == "late-staging" => Ok(Self::LateStaging),
             [value] if value == "late-first-live" => Ok(Self::LateFirstLive),
+            [value] if value == "combined" => Ok(Self::Combined),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "expected one output-pressure scenario: ordered, duplicate, reordered, late-staging, late-first-live",
+                "expected one output-pressure scenario: ordered, duplicate, reordered, late-staging, late-first-live, combined",
             )),
         }
+    }
+
+    fn expects_success(self) -> bool {
+        matches!(self, Self::Ordered | Self::Combined)
     }
 }
 
@@ -82,6 +90,7 @@ enum Phase {
     Draining,
     AwaitRedock,
     AwaitRetirement,
+    RetireSatellites,
     AwaitFinalBoundary,
     Done,
 }
@@ -140,6 +149,7 @@ struct PressureState {
     late_terminal_after_fatal: bool,
     previous_terminal: Option<eframe::NativeOutputResult>,
     outcome: Option<Result<(), String>>,
+    combined: Option<combined::CombinedPressure>,
 }
 
 impl PressureState {
@@ -172,6 +182,7 @@ impl PressureState {
             late_terminal_after_fatal: false,
             previous_terminal: None,
             outcome: None,
+            combined: (scenario == Scenario::Combined).then(combined::CombinedPressure::new),
         }
     }
 
@@ -180,7 +191,7 @@ impl PressureState {
             eprintln!(
                 "output-pressure: {:?}: {:?}; ordinary_peak={}, control_peak={}, \
                  resident_peak={}, reserved_peak={}, limit={BYTE_LIMIT}, forwarded={}, \
-                 proxy_backing={} bytes",
+                 proxy_backing={} bytes, combined_fixture={} bytes",
                 self.scenario,
                 result,
                 self.peak_ordinary,
@@ -189,6 +200,11 @@ impl PressureState {
                 self.peak_reserved,
                 self.forwarded,
                 self.buffered.capacity() * size_of::<eframe::NativeOutputResult>(),
+                if self.combined.is_some() {
+                    size_of::<combined::CombinedPressure>()
+                } else {
+                    0
+                },
             );
             self.outcome = Some(result);
         }
@@ -222,25 +238,32 @@ impl PressureState {
     }
 }
 
-fn storage_limit() -> Result<NativeStorageLimit, egui_dockspace_native::NativeRuntimeError> {
+fn storage_limit(
+    scenario: Scenario,
+) -> Result<NativeStorageLimit, egui_dockspace_native::NativeRuntimeError> {
     let slots = |count| NonZeroUsize::new(count).unwrap();
+    let combined = scenario == Scenario::Combined;
     let input = NativeInputStorageLimit::new(slots(64), 256 * 1024)
         .with_producer_storage_limit(NativeProducerStorageLimit::new(
-            slots(2),
-            slots(1),
-            16 * 1024,
+            slots(if combined { 16 } else { 2 }),
+            slots(if combined { 8 } else { 1 }),
+            if combined { 128 * 1024 } else { 16 * 1024 },
         ))
         .with_report_storage_limit(NativeReportStorageLimit::new(
             slots(258),
-            slots(2),
+            slots(if combined { 16 } else { 2 }),
             768 * 1024,
         ));
-    NativeStorageLimit::new(input, BYTE_LIMIT, 4, 2, 2)
+    if combined {
+        NativeStorageLimit::new(input, BYTE_LIMIT, 48, 32, 16)
+    } else {
+        NativeStorageLimit::new(input, BYTE_LIMIT, 4, 2, 2)
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let scenario = Scenario::from_args()?;
-    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+    let mut surface = DockspaceSurfaceLayout::new(
         ROOT_SURFACE,
         DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::central_tabs([MAIN_ITEM])),
     )
@@ -248,11 +271,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         FloatingPresentationId::new(1),
         DockspaceRootLayout::new(CHILD_ROOT, DockspaceNode::central_tabs([CHILD_ITEM])),
         LogicalRect::new(60.0, 70.0, 360.0, 240.0)?,
-    ))])?;
+    ));
+    if scenario == Scenario::Combined {
+        surface = combined::with_satellites(surface)?;
+    }
+    let layout = DockspaceLayout::new([surface])?;
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let session = DockspaceSession::from_layout(layout, policy)?;
-    let selected = storage_limit()?;
+    let selected = storage_limit(scenario)?;
     eprintln!(
         "output-pressure: {scenario:?}; selected={BYTE_LIMIT}, initial_reserved={}",
         selected.initial_reserved_bytes()
@@ -276,7 +303,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let app = PressureApp {
         runtime: Arc::clone(&runtime),
         shared: Arc::clone(&shared),
-        deadline: Instant::now() + Duration::from_secs(60),
+        deadline: Instant::now() + Duration::from_secs(120),
     };
     let demand_shared = Arc::clone(&shared);
     let demand_runtime = Arc::clone(&runtime);
@@ -304,7 +331,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             std::thread::Builder::new()
                 .name("native-output-pressure-demand".to_owned())
                 .spawn(move || {
-                    let deadline = Instant::now() + Duration::from_secs(60);
+                    let deadline = Instant::now() + Duration::from_secs(120);
                     loop {
                         let request_repaint = {
                             let state = lock(&demand_shared);
@@ -373,7 +400,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         // exit. Destroying the external root can then enqueue a new OS fact,
         // after the last core boundary and without retaining an output owner.
     }
-    if scenario == Scenario::Ordered {
+    if let Some(combined) = &shared.combined {
+        combined
+            .verify_finished(&runtime)
+            .map_err(io::Error::other)?;
+    }
+    if scenario.expects_success() {
         assert_eq!(
             runtime.error_kind(),
             None,
@@ -462,7 +494,7 @@ impl PressureApp {
                     cleanup.is_empty(),
                 )
             });
-            if state.scenario == Scenario::Ordered
+            if state.scenario.expects_success()
                 || state.phase != Phase::Draining
                 || error != NativeRuntimeErrorKind::HostProtocol
                 || !order_error
@@ -484,11 +516,16 @@ impl PressureApp {
             }
             return Ok(());
         }
-        if state.scenario != Scenario::Ordered && state.phase == Phase::Draining {
+        if !state.scenario.expects_success() && state.phase == Phase::Draining {
             return Ok(());
         }
         if let Some(status) = runtime.take_action_status() {
             match status {
+                Ok(DockspaceActionStatus::Applied(ref outcome))
+                    if state
+                        .combined
+                        .as_mut()
+                        .is_some_and(|combined| combined.on_action(outcome)) => {}
                 Ok(DockspaceActionStatus::Applied(
                     DockspaceActionOutcome::NativeRootTearOffRequested {
                         root,
@@ -508,6 +545,11 @@ impl PressureApp {
         }
         match state.phase {
             Phase::Bootstrap if runtime.is_surface_presented(ROOT_SURFACE) => {
+                if let Some(combined) = &mut state.combined
+                    && !combined.bootstrap(runtime)?
+                {
+                    return Ok(());
+                }
                 let source = SourceOwnership::read(runtime)
                     .ok_or("the child source is not a contained root")?;
                 if source.surface != ROOT_SURFACE || source.root != CHILD_ROOT {
@@ -557,8 +599,21 @@ impl PressureApp {
                         .child_surface
                         .is_some_and(|surface| !runtime.is_surface_presented(surface))
                 {
+                    if let Some(combined) = &state.combined {
+                        if !combined.child_destroyed {
+                            return Ok(());
+                        }
+                        state.phase = Phase::RetireSatellites;
+                        return Ok(());
+                    }
                     // Let the current semantic terminal enter one last root
                     // settlement pass before closing the native event loop.
+                    state.phase = Phase::AwaitFinalBoundary;
+                    context.request_repaint_of(ViewportId::ROOT);
+                }
+            }
+            Phase::RetireSatellites => {
+                if state.combined.as_mut().unwrap().redock(runtime)? {
                     state.phase = Phase::AwaitFinalBoundary;
                     context.request_repaint_of(ViewportId::ROOT);
                 }
@@ -569,7 +624,13 @@ impl PressureApp {
                     && runtime.output_backlog().ordinary() == 1
                     && runtime.output_backlog().control() == 0 =>
             {
-                state.finish(context, Ok(()));
+                if state
+                    .combined
+                    .as_ref()
+                    .is_none_or(|combined| combined.final_roster_checked)
+                {
+                    state.finish(context, Ok(()));
+                }
             }
             _ => {}
         }
@@ -586,6 +647,12 @@ impl PaneView for Panes {
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
         ui.label(format!("Real output pressure pane {}", item.get()));
+        if let Some(token) = eframe::current_native_output_token()
+            && token.viewport_id() != ViewportId::ROOT
+            && let Some(combined) = &mut lock(&self.0).combined
+        {
+            combined.observe_pane(item, token);
+        }
         if item == CHILD_ITEM
             && let Some(token) = eframe::current_native_output_token()
             && token.viewport_id() != ViewportId::ROOT
