@@ -288,6 +288,10 @@ the complete button/capture contract. Windows likewise keeps hover and desktop
 pointer authority unavailable until equivalent platform-fact tests land. X11
 is the current certified physical reference backend.
 
+The [platform support matrix](docs/PLATFORM_SUPPORT.md) separates the public
+engine-host contract, official-egui output limits, backend capability bits and
+the exact scope of real-window/physical qualification.
+
 CI keeps those claims separate. The programmatic Glow smoke proves hidden
 creation, staging, first-live admission, redock, and retirement through product
 commands. The X11/XTest smoke locates only read-only semantic receivers, injects
