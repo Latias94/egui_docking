@@ -311,13 +311,13 @@ own desktop hover projection, with separately confirmed physical routing and
 exact target-output presentation. A rejected packet follows its original local
 event; the real release/cancel remains consumable. No ordinary Desktop packet
 implicitly upgrades a native-local gesture. This public host contract is locally
-qualified in `docs/VALIDATION.md`; adapter packet emission and native stationary
-scheduling remain separate work. The egui native reference adapter has a
-qualified event-time local geometry callback contract; the public host API does
-not establish platform callback qualification. Its
-committed capability, callback geometry and event-generation geometry must all
-agree. Unknown local samples cannot authorize idle compaction; exact samples
-can compare authority with `NativeLocalPointerSample::same_coordinates`.
+qualified in `docs/VALIDATION.md`. The reference adapter also has qualified
+same-event callback capture/emission and complete raw-to-output handoff traces;
+native-local OS handoff and native stationary scheduling remain separate work.
+The public host API does not establish platform callback qualification. The
+reference adapter's committed capability, callback geometry and event-generation
+geometry must all agree. Unknown local samples cannot authorize idle compaction;
+exact samples can compare authority with `NativeLocalPointerSample::same_coordinates`.
 
 `native_input_owned_capacity_bytes()` on the session or an open host frame
 reports recorded input transport data: recorder envelopes and buffers, shared

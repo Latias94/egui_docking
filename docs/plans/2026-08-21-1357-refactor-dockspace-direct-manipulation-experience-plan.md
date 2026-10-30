@@ -1473,9 +1473,37 @@ cases per platform. The bounded sample remains 2,146,235 owned / 3,298,688
 reserved bytes within 4 MiB and 4,096 raw slots. Two independent review lanes
 find no confirmed P1/P2. Source and commands/results are frozen under
 `/tmp/dockspace-handoff-*`; all 435 Rust paths match the native snapshot.
-See the current evidence in `docs/VALIDATION.md`. Winit/eframe dual-location
-emission, native-local OS evidence and stationary scheduling remain subsequent
-work; this implementation alone does not close U7/U8.
+See the current evidence in `docs/VALIDATION.md`. The next checkpoint qualifies
+adapter dual-location emission; native-local OS evidence and stationary
+scheduling remain subsequent work. This implementation alone does not close U7/U8.
+
+The callback-emission follow-up is now locally qualified. It preserves the local
+sample in the existing shared callback payload only when a real CursorMoved
+also has original event geometry and finite desktop facts; desktop coordinates
+remain in the original event. The adapter emits facts without looking up or
+owning a gesture lane. Button/wheel selection, X11 synthetic focus and Unknown
+local compaction boundaries remain explicit. The new complete raw-to-output
+handoff regression fails on the preceding adapter at preview publication, with
+its ordinary Desktop control passing; both now pass with six new inline cases
+and 25 focused tests. All 21 affected native gates pass: 484/484 normal/noassert,
+both same-coordinator 10,000-lifetime soaks, Clippy, strict docs, formatting,
+macOS default/bounded redock, X11 physical smoke and five pressure scenarios
+per platform. The bounded sample remains 2,146,235 owned / 3,298,688 reserved
+bytes within 4 MiB and 4,096 raw slots. Only three native source files change;
+core/public/official-egui sources are hash-identical, preserving the preceding
+1,889/116/123 qualification without rerunning it. All 435 Rust paths match the
+new snapshot, with no confirmed P1/P2 in independent review. Evidence is under
+`/tmp/dockspace-handoff-emission-*`. This does not qualify native-local OS
+handoff, native touch/stationary behavior or the complete U7/U8 gates.
+
+The native-touch follow-up must retain original contact geometry as well as
+identity. Winit's current Wayland touch `up`/`cancel` paths convert a retained
+logical point with the then-current scale. Do not use that result as a new
+event-generation physical sample. Freeze the position/geometry pair on the
+original down/motion and preserve it through the terminal, so a later scale
+change rejects that old coordinate proof while still consuming the real end.
+Unknown geometry and unqualified backends must remain explicit; callback size
+alone cannot reconstruct original touch authority.
 
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement

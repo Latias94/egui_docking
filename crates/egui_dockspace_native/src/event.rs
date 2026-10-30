@@ -5,7 +5,7 @@ use std::sync::Arc;
 use dockspace::geometry::{PhysicalPoint, PhysicalSize, ScaleFactor};
 use dockspace::runtime::{
     NativeLocalCoordinates, NativeLocalGeometry, NativeLocalPointerFact,
-    NativeLocalPointerLocation, NativeSurfaceBinding,
+    NativeLocalPointerLocation, NativeLocalPointerSample, NativeSurfaceBinding,
 };
 use eframe::{NativeDeviceRemoval, egui::ViewportId};
 use winit::event::{PointerEventFacts, PointerWindowRoute, WindowEvent};
@@ -129,6 +129,8 @@ impl NativePointerRoutes {
 pub(crate) enum CapturedNativePointerLocation {
     Desktop,
     NativeLocal(NativeLocalPointerLocation),
+    /// Exact local sample paired with the desktop facts in the same raw event.
+    LocalToDesktop(NativeLocalPointerSample),
 }
 
 #[derive(Debug, PartialEq)]
@@ -308,6 +310,10 @@ impl NativeWindowEventRecord {
                     Some(CapturedNativePointerLocation::NativeLocal(
                         NativeLocalPointerLocation::Exact(newer),
                     )),
+                )
+                | (
+                    Some(CapturedNativePointerLocation::LocalToDesktop(first)),
+                    Some(CapturedNativePointerLocation::LocalToDesktop(newer)),
                 ) => first.same_coordinates(newer),
                 (
                     Some(CapturedNativePointerLocation::NativeLocal(
@@ -472,6 +478,21 @@ impl NativeWindowEventRecord {
         };
         let pointer = pointer_routes.map(|routes| {
             let location = match (&event, local_capture) {
+                (WindowEvent::CursorMoved { facts, .. }, Some(local_capture))
+                    if facts.geometry.is_some()
+                        && facts
+                            .desktop_position
+                            .is_some_and(|point| point.x.is_finite() && point.y.is_finite()) =>
+                {
+                    match local_capture.capture(binding, facts) {
+                        NativeLocalPointerLocation::Exact(sample) => {
+                            CapturedNativePointerLocation::LocalToDesktop(sample)
+                        }
+                        NativeLocalPointerLocation::Unknown => {
+                            CapturedNativePointerLocation::Desktop
+                        }
+                    }
+                }
                 (
                     WindowEvent::CursorMoved { facts, .. }
                     | WindowEvent::MouseInput { facts, .. }
@@ -514,12 +535,13 @@ mod tests {
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
         DockspaceSession, HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation,
-        NativeDesktopPosition, NativePointerButton, NativePointerEvent, NativePointerHover,
-        NativePointerId, NativePointerInput, NativePointerLocation, NativePointerOwner,
-        NativePointerRoster, NativeReceiverAnswer, NativeScrollDelta, NativeScrollDeviceId,
-        NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
-        NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-        NativeWorkAreaRoster, SurfaceUnavailableReason,
+        NativeDesktopPosition, NativeLocalToDesktopHandoff, NativePointerButton,
+        NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+        NativePointerLocation, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
+        NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+        NativeScrollMomentum, NativeScrollPhase, NativeWindowFacts, NativeWindowInputState,
+        NativeWindowPresentationState, NativeWorkAreaRoster, PointerDeviceKind,
+        PointerEventMetadata, SurfaceUnavailableReason,
     };
     use winit::dpi::{PhysicalPosition, PhysicalSize as WinitPhysicalSize};
     use winit::event::{
@@ -960,6 +982,246 @@ mod tests {
     }
 
     #[test]
+    fn dual_motion_translation_retains_same_callback_sample_routes_and_metadata() {
+        let (mut session, binding, mut viewports) = local_fixture();
+        let facts = PointerEventFacts {
+            desktop_position: Some(PhysicalPosition::new(420.0, -260.0)),
+            hover: PointerWindowRoute::Foreign,
+            ..pointer_facts(20.0, 40.0, 1.0)
+        };
+        let event = cursor(facts);
+        let record = captured(1, event.clone(), &viewports, geometry(1.0));
+        assert_eq!(record.event(), &event);
+        let Some(CapturedNativePointerLocation::LocalToDesktop(original)) =
+            record.pointer_location()
+        else {
+            panic!("one exact cursor callback must retain both coordinate facts");
+        };
+        assert_eq!(
+            original.client_position(),
+            PhysicalPoint::new(20.0, 40.0).unwrap()
+        );
+        assert_eq!(
+            original.surface_position(),
+            LogicalPoint::new(20.0, 40.0).unwrap()
+        );
+
+        commit_geometry(&mut session, binding, geometry(2.0));
+        viewports.refresh_local_coordinates(&session);
+        let newer = captured(
+            2,
+            cursor(pointer_facts(20.0, 40.0, 2.0)),
+            &viewports,
+            geometry(2.0),
+        );
+        let Some(CapturedNativePointerLocation::NativeLocal(NativeLocalPointerLocation::Exact(
+            current,
+        ))) = newer.pointer_location()
+        else {
+            panic!("the next callback uses the refreshed coordinate authority");
+        };
+        assert!(!original.same_coordinates(current));
+        assert_eq!(
+            current.surface_position(),
+            LogicalPoint::new(10.0, 20.0).unwrap()
+        );
+        assert!(viewports.suppress_pointer_route(ViewportId::ROOT, binding));
+
+        let captured_at = std::time::Duration::from_millis(37);
+        let expected = NativePointerTranslation::Input(
+            NativePointerInput::new_handoff(
+                NativePointerId::new(1),
+                NativePointerEvent::Moved,
+                NativeLocalToDesktopHandoff::new(
+                    original,
+                    NativeDesktopPointerLocation::new(
+                        NativeDesktopPosition::Exact(PhysicalPoint::new(420.0, -260.0).unwrap()),
+                        NativePointerHover::Foreign,
+                        None,
+                    ),
+                ),
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding),
+            )
+            .with_metadata(PointerEventMetadata::new(
+                PointerDeviceKind::Mouse,
+                captured_at,
+            )),
+        );
+        let retry = record.clone();
+        let mut translator = NativePointerTranslator::default();
+        for record in [&record, &retry] {
+            assert_eq!(
+                translator.translate_captured(record, captured_at, |_| {
+                    panic!("foreign hover cannot select a work area")
+                }),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn finite_desktop_cursor_requires_exact_event_and_callback_local_facts() {
+        let (_session, binding, viewports) = local_fixture();
+        let coordinates = viewports.local_coordinates_for_event(WindowId::from(WINDOW), None);
+        let callback = Some(geometry(1.0));
+        let facts = PointerEventFacts {
+            desktop_position: Some(PhysicalPosition::new(420.0, -260.0)),
+            ..pointer_facts(20.0, 40.0, 1.0)
+        };
+        for (facts, coordinates, callback) in [
+            (facts, None, callback),
+            (facts, coordinates, None),
+            (facts, coordinates, Some(geometry(2.0))),
+            (
+                PointerEventFacts {
+                    surface_position: None,
+                    ..facts
+                },
+                coordinates,
+                callback,
+            ),
+            (
+                PointerEventFacts {
+                    geometry: None,
+                    ..facts
+                },
+                coordinates,
+                callback,
+            ),
+            (
+                PointerEventFacts {
+                    geometry: Some(PointerEventGeometry {
+                        surface_size: WinitPhysicalSize::new(800, 600),
+                        scale_factor: 2.0,
+                    }),
+                    ..facts
+                },
+                coordinates,
+                callback,
+            ),
+        ] {
+            let record = NativeWindowEventRecord::for_test_local_capture(
+                1,
+                WindowId::from(WINDOW),
+                Some(ViewportId::ROOT),
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(20.0, 40.0),
+                    facts,
+                },
+                &viewports,
+                coordinates,
+                callback,
+            );
+            assert_eq!(
+                record.pointer_location(),
+                Some(CapturedNativePointerLocation::Desktop)
+            );
+            assert_eq!(
+                NativePointerTranslator::default().translate(&record, |_| {
+                    panic!("dock hover cannot select a work area")
+                }),
+                NativePointerTranslation::Input(NativePointerInput::new(
+                    NativePointerId::new(1),
+                    NativePointerEvent::Moved,
+                    NativeDesktopPointerLocation::new(
+                        NativeDesktopPosition::Exact(PhysicalPoint::new(420.0, -260.0).unwrap()),
+                        NativePointerHover::Dock(binding),
+                        None,
+                    ),
+                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding),
+                )),
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_non_finite_desktop_cursor_retains_the_exact_local_sample() {
+        let (_session, _binding, viewports) = local_fixture();
+        for desktop_position in [
+            None,
+            Some(PhysicalPosition::new(f64::NAN, 0.0)),
+            Some(PhysicalPosition::new(0.0, f64::INFINITY)),
+        ] {
+            let record = captured(
+                1,
+                cursor(PointerEventFacts {
+                    desktop_position,
+                    ..pointer_facts(20.0, 40.0, 1.0)
+                }),
+                &viewports,
+                geometry(1.0),
+            );
+            let Some(CapturedNativePointerLocation::NativeLocal(
+                NativeLocalPointerLocation::Exact(sample),
+            )) = record.pointer_location()
+            else {
+                panic!("unavailable desktop facts must retain the original local sample");
+            };
+            assert_eq!(
+                sample.surface_position(),
+                LogicalPoint::new(20.0, 40.0).unwrap()
+            );
+            let NativePointerTranslation::Input(input) = NativePointerTranslator::default()
+                .translate(&record, |_| panic!("local input cannot select a work area"))
+            else {
+                panic!("the local motion must still translate");
+            };
+            assert_eq!(
+                input.location(),
+                NativePointerLocation::NativeLocal(NativeLocalPointerLocation::Exact(sample),)
+            );
+        }
+    }
+
+    #[test]
+    fn finite_desktop_buttons_and_wheel_keep_their_desktop_lane() {
+        let (_session, _binding, viewports) = local_fixture();
+        let facts = PointerEventFacts {
+            desktop_position: Some(PhysicalPosition::new(420.0, -260.0)),
+            ..pointer_facts(20.0, 40.0, 1.0)
+        };
+        for event in [
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                facts,
+            },
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                facts,
+            },
+            WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, 2.0),
+                phase: TouchPhase::Moved,
+                facts,
+            },
+        ] {
+            let record = captured(1, event.clone(), &viewports, geometry(1.0));
+            assert_eq!(record.event(), &event);
+            assert_eq!(
+                record.pointer_location(),
+                Some(CapturedNativePointerLocation::Desktop)
+            );
+            let NativePointerTranslation::Input(input) = NativePointerTranslator::default()
+                .translate(&record, |_| panic!("dock hover cannot select a work area"))
+            else {
+                panic!("button and wheel callbacks must retain their existing translation");
+            };
+            assert!(matches!(
+                input.location(),
+                NativePointerLocation::Desktop(_)
+            ));
+        }
+    }
+
+    #[test]
     fn cursor_coalescing_compares_coordinate_authority_instead_of_points_or_arc_addresses() {
         let (mut session, binding, mut viewports) = local_fixture();
         let first = captured(
@@ -998,6 +1260,83 @@ mod tests {
                 .geometry(),
             geometry(1.0)
         );
+    }
+
+    #[test]
+    fn dual_cursor_compaction_requires_same_authority_and_location_variant() {
+        let (mut session, binding, mut viewports) = local_fixture();
+        let facts = PointerEventFacts {
+            desktop_position: Some(PhysicalPosition::new(420.0, -260.0)),
+            ..pointer_facts(20.0, 40.0, 1.0)
+        };
+        let first = captured(1, cursor(facts), &viewports, geometry(1.0));
+        let moved = captured(
+            2,
+            cursor(PointerEventFacts {
+                desktop_position: Some(PhysicalPosition::new(430.0, -250.0)),
+                ..pointer_facts(30.0, 50.0, 1.0)
+            }),
+            &viewports,
+            geometry(1.0),
+        );
+        assert!(matches!(
+            first.pointer_location(),
+            Some(CapturedNativePointerLocation::LocalToDesktop(_))
+        ));
+        assert!(!Arc::ptr_eq(
+            first.pointer.as_ref().unwrap(),
+            moved.pointer.as_ref().unwrap()
+        ));
+        assert!(first.shares_cursor_lane(&moved));
+        assert!(moved.shares_cursor_lane(&first));
+
+        for boundary in [
+            captured(
+                3,
+                cursor(pointer_facts(20.0, 40.0, 1.0)),
+                &viewports,
+                geometry(1.0),
+            ),
+            captured(
+                3,
+                cursor(pointer_facts(20.0, 40.0, 2.0)),
+                &viewports,
+                geometry(1.0),
+            ),
+            captured(
+                3,
+                cursor(PointerEventFacts {
+                    geometry: None,
+                    ..facts
+                }),
+                &viewports,
+                geometry(1.0),
+            ),
+            captured(
+                3,
+                cursor(PointerEventFacts {
+                    hover: PointerWindowRoute::Foreign,
+                    ..facts
+                }),
+                &viewports,
+                geometry(1.0),
+            ),
+        ] {
+            assert!(!first.shares_cursor_lane(&boundary));
+            assert!(!boundary.shares_cursor_lane(&first));
+        }
+
+        commit_geometry(&mut session, binding, geometry(2.0));
+        commit_geometry(&mut session, binding, geometry(1.0));
+        viewports.refresh_local_coordinates(&session);
+        let renewed = captured(4, cursor(facts), &viewports, geometry(1.0));
+        assert!(matches!(
+            renewed.pointer_location(),
+            Some(CapturedNativePointerLocation::LocalToDesktop(_))
+        ));
+        assert_eq!(first.pointer_routes(), renewed.pointer_routes());
+        assert!(!first.shares_cursor_lane(&renewed));
+        assert!(!renewed.shares_cursor_lane(&first));
     }
 
     #[test]
@@ -1159,28 +1498,33 @@ mod tests {
     #[test]
     fn pointer_payload_capacity_is_complete_and_retry_clones_share_one_allocation() {
         let (_session, _binding, viewports) = local_fixture();
-        let pointer = captured(
-            1,
-            cursor(pointer_facts(20.0, 40.0, 1.0)),
-            &viewports,
-            geometry(1.0),
-        );
-        assert_eq!(
-            pointer.owned_descendant_capacity_bytes(),
-            size_of::<NativePointerCallbackFacts>()
-        );
-        assert_eq!(
-            pointer.owned_descendant_capacity_bytes(),
-            NativeWindowEventRecord::pointer_callback_capacity_bytes()
-        );
-        let retry = pointer.clone();
-        assert!(Arc::ptr_eq(
-            pointer.pointer.as_ref().unwrap(),
-            retry.pointer.as_ref().unwrap()
-        ));
-        assert_eq!(Arc::strong_count(pointer.pointer.as_ref().unwrap()), 2);
-        drop(retry);
-        assert_eq!(Arc::strong_count(pointer.pointer.as_ref().unwrap()), 1);
+        for desktop_position in [None, Some(PhysicalPosition::new(420.0, -260.0))] {
+            let pointer = captured(
+                1,
+                cursor(PointerEventFacts {
+                    desktop_position,
+                    ..pointer_facts(20.0, 40.0, 1.0)
+                }),
+                &viewports,
+                geometry(1.0),
+            );
+            assert_eq!(
+                pointer.owned_descendant_capacity_bytes(),
+                size_of::<NativePointerCallbackFacts>()
+            );
+            assert_eq!(
+                pointer.owned_descendant_capacity_bytes(),
+                NativeWindowEventRecord::pointer_callback_capacity_bytes()
+            );
+            let retry = pointer.clone();
+            assert!(Arc::ptr_eq(
+                pointer.pointer.as_ref().unwrap(),
+                retry.pointer.as_ref().unwrap()
+            ));
+            assert_eq!(Arc::strong_count(pointer.pointer.as_ref().unwrap()), 2);
+            drop(retry);
+            assert_eq!(Arc::strong_count(pointer.pointer.as_ref().unwrap()), 1);
+        }
 
         for event in [WindowEvent::CloseRequested, WindowEvent::Destroyed] {
             let record = captured(2, event, &viewports, geometry(1.0));

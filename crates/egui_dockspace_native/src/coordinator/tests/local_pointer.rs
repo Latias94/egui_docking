@@ -308,6 +308,22 @@ fn raw_event(point: LogicalPoint, state: Option<ElementState>, event_scale: f64)
     }
 }
 
+fn raw_desktop_event(point: LogicalPoint, state: Option<ElementState>) -> WindowEvent {
+    let mut event = raw_event(point, state, 2.0);
+    let (WindowEvent::CursorMoved { facts, .. } | WindowEvent::MouseInput { facts, .. }) =
+        &mut event
+    else {
+        unreachable!("the fixture only creates mouse motion and button events");
+    };
+    let scale = geometry().presentation_scale_factor().get();
+    facts.desktop_position = Some(PhysicalPosition::new(
+        400.0 + point.x() * scale,
+        -300.0 + point.y() * scale,
+    ));
+    facts.hover = PointerWindowRoute::Window(WindowId::from(WINDOW));
+    event
+}
+
 fn capture(
     native: &NativeCoordinator,
     binding: NativeSurfaceBinding,
@@ -329,7 +345,6 @@ fn capture(
     assert_eq!(record.binding(), Some(binding));
     let routes = record.pointer_routes().unwrap();
     assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(binding));
-    assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
     record
 }
 
@@ -506,6 +521,213 @@ fn raw_local_reorder_retries_input_and_delivers_only_after_exact_presented_outpu
         presentation_recorded
     );
     assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+}
+
+#[test]
+fn raw_local_to_desktop_handoff_retries_without_releasing_source_credit_or_accepting_old_preview() {
+    let (mut native, binding, scene, now) = fixture_with_desktop(true);
+    let source = scene.point(FIRST, 0.25);
+    let target = scene.point(THIRD, 0.625);
+    let version = native.session.version();
+    let recorded = native.session.native_input_recorded_count();
+    let coordinates = native.session.native_local_coordinates(binding).unwrap();
+    now.store(40, Ordering::SeqCst);
+    let press = capture(
+        &native,
+        binding,
+        1,
+        raw_event(source, Some(ElementState::Pressed), 2.0),
+    );
+    native.bridge.push_record(HostRecord::WindowEvent(press));
+    reduce_one(&mut native);
+    assert!(
+        input_boundary(&mut native, &scene, CAPTURED_AT)
+            .manipulation_feedback()
+            .is_empty()
+    );
+    let motion = capture(&native, binding, 2, raw_event(target, None, 2.0));
+    native.bridge.push_record(HostRecord::WindowEvent(motion));
+    reduce_one(&mut native);
+    let mut local_frame = native
+        .begin_host_frame(|query| scene.answer(query, CAPTURED_AT))
+        .unwrap();
+    let local_preview = render(&mut local_frame);
+    assert!(local_preview.preview);
+    let mut local_report = finish(local_frame);
+    assert!(local_report.manipulation_feedback().is_empty());
+    let local_output = take_output(&mut local_report, &local_preview, binding);
+    let local_artifact = local_output.presentation_artifact();
+    assert!(native.session.has_active_gesture());
+
+    let motion = capture(&native, binding, 3, raw_desktop_event(target, None));
+    assert_eq!(
+        motion.pointer_routes().unwrap().hover(),
+        NativePointerRouteSnapshot::Dock(binding)
+    );
+    native.bridge.push_record(HostRecord::WindowEvent(motion));
+    reduce_one(&mut native);
+    let translator = format!("{:?}", native.pointer_translator);
+    let mut abandoned = native
+        .begin_host_frame(|query| scene.answer(query, CAPTURED_AT))
+        .unwrap();
+    assert!(render(&mut abandoned).preview);
+    drop(abandoned);
+    now.store(80, Ordering::SeqCst);
+    assert_eq!(native.session.version(), version);
+    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+    assert_eq!(
+        native.session.native_local_coordinates(binding),
+        Some(coordinates)
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 3);
+    assert!(native.session.has_active_gesture());
+    assert!(native.bridge.callback_boundary_pending());
+    assert_eq!(
+        native.bridge.input_backlog_for_test(),
+        (1, Some(Duration::from_millis(40)))
+    );
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(format!("{:?}", native.pointer_translator), translator);
+    assert!(
+        input_boundary(&mut native, &scene, CAPTURED_AT)
+            .manipulation_feedback()
+            .is_empty()
+    );
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    assert!(native.session.has_active_gesture());
+
+    let release = capture(
+        &native,
+        binding,
+        4,
+        raw_desktop_event(target, Some(ElementState::Released)),
+    );
+    native.bridge.push_record(HostRecord::WindowEvent(release));
+    reduce_one(&mut native);
+    let mut frame = native
+        .begin_host_frame(|query| scene.answer(query, Duration::from_millis(80)))
+        .unwrap();
+    let desktop_preview = render(&mut frame);
+    assert!(desktop_preview.preview);
+    let mut report = finish(frame);
+    let pending = feedback(&report);
+    assert_eq!(
+        pending.status(),
+        Status::Pending(PendingReason::AwaitingPresentation)
+    );
+    assert!(!report.workspace_changed());
+    assert_eq!(native.session.version(), version);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 4);
+    assert!(!native.session.has_active_gesture());
+    assert!(native.next_window_event().unwrap().is_none());
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    let exact = take_output(&mut report, &desktop_preview, binding);
+    let artifact = exact.presentation_artifact();
+    assert_ne!(artifact, local_artifact);
+
+    native
+        .session
+        .report_surface_presentation(local_output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let late = idle(&mut native);
+    assert!(
+        late.surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.settles(local_artifact))
+    );
+    assert!(late.manipulation_feedback().is_empty());
+    assert!(!late.workspace_changed());
+    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+    assert_eq!(native.session.version(), version);
+
+    native
+        .session
+        .report_surface_presentation(exact, SurfacePresentationResult::Presented)
+        .unwrap();
+    let delivered = idle(&mut native);
+    assert!(
+        delivered
+            .surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.settles(artifact))
+    );
+    let terminal = feedback(&delivered);
+    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(delivered.workspace_changed());
+    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
+    assert!(!native.session.has_pending_native_input());
+    assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 6);
+    let delivered_version = native.session.version();
+    assert!(idle(&mut native).manipulation_feedback().is_empty());
+    assert_eq!(native.session.version(), delivered_version);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 6);
+}
+
+#[test]
+fn an_ordinary_desktop_drag_keeps_its_lane_when_a_callback_adds_local_facts() {
+    let (mut native, binding, scene, now) = fixture_with_desktop(true);
+    let source = scene.point(FIRST, 0.25);
+    let target = scene.point(THIRD, 0.625);
+    let version = native.session.version();
+    let recorded = native.session.native_input_recorded_count();
+    now.store(40, Ordering::SeqCst);
+    for (ordinal, point, state) in [(1, source, Some(ElementState::Pressed)), (2, target, None)] {
+        let record = capture(&native, binding, ordinal, raw_desktop_event(point, state));
+        assert_eq!(
+            record.pointer_routes().unwrap().hover(),
+            NativePointerRouteSnapshot::Dock(binding)
+        );
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        reduce_one(&mut native);
+        assert!(
+            input_boundary(&mut native, &scene, CAPTURED_AT)
+                .manipulation_feedback()
+                .is_empty()
+        );
+    }
+    assert!(native.session.has_active_gesture());
+    let release = capture(
+        &native,
+        binding,
+        3,
+        raw_desktop_event(target, Some(ElementState::Released)),
+    );
+    native.bridge.push_record(HostRecord::WindowEvent(release));
+    reduce_one(&mut native);
+    let mut frame = native
+        .begin_host_frame(|query| scene.answer(query, CAPTURED_AT))
+        .unwrap();
+    let preview = render(&mut frame);
+    assert!(preview.preview);
+    let mut report = finish(frame);
+    let pending = feedback(&report);
+    assert_eq!(
+        pending.status(),
+        Status::Pending(PendingReason::AwaitingPresentation)
+    );
+    assert_eq!(native.session.version(), version);
+    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 3);
+    let exact = take_output(&mut report, &preview, binding);
+    native
+        .session
+        .report_surface_presentation(exact, SurfacePresentationResult::Presented)
+        .unwrap();
+    let delivered = idle(&mut native);
+    let terminal = feedback(&delivered);
+    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
+    assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    assert!(idle(&mut native).manipulation_feedback().is_empty());
 }
 
 #[test]

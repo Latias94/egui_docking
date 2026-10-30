@@ -15,6 +15,47 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 native callback handoff emission
+
+The follow-up adapter slice selects a dual-location packet only for an original
+CursorMoved with event geometry, an Exact local sample and finite desktop
+coordinates. The immutable callback payload retains that sample while the
+original WindowEvent owns desktop coordinates. Translation uses those frozen
+facts and routes without consulting the gesture or adding a lane registry.
+Button/wheel selection and X11 synthetic focus handling keep their existing
+boundaries. Dual cursor compaction compares exact coordinate authority.
+
+A complete raw callback/mailbox/translation/core regression fails against the
+previous adapter at the first handoff preview, while its ordinary Desktop
+control passes. That red evidence is retained at
+`/tmp/dockspace-handoff-emission-red.log`. The journey also checks frame retry,
+original source credit/age, late local preview rejection and exact Desktop
+output delivery. The same journey now passes, alongside its ordinary Desktop
+control and six new inline capture/translation/compaction cases. All 25 focused
+tests pass; green evidence is at `/tmp/dockspace-handoff-emission-green.log`.
+
+All 21 affected native gates pass: 484 tests normally and 484 without native
+debug assertions, including both same-coordinator 10,000-lifetime soaks,
+correctness/suspicious Clippy, strict docs, formatting and patch integrity,
+macOS default/bounded programmatic redock, X11/XTest physical tear-off,
+first-live, guide-targeted redock, exact destruction/retirement/quiescence, and
+five output-pressure scenarios per platform. The bounded root-boundary sample
+remains 2,146,235 owned / 3,298,688 reserved bytes within 4 MiB and 4,096 raw slots.
+It is input-data capacity evidence, not RSS or combined cross-saturation.
+
+Only three native adapter source paths change. Core/public/official-egui Rust
+sources are hash-identical to the preceding handoff qualification, so its
+workspace1,889/public116/serde123/doctest10 and static gates are reused rather
+than rerun. All 435 Rust paths match the updated native snapshot. Independent
+review finds no confirmed P1/P2. Source/provenance and commands/results are at
+`/tmp/dockspace-handoff-emission-snapshot.json` and
+`/tmp/dockspace-handoff-emission-qualification.json`.
+
+This qualifies callback fact capture/emission and full adapter-to-core traces.
+It does not prove a real native-local OS handoff, Wayland presentation,
+native touch/stationary scheduling, non-guide physical docking or complete U7/U8.
+The unchanged unpublished local forks still need explicit local overrides.
+
 ## 2026-10-30 explicit native-local to desktop handoff
 
 `NativeLocalToDesktopHandoff` carries the original local sample and independent
@@ -65,11 +106,11 @@ commands/results are at `/tmp/dockspace-handoff-snapshot.json` and
 `/tmp/dockspace-handoff-*`.
 
 This qualifies the public host handoff contract and its reference regressions.
-It does not yet emit dual-location packets from Winit/eframe, enable native
-stationary scheduling, or prove a native-local OS transition. The unchanged
-unpublished local forks still require explicit overrides, and remote pins do
-not reproduce them. U7/U8, non-guide physical acceptance, dependency packaging
-and the overall plan remain open.
+The callback-emission entry above separately qualifies the adapter path. Neither
+enables native stationary scheduling or proves a native-local OS transition.
+The unchanged unpublished local forks still require explicit overrides, and
+remote pins do not reproduce them. U7/U8, non-guide physical acceptance,
+dependency packaging and the overall plan remain open.
 
 ## 2026-10-30 native callback local coordinates
 

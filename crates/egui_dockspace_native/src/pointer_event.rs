@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
-    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativeScrollCancelReason, NativeScrollDelta,
-    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
-    NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding, NativeWorkAreaBinding,
-    PointerDeviceKind, PointerEventMetadata,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeLocalToDesktopHandoff,
+    NativePointerButton, NativePointerCancelReason, NativePointerEvent, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerOwner, NativeScrollCancelReason,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding,
+    NativeWorkAreaBinding, PointerDeviceKind, PointerEventMetadata,
 };
 use winit::event::{
     DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
@@ -497,31 +497,47 @@ fn native_input(
         .pointer_location()
         .unwrap_or(CapturedNativePointerLocation::Desktop)
     {
-        CapturedNativePointerLocation::Desktop => {
-            let desktop_position = match record.event() {
-                WindowEvent::CursorMoved { facts, .. }
-                | WindowEvent::MouseInput { facts, .. }
-                | WindowEvent::MouseWheel { facts, .. } => facts.desktop_position,
-                _ => None,
-            };
-            let position = native_position(desktop_position);
-            let hover = native_hover(routes.hover());
-            NativePointerInput::new(
-                pointer,
-                event,
-                NativeDesktopPointerLocation::new(
-                    position,
-                    hover,
-                    native_work_area(position, hover, resolve_work_area),
-                ),
-                delivery,
-                capture,
-            )
-        }
+        CapturedNativePointerLocation::Desktop => NativePointerInput::new(
+            pointer,
+            event,
+            native_desktop_location(record, routes, resolve_work_area),
+            delivery,
+            capture,
+        ),
         CapturedNativePointerLocation::NativeLocal(location) => {
             NativePointerInput::new_local(pointer, event, location, delivery, capture)
         }
+        CapturedNativePointerLocation::LocalToDesktop(sample) => NativePointerInput::new_handoff(
+            pointer,
+            event,
+            NativeLocalToDesktopHandoff::new(
+                sample,
+                native_desktop_location(record, routes, resolve_work_area),
+            ),
+            delivery,
+            capture,
+        ),
     }
+}
+
+fn native_desktop_location(
+    record: &NativeWindowEventRecord,
+    routes: NativePointerRoutes,
+    resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+) -> NativeDesktopPointerLocation {
+    let desktop_position = match record.event() {
+        WindowEvent::CursorMoved { facts, .. }
+        | WindowEvent::MouseInput { facts, .. }
+        | WindowEvent::MouseWheel { facts, .. } => facts.desktop_position,
+        _ => None,
+    };
+    let position = native_position(desktop_position);
+    let hover = native_hover(routes.hover());
+    NativeDesktopPointerLocation::new(
+        position,
+        hover,
+        native_work_area(position, hover, resolve_work_area),
+    )
 }
 
 fn translate_scroll_phase(
@@ -914,6 +930,84 @@ mod overload;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_location_uses_only_same_record_desktop_facts_and_frozen_hover() {
+        use crate::viewport_map::NativeViewportMap;
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{PointerEventFacts, PointerWindowRoute};
+
+        let point = PhysicalPoint::new(110.0, -220.0).unwrap();
+        let raw_point = Some(PhysicalPosition::new(point.x(), point.y()));
+        for (desktop_position, hover, expected_position, expected_hover, expected_calls) in [
+            (
+                raw_point,
+                PointerWindowRoute::Foreign,
+                NativeDesktopPosition::Exact(point),
+                NativePointerHover::Foreign,
+                0,
+            ),
+            (
+                raw_point,
+                PointerWindowRoute::None,
+                NativeDesktopPosition::Exact(point),
+                NativePointerHover::OutsideAll,
+                1,
+            ),
+            (
+                None,
+                PointerWindowRoute::None,
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::OutsideAll,
+                0,
+            ),
+            (
+                Some(PhysicalPosition::new(f64::NAN, 0.0)),
+                PointerWindowRoute::None,
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::OutsideAll,
+                0,
+            ),
+            (
+                Some(PhysicalPosition::new(0.0, f64::INFINITY)),
+                PointerWindowRoute::None,
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::OutsideAll,
+                0,
+            ),
+        ] {
+            let record = NativeWindowEventRecord::for_test_snapshot(
+                1,
+                winit::window::WindowId::from(1),
+                None,
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(900.0, 800.0),
+                    facts: PointerEventFacts {
+                        desktop_position,
+                        hover,
+                        ..PointerEventFacts::default()
+                    },
+                },
+                &NativeViewportMap::default(),
+            );
+            let mut calls = 0;
+            let location = native_desktop_location(
+                &record,
+                record.pointer_routes().unwrap(),
+                &mut |observed| {
+                    calls += 1;
+                    assert_eq!(observed, point);
+                    None
+                },
+            );
+            assert_eq!(
+                location,
+                NativeDesktopPointerLocation::new(expected_position, expected_hover, None)
+            );
+            assert_eq!(calls, expected_calls);
+        }
+    }
 
     #[test]
     fn owned_capacity_keeps_device_slots_charged_when_they_become_tombstones() {
