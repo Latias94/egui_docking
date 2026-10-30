@@ -18,15 +18,53 @@ use super::super::app::{
     ProductObservation, ProductPhase, ROOT_TARGET_LABEL, ROOT_WINDOW_TITLE, Shared,
 };
 use super::super::assertions::{
-    LogicalBounds, PhysicalBounds, PhysicalPoint, SemanticLookupError, SemanticSelector,
-    SemanticStabilitySample, SemanticText, choose_outside_points, desktop_to_viewport_logical,
-    native_drag_preview_observation, point_towards, pointer_barrier_is_satisfied,
+    ActualGuideHit, DockPreviewEmission, LogicalBounds, PaneCenterCase, PaneCenterError,
+    PaneCenterGeometry, PhysicalBounds, PhysicalPoint, SemanticLookupError, SemanticSelector,
+    SemanticStabilitySample, SemanticText, actual_guide_hits, choose_outside_points,
+    desktop_to_viewport_logical, dock_preview_emission, native_drag_preview_observation,
+    pane_center_geometry, pane_center_point, point_towards, pointer_barrier_is_satisfied,
     pointer_observation_for_barrier, semantic_baseline_after_missing, semantic_bounds,
     semantic_node, semantic_snapshot_is_stable, semantic_tree_summary, tab_drag_point,
-    two_stage_ingress_points, viewport_logical_to_desktop,
+    two_stage_ingress_points, verify_center_preview, viewport_logical_to_desktop,
 };
 use super::inspection::{InspectionClient, ViewportTreeSnapshot, viewport_retirement_is_observed};
 use super::x11::{DestroyWatcher, WindowRecord, X11Desktop, x11_window_is_retired};
+
+const TARGET_ENV: &str = "EGUI_DOCKSPACE_PHYSICAL_TARGET";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RedockTarget {
+    GuideControl,
+    PaneCenter(PaneCenterCase),
+}
+
+impl RedockTarget {
+    fn from_env() -> Result<Self, String> {
+        match std::env::var(TARGET_ENV) {
+            Err(std::env::VarError::NotPresent) => Ok(Self::GuideControl),
+            Ok(value) => Self::parse(&value),
+            Err(error) => Err(format!("{TARGET_ENV}: {error}")),
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "pane-center-a" => Ok(Self::PaneCenter(PaneCenterCase::A)),
+            "pane-center-b" => Ok(Self::PaneCenter(PaneCenterCase::B)),
+            "pane-center-c" => Ok(Self::PaneCenter(PaneCenterCase::C)),
+            _ => Err(format!(
+                "invalid {TARGET_ENV}={value:?}; unset for guide-control or choose pane-center-a, pane-center-b, pane-center-c"
+            )),
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::GuideControl => "guide-control",
+            Self::PaneCenter(case) => case.name(),
+        }
+    }
+}
 
 fn bounded_stage_deadline(overall: Instant, budget: Duration) -> Instant {
     overall.min(Instant::now() + budget)
@@ -284,6 +322,7 @@ struct PhysicalDriver {
     deadline: Instant,
     work_area: Option<PhysicalBounds>,
     stage: ScenarioStage,
+    target: RedockTarget,
 }
 
 pub(crate) fn run(shared: Shared, inspection_endpoint: SocketAddr) -> Result<(), String> {
@@ -300,6 +339,7 @@ impl PhysicalDriver {
         inspection_endpoint: SocketAddr,
         deadline: Instant,
     ) -> Result<Self, String> {
+        let target = RedockTarget::from_env()?;
         Ok(Self {
             shared,
             inspection: InspectionClient::connect(inspection_endpoint, deadline)?,
@@ -307,6 +347,7 @@ impl PhysicalDriver {
             deadline,
             work_area: None,
             stage: ScenarioStage::ValidateX11Environment,
+            target,
         })
     }
 
@@ -316,6 +357,7 @@ impl PhysicalDriver {
     }
 
     fn run_inner(&mut self) -> Result<(), String> {
+        eprintln!("physical-smoke: target-case={}", self.target.name());
         self.set_stage(ScenarioStage::ValidateX11Environment);
         self.set_stage(ScenarioStage::AwaitRootPresentation);
         wait_for_product(
@@ -363,13 +405,24 @@ impl PhysicalDriver {
             },
         )?;
         self.set_stage(ScenarioStage::AwaitRetirementQuiescence);
-        wait_for_product(
+        let final_observation = wait_for_product(
             &self.shared,
             self.deadline,
             self.stage.name(),
             |observation| observation.phase == ProductPhase::Retired && observation.quiescent,
         )?;
+        if !final_observation.center_merge_verified {
+            return Err(format!(
+                "{}: {:?}; expected real Main/Child tabs [Main, Child] in the original root",
+                self.target.name(),
+                PaneCenterError::FinalLayoutMismatch
+            ));
+        }
         self.verify_retired_viewport(retirement)?;
+        eprintln!(
+            "physical-smoke: target-case={} verified real tabs=[Main,Child], retirement and quiescence",
+            self.target.name()
+        );
         self.set_stage(ScenarioStage::Complete);
         Ok(())
     }
@@ -520,6 +573,13 @@ impl PhysicalDriver {
             refreshed_root.id,
             semantic_deadline,
         )?;
+        let frozen_pane = match self.target {
+            RedockTarget::GuideControl => None,
+            RedockTarget::PaneCenter(_) => Some(
+                pane_center_geometry(&root_tree.tree)
+                    .map_err(|error| format!("{} before press: {error:?}", self.target.name()))?,
+            ),
+        };
         let refreshed_root_window = self.desktop.window_for_title(ROOT_WINDOW_TITLE)?;
         let (ingress_logical, routed_ingress_logical) = two_stage_ingress_points(root_target);
         let ingress = viewport_logical_to_desktop(
@@ -551,7 +611,7 @@ impl PhysicalDriver {
         );
 
         self.set_stage(ScenarioStage::DragBackX11Events);
-        let drag_back = inject_drag_to_center_guide(
+        let drag_back = inject_redock_drag(
             &self.shared,
             &mut self.inspection,
             &self.desktop,
@@ -569,6 +629,8 @@ impl PhysicalDriver {
                 routed_ingress,
                 deadline: self.deadline,
             },
+            self.target,
+            frozen_pane,
         )?;
         Ok((
             RetirementTarget {
@@ -614,13 +676,16 @@ impl PhysicalDriver {
             retirement.viewport
         );
         let final_root = root_viewport(&viewports)?;
-        let final_root_tree = self.inspection.tree(final_root.id, self.deadline)?;
-        selector_bounds(
-            &final_root_tree,
+        wait_for_stable_selector_bounds(
+            &self.shared,
+            &mut self.inspection,
+            final_root.id,
             SemanticSelector {
                 role: egui::accesskit::Role::Tab,
                 text: SemanticText::Label(CHILD_TAB_LABEL),
             },
+            bounded_stage_deadline(self.deadline, Duration::from_secs(3)),
+            "retired child item remains in live root",
         )?;
         Ok(())
     }
@@ -846,11 +911,13 @@ fn native_drag_preview_barrier(
     }
 }
 
-fn inject_drag_to_center_guide(
+fn inject_redock_drag(
     shared: &Shared,
     inspection: &mut InspectionClient,
     desktop: &X11Desktop,
     request: GuideDragRequest<'_>,
+    target: RedockTarget,
+    frozen_pane: Option<PaneCenterGeometry>,
 ) -> Result<DragResult, String> {
     desktop.move_pointer(request.source)?;
     let source_at_hover = input_barrier(
@@ -874,24 +941,38 @@ fn inject_drag_to_center_guide(
             request,
             source_at_hover.step,
         )?;
-        move_to_center_guide_while_pressed(
-            shared,
-            inspection,
-            desktop,
-            request,
-            source_ingress_step,
-            &ingress_tree,
-        )
+        match target {
+            RedockTarget::GuideControl => move_to_center_guide_while_pressed(
+                shared,
+                inspection,
+                desktop,
+                request,
+                source_ingress_step,
+                &ingress_tree,
+            ),
+            RedockTarget::PaneCenter(case) => move_to_pane_center_while_pressed(
+                shared,
+                inspection,
+                desktop,
+                request,
+                case,
+                frozen_pane.ok_or_else(|| {
+                    format!("{}: {:?}", case.name(), PaneCenterError::BoundsTooSmall)
+                })?,
+                source_ingress_step,
+                &ingress_tree,
+            ),
+        }
     })();
     let release = desktop.set_primary_button(false);
-    let (preview, guide) = match (pressed, release) {
+    let (preview, final_point) = match (pressed, release) {
         (Ok(preview), Ok(())) => preview,
         (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
         (Err(error), Err(release)) => {
             return Err(format!("{error}; release cleanup also failed: {release}"));
         }
     };
-    desktop.assert_pointer(guide, Some(false))?;
+    desktop.assert_pointer(final_point, Some(false))?;
     let released = viewport_barrier(
         inspection,
         request.target_viewport,
@@ -1033,6 +1114,265 @@ fn root_step_before_drag_route(
             bounded_stage_deadline(request.deadline, Duration::from_secs(3)),
         )
         .map(|snapshot| snapshot.step)
+}
+
+#[derive(Debug, PartialEq)]
+struct PaneCenterScene {
+    geometry: PaneCenterGeometry,
+    guides: Vec<ActualGuideHit>,
+    preview: Option<DockPreviewEmission>,
+}
+
+fn wait_for_pane_center_scene(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    viewport: ViewportId,
+    after_step: u64,
+    expected_geometry: Option<PaneCenterGeometry>,
+    overall_deadline: Instant,
+) -> Result<(ViewportTreeSnapshot, PaneCenterScene), String> {
+    let deadline = bounded_stage_deadline(overall_deadline, Duration::from_secs(3));
+    let mut previous: Option<(u64, u64, f32, PaneCenterScene)> = None;
+    let mut last_pending = "no complete scene observed".to_owned();
+    while Instant::now() < deadline {
+        if let Some(error) = shared_fatal_error(shared) {
+            return Err(error);
+        }
+        let snapshot = inspection
+            .tree(viewport, deadline)
+            .map_err(|error| format!("{error}; pane-center last pending: {last_pending}"))?;
+        if snapshot.step <= after_step {
+            continue;
+        }
+        let roster_epoch = {
+            let (lock, _) = &**shared;
+            lock.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .roster_epoch
+        };
+        let geometry = match pane_center_geometry(&snapshot.tree) {
+            Ok(geometry) => geometry,
+            Err(PaneCenterError::Semantic {
+                error: SemanticLookupError::Missing,
+                ..
+            }) => {
+                last_pending = format!("step {} has no current pane/workspace", snapshot.step);
+                previous = previous.filter(|(_, epoch, _, _)| *epoch == roster_epoch);
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "pane-center geometry step={}: {error:?}",
+                    snapshot.step
+                ));
+            }
+        };
+        let guides = match actual_guide_hits(&snapshot.tree) {
+            Ok(guides) => guides,
+            Err(error @ PaneCenterError::MissingGuide { .. }) => {
+                last_pending = format!("step {}: {error:?}", snapshot.step);
+                previous = previous.filter(|(_, epoch, _, _)| *epoch == roster_epoch);
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "pane-center actual guide hits step={}: {error:?}",
+                    snapshot.step
+                ));
+            }
+        };
+        let preview = dock_preview_emission(&snapshot.tree).map_err(|error| {
+            format!(
+                "pane-center Dock emission step={}: {error:?}",
+                snapshot.step
+            )
+        })?;
+        if expected_geometry.is_some() && preview.is_none() {
+            last_pending = format!("step {} has no Dock preview emission", snapshot.step);
+            previous = None;
+            continue;
+        }
+        if let Some(expected) = expected_geometry {
+            if geometry != expected {
+                return Err(format!(
+                    "pane-center current geometry: {:?}",
+                    PaneCenterError::TargetMoved
+                ));
+            }
+            if let Some(preview) = preview {
+                match verify_center_preview(expected, preview, snapshot.pixels_per_point) {
+                    Ok(()) => {}
+                    Err(PaneCenterError::PreviewBoundsMismatch) => {
+                        last_pending = format!(
+                            "step {} has transitional preview {preview:?}",
+                            snapshot.step
+                        );
+                        previous = None;
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "pane-center emitted rectangle step={}: {error:?}; preview={preview:?}, frozen-content={:?}",
+                            snapshot.step, expected.content
+                        ));
+                    }
+                }
+            }
+        }
+        let scene = PaneCenterScene {
+            geometry,
+            guides,
+            preview,
+        };
+        if previous
+            .as_ref()
+            .is_some_and(|(step, epoch, scale, prior)| {
+                snapshot.step > *step
+                    && roster_epoch == *epoch
+                    && snapshot.pixels_per_point == *scale
+                    && &scene == prior
+            })
+        {
+            return Ok((snapshot, scene));
+        }
+        previous = Some((
+            snapshot.step,
+            roster_epoch,
+            snapshot.pixels_per_point,
+            scene,
+        ));
+    }
+    Err(format!(
+        "pane-center scene did not stabilize after step={after_step}; require-dock-emission={}; last-pending={last_pending}",
+        expected_geometry.is_some()
+    ))
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn move_to_pane_center_while_pressed(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    desktop: &X11Desktop,
+    request: GuideDragRequest<'_>,
+    case: PaneCenterCase,
+    geometry: PaneCenterGeometry,
+    source_ingress_step: u64,
+    ingress_tree: &ViewportTreeSnapshot,
+) -> Result<(ViewportTreeSnapshot, PhysicalPoint), String> {
+    let (target_tree, target_scene) = wait_for_pane_center_scene(
+        shared,
+        inspection,
+        request.target_viewport,
+        ingress_tree.step,
+        None,
+        request.deadline,
+    )?;
+    if target_scene.geometry != geometry {
+        return Err(format!(
+            "{} before motion: {:?}",
+            case.name(),
+            PaneCenterError::TargetMoved
+        ));
+    }
+    let window = desktop.window_for_title(request.target_window_title)?;
+    let (selected, logical) = pane_center_point(
+        case,
+        geometry,
+        window.bounds,
+        target_tree.pixels_per_point,
+        &target_scene.guides,
+    )
+    .map_err(|error| format!("{} before motion: {error:?}", case.name()))?;
+    if selected == request.routed_ingress {
+        return Err(format!(
+            "{}: {:?}; non-guide motion must advance from routed ingress",
+            case.name(),
+            PaneCenterError::BoundsTooSmall
+        ));
+    }
+    eprintln!(
+        "physical-smoke: pane-basin case={} logical={logical:?} physical={selected:?} content={:?} excluded-actual-guides={}",
+        case.name(),
+        geometry.content,
+        target_scene.guides.len()
+    );
+    desktop.move_pointer(selected)?;
+    desktop.assert_pointer(selected, Some(true))?;
+    let source_step = if request.source_viewport == request.target_viewport {
+        source_ingress_step.max(target_tree.step)
+    } else {
+        source_ingress_step
+    };
+    let source_at_motion = input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source_step,
+        request.source_client,
+        request.source_pixels_per_point,
+        selected,
+        true,
+        request.deadline,
+        &format!("{} non-guide native motion", case.name()),
+    )?;
+    // Captured raw input is observed on the source viewport. The target independently emits
+    // the Dock program; its marker is not a GPU Presented receipt or an input delivery route.
+    let target_at_motion = viewport_barrier(
+        inspection,
+        request.target_viewport,
+        target_tree.step,
+        request.deadline,
+        &format!("{} target step after native motion", case.name()),
+    )?;
+    let (preview, final_scene) = wait_for_pane_center_scene(
+        shared,
+        inspection,
+        request.target_viewport,
+        target_at_motion.step,
+        Some(geometry),
+        request.deadline,
+    )?;
+    let final_window = desktop.window_for_title(request.target_window_title)?;
+    let (rechecked, _) = pane_center_point(
+        case,
+        geometry,
+        final_window.bounds,
+        preview.pixels_per_point,
+        &final_scene.guides,
+    )
+    .map_err(|error| format!("{} before release: {error:?}", case.name()))?;
+    if final_window.bounds != window.bounds
+        || preview.pixels_per_point != target_tree.pixels_per_point
+        || rechecked != selected
+    {
+        return Err(format!(
+            "{}: {:?}; target bounds or physical projection changed before release",
+            case.name(),
+            PaneCenterError::TargetMoved
+        ));
+    }
+    input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source_at_motion.step,
+        request.source_client,
+        request.source_pixels_per_point,
+        selected,
+        true,
+        request.deadline,
+        &format!("{} held source point before release", case.name()),
+    )?;
+    desktop.assert_pointer(selected, Some(true))?;
+    eprintln!(
+        "physical-smoke: pane-basin case={} Dock program emitted={:?} step={} after-motion-step={} all-guide-hits-excluded={} (not a GPU presentation receipt)",
+        case.name(),
+        final_scene.preview,
+        preview.step,
+        target_at_motion.step,
+        final_scene.guides.len()
+    );
+    Ok((preview, selected))
 }
 
 fn move_to_center_guide_while_pressed(

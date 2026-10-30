@@ -15,6 +15,67 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 X11 non-guide pane-center docking
+
+This slice is locally qualified by 36 final gates. The physical X11/XTest
+runner retains its
+Center-guide control and adds three fixed pane-content points, at normalized
+(0.35,0.35), (0.65,0.35) and (0.65,0.65). It freezes actual content/workspace
+bounds before press, uses the current client origin/scale for physical rounding,
+and checks the round-tripped point against every actual guide hit, including
+repeated directions from separate clusters. Default presentation configuration
+is only a fixed-smoke selection precondition; it is not a target-solver oracle.
+No candidate falls back to a guide or another point.
+
+All five renderer guide directions publish passive labels over their actual
+receiver hit bounds. The opt-in native diagnostic also emits a same-surface
+Dock marker after its preview shapes enter the program, using the real preview
+rectangle. It is always `painted`: core layout projection currently applies to
+Contained previews, not Dock. Independent review rejected the initial helper
+test's impossible Dock+projected combination. The corrected marker means
+program emission only, not GPU presentation, current receiver authority or
+release delivery. The original Native-preview diagnostic keeps its conditions.
+
+The runner waits for two increasing complete semantic scene samples with the
+same roster epoch, scale, content/workspace, all guide hits and real Dock preview.
+Same-epoch missing control outputs retain the preceding complete sample, as in
+the existing selector wait; Missing never returns success or fills the current
+scene. An old side preview after source motion resets the baseline and retries
+within the deadline. Illegal nodes/values or changed target geometry fail.
+The final point is rechecked against current guides and physical bounds, source
+held-input observations and the actual X11 button state before real release.
+Success additionally requires actual model views to place both Main and Child
+in the original root/tabs as [Main,Child], followed by exact X11 DestroyNotify,
+retired semantic inventory and quiescence. A step or painted marker never
+substitutes for that terminal journey.
+
+All four final real journeys pass: the original guide control and each of the
+three non-guide points. The final post-retirement lookup also uses a bounded
+stable semantic wait; a one-shot lookup had landed in a legitimate control
+output after the model/order and OS retirement checks passed. That failed
+attempt is retained at
+`/tmp/dockspace-physical-basin-linux-physical-pane-center-a-before-retirement-wait.log`.
+Initial scene-wait failures and the independent transition-preview finding
+remain recorded as well. No failed attempt is counted as a pass.
+
+Fresh qualification passes workspace1,891/public130/serde137, product114,
+official-egui15, doctest10 and native494/494, including both same-coordinator
+10,000-lifetime soaks. macOS default/bounded redock and five pressure cases per
+platform pass. The bounded sample remains 2,302,971 owned / 3,455,424 reserved
+bytes within 4 MiB/4,096 raw slots. Linux runner32 tests, correctness/suspicious
+Clippy, strict docs, formatting and core dependency isolation pass. Both
+independent reviews report no remaining confirmed P1/P2. The final runner-only
+post-retirement refreeze is followed by fresh Linux compilation, runner tests,
+all four real journeys and formatting; product/renderer source did not change.
+All 439 Rust paths match `/tmp/dockspace-physical-basin-snapshot.json`; full
+commands/results and detailed logs are under `/tmp/dockspace-physical-basin-*`.
+Fork source remains unchanged from the preceding Touch qualification.
+
+These three native smoke points are additional finite samples, not the shared
+L03 complete60-case matrix. They do not cover non-guide edges, tab half
+insertion, multiple nested targets, mixed DPI or high-rate physical input,
+and do not complete U7/U8.
+
 ## 2026-10-30 native Touch event-time coordinate pairs
 
 This slice is locally qualified by 34 final gates. The Winit Touch schema now

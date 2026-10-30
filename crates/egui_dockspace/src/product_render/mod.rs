@@ -736,6 +736,7 @@ fn paint_preview(
 }
 
 #[cfg(feature = "native-render-support")]
+/// Reports a painted preview program emission without proving GPU work or Presented output.
 fn publish_native_drag_preview_diagnostic(
     ui: &Ui,
     surface: dockspace::model::SurfaceId,
@@ -745,23 +746,26 @@ fn publish_native_drag_preview_diagnostic(
     if !native_drag_preview_diagnostic_enabled(ui.ctx()) {
         return;
     }
-    if !matches!(
-        visual,
-        DockspacePreviewVisual::Native { host_surface, .. } if host_surface == surface
-    ) {
-        return;
-    }
-    let id = ui.make_persistent_id(("dockspace-native-drag-preview-painted", surface));
+    let (id_source, label) = match visual {
+        DockspacePreviewVisual::Dock {
+            surface: preview_surface,
+            ..
+        } if preview_surface == surface => (
+            "dockspace-dock-preview-emitted",
+            "Dockspace dock preview emitted",
+        ),
+        DockspacePreviewVisual::Native { host_surface, .. } if host_surface == surface => (
+            "dockspace-native-drag-preview-painted",
+            "Dockspace native drag preview painted",
+        ),
+        _ => return,
+    };
+    let id = ui.make_persistent_id((id_source, surface));
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(egui::accesskit::Role::Label);
-        node.set_label("Dockspace native drag preview painted");
+        node.set_label(label);
         node.set_value("painted");
-        node.set_bounds(egui::accesskit::Rect::new(
-            f64::from(rect.min.x),
-            f64::from(rect.min.y),
-            f64::from(rect.max.x),
-            f64::from(rect.max.y),
-        ));
+        node.set_bounds(geometry::accesskit_bounds(rect));
     });
 }
 
@@ -912,6 +916,7 @@ mod tests {
     use super::{
         DockspacePreviewVisual, enable_native_drag_preview_diagnostic,
         native_drag_preview_diagnostic_enabled, preview_rect,
+        publish_native_drag_preview_diagnostic,
     };
 
     #[test]
@@ -955,5 +960,97 @@ mod tests {
         enable_native_drag_preview_diagnostic(&context);
 
         assert!(native_drag_preview_diagnostic_enabled(&context));
+    }
+
+    #[test]
+    fn dock_preview_diagnostic_keeps_exact_bounds_and_passive_painted_emission() {
+        let surface = SurfaceId::new(1);
+        let visual = DockspacePreviewVisual::Dock {
+            surface,
+            rect: LogicalRect::new(30.0, 40.0, 50.0, 60.0).unwrap(),
+        };
+        let bounds = Rect::from_min_size(pos2(10.0, 20.0), vec2(300.0, 200.0));
+        let rect = preview_rect(surface, bounds, visual).unwrap();
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        enable_native_drag_preview_diagnostic(&context);
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let clip = ui.clip_rect();
+            let focused = ui.memory(egui::Memory::focused);
+            publish_native_drag_preview_diagnostic(ui, surface, rect, visual);
+            assert_eq!(ui.clip_rect(), clip);
+            assert_eq!(ui.memory(egui::Memory::focused), focused);
+        });
+        let update = output.platform_output.accesskit_update.as_ref().unwrap();
+        let nodes: Vec<_> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Dockspace dock preview emitted"))
+            .collect();
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0].1;
+        assert_eq!(node.role(), egui::accesskit::Role::Label);
+        assert_eq!(node.value(), Some("painted"));
+        assert_eq!(node.bounds(), Some(super::geometry::accesskit_bounds(rect)));
+        assert!(!node.supports_action(egui::accesskit::Action::Focus));
+        assert!(!node.supports_action(egui::accesskit::Action::Click));
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn preview_diagnostics_keep_opt_in_and_exact_dock_and_native_surface_guards() {
+        let surface = SurfaceId::new(1);
+        let other = SurfaceId::new(2);
+        let rect = Rect::from_min_size(pos2(30.0, 40.0), vec2(50.0, 60.0));
+        let dock = DockspacePreviewVisual::Dock {
+            surface,
+            rect: LogicalRect::new(30.0, 40.0, 50.0, 60.0).unwrap(),
+        };
+        let native = DockspacePreviewVisual::Native {
+            host_surface: surface,
+            target_surface: other,
+            placement: PhysicalRect::new(400.0, 100.0, 300.0, 200.0).unwrap(),
+        };
+        for (enabled, host, visual, expected) in [
+            (false, surface, dock, None),
+            (true, other, dock, None),
+            (false, surface, native, None),
+            (true, other, native, None),
+            (
+                true,
+                surface,
+                native,
+                Some("Dockspace native drag preview painted"),
+            ),
+        ] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            if enabled {
+                enable_native_drag_preview_diagnostic(&context);
+            }
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                publish_native_drag_preview_diagnostic(ui, host, rect, visual);
+            });
+            let update = output.platform_output.accesskit_update.as_ref().unwrap();
+            let nodes: Vec<_> = update
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    matches!(
+                        node.label(),
+                        Some(
+                            "Dockspace native drag preview painted"
+                                | "Dockspace dock preview emitted"
+                        )
+                    )
+                })
+                .collect();
+            assert_eq!(nodes.len(), usize::from(expected.is_some()));
+            if let Some(label) = expected {
+                assert_eq!(nodes[0].1.label(), Some(label));
+                assert_eq!(nodes[0].1.value(), Some("painted"));
+            }
+            output.drop_without_applying_deltas();
+        }
     }
 }

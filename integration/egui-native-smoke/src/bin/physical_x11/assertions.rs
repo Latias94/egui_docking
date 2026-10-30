@@ -5,6 +5,83 @@ use eframe::egui::accesskit::{Role, TreeUpdate};
 pub(super) const POINTER_DIAGNOSTIC_LABEL: &str = "Physical smoke pointer input";
 pub(super) const NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL: &str =
     "Dockspace native drag preview painted";
+pub(super) const ROOT_PANE_CONTENT_LABEL: &str = "Root pane content";
+pub(super) const DOCK_PREVIEW_EMITTED_LABEL: &str = "Dockspace dock preview emitted";
+const ACTUAL_GUIDE_LABELS: [&str; 5] = [
+    "Dockspace center drop guide",
+    "Dockspace left drop guide",
+    "Dockspace right drop guide",
+    "Dockspace top drop guide",
+    "Dockspace bottom drop guide",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneCenterCase {
+    A,
+    B,
+    C,
+}
+
+impl PaneCenterCase {
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::A => "pane-center-a",
+            Self::B => "pane-center-b",
+            Self::C => "pane-center-c",
+        }
+    }
+
+    const fn fractions(self) -> (f64, f64) {
+        match self {
+            Self::A => (0.35, 0.35),
+            Self::B => (0.65, 0.35),
+            Self::C => (0.65, 0.65),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct PaneCenterGeometry {
+    pub(super) content: LogicalBounds,
+    pub(super) workspace: LogicalBounds,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ActualGuideHit {
+    pub(super) label: &'static str,
+    pub(super) bounds: LogicalBounds,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct DockPreviewEmission {
+    pub(super) bounds: LogicalBounds,
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum PaneCenterError {
+    Semantic {
+        label: &'static str,
+        error: SemanticLookupError,
+    },
+    InteractiveDiagnostic {
+        label: &'static str,
+    },
+    MissingGuide {
+        label: &'static str,
+    },
+    InvalidPreviewValue,
+    BoundsTooSmall,
+    OutsideContent,
+    OutsideCenterBasin,
+    InsideRootEdgeBand,
+    GuideCovered {
+        label: &'static str,
+    },
+    Coordinates(CoordinateError),
+    TargetMoved,
+    PreviewBoundsMismatch,
+    FinalLayoutMismatch,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct LogicalBounds {
@@ -271,6 +348,12 @@ pub(super) fn semantic_bounds(
     selector: SemanticSelector<'_>,
 ) -> Result<LogicalBounds, SemanticLookupError> {
     let node = semantic_node(tree, selector)?;
+    checked_node_bounds(node)
+}
+
+fn checked_node_bounds(
+    node: &eframe::egui::accesskit::Node,
+) -> Result<LogicalBounds, SemanticLookupError> {
     let bounds = node.bounds().ok_or(SemanticLookupError::MissingBounds)?;
     let bounds = LogicalBounds {
         min_x: bounds.x0,
@@ -287,6 +370,199 @@ pub(super) fn semantic_bounds(
         return Err(SemanticLookupError::InvalidBounds);
     }
     Ok(bounds)
+}
+
+pub(super) fn pane_center_geometry(
+    tree: &TreeUpdate,
+) -> Result<PaneCenterGeometry, PaneCenterError> {
+    let selector = SemanticSelector {
+        role: Role::Label,
+        text: SemanticText::Value(ROOT_PANE_CONTENT_LABEL),
+    };
+    let node = semantic_node(tree, selector).map_err(|error| PaneCenterError::Semantic {
+        label: ROOT_PANE_CONTENT_LABEL,
+        error,
+    })?;
+    require_passive(node, ROOT_PANE_CONTENT_LABEL)?;
+    let content = checked_node_bounds(node).map_err(|error| PaneCenterError::Semantic {
+        label: ROOT_PANE_CONTENT_LABEL,
+        error,
+    })?;
+    let workspace = semantic_bounds(
+        tree,
+        SemanticSelector {
+            role: Role::Pane,
+            text: SemanticText::Label("Dockspace workspace"),
+        },
+    )
+    .map_err(|error| PaneCenterError::Semantic {
+        label: "Dockspace workspace",
+        error,
+    })?;
+    Ok(PaneCenterGeometry { content, workspace })
+}
+
+fn require_passive(
+    node: &eframe::egui::accesskit::Node,
+    label: &'static str,
+) -> Result<(), PaneCenterError> {
+    if node.supports_action(eframe::egui::accesskit::Action::Click)
+        || node.supports_action(eframe::egui::accesskit::Action::Focus)
+    {
+        return Err(PaneCenterError::InteractiveDiagnostic { label });
+    }
+    Ok(())
+}
+
+pub(super) fn actual_guide_hits(tree: &TreeUpdate) -> Result<Vec<ActualGuideHit>, PaneCenterError> {
+    let mut hits = Vec::new();
+    for (_, node) in &tree.nodes {
+        if node.is_hidden() || node.role() != Role::Label {
+            continue;
+        }
+        let Some(label) = ACTUAL_GUIDE_LABELS
+            .into_iter()
+            .find(|label| node.label() == Some(*label))
+        else {
+            continue;
+        };
+        require_passive(node, label)?;
+        let bounds = checked_node_bounds(node)
+            .map_err(|error| PaneCenterError::Semantic { label, error })?;
+        hits.push(ActualGuideHit { label, bounds });
+    }
+    // Inner and outer clusters can expose the same direction. Keep every actual hit instead
+    // of selecting one matching label and accidentally overlooking an overlapping receiver.
+    for label in ACTUAL_GUIDE_LABELS {
+        if !hits.iter().any(|hit| hit.label == label) {
+            return Err(PaneCenterError::MissingGuide { label });
+        }
+    }
+    hits.sort_by(|left, right| {
+        left.label
+            .cmp(right.label)
+            .then_with(|| left.bounds.min_x.total_cmp(&right.bounds.min_x))
+            .then_with(|| left.bounds.min_y.total_cmp(&right.bounds.min_y))
+            .then_with(|| left.bounds.max_x.total_cmp(&right.bounds.max_x))
+            .then_with(|| left.bounds.max_y.total_cmp(&right.bounds.max_y))
+    });
+    Ok(hits)
+}
+
+pub(super) fn dock_preview_emission(
+    tree: &TreeUpdate,
+) -> Result<Option<DockPreviewEmission>, PaneCenterError> {
+    let selector = SemanticSelector {
+        role: Role::Label,
+        text: SemanticText::Label(DOCK_PREVIEW_EMITTED_LABEL),
+    };
+    let node = match semantic_node(tree, selector) {
+        Ok(node) => node,
+        Err(SemanticLookupError::Missing) => return Ok(None),
+        Err(error) => {
+            return Err(PaneCenterError::Semantic {
+                label: DOCK_PREVIEW_EMITTED_LABEL,
+                error,
+            });
+        }
+    };
+    require_passive(node, DOCK_PREVIEW_EMITTED_LABEL)?;
+    if node.value() != Some("painted") {
+        return Err(PaneCenterError::InvalidPreviewValue);
+    }
+    let bounds = checked_node_bounds(node).map_err(|error| PaneCenterError::Semantic {
+        label: DOCK_PREVIEW_EMITTED_LABEL,
+        error,
+    })?;
+    Ok(Some(DockPreviewEmission { bounds }))
+}
+
+pub(super) fn pane_center_point(
+    case: PaneCenterCase,
+    geometry: PaneCenterGeometry,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    guides: &[ActualGuideHit],
+) -> Result<(PhysicalPoint, LogicalPoint), PaneCenterError> {
+    let content = geometry.content;
+    let config = dockspace::runtime::DockPresentationConfig::default();
+    let width = content.max_x - content.min_x;
+    let height = content.max_y - content.min_y;
+    if width < config.minimum_pane_size().width() || height < config.minimum_pane_size().height() {
+        return Err(PaneCenterError::BoundsTooSmall);
+    }
+    let (x, y) = case.fractions();
+    let candidate = LogicalPoint {
+        x: content.min_x + width * x,
+        y: content.min_y + height * y,
+    };
+    let physical = viewport_logical_to_desktop(client, pixels_per_point, candidate)
+        .map_err(PaneCenterError::Coordinates)?;
+    let point = desktop_to_viewport_logical(client, pixels_per_point, physical)
+        .map_err(PaneCenterError::Coordinates)?;
+    let margin = 2.0 / f64::from(pixels_per_point);
+    let inset = (1.0 - config.magnetic_center_fraction()) * 0.5;
+    let center = LogicalBounds {
+        min_x: content.min_x + width * inset,
+        min_y: content.min_y + height * inset,
+        max_x: content.max_x - width * inset,
+        max_y: content.max_y - height * inset,
+    };
+    if !client.contains(physical) || !strictly_inside(content, point, margin) {
+        return Err(PaneCenterError::OutsideContent);
+    }
+    if !strictly_inside(center, point, margin) {
+        return Err(PaneCenterError::OutsideCenterBasin);
+    }
+    let workspace = geometry.workspace;
+    let band = ((workspace.max_x - workspace.min_x).min(workspace.max_y - workspace.min_y)
+        * config.magnetic_outer_band_fraction())
+    .clamp(
+        config.magnetic_outer_band_minimum(),
+        config.magnetic_outer_band_maximum(),
+    );
+    if !strictly_inside(workspace, point, band + margin) {
+        return Err(PaneCenterError::InsideRootEdgeBand);
+    }
+    for guide in guides {
+        let bounds = guide.bounds;
+        if point.x >= bounds.min_x - margin
+            && point.x <= bounds.max_x + margin
+            && point.y >= bounds.min_y - margin
+            && point.y <= bounds.max_y + margin
+        {
+            return Err(PaneCenterError::GuideCovered { label: guide.label });
+        }
+    }
+    Ok((physical, point))
+}
+
+fn strictly_inside(bounds: LogicalBounds, point: LogicalPoint, margin: f64) -> bool {
+    point.x > bounds.min_x + margin
+        && point.x < bounds.max_x - margin
+        && point.y > bounds.min_y + margin
+        && point.y < bounds.max_y - margin
+}
+
+pub(super) fn verify_center_preview(
+    geometry: PaneCenterGeometry,
+    preview: DockPreviewEmission,
+    pixels_per_point: f32,
+) -> Result<(), PaneCenterError> {
+    let tolerance = 1.5 / f64::from(pixels_per_point);
+    let expected = geometry.content;
+    if ![
+        preview.bounds.min_x - expected.min_x,
+        preview.bounds.min_y - expected.min_y,
+        preview.bounds.max_x - expected.max_x,
+        preview.bounds.max_y - expected.max_y,
+    ]
+    .into_iter()
+    .all(|delta| delta.abs() <= tolerance)
+    {
+        return Err(PaneCenterError::PreviewBoundsMismatch);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -533,6 +809,152 @@ mod tests {
         }
         node.set_bounds(rect);
         node
+    }
+
+    #[test]
+    fn pane_cases_round_trip_inside_center_and_reject_actual_guide_overlap() {
+        let geometry = PaneCenterGeometry {
+            content: LogicalBounds {
+                min_x: 0.0,
+                min_y: 28.0,
+                max_x: 720.0,
+                max_y: 520.0,
+            },
+            workspace: LogicalBounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 720.0,
+                max_y: 520.0,
+            },
+        };
+        let client = PhysicalBounds {
+            min_x: 120,
+            min_y: 80,
+            max_x: 1200,
+            max_y: 860,
+        };
+        for case in [PaneCenterCase::A, PaneCenterCase::B, PaneCenterCase::C] {
+            let (physical, logical) = pane_center_point(case, geometry, client, 1.5, &[]).unwrap();
+            assert_eq!(
+                desktop_to_viewport_logical(client, 1.5, physical),
+                Ok(logical)
+            );
+            let covered = ActualGuideHit {
+                label: ACTUAL_GUIDE_LABELS[1],
+                bounds: LogicalBounds {
+                    min_x: logical.x,
+                    min_y: logical.y - 1.0,
+                    max_x: logical.x + 10.0,
+                    max_y: logical.y + 1.0,
+                },
+            };
+            assert_eq!(
+                pane_center_point(case, geometry, client, 1.5, &[covered]),
+                Err(PaneCenterError::GuideCovered {
+                    label: covered.label
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn guide_exclusion_keeps_every_hit_when_directions_repeat() {
+        let mut nodes = ACTUAL_GUIDE_LABELS
+            .into_iter()
+            .enumerate()
+            .map(|(index, label)| {
+                (
+                    NodeId::from(index as u64 + 1),
+                    node(
+                        Role::Label,
+                        Some(label),
+                        None,
+                        Rect::new(300.0, 200.0, 340.0, 240.0),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        nodes.push((
+            NodeId::from(9_u64),
+            node(
+                Role::Label,
+                Some(ACTUAL_GUIDE_LABELS[1]),
+                None,
+                Rect::new(10.0, 100.0, 40.0, 130.0),
+            ),
+        ));
+        let hits = actual_guide_hits(&tree(nodes)).unwrap();
+        assert_eq!(hits.len(), 6);
+        assert_eq!(
+            hits.iter()
+                .filter(|hit| hit.label == ACTUAL_GUIDE_LABELS[1])
+                .count(),
+            2
+        );
+        assert!(matches!(
+            actual_guide_hits(&tree([])),
+            Err(PaneCenterError::MissingGuide { .. })
+        ));
+    }
+
+    #[test]
+    fn dock_emission_accepts_only_painted_and_checks_center_rectangle() {
+        let update = tree([(
+            NodeId::from(1_u64),
+            node(
+                Role::Label,
+                Some(DOCK_PREVIEW_EMITTED_LABEL),
+                Some("painted"),
+                Rect::new(0.0, 28.0, 720.0, 520.0),
+            ),
+        )]);
+        let preview = dock_preview_emission(&update).unwrap().unwrap();
+        let geometry = PaneCenterGeometry {
+            content: preview.bounds,
+            workspace: LogicalBounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 720.0,
+                max_y: 520.0,
+            },
+        };
+        assert_eq!(verify_center_preview(geometry, preview, 1.5), Ok(()));
+        let half = DockPreviewEmission {
+            bounds: LogicalBounds {
+                max_x: 360.0,
+                ..preview.bounds
+            },
+            ..preview
+        };
+        assert_eq!(
+            verify_center_preview(geometry, half, 1.5),
+            Err(PaneCenterError::PreviewBoundsMismatch)
+        );
+        let native = tree([(
+            NodeId::from(1_u64),
+            node(
+                Role::Label,
+                Some(NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL),
+                Some("painted"),
+                Rect::new(4.0, 4.0, 716.0, 516.0),
+            ),
+        )]);
+        assert_eq!(dock_preview_emission(&native), Ok(None));
+        for value in ["projected", "presented"] {
+            let malformed = tree([(
+                NodeId::from(1_u64),
+                node(
+                    Role::Label,
+                    Some(DOCK_PREVIEW_EMITTED_LABEL),
+                    Some(value),
+                    Rect::new(0.0, 28.0, 720.0, 520.0),
+                ),
+            )]);
+            assert_eq!(
+                dock_preview_emission(&malformed),
+                Err(PaneCenterError::InvalidPreviewValue)
+            );
+        }
     }
 
     #[test]

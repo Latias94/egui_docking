@@ -16,7 +16,7 @@ use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, PaneView};
 use egui_dockspace_native::NativeDockspaceApp;
 
-use super::assertions::{POINTER_DIAGNOSTIC_LABEL, PhysicalBounds};
+use super::assertions::{POINTER_DIAGNOSTIC_LABEL, PhysicalBounds, ROOT_PANE_CONTENT_LABEL};
 use super::driver;
 
 pub(super) const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
@@ -45,6 +45,7 @@ pub(super) enum ProductPhase {
 pub(super) struct ProductObservation {
     pub(super) phase: ProductPhase,
     pub(super) quiescent: bool,
+    pub(super) center_merge_verified: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -495,6 +496,23 @@ impl PhysicalSmokeApp {
             child_location == Some(surface) && self.dockspace.is_surface_presented(surface)
         });
         let redocked = self.child_surface.is_some() && child_location == Some(ROOT_SURFACE);
+        let center_merge_verified = redocked
+            && self.dockspace.with_view(|view| {
+                view.item(MAIN_ITEM)
+                    .zip(view.item(CHILD_ITEM))
+                    .is_some_and(|(main, child)| {
+                        main.surface() == ROOT_SURFACE
+                            && child.surface() == ROOT_SURFACE
+                            && main.root() == MAIN_ROOT
+                            && child.root() == MAIN_ROOT
+                            && main.contained().is_none()
+                            && child.contained().is_none()
+                            && main.tabs().items() == [MAIN_ITEM, CHILD_ITEM]
+                            && child.tabs().items() == [MAIN_ITEM, CHILD_ITEM]
+                            && main.tab_index() == 0
+                            && child.tab_index() == 1
+                    })
+            }) == Some(true);
         let retired = self
             .child_surface
             .is_some_and(|surface| redocked && !self.dockspace.is_surface_presented(surface));
@@ -512,6 +530,7 @@ impl PhysicalSmokeApp {
         let observation = ProductObservation {
             phase,
             quiescent: self.dockspace.is_quiescent(),
+            center_merge_verified,
         };
         let fatal_error = self
             .dockspace
@@ -587,6 +606,7 @@ impl PaneView for SmokePanes {
             return;
         };
         if item == MAIN_ITEM {
+            publish_root_pane_content_diagnostic(ui);
             publish_root_target_diagnostic(ui);
             ui.label(pane.body);
         } else {
@@ -594,6 +614,21 @@ impl PaneView for SmokePanes {
             ui.label(pane.body);
         }
     }
+}
+
+fn publish_root_pane_content_diagnostic(ui: &egui::Ui) {
+    let pane = ui.max_rect();
+    let id = ui.make_persistent_id(("physical-smoke-pane-content", ui.ctx().viewport_id()));
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_role(egui::accesskit::Role::Label);
+        node.set_value(ROOT_PANE_CONTENT_LABEL);
+        node.set_bounds(egui::accesskit::Rect::new(
+            f64::from(pane.min.x),
+            f64::from(pane.min.y),
+            f64::from(pane.max.x),
+            f64::from(pane.max.y),
+        ));
+    });
 }
 
 fn publish_root_target_diagnostic(ui: &egui::Ui) {

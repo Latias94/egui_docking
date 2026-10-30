@@ -1693,6 +1693,27 @@ also reuses the same pointer after removal in one backend batch and requires a
 new stream incarnation. Removing only DeviceRemoval staged-ledger sync fails
 that regression with ButtonAlreadyPressed; restoring the implementation passes.
 
+The physical pane-center follow-up is locally qualified. It retains the
+existing guide control and exercises three fixed points inside real pane
+content, excluding every actual renderer guide hit after physical rounding and
+again before release. Full current pane/workspace, guide and painted Dock
+emission scenes must stabilize; no-authority control passes are not successful
+samples. Transitional side previews retry within a bounded deadline. Final real
+model tabs must be [Main,Child], then exact DestroyNotify, semantic retirement
+and quiescence complete the journey. The diagnostic is program emission only;
+Contained projection cannot be presented as a Dock projected path. The three
+non-guide points and guide control pass after a runner-only stable retirement
+lookup correction. All 36 final gates pass: workspace1,891/public130/serde137,
+product114/official15, native494/494 and both 10,000-lifetime soaks, doctest10,
+strict docs/lints/formatting and core dependency isolation. Both macOS profiles,
+all four final X11 real journeys, runner32 and five pressure cases per platform
+pass. The bounded sample remains 2,302,971 owned / 3,455,424 reserved bytes.
+All 439 Rust paths match the source snapshot; review corrections and failed
+attempts remain in the detailed evidence. These three points are finite native
+smoke additions, not shared L03 complete60-case coverage. Non-guide edges,
+nested-target competition and high-rate input remain subsequent work; this
+does not close U7/U8 or the full native matrix.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

@@ -292,8 +292,14 @@ CI keeps those claims separate. The programmatic Glow smoke proves hidden
 creation, staging, first-live admission, redock, and retirement through product
 commands. The X11/XTest smoke locates only read-only semantic receivers, injects
 real OS pointer events through Winit, and proves drag-out, first-live, the exact
-Center guide, drag-back, OS-window destruction, and retirement quiescence. It
-does not expose core geometry or provide a reusable GUI test engine.
+Center-guide control plus three non-guide pane-center points, real same-tabs
+merge order, OS-window destruction, and retirement quiescence. The three
+additional cases use `EGUI_DOCKSPACE_PHYSICAL_TARGET=pane-center-a`,
+`pane-center-b` or `pane-center-c`; leaving it unset runs the guide control.
+Each excludes all actual guide hit bounds after physical rounding and again
+before release. These finite native smokes do not certify non-guide edges,
+nested targets or the complete local journey matrix. They do not expose core
+geometry or provide a reusable GUI test engine.
 
 ## Packaging and release order
 

@@ -51,13 +51,21 @@ fn paint_target(
         let _ = context.interact_receiver(hit, id, Sense::hover(), Some(receiver));
         #[cfg(test)]
         context.observe_drop_target(target.direction(), target.visual_id(), &response, receiver);
-        if target.direction() == DockspaceDropDirection::Center {
-            context.ui.ctx().accesskit_node_builder(id, |node| {
-                node.set_role(Role::Label);
-                node.set_bounds(accesskit_bounds(hit));
-                node.set_label(CENTER_DROP_GUIDE_LABEL);
-            });
-        }
+        context.ui.ctx().accesskit_node_builder(id, |node| {
+            node.set_role(Role::Label);
+            node.set_bounds(accesskit_bounds(hit));
+            node.set_label(guide_label(target.direction()));
+        });
+    }
+}
+
+const fn guide_label(direction: DockspaceDropDirection) -> &'static str {
+    match direction {
+        DockspaceDropDirection::Center => CENTER_DROP_GUIDE_LABEL,
+        DockspaceDropDirection::Left => "Dockspace left drop guide",
+        DockspaceDropDirection::Right => "Dockspace right drop guide",
+        DockspaceDropDirection::Top => "Dockspace top drop guide",
+        DockspaceDropDirection::Bottom => "Dockspace bottom drop guide",
     }
 }
 
