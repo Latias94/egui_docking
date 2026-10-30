@@ -151,13 +151,14 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.37.0`. The excluded
 native workspace still pins the last published egui/eframe fork baseline,
-`0716beee5b7284389f2e80ffb6b24b5af6ae2910`. Native resource-ownership work now
-also requires the local, unpublished fork commit
-`1f7c541fde99fd69192622a1a36cb642de58ed29`, qualified through explicit local
-Cargo overrides. The tracked native manifests and CI cannot yet reproduce that
-new work from their remote pins alone. The event-time Winit fork is pinned at
-`f378b50f29cafafec31cd8675c17646b4ef57d70`. The manifest, lockfile, CI, and
-this document must continue to move together when the fork advances.
+`0716beee5b7284389f2e80ffb6b24b5af6ae2910`, with Winit pinned at
+`f378b50f29cafafec31cd8675c17646b4ef57d70`. Current native qualification requires
+newer local, unpublished egui and Winit revisions through explicit Cargo
+overrides. Their exact source revisions and qualification limits are recorded
+in [`docs/VALIDATION.md`](docs/VALIDATION.md). The tracked native manifests and
+CI cannot yet reproduce the newer work from their remote pins alone. The
+manifest, lockfile, CI, and this document must move together when those forks
+are published.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 
@@ -165,6 +166,13 @@ The official adapter and admitted native fork use egui/eframe `0.37.0`.
 The fork branch `dockspace-native-seam-0.37` retains graph-neutral seams for
 exact native facts and output finalization. Winit remains on stable `0.30.13`,
 and egui_tiles remains reference-only.
+
+The optional native pointer observation seam does not enable automatic
+stationary gestures. Its current X11 query reports server-logical desktop
+position and limited direct-root-child hover; capture and delivery remain
+Unknown. Hosts must not fill those gaps from the expected window or cached
+implicit capture. The renderer-neutral core separately supports explicit
+stationary continuations when a host can supply complete native facts.
 
 Hosts that own official crates.io egui's complete run use the Dockspace wrapper
 to bind local settlement to that run without application-managed frame counts:

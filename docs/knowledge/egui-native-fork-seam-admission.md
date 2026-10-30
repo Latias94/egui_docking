@@ -47,6 +47,42 @@ It must not publish known-empty or select a product receiver behind that area.
 Five real ScrollArea tests cover top/bottom edges, nested overscroll, momentum
 reservation, frozen state and candidate order, and non-consuming areas.
 
+### Correlated native pointer observation prerequisite
+
+This local, unpublished seam prepares future deadline-driven input without
+introducing docking types, gesture tokens, an input queue or a capture registry
+in the forks. `prepare_native_viewport_pointer_observation` reserves a typed
+command identity before enqueueing into the existing property queue. The result
+and existing property-retirement callback echo the viewport, expected physical
+window and exact native device. Execution checks the actual window first;
+an obsolete request cannot query its successor. Glow and WGPU pass the active
+event loop where available; an immediate path without it finishes Unavailable.
+No motion event is generated, and eframe does not retry a terminal result.
+
+Winit's X11 query rejects native-event expansion and pending events before or
+after its synchronous replies. A single root XIQueryPointer reply provides the
+server-logical desktop point and direct root-child hover. Known direct Winit
+children identify only that subtree, not embedded descendants. A WM or foreign
+frame remains Unknown. Local position, geometry, modifiers, capture and delivery
+are not inferred. A retained implicit capture does not prove current ownership:
+ancestor unmap/remap and queued pre-command press events defeat that inference,
+and XIQueryPointer does not identify a grab or protocol freeze. Traversing a
+mutable external window tree with multiple queries also cannot prove one atomic
+hover observation, so this seam does not do so.
+
+The adapter does not enroll automatic native stationary scheduling from these
+facts. It treats unowned observation retirements as Unreserved. A future host
+must reserve a bounded request owner, preserve raw/output ordering and sample
+time, keep core continuation identity outside the fork and require complete
+native facts before recording a continuation. Unsupported backends remain
+Unsupported; Unknown capture never inherits the expected source identity.
+The public core's explicit fact-based stationary contract remains independent.
+
+This seam can be removed when upstream offers equivalent correlated observation
+and retirement boundaries, or when the native validation adapter no longer
+requires active querying. Component tests and their real-X11 limits are recorded
+in `docs/VALIDATION.md`; they do not certify automatic stationary behavior.
+
 ### Local close-hold prerequisite (not yet pinned)
 
 The local egui fork adds neutral close ownership in

@@ -15,6 +15,81 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 native pointer observation prerequisite
+
+The new fork seam is locally qualified by 34 final gates. It does not enable
+automatic native stationary gestures. Winit can query an exact enabled X11
+master pointer after native event expansion has ended, with pre/post pending-event checks. One root
+XIQueryPointer reply supplies both the current server-logical desktop point and
+its limited root-child hover. A direct known Winit child is identified; a WM or
+foreign frame remains Unknown. No local geometry or position is reconstructed.
+
+Independent review rejects retained implicit capture as queried authority.
+An ancestor unmap/remap can end a grab without the client receiving its own
+UnmapNotify or a guaranteed Ungrab crossing. A pre-command queued press can also
+overwrite local invalidation after an ungrab command. XIQueryPointer identifies
+neither a current grab owner nor a protocol freeze. Capture and delivery thus
+remain Unknown. A multi-reply foreign hierarchy traversal is also rejected:
+unchanged root child/point checks cannot prove that all intermediate queried
+edges coexisted. The final implementation uses a single reply and adds no
+capture registry, topology model or server-wide grab.
+
+Eframe reuses its existing property command queue and retirement owner. A
+prepared opaque token, viewport, expected physical window and exact DeviceId
+correlate the result. A replacement is never queried for its predecessor; an
+unavailable or unsupported response is terminal, and retirement preserves
+reentrant successor work. The result callback only reports facts. It creates
+no CursorMoved, docking input, polling timer or automatic continuation.
+The native adapter treats these currently unowned observation retirements as
+Unreserved; they cannot claim focus, visibility or pass-through receipts.
+
+The eframe gates pass 94 Glow tests, 88 WGPU tests and 89 Linux tests with both
+renderers, including seven new request/result, unknown-fact, successor and
+retirement tests. Compiling both renderers without the seam also passes. A real
+X11/XTest opt-in journey passes with override-redirect A/B windows: while the
+primary button is held, input stays delivered to A and queries follow two
+target positions in B; repeat stationary queries generate no
+motion, native-event expansion and undispatched prefixes return Unavailable,
+and an invalid device or destroyed expected window cannot produce a sample.
+The affected native gates pass 484 tests normally and 484 without native debug
+assertions, both with the same-coordinator 10,000-lifetime soak. macOS
+default/bounded programmatic redock, the X11 physical guide-targeted docking
+journey and five output-pressure cases on each platform pass. The bounded sample
+remains 2,146,235 owned / 3,298,688 reserved bytes within 4 MiB/4,096 raw slots.
+These gates are tied to `/tmp/dockspace-pointer-observation-snapshot.json`; they
+are not complete native-readiness or automatic stationary certification. The
+native query test does not separately isolate an event arriving between the pre/post query fences, a WM wrapper,
+multiple master pointers or device removal. Its positive samples follow real
+motion delivery, so the no-cache conclusion additionally relies on production
+source inspection. Eframe's queue tests exercise the native-query boundary with
+recorded results; the X11 test exercises the real Winit query, not an automatic
+eframe-to-docking stationary journey.
+
+The registry audit still reports egui 0.37.0 as the latest stable release
+(registry update 2026-10-15). Winit remains stable at 0.30.13; 0.31.0-beta.4 is
+a prerelease (registry update 2026-10-24), outside the stable baseline contract.
+egui_tiles is now 0.18.0 (2026-10-19), but remains reference-only and is not a
+product dependency. This slice therefore does not change these baselines.
+The qualified local commits are Winit
+`98642f5e8460677a5b96bcefb611ac8af437da9b` and egui
+`70f7b51712284561d3408950273f128ff556a81b`. Both remain unpublished. All 438
+main Rust paths match the native snapshot, with only the two adapter retirement
+matches changed from the previous qualification; core/public/official-egui
+source is unchanged. The preceding workspace1,889/public130/serde137 results
+are preserved by exact source identity, not rerun for this fork prerequisite.
+Independent producer and eframe reviews report no remaining confirmed P1/P2
+within this restricted observation contract.
+
+Native and eframe correctness/suspicious Clippy, strict docs, formatting and
+patch integrity pass. Evidence retains the initial Linux offline cache miss,
+the eframe docs feature-combination correction, missing Linux Clippy component
+and nightly-rustfmt failure. The final refreeze moves only the existing SAFETY
+comment and formats one test string; the real producer test, lint, docs and
+format gates pass again. Source manifests, commands, results and registry audit
+are under `/tmp/dockspace-pointer-observation-*`. The eframe local-override
+lockfile delta was excluded from commits. Tracked remote native fork pins still
+do not reproduce these seams; dependency packaging and U7/U8 remain open.
+
 ## 2026-10-30 public native stationary requests
 
 The existing pointer gesture now projects a Native-specific stationary request

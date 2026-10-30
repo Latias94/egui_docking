@@ -261,6 +261,7 @@ impl NativeCommandCallbacks {
         retirement: &NativeViewportPropertyCommandRetirement,
     ) -> bool {
         match retirement {
+            NativeViewportPropertyCommandRetirement::PointerObservation { .. } => false,
             NativeViewportPropertyCommandRetirement::Focus { token, .. } => {
                 self.has_focus_token(*token)
             }
@@ -287,6 +288,9 @@ impl NativeCommandCallbacks {
         make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
         match retirement {
+            NativeViewportPropertyCommandRetirement::PointerObservation { .. } => {
+                CommandCallbackAdmission::Unreserved
+            }
             NativeViewportPropertyCommandRetirement::Focus { viewport_id, token } => {
                 let Some(receipt) = self.focus.receipt.as_ref() else {
                     return CommandCallbackAdmission::Unreserved;

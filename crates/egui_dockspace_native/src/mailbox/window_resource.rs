@@ -906,6 +906,9 @@ impl NativeWindowResources {
         make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
         let viewport = match &retirement {
+            NativeViewportPropertyCommandRetirement::PointerObservation { .. } => {
+                return CommandCallbackAdmission::Unreserved;
+            }
             NativeViewportPropertyCommandRetirement::Focus { viewport_id, .. }
             | NativeViewportPropertyCommandRetirement::Visibility { viewport_id, .. }
             | NativeViewportPropertyCommandRetirement::PointerPassthrough { viewport_id, .. } => {
@@ -1644,6 +1647,17 @@ mod tests {
         assert!(resources.reserve_create(viewport, next, NativePhysicalRect::new(0, 0, 640, 480)));
 
         for foreign in [
+            NativeViewportPropertyCommandRetirement::PointerObservation {
+                viewport_id: viewport,
+                token: eframe::prepare_native_viewport_pointer_observation(
+                    viewport,
+                    window,
+                    winit::event::DeviceId::dummy(),
+                )
+                .token(),
+                expected_window_id: window,
+                device_id: winit::event::DeviceId::dummy(),
+            },
             NativeViewportPropertyCommandRetirement::Focus {
                 viewport_id: ViewportId::from_hash_of("foreign-property-retirement"),
                 token: focus,

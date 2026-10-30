@@ -1595,6 +1595,36 @@ Wayland and Touch active sampling remain explicit Unsupported until their
 native protocols supply a qualified path. This is a next-step design boundary,
 not implemented scheduling or physical qualification.
 
+The fresh-observation prerequisite is implemented conservatively. Independent
+review rejects deriving a queried capture from the existing implicit-owner cache:
+an ancestor frame can unmap/remap without a source UnmapNotify or guaranteed
+Ungrab crossing, and a queued pre-command press can overwrite same-client
+invalidation. XIQueryPointer identifies neither the grab owner nor a protocol
+freeze. The new seam therefore leaves capture and delivery Unknown and does not
+enable automatic native stationary gestures.
+
+Position and hover must share one root XIQueryPointer reply. A mutable foreign
+hierarchy cannot be traversed through several replies and claimed as one atomic
+observation; repeated root/point checks do not exclude an intermediate path race.
+Only a direct root child known to the current event loop, or no root child, gets
+a definite hover route. An unrecognized child, including a WM frame, stays
+Unknown. Do not add a second native topology model or a server-wide grab to
+manufacture stronger facts. Native-event expansion and pre/post query pending
+checks prevent this seam from overtaking native event dispatch. Eframe reuses
+its existing typed property queue and retirement callbacks, correlated to the
+expected physical window and exact device. Unsupported and unavailable results
+remain terminal results of that request; no synthetic CursorMoved is generated.
+This prerequisite is locally qualified by 34 final gates: eframe Glow94/WGPU88,
+Linux89, native484/484 with both same-coordinator 10,000-lifetime soaks, strict
+docs/lints/formatting, real X11 pointer queries, macOS default/bounded redock,
+X11 physical guide-targeted redock and five pressure cases on each platform.
+The bounded sample remains 2,146,235 owned / 3,298,688 reserved bytes. Main
+core/public sources are hash-identical to their previous qualification. Local
+Winit `98642f5e8460677a5b96bcefb611ac8af437da9b` and egui
+`70f7b51712284561d3408950273f128ff556a81b` are committed but unpublished.
+Detailed evidence and the limited test coverage are in `docs/VALIDATION.md`.
+Automatic stationary scheduling, native Touch and complete U7/U8 remain open.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
@@ -1929,7 +1959,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `154ac8e77e3af81aa7ccb9c8c0f8a7769f339c3f` and Winit fork `e8dd500fd5a78884de0092db81f60e8649da18aa`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `70f7b51712284561d3408950273f128ff556a81b` and Winit fork `98642f5e8460677a5b96bcefb611ac8af437da9b`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.
