@@ -1801,6 +1801,17 @@ window/output cross-saturation gap, while remaining close/create owner classes,
 actual wall-time service and broader native qualification remain open. See
 `docs/VALIDATION.md` for exact profiles, measurements and source evidence.
 
+An explicit ignored release test now measures each actual callback-prefix
+claim/translation/core-poll segment with the same system clock as ingress age
+and the shared outer-turn budget. The first Linux and macOS samples preserve 257 active
+edges and exact release/output delivery, including deadline expiry during a
+receiver, its retained successor and the zero-progress same-budget probe.
+Measured segments above 2 ms remain in the results. This establishes a finite
+measurement entry point, not a hard wall-time cap; commit/paint and actual
+event-loop yield remain outside this segment. Ordinary CI retains deterministic
+clock assertions. Full host-service, broader capacity and native readiness
+qualification remain open.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

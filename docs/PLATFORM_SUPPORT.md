@@ -206,6 +206,16 @@ fixture storage is reported separately. This finite output/inventory combination
 does not simultaneously fill the profile's remaining owner classes or prove
 input throughput, release latency or the 2 ms service boundary.
 
+The [opt-in release wall-time test](VALIDATION.md#2026-10-31-opt-in-release-reducer-wall-time-measurement)
+adds actual claim/translation/core-poll segment measurements with one shared
+system clock. Its first Linux and macOS runs preserve all 257 active moves across budget
+expiry, an intentionally delayed receiver, a zero-progress expired poll and
+exact release/output settlement. It reports the over-2-ms samples as observed.
+Commit, painting and event-loop return are outside that segment, so this
+evidence does not certify a strict 2 ms upper bound or the complete host-service
+envelope. The ignored test is explicitly selected for release qualification;
+ordinary CI keeps deterministic budget/continuation checks.
+
 ### Native stationary observations
 
 The public [`NativePointerContinuation`](../crates/dockspace/src/runtime/native/continuation.rs)

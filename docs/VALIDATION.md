@@ -15,6 +15,77 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 opt-in release reducer wall-time measurement
+
+The existing internal active-load fixture adds the explicitly ignored
+`wall_time_active_prefix_and_receiver_deadline_preserve_exact_release` test.
+Ordinary CI retains deterministic injected-clock assertions and does not assert
+machine-dependent `elapsed <= 2 ms`. This opt-in test instead shares one
+system `NativeMonotonicClock` among ingress age, reduction budget and measurement.
+It records every `reduce_callback_prefix` plus `poll_host_frame` segment from
+before immutable-prefix claim until poll returns a frame or None. All segments
+within one outer turn retain the same original budget; a partial core replay
+does not receive a new deadline to improve the measurement.
+
+The fixture presses a real core receiver, admits 257 active moves, injects one
+3 ms receiver delay across two distinct retained moves, releases, paints and
+settles the exact output. It verifies raw ordinal continuity, one-time recording
+and completion, the expired same-budget zero-progress poll, exact unstarted
+receiver continuation and one Pending/Delivered pair sharing the manipulation
+identity. Source ownership remains unchanged until that output settles.
+Measurement scope is explicit: commit, painting, output settlement, logging
+and actual return to the OS event loop are outside each measured segment.
+The fixture creates no OS window or GPU submission and adds no public profiler,
+clock owner or lifecycle registry.
+
+The reviewed Linux/arm64 release run passes. Its nine segments include an active
+256-record raw claim that completes 238 records at 2.005833 ms, followed by
+18-record and one-record exact continuation. The deliberately delayed receiver
+segment takes 4.702917 ms, completes only its current record, and leaves the next
+distinct point untouched. The immediate same-budget poll records zero claims,
+zero completions and zero receiver queries; the following fresh turn completes
+the successor. The release and presentation segments take 28.833 and 38.167
+microseconds in this finite sample. Two segments exceed 2 ms and remain in the
+reported results. These are observations, not a hard upper bound or a latency
+percentile. Cooperative expiry prevents starting subsequent core records;
+preparation, the currently running record and OS preemption may overrun.
+
+The reviewed macOS release run also passes with nine segments. Its active claim
+completes 153 records at 2.00825 ms, then resumes exactly 103 and one records.
+The delayed receiver takes 4.618084 ms including a measured 4.528833 ms sleep,
+followed by the same zero-progress expired poll and exact successor. Release
+and presentation segments take 66.459 and 39.542 microseconds. It likewise
+reports two over-deadline segments. The test prints `debug_assertions=false`
+and its measured scope in both platform logs; the initial release compilation
+time is recorded separately from these segment samples.
+
+Independent review found one fixture P2: injecting the delay only when both
+moves had already been translated could reject legal partial translation after
+OS preemption. The corrected test delays the first actual receiver query and
+accepts its pending successor in either raw or core storage, retaining exact
+point-order and expired zero-progress assertions. Both platform release runs,
+nine adjacent controlled regressions normally and without native debug
+assertions, correctness/suspicious Clippy, formatting and patch integrity pass
+on the reviewed source. Earlier samples remain marked superseded in the local
+evidence record. Production core, adapter and fork sources are unchanged.
+
+Run the Linux qualification with its documented explicit local fork overrides:
+
+```text
+cargo test --release \
+  --manifest-path integration/egui-fork-workspace/Cargo.toml \
+  -p egui_dockspace_native --lib --locked --offline \
+  --config /tmp/dockspace-linux-local-callback-egui.toml \
+  wall_time_active_prefix_and_receiver_deadline_preserve_exact_release \
+  -- --ignored --nocapture --test-threads=1
+```
+
+The current source and exact invocation/results are
+`/tmp/dockspace-service-time-snapshot.json`,
+`/tmp/dockspace-service-time-qualification.json` and matching logs. The full
+host claim-to-event-loop-yield service envelope, sustained OS throughput,
+broader layout sizes and the remaining U7/U8 criteria remain separate work.
+
 ## 2026-10-31 simultaneous W16 roster and O256 real outputs
 
 The real output-pressure executable adds the finite `combined` scenario. It

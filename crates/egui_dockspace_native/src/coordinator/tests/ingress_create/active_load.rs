@@ -1,8 +1,9 @@
-//! Controlled 1 kHz native ingress, with real core program/presentation receipts.
+//! Controlled 1 kHz and opt-in wall-time ingress with real core presentation receipts.
 //!
 //! This model does not certify OS event timing, GPU presentation or real-time latency.
 //! Native property effects enter their original adapter queue; platform dispatch
 //! is deliberately outside this callback-to-core throughput qualification.
+//! The ignored release test measures cooperative callback-to-poll service only.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -378,6 +379,333 @@ fn controlled_one_kilohertz_active_drag_preserves_all_edges_and_delivers_release
         peak_age.as_millis(),
         wall_started.elapsed()
     );
+}
+
+#[test]
+#[ignore = "wall-time qualification: run with --release, one test thread and --nocapture"]
+fn wall_time_active_prefix_and_receiver_deadline_preserve_exact_release() {
+    #[derive(Debug)]
+    struct Sample {
+        phase: &'static str,
+        turn: usize,
+        raw_records: usize,
+        completed_records: usize,
+        elapsed: Duration,
+        frame_pending: Option<bool>,
+        pending: bool,
+        exhausted: bool,
+        receiver_queries: usize,
+        receiver_delay: Option<Duration>,
+    }
+
+    const ACTIVE_MOVES: usize = 257;
+    const DEADLINE: Duration = Duration::from_millis(2);
+    eprintln!(
+        "wall-time-service: debug_assertions={} scope=reduce+poll-segment budget=shared-outer-turn commit_paint_excluded=true hard_realtime=false",
+        cfg!(debug_assertions),
+    );
+    let clock = NativeMonotonicClock::system();
+    let (mut native, receivers) = fixture(clock.clone());
+    let context = egui::Context::default();
+    let press = receivers.source.center();
+    let press = PhysicalPoint::new(press.x(), press.y()).unwrap();
+    let target = PhysicalPoint::new(400.0, 220.0).unwrap();
+    let baseline = native.session.native_input_recorded_count();
+    let mut captured = 0;
+    let mut claimed = 0;
+    let mut completed = 0;
+    let mut samples = Vec::new();
+    let mut receiver_delayed = false;
+    let mut receiver_points = Vec::with_capacity(2);
+    let mut exhausted_probe_observed = false;
+    let mut preview = false;
+    let mut feedback = Vec::new();
+    let mut release_output = None;
+    let mut artifact = None;
+    let mut settled_outputs = 0;
+
+    for (phase, records) in [
+        ("press", 1),
+        ("active", ACTIVE_MOVES),
+        ("receiver-deadline", 2),
+        ("release", 1),
+        ("settlement", 0),
+    ] {
+        if phase == "settlement" {
+            native
+                .session
+                .report_surface_presentation(
+                    release_output.take().expect("the release must paint"),
+                    SurfacePresentationResult::Presented,
+                )
+                .unwrap();
+        }
+        for index in 0..records {
+            captured += 1;
+            let (point, button) = match phase {
+                "press" => (press, Some(ElementState::Pressed)),
+                "release" => (target, Some(ElementState::Released)),
+                _ => (
+                    PhysicalPoint::new(target.x() + (index % 17) as f64 * 0.125, target.y())
+                        .unwrap(),
+                    None,
+                ),
+            };
+            capture(&native, captured, point, button);
+        }
+
+        let mut drained = false;
+        for turn in 0..128 {
+            let mut budget = NativeInputBudget::new(&clock);
+            let mut probe_exhausted = false;
+            loop {
+                let allowance = budget.remaining_records();
+                let mut receiver_queries = 0;
+                let mut receiver_delay = None;
+                // Each segment encloses claim/translation and core poll, including None.
+                // The turn shares one budget; commit/paint and event-loop yield are not timed.
+                let started = clock.now();
+                let raw_records = native
+                    .reduce_callback_prefix(&context, &mut budget)
+                    .unwrap()
+                    .map_or(0, std::num::NonZeroUsize::get);
+                claimed += raw_records;
+                let inject_delay = phase == "receiver-deadline" && !receiver_delayed;
+                let frame = native
+                    .poll_host_frame(&mut budget, |query| {
+                        receiver_queries += 1;
+                        if phase == "receiver-deadline" {
+                            let point = query.point().expect("active motion must have a point");
+                            receiver_points.push((point.x(), point.y()));
+                        }
+                        if inject_delay && !receiver_delayed {
+                            receiver_delayed = true;
+                            let started = clock.now();
+                            std::thread::sleep(Duration::from_millis(3));
+                            receiver_delay = Some(clock.now() - started);
+                        }
+                        receivers.resolve(query)
+                    })
+                    .unwrap();
+                let elapsed = clock.now() - started;
+                let completed_records = allowance - budget.remaining_records();
+                let frame_pending = frame.as_ref().map(NativeHostFrame::native_input_pending);
+                let exhausted = budget.is_exhausted();
+                completed += completed_records;
+
+                if let Some(mut frame) = frame {
+                    if !frame.native_input_pending()
+                        && let Some(plan) = frame.frame.paint_plan(SOURCE_SURFACE).unwrap()
+                    {
+                        preview |= program_has_drag_preview(plan);
+                        if phase == "release" {
+                            let receipt =
+                                plan.execute_surface_program(|_| Ok::<(), ()>(())).unwrap();
+                            frame.frame.confirm_surface_painted(receipt).unwrap();
+                        }
+                    }
+                    frame
+                        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                        .unwrap();
+                    let mut report = frame.commit().unwrap();
+                    assert!(
+                        !report
+                            .inputs()
+                            .contains(&HostInputOutcome::NativeInputCancelledForOverload)
+                    );
+                    if let Some(artifact) = artifact {
+                        settled_outputs += report
+                            .surface_presentation_commits()
+                            .iter()
+                            .filter(|commit| commit.settles(artifact))
+                            .count();
+                    }
+                    if settled_outputs == 0 {
+                        assert_eq!(
+                            native.session.view().item(SOURCE_ITEM).unwrap().root(),
+                            SOURCE_ROOT,
+                            "the accepted release must await its exact presentation"
+                        );
+                    }
+                    feedback.extend_from_slice(report.manipulation_feedback());
+                    let effects = report.take_native_effects();
+                    assert!(effects.iter().all(|effect| matches!(
+                        effect.operation(),
+                        NativeEffectOperation::SetPointerPassthrough { .. }
+                    )));
+                    native.accept_native_effects(&context, effects).unwrap();
+                    for output in report.take_painted_outputs() {
+                        assert_eq!(phase, "release");
+                        assert!(artifact.replace(output.presentation_artifact()).is_none());
+                        assert!(release_output.replace(output).is_none());
+                    }
+                    native.settle_host_frame_report(&report).unwrap();
+                }
+
+                let pending = native.bridge.has_pending_callback_records()
+                    || native.session.has_pending_native_input();
+                samples.push(Sample {
+                    phase,
+                    turn,
+                    raw_records,
+                    completed_records,
+                    elapsed,
+                    frame_pending,
+                    pending,
+                    exhausted,
+                    receiver_queries,
+                    receiver_delay,
+                });
+                assert!(raw_records <= allowance && completed_records <= allowance);
+                assert_eq!(
+                    native.bridge.front_event().map(|event| event.ordinal()),
+                    ((claimed as u64) < captured).then_some(claimed as u64 + 1),
+                    "the next raw claim must resume at its exact ordinal"
+                );
+                if phase != "settlement" {
+                    assert_eq!(
+                        native.session.native_input_recorded_count(),
+                        baseline + claimed as u64,
+                        "active edges must not be coalesced or recorded twice"
+                    );
+                }
+                if let Some(delay) = receiver_delay {
+                    assert!(delay >= DEADLINE && elapsed >= DEADLINE);
+                    assert!(exhausted);
+                    assert_eq!(
+                        completed_records, 1,
+                        "the timed-out receiver may finish only its current record"
+                    );
+                    assert!(pending, "the successor must remain raw- or recorder-owned");
+                    assert_eq!(receiver_points.len(), 1);
+                    // A second poll keeps the expired budget and must not start
+                    // the retained successor. Its zero-progress sample stays visible.
+                    probe_exhausted = true;
+                    continue;
+                }
+                if probe_exhausted {
+                    assert_eq!(
+                        (raw_records, completed_records, receiver_queries),
+                        (0, 0, 0)
+                    );
+                    assert!(frame_pending.is_none() && pending && exhausted);
+                    exhausted_probe_observed = true;
+                    break;
+                }
+                if !pending {
+                    drained = true;
+                    break;
+                }
+                if frame_pending.is_none()
+                    || exhausted
+                    || (raw_records == 0 && completed_records == 0)
+                {
+                    break;
+                }
+            }
+            if drained {
+                break;
+            }
+        }
+        assert!(drained, "{phase} did not drain: {samples:#?}");
+        if matches!(phase, "press" | "active" | "receiver-deadline") {
+            assert!(feedback.is_empty());
+            assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
+        }
+        if phase == "active" {
+            assert!(preview);
+            assert!(native.session.has_active_gesture());
+            assert_eq!(claimed, ACTIVE_MOVES + 1);
+            assert_eq!(completed, claimed);
+            assert!(
+                samples
+                    .iter()
+                    .filter(|sample| sample.phase == phase)
+                    .count()
+                    >= 2
+            );
+        }
+        if phase == "receiver-deadline" {
+            assert!(receiver_delayed && exhausted_probe_observed);
+            assert_eq!(completed, claimed);
+            assert_eq!(
+                receiver_points,
+                [(target.x(), target.y()), (target.x() + 0.125, target.y())],
+                "the receiver must resume with exactly its unstarted successor"
+            );
+        }
+        if phase == "release" {
+            let [pending] = feedback.as_slice() else {
+                panic!("the release must publish exactly one pending outcome: {feedback:?}");
+            };
+            assert_eq!(
+                pending.status(),
+                DockspaceManipulationStatus::Pending(
+                    DockspaceManipulationPendingReason::AwaitingPresentation
+                )
+            );
+        }
+    }
+
+    // These are cooperative service samples, not a hard real-time upper bound.
+    // Keep every sample, including deliberate overrun and zero-progress polls.
+    for (segment, sample) in samples.iter().enumerate() {
+        eprintln!(
+            "wall-time-service: segment={segment} phase={} turn={} raw={} completed={} elapsed={:?} frame_pending={:?} pending={} exhausted={} receiver_queries={} receiver_delay={:?} over_2ms={}",
+            sample.phase,
+            sample.turn,
+            sample.raw_records,
+            sample.completed_records,
+            sample.elapsed,
+            sample.frame_pending,
+            sample.pending,
+            sample.exhausted,
+            sample.receiver_queries,
+            sample.receiver_delay,
+            sample.elapsed >= DEADLINE,
+        );
+    }
+    eprintln!(
+        "wall-time-service: segments={} over_2ms={} zero_progress={} max_elapsed={:?} cooperative=true",
+        samples.len(),
+        samples
+            .iter()
+            .filter(|sample| sample.elapsed >= DEADLINE)
+            .count(),
+        samples
+            .iter()
+            .filter(|sample| sample.raw_records == 0 && sample.completed_records == 0)
+            .count(),
+        samples.iter().map(|sample| sample.elapsed).max(),
+    );
+    let [pending, terminal] = feedback.as_slice() else {
+        panic!("one release must publish one pending and one terminal: {feedback:?}");
+    };
+    assert_eq!(
+        terminal.status(),
+        DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
+    );
+    assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
+    assert_eq!(settled_outputs, 1);
+    assert_eq!(claimed, ACTIVE_MOVES + 4);
+    assert_eq!(completed, ACTIVE_MOVES + 5);
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        baseline + completed as u64,
+        "each retained record must reduce once, including the presentation"
+    );
+    assert_eq!(
+        native.session.view().item(SOURCE_ITEM).unwrap().root(),
+        TARGET_ROOT
+    );
+    assert_eq!(
+        native.session.view().item(SIBLING_ITEM).unwrap().root(),
+        SOURCE_ROOT
+    );
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    assert!(!native.session.has_active_gesture());
+    assert!(!native.session.has_pending_native_input());
+    assert!(!native.session.has_pending_native_create());
 }
 
 #[test]
