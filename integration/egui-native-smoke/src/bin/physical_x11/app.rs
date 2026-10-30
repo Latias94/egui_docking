@@ -8,8 +8,8 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
 use dockspace::model::{
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
-    SurfaceId,
+    DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    DockspaceView, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::DockspaceSession;
@@ -17,7 +17,9 @@ use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, PaneView};
 use egui_dockspace_native::NativeDockspaceApp;
 
-use super::assertions::{POINTER_DIAGNOSTIC_LABEL, PhysicalBounds, ROOT_PANE_CONTENT_LABEL};
+use super::assertions::{
+    POINTER_DIAGNOSTIC_LABEL, PaneEdgeCase, PhysicalBounds, ROOT_PANE_CONTENT_LABEL,
+};
 use super::driver;
 use super::pointer_load::{PointerLoad, PointerSource, load_storage_limit, pointer_load_enabled};
 
@@ -48,6 +50,50 @@ pub(super) struct ProductObservation {
     pub(super) phase: ProductPhase,
     pub(super) quiescent: bool,
     pub(super) center_merge_verified: bool,
+    pub(super) redock_layout: Option<RedockLayout>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RedockLayout {
+    Center,
+    Edge(PaneEdgeCase),
+}
+
+fn observed_redock_layout(view: DockspaceView<'_>) -> Option<RedockLayout> {
+    let main = view.item(MAIN_ITEM)?;
+    let child = view.item(CHILD_ITEM)?;
+    if [main, child].iter().any(|item| {
+        item.surface() != ROOT_SURFACE || item.root() != MAIN_ROOT || item.contained().is_some()
+    }) {
+        return None;
+    }
+    let content = view.surface(ROOT_SURFACE)?.main_root()?.content()?;
+    if let Some(tabs) = content.tabs() {
+        return (tabs.items() == [MAIN_ITEM, CHILD_ITEM]).then_some(RedockLayout::Center);
+    }
+    let split = content.split()?;
+    if split.child_count() != 2
+        || split
+            .weights()
+            .any(|weight| (weight - 0.5).abs() > f32::EPSILON)
+    {
+        return None;
+    }
+    let mut children = split.children();
+    let first = children.next()?.tabs()?.items();
+    let second = children.next()?.tabs()?.items();
+    let child_before = match (first, second) {
+        ([CHILD_ITEM], [MAIN_ITEM]) => true,
+        ([MAIN_ITEM], [CHILD_ITEM]) => false,
+        _ => return None,
+    };
+    let edge = match (split.axis(), child_before) {
+        (DockspaceAxis::Horizontal, true) => PaneEdgeCase::West,
+        (DockspaceAxis::Horizontal, false) => PaneEdgeCase::East,
+        (DockspaceAxis::Vertical, true) => PaneEdgeCase::North,
+        (DockspaceAxis::Vertical, false) => PaneEdgeCase::South,
+    };
+    Some(RedockLayout::Edge(edge))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -551,23 +597,10 @@ impl PhysicalSmokeApp {
             child_location == Some(surface) && self.dockspace.is_surface_presented(surface)
         });
         let redocked = self.child_surface.is_some() && child_location == Some(ROOT_SURFACE);
-        let center_merge_verified = redocked
-            && self.dockspace.with_view(|view| {
-                view.item(MAIN_ITEM)
-                    .zip(view.item(CHILD_ITEM))
-                    .is_some_and(|(main, child)| {
-                        main.surface() == ROOT_SURFACE
-                            && child.surface() == ROOT_SURFACE
-                            && main.root() == MAIN_ROOT
-                            && child.root() == MAIN_ROOT
-                            && main.contained().is_none()
-                            && child.contained().is_none()
-                            && main.tabs().items() == [MAIN_ITEM, CHILD_ITEM]
-                            && child.tabs().items() == [MAIN_ITEM, CHILD_ITEM]
-                            && main.tab_index() == 0
-                            && child.tab_index() == 1
-                    })
-            }) == Some(true);
+        let redock_layout = redocked
+            .then(|| self.dockspace.with_view(observed_redock_layout).flatten())
+            .flatten();
+        let center_merge_verified = redock_layout == Some(RedockLayout::Center);
         let retired = self
             .child_surface
             .is_some_and(|surface| redocked && !self.dockspace.is_surface_presented(surface));
@@ -586,6 +619,7 @@ impl PhysicalSmokeApp {
             phase,
             quiescent: self.dockspace.is_quiescent(),
             center_merge_verified,
+            redock_layout,
         };
         let fatal_error = self
             .dockspace
@@ -774,6 +808,77 @@ mod tests {
                 .item(CHILD_ITEM)
                 .is_some_and(|item| item.is_selected())
         );
+    }
+
+    #[test]
+    fn redock_observation_distinguishes_center_and_ordered_edge_splits() {
+        assert_eq!(
+            observed_redock_layout(smoke_layout().view()),
+            Some(RedockLayout::Center)
+        );
+        for (axis, first, second, expected) in [
+            (
+                DockspaceAxis::Horizontal,
+                CHILD_ITEM,
+                MAIN_ITEM,
+                PaneEdgeCase::West,
+            ),
+            (
+                DockspaceAxis::Horizontal,
+                MAIN_ITEM,
+                CHILD_ITEM,
+                PaneEdgeCase::East,
+            ),
+            (
+                DockspaceAxis::Vertical,
+                CHILD_ITEM,
+                MAIN_ITEM,
+                PaneEdgeCase::North,
+            ),
+            (
+                DockspaceAxis::Vertical,
+                MAIN_ITEM,
+                CHILD_ITEM,
+                PaneEdgeCase::South,
+            ),
+        ] {
+            let split = DockspaceNode::equal_split(
+                axis,
+                [DockspaceNode::tabs([first]), DockspaceNode::tabs([second])],
+            )
+            .unwrap();
+            let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                ROOT_SURFACE,
+                DockspaceRootLayout::new(MAIN_ROOT, split),
+            )])
+            .unwrap();
+            assert_eq!(
+                observed_redock_layout(layout.view()),
+                Some(RedockLayout::Edge(expected))
+            );
+        }
+        let reversed_center = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            ROOT_SURFACE,
+            DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::tabs([CHILD_ITEM, MAIN_ITEM])),
+        )])
+        .unwrap();
+        assert_eq!(observed_redock_layout(reversed_center.view()), None);
+        let uneven = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            ROOT_SURFACE,
+            DockspaceRootLayout::new(
+                MAIN_ROOT,
+                DockspaceNode::split(
+                    DockspaceAxis::Vertical,
+                    [
+                        (DockspaceNode::tabs([CHILD_ITEM]), 0.4),
+                        (DockspaceNode::tabs([MAIN_ITEM]), 0.6),
+                    ],
+                )
+                .unwrap(),
+            ),
+        )])
+        .unwrap();
+        assert_eq!(observed_redock_layout(uneven.view()), None);
     }
 
     #[test]

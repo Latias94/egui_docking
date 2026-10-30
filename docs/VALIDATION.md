@@ -15,6 +15,63 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 X11 non-guide pane-edge docking
+
+The physical runner now qualifies four additional finite X11/XTest journeys:
+`EGUI_DOCKSPACE_PHYSICAL_TARGET=pane-edge-north`, `pane-edge-south`,
+`pane-edge-east` and `pane-edge-west`. The respective normalized content points
+are (0.30,0.16), (0.30,0.84), (0.84,0.25) and (0.16,0.25). Their physically
+rounded positions must remain inside the named inner-pane basin, outside the
+outer-root band and every actual renderer guide hit. The same checks run again
+before release. No guide fallback or replacement point is allowed.
+
+The target wait now dispatches exact preview validation by the requested basin.
+For this one-pane initial root, an edge preview occupies the corresponding half
+of the workspace after its splitter gap; a center preview still covers pane
+content. The model observation independently identifies the actual layout:
+center requires ordered [Main,Child] tabs, while an edge requires two singleton
+tabs leaves with the expected axis/order and equal weights in the original root.
+The driver requires the observed layout to equal its selected target. Merely
+returning Child to the root cannot pass an incorrect merge or split.
+
+A fresh North red run reproduced the original runner bug in 4.011 seconds:
+`wait_for_pane_center_scene` always called `verify_center_preview`, rejected the
+valid half-root rectangle until its deadline and then performed its explicit
+XTest release cleanup. That release caused a legitimate split and retirement.
+The release was not evidence of a synthetic Winit event or a core docking fault.
+The same real journey passes after the target-aware wait correction; no
+production core, adapter or fork code changes in this slice. Temporary native
+event/early-retirement diagnostic logging has been removed.
+
+Fresh Linux qualification passes all 40 runner tests, all eight real journeys
+(four edge, three center, one guide control), correctness/suspicious Clippy and
+formatting. Each successful journey still checks held source input, a painted
+Dock program before physical release, final model, exact X11 DestroyNotify,
+semantic viewport retirement and quiescence. A viewport step is only a
+pass-progress barrier, not a native release callback receipt or GPU presentation
+proof. The Linux container lacks nextest, so its attempted nextest invocation
+is recorded as unavailable and the actual tests use serial `cargo test`.
+An initial fixture compile error is retained separately from the passing run.
+
+Only the runner's three Rust files differ from the preceding production source
+qualification. Core/public/official/native production gates were not rerun for
+this runner-only change. The eight fresh journeys use the same Linux/arm64,
+Rust 1.95, Xvfb/Openbox, 2-CPU/4-GiB environment, one X screen, scale 1 and
+software GL with one renderer thread. Source hashes and exact commands/results
+are `/tmp/dockspace-physical-edge-snapshot.json`,
+`/tmp/dockspace-physical-edge-qualification.json` and matching logs; the red
+control is `/tmp/dockspace-physical-edge-red.json`.
+
+Qualification still requires the unpublished local egui `70f7b517` and Winit
+`6c10c87d` overrides. A direct tracked-pin check fails because the older remote
+egui/Winit revisions lack the current native host seams; it is not a reproducible
+native checkout. The 1-kHz extension remains center-only and rejects edge targets
+before starting the gesture. This slice closes the finite four-direction
+non-guide edge smoke gap, not tab-half insertion, nested target competition,
+mixed DPI, native stationary capture, maximum-roster/O256 pressure, reducer
+service-time qualification, the native showcase or U9 packaging/pin closure.
+The complete plan and Goal remain open.
+
 ## 2026-10-31 L03 single-batch Burst qualification
 
 The formerly known-invalid egui product Burst gate now passes on the current

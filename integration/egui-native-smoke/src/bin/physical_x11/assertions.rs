@@ -40,6 +40,34 @@ impl PaneCenterCase {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneEdgeCase {
+    North,
+    South,
+    East,
+    West,
+}
+
+impl PaneEdgeCase {
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::North => "pane-edge-north",
+            Self::South => "pane-edge-south",
+            Self::East => "pane-edge-east",
+            Self::West => "pane-edge-west",
+        }
+    }
+
+    const fn fractions(self) -> (f64, f64) {
+        match self {
+            Self::North => (0.30, 0.16),
+            Self::South => (0.30, 0.84),
+            Self::East => (0.84, 0.25),
+            Self::West => (0.16, 0.25),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PaneCenterGeometry {
     pub(super) content: LogicalBounds,
@@ -73,6 +101,7 @@ pub(super) enum PaneCenterError {
     BoundsTooSmall,
     OutsideContent,
     OutsideCenterBasin,
+    OutsideEdgeBasin,
     InsideRootEdgeBand,
     GuideCovered {
         label: &'static str,
@@ -537,6 +566,68 @@ pub(super) fn pane_center_point(
     Ok((physical, point))
 }
 
+pub(super) fn pane_edge_point(
+    case: PaneEdgeCase,
+    geometry: PaneCenterGeometry,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    guides: &[ActualGuideHit],
+) -> Result<(PhysicalPoint, LogicalPoint), PaneCenterError> {
+    let content = geometry.content;
+    let config = dockspace::runtime::DockPresentationConfig::default();
+    let width = content.max_x - content.min_x;
+    let height = content.max_y - content.min_y;
+    if width < config.minimum_pane_size().width() || height < config.minimum_pane_size().height() {
+        return Err(PaneCenterError::BoundsTooSmall);
+    }
+    let (x, y) = case.fractions();
+    let candidate = LogicalPoint {
+        x: content.min_x + width * x,
+        y: content.min_y + height * y,
+    };
+    let physical = viewport_logical_to_desktop(client, pixels_per_point, candidate)
+        .map_err(PaneCenterError::Coordinates)?;
+    let point = desktop_to_viewport_logical(client, pixels_per_point, physical)
+        .map_err(PaneCenterError::Coordinates)?;
+    let margin = 2.0 / f64::from(pixels_per_point);
+    if !client.contains(physical) || !strictly_inside(content, point, margin) {
+        return Err(PaneCenterError::OutsideContent);
+    }
+    let x = (point.x - content.min_x) / width;
+    let y = (point.y - content.min_y) / height;
+    let inset = (1.0 - config.magnetic_center_fraction()) * 0.5;
+    let in_basin = match case {
+        PaneEdgeCase::North => y < inset - margin / height && y < x.min(1.0 - x),
+        PaneEdgeCase::South => 1.0 - y < inset - margin / height && 1.0 - y < x.min(1.0 - x),
+        PaneEdgeCase::East => 1.0 - x < inset - margin / width && 1.0 - x < y.min(1.0 - y),
+        PaneEdgeCase::West => x < inset - margin / width && x < y.min(1.0 - y),
+    };
+    if !in_basin {
+        return Err(PaneCenterError::OutsideEdgeBasin);
+    }
+    let workspace = geometry.workspace;
+    let band = ((workspace.max_x - workspace.min_x).min(workspace.max_y - workspace.min_y)
+        * config.magnetic_outer_band_fraction())
+    .clamp(
+        config.magnetic_outer_band_minimum(),
+        config.magnetic_outer_band_maximum(),
+    );
+    if !strictly_inside(workspace, point, band + margin) {
+        return Err(PaneCenterError::InsideRootEdgeBand);
+    }
+    for guide in guides {
+        let bounds = guide.bounds;
+        if point.x >= bounds.min_x - margin
+            && point.x <= bounds.max_x + margin
+            && point.y >= bounds.min_y - margin
+            && point.y <= bounds.max_y + margin
+        {
+            return Err(PaneCenterError::GuideCovered { label: guide.label });
+        }
+    }
+    Ok((physical, point))
+}
+
 fn strictly_inside(bounds: LogicalBounds, point: LogicalPoint, margin: f64) -> bool {
     point.x > bounds.min_x + margin
         && point.x < bounds.max_x - margin
@@ -549,8 +640,37 @@ pub(super) fn verify_center_preview(
     preview: DockPreviewEmission,
     pixels_per_point: f32,
 ) -> Result<(), PaneCenterError> {
+    verify_preview_bounds(geometry.content, preview, pixels_per_point)
+}
+
+pub(super) fn verify_edge_preview(
+    case: PaneEdgeCase,
+    geometry: PaneCenterGeometry,
+    preview: DockPreviewEmission,
+    pixels_per_point: f32,
+) -> Result<(), PaneCenterError> {
+    // This finite fixture starts with one pane covering the original main root.
+    let mut expected = geometry.workspace;
+    let config = dockspace::runtime::DockPresentationConfig::default();
+    let width =
+        (expected.max_x - expected.min_x - config.splitter_thickness()) * config.dock_fraction();
+    let height =
+        (expected.max_y - expected.min_y - config.splitter_thickness()) * config.dock_fraction();
+    match case {
+        PaneEdgeCase::North => expected.max_y = expected.min_y + height,
+        PaneEdgeCase::South => expected.min_y = expected.max_y - height,
+        PaneEdgeCase::East => expected.min_x = expected.max_x - width,
+        PaneEdgeCase::West => expected.max_x = expected.min_x + width,
+    }
+    verify_preview_bounds(expected, preview, pixels_per_point)
+}
+
+fn verify_preview_bounds(
+    expected: LogicalBounds,
+    preview: DockPreviewEmission,
+    pixels_per_point: f32,
+) -> Result<(), PaneCenterError> {
     let tolerance = 1.5 / f64::from(pixels_per_point);
-    let expected = geometry.content;
     if ![
         preview.bounds.min_x - expected.min_x,
         preview.bounds.min_y - expected.min_y,
@@ -853,6 +973,165 @@ mod tests {
                 Err(PaneCenterError::GuideCovered {
                     label: covered.label
                 })
+            );
+        }
+    }
+
+    #[test]
+    fn pane_edge_cases_preserve_inner_basins_and_exclude_guides_after_rounding() {
+        let geometry = PaneCenterGeometry {
+            content: LogicalBounds {
+                min_x: 0.0,
+                min_y: 28.0,
+                max_x: 720.0,
+                max_y: 520.0,
+            },
+            workspace: LogicalBounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 720.0,
+                max_y: 520.0,
+            },
+        };
+        for scale in [1.0_f32, 1.5, 2.0] {
+            let client = PhysicalBounds {
+                min_x: -360,
+                min_y: 80,
+                max_x: -360 + (720.0 * scale) as i32,
+                max_y: 80 + (520.0 * scale) as i32,
+            };
+            for case in [
+                PaneEdgeCase::North,
+                PaneEdgeCase::South,
+                PaneEdgeCase::East,
+                PaneEdgeCase::West,
+            ] {
+                let (physical, logical) =
+                    pane_edge_point(case, geometry, client, scale, &[]).unwrap();
+                assert_eq!(
+                    desktop_to_viewport_logical(client, scale, physical),
+                    Ok(logical)
+                );
+                let covered = ActualGuideHit {
+                    label: ACTUAL_GUIDE_LABELS[0],
+                    bounds: LogicalBounds {
+                        min_x: logical.x,
+                        min_y: logical.y,
+                        max_x: logical.x + 1.0,
+                        max_y: logical.y + 1.0,
+                    },
+                };
+                assert_eq!(
+                    pane_edge_point(case, geometry, client, scale, &[covered]),
+                    Err(PaneCenterError::GuideCovered {
+                        label: covered.label,
+                    })
+                );
+            }
+        }
+        let short = PaneCenterGeometry {
+            content: LogicalBounds {
+                max_y: 200.0,
+                ..geometry.content
+            },
+            workspace: LogicalBounds {
+                max_y: 200.0,
+                ..geometry.workspace
+            },
+        };
+        assert_eq!(
+            pane_edge_point(
+                PaneEdgeCase::South,
+                short,
+                PhysicalBounds {
+                    min_x: 0,
+                    min_y: 0,
+                    max_x: 720,
+                    max_y: 200,
+                },
+                1.0,
+                &[],
+            ),
+            Err(PaneCenterError::InsideRootEdgeBand)
+        );
+    }
+
+    #[test]
+    fn pane_edge_preview_requires_exact_side_and_half_root_extent() {
+        let geometry = PaneCenterGeometry {
+            content: LogicalBounds {
+                min_x: 0.0,
+                min_y: 28.0,
+                max_x: 720.0,
+                max_y: 520.0,
+            },
+            workspace: LogicalBounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 720.0,
+                max_y: 520.0,
+            },
+        };
+        for (case, bounds) in [
+            (
+                PaneEdgeCase::North,
+                LogicalBounds {
+                    max_y: 259.5,
+                    ..geometry.workspace
+                },
+            ),
+            (
+                PaneEdgeCase::South,
+                LogicalBounds {
+                    min_y: 260.5,
+                    ..geometry.workspace
+                },
+            ),
+            (
+                PaneEdgeCase::East,
+                LogicalBounds {
+                    min_x: 360.5,
+                    ..geometry.workspace
+                },
+            ),
+            (
+                PaneEdgeCase::West,
+                LogicalBounds {
+                    max_x: 359.5,
+                    ..geometry.workspace
+                },
+            ),
+        ] {
+            let preview = DockPreviewEmission { bounds };
+            assert_eq!(verify_edge_preview(case, geometry, preview, 1.5), Ok(()));
+            assert_eq!(
+                verify_center_preview(geometry, preview, 1.5),
+                Err(PaneCenterError::PreviewBoundsMismatch)
+            );
+            assert_eq!(
+                verify_edge_preview(
+                    case,
+                    geometry,
+                    DockPreviewEmission {
+                        bounds: geometry.content,
+                    },
+                    1.5,
+                ),
+                Err(PaneCenterError::PreviewBoundsMismatch)
+            );
+            assert_eq!(
+                verify_edge_preview(
+                    case,
+                    geometry,
+                    DockPreviewEmission {
+                        bounds: LogicalBounds {
+                            min_x: bounds.min_x + 10.0,
+                            ..bounds
+                        },
+                    },
+                    1.5,
+                ),
+                Err(PaneCenterError::PreviewBoundsMismatch)
             );
         }
     }

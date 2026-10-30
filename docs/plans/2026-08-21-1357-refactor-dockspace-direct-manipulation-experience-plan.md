@@ -29,7 +29,8 @@ renderer-neutral public host, local/contained egui behavior, and U3c complete
 single-batch Burst matrix have qualified checkpoints. Optional native completion still requires the remaining
 capacity/service-time and platform matrices, the native showcase, and U9
 dependency/package/documentation closure. The new continuous-X11-input and
-pending-presentation-wake slice is locally qualified; it does not replace
+pending-presentation-wake slice and finite four-direction non-guide edge smoke
+are locally qualified; they do not replace
 those remaining acceptance gates. Open-GPUI and the user's actual engine remain
 outside the completion dependencies. Exact current results and failed attempts
 are recorded in `docs/VALIDATION.md`.
@@ -1759,6 +1760,22 @@ debug, overload, idle-stall and renderer-contention failures remain recorded.
 This finite XTest profile is not hardware polling or the separate 2 ms service,
 maximum-roster/O256, edge/nested/mixed-DPI or automatic stationary qualification.
 See `docs/VALIDATION.md` for exact profile and evidence. U7/U8 remains open.
+
+The finite four-direction X11 pane-edge smoke is locally qualified (2026-10-31).
+North/South/East/West now use physically rounded non-guide inner-pane points,
+exclude the outer-root band and every actual guide hit, and wait for their
+corresponding exact half-root Dock preview. The final model must preserve the
+original root and produce the requested axis/order with two equal-weight
+singleton tabs leaves. The earlier center-only wait caused a bounded timeout
+followed by explicit cleanup release and a legitimate split; it was a runner
+error, not a Winit-synthesized release or core ownership failure. All eight
+finite real journeys and 40 Linux runner tests pass, together with Clippy and
+formatting. Only three runner Rust files change; production source remains
+unchanged from the continuous-input qualification. The 1-kHz extension remains
+center-only. Tab-half insertion, nested targets, mixed DPI, automatic native
+stationary input, maximum-roster/O256 and reducer-service qualification remain
+open. Native reproducibility still requires unpublished local fork overrides;
+U7/U8/U9 and the full Goal are not complete.
 
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
