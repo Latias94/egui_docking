@@ -1777,6 +1777,18 @@ stationary input, maximum-roster/O256 and reducer-service qualification remain
 open. Native reproducibility still requires unpublished local fork overrides;
 U7/U8/U9 and the full Goal are not complete.
 
+The W16 combined-profile model now qualifies its configured maximum roster and
+property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
+roster and 32 original property identities coexist while ordinary input reaches
+its byte allowance. All 32 property terminals and 16 Destroyed callbacks remain
+admissible after ordinary freeze; candidate and whole-batch retirement drops
+retry, and all lifetimes reach quiescence. The new case and three existing
+admission/accepted-release controls pass 4/4 normally and 4/4 without native
+debug assertions, with sampled owned/reserved input data of
+2,325,314/4,194,296 bytes under 4 MiB. Only a test changes. The separate W2/R258
+O256 real-output profile is not combined with this W16 fixture, and other owner
+classes and wall-time service remain subsequent acceptance work.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

@@ -334,3 +334,307 @@ fn combined_model_reuses_one_coordinator_for_ten_thousand_quiescent_lifetimes() 
         peaks.resident, peaks.reserved
     );
 }
+
+#[test]
+fn configured_maximum_roster_and_terminal_fanout_survive_ordinary_freeze_and_retry() {
+    use eframe::{NativeHostHandler, NativeHostWake, NativeViewportPropertyCommandRetirement};
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, PointerEventFacts};
+
+    const WINDOWS: usize = 16;
+    let profile = combined_profile();
+    assert_eq!(
+        profile
+            .input
+            .producer_storage_limit()
+            .unwrap()
+            .binding_slots()
+            .get(),
+        WINDOWS
+    );
+    let layout = DockspaceLayout::new((1..=WINDOWS as u64).map(|id| {
+        DockspaceSurfaceLayout::new(
+            SurfaceId::new(id),
+            DockspaceRootLayout::new(
+                RootId::new(id),
+                DockspaceNode::central_tabs([ItemId::new(id)]),
+            ),
+        )
+    }))
+    .unwrap();
+    let mut native = NativeCoordinator::new_with_combined_storage_limit_and_clock(
+        DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap(),
+        NativePointerRoster::Exact(Vec::new()),
+        profile,
+        dockspace::runtime::NativeMonotonicClock::new(|| std::time::Duration::ZERO),
+    )
+    .unwrap();
+    let context = egui::Context::default();
+    let mut peaks = CapacityPeaks::default();
+    for id in 1..=WINDOWS as u64 {
+        native
+            .register_native_root(SurfaceId::new(id), HostWindowToken::new(id))
+            .unwrap();
+    }
+    let report = commit_boundary(&mut native);
+    let bindings = report.native_bindings().to_vec();
+    assert_eq!(bindings.len(), WINDOWS);
+    drop(report);
+
+    // All configured lifetimes coexist. The fixture issues real fork command
+    // identities but models their retirement; it creates no OS windows or output tokens.
+    let mut routes = Vec::new();
+    let mut commands = Vec::new();
+    let mut retirements = Vec::new();
+    for (index, binding) in bindings.iter().copied().enumerate() {
+        let viewport = if index == 0 {
+            ViewportId::ROOT
+        } else {
+            ViewportId::from_hash_of(("maximum-roster", index))
+        };
+        let window = WindowId::from(100 + index as u64);
+        native.bind_viewport(viewport, window, binding).unwrap();
+        let focus = eframe::prepare_native_viewport_focus(viewport);
+        let visibility = eframe::prepare_native_viewport_visibility(viewport, true);
+        assert!(
+            native
+                .bridge
+                .reserve_focus_callback(viewport, binding, window, focus.token())
+        );
+        assert!(native.bridge.reserve_visibility_callback(
+            viewport,
+            binding,
+            window,
+            visibility.token(),
+            true,
+        ));
+        retirements.extend([
+            NativeViewportPropertyCommandRetirement::Focus {
+                viewport_id: viewport,
+                token: focus.token(),
+            },
+            NativeViewportPropertyCommandRetirement::Visibility {
+                viewport_id: viewport,
+                token: visibility.token(),
+                visible: true,
+            },
+        ]);
+        commands.push((focus, visibility));
+        routes.push((viewport, window, binding));
+        peaks.observe(&native, 0);
+    }
+    assert_eq!(
+        native
+            .bridge
+            .with_viewports(|routes| routes.bindings().count()),
+        WINDOWS
+    );
+    native
+        .bridge
+        .push_viewport_roster(live_roster(bindings.iter().copied()));
+    assert_eq!(
+        native
+            .bridge
+            .front_viewport_roster()
+            .unwrap()
+            .roster()
+            .observation_count(),
+        WINDOWS
+    );
+    let (_, window, binding) = routes[0];
+    let mut accepted = 0;
+    for ordinal in 1..=4_096 {
+        let before = native.bridge.captured_through_for_test();
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+                ordinal,
+                window,
+                Some(ViewportId::ROOT),
+                Some(binding),
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(ordinal as f64, 20.0),
+                    facts: PointerEventFacts::default(),
+                },
+            )));
+        peaks.observe(&native, 0);
+        if native.bridge.captured_through_for_test() == before {
+            break;
+        }
+        accepted += 1;
+    }
+    assert!((1..4_096).contains(&accepted));
+    let frozen = native.bridge.captured_through_for_test();
+    for &retirement in &retirements {
+        assert_eq!(
+            NativeHostHandler::on_viewport_property_command_retired(
+                native.bridge.as_ref(),
+                retirement,
+            ),
+            NativeHostWake::RepaintRootAfterCurrent
+        );
+        peaks.observe(&native, 0);
+    }
+    for (index, &(viewport, window, _)) in routes.iter().enumerate() {
+        let destroyed = native.bridge.with_viewports_mut(|routes| {
+            NativeWindowEventRecord::for_test_ingress(
+                10_000 + index as u64,
+                window,
+                Some(viewport),
+                WindowEvent::Destroyed,
+                routes,
+            )
+        });
+        native
+            .bridge
+            .push_record(HostRecord::WindowEvent(destroyed));
+        peaks.observe(&native, 0);
+    }
+    assert_eq!(
+        native.bridge.captured_through_for_test(),
+        frozen + retirements.len() as u64 + WINDOWS as u64,
+        "every reserved terminal remains admissible after ordinary ingress freezes"
+    );
+
+    let mut dropped = false;
+    let mut retried_roster_commits = 0;
+    let mut cancellations = 0;
+    for _ in 0..128 {
+        let mut budget = test_budget();
+        native
+            .reduce_callback_prefix(&context, &mut budget)
+            .unwrap();
+        let queued_roster = native
+            .queued_snapshot
+            .as_ref()
+            .map(|queued| queued.roster.clone());
+        let version = native.session.version();
+        let recorded = native.session.native_input_recorded_count();
+        let Some(mut frame) = native
+            .poll_host_frame(&mut budget, |_| NativeReceiverAnswer::Unknown)
+            .unwrap()
+        else {
+            assert!(budget.is_exhausted());
+            continue;
+        };
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        if !dropped && let Some(roster) = &queued_roster {
+            assert_eq!(roster.roster().observation_count(), WINDOWS);
+            drop(frame);
+            assert_eq!(native.session.version(), version);
+            assert_eq!(native.session.native_input_recorded_count(), recorded);
+            assert!(native.bridge.callback_boundary_pending());
+            let retained = &native.queued_snapshot.as_ref().unwrap().roster;
+            assert_eq!(retained, roster);
+            assert!(Arc::ptr_eq(
+                retained.shared_roster(),
+                roster.shared_roster()
+            ));
+            dropped = true;
+            continue;
+        }
+        let mut report = frame.commit().unwrap();
+        assert!(report.take_native_effects().is_empty());
+        if queued_roster.is_some() {
+            retried_roster_commits += report
+                .inputs()
+                .iter()
+                .filter(|input| {
+                    matches!(
+                        input,
+                        HostInputOutcome::NativePlatformSnapshotApplied { .. }
+                    )
+                })
+                .count();
+        }
+        native.settle_host_frame_report(&report).unwrap();
+        cancellations += report
+            .inputs()
+            .iter()
+            .filter(|input| matches!(input, HostInputOutcome::NativeInputCancelledForOverload))
+            .count();
+        peaks.observe(&native, 0);
+        if cancellations == 1
+            && !native.bridge.has_pending_callback_records()
+            && !native.session.has_pending_native_input()
+        {
+            break;
+        }
+    }
+    assert!(dropped);
+    assert_eq!(retried_roster_commits, 1);
+    assert_eq!(cancellations, 1);
+    assert_eq!(
+        native.lifecycle_progress().destroyed_observations(),
+        WINDOWS as u64
+    );
+    assert!(!native.bridge.has_pending_callback_records());
+    assert!(!native.session.has_pending_native_input());
+
+    reset_layout(&mut native, DockspaceLayout::empty(), false);
+    native
+        .bridge
+        .with_retirement_destroyed_observations(|count, entries, _, _| {
+            assert_eq!(count, WINDOWS);
+            let observed: Vec<_> = entries.map(|(binding, _)| binding).collect();
+            assert!(bindings.iter().all(|binding| observed.contains(binding)));
+        });
+    native.bridge.push_terminal_viewport_roster(live_roster([]));
+    assert!(
+        native
+            .reduce_callback_prefix(&context, &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    drop(commit_boundary(&mut native));
+    let prepared = native.prepare_committed_retirements().unwrap().unwrap();
+    drop(prepared);
+    assert_eq!(
+        native
+            .bridge
+            .with_viewports(|routes| routes.bindings().count()),
+        WINDOWS,
+        "dropping the full retirement preparation keeps every exact route retryable"
+    );
+    let prepared = native.prepare_committed_retirements().unwrap().unwrap();
+    assert!(native.commit_retirements(prepared).is_empty());
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    drop(commit_boundary(&mut native));
+    // The next prelude releases the committed quiescence prefix and its core guards.
+    drop(commit_boundary(&mut native));
+    assert!(!native.session.has_pending_native_input());
+    for &(_, _, binding) in &routes {
+        assert!(!native.session.recognizes_native_binding(binding));
+        assert!(!native.binding_has_retained_host_references(binding));
+    }
+    for retirement in retirements {
+        assert_eq!(
+            NativeHostHandler::on_viewport_property_command_retired(
+                native.bridge.as_ref(),
+                retirement,
+            ),
+            NativeHostWake::Wait
+        );
+    }
+    assert_eq!(
+        native.lifecycle_progress().quiescent_retirements(),
+        WINDOWS as u64
+    );
+    assert_eq!(
+        native
+            .bridge
+            .with_viewports(|routes| routes.bindings().count()),
+        0
+    );
+    assert!(native.is_quiescent());
+    peaks.observe(&native, 0);
+    eprintln!(
+        "maximum-roster: windows={WINDOWS}, command_terminals={}, destroyed={WINDOWS}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
+        commands.len() * 2,
+        peaks.resident,
+        peaks.reserved
+    );
+}

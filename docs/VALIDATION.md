@@ -15,6 +15,54 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 configured maximum roster and terminal fanout
+
+The existing 4 MiB combined model profile now runs with all 16 configured
+binding lifetimes simultaneously. Its complete 16-window roster coexists with
+ordinary ingress and 32 reserved property callback receipts: one real fork-issued
+focus identity and one visibility identity per window. Ordinary capacity accepts
+1,360 raw cursor records before freezing. After that freeze, all 32 exact command
+retirements and 16 original Destroyed callbacks still obtain their reserved
+ordered ingress. No extra ordinary record, OS window or eframe output token is
+fabricated for those terminals.
+
+The candidate holding the transferred 16-window roster is dropped and retried
+with unchanged published version/recorded input and the same complete envelope
+and shared payload; the matching snapshot publishes exactly once. The preceding
+empty freeze boundary cannot satisfy that retry check. Every accepted terminal
+drains through the existing budgeted coordinator path, followed by exactly one
+overload cancellation.
+Application layout removal retires core authority, the existing protected
+terminal roster publishes all 16 destroyed tombstones, and a dropped whole-batch
+route-retirement preparation preserves every route for its retry. Quiescence
+then removes all 16 recognized bindings and retained host references; the
+following empty prelude also retires the committed quiescence prefix and core
+guards. Repeated property terminals are inert. Independent review caught the
+initial empty-frame drop and missing final reclamation boundary; the final
+qualification reruns both corrected paths.
+
+The maximum-roster case and three adjacent admission/accepted-release controls
+pass 4/4 normally and 4/4 without native debug assertions on macOS. Both runs
+sample 2,325,314 owned / 4,194,296 reserved bytes under the unchanged
+4,194,304-byte allowance. The new maximum-roster case also passes 1/1 normally
+and 1/1 without native debug assertions on Linux/arm64, sampling 2,325,282 owned /
+4,194,288 reserved bytes with the same 1,360-record boundary.
+This is owned input-data capacity, excluding allocator metadata,
+workspace/renderer state and fixture allocations. The constant injected clock
+isolates capacity from the independent age and wall-time budgets. Clippy,
+formatting and patch integrity pass. Only one existing test file changes;
+production source and earlier real-window qualifications are retained rather
+than rerun. Source and exact commands/results are at
+`/tmp/dockspace-maximum-roster-snapshot.json`,
+`/tmp/dockspace-maximum-roster-qualification.json` and matching logs.
+
+This closes the W16 profile's concurrent roster/property/Destroyed model boundary.
+It does not combine the separate W2/R258 O256 real-output profile with maximum
+roster pressure, fill close/create owner classes, prove active-release semantics
+for this cursor-only fixture, or establish OS callback timing and the 2 ms
+reducer-service boundary. The adjacent accepted-release case retains its own
+one-window evidence. Full U7/U8/U9 remains open.
+
 ## 2026-10-31 X11 non-guide pane-edge docking
 
 The physical runner now qualifies four additional finite X11/XTest journeys:
