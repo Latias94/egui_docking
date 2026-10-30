@@ -182,6 +182,18 @@ nested targets, mixed DPI or high-rate edge docking.
 
 ### Configured-capacity model evidence
 
+The [terminal-guard correction](VALIDATION.md#2026-10-31-terminal-guards-for-never-created-native-bindings)
+extends the existing cleanup owner to proven never-created bindings. Binding
+publication and Create delivery remain separate facts, so a published Pending
+binding still retains its producer obligation when report backpressure delays
+the effect. Cancellation, reset and replacement discard preserve exact-provider
+quiescence without manufacturing Destroyed observations. The finite W4/A1,
+E1, M4/C0/L2 close/create combination passes on macOS and Linux normally and
+without adapter debug assertions, under 4 MiB. It qualifies actual cancellation
+and Failed candidate retry, exact per-owner successor promotion and full
+reclamation in the coordinator model. It does not claim real OS close/create
+or simultaneously fill every owner class.
+
 The [2026-10-31 maximum-roster record](VALIDATION.md#2026-10-31-configured-maximum-roster-and-terminal-fanout)
 adds a focused W16 model qualification in the existing
 [`combined_soak.rs`](../crates/egui_dockspace_native/src/coordinator/tests/combined_soak.rs)

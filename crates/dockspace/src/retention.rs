@@ -9,7 +9,7 @@ use crate::presentation_observation::{HostFrameKey, HostPresentationStreamId};
 /// This enum is not a proof or a compaction capability. These barriers are protocol facts, not
 /// timers or capacity policies. Joined backend replacement discharges pointer, effect-provider,
 /// and every remaining platform-observation barrier by consuming the sole recorder. A long-lived
-/// joined provider may release one destroyed binding earlier through a core-committed affine
+/// joined provider may release one terminal binding earlier through a core-committed affine
 /// prefix-retirement receipt. Published terminal effect and close detail is compacted on the next
 /// atomic engine candidate; monotonic identity frontiers continue to classify late replay without
 /// retaining the payload.
@@ -19,7 +19,7 @@ pub enum RuntimeRetentionReleaseBarrier {
     EffectIngressQuiesced,
     /// The producer was joined and no prepared journal for the retired lease can still commit.
     PointerIngressQuiesced,
-    /// No accepted platform snapshot can still contain facts for the destroyed binding.
+    /// No accepted platform snapshot can still contain facts for the terminal binding.
     ///
     /// This is proven either by complete provider drain or by one binding-scoped quiescence record
     /// entering a reclaimed, core-committed backend prefix. Snapshot absence, generation advance,
@@ -289,13 +289,13 @@ impl PointerRetentionManifest {
     }
 }
 
-/// Retained native-binding cleanup state, indexes, and destroyed-incarnation guards.
+/// Retained native-binding cleanup state, indexes, and terminal-incarnation guards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BindingRetentionManifest {
     active_cleanup_obligations: usize,
     token_index_entries: usize,
     cleanup_lineage_entries: usize,
-    destroyed_binding_guards: usize,
+    terminal_binding_guards: usize,
     surface_authority_generations: usize,
 }
 
@@ -362,13 +362,13 @@ impl BindingRetentionManifest {
         active_cleanup_obligations: usize,
         token_index_entries: usize,
         cleanup_lineage_entries: usize,
-        destroyed_binding_guards: usize,
+        terminal_binding_guards: usize,
     ) -> Self {
         Self {
             active_cleanup_obligations,
             token_index_entries,
             cleanup_lineage_entries,
-            destroyed_binding_guards,
+            terminal_binding_guards,
             surface_authority_generations: 0,
         }
     }
@@ -399,10 +399,12 @@ impl BindingRetentionManifest {
         self.cleanup_lineage_entries
     }
 
-    /// Returns exact destroyed binding incarnations retained against delayed snapshots.
+    /// Returns exact terminal binding incarnations retained against delayed snapshots.
+    ///
+    /// Includes observed destruction and proven never-created failures or cancellation.
     #[must_use]
-    pub const fn destroyed_binding_guards(self) -> usize {
-        self.destroyed_binding_guards
+    pub const fn terminal_binding_guards(self) -> usize {
+        self.terminal_binding_guards
     }
 
     /// Returns per-surface coordinate-authority frontiers retained against headless ABA.
@@ -417,14 +419,14 @@ impl BindingRetentionManifest {
         self.active_cleanup_obligations
             + self.token_index_entries
             + self.cleanup_lineage_entries
-            + self.destroyed_binding_guards
+            + self.terminal_binding_guards
             + self.surface_authority_generations
     }
 
-    /// Returns the proof required before destroyed binding guards may be compacted.
+    /// Returns the proof required before terminal binding guards may be compacted.
     #[must_use]
     pub const fn terminal_release_barrier(self) -> Option<RuntimeRetentionReleaseBarrier> {
-        if self.destroyed_binding_guards > 0 {
+        if self.terminal_binding_guards > 0 {
             Some(RuntimeRetentionReleaseBarrier::PlatformObservationIngressQuiesced)
         } else {
             None

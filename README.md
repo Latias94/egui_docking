@@ -79,6 +79,14 @@ the host still supplies fresh native facts. Automatic reference-adapter wakes,
 OS stationary/Touch observation and the complete native readiness matrix remain
 unfinished.
 
+Native binding retention now uses `terminal_binding_guards()` in the diagnostic
+manifest. It covers observed destruction and conclusively never-created
+bindings, including a published Pending binding cancelled before its Create
+effect could be delivered. The previous `destroyed_binding_guards()` name and
+destroyed-only missing/provider-mismatch error variants are replaced. Exact
+producer quiescence and committed-prefix retirement still own guard release;
+there is no synthetic Destroyed observation for a failed create.
+
 The experimental native adapter reserves 4,096 raw callback slots and two
 reusable complete-roster payloads. It admits at most 256 simultaneously retained
 native binding lifetimes, including pending retirement; a route/create pair

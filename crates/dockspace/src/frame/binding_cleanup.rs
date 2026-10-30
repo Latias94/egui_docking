@@ -357,6 +357,19 @@ impl BindingCleanupTerminal {
         self.retirement.retained_staging_resource
     }
 
+    pub(super) const fn uncreated_effect(&self) -> Option<EffectId> {
+        if !self.retirement.observed && !self.retirement.may_reappear {
+            match self.retirement.cleanup {
+                BindingCleanupAction::CompensateCreate { create } => Some(create),
+                BindingCleanupAction::ReleaseOwnedWindow | BindingCleanupAction::KeepExternal => {
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
     pub(super) const fn recovery_cleanup_completion(
         &self,
     ) -> Option<RecoveryReplacementCleanupCompletion> {
@@ -402,10 +415,10 @@ pub(super) enum BindingCleanupError {
     CleanupPurposeMismatch {
         binding: ViewportBinding,
     },
-    DestroyedTombstoneMissing {
+    TerminalBindingGuardMissing {
         binding: ViewportBinding,
     },
-    DestroyedTombstoneProviderMismatch {
+    TerminalBindingGuardProviderMismatch {
         binding: ViewportBinding,
         expected: PlatformObservationLease,
         submitted: PlatformObservationLease,
@@ -418,8 +431,8 @@ pub(super) struct BindingCleanupLifecycle {
     entries: BTreeMap<ViewportBinding, BindingRetirement>,
     by_token: BTreeMap<WindowToken, ViewportBinding>,
     by_cleanup_effect: BTreeMap<EffectId, ViewportBinding>,
-    destroyed_tombstones: BTreeSet<ViewportBinding>,
-    destroyed_tombstone_providers: BTreeMap<ViewportBinding, PlatformObservationLease>,
+    terminal_binding_guards: BTreeSet<ViewportBinding>,
+    terminal_binding_guard_providers: BTreeMap<ViewportBinding, PlatformObservationLease>,
 }
 
 impl BindingCleanupLifecycle {
@@ -492,15 +505,15 @@ impl BindingCleanupLifecycle {
     /// window token is not such a proof.
     pub(super) fn retention_manifest(&self) -> BindingRetentionManifest {
         debug_assert_eq!(
-            self.destroyed_tombstones.len(),
-            self.destroyed_tombstone_providers.len(),
-            "every destroyed binding guard retains its exact observation producer"
+            self.terminal_binding_guards.len(),
+            self.terminal_binding_guard_providers.len(),
+            "every terminal binding guard retains its exact observation producer"
         );
         BindingRetentionManifest::new(
             self.entries.len(),
             self.by_token.len(),
             self.by_cleanup_effect.len(),
-            self.destroyed_tombstones.len(),
+            self.terminal_binding_guards.len(),
         )
     }
 
@@ -1088,65 +1101,66 @@ impl BindingCleanupLifecycle {
         binding: ViewportBinding,
         provider: PlatformObservationLease,
     ) -> Option<BindingCleanupTerminal> {
-        self.record_destroyed_tombstone(binding, provider);
+        self.record_terminal_binding_guard(binding, provider);
         self.finish(binding)
     }
 
-    pub(super) fn record_destroyed_tombstone(
+    pub(super) fn record_terminal_binding_guard(
         &mut self,
         binding: ViewportBinding,
         provider: PlatformObservationLease,
     ) {
-        self.destroyed_tombstones.insert(binding);
-        self.destroyed_tombstone_providers.insert(binding, provider);
+        self.terminal_binding_guards.insert(binding);
+        self.terminal_binding_guard_providers
+            .insert(binding, provider);
     }
 
     /// Releases guards owned by one producer after its observation lane has quiesced.
-    pub(super) fn compact_destroyed_tombstones_from(
+    pub(super) fn compact_terminal_binding_guards_from(
         &mut self,
         provider: PlatformObservationLease,
     ) -> usize {
         let compacted = self
-            .destroyed_tombstone_providers
+            .terminal_binding_guard_providers
             .iter()
             .filter_map(|(binding, owner)| (*owner == provider).then_some(*binding))
             .collect::<Vec<_>>();
         for binding in &compacted {
-            self.destroyed_tombstone_providers.remove(binding);
-            self.destroyed_tombstones.remove(binding);
+            self.terminal_binding_guard_providers.remove(binding);
+            self.terminal_binding_guards.remove(binding);
         }
         compacted.len()
     }
 
     /// Releases one exact guard after its producer-bound ingress lane quiesces.
-    pub(super) fn compact_destroyed_tombstone(
+    pub(super) fn compact_terminal_binding_guard(
         &mut self,
         binding: ViewportBinding,
         provider: PlatformObservationLease,
     ) -> Result<(), BindingCleanupError> {
         let expected = self
-            .destroyed_tombstone_providers
+            .terminal_binding_guard_providers
             .get(&binding)
             .copied()
-            .ok_or(BindingCleanupError::DestroyedTombstoneMissing { binding })?;
+            .ok_or(BindingCleanupError::TerminalBindingGuardMissing { binding })?;
         if expected != provider {
-            return Err(BindingCleanupError::DestroyedTombstoneProviderMismatch {
+            return Err(BindingCleanupError::TerminalBindingGuardProviderMismatch {
                 binding,
                 expected,
                 submitted: provider,
             });
         }
-        self.destroyed_tombstone_providers.remove(&binding);
-        self.destroyed_tombstones.remove(&binding);
+        self.terminal_binding_guard_providers.remove(&binding);
+        self.terminal_binding_guards.remove(&binding);
         Ok(())
     }
 
-    pub(super) fn destroyed_bindings(&self) -> &BTreeSet<ViewportBinding> {
-        &self.destroyed_tombstones
+    pub(super) fn terminal_bindings(&self) -> &BTreeSet<ViewportBinding> {
+        &self.terminal_binding_guards
     }
 
-    pub(super) fn was_destroyed(&self, binding: ViewportBinding) -> bool {
-        self.destroyed_tombstones.contains(&binding)
+    pub(super) fn is_terminal(&self, binding: ViewportBinding) -> bool {
+        self.terminal_binding_guards.contains(&binding)
     }
 
     #[cfg(test)]

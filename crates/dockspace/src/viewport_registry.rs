@@ -693,14 +693,14 @@ impl ViewportRegistry {
         snapshot: &PlatformSnapshot,
         inventory: Option<&[ViewportBinding]>,
         retired_bindings: &BTreeSet<ViewportBinding>,
-        destroyed_tombstones: &BTreeSet<ViewportBinding>,
+        terminal_binding_guards: &BTreeSet<ViewportBinding>,
     ) -> Result<RegistryTransition, ViewportRegistryError> {
         let mut candidate = self.clone();
         let transition = candidate.apply_snapshot_in_place(
             snapshot,
             inventory,
             retired_bindings,
-            destroyed_tombstones,
+            terminal_binding_guards,
         )?;
         *self = candidate;
         Ok(transition)
@@ -868,9 +868,9 @@ impl ViewportRegistry {
         snapshot: &PlatformSnapshot,
         inventory: Option<&[ViewportBinding]>,
         retired_bindings: &BTreeSet<ViewportBinding>,
-        destroyed_tombstones: &BTreeSet<ViewportBinding>,
+        terminal_binding_guards: &BTreeSet<ViewportBinding>,
     ) -> Result<RegistryTransition, ViewportRegistryError> {
-        self.validate_snapshot_bindings(snapshot, retired_bindings, destroyed_tombstones)?;
+        self.validate_snapshot_bindings(snapshot, retired_bindings, terminal_binding_guards)?;
         let generation = self
             .inventory_generation
             .checked_next()
@@ -1050,7 +1050,7 @@ impl ViewportRegistry {
         &self,
         snapshot: &PlatformSnapshot,
         retired_bindings: &BTreeSet<ViewportBinding>,
-        destroyed_tombstones: &BTreeSet<ViewportBinding>,
+        terminal_binding_guards: &BTreeSet<ViewportBinding>,
     ) -> Result<(), ViewportRegistryError> {
         for window in snapshot.window_observations() {
             self.validate_live_observed_binding(window.binding(), retired_bindings)?;
@@ -1059,7 +1059,7 @@ impl ViewportRegistry {
             self.validate_close_observed_binding(
                 *observation,
                 retired_bindings,
-                destroyed_tombstones,
+                terminal_binding_guards,
             )?;
         }
         Ok(())
@@ -1086,10 +1086,10 @@ impl ViewportRegistry {
         &self,
         observation: WindowCloseObservation,
         retired_bindings: &BTreeSet<ViewportBinding>,
-        destroyed_tombstones: &BTreeSet<ViewportBinding>,
+        terminal_binding_guards: &BTreeSet<ViewportBinding>,
     ) -> Result<(), ViewportRegistryError> {
         if observation.known_state() == Some(WindowCloseState::Destroyed)
-            && destroyed_tombstones.contains(&observation.binding())
+            && terminal_binding_guards.contains(&observation.binding())
         {
             return Ok(());
         }
@@ -1669,13 +1669,13 @@ mod tests {
         registry: &mut ViewportRegistry,
         snapshot: &PlatformSnapshot,
         retired_bindings: &BTreeSet<ViewportBinding>,
-        destroyed_tombstones: &BTreeSet<ViewportBinding>,
+        terminal_binding_guards: &BTreeSet<ViewportBinding>,
     ) -> Result<RegistryTransition, ViewportRegistryError> {
         registry.apply_snapshot_with_retired_bindings(
             snapshot,
             snapshot.inventory_observation().known_roster(),
             retired_bindings,
-            destroyed_tombstones,
+            terminal_binding_guards,
         )
     }
 

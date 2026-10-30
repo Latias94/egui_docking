@@ -625,23 +625,23 @@ impl ViewportCoordinator {
         Ok(())
     }
 
-    /// Compacts destroyed-binding guards after the exact observation producer has quiesced.
-    pub(crate) fn compact_quiesced_destroyed_binding_guards(
+    /// Compacts terminal-binding guards after the exact observation producer has quiesced.
+    pub(crate) fn compact_quiesced_terminal_binding_guards(
         &mut self,
         provider: PlatformObservationLease,
     ) -> usize {
         self.binding_cleanup
-            .compact_destroyed_tombstones_from(provider)
+            .compact_terminal_binding_guards_from(provider)
     }
 
     /// Compacts one exact binding guard after its joined producer lane proves quiescence.
-    pub(crate) fn compact_quiesced_destroyed_binding_guard(
+    pub(crate) fn compact_quiesced_terminal_binding_guard(
         &mut self,
         binding: ViewportBinding,
         provider: PlatformObservationLease,
     ) -> Result<(), ViewportCoordinatorError> {
         self.binding_cleanup
-            .compact_destroyed_tombstone(binding, provider)
+            .compact_terminal_binding_guard(binding, provider)
             .map_err(binding_cleanup_error)
     }
 
@@ -651,17 +651,17 @@ impl ViewportCoordinator {
             .record(binding.surface())
             .is_some_and(|record| record.binding() == binding)
             || self.binding_cleanup.contains_key(&binding)
-            || self.binding_cleanup.was_destroyed(binding)
+            || self.binding_cleanup.is_terminal(binding)
     }
 
     #[cfg(test)]
-    pub(crate) fn record_destroyed_binding_guard_for_test(
+    pub(crate) fn record_terminal_binding_guard_for_test(
         &mut self,
         binding: ViewportBinding,
         provider: PlatformObservationLease,
     ) {
         self.binding_cleanup
-            .record_destroyed_tombstone(binding, provider);
+            .record_terminal_binding_guard(binding, provider);
     }
 
     /// Releases the exact revoked effect-provider guard proven quiescent by backend drain.
@@ -1338,6 +1338,9 @@ impl ViewportCoordinator {
                 {
                     self.release_native_staging_resource(resource, owner)?;
                 }
+                if let Some(create) = staging.and_then(|staging| staging.creation_effect) {
+                    self.retain_uncreated_binding_guard(binding, create);
+                }
                 continue;
             }
             let status = existing_effect
@@ -1508,6 +1511,9 @@ impl ViewportCoordinator {
                 Ok(Some(effect))
             }
             BindingCleanupDirective::Finish(terminal) => {
+                if let Some(create) = terminal.uncreated_effect() {
+                    self.retain_uncreated_binding_guard(terminal.binding(), create);
+                }
                 self.finish_binding_cleanup(terminal)?;
                 Ok(None)
             }
@@ -1682,7 +1688,7 @@ impl ViewportCoordinator {
                 snapshot,
                 inventory,
                 &retired_bindings,
-                candidate.binding_cleanup.destroyed_bindings(),
+                candidate.binding_cleanup.terminal_bindings(),
             )
             .map_err(ViewportCoordinatorError::Registry)?;
         for binding in registry.events().iter().filter_map(|event| match event {
@@ -1696,7 +1702,7 @@ impl ViewportCoordinator {
         }) {
             candidate
                 .binding_cleanup
-                .record_destroyed_tombstone(binding, provider);
+                .record_terminal_binding_guard(binding, provider);
             candidate.terminate_pointer_passthrough_binding(binding);
         }
         candidate.reconcile_binding_cleanups(provider, snapshot)?;
@@ -2953,6 +2959,9 @@ impl ViewportCoordinator {
         let indeterminate = matches!(result, EffectDispatchResult::Indeterminate(_));
         let replacement_was_discarded = !indeterminate
             && replacement.is_some_and(|binding| self.registry.discard_unobserved(binding).is_ok());
+        if replacement_was_discarded && let Some(binding) = replacement {
+            self.retain_uncreated_binding_guard(binding, effect);
+        }
         let observed = self.recovery_replacements.observe_replacement_dispatch(
             surface,
             effect,
@@ -3097,7 +3106,7 @@ impl ViewportCoordinator {
     }
 
     fn vacancy_binding_has_terminal_owner(&self, binding: ViewportBinding) -> bool {
-        self.binding_cleanup.was_destroyed(binding) || self.binding_cleanup.contains_key(&binding)
+        self.binding_cleanup.is_terminal(binding) || self.binding_cleanup.contains_key(&binding)
     }
 
     /// Reconciles native resources against exact tick-start binding authority.
@@ -3330,6 +3339,15 @@ impl ViewportCoordinator {
 
     pub(crate) fn mark_effect_boundary_published(&mut self) {
         self.effects.mark_boundary_published();
+        if let Some(provider) = self.platform_provider() {
+            let registry = &self.registry;
+            self.effects
+                .mark_creation_bindings_published(provider, |binding| {
+                    registry
+                        .record(binding.surface())
+                        .is_some_and(|record| record.binding() == binding)
+                });
+        }
     }
 
     pub(crate) fn binding_retention_manifest(&self) -> BindingRetentionManifest {
@@ -3347,7 +3365,7 @@ impl ViewportCoordinator {
         retained.extend(self.binding_cleanup.keys().map(|binding| binding.surface()));
         retained.extend(
             self.binding_cleanup
-                .destroyed_bindings()
+                .terminal_bindings()
                 .iter()
                 .map(|binding| binding.surface()),
         );
@@ -3881,14 +3899,14 @@ fn binding_cleanup_error(error: BindingCleanupError) -> ViewportCoordinatorError
         BindingCleanupError::CleanupWindowNotObserved { effect } => {
             ViewportCoordinatorError::CleanupWindowNotObserved { effect }
         }
-        BindingCleanupError::DestroyedTombstoneMissing { binding } => {
-            ViewportCoordinatorError::DestroyedBindingGuardMissing { binding }
+        BindingCleanupError::TerminalBindingGuardMissing { binding } => {
+            ViewportCoordinatorError::TerminalBindingGuardMissing { binding }
         }
-        BindingCleanupError::DestroyedTombstoneProviderMismatch {
+        BindingCleanupError::TerminalBindingGuardProviderMismatch {
             binding,
             expected,
             submitted,
-        } => ViewportCoordinatorError::DestroyedBindingGuardProviderMismatch {
+        } => ViewportCoordinatorError::TerminalBindingGuardProviderMismatch {
             binding,
             expected,
             submitted,
@@ -4038,12 +4056,12 @@ pub enum ViewportCoordinatorError {
     },
     #[error("destroyed viewport binding is still observed: {binding:?}")]
     DestroyedSurfaceStillObserved { binding: ViewportBinding },
-    #[error("destroyed binding retention guard is missing for {binding:?}")]
-    DestroyedBindingGuardMissing { binding: ViewportBinding },
+    #[error("terminal binding retention guard is missing for {binding:?}")]
+    TerminalBindingGuardMissing { binding: ViewportBinding },
     #[error(
-        "destroyed binding guard {binding:?} belongs to provider {expected:?}, not {submitted:?}"
+        "terminal binding guard {binding:?} belongs to provider {expected:?}, not {submitted:?}"
     )]
-    DestroyedBindingGuardProviderMismatch {
+    TerminalBindingGuardProviderMismatch {
         binding: ViewportBinding,
         expected: PlatformObservationLease,
         submitted: PlatformObservationLease,

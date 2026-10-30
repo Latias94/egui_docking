@@ -133,37 +133,40 @@ fn provider_replacement_rebases_retired_binding_observation_generations() {
 }
 
 #[test]
-fn quiesced_producer_compacts_only_its_destroyed_binding_guards() {
+fn quiesced_producer_compacts_only_its_terminal_binding_guards() {
     let mut lifecycle = BindingCleanupLifecycle::default();
     let (first, second) = provider_pair();
 
     for token in 1..=10_000 {
         let provider = if token <= 6_000 { first } else { second };
-        lifecycle.record_destroyed_tombstone(binding(1, token), provider);
+        lifecycle.record_terminal_binding_guard(binding(1, token), provider);
     }
 
     let retention = lifecycle.retention_manifest();
     assert_eq!(retention.active_cleanup_obligations(), 0);
     assert_eq!(retention.token_index_entries(), 0);
     assert_eq!(retention.cleanup_lineage_entries(), 0);
-    assert_eq!(retention.destroyed_binding_guards(), 10_000);
+    assert_eq!(retention.terminal_binding_guards(), 10_000);
     assert_eq!(retention.retained_structure_count(), 10_000);
     assert_eq!(
         retention.terminal_release_barrier(),
         Some(crate::retention::RuntimeRetentionReleaseBarrier::PlatformObservationIngressQuiesced),
     );
 
-    assert_eq!(lifecycle.compact_destroyed_tombstones_from(first), 6_000);
+    assert_eq!(lifecycle.compact_terminal_binding_guards_from(first), 6_000);
     assert_eq!(
-        lifecycle.retention_manifest().destroyed_binding_guards(),
+        lifecycle.retention_manifest().terminal_binding_guards(),
         4_000
     );
-    assert!(lifecycle.was_destroyed(binding(1, 6_001)));
-    assert!(!lifecycle.was_destroyed(binding(1, 6_000)));
+    assert!(lifecycle.is_terminal(binding(1, 6_001)));
+    assert!(!lifecycle.is_terminal(binding(1, 6_000)));
 
-    assert_eq!(lifecycle.compact_destroyed_tombstones_from(first), 0);
-    assert_eq!(lifecycle.compact_destroyed_tombstones_from(second), 4_000);
-    assert_eq!(lifecycle.retention_manifest().destroyed_binding_guards(), 0);
+    assert_eq!(lifecycle.compact_terminal_binding_guards_from(first), 0);
+    assert_eq!(
+        lifecycle.compact_terminal_binding_guards_from(second),
+        4_000
+    );
+    assert_eq!(lifecycle.retention_manifest().terminal_binding_guards(), 0);
     assert_eq!(
         lifecycle.retention_manifest().terminal_release_barrier(),
         None
@@ -175,33 +178,33 @@ fn exact_quiescence_compacts_same_provider_guards_without_cross_binding_fallthro
     let mut lifecycle = BindingCleanupLifecycle::default();
     let (provider, foreign_provider) = provider_pair();
     for token in 1..=10_000 {
-        lifecycle.record_destroyed_tombstone(binding(1, token), provider);
+        lifecycle.record_terminal_binding_guard(binding(1, token), provider);
     }
 
     let first = binding(1, 1);
     assert_eq!(
         lifecycle
-            .compact_destroyed_tombstone(first, foreign_provider)
+            .compact_terminal_binding_guard(first, foreign_provider)
             .expect_err("a foreign provider cannot compact the exact guard"),
-        BindingCleanupError::DestroyedTombstoneProviderMismatch {
+        BindingCleanupError::TerminalBindingGuardProviderMismatch {
             binding: first,
             expected: provider,
             submitted: foreign_provider,
         }
     );
-    assert!(lifecycle.was_destroyed(first));
+    assert!(lifecycle.is_terminal(first));
 
     for token in 1..=10_000 {
         lifecycle
-            .compact_destroyed_tombstone(binding(1, token), provider)
+            .compact_terminal_binding_guard(binding(1, token), provider)
             .expect("each exact producer proof must compact one guard");
     }
-    assert_eq!(lifecycle.retention_manifest().destroyed_binding_guards(), 0);
+    assert_eq!(lifecycle.retention_manifest().terminal_binding_guards(), 0);
     assert_eq!(
         lifecycle
-            .compact_destroyed_tombstone(first, provider)
+            .compact_terminal_binding_guard(first, provider)
             .expect_err("one exact proof cannot compact twice"),
-        BindingCleanupError::DestroyedTombstoneMissing { binding: first },
+        BindingCleanupError::TerminalBindingGuardMissing { binding: first },
     );
 }
 
@@ -222,7 +225,7 @@ fn retention_accounts_for_active_quarantine_and_cleanup_indexes() {
     assert_eq!(retention.active_cleanup_obligations(), 1);
     assert_eq!(retention.token_index_entries(), 1);
     assert_eq!(retention.cleanup_lineage_entries(), 1);
-    assert_eq!(retention.destroyed_binding_guards(), 0);
+    assert_eq!(retention.terminal_binding_guards(), 0);
     assert_eq!(retention.retained_structure_count(), 3);
     assert_eq!(retention.terminal_release_barrier(), None);
 }
@@ -370,7 +373,7 @@ fn terminal_destruction_releases_token_and_complete_cleanup_lineage() {
         .finish_destroyed(binding, provider)
         .expect("exact destruction must finish the retirement");
     assert_eq!(terminal.binding(), binding);
-    assert!(lifecycle.was_destroyed(binding));
+    assert!(lifecycle.is_terminal(binding));
     assert!(!lifecycle.token_is_reserved(binding.token()));
     assert_eq!(
         lifecycle

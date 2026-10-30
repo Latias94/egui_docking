@@ -767,7 +767,7 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
     assert_eq!(
         (
             binding_retention.active_cleanup_obligations(),
-            binding_retention.destroyed_binding_guards(),
+            binding_retention.terminal_binding_guards(),
         ),
         (0, 1),
         "the destroyed snapshot finishes cleanup while retaining its exact producer guard",
@@ -783,7 +783,7 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
             .engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         0,
         "the following boundary reclaims the committed guard",
     );
@@ -848,7 +848,7 @@ fn destroyed_fact_can_acknowledge_the_exact_destructive_effect() {
 }
 
 #[test]
-fn retired_binding_accepts_only_an_exact_destroyed_tombstone() {
+fn retired_binding_accepts_only_an_exact_terminal_binding_guard() {
     let (mut session, binding) = native_root_session();
     let native = session
         .native

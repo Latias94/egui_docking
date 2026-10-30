@@ -1822,6 +1822,25 @@ All ten finite X11 journeys and 42 runner tests pass, along with 70 adapter,
 gap, not clipped/overflow insertion, nested/mixed-DPI or remaining native
 qualification. Exact evidence is recorded in `docs/VALIDATION.md`.
 
+The finite close/create follow-up exposed missing core terminal guards for
+never-created incarnations. The correction reuses existing cleanup indexes and
+exact-provider quiescence, including published Pending bindings whose Create
+delivery is delayed by report backpressure. One provider tag in the existing
+effect row records actual binding publication independently from emission;
+same-candidate cancellation retains no external obligation. Failed create,
+replacement discard, cancellation and layout-reset retirement share this
+boundary, including restore's never-created fast exit. Retention diagnostics
+now use `terminal_binding_guards()` rather than the destroyed-only name. The
+finite W4/A1, E1, M4/C0/L2 model checks two close successors and one Failed create
+across ordinary freeze, dropped candidates, exact retry and final reclamation.
+Final qualification passes 1,897 workspace tests, public 130/serde137, product114,
+official15, native502 normally/noassert with both 10,000-lifetime soaks, strict
+docs/lints/formatting and ten doctests. The finite model passes normally/noassert
+on macOS and Linux under 4 MiB. Both platforms' six pressure journeys, macOS
+default/bounded redock and ten X11 physical journeys pass. Exact evidence and
+local fork limitations are in `docs/VALIDATION.md`; full host-service, broader
+capacity combinations and native readiness remain open.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

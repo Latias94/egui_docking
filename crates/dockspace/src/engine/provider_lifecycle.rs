@@ -107,7 +107,7 @@ impl DockEngine {
     ///
     /// The affine receipt proves that the sole backend recorder reclaimed only a
     /// core-committed prefix. Every binding named by that prefix must still have
-    /// a destroyed-binding guard owned by the same platform provider. A failed
+    /// a terminal-binding guard owned by the same platform provider. A failed
     /// validation publishes nothing and leaves the receipt available for an
     /// exact retry.
     ///
@@ -136,7 +136,7 @@ impl DockEngine {
         for binding in receipt.binding_quiescences() {
             candidate
                 .viewport
-                .compact_quiesced_destroyed_binding_guard(*binding, provider)
+                .compact_quiesced_terminal_binding_guard(*binding, provider)
                 .map_err(|source| EngineError::Viewport {
                     input: candidate.last_input,
                     source,
@@ -308,7 +308,7 @@ impl DockEngine {
             })?;
         let _ = candidate
             .viewport
-            .compact_quiesced_destroyed_binding_guards(predecessor.platform_provider());
+            .compact_quiesced_terminal_binding_guards(predecessor.platform_provider());
         let _ = candidate
             .viewport
             .compact_quiesced_backend_effect_provider(&drain);
@@ -572,7 +572,7 @@ impl DockEngine {
             })?;
         let _ = candidate
             .viewport
-            .compact_quiesced_destroyed_binding_guards(predecessor.platform_provider());
+            .compact_quiesced_terminal_binding_guards(predecessor.platform_provider());
         let _ = candidate
             .viewport
             .compact_quiesced_backend_effect_provider(&predecessor_drain);

@@ -1028,7 +1028,7 @@ fn cancelling_first_live_heads_retries_without_moving_sources_or_leaking_childre
             .engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         0
     );
 }

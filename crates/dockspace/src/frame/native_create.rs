@@ -879,6 +879,7 @@ impl ViewportCoordinator {
         if !observed && !may_reappear {
             self.terminate_pointer_passthrough_binding(binding);
             self.release_native_staging_resource(resource, resource_owner)?;
+            self.retain_uncreated_binding_guard(binding, create);
             return Ok(None);
         }
         self.transition_native_staging_resource(
@@ -902,6 +903,23 @@ impl ViewportCoordinator {
         })?;
         let _ = self.reconcile_pointer_passthrough_saga(binding)?;
         self.drive_binding_cleanup(binding)
+    }
+
+    pub(super) fn retain_uncreated_binding_guard(
+        &mut self,
+        binding: ViewportBinding,
+        create: EffectId,
+    ) {
+        if let Some(provider) = self
+            .effects
+            .record(create)
+            .and_then(|record| record.provider().or(record.binding_publication_provider()))
+        {
+            // A proven never-created incarnation still needs its producer-bound
+            // terminal guard until the joined ingress prefix is reclaimed.
+            self.binding_cleanup
+                .record_terminal_binding_guard(binding, provider);
+        }
     }
 
     #[must_use]

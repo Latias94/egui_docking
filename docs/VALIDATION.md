@@ -15,6 +15,83 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 terminal guards for never-created native bindings
+
+The finite close/create capacity model exposed a production reclamation fault:
+after a conclusively failed create, the coordinator could retire its exact
+binding and report producer quiescence, but the next committed-prefix
+reclamation required a Destroyed-only guard which that binding never had.
+`configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry`
+first failed with `DestroyedBindingGuardMissing`; an extension of the existing
+pure-core create-dispatch-failure test independently reproduced the same error.
+Neither test supplies a fabricated physical Destroyed observation.
+
+Core now retains a terminal binding guard for a conclusively never-created
+incarnation. It uses the same existing cleanup indexes and exact-provider
+reclamation path as observed destruction. The internal names, retention query
+and errors now describe terminal guards: `terminal_binding_guards()` and
+`TerminalBindingGuardMissing/ProviderMismatch` replace their destroyed-only
+names. Guard absence and foreign-provider rejection remain errors. Failed
+recovery-replacement discard and unobserved cleanup completion use the same
+helper; observed destruction retains its own exact observation-provider proof.
+
+Independent review identified a second boundary: an accepted native prefix can
+publish a Pending binding while effect-report capacity delays its Create
+emission. Its producer has already received the binding, so cross-frame
+cancellation still requires quiescence. A new capacity regression reproduced
+the missing guard. The existing effect record now stores the exact provider
+of successful binding publication, independently of effect delivery. The
+existing atomic publication boundary writes it only for current creation or
+replacement bindings. The terminal helper prefers the original immutable
+delivery provider and otherwise uses that publication fact, never a guessed
+current provider. Same-candidate cancellation before any binding publication
+retains no external guard. No second registry, owner, issuer or lifecycle graph
+is introduced.
+
+The same published-but-undelivered fixture also resets the layout. Independent
+review found that restore's never-created fast exit released its staging
+resource without calling the terminal helper; the reset variation first
+reproduced guard count zero instead of one. That exit now shares the helper.
+The final review confirms this reset correction, publication/provider lineage
+and the separate exact-Destroyed path without remaining confirmed P1/P2.
+
+The new W4/A1, E1, M4/C0/L2 model remains within the selected 4 MiB allowance.
+Two existing close requests retain cancellation acknowledgements while a real
+core Create owns its effect and admitted route. A pre-freeze close successor
+and 1,745 accepted ordinary cursor records establish boundary B; a second
+successor and Failed enter their original protected receipts after B. Duplicate
+terminals do not advance capture. Actual cancellation and Failed candidates
+are dropped and retried; neither pending terminal blocks the single overload
+cancellation, and Failed cannot quiesce before full commit. Per-owner Clear
+promotes only its original successor with unchanged ordinal/captured time;
+both resulting requests then finish independently. Final source ownership,
+route/close/retirement cleanup, prefix reclamation and quiescence are checked.
+This is a finite tokenless coordinator model, not a real OS close/create test.
+
+Final frozen-source qualification passes 1,897 workspace tests, public consumers
+130 normally / 137 with serde, 114 product and 15 official-egui tests, plus ten
+doctests. Native all-targets gates pass 502/502 normally and 502/502 without
+adapter debug assertions; each includes the same-coordinator 10,000-lifetime
+soak. The explicitly opt-in wall-time test is the one ordinary-run skip and
+retains its separate release record. Core/native correctness/suspicious Clippy,
+strict rustdoc, formatting and patch integrity pass.
+
+The finite close/create case passes on macOS and Linux normally and without
+adapter debug assertions. MacOS samples 2,136,448 owned / 4,194,144 reserved
+bytes; Linux samples 2,136,416 / 4,194,136 bytes, under 4,194,304 bytes on both.
+These are native owned input-data capacities and promises, excluding allocator
+metadata, core workspace/reducer/renderer state and fixture allocations.
+MacOS default/bounded real-window redock and all six pressure journeys pass;
+X11 reruns all ten finite physical journeys and six pressure cases successfully.
+The unchanged unpublished local egui/Winit overrides remain required.
+Current source and exact results are `/tmp/dockspace-close-create-snapshot.json`,
+`/tmp/dockspace-close-create-qualification.json` and matching logs. The initial
+failure, publication/cancellation and reset red controls remain separate. This
+closes the identified finite close/create retry boundary, not every capacity
+combination or real OS close/create proof. Full host-service timing, native
+scoped/stationary and broader platform claims, the showcase and U9 remain open.
+Overall U7/U8 and the complete Goal are not complete.
+
 ## 2026-10-31 X11 physical tab-half insertion
 
 The finite X11/XTest runner adds `tab-half-before` and `tab-half-after` to

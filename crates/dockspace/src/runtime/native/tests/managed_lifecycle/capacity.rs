@@ -39,6 +39,97 @@ fn limit_recorder(session: &mut DockspaceSession, records: usize) {
 }
 
 #[test]
+fn published_unemitted_create_retirement_keeps_the_producer_quiescence_guard() {
+    for reset_layout in [false, true] {
+        let (mut session, root) = programmatic_tear_off_session();
+        session.abandoned_native_effects =
+            crate::runtime::native_effect::NativeEffectDropQueue::with_capacity_limit(0).unwrap();
+        session
+            .record_native_pointer(unknown_native_pointer_input(91, NativePointerEvent::Moved))
+            .unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .move_root_to_new_window_current(
+                ROOT,
+                NativeWindowPlacement::new(PhysicalRect::new(920.0, 120.0, 420.0, 320.0).unwrap()),
+            )
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = frame.commit().unwrap();
+        assert!(report.take_native_effects().is_empty());
+        let child = *report
+            .native_bindings()
+            .iter()
+            .find(|binding| **binding != root)
+            .unwrap();
+        let (_, saga) = session
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .next()
+            .unwrap();
+        assert!(
+            !session
+                .engine
+                .viewport()
+                .effects()
+                .record(saga.create())
+                .unwrap()
+                .was_emitted()
+        );
+        assert!(session.recognizes_native_binding(child));
+        let reset = reset_layout.then(|| {
+            session
+                .prepare_layout_reset(DockspaceLayout::empty())
+                .unwrap()
+        });
+        let mut frame = if let Some(reset) = &reset {
+            session
+                .begin_native_layout_reset_frame(reset, |_| NativeReceiverAnswer::Unknown)
+                .unwrap()
+        } else {
+            session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap()
+        };
+        if !reset_layout {
+            assert!(frame.cancel_next_native_create().unwrap());
+        }
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = frame.commit().unwrap();
+        assert!(report.take_native_effects().is_empty());
+        assert!(!session.is_current_native_binding(child));
+        assert!(session.recognizes_native_binding(child));
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .bindings()
+                .terminal_binding_guards(),
+            1
+        );
+        session.report_native_binding_quiescence(child).unwrap();
+        commit_managed_frame(&mut session);
+        commit_managed_frame(&mut session);
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .bindings()
+                .terminal_binding_guards(),
+            0
+        );
+        assert!(!session.recognizes_native_binding(child));
+    }
+}
+
+#[test]
 fn bounded_effect_submission_returns_the_affine_result_until_accepted_input_drains() {
     let (mut session, request) = pending_programmatic_create();
     let failed = request.dispatch_failed(NativeDispatchFailure::WindowUnavailable);

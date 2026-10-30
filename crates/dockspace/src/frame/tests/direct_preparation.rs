@@ -4,6 +4,95 @@ use crate::platform::{
 };
 
 #[test]
+fn never_created_replacement_retains_the_exact_provider_guard_until_quiescence() {
+    let mut coordinator = ViewportCoordinator::default();
+    let epoch = WorkspaceEpoch::default();
+    let surface = SurfaceId::new(710);
+    let replacement = coordinator
+        .registry
+        .reserve(epoch, surface, ViewportRole::Child)
+        .unwrap();
+    let destroyed = ViewportBinding::new(
+        EngineAuthorityDomainId::new_for_test(1),
+        epoch,
+        surface,
+        WindowToken::new(709),
+        WindowIncarnation::new(709),
+    );
+    let create = coordinator
+        .effects
+        .request(PlatformEffect::RequestReplacement {
+            binding: replacement,
+            placement: PhysicalRect::new(5.0, 0.0, 310.0, 225.0).unwrap(),
+            role: ViewportRole::Child,
+            strategy: NativeCreateStrategy::Staged,
+        })
+        .unwrap();
+    coordinator
+        .recovery_replacements
+        .begin(RecoveryPendingRequest::replacement(
+            destroyed,
+            ViewportRole::Child,
+            recovery(712),
+            replacement,
+            create,
+            NativeCreateStrategy::Staged,
+        ))
+        .unwrap();
+    let [request]: [_; 1] = coordinator.take_new_effects().try_into().unwrap();
+    assert_eq!(request.id(), create);
+    let provider = coordinator
+        .effects
+        .record(create)
+        .unwrap()
+        .provider()
+        .unwrap();
+    coordinator
+        .report_effect_from(
+            provider,
+            epoch,
+            EffectResult::new(
+                create,
+                epoch,
+                EffectDispatchResult::DispatchFailed(
+                    crate::effect::DispatchFailureReason::WindowUnavailable,
+                ),
+            ),
+        )
+        .unwrap();
+    assert!(coordinator.viewport(surface).is_none());
+    assert_eq!(
+        coordinator
+            .recovery_pending(surface)
+            .unwrap()
+            .replacement_binding(),
+        None
+    );
+    assert_eq!(
+        coordinator
+            .binding_retention_manifest()
+            .terminal_binding_guards(),
+        1
+    );
+    assert!(coordinator.take_new_effects().is_empty());
+    coordinator
+        .compact_quiesced_terminal_binding_guard(replacement, provider)
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .binding_retention_manifest()
+            .terminal_binding_guards(),
+        0
+    );
+    assert_eq!(
+        coordinator.compact_quiesced_terminal_binding_guard(replacement, provider),
+        Err(ViewportCoordinatorError::TerminalBindingGuardMissing {
+            binding: replacement
+        }),
+    );
+}
+
+#[test]
 fn staged_replacement_failed_before_first_live_revokes_readiness_and_closes_exact_binding() {
     let (mut coordinator, destroyed, replacement, obligation) = ready_recovery_replacement();
     let create = coordinator

@@ -608,6 +608,7 @@ pub struct EffectRecord {
     request: EffectRequest,
     phase: EffectPhase,
     delivery: Option<EffectDelivery>,
+    binding_publication_provider: Option<PlatformObservationLease>,
     native_close_after_effect: Option<EffectId>,
     terminal_published: bool,
 }
@@ -641,6 +642,10 @@ impl EffectRecord {
             Some(delivery) => Some(delivery.provider()),
             None => None,
         }
+    }
+
+    pub(crate) const fn binding_publication_provider(&self) -> Option<PlatformObservationLease> {
+        self.binding_publication_provider
     }
 
     /// Returns the inventory generation at which the adapter first received this request.
@@ -858,6 +863,7 @@ impl EffectLedger {
                 request,
                 phase: EffectPhase::Requested,
                 delivery: None,
+                binding_publication_provider: None,
                 native_close_after_effect,
                 terminal_published: false,
             },
@@ -1590,6 +1596,21 @@ impl EffectLedger {
         for record in self.records.values_mut() {
             if effect_phase_is_compactable(record.phase) {
                 record.terminal_published = true;
+            }
+        }
+    }
+
+    pub(crate) fn mark_creation_bindings_published(
+        &mut self,
+        provider: PlatformObservationLease,
+        is_current_binding: impl Fn(ViewportBinding) -> bool,
+    ) {
+        for record in self.records.values_mut() {
+            if let PlatformEffect::CreateWindow { binding, .. }
+            | PlatformEffect::RequestReplacement { binding, .. } = record.request.effect()
+                && is_current_binding(*binding)
+            {
+                record.binding_publication_provider = Some(provider);
             }
         }
     }

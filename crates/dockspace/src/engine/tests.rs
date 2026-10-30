@@ -850,7 +850,7 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
         .expect("the retiring stream settles before producer quiescence");
     engine
         .viewport
-        .record_destroyed_binding_guard_for_test(first, provider);
+        .record_terminal_binding_guard_for_test(first, provider);
     recorder
         .record_platform_binding_quiescence(first)
         .expect("first lane closure must fit");
@@ -876,7 +876,7 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
     assert!(matches!(
         engine.settle_backend_ingress_prefix_retirement(&mut receipt),
         Err(EngineError::Viewport {
-            source: ViewportCoordinatorError::DestroyedBindingGuardMissing { binding },
+            source: ViewportCoordinatorError::TerminalBindingGuardMissing { binding },
             ..
         }) if binding == second
     ));
@@ -884,7 +884,7 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
         engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         1,
         "the valid first guard must not be partially removed on failure",
     );
@@ -913,7 +913,7 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
 
     engine
         .viewport
-        .record_destroyed_binding_guard_for_test(second, provider);
+        .record_terminal_binding_guard_for_test(second, provider);
     assert_eq!(
         engine
             .settle_backend_ingress_prefix_retirement(&mut receipt)
@@ -924,7 +924,7 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
         engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         0,
     );
     assert!(
@@ -958,7 +958,7 @@ fn prepared_host_frame_cannot_restore_a_compacted_binding_guard() {
     );
     engine
         .viewport
-        .record_destroyed_binding_guard_for_test(binding, provider);
+        .record_terminal_binding_guard_for_test(binding, provider);
     recorder
         .record_platform_binding_quiescence(binding)
         .expect("the exact lane closure must fit");
@@ -1005,7 +1005,7 @@ fn prepared_host_frame_cannot_restore_a_compacted_binding_guard() {
         engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         0,
     );
     assert!(matches!(
@@ -1016,7 +1016,7 @@ fn prepared_host_frame_cannot_restore_a_compacted_binding_guard() {
         engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         0,
         "a stale owned frame must not restore the compacted guard",
     );
@@ -1041,7 +1041,7 @@ fn sealed_host_frame_rejects_retention_settlement_before_prepare() {
     );
     engine
         .viewport
-        .record_destroyed_binding_guard_for_test(binding, provider);
+        .record_terminal_binding_guard_for_test(binding, provider);
     recorder
         .record_platform_binding_quiescence(binding)
         .expect("the exact lane closure must fit");
@@ -1089,7 +1089,7 @@ fn sealed_host_frame_rejects_retention_settlement_before_prepare() {
         engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         0,
         "a frame sealed before settlement must not restore the compacted guard",
     );

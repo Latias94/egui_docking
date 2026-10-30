@@ -401,6 +401,16 @@ fn native_create_cleanup_cancels_only_one_create_from_the_current_candidate() {
 
     assert!(frame.cancel_next_native_create().unwrap());
     assert_eq!(frame.next_source_sequence, source_sequence + 3);
+    assert_eq!(
+        frame
+            .frame
+            .view()
+            .viewport()
+            .binding_retention_manifest()
+            .terminal_binding_guards(),
+        0,
+        "a create cancelled before emission has no external producer obligation",
+    );
     let remaining = frame
         .frame
         .view()
@@ -1197,7 +1207,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
             .engine
             .runtime_retention_manifest()
             .bindings()
-            .destroyed_binding_guards(),
+            .terminal_binding_guards(),
         0,
         "the committed binding quiescence reclaims its destroyed guard",
     );
@@ -1233,6 +1243,15 @@ fn managed_native_create_dispatch_failure_preserves_source_ownership() {
         .expect("the exact create failure records");
     let mut failure_report = commit_managed_frame_report(&mut session);
     assert!(failure_report.take_native_effects().is_empty());
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .bindings()
+            .terminal_binding_guards(),
+        1,
+        "a failed create retains a terminal guard without a physical Destroyed fact",
+    );
 
     session
         .report_managed_native_snapshot(
@@ -1258,6 +1277,29 @@ fn managed_native_create_dispatch_failure_preserves_source_ownership() {
         Some(SURFACE)
     );
     assert!(!session.is_current_native_binding(child_binding));
+    let version = session.version();
+    session
+        .report_native_binding_quiescence(child_binding)
+        .expect("the never-created binding's exact producer can quiesce");
+    drop(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the quiescence candidate can be abandoned"),
+    );
+    assert_eq!(session.version(), version);
+    commit_managed_frame(&mut session);
+    commit_managed_frame(&mut session);
+    assert_eq!(session.version(), version);
+    assert!(!session.recognizes_native_binding(child_binding));
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .bindings()
+            .terminal_binding_guards(),
+        0,
+        "the exact quiescence prefix retires the never-created guard",
+    );
 }
 
 struct PendingNativeCreate {

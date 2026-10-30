@@ -162,6 +162,12 @@ adds a finite simultaneous window/output profile in the existing smoke runner.
 Its fixed satellite identities are fixture expectations, outside native runtime
 storage, and introduce no production registry or graph.
 
+The adjacent terminal-guard correction keeps proven never-created incarnations
+in the same cleanup indexes as observed destruction. The existing effect row's
+binding-publication provider distinguishes a committed Pending binding from a
+same-candidate create/cancel and from later effect delivery. It adds no owner
+or registry; exact producer quiescence still gates prefix reclamation.
+
 The remaining close/create capacity, service-time, broader
 physical/platform, stationary capture, native showcase, dependency/package and
 evidence/deletion gates retain their existing owners in the canonical plan.
