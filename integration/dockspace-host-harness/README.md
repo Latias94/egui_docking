@@ -46,6 +46,13 @@ before visibility is known while preserving its hidden/output barriers. These
 are host-contract traces; actual platform creation and presentation remain host
 responsibilities and have separately labelled native reference qualification.
 
+`tests/native_local_geometry.rs` measures and presents a native root with client
+size and independent scales, without a desktop origin or work-area facts. It
+checks stable selection, exact output, frame retry and atomic rejection of
+conflicting sizes. A desktop-input negative case proves that local geometry
+cannot supply a missing desktop origin. These are recording-renderer geometry
+and command traces; they do not qualify native local pointer gestures.
+
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,

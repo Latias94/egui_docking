@@ -439,9 +439,12 @@ correlation capability. Report actual creation through
 `NativeWindowFacts::with_create_readiness(Created, Some(create_ack))`, or report
 `Prepared` immediately when both creation and renderer preparation are complete.
 Created is not a mandatory intermediate pass. DirectPrepared also requires
-current Visible state, exact content bounds, and independent native and
-presentation scale factors. Outer bounds are separate placement/recovery facts;
-they are never inferred from content bounds or the requested placement.
+current Visible state, exact client size, and independent native and
+presentation scale factors. Report local geometry with `with_content_size`
+when the desktop origin is unavailable. Existing `with_content_bounds` facts
+also establish size, and a separately supplied size must agree with them.
+Content bounds with a desktop origin and outer bounds are separate
+placement/recovery facts; neither is invented from size or requested placement.
 Geometry observation and readiness are separate;
 an unchanged coordinate authority does not need a fabricated generation bump.
 Creation acknowledgement settles independently of visibility. A Staged host
@@ -461,6 +464,14 @@ A replacement with still-valid measurements receives a fresh semantic output
 ticket when readiness returns, so the next ordinary paint can satisfy its new
 first-live floor. Changed coordinate or requirement authority follows the normal
 measurement path. Old outputs remain ineligible for admission.
+
+An admitted native root can measure, paint, settle exact output and process
+stable-item commands using size and scales alone. Desktop hover conversion,
+cross-window physical routing, default window placement and spatial recovery
+still require the corresponding observed desktop facts. Missing desktop origin
+returns an explicit coordinate-authority failure; it never becomes `(0, 0)`.
+The managed native pointer API currently accepts desktop input only; the local
+geometry contract is a prerequisite for joined native local gestures.
 
 Renderer failure and lifecycle cancellation are distinct operations. Dropping
 an affine output reports only that output's failure; an unresolved native create

@@ -373,6 +373,40 @@ fn first_created_or_prepared_snapshot_can_ack_create_without_staging_or_show() {
 }
 
 #[test]
+fn direct_prepared_child_can_present_with_local_size_and_no_desktop_origin() {
+    let mut fixture = PendingDirect::new();
+    let scale = ScaleFactor::new(1.0).unwrap();
+    let acknowledgement = fixture.acknowledgement.take().unwrap();
+    fixture.observe_facts(
+        NativeWindowFacts::live()
+            .with_content_size(fixture.placement.size())
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_create_readiness(NativeCreateReadiness::Prepared, Some(acknowledgement)),
+    );
+    fixture.assert_source();
+    let output = paint(&mut fixture.session, fixture.child);
+    let artifact = output.presentation_artifact();
+    fixture.assert_source();
+    let report = fixture.present(output);
+    assert_admitted(&fixture, &report);
+    assert!(
+        fixture
+            .session
+            .presented_surface(fixture.child.surface())
+            .unwrap()
+            .matches_presentation_artifact(artifact)
+    );
+    let committed = fixture.session.version();
+    let repeated = idle(&mut fixture.session);
+    assert!(repeated.native_admissions().is_empty());
+    assert!(!repeated.workspace_changed());
+    assert_eq!(fixture.session.version(), committed);
+}
+
+#[test]
 fn staged_creation_acknowledgement_precedes_visibility_without_bypassing_staging() {
     let mut fixture = PendingDirect::with_strategy(NativeCreateStrategy::Staged);
     let acknowledgement = fixture.acknowledgement.take().unwrap();

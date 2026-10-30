@@ -23,7 +23,7 @@ use crate::backend_ingress::{
     BackendIngressRecorder,
 };
 use crate::engine::EngineInput;
-use crate::geometry::{PhysicalRect, ScaleFactor};
+use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};
 use crate::platform::{
     CloseEffectAcknowledgement, ObservedWindow, WindowCloseObservation, WindowCloseState,
@@ -501,6 +501,7 @@ impl From<NativeWindowPresentationState> for WindowPresentationState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeWindowFacts {
     lifecycle: NativeWindowLifecycleFact,
+    content_size: Option<PhysicalSize>,
     content_bounds: Option<PhysicalRect>,
     outer_bounds: Option<PhysicalRect>,
     native_scale_factor: Option<ScaleFactor>,
@@ -549,6 +550,7 @@ impl NativeWindowFacts {
     pub const fn live() -> Self {
         Self {
             lifecycle: NativeWindowLifecycleFact::Live,
+            content_size: None,
             content_bounds: None,
             outer_bounds: None,
             native_scale_factor: None,
@@ -564,6 +566,15 @@ impl NativeWindowFacts {
     #[must_use]
     pub const fn with_content_bounds(mut self, bounds: PhysicalRect) -> Self {
         self.content_bounds = Some(bounds);
+        self
+    }
+
+    /// Adds the client-area size without asserting a desktop origin or outer bounds.
+    ///
+    /// When content bounds are also reported, their size must match this fact.
+    #[must_use]
+    pub const fn with_content_size(mut self, size: PhysicalSize) -> Self {
+        self.content_size = Some(size);
         self
     }
 
@@ -657,6 +668,7 @@ impl NativeWindowFacts {
             lifecycle: NativeWindowLifecycleFact::Destroyed {
                 acknowledgement: None,
             },
+            content_size: None,
             content_bounds: None,
             outer_bounds: None,
             native_scale_factor: None,
@@ -675,6 +687,7 @@ impl NativeWindowFacts {
             lifecycle: NativeWindowLifecycleFact::Destroyed {
                 acknowledgement: Some(acknowledgement),
             },
+            content_size: None,
             content_bounds: None,
             outer_bounds: None,
             native_scale_factor: None,
@@ -756,6 +769,9 @@ pub(super) enum NativePlatformError {
     /// A complete snapshot did not exactly cover the current binding roster.
     #[error("native snapshot roster is incomplete or contains a foreign surface")]
     IncompleteRoster,
+    /// Independently reported client size disagrees with desktop content bounds.
+    #[error("native surface {surface} content size differs from its content bounds")]
+    ContentSizeBoundsMismatch { surface: SurfaceId },
     /// A preceding roster mutation has not reached a committed host boundary.
     #[error("native binding roster is not yet settled")]
     BindingRosterUnsettled,
@@ -856,6 +872,7 @@ impl NativePlatformError {
             }
             Self::DuplicateSurface { .. }
             | Self::IncompleteRoster
+            | Self::ContentSizeBoundsMismatch { .. }
             | Self::InvalidWorkAreaRoster
             | Self::InvalidPointerFacts
             | Self::CapabilityRosterChanged

@@ -3585,6 +3585,7 @@ impl DockEngine {
                                 current.binding() == coordinates.binding()
                                     && current.coordinate_generation()
                                         == coordinates.coordinate_generation()
+                                    && current.content_size() == coordinates.content_size()
                                     && current.content_bounds() == coordinates.content_bounds()
                                     && current.native_scale_factor()
                                         == coordinates.native_scale_factor()

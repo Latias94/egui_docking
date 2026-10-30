@@ -81,7 +81,10 @@ impl DockEngine {
                 let content = coordinates
                     .surface_rect_to_desktop(contained.outer_bounds())
                     .map_err(|_| DockspaceActionRejection::PresentationUnavailable { surface })?;
-                expand_content_rect_to_outer(content, coordinates.content_bounds(), source_outer)
+                let source_content = coordinates
+                    .content_bounds()
+                    .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
+                expand_content_rect_to_outer(content, source_content, source_outer)
                     .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?
             }
         };

@@ -550,6 +550,9 @@ pub enum SurfaceRecoveryError {
     /// Coordinate conversion failed despite frozen source and host facts.
     #[error(transparent)]
     Geometry(#[from] GeometryError),
+    /// A frozen local coordinate envelope cannot prove a desktop conversion.
+    #[error(transparent)]
+    Coordinates(#[from] crate::coordinates::CoordinateUnavailable),
     /// Deterministic clamping could not produce a representable contained rectangle.
     #[error("surface {surface} cannot represent recovered contained geometry")]
     UnrepresentableGeometry { surface: SurfaceId },
@@ -570,6 +573,9 @@ impl SurfaceRecoveryError {
             Self::SourceCoordinatesUnavailable { .. }
                 | Self::SourceOuterBoundsUnavailable { .. }
                 | Self::ContainedMinimumsUnavailable { .. }
+                | Self::Coordinates(
+                    crate::coordinates::CoordinateUnavailable::FactUnavailable { .. }
+                )
         )
     }
 }

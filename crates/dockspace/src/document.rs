@@ -483,8 +483,7 @@ impl BoundDocumentState {
             let Ok(preference) = ViewportPlacementPreference::new(surface, outer_rect) else {
                 continue;
             };
-            let Ok(mut preference) =
-                preference.try_with_inner_size(coordinates.content_bounds().size())
+            let Ok(mut preference) = preference.try_with_inner_size(coordinates.content_size())
             else {
                 continue;
             };

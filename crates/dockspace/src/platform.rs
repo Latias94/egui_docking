@@ -8,7 +8,7 @@ use std::mem::size_of;
 use thiserror::Error;
 
 use crate::effect::EffectId;
-use crate::geometry::{PhysicalRect, ScaleFactor};
+use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
@@ -1087,17 +1087,19 @@ impl WindowPresentationObservationStream {
 /// One provider-captured coordinate envelope for an exact native-window binding.
 ///
 /// The provider generation is monotonic only within the exact binding incarnation.
-/// Content bounds, native scale, and presentation scale jointly authorize coordinate
-/// conversion. The native scale describes operating-system logical units. The presentation
+/// Content size, native scale, and presentation scale jointly authorize local coordinates.
+/// Desktop conversion additionally requires content bounds with a real desktop origin.
+/// The native scale describes operating-system logical units. The presentation
 /// scale describes the surface-local coordinate system actually presented by the UI adapter.
 /// Keeping them separate prevents application zoom from being mistaken for a DPI change.
-/// Outer bounds remain optional, so an unavailable outer rectangle does not revoke otherwise
-/// complete coordinate authority. An unavailable required fact is a versioned tombstone for
-/// the whole atomic tuple.
+/// Content and outer bounds remain independently optional for local coordinate authority.
+/// An unavailable required fact revokes local authority. Recovering an invalidated stream
+/// requires a versioned tombstone before a complete local tuple can become authoritative.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowCoordinateObservation {
     binding: ViewportBinding,
     generation: CoordinateObservationGeneration,
+    content_size: Authority<PhysicalSize>,
     content_bounds: Authority<PhysicalRect>,
     outer_bounds: Authority<PhysicalRect>,
     native_scale_factor: Authority<ScaleFactor>,
@@ -1106,7 +1108,7 @@ pub struct WindowCoordinateObservation {
 
 impl WindowCoordinateObservation {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         binding: ViewportBinding,
         generation: CoordinateObservationGeneration,
         content_bounds: Authority<PhysicalRect>,
@@ -1114,9 +1116,14 @@ impl WindowCoordinateObservation {
         native_scale_factor: Authority<ScaleFactor>,
         presentation_scale_factor: Authority<ScaleFactor>,
     ) -> Self {
+        let content_size = match content_bounds {
+            Authority::Known(bounds) => Authority::Known(bounds.size()),
+            Authority::Unknown(reason) => Authority::Unknown(reason),
+        };
         Self {
             binding,
             generation,
+            content_size,
             content_bounds,
             outer_bounds,
             native_scale_factor,
@@ -1132,6 +1139,19 @@ impl WindowCoordinateObservation {
     #[must_use]
     pub const fn generation(self) -> CoordinateObservationGeneration {
         self.generation
+    }
+
+    /// Supplies content size independently of desktop-position authority.
+    #[must_use]
+    pub const fn with_content_size(mut self, content_size: Authority<PhysicalSize>) -> Self {
+        self.content_size = content_size;
+        self
+    }
+
+    /// Returns the physical content size, independent of its desktop origin.
+    #[must_use]
+    pub const fn content_size(&self) -> &Authority<PhysicalSize> {
+        &self.content_size
     }
 
     #[must_use]
@@ -1157,7 +1177,7 @@ impl WindowCoordinateObservation {
 
     #[must_use]
     pub const fn has_authority(&self) -> bool {
-        matches!(self.content_bounds, Authority::Known(_))
+        matches!(self.content_size, Authority::Known(_))
             && matches!(self.native_scale_factor, Authority::Known(_))
             && matches!(self.presentation_scale_factor, Authority::Known(_))
     }
@@ -1757,7 +1777,8 @@ impl PlatformSnapshot {
     /// # Errors
     ///
     /// Returns [`PlatformSnapshotError`] for duplicate identities, a mismatched complete
-    /// inventory roster, or a work-area roster that contradicts the declared capability.
+    /// inventory roster, conflicting coordinate size and bounds, or a work-area roster
+    /// that contradicts the declared capability.
     pub fn new(
         generation: PlatformSnapshotGeneration,
         capability_observation: CapabilityRosterObservation,
@@ -1923,15 +1944,21 @@ fn reject_duplicate_windows(windows: &[ObservedWindow]) -> Result<(), PlatformSn
 fn validate_input_observations(windows: &[ObservedWindow]) -> Result<(), PlatformSnapshotError> {
     for window in windows {
         let binding = window.binding();
-        if let Some(observation) = window.coordinate_observation()
-            && observation.binding() != binding
-        {
-            return Err(
-                PlatformSnapshotError::CoordinateObservationBindingMismatch {
-                    window: binding,
-                    observation: observation.binding(),
-                },
-            );
+        if let Some(observation) = window.coordinate_observation() {
+            if observation.binding() != binding {
+                return Err(
+                    PlatformSnapshotError::CoordinateObservationBindingMismatch {
+                        window: binding,
+                        observation: observation.binding(),
+                    },
+                );
+            }
+            if let (Authority::Known(size), Authority::Known(bounds)) =
+                (observation.content_size(), observation.content_bounds())
+                && *size != bounds.size()
+            {
+                return Err(PlatformSnapshotError::CoordinateObservationSizeMismatch { binding });
+            }
         }
         if let Some(observation) = window.input_observation() {
             if observation.binding() != binding {
@@ -2027,6 +2054,8 @@ pub enum PlatformSnapshotError {
         window: ViewportBinding,
         observation: ViewportBinding,
     },
+    #[error("window {binding:?} carries conflicting coordinate content size and bounds")]
+    CoordinateObservationSizeMismatch { binding: ViewportBinding },
     #[error(
         "window {window:?} carries an input observation for a different binding {observation:?}"
     )]
@@ -2496,6 +2525,93 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_content_size_is_derived_or_explicitly_supplied() {
+        let content = PhysicalRect::new(-1200.0, 20.0, 800.0, 600.0).unwrap();
+        let scale = ScaleFactor::new(2.0).unwrap();
+        let positioned = WindowCoordinateObservation::new(
+            binding(1),
+            CoordinateObservationGeneration::new(1),
+            Authority::Known(content),
+            unavailable(),
+            Authority::Known(scale),
+            Authority::Known(scale),
+        );
+        assert_eq!(positioned.content_size(), &Authority::Known(content.size()));
+
+        let reason = AuthorityUnavailableReason::PermissionDenied;
+        let unpositioned = WindowCoordinateObservation::new(
+            binding(1),
+            CoordinateObservationGeneration::new(2),
+            Authority::Unknown(reason),
+            unavailable(),
+            Authority::Known(scale),
+            Authority::Known(scale),
+        );
+        assert_eq!(unpositioned.content_size(), &Authority::Unknown(reason));
+        assert!(!unpositioned.has_authority());
+        let local = unpositioned.with_content_size(Authority::Known(content.size()));
+        assert!(local.has_authority());
+        assert_eq!(local.content_bounds(), &Authority::Unknown(reason));
+        assert_ne!(local, unpositioned);
+    }
+
+    #[test]
+    fn coordinate_stream_accepts_size_only_facts_and_checks_size_conflicts() {
+        let current_binding = binding(1);
+        let size = PhysicalSize::new(800.0, 600.0).unwrap();
+        let scale = ScaleFactor::new(2.0).unwrap();
+        let local = |generation| {
+            WindowCoordinateObservation::new(
+                current_binding,
+                CoordinateObservationGeneration::new(generation),
+                unavailable(),
+                unavailable(),
+                Authority::Known(scale),
+                Authority::Known(scale),
+            )
+            .with_content_size(Authority::Known(size))
+        };
+        let unknown = |generation| {
+            WindowCoordinateObservation::new(
+                current_binding,
+                CoordinateObservationGeneration::new(generation),
+                unavailable(),
+                unavailable(),
+                unavailable(),
+                unavailable(),
+            )
+        };
+        let mut stream = WindowCoordinateObservationStream::default();
+        stream.observe(current_binding, Some(local(1)));
+        assert_eq!(stream.current(), Some(local(1)));
+        stream.observe(current_binding, Some(local(1)));
+        assert_eq!(stream.current(), Some(local(1)));
+        stream.observe(
+            current_binding,
+            Some(
+                local(1)
+                    .with_content_size(Authority::Known(PhysicalSize::new(900.0, 600.0).unwrap())),
+            ),
+        );
+        assert_eq!(stream.current(), None);
+
+        let partial = unknown(2).with_content_size(Authority::Known(size));
+        assert!(!partial.has_authority());
+        stream.observe(current_binding, Some(partial));
+        stream.observe(current_binding, Some(local(3)));
+        assert_eq!(
+            stream.current(),
+            Some(local(3)),
+            "a causally newer incomplete local tuple is a coordinate tombstone"
+        );
+
+        assert!(!unknown(4).has_authority());
+        stream.observe(current_binding, Some(unknown(4)));
+        stream.observe(current_binding, Some(local(5)));
+        assert_eq!(stream.current(), Some(local(5)));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn coordinate_observation_stream_requires_causal_tombstones() {
         let current_binding = binding(1);
@@ -2897,6 +3013,73 @@ mod tests {
                     observation: delayed,
                 }
             )
+        );
+    }
+
+    #[test]
+    fn snapshot_checks_content_size_against_known_bounds() {
+        let current = binding(1);
+        let content = PhysicalRect::new(-1200.0, 20.0, 800.0, 600.0).unwrap();
+        let observation = WindowCoordinateObservation::new(
+            current,
+            CoordinateObservationGeneration::new(1),
+            Authority::Known(content),
+            unavailable(),
+            Authority::Known(ScaleFactor::new(2.0).unwrap()),
+            Authority::Known(ScaleFactor::new(2.5).unwrap()),
+        );
+        for size in [
+            content.size(),
+            PhysicalSize::new(900.0, 600.0).unwrap(),
+            PhysicalSize::new(800.0, 700.0).unwrap(),
+        ] {
+            let window = ObservedWindow::new(current)
+                .with_coordinate_observation(observation.with_content_size(Authority::Known(size)));
+            let result = snapshot_with_unknown_inventory(
+                1,
+                PlatformCapabilities::default(),
+                vec![window],
+                Vec::new(),
+                unknown_work_areas(1),
+            );
+            if size == content.size() {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(
+                    result,
+                    Err(PlatformSnapshotError::CoordinateObservationSizeMismatch {
+                        binding: current,
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_accepts_content_size_without_desktop_bounds() {
+        let current = binding(1);
+        let observation = WindowCoordinateObservation::new(
+            current,
+            CoordinateObservationGeneration::new(1),
+            Authority::Unknown(AuthorityUnavailableReason::PermissionDenied),
+            unavailable(),
+            Authority::Known(ScaleFactor::new(2.0).unwrap()),
+            Authority::Known(ScaleFactor::new(2.5).unwrap()),
+        )
+        .with_content_size(Authority::Known(PhysicalSize::new(800.0, 600.0).unwrap()));
+        let window = ObservedWindow::new(current).with_coordinate_observation(observation);
+        let snapshot = snapshot_with_unknown_inventory(
+            1,
+            PlatformCapabilities::default(),
+            vec![window],
+            Vec::new(),
+            unknown_work_areas(1),
+        )
+        .expect("local content size and scales do not require desktop bounds");
+
+        assert_eq!(
+            snapshot.window_observations()[0].coordinate_observation(),
+            Some(observation)
         );
     }
 

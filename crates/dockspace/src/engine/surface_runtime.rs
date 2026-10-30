@@ -1995,14 +1995,27 @@ impl DockEngine {
         if ready.stamp().requirement().workspace_epoch() != self.version.epoch() {
             return false;
         }
-        if let Some(coordinates) = roster.source_coordinates()
-            && !matches!(
+        if let Some(coordinates) = roster.source_coordinates() {
+            // Minimum measurements belong to the last local scene, independently
+            // of the historical desktop projection used to place recovered roots.
+            let source = coordinates.content();
+            let local = match self.viewport.viewport(roster.surface()) {
+                Some(record) if record.binding() == source.binding() => {
+                    let Some(local) = record.coordinates() else {
+                        return false;
+                    };
+                    local
+                }
+                Some(_) => return false,
+                None => source,
+            };
+            if !matches!(
                 ready.coordinate_capture(),
                 SurfaceCoordinateCapture::NativeReady { coordinates: captured, .. }
-                    if captured == coordinates.content()
-            )
-        {
-            return false;
+                    if captured == local
+            ) {
+                return false;
+            }
         }
         roster.freeze_contained_minimums(ready.stamp(), ready.plan().contained_minimums())
     }

@@ -1086,6 +1086,172 @@ fn unplanned_rootless_destruction_rehomes_all_contained_roots_without_a_main_roo
 }
 
 #[test]
+fn size_only_child_destruction_recovers_the_complete_cached_forest() {
+    use dockspace::geometry::PhysicalPoint;
+    use dockspace::pointer_journal::{
+        DesktopRouteFact, DesktopRouteUnavailable, DesktopRouteValidation,
+    };
+
+    for (workspace, roots, expected_contained) in [
+        (
+            rooted_workspace(),
+            vec![
+                ROOT_CHILD_MAIN,
+                ROOT_CHILD_FLOATING_A,
+                ROOT_CHILD_FLOATING_B,
+            ],
+            vec![FLOATING_HOST, RECOVERY_FLOATING, FLOATING_A, FLOATING_B],
+        ),
+        (
+            rootless_workspace(),
+            vec![ROOT_CHILD_FLOATING_A, ROOT_CHILD_FLOATING_B],
+            vec![FLOATING_HOST, FLOATING_A, FLOATING_B],
+        ),
+    ] {
+        let mut fixture = fixture(workspace, roots);
+        let before = fixture.engine.workspace().clone();
+        let child_main = before
+            .surface(SURFACE_CHILD)
+            .expect("source surface must exist")
+            .main_root;
+        let cached_content = fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_CHILD)
+            .expect("child binding must exist")
+            .recovery_coordinates()
+            .expect("observed desktop geometry must establish a recovery cache")
+            .content();
+        assert_eq!(
+            cached_content.content_bounds(),
+            Some(fixture.child_geometry.content)
+        );
+
+        for _ in 0..2 {
+            let generation = fixture.next_generation();
+            let host = ready_window(fixture.host_binding, generation, fixture.host_geometry);
+            let child = ready_window(fixture.child_binding, generation, fixture.child_geometry)
+                .with_coordinate_observation(
+                    WindowCoordinateObservation::new(
+                        fixture.child_binding,
+                        CoordinateObservationGeneration::new(generation),
+                        Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                        Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                        Authority::Known(fixture.child_geometry.scale),
+                        Authority::Known(fixture.child_geometry.scale),
+                    )
+                    .with_content_size(Authority::Known(fixture.child_geometry.content.size())),
+                );
+            publish_windows(
+                &mut fixture.engine,
+                &mut fixture.presentation_host,
+                vec![host, child],
+            );
+            publish_scene(&mut fixture.engine, &mut fixture.presentation_host);
+            assert!(
+                fixture
+                    .engine
+                    .interaction_projection(SURFACE_CHILD)
+                    .is_some()
+            );
+            assert_eq!(fixture.engine.workspace(), &before);
+
+            let child = fixture
+                .engine
+                .viewport()
+                .viewport(SURFACE_CHILD)
+                .expect("size-only geometry must keep the child binding live");
+            assert!(child.is_ready());
+            let current = child
+                .coordinates()
+                .expect("size and scales must retain local coordinate authority");
+            assert_eq!(current.content_bounds(), None);
+            assert_eq!(
+                current.content_size(),
+                fixture.child_geometry.content.size()
+            );
+            assert_eq!(
+                child
+                    .recovery_coordinates()
+                    .expect("size-only observations must retain the historical recovery cache")
+                    .content(),
+                cached_content,
+                "recovery must retain the complete observed desktop tuple"
+            );
+            let desktop_route = DesktopRouteFact::dock_from_desktop_position(
+                fixture.child_binding,
+                Authority::Known(
+                    PhysicalPoint::new(1100.0, 100.0).expect("desktop point must be valid"),
+                ),
+            )
+            .validate_against_registry(
+                fixture.engine.authority_domain(),
+                fixture.engine.viewport().registry(),
+            );
+            assert_eq!(
+                desktop_route,
+                DesktopRouteValidation::Unavailable(
+                    DesktopRouteUnavailable::CoordinateConversionUnavailable {
+                        binding: fixture.child_binding,
+                    }
+                ),
+                "historical recovery bounds must never authorize a live desktop route"
+            );
+        }
+
+        let destroyed = fixture.child_binding;
+        fixture.publish_destroyed(destroyed, [TestWindow::Host]);
+
+        let workspace = fixture.engine.workspace();
+        assert!(workspace.surface(SURFACE_CHILD).is_none());
+        if let Some(root) = child_main {
+            assert_eq!(
+                workspace.presentation_for_root(root),
+                Some(RootPresentationOwner::Contained {
+                    surface: SURFACE_HOST,
+                    floating: RECOVERY_FLOATING,
+                })
+            );
+        } else {
+            assert!(workspace.contained_floating(RECOVERY_FLOATING).is_none());
+        }
+        for (root, floating) in [
+            (ROOT_CHILD_FLOATING_A, FLOATING_A),
+            (ROOT_CHILD_FLOATING_B, FLOATING_B),
+        ] {
+            assert_eq!(
+                workspace.presentation_for_root(root),
+                Some(RootPresentationOwner::Contained {
+                    surface: SURFACE_HOST,
+                    floating,
+                })
+            );
+        }
+        assert_eq!(
+            workspace
+                .surface(SURFACE_HOST)
+                .expect("recovery host must survive")
+                .contained,
+            expected_contained
+        );
+        assert_child_roots_preserved(&fixture);
+        assert_eq!(workspace.item_multiset(), fixture.initial_items);
+        assert!(
+            fixture
+                .engine
+                .pending_surface_recovery(SURFACE_CHILD)
+                .is_none()
+        );
+        assert!(
+            fixture
+                .engine
+                .blocked_surface_recovery(SURFACE_CHILD)
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn rehoming_one_rootless_contained_root_keeps_the_source_surface_live() {
     let mut fixture = fixture(
         rootless_workspace(),

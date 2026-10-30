@@ -285,19 +285,33 @@ pub(super) fn compile_window_fact(
     let close_generation = CloseObservationGeneration::new(close_generation);
     let reason = AuthorityUnavailableReason::NotReported;
 
+    if let (Some(size), Some(bounds)) = (facts.content_size, facts.content_bounds)
+        && size != bounds.size()
+    {
+        return Err(NativePlatformError::ContentSizeBoundsMismatch {
+            surface: binding.surface(),
+        });
+    }
+    let content_size = facts
+        .content_size
+        .or_else(|| facts.content_bounds.map(|bounds| bounds.size()));
+
     match facts.lifecycle {
         NativeWindowLifecycleFact::Live => Ok(CompiledNativeWindow {
             is_live: true,
             window: Some(
                 ObservedWindow::new(binding)
-                    .with_coordinate_observation(WindowCoordinateObservation::new(
-                        binding,
-                        coordinate_generation,
-                        fact_authority(facts.content_bounds, reason),
-                        fact_authority(facts.outer_bounds, reason),
-                        fact_authority(facts.native_scale_factor, reason),
-                        fact_authority(facts.presentation_scale_factor, reason),
-                    ))
+                    .with_coordinate_observation(
+                        WindowCoordinateObservation::new(
+                            binding,
+                            coordinate_generation,
+                            fact_authority(facts.content_bounds, reason),
+                            fact_authority(facts.outer_bounds, reason),
+                            fact_authority(facts.native_scale_factor, reason),
+                            fact_authority(facts.presentation_scale_factor, reason),
+                        )
+                        .with_content_size(fact_authority(content_size, reason)),
+                    )
                     .with_input_observation(WindowInputObservation::new(
                         binding,
                         input_generation,
@@ -345,7 +359,8 @@ pub(super) fn compile_window_fact(
             ),
         }),
         NativeWindowLifecycleFact::Destroyed { acknowledgement } => {
-            if facts.content_bounds.is_some()
+            if facts.content_size.is_some()
+                || facts.content_bounds.is_some()
                 || facts.outer_bounds.is_some()
                 || facts.native_scale_factor.is_some()
                 || facts.presentation_scale_factor.is_some()

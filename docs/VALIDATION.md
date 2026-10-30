@@ -15,6 +15,67 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-30 native local geometry
+
+The existing coordinate envelope now separates required physical client size
+and native/presentation scales from optional desktop content/outer bounds.
+Known content bounds establish their size; independently supplied conflicting
+size rejects before recorder publication. Size-only snapshots can authorize
+local scene compilation and exact presentation, including DirectPrepared
+first-live. Desktop conversions and placement preserve the original Unknown
+reason and fail without a real content origin. Recovery reports the same
+typed authority gap instead of inventing an origin.
+
+The existing coordinate observation generation, registry row and scene capture
+continue to own all these facts. Size, position, outer bounds and scales remain
+in the existing generation comparison; changing any authoritative geometry
+revokes old scene authority. No second coordinate registry, sequence issuer,
+pointer producer or gesture owner is added. Standalone local-input guards and
+the managed native desktop-only input API are unchanged in this prerequisite.
+
+All 1,851 workspace tests and 96 default / 103 serde independent-consumer tests
+pass on the frozen 13-path Rust change. New cases cover size-only local paint and
+exact output, stable selection with frame retry, contradictory sizes and producer
+watermarks, direct first-live, origin withdrawal/return and old-output retirement,
+and rejection of desktop pointer input without a real desktop origin.
+
+Independent review found that an authoritative local update could overwrite the
+historical desktop projection used by destruction recovery. A failing unit and
+whole-forest lifecycle regression demonstrated the loss. Recovery now retains
+the last complete observed desktop tuple rather than mixing an old origin with
+new scales or sizes. Local minimum measurements compare with the same binding's
+last actual local snapshot, not its historical placement projection. An existing
+row with unavailable coordinates or another binding cannot borrow that cache;
+only the original removed-row retry retains its historical fallback. Rooted and
+rootless forests survive two size-only generations, fresh presentation and
+destruction with all root/item identities and ordering intact. Live desktop
+routing remains unavailable throughout. The focused geometry/recovery suite
+passes 83 cases; the full gates include these cases and the remaining regressions.
+
+All 29 frozen-source gates pass: 1,851 workspace tests, 96 default / 103 serde
+public-consumer tests, 458 native tests both normally and with native debug
+assertions disabled, ten doctests, core/native correctness and suspicious Clippy,
+strict rustdoc, formatting, and patch integrity. Each native configuration runs
+10,000 lifetimes on the same coordinator. All 430 Rust paths match between the
+main tree and native qualification snapshot.
+
+macOS default and bounded programmatic redock reach quiescence. The bounded
+root-boundary sample peaks at 3,000,339 resident / 4,152,792 reserved bytes under
+the unchanged 4,194,304-byte limit. Both macOS and X11 pass ordered, duplicate,
+reordered, late-staging and late-first-live output-pressure scenarios. X11/XTest
+also passes physical tear-off, first-live, guide-targeted redock and destruction;
+this smoke does not certify non-guide physical acceptance.
+
+The cache unit and forest red runs, the intermediate cache-only failure and final
+green recovery run are retained under `/tmp/dockspace-local-geometry-recovery-*`.
+Final source hashes and commands/results are in
+`/tmp/dockspace-local-geometry-final-snapshot.json` and
+`/tmp/dockspace-local-geometry-final-qualification.json`. Native qualification
+uses the explicit local egui override at `86feb7f8cc49217bff54a8924b2cb525f4af3285`;
+the tracked remote pin does not reproduce this local fork. Joined native local
+input, handoff, stationary scheduling, combined-cap cross-saturation and the
+broader U7/U8/U11 physical gates remain separate work.
+
 ## 2026-10-30 native preparation strategies
 
 Native enrollment explicitly freezes DirectPrepared or Staged for the provider

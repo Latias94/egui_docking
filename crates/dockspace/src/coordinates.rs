@@ -3,7 +3,8 @@
 use thiserror::Error;
 
 use crate::geometry::{
-    GeometryError, LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
+    GeometryError, LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect,
+    PhysicalSize, ScaleFactor,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{ObservedWorkArea, WindowCoordinateObservation};
@@ -202,13 +203,14 @@ fn solve_tear_off_geometry(
     Ok((requested_rect, physical_rect))
 }
 
-/// A complete coordinate snapshot acknowledged for one exact native-window binding.
+/// Local coordinate facts and optional desktop bounds for one exact native-window binding.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CoordinateSnapshot {
     binding: ViewportBinding,
     coordinate_generation: CoordinateGeneration,
     observation_generation: CoordinateObservationGeneration,
-    content_bounds: PhysicalRect,
+    content_size: PhysicalSize,
+    content_bounds: Authority<PhysicalRect>,
     outer_bounds: Option<PhysicalRect>,
     native_scale_factor: ScaleFactor,
     presentation_scale_factor: ScaleFactor,
@@ -216,11 +218,10 @@ pub(crate) struct CoordinateSnapshot {
 
 /// Exact-binding geometry retained only for destruction recovery.
 ///
-/// Content projection and the outer-window anchor are independent platform
-/// facts. A provider may temporarily lose the latter while continuing to
-/// report content coordinates. Keeping them separately prevents recovery from
-/// either fabricating an outer rectangle from content bounds or discarding the
-/// last exact outer placement.
+/// Desktop content projection and the outer-window anchor are independent
+/// historical facts. Local updates cannot replace a complete desktop projection
+/// with an unknown origin or combine that old origin with newer scales.
+/// These facts never grant live routing or scene authority.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct RecoveryCoordinateSnapshot {
     content: CoordinateSnapshot,
@@ -235,10 +236,11 @@ impl RecoveryCoordinateSnapshot {
         }
     }
 
-    /// Advances current content geometry while retaining the last exact outer
-    /// anchor when the new observation reports that fact as unavailable.
+    /// Advances each historical desktop fact only when it is actually observed.
     pub(crate) const fn observe(mut self, content: CoordinateSnapshot) -> Self {
-        self.content = content;
+        if content.content_bounds().is_some() {
+            self.content = content;
+        }
         if let Some(outer_bounds) = content.outer_bounds() {
             self.outer_bounds = Some(outer_bounds);
         }
@@ -286,8 +288,7 @@ impl CoordinateSnapshot {
                 observed: observation.binding(),
             });
         }
-        let content_bounds =
-            require_fact(observation.content_bounds(), CoordinateFact::ContentBounds)?;
+        let content_size = require_fact(observation.content_size(), CoordinateFact::ContentSize)?;
         let native_scale_factor = require_fact(
             observation.native_scale_factor(),
             CoordinateFact::NativeScaleFactor,
@@ -300,15 +301,23 @@ impl CoordinateSnapshot {
             binding,
             coordinate_generation,
             observation_generation: observation.generation(),
-            content_bounds,
+            content_size,
+            content_bounds: *observation.content_bounds(),
             outer_bounds: observation.outer_bounds().known().copied(),
             native_scale_factor,
             presentation_scale_factor,
         })
     }
 
-    pub(crate) const fn content_bounds(self) -> PhysicalRect {
-        self.content_bounds
+    pub(crate) const fn content_size(self) -> PhysicalSize {
+        self.content_size
+    }
+
+    pub(crate) const fn content_bounds(self) -> Option<PhysicalRect> {
+        match self.content_bounds {
+            Authority::Known(bounds) => Some(bounds),
+            Authority::Unknown(_) => None,
+        }
     }
 
     pub(crate) const fn outer_bounds(self) -> Option<PhysicalRect> {
@@ -322,7 +331,8 @@ impl CoordinateSnapshot {
 
     pub(crate) fn same_facts(self, other: Self) -> bool {
         self.binding == other.binding
-            && self.content_bounds == other.content_bounds
+            && self.content_size == other.content_size
+            && self.content_bounds() == other.content_bounds()
             && self.outer_bounds == other.outer_bounds
             && self.native_scale_factor == other.native_scale_factor
             && self.presentation_scale_factor == other.presentation_scale_factor
@@ -335,29 +345,38 @@ impl CoordinateSnapshot {
     #[cfg(test)]
     pub(crate) fn same_placement_facts(self, other: Self) -> bool {
         self.binding == other.binding
-            && self.content_bounds == other.content_bounds
+            && self.content_size == other.content_size
+            && self.content_bounds() == other.content_bounds()
             && self.native_scale_factor == other.native_scale_factor
     }
 
     pub(crate) fn desktop_to_surface(
         self,
         point: PhysicalPoint,
-    ) -> Result<LogicalPoint, GeometryError> {
-        point.to_target_logical(self.content_bounds.min(), self.presentation_scale_factor)
+    ) -> Result<LogicalPoint, CoordinateUnavailable> {
+        point
+            .to_target_logical(self.content_origin()?, self.presentation_scale_factor)
+            .map_err(CoordinateUnavailable::Geometry)
     }
 
     pub(crate) fn desktop_rect_to_surface(
         self,
         rect: PhysicalRect,
-    ) -> Result<LogicalRect, GeometryError> {
-        rect.to_target_logical(self.content_bounds.min(), self.presentation_scale_factor)
+    ) -> Result<LogicalRect, CoordinateUnavailable> {
+        rect.to_target_logical(self.content_origin()?, self.presentation_scale_factor)
+            .map_err(CoordinateUnavailable::Geometry)
     }
 
     pub(crate) fn surface_rect_to_desktop(
         self,
         rect: LogicalRect,
-    ) -> Result<PhysicalRect, GeometryError> {
-        rect.to_desktop_physical(self.content_bounds.min(), self.presentation_scale_factor)
+    ) -> Result<PhysicalRect, CoordinateUnavailable> {
+        rect.to_desktop_physical(self.content_origin()?, self.presentation_scale_factor)
+            .map_err(CoordinateUnavailable::Geometry)
+    }
+
+    fn content_origin(self) -> Result<PhysicalPoint, CoordinateUnavailable> {
+        require_fact(&self.content_bounds, CoordinateFact::ContentBounds).map(PhysicalRect::min)
     }
 
     pub(crate) fn placement(
@@ -368,7 +387,7 @@ impl CoordinateSnapshot {
     ) -> Result<ViewportPlacementProof, CoordinateUnavailable> {
         let physical_min = logical_rect
             .min()
-            .to_desktop_physical(self.content_bounds.min(), self.native_scale_factor)
+            .to_desktop_physical(self.content_origin()?, self.native_scale_factor)
             .map_err(CoordinateUnavailable::Geometry)?;
         let physical_size = work_area
             .scale_factor()
@@ -471,6 +490,7 @@ impl ViewportPlacementProof {
 /// Coordinate fact required for an exact conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoordinateFact {
+    ContentSize,
     ContentBounds,
     NativeScaleFactor,
     PresentationScaleFactor,
@@ -555,6 +575,163 @@ mod tests {
 
     fn snapshot(scale: f64, origin_x: f64) -> CoordinateSnapshot {
         snapshot_with_scales(scale, scale, origin_x)
+    }
+
+    #[test]
+    fn size_only_snapshot_preserves_local_facts_but_rejects_desktop_conversions() {
+        let reference = snapshot_with_scales(2.0, 2.5, 100.0);
+        let reason = AuthorityUnavailableReason::PermissionDenied;
+        let observation = WindowCoordinateObservation::new(
+            reference.binding(),
+            CoordinateObservationGeneration::new(8),
+            Authority::Unknown(reason),
+            Authority::Known(rect(92.0, -330.0, 1216.0, 938.0)),
+            Authority::Known(reference.native_scale_factor()),
+            Authority::Known(reference.presentation_scale_factor()),
+        )
+        .with_content_size(Authority::Known(reference.content_size()));
+        assert!(observation.has_authority());
+
+        let local = CoordinateSnapshot::from_observation(
+            reference.binding(),
+            CoordinateGeneration::new(12),
+            observation,
+        )
+        .expect("local coordinates do not require a desktop origin");
+        assert_eq!(local.content_size(), reference.content_size());
+        assert_eq!(local.content_bounds(), None);
+        assert_eq!(local.native_scale_factor(), reference.native_scale_factor());
+        assert_eq!(
+            local.presentation_scale_factor(),
+            reference.presentation_scale_factor()
+        );
+        let expected = CoordinateUnavailable::FactUnavailable {
+            fact: CoordinateFact::ContentBounds,
+            reason,
+        };
+        assert_eq!(
+            local.desktop_to_surface(PhysicalPoint::new(350.0, -50.0).unwrap()),
+            Err(expected.clone())
+        );
+        assert_eq!(
+            local.desktop_rect_to_surface(rect(350.0, -50.0, 200.0, 120.0)),
+            Err(expected.clone())
+        );
+        assert_eq!(
+            local.surface_rect_to_desktop(logical_rect(100.0, 100.0, 200.0, 120.0)),
+            Err(expected.clone())
+        );
+        assert_eq!(
+            local.placement(
+                logical_rect(100.0, 100.0, 200.0, 120.0),
+                work_area(4, rect(0.0, -400.0, 2000.0, 1400.0), 2.0),
+                WorkAreaGeneration::new(8),
+            ),
+            Err(expected)
+        );
+    }
+
+    #[test]
+    fn recovery_retains_the_last_complete_desktop_projection_across_local_updates() {
+        let desktop = snapshot_with_scales(2.0, 2.5, 100.0);
+        let updated_outer = rect(120.0, -340.0, 1416.0, 838.0);
+        let reason = AuthorityUnavailableReason::PermissionDenied;
+        let local = CoordinateSnapshot::from_observation(
+            desktop.binding(),
+            CoordinateGeneration::new(13),
+            WindowCoordinateObservation::new(
+                desktop.binding(),
+                CoordinateObservationGeneration::new(9),
+                Authority::Unknown(reason),
+                Authority::Known(updated_outer),
+                Authority::Known(ScaleFactor::new(3.0).unwrap()),
+                Authority::Known(ScaleFactor::new(3.5).unwrap()),
+            )
+            .with_content_size(Authority::Known(PhysicalSize::new(1400.0, 800.0).unwrap())),
+        )
+        .unwrap();
+        let recovery = RecoveryCoordinateSnapshot::new(desktop).observe(local);
+        assert_eq!(
+            recovery.content(),
+            desktop,
+            "historical recovery must retain one complete projection instead of mixing old origin with new scales"
+        );
+        assert_eq!(recovery.outer_bounds(), Some(updated_outer));
+        let point = PhysicalPoint::new(350.0, -50.0).unwrap();
+        assert_eq!(
+            local.desktop_to_surface(point),
+            Err(CoordinateUnavailable::FactUnavailable {
+                fact: CoordinateFact::ContentBounds,
+                reason,
+            }),
+            "historical geometry cannot grant live desktop authority"
+        );
+        let origin_never_observed = RecoveryCoordinateSnapshot::new(local).observe(local);
+        assert_eq!(origin_never_observed.content().content_bounds(), None);
+        assert!(
+            origin_never_observed
+                .content()
+                .desktop_to_surface(point)
+                .is_err()
+        );
+        let next_desktop = snapshot_with_scales(3.0, 3.5, 200.0);
+        assert_eq!(recovery.observe(next_desktop).content(), next_desktop);
+    }
+
+    #[test]
+    fn missing_local_size_or_either_scale_rejects_a_snapshot() {
+        let reference = snapshot(2.0, 100.0);
+        let unknown = AuthorityUnavailableReason::ProviderUnavailable;
+        for missing in [
+            CoordinateFact::ContentSize,
+            CoordinateFact::NativeScaleFactor,
+            CoordinateFact::PresentationScaleFactor,
+        ] {
+            let observation = WindowCoordinateObservation::new(
+                reference.binding(),
+                CoordinateObservationGeneration::new(8),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                if missing == CoordinateFact::NativeScaleFactor {
+                    Authority::Unknown(unknown)
+                } else {
+                    Authority::Known(reference.native_scale_factor())
+                },
+                if missing == CoordinateFact::PresentationScaleFactor {
+                    Authority::Unknown(unknown)
+                } else {
+                    Authority::Known(reference.presentation_scale_factor())
+                },
+            )
+            .with_content_size(if missing == CoordinateFact::ContentSize {
+                Authority::Unknown(unknown)
+            } else {
+                Authority::Known(reference.content_size())
+            });
+
+            assert!(!observation.has_authority());
+            assert_eq!(
+                CoordinateSnapshot::from_observation(
+                    reference.binding(),
+                    CoordinateGeneration::new(12),
+                    observation,
+                ),
+                Err(CoordinateUnavailable::FactUnavailable {
+                    fact: missing,
+                    reason: unknown,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rectangle_conversions_preserve_real_origin_and_presentation_scale() {
+        let coordinates = snapshot_with_scales(2.0, 2.5, -1600.0);
+        let desktop = rect(-1350.0, -50.0, 500.0, 300.0);
+        let local = logical_rect(100.0, 100.0, 200.0, 120.0);
+
+        assert_eq!(coordinates.desktop_rect_to_surface(desktop), Ok(local));
+        assert_eq!(coordinates.surface_rect_to_desktop(local), Ok(desktop));
     }
 
     #[test]
@@ -654,7 +831,8 @@ mod tests {
     fn placement_facts_reject_a_content_resize_at_the_same_origin_and_scale() {
         let previous = snapshot(1.0, 0.0);
         let resized = CoordinateSnapshot {
-            content_bounds: rect(0.0, -300.0, 1400.0, 700.0),
+            content_size: rect(0.0, -300.0, 1400.0, 700.0).size(),
+            content_bounds: Authority::Known(rect(0.0, -300.0, 1400.0, 700.0)),
             ..previous
         };
 
@@ -682,7 +860,8 @@ mod tests {
         assert!(!previous.same_projection_authority(replaced));
 
         let resized = CoordinateSnapshot {
-            content_bounds: rect(0.0, -300.0, 1400.0, 700.0),
+            content_size: rect(0.0, -300.0, 1400.0, 700.0).size(),
+            content_bounds: Authority::Known(rect(0.0, -300.0, 1400.0, 700.0)),
             ..refreshed
         };
         assert!(!previous.same_projection_authority(resized));
@@ -697,6 +876,8 @@ mod tests {
         };
 
         assert!(previous.same_placement_facts(decorated));
+        assert!(!previous.same_facts(decorated));
+        assert!(!previous.same_projection_authority(decorated));
     }
 
     #[test]

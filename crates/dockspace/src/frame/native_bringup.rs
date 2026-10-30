@@ -305,8 +305,8 @@ impl ViewportCoordinator {
         };
         if !record.is_ready()
             || record.coordinates().is_none_or(|coordinates| {
-                coordinates.content_bounds().width() <= 0.0
-                    || coordinates.content_bounds().height() <= 0.0
+                coordinates.content_size().width() <= 0.0
+                    || coordinates.content_size().height() <= 0.0
             })
             || record
                 .create_preparation()

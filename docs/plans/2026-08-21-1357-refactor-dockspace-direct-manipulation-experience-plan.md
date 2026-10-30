@@ -1378,6 +1378,26 @@ requests and implement their deadline/output-result scheduling for hover, touch
 and edge scrolling. Reuse
 the local/contained U12 qualification throughout these native-only slices.
 
+The local-geometry prerequisite (2026-10-30) allows the
+existing window coordinate record to become locally Ready from client size
+and both scales without desktop content bounds. Existing bounds still establish
+their size, and contradictory explicit sizes reject atomically. DirectPrepared
+first-live uses positive client area; desktop conversions, placement and spatial
+recovery still require real desktop facts. The coordinate generation and scene
+capture remain the only geometry authority. Focused public and core regressions
+pass. Historical desktop recovery retains its last complete observed tuple
+across local updates; contained minimums retain their separate exact local-scene
+proof. All 29 frozen gates pass: 1,851 workspace tests, 96 default / 103 serde
+public tests, 458 native tests normally and without native debug assertions
+(each including the same-coordinator 10,000-lifetime soak), ten doctests,
+core/native Clippy and strict docs, formatting, macOS default/bounded redock,
+X11/XTest physical smoke and five output-pressure scenarios on each platform.
+The bounded macOS sample remains within 4 MiB at 3,000,339 resident / 4,152,792
+reserved bytes. Main and native snapshot match across all 430 Rust paths. X11
+physical redock is guide-targeted; non-guide physical acceptance remains open.
+The joined provider, per-gesture local lane, positive handoff and stationary
+scheduling above remain required and are not claimed by this prerequisite.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
