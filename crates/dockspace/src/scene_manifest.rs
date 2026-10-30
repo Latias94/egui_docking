@@ -734,6 +734,27 @@ pub(crate) struct SceneRequirementDraft {
 }
 
 impl SceneRequirementDraft {
+    /// Keeps one counterfactual surface and the host's current presentation
+    /// context. Only that surface is compiled against this draft's index.
+    pub(crate) fn retain_projection_context(
+        &mut self,
+        surface: SurfaceId,
+        context: &SceneRequirementManifest,
+    ) {
+        self.surfaces.retain(|current, _| *current == surface);
+        self.surfaces.extend(
+            context
+                .surfaces()
+                .filter(|(current, _)| *current != surface)
+                .map(|(current, requirements)| (current, requirements.clone())),
+        );
+    }
+
+    pub(crate) fn insert_native_projection(&mut self, requirements: SurfaceRequirements) {
+        self.surfaces
+            .insert(requirements.ticket().surface(), requirements);
+    }
+
     pub(crate) fn new(
         authority_domain: EngineAuthorityDomainId,
         workspace: WorkspaceVersion,
@@ -802,10 +823,9 @@ impl SceneRequirementDraft {
         popup: PopupPlaneRequirement,
     ) -> Result<SceneRequirementManifest, ManifestBuildError> {
         validate_popup_requirement(&self.surfaces, popup)?;
-        if matches!(popup, PopupPlaneRequirement::Active { .. }) {
-            for (surface, requirements) in &mut self.surfaces {
-                requirements.popup_plane_bounds = Some(PopupPlaneBoundsKey::new(*surface));
-            }
+        for (surface, requirements) in &mut self.surfaces {
+            requirements.popup_plane_bounds = matches!(popup, PopupPlaneRequirement::Active { .. })
+                .then(|| PopupPlaneBoundsKey::new(*surface));
         }
         Ok(SceneRequirementManifest {
             authority_domain: self.authority_domain,
@@ -838,6 +858,17 @@ pub struct SceneRequirementManifest {
 }
 
 impl SceneRequirementManifest {
+    pub(crate) fn with_popup(mut self, popup: PopupPlaneRequirement) -> Self {
+        if self.popup == popup {
+            return self;
+        }
+        self.popup = popup;
+        for requirements in self.surfaces.values_mut() {
+            *requirements = requirements.clone().with_popup_plane_requirement(popup);
+        }
+        self
+    }
+
     /// Returns the engine authority domain which minted every surface ticket.
     #[must_use]
     pub const fn authority_domain(&self) -> EngineAuthorityDomainId {
@@ -914,6 +945,17 @@ impl SceneRequirementManifest {
 }
 
 impl SurfaceRequirements {
+    pub(crate) fn with_surface_requirement(mut self, revision: SurfaceRequirementRevision) -> Self {
+        self.ticket.surface_requirement = revision;
+        self
+    }
+
+    pub(crate) fn with_popup_plane_requirement(mut self, popup: PopupPlaneRequirement) -> Self {
+        self.popup_plane_bounds = matches!(popup, PopupPlaneRequirement::Active { .. })
+            .then(|| PopupPlaneBoundsKey::new(self.ticket.surface()));
+        self
+    }
+
     /// Constructs a core-owned exact requirement set.
     pub(crate) fn new(
         ticket: SurfaceMeasurementTicket,

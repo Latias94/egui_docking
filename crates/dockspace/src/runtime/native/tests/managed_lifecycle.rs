@@ -3,7 +3,7 @@ use super::*;
 mod budget;
 mod capacity;
 mod deferred_close;
-mod first_live_recovery;
+mod first_live_ownership;
 mod multiple_first_live;
 mod overload;
 mod report_backpressure;
@@ -733,7 +733,9 @@ fn programmatic_native_root_tear_off_rejects_when_it_would_remove_the_recovery_h
 }
 
 #[inline(never)]
-fn assert_cleanup_skips_transferred_candidate(session: &mut DockspaceSession) {
+fn assert_first_live_preparation_is_cancellable_without_transferring_source(
+    session: &mut DockspaceSession,
+) {
     let saga = session
         .engine
         .viewport()
@@ -751,11 +753,13 @@ fn assert_cleanup_skips_transferred_candidate(session: &mut DockspaceSession) {
         crate::frame::NativeCreatePhase::AwaitingPostShowPresentation { .. }
     ));
     let source_sequence = session.committed_source_sequence;
-    let mut transfer = session
+    let version = session.version();
+    let workspace = session.engine.workspace().clone();
+    let mut candidate = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the post-show terminal transfers ownership in this candidate");
+        .expect("the post-show terminal prepares prospective content in this candidate");
     assert!(matches!(
-        transfer
+        candidate
             .frame
             .view()
             .viewport()
@@ -764,15 +768,20 @@ fn assert_cleanup_skips_transferred_candidate(session: &mut DockspaceSession) {
             .phase(),
         crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
     ));
-    assert!(!transfer.cancel_next_native_create().unwrap());
-    assert_eq!(transfer.next_source_sequence, source_sequence);
-    transfer
+    assert_eq!(candidate.version(), version);
+    assert!(candidate.cancel_next_native_create().unwrap());
+    candidate
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
-    let report = transfer
-        .commit()
-        .expect("cleanup skips the transferred candidate");
+    drop(candidate);
+    assert_eq!(session.engine.workspace(), &workspace);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.committed_source_sequence, source_sequence);
+
+    let report = commit_managed_frame_report(session);
     assert!(report.native_admissions().is_empty());
+    assert_eq!(session.engine.workspace(), &workspace);
+    assert_eq!(session.version(), version);
 }
 
 #[inline(never)]
@@ -973,19 +982,18 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
     session
         .report_native_staging_presentation(post_show, SurfacePresentationResult::Presented)
         .expect("the post-show staging result records");
-    assert_cleanup_skips_transferred_candidate(&mut session);
+    assert_first_live_preparation_is_cancellable_without_transferring_source(&mut session);
 
     measure_all_surfaces(&mut session);
     let mut first_live = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the first-live paint frame begins");
-    assert!(!first_live.cancel_next_native_create().unwrap());
     assert!(
         first_live
             .paint_plan(child_binding.surface())
             .expect("the child plan resolves")
             .is_some(),
-        "ownership transfer must publish a semantic child plan"
+        "the unadmitted child must expose a complete prospective semantic plan"
     );
     let receipt = execute_surface_program(&mut first_live, child_binding.surface());
     first_live

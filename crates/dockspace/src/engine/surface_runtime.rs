@@ -1517,143 +1517,6 @@ impl DockEngine {
         Ok(InputOutcome::NativeCreateCancelled { saga, compensation })
     }
 
-    pub(super) fn native_create_first_live_recovery_obligation(
-        &self,
-        saga: NativeCreateSagaId,
-        binding: ViewportBinding,
-    ) -> Option<&SurfaceRecoveryObligation> {
-        let create = self.viewport.native_create_saga(saga)?;
-        if !self.native_create_first_live_resource_matches(saga, binding) {
-            return None;
-        }
-        let resource = create.resource();
-        let bound = self.bound_surface_recoveries.get(&binding.surface())?;
-        let obligation = &bound.obligation;
-        let original = create.prepared().recovery_obligation();
-        (bound.binding == binding
-            && bound.retained_staging_resource == Some(resource)
-            && obligation.id() == original.id()
-            && obligation.target() == original.target()
-            && obligation.authority_domain() == self.authority_domain
-            && self
-                .root_recovery_anchors
-                .get(&obligation.target().host_surface())
-                == Some(&obligation.target().anchor())
-            && Self::recovery_policy_request(
-                &self.workspace,
-                binding.surface(),
-                obligation.target().host_surface(),
-            )
-            .as_ref()
-                == Ok(obligation.request()))
-        .then_some(obligation)
-    }
-
-    fn native_create_first_live_resource_matches(
-        &self,
-        saga: NativeCreateSagaId,
-        binding: ViewportBinding,
-    ) -> bool {
-        let Some(create) = self.viewport.native_create_saga(saga) else {
-            return false;
-        };
-        let crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { proof } =
-            create.phase()
-        else {
-            return false;
-        };
-        let resource = create.resource();
-        create.binding() == binding
-            && proof.retained_resource() == Some(resource)
-            && self
-                .native_admission
-                .owns_native_create_barrier(saga, binding, resource)
-            && self
-                .viewport
-                .viewport(binding.surface())
-                .is_some_and(|record| {
-                    record.binding() == binding && record.admission() == ViewportAdmission::Pending
-                })
-    }
-
-    pub(super) fn preserves_unrecovered_first_live_surface(
-        &self,
-        saga: NativeCreateSagaId,
-        candidate: &Workspace,
-    ) -> bool {
-        let Some(create) = self.viewport.native_create_saga(saga) else {
-            return false;
-        };
-        self.native_create_first_live_recovery_obligation(saga, create.binding())
-            .is_some()
-            && self
-                .capture_surface_roster(create.binding().surface())
-                .is_ok_and(|roster| roster.matches_workspace(candidate))
-    }
-
-    pub(super) fn reduce_native_create_first_live_recovery(
-        &mut self,
-        input: InputSequence,
-        expected: WorkspaceVersion,
-        saga: NativeCreateSagaId,
-        binding: ViewportBinding,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<InputOutcome, EngineError> {
-        use crate::transition::NativeCreateFirstLiveRecoveryResult as ResultKind;
-        if expected != self.version {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: self.version,
-            });
-        }
-        let create = self
-            .viewport
-            .native_create_saga(saga)
-            .ok_or(EngineError::Viewport {
-                input,
-                source: ViewportCoordinatorError::MissingCreateSaga { saga },
-            })?;
-        let host = create
-            .prepared()
-            .recovery_obligation()
-            .target()
-            .host_surface();
-        let result = if let Some(obligation) = self
-            .native_create_first_live_recovery_obligation(saga, binding)
-            .cloned()
-        {
-            self.viewport
-                .validate_native_staging_resource_conservation()
-                .map_err(|source| EngineError::Viewport { input, source })?;
-            let mut roster = self
-                .capture_surface_roster(binding.surface())
-                .map_err(|source| EngineError::SurfaceRoster { input, source })?;
-            let _ = self.freeze_surface_roster_minimums(&mut roster);
-            let target = self.freeze_surface_recovery_target(host);
-            // This semantic input follows the completed platform action batch.
-            // Persistent recovery rosters are still checked by publication.
-            let barrier = BTreeMap::new();
-            match self.apply_obligated_surface_recovery(
-                input,
-                &roster,
-                &obligation,
-                SurfaceRecoveryTargetContext::new(&barrier, target.as_ref()),
-                events,
-            )? {
-                ObligatedSurfaceRecoveryApplication::Applied => ResultKind::Applied,
-                ObligatedSurfaceRecoveryApplication::Blocked(reason) => ResultKind::Blocked(reason),
-            }
-        } else {
-            ResultKind::Blocked(SurfaceRecoveryBlockedReason::ObligationMismatch)
-        };
-        Ok(InputOutcome::NativeCreateFirstLiveRecovery {
-            saga,
-            binding,
-            host,
-            result,
-        })
-    }
-
     pub(super) fn reduce_viewport_cleanup_retry(
         &mut self,
         input: InputSequence,
@@ -1692,7 +1555,7 @@ impl DockEngine {
         let mut active_barrier = recovery_batch.active_rosters.clone();
         for action in actions {
             match action {
-                crate::frame::ViewportLifecycleAction::TransferNativeCreate {
+                crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive {
                     saga,
                     prepared,
                     proof,
@@ -1707,8 +1570,8 @@ impl DockEngine {
                             *saga,
                         )?;
                     match application {
-                        application @ CommandApplication::Applied { .. } => {
-                            let Some(mut publication) = publication else {
+                        CommandApplication::Applied { .. } => {
+                            let Some(publication) = publication else {
                                 return Err(EngineError::MissingCommandOutcome { input });
                             };
                             let obligation = prepared.recovery_obligation();
@@ -1728,17 +1591,10 @@ impl DockEngine {
                                 let _ = self.viewport_focus.cancel_activation_reservation(*saga);
                                 continue;
                             }
-                            let source_surface = prepared.source_surface();
-                            let source_vacancy = publication
-                                .workspace
-                                .surface(source_surface)
-                                .is_none()
-                                .then(|| {
-                                    self.viewport
-                                        .capture_surface_vacancy_authority(source_surface)
-                                });
                             let mut viewport = self.viewport.clone();
-                            let binding = match viewport.transfer_native_create(*saga, *proof) {
+                            let binding = match viewport
+                                .prepare_native_create_first_live(*saga, *proof)
+                            {
                                 Ok(binding) => binding,
                                 Err(_) => {
                                     self.viewport.reject_native_create(*saga).map_err(
@@ -1754,30 +1610,21 @@ impl DockEngine {
                                     detail: "native create proof lost its retained staging resource",
                                 });
                             };
-                            publication.bound_surface_recoveries.insert(
-                                surface,
-                                BoundSurfaceRecovery::new(binding, obligation.clone())
-                                    .retaining_staging_resource(resource),
-                            );
                             self.native_admission
-                                .register_transfer(
+                                .register_native_create(
                                     *saga,
                                     binding,
                                     resource,
                                     self.presentation_authority.last_presentation_output_serial,
-                                    source_vacancy,
                                 )
                                 .map_err(|source| EngineError::ReductionCauseInvariant {
                                     detail: source.detail(),
                                 })?;
-                            self.publish_workspace(publication);
+                            // The checked publication is compiler input only.
+                            // Exact semantic first-live acceptance owns transfer.
+                            drop(publication);
                             self.viewport = viewport;
-                            self.reconcile_viewport_focus_authority();
-                            self.record_interaction_command_application(
-                                input,
-                                application,
-                                events,
-                            )?;
+                            self.rebuild_presentation_requirements(input)?;
                         }
                         CommandApplication::Rejected(_) => {
                             self.viewport
@@ -1789,7 +1636,7 @@ impl DockEngine {
                 }
                 crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. } => {
                     let binding = observation.binding();
-                    self.mark_native_source_transition_target_destroyed(binding);
+                    self.discard_native_first_live_barrier(binding);
                     if self.reduce_planned_destroyed_surface(
                         input,
                         provider,
@@ -1824,15 +1671,16 @@ impl DockEngine {
                     recovery_obligation,
                 } => {
                     let surface = destroyed_binding.surface();
-                    let resource = self
+                    if !self
                         .bound_surface_recoveries
                         .get(&surface)
-                        .filter(|bound| {
+                        .is_some_and(|bound| {
                             bound.binding == *destroyed_binding
                                 && bound.obligation.id() == *recovery_obligation
                         })
-                        .map(|bound| bound.retained_staging_resource)
-                        .ok_or(EngineError::ConflictingSurfaceRecovery { input, surface })?;
+                    {
+                        return Err(EngineError::ConflictingSurfaceRecovery { input, surface });
+                    }
                     let replacement_is_focused = self
                         .viewport_focus
                         .focus_observation()
@@ -1862,7 +1710,6 @@ impl DockEngine {
                             *destroyed_binding,
                             *replacement_binding,
                             *recovery_obligation,
-                            resource,
                             self.presentation_authority.last_presentation_output_serial,
                             recovery_activation,
                         )
@@ -1959,7 +1806,7 @@ impl DockEngine {
         let mut targets = BTreeMap::new();
         for action in actions {
             let target_surface = match action {
-                crate::frame::ViewportLifecycleAction::TransferNativeCreate { .. }
+                crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { .. }
                 | crate::frame::ViewportLifecycleAction::RecoveryReplacementReady { .. }
                 | crate::frame::ViewportLifecycleAction::RecoveryReplacementLost { .. } => None,
                 crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. } => self
@@ -2395,13 +2242,7 @@ impl DockEngine {
                 .get(&surface)
                 .is_some_and(|bound| bound.binding == binding)
             {
-                if let Some(bound) = self.bound_surface_recoveries.remove(&surface)
-                    && let Some(resource) = bound.retained_staging_resource
-                {
-                    self.viewport
-                        .release_transferred_native_staging_resource(resource, binding)
-                        .map_err(|source| EngineError::Viewport { input, source })?;
-                }
+                self.bound_surface_recoveries.remove(&surface);
             }
             return Ok(());
         }
@@ -2419,7 +2260,6 @@ impl DockEngine {
             return Ok(());
         };
         let recovery_obligation = bound.obligation.id();
-        let retained_staging_resource = bound.retained_staging_resource;
         let obligation = bound.obligation;
         let roster = context
             .roster
@@ -2455,18 +2295,9 @@ impl DockEngine {
         {
             self.complete_destroyed_surface(input, binding)?;
             self.surface_recovery.complete_pending(surface);
-            if let Some(resource) = retained_staging_resource {
-                self.viewport
-                    .release_transferred_native_staging_resource(resource, binding)
-                    .map_err(|source| EngineError::Viewport { input, source })?;
-            }
         } else if let ObligatedSurfaceRecoveryApplication::Blocked(reason) = application {
             self.viewport
-                .defer_destroyed_surface_recovery(
-                    binding,
-                    recovery_obligation,
-                    retained_staging_resource,
-                )
+                .defer_destroyed_surface_recovery(binding, recovery_obligation)
                 .map_err(|source| EngineError::Viewport { input, source })?;
             if !self.surface_recovery.defer(roster.clone()) {
                 return Err(EngineError::ConflictingSurfaceRecovery { input, surface });

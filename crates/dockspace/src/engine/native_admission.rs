@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::frame::{NativeCreatePhase, SurfaceVacancyAuthority, ViewportCoordinator};
+use crate::frame::{SurfaceVacancyAuthority, ViewportCoordinator};
 use crate::graph::Workspace;
 use crate::ids::{NativeCreateSagaId, SurfaceId};
 use crate::presentation_observation::{
@@ -15,16 +15,22 @@ use crate::viewport_registry::ViewportAdmission;
 
 use super::{DockEngine, EngineError};
 
-/// Engine-owned barrier between native topology transfer and live admission.
+/// Engine-owned barrier before native topology transfer and live admission.
 ///
 /// The viewport coordinator owns the platform lifecycle saga. This module owns
-/// only the presentation-dependent obligations created by an atomic topology
-/// transfer: the exact first-live output floor and any source binding whose
-/// retirement must wait for a terminal target outcome.
+/// the exact first-live output floor. Source vacancies are recorded only when
+/// an accepted first-live output atomically commits topology and admission;
+/// their physical retirement remains a tick-final operation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct NativeAdmissionState {
     barriers: BTreeMap<ViewportBinding, FirstLiveBarrier>,
-    source_transitions: BTreeMap<NativeCreateSagaId, PendingSourceTransition>,
+    committed_vacancies: BTreeMap<NativeCreateSagaId, NativeCreateVacancies>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeCreateVacancies {
+    source: Option<SurfaceVacancyAuthority>,
+    target: SurfaceVacancyAuthority,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,31 +51,10 @@ enum FirstLiveOwner {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PendingSourceTransition {
-    target: ViewportBinding,
-    vacancy: SurfaceVacancyAuthority,
-    status: SourceTransitionStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SourceTransitionStatus {
-    AwaitingFirstLive,
-    SettleAtTickFinal(TargetTerminal),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TargetTerminal {
-    FirstLivePresented,
-    Destroyed,
-    Vacated,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeAdmissionError {
     DuplicateBarrier,
-    DuplicateSourceTransition,
+    DuplicateCommittedVacancies,
     MissingBarrier,
-    TargetMismatch,
     OwnerMismatch,
     ResourceMismatch,
 }
@@ -78,9 +63,8 @@ impl NativeAdmissionError {
     pub(super) const fn detail(self) -> &'static str {
         match self {
             Self::DuplicateBarrier => "native first-live barrier was already pending",
-            Self::DuplicateSourceTransition => "native source transition was already pending",
+            Self::DuplicateCommittedVacancies => "native create vacancies were already committed",
             Self::MissingBarrier => "pending native create had no first-live barrier",
-            Self::TargetMismatch => "pending native create did not match its first-live target",
             Self::OwnerMismatch => "first-live barrier did not match its lifecycle owner",
             Self::ResourceMismatch => {
                 "pending native create did not match its retained staging resource"
@@ -90,6 +74,38 @@ impl NativeAdmissionError {
 }
 
 impl NativeAdmissionState {
+    pub(super) fn reconcile_pending_creates(&mut self, viewport: &ViewportCoordinator) {
+        self.barriers
+            .retain(|binding, barrier| match barrier.owner {
+                FirstLiveOwner::NativeCreate(saga) => viewport
+                    .native_create_saga(saga)
+                    .is_some_and(|create| create.binding() == *binding),
+                FirstLiveOwner::RecoveryReplacement { .. } => true,
+            });
+    }
+
+    pub(super) fn finish_native_create_first_live(
+        &mut self,
+        saga: NativeCreateSagaId,
+        binding: ViewportBinding,
+        resource: NativeStagingResourceId,
+        vacancy: Option<SurfaceVacancyAuthority>,
+        target_vacancy: SurfaceVacancyAuthority,
+    ) -> Result<(), NativeAdmissionError> {
+        if self.committed_vacancies.contains_key(&saga) {
+            return Err(NativeAdmissionError::DuplicateCommittedVacancies);
+        }
+        self.admit_first_live(binding, FirstLiveOwner::NativeCreate(saga), Some(resource))?;
+        self.committed_vacancies.insert(
+            saga,
+            NativeCreateVacancies {
+                source: vacancy,
+                target: target_vacancy,
+            },
+        );
+        Ok(())
+    }
+
     pub(super) fn owns_native_create_barrier(
         &self,
         saga: NativeCreateSagaId,
@@ -127,35 +143,20 @@ impl NativeAdmissionState {
         Ok(())
     }
 
-    pub(super) fn register_transfer(
+    pub(super) fn register_native_create(
         &mut self,
         saga: NativeCreateSagaId,
         target: ViewportBinding,
         resource: NativeStagingResourceId,
         output_floor: PresentationOutputSerial,
-        source_vacancy: Option<SurfaceVacancyAuthority>,
     ) -> Result<(), NativeAdmissionError> {
-        if source_vacancy.is_some() && self.source_transitions.contains_key(&saga) {
-            return Err(NativeAdmissionError::DuplicateSourceTransition);
-        }
         self.register_barrier(
             target,
             FirstLiveOwner::NativeCreate(saga),
             Some(resource),
             output_floor,
             None,
-        )?;
-        if let Some(vacancy) = source_vacancy {
-            self.source_transitions.insert(
-                saga,
-                PendingSourceTransition {
-                    target,
-                    vacancy,
-                    status: SourceTransitionStatus::AwaitingFirstLive,
-                },
-            );
-        }
-        Ok(())
+        )
     }
 
     pub(super) fn register_recovery_replacement(
@@ -163,7 +164,6 @@ impl NativeAdmissionState {
         destroyed_binding: ViewportBinding,
         target: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
-        resource: Option<NativeStagingResourceId>,
         output_floor: PresentationOutputSerial,
         recovery_activation: Option<(FocusCausalStamp, PaneFocusDisposition)>,
     ) -> Result<(), NativeAdmissionError> {
@@ -173,7 +173,7 @@ impl NativeAdmissionState {
                 destroyed_binding,
                 recovery_obligation,
             },
-            resource,
+            None,
             output_floor,
             recovery_activation,
         )
@@ -208,34 +208,11 @@ impl NativeAdmissionState {
             self.barriers.insert(target, barrier);
             return Err(NativeAdmissionError::ResourceMismatch);
         }
-        if let FirstLiveOwner::NativeCreate(saga) = owner {
-            if let Some(transition) = self
-                .source_transitions
-                .get_mut(&saga)
-                .filter(|transition| transition.target == target)
-            {
-                transition.status =
-                    SourceTransitionStatus::SettleAtTickFinal(TargetTerminal::FirstLivePresented);
-            }
-        }
         Ok(())
     }
 
     pub(super) fn target_destroyed(&mut self, target: ViewportBinding) {
-        let Some(barrier) = self.barriers.remove(&target) else {
-            return;
-        };
-        let FirstLiveOwner::NativeCreate(saga) = barrier.owner else {
-            return;
-        };
-        if let Some(transition) = self
-            .source_transitions
-            .get_mut(&saga)
-            .filter(|transition| transition.target == target)
-        {
-            transition.status =
-                SourceTransitionStatus::SettleAtTickFinal(TargetTerminal::Destroyed);
-        }
+        self.barriers.remove(&target);
     }
 
     pub(super) fn cancel_recovery_replacement(
@@ -260,96 +237,36 @@ impl NativeAdmissionState {
         Ok(())
     }
 
-    pub(super) fn targets_vacated(
-        &mut self,
-        retired: &[(NativeCreateSagaId, ViewportBinding)],
-    ) -> Result<Vec<NativeCreateSagaId>, NativeAdmissionError> {
-        for (saga, target) in retired {
-            let Some(barrier) = self.barriers.get(target) else {
-                return Err(
-                    if self
-                        .barriers
-                        .values()
-                        .any(|barrier| barrier.owner == FirstLiveOwner::NativeCreate(*saga))
-                    {
-                        NativeAdmissionError::TargetMismatch
-                    } else {
-                        NativeAdmissionError::MissingBarrier
-                    },
-                );
-            };
-            if barrier.owner != FirstLiveOwner::NativeCreate(*saga) {
-                return Err(NativeAdmissionError::OwnerMismatch);
-            }
-        }
-        let mut settled = Vec::with_capacity(retired.len());
-        for (saga, target) in retired {
-            self.barriers
-                .remove(target)
-                .expect("the complete vacancy batch was prevalidated");
-            if let Some(transition) = self
-                .source_transitions
-                .get_mut(saga)
-                .filter(|transition| transition.target == *target)
-            {
-                transition.status =
-                    SourceTransitionStatus::SettleAtTickFinal(TargetTerminal::Vacated);
-            }
-            settled.push(*saga);
-        }
-        Ok(settled)
-    }
-
     pub(super) fn source_surface_is_held(&self, surface: SurfaceId) -> bool {
-        self.source_transitions
-            .values()
-            .any(|transition| transition.vacancy.surface() == surface)
+        self.committed_vacancies.values().any(|vacancies| {
+            vacancies
+                .source
+                .is_some_and(|vacancy| vacancy.surface() == surface)
+        })
     }
 
     pub(super) fn held_source_surfaces(&self) -> BTreeSet<SurfaceId> {
-        self.source_transitions
+        self.committed_vacancies
             .values()
-            .map(|transition| transition.vacancy.surface())
+            .filter_map(|vacancies| vacancies.source.map(SurfaceVacancyAuthority::surface))
             .collect()
     }
 
-    pub(super) fn take_settleable_source_vacancies(
+    pub(super) fn take_committed_vacancies(
         &mut self,
-        viewport: &ViewportCoordinator,
         workspace: &Workspace,
     ) -> Vec<SurfaceVacancyAuthority> {
-        let completed = self
-            .source_transitions
-            .iter()
-            .filter_map(|(saga, transition)| {
-                let SourceTransitionStatus::SettleAtTickFinal(_) = transition.status else {
-                    return None;
-                };
-                let target_settled =
-                    viewport
-                        .viewport(transition.target.surface())
-                        .is_none_or(|record| {
-                            record.binding() != transition.target
-                                || record.admission() == ViewportAdmission::Admitted
-                        });
-                target_settled.then_some((*saga, *transition))
-            })
-            .collect::<Vec<_>>();
-        completed
-            .into_iter()
-            .filter_map(|(saga, transition)| {
-                self.source_transitions.remove(&saga);
-                workspace
-                    .surface(transition.vacancy.surface())
-                    .is_none()
-                    .then_some(transition.vacancy)
-            })
+        std::mem::take(&mut self.committed_vacancies)
+            .into_values()
+            .flat_map(|vacancies| [vacancies.source, Some(vacancies.target)])
+            .flatten()
+            .filter(|vacancy| workspace.surface(vacancy.surface()).is_none())
             .collect()
     }
 
     pub(super) fn clear(&mut self) {
         self.barriers.clear();
-        self.source_transitions.clear();
+        self.committed_vacancies.clear();
     }
 }
 
@@ -411,54 +328,10 @@ impl DockEngine {
             return Ok(());
         };
         match barrier.owner {
-            FirstLiveOwner::NativeCreate(saga) => {
-                let Some(resource) = barrier.resource else {
-                    return Err(EngineError::ReductionCauseInvariant {
-                        detail: "first-live native create lost its retained staging resource",
-                    });
-                };
-                let create_resource =
-                    self.viewport
-                        .native_create_saga(saga)
-                        .and_then(|saga| match saga.phase() {
-                            NativeCreatePhase::AwaitingFirstLivePresentation { proof } => {
-                                proof.retained_resource()
-                            }
-                            NativeCreatePhase::AwaitingHidden { .. }
-                            | NativeCreatePhase::AwaitingPreShowPresentation { .. }
-                            | NativeCreatePhase::AwaitingShowAcknowledgement { .. }
-                            | NativeCreatePhase::AwaitingVisible { .. }
-                            | NativeCreatePhase::AwaitingPostShowPresentation { .. }
-                            | NativeCreatePhase::AwaitingOwnershipTransfer { .. } => None,
-                        });
-                if create_resource != Some(resource)
-                    || !self
-                        .bound_surface_recoveries
-                        .get(&surface)
-                        .is_some_and(|bound| {
-                            bound.binding == binding
-                                && bound.retained_staging_resource == Some(resource)
-                        })
-                {
-                    return Err(EngineError::ReductionCauseInvariant {
-                        detail: "first-live barrier lost its bound retained staging resource",
-                    });
-                }
-                self.viewport
-                    .admit_native_create_first_live(saga, binding)
-                    .map_err(|source| EngineError::Viewport {
-                        input: self.last_input,
-                        source,
-                    })?;
-                self.native_admission
-                    .admit_first_live(binding, FirstLiveOwner::NativeCreate(saga), Some(resource))
-                    .map_err(|source| EngineError::ReductionCauseInvariant {
-                        detail: source.detail(),
-                    })?;
-                self.bound_surface_recoveries
-                    .get_mut(&surface)
-                    .expect("the retained staging resource was validated above")
-                    .retained_staging_resource = None;
+            FirstLiveOwner::NativeCreate(_) => {
+                return Err(EngineError::ReductionCauseInvariant {
+                    detail: "a native create can be admitted only by its exact first-live projection",
+                });
             }
             FirstLiveOwner::RecoveryReplacement {
                 destroyed_binding,
@@ -470,7 +343,6 @@ impl DockEngine {
                     .is_some_and(|bound| {
                         bound.binding == destroyed_binding
                             && bound.obligation.id() == recovery_obligation
-                            && bound.retained_staging_resource == barrier.resource
                     })
                 {
                     return Err(EngineError::ReductionCauseInvariant {
@@ -494,7 +366,7 @@ impl DockEngine {
                             destroyed_binding,
                             recovery_obligation,
                         },
-                        barrier.resource,
+                        None,
                     )
                     .map_err(|source| EngineError::ReductionCauseInvariant {
                         detail: source.detail(),
@@ -504,7 +376,6 @@ impl DockEngine {
                     .get_mut(&surface)
                     .expect("the recovery authority was validated above");
                 bound.binding = binding;
-                bound.retained_staging_resource = None;
                 self.surface_recovery.complete_pending(surface);
                 self.reconcile_viewport_focus_authority();
                 if let Some((focus_causal, pane)) = barrier.recovery_activation {
@@ -528,34 +399,13 @@ impl DockEngine {
         Ok(())
     }
 
-    pub(super) fn mark_native_source_transition_target_destroyed(
-        &mut self,
-        binding: ViewportBinding,
-    ) {
+    pub(super) fn discard_native_first_live_barrier(&mut self, binding: ViewportBinding) {
         self.native_admission.target_destroyed(binding);
     }
 
-    pub(super) fn settle_vacated_native_first_live_barriers(
-        &mut self,
-        retired: &[(NativeCreateSagaId, ViewportBinding)],
-    ) -> Result<(), EngineError> {
-        let settled = self
-            .native_admission
-            .targets_vacated(retired)
-            .map_err(|source| EngineError::ReductionCauseInvariant {
-                detail: source.detail(),
-            })?;
-        for saga in settled {
-            let _ = self.viewport_focus.cancel_activation_reservation(saga);
-        }
-        Ok(())
-    }
-
-    pub(super) fn take_settleable_native_source_vacancies(
-        &mut self,
-    ) -> Vec<SurfaceVacancyAuthority> {
+    pub(super) fn take_native_create_vacancies(&mut self) -> Vec<SurfaceVacancyAuthority> {
         self.native_admission
-            .take_settleable_source_vacancies(&self.viewport, &self.workspace)
+            .take_committed_vacancies(&self.workspace)
     }
 }
 
@@ -580,53 +430,74 @@ mod tests {
     }
 
     #[test]
-    fn transfer_registration_is_atomic_and_unique_per_saga() {
+    fn native_create_barrier_is_unique_per_saga() {
         let mut state = NativeAdmissionState::default();
         let saga = NativeCreateSagaId::new(1);
         let target = binding(1, 1);
 
         state
-            .register_transfer(
+            .register_native_create(
                 saga,
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
-                None,
             )
-            .expect("first transfer must register");
+            .expect("the first native create barrier registers");
         assert_eq!(
-            state.register_transfer(
+            state.register_native_create(
                 saga,
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
-                None,
             ),
             Err(NativeAdmissionError::DuplicateBarrier)
         );
-        assert_eq!(state.targets_vacated(&[(saga, target)]), Ok(vec![saga]));
+        assert_eq!(
+            state.finish_native_create_first_live(
+                saga,
+                target,
+                resource(saga),
+                None,
+                SurfaceVacancyAuthority::capture(target.surface(), None),
+            ),
+            Ok(())
+        );
     }
 
     #[test]
-    fn mismatched_vacancy_cannot_consume_the_current_barrier() {
+    fn mismatched_binding_cannot_consume_the_current_barrier() {
         let mut state = NativeAdmissionState::default();
         let saga = NativeCreateSagaId::new(2);
         let target = binding(2, 1);
         state
-            .register_transfer(
+            .register_native_create(
                 saga,
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
-                None,
             )
-            .expect("transfer must register");
+            .expect("the native create barrier registers");
 
         assert_eq!(
-            state.targets_vacated(&[(saga, binding(2, 2))]),
-            Err(NativeAdmissionError::TargetMismatch)
+            state.finish_native_create_first_live(
+                saga,
+                binding(2, 2),
+                resource(saga),
+                None,
+                SurfaceVacancyAuthority::capture(target.surface(), None),
+            ),
+            Err(NativeAdmissionError::MissingBarrier)
         );
-        assert_eq!(state.targets_vacated(&[(saga, target)]), Ok(vec![saga]));
+        assert_eq!(
+            state.finish_native_create_first_live(
+                saga,
+                target,
+                resource(saga),
+                None,
+                SurfaceVacancyAuthority::capture(target.surface(), None),
+            ),
+            Ok(())
+        );
     }
 
     #[test]
@@ -636,14 +507,13 @@ mod tests {
         let target = binding(3, 1);
         let expected_resource = resource(saga);
         state
-            .register_transfer(
+            .register_native_create(
                 saga,
                 target,
                 expected_resource,
                 PresentationOutputSerial::default(),
-                None,
             )
-            .expect("transfer must register");
+            .expect("the native create barrier registers");
 
         assert_eq!(
             state.admit_first_live(

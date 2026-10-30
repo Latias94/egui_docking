@@ -11,12 +11,10 @@ use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::{
     CoreHostFrame, EngineInput, HostPresentationSlot, HostPresentationUnavailableReason,
 };
-use crate::frame::NativeCreatePhase;
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
 use crate::policy::DockPolicy;
-use crate::surface_recovery::{SurfaceRecoveryBlockedReason, SurfaceRecoveryError};
-use crate::transition::{InputOutcome, NativeCreateFirstLiveRecoveryResult};
+use crate::transition::InputOutcome;
 
 #[cfg(feature = "serde")]
 use super::DockspacePersistenceError;
@@ -41,90 +39,8 @@ fn has_ordinary_application_input(transition: &crate::transition::EngineTransiti
                 input.outcome(),
                 InputOutcome::NativeInputCancelledForOverload
                     | InputOutcome::NativeCreateCancelled { .. }
-                    | InputOutcome::NativeCreateFirstLiveRecovery { .. }
             )
     })
-}
-
-/// Stable reason why a transferred native create could not recover its roster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeCreateRecoveryBlockedReason {
-    /// The obligation's recovery host lacks current routing or measured authority.
-    HostAuthorityUnavailable,
-    /// Exact source coordinates, bounds, or contained minimums are unavailable.
-    SourceGeometryUnavailable,
-    /// The saga, binding, obligation, or frozen roster no longer matches authority.
-    AuthorityChanged,
-    /// The complete recovery program could not be compiled or published atomically.
-    PublicationBlocked,
-}
-
-impl NativeCreateRecoveryBlockedReason {
-    pub(super) fn from_core(reason: &SurfaceRecoveryBlockedReason) -> Self {
-        match reason {
-            SurfaceRecoveryBlockedReason::HostAuthorityUnavailable { .. }
-            | SurfaceRecoveryBlockedReason::Compile(SurfaceRecoveryError::MissingHostSurface {
-                ..
-            }) => Self::HostAuthorityUnavailable,
-            SurfaceRecoveryBlockedReason::Compile(
-                SurfaceRecoveryError::SourceCoordinatesUnavailable { .. }
-                | SurfaceRecoveryError::SourceOuterBoundsUnavailable { .. }
-                | SurfaceRecoveryError::ContainedMinimumsUnavailable { .. }
-                | SurfaceRecoveryError::Geometry(_)
-                | SurfaceRecoveryError::UnrepresentableGeometry { .. },
-            ) => Self::SourceGeometryUnavailable,
-            SurfaceRecoveryBlockedReason::ObligationMismatch
-            | SurfaceRecoveryBlockedReason::Compile(
-                SurfaceRecoveryError::SourceIsRecoveryHost { .. }
-                | SurfaceRecoveryError::HostFactsMismatch { .. }
-                | SurfaceRecoveryError::HostSceneSurfaceMismatch { .. }
-                | SurfaceRecoveryError::SourceRosterChanged { .. }
-                | SurfaceRecoveryError::ShapeMismatch { .. }
-                | SurfaceRecoveryError::ConvertedMainRootMismatch { .. }
-                | SurfaceRecoveryError::FloatingCollision { .. }
-                | SurfaceRecoveryError::ContainedMinimumRosterMismatch { .. },
-            ) => Self::AuthorityChanged,
-            SurfaceRecoveryBlockedReason::ProgramRejected
-            | SurfaceRecoveryBlockedReason::Compile(
-                SurfaceRecoveryError::Transaction(_) | SurfaceRecoveryError::InvalidProgram { .. },
-            ) => Self::PublicationBlocked,
-        }
-    }
-}
-
-/// Immediate candidate result of recovering at most one transferred native create.
-///
-/// An applied or blocked attempt consumes one application input sequence and one
-/// host lifecycle work-budget entry. Its effects publish only when the enclosing
-/// frame commits; dropping the frame rolls the attempt back. Recovery does not
-/// prove that cleanup was dispatched or that the child window was destroyed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[must_use = "recovery attempts must be accounted for in the host lifecycle work budget"]
-pub enum NativeCreateRecoveryStep {
-    /// No matching transferred child remains in the current candidate.
-    ///
-    /// No input was appended and no application sequence was consumed.
-    None,
-    /// The complete child roster recovered into its obligated host in the candidate.
-    Applied {
-        /// Identity of the exact recovery input appended to this frame.
-        submitted: DockspaceSubmittedAction,
-        /// Child surface whose complete roster was recovered.
-        surface: SurfaceId,
-        /// Recovery destination named by the saga's durable obligation.
-        host: SurfaceId,
-    },
-    /// The exact recovery attempt left the child and its obligation intact.
-    Blocked {
-        /// Identity of the exact recovery input appended to this frame.
-        submitted: DockspaceSubmittedAction,
-        /// Child surface whose complete roster remains retained.
-        surface: SurfaceId,
-        /// Recovery destination named by the saga's durable obligation.
-        host: SurfaceId,
-        /// Authority or publication condition preventing this attempt.
-        reason: NativeCreateRecoveryBlockedReason,
-    },
 }
 
 /// One affine, rollbackable application host frame.
@@ -174,16 +90,17 @@ impl DockspaceHostFrame<'_> {
         Ok(DockspaceSubmittedAction::new(attempt, sequence))
     }
 
-    /// Explicitly cancels at most one native create before ownership transfer.
+    /// Explicitly cancels at most one pending native create.
     ///
-    /// Selects the next eligible saga from this frame's current candidate and
-    /// preserves its source content through the existing cleanup protocol.
-    /// Creates awaiting first-live presentation are skipped. Returns whether
-    /// one cancellation input was appended; dropping or failing to commit the
-    /// frame publishes no cancellation. Hosts account for each appended input
-    /// against their own lifecycle work budget. Appending does not reserve
-    /// effect-report storage; compensation stays in the existing effect ledger
-    /// until delivery capacity is available.
+    /// Selects the first saga from this frame's current candidate, including
+    /// creates awaiting first-live presentation. Source content remains on its
+    /// current surface until the exact first-live output is presented, so every
+    /// pending create can use the existing cleanup protocol without moving it.
+    /// Returns whether one cancellation input was appended; dropping or failing
+    /// to commit the frame publishes no cancellation. Hosts account for each
+    /// appended input against their own lifecycle work budget. Appending does
+    /// not reserve effect-report storage; compensation stays in the existing
+    /// effect ledger until delivery capacity is available.
     ///
     /// # Errors
     ///
@@ -196,13 +113,8 @@ impl DockspaceHostFrame<'_> {
             .view()
             .viewport()
             .native_create_sagas()
-            .find_map(|(id, saga)| {
-                (!matches!(
-                    saga.phase(),
-                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                ))
-                .then_some(id)
-            });
+            .next()
+            .map(|(id, _)| id);
         let Some(saga) = saga else {
             return Ok(false);
         };
@@ -211,135 +123,6 @@ impl DockspaceHostFrame<'_> {
             saga,
         })?;
         Ok(true)
-    }
-
-    /// Returns transferred children still awaiting recovery in the current candidate.
-    ///
-    /// This query consumes no input sequence. It includes blocked children and skips
-    /// children already recovered in this frame, before final saga retirement.
-    pub fn native_create_recovery_surfaces(&self) -> impl Iterator<Item = SurfaceId> + '_ {
-        let candidate = self.frame.view();
-        let workspace = candidate.workspace();
-        candidate
-            .viewport()
-            .native_create_sagas()
-            .filter_map(move |(_, saga)| {
-                let surface = saga.binding().surface();
-                (matches!(
-                    saga.phase(),
-                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                ) && workspace.surface(surface).is_some())
-                .then_some(surface)
-            })
-    }
-
-    /// Attempts the next transferred child awaiting its first live presentation.
-    ///
-    /// A blocked child remains eligible for the next call. Hosts handling several
-    /// children should enumerate [`Self::native_create_recovery_surfaces`] and use
-    /// [`Self::recover_transferred_native_create`] to attempt other candidates.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::recover_transferred_native_create`].
-    pub fn recover_next_transferred_native_create(
-        &mut self,
-    ) -> Result<NativeCreateRecoveryStep, DockspaceRuntimeError> {
-        self.ensure_semantic_input_allowed()?;
-        let next = self.native_create_recovery_surfaces().next();
-        match next {
-            Some(surface) => self.recover_transferred_native_create(surface),
-            None => Ok(NativeCreateRecoveryStep::None),
-        }
-    }
-
-    /// Recovers the exact transferred child before its first live presentation.
-    ///
-    /// Resolves the surface's eligible saga and exact binding from the current candidate,
-    /// including changes from earlier native ingress. Core recovers the complete
-    /// roster into the host named by that saga's durable recovery obligation.
-    /// The returned step reflects the just-appended input's actual reduction.
-    /// Already recovered children are skipped even before final saga retirement.
-    ///
-    /// [`NativeCreateRecoveryStep::None`] consumes no application sequence. Applied
-    /// and blocked attempts each consume one sequence and count against the host's
-    /// lifecycle work budget. Dropping or failing to commit the frame publishes
-    /// neither attempt. Cleanup effects remain in the existing ledger until report
-    /// storage is available; recovery does not admit or destroy the child window.
-    ///
-    /// A blocked host may require fresh exact measurements committed in a separate
-    /// frame before retrying. Measurements close this frame's semantic input phase,
-    /// so they cannot supply authority to a recovery input in that same frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when native input remains pending, semantic input is closed,
-    /// the private source sequence is exhausted, core rejects the input, or the
-    /// immediate outcome does not identify the selected saga, binding, and host.
-    pub fn recover_transferred_native_create(
-        &mut self,
-        surface: SurfaceId,
-    ) -> Result<NativeCreateRecoveryStep, DockspaceRuntimeError> {
-        self.ensure_semantic_input_allowed()?;
-        let candidate = self.frame.view();
-        if candidate.workspace().surface(surface).is_none() {
-            return Ok(NativeCreateRecoveryStep::None);
-        }
-        let next = candidate
-            .viewport()
-            .native_create_sagas()
-            .find_map(|(id, saga)| {
-                (matches!(
-                    saga.phase(),
-                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                ) && saga.binding().surface() == surface)
-                    .then_some((
-                        id,
-                        saga.binding(),
-                        saga.prepared()
-                            .recovery_obligation()
-                            .target()
-                            .host_surface(),
-                    ))
-            });
-        let Some((saga, binding, host)) = next else {
-            return Ok(NativeCreateRecoveryStep::None);
-        };
-        let attempt = self.frame.presentation_attempt();
-        let sequence = self.append_identified(EngineInput::RecoverNativeCreateFirstLive {
-            expected: self.frame.view().version(),
-            saga,
-            binding,
-        })?;
-        let Some(InputOutcome::NativeCreateFirstLiveRecovery {
-            saga: recovered_saga,
-            binding: recovered_binding,
-            host: recovered_host,
-            result,
-        }) = self.frame.last_input_outcome()
-        else {
-            return Err(NativePlatformError::ProtocolInvariant.into());
-        };
-        if (*recovered_saga, *recovered_binding, *recovered_host) != (saga, binding, host) {
-            return Err(NativePlatformError::ProtocolInvariant.into());
-        }
-        let submitted = DockspaceSubmittedAction::new(attempt, sequence);
-        let surface = binding.surface();
-        Ok(match result {
-            NativeCreateFirstLiveRecoveryResult::Applied => NativeCreateRecoveryStep::Applied {
-                submitted,
-                surface,
-                host,
-            },
-            NativeCreateFirstLiveRecoveryResult::Blocked(reason) => {
-                NativeCreateRecoveryStep::Blocked {
-                    submitted,
-                    surface,
-                    host,
-                    reason: NativeCreateRecoveryBlockedReason::from_core(reason),
-                }
-            }
-        })
     }
 
     /// Returns whether native input or report submission remains after this prefix.
@@ -461,8 +244,8 @@ impl DockspaceHostFrame<'_> {
 
     /// Requests a native child window for one complete root.
     ///
-    /// Source content remains on its current surface until post-show staging
-    /// authorizes the ownership-transfer barrier. First-live presentation then
+    /// Source content remains on its current surface until the exact first-live
+    /// target output is presented. That atomic boundary transfers ownership and
     /// admits routing, focus, accessibility, and source-resource retirement.
     ///
     /// # Errors

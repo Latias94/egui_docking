@@ -621,7 +621,8 @@ impl TabStripStateStore {
         }
         let active_before = candidate.active_menu.clone();
         candidate.reconcile_active_menu();
-        let routing_changed = surface_roster_changed || candidate.active_menu != active_before;
+        let routing_changed = (surface_roster_changed && candidate.active_menu.is_some())
+            || candidate.active_menu != active_before;
         if routing_changed {
             candidate.popup_routing_revision = candidate
                 .popup_routing_revision
@@ -1132,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn close_and_exact_surface_roster_changes_advance_global_routing() {
+    fn inactive_surface_rosters_preserve_independent_routing_and_active_rosters_advance_it() {
         let [node, _] = nodes();
         let key = key(1, 10, node);
         let items = [ItemId::new(1)];
@@ -1158,6 +1159,20 @@ mod tests {
         let roster = states
             .reconcile_exact_for_surface_roster([(key, items.as_slice())], true)
             .expect("an exact surface-roster change reconciles");
+        assert!(!roster.state_changed());
+        assert!(roster.influence().is_empty());
+        assert_eq!(
+            states.popup_requirement().revision(),
+            revision_before_roster
+        );
+
+        states
+            .open_tab_list_menu(key, None)
+            .expect("the same strip can open a new exact popup session");
+        let revision_before_roster = states.popup_requirement().revision();
+        let roster = states
+            .reconcile_exact_for_surface_roster([(key, items.as_slice())], true)
+            .expect("an active popup requires a new exact-roster barrier");
         assert!(roster.state_changed());
         assert_eq!(roster.influence(), &TabStripInfluenceDomain::PopupRoster);
         assert_ne!(

@@ -1394,6 +1394,7 @@ fn native_lifecycle_scenario_reports_terminality_presentation_first_live_and_qui
         terminality: ScenarioActionTerminality::Requested,
     });
 
+    let before_first_live = fixture.host.version();
     fixture.present_hidden_child(child, create_acknowledgement);
     let show_acknowledgement =
         fixture.present_staging_and_take_show(child, NativeStagingPresentationPhase::PreShow);
@@ -1402,14 +1403,29 @@ fn native_lifecycle_scenario_reports_terminality_presentation_first_live_and_qui
     fixture.commit();
     assert_eq!(
         fixture.host.view().item(X).map(|item| item.surface()),
-        Some(child.surface()),
-        "post-show ownership transfer publishes the child presentation before first-live",
+        Some(SURFACE),
+        "the post-show placeholder retains source ownership before first-live",
     );
+    assert_eq!(fixture.host.version(), before_first_live);
+    assert!(fixture.host.view().surface(child.surface()).is_none());
+    assert!(
+        fixture
+            .host
+            .session
+            .presented_surface(child.surface())
+            .is_none()
+    );
+
+    fixture.present_first_live(child);
+    assert_eq!(
+        fixture.host.view().item(X).map(|item| item.surface()),
+        Some(child.surface()),
+        "the exact first-live output publishes ownership and admission together",
+    );
+    assert_ne!(fixture.host.version(), before_first_live);
     observations.push(SemanticObservation::PresentationApplied(
         SurfaceAlias::Child,
     ));
-
-    fixture.present_first_live(child);
     observations.push(SemanticObservation::FirstLive(SurfaceAlias::Child));
 
     let release = fixture.request_redock(child);

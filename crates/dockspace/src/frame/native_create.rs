@@ -23,8 +23,7 @@ use super::native_bringup::{NativeBringupPhase, NativeBringupPresentationOutcome
 use super::native_staging_resource::NativeStagingResourceOwner;
 use super::{
     BindingCleanupAction, BindingRetirementOrigin, BindingRetirementStatus, NativeVisibilityProof,
-    NativeVisibleProof, RecoveryPendingStatus, ViewportCoordinator, ViewportCoordinatorError,
-    ViewportLifecycleAction,
+    NativeVisibleProof, ViewportCoordinator, ViewportCoordinatorError, ViewportLifecycleAction,
 };
 
 /// Placement and recovery identities shared by every native create entry point.
@@ -187,11 +186,11 @@ pub enum NativeCreatePhase {
         visibility: NativeVisibilityProof,
         presentation: NativeStagingPresentation,
     },
-    /// Both staging outputs were presented and graph ownership may advance.
-    AwaitingOwnershipTransfer {
+    /// Both staging outputs were presented; prospective child content may be prepared.
+    AwaitingFirstLivePreparation {
         proof: NativeVisibleProof,
     },
-    /// Graph ownership moved, but the exact first live output is still pending.
+    /// The child may render prospective content; source ownership is unchanged.
     AwaitingFirstLivePresentation {
         proof: NativeVisibleProof,
     },
@@ -273,9 +272,8 @@ impl NativeCreatePhase {
                 visibility,
                 presentation,
             }),
-            Self::AwaitingOwnershipTransfer { .. } | Self::AwaitingFirstLivePresentation { .. } => {
-                None
-            }
+            Self::AwaitingFirstLivePreparation { .. }
+            | Self::AwaitingFirstLivePresentation { .. } => None,
         }
     }
 
@@ -290,7 +288,7 @@ impl NativeCreatePhase {
                 show
             }
             Self::AwaitingPostShowPresentation { visibility, .. } => visibility.show,
-            Self::AwaitingOwnershipTransfer { proof }
+            Self::AwaitingFirstLivePreparation { proof }
             | Self::AwaitingFirstLivePresentation { proof } => proof.show(),
         }
     }
@@ -301,7 +299,7 @@ impl NativeCreatePhase {
                 Some(show)
             }
             Self::AwaitingPostShowPresentation { visibility, .. } => Some(visibility.show),
-            Self::AwaitingOwnershipTransfer { proof }
+            Self::AwaitingFirstLivePreparation { proof }
             | Self::AwaitingFirstLivePresentation { proof } => Some(proof.show()),
             Self::AwaitingHidden { .. } | Self::AwaitingPreShowPresentation { .. } => None,
         }
@@ -314,7 +312,7 @@ impl NativeCreatePhase {
             Self::AwaitingHidden { .. }
             | Self::AwaitingShowAcknowledgement { .. }
             | Self::AwaitingVisible { .. }
-            | Self::AwaitingOwnershipTransfer { .. }
+            | Self::AwaitingFirstLivePreparation { .. }
             | Self::AwaitingFirstLivePresentation { .. } => None,
         }
     }
@@ -402,10 +400,9 @@ impl From<NativeBringupPhase> for NativeCreatePhase {
 
 /// Queryable native create saga.
 ///
-/// Source ownership remains unchanged through
-/// [`NativeCreatePhase::AwaitingPostShowPresentation`]. After transfer, the
-/// saga remains queryable until the exact first live target output admits
-/// routing, focus, accessibility, and source-resource retirement.
+/// Source ownership remains unchanged for every pending phase. The exact first
+/// live target output atomically transfers ownership, admits the binding,
+/// releases its staging resource and completes this saga.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeCreateSaga {
     pub(super) id: NativeCreateSagaId,
@@ -619,14 +616,12 @@ impl ViewportCoordinator {
             NativeStagingOwner::RecoveryReplacement {
                 destroyed_binding,
                 recovery_obligation,
-                retained_resource,
             } => self
                 .recovery_replacements
                 .pending(destroyed_binding.surface())
                 .is_some_and(|pending| {
                     pending.destroyed_binding() == destroyed_binding
                         && pending.recovery_obligation() == recovery_obligation
-                        && pending.retained_staging_resource() == retained_resource
                         && pending.replacement_binding() == Some(presentation.binding())
                         && pending
                             .bringup_phase()
@@ -725,12 +720,14 @@ impl ViewportCoordinator {
                     .sagas
                     .get_mut(&saga_id)
                     .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreatePhase::AwaitingOwnershipTransfer { proof };
-                Ok(Some(ViewportLifecycleAction::TransferNativeCreate {
-                    saga: saga_id,
-                    prepared: Box::new(prepared),
-                    proof,
-                }))
+                    .phase = NativeCreatePhase::AwaitingFirstLivePreparation { proof };
+                Ok(Some(
+                    ViewportLifecycleAction::PrepareNativeCreateFirstLive {
+                        saga: saga_id,
+                        prepared: Box::new(prepared),
+                        proof,
+                    },
+                ))
             }
         }
     }
@@ -746,7 +743,6 @@ impl ViewportCoordinator {
         let NativeStagingOwner::RecoveryReplacement {
             destroyed_binding,
             recovery_obligation,
-            retained_resource,
         } = request.owner()
         else {
             return Ok(None);
@@ -776,28 +772,9 @@ impl ViewportCoordinator {
                 if !self.replacement_is_admissible(binding) {
                     return Ok(None);
                 }
-                let mut staging_resources = self.native_staging_resources.clone();
-                let mut recovery_replacements = self.recovery_replacements.clone();
-                if let Some(resource) = retained_resource {
-                    staging_resources
-                        .transition(
-                            resource,
-                            NativeStagingResourceOwner::SurfaceRecovery {
-                                obligation: recovery_obligation,
-                                binding: destroyed_binding,
-                            },
-                            NativeStagingResourceOwner::RecoveryReplacementFirstLive {
-                                obligation: recovery_obligation,
-                                binding,
-                            },
-                        )
-                        .map_err(ViewportCoordinatorError::from)?;
-                }
-                recovery_replacements
+                self.recovery_replacements
                     .mark_awaiting_first_live(binding, phase, proof)
                     .map_err(super::recovery_replacement_error)?;
-                self.native_staging_resources = staging_resources;
-                self.recovery_replacements = recovery_replacements;
                 Ok(Some(ViewportLifecycleAction::RecoveryReplacementReady {
                     destroyed_binding,
                     replacement_binding: binding,
@@ -807,7 +784,7 @@ impl ViewportCoordinator {
         }
     }
 
-    pub(crate) fn transfer_native_create(
+    pub(crate) fn prepare_native_create_first_live(
         &mut self,
         saga_id: NativeCreateSagaId,
         proof: NativeVisibleProof,
@@ -817,7 +794,7 @@ impl ViewportCoordinator {
             .sagas
             .get(&saga_id)
             .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?;
-        let NativeCreatePhase::AwaitingOwnershipTransfer { proof: expected } = saga.phase else {
+        let NativeCreatePhase::AwaitingFirstLivePreparation { proof: expected } = saga.phase else {
             return Err(ViewportCoordinatorError::CreateSagaNotReady { saga: saga_id });
         };
         let visibility = proof.visibility;
@@ -916,7 +893,7 @@ impl ViewportCoordinator {
             // repeating that acknowledgement. The applied generation must
             // therefore precede or equal the retained hidden proof; requiring
             // equality would make every legitimate reissue uncompilable at
-            // ownership transfer.
+            // first-live preparation.
             }) if inventory_generation <= visibility.hidden_inventory_generation
         ) || !matches!(
             show_phase,
@@ -943,8 +920,8 @@ impl ViewportCoordinator {
         Ok(binding)
     }
 
-    /// Admits a transferred native binding after the engine has accepted an
-    /// exact presentation observation for its first live docking output.
+    /// Admits the native binding as the engine atomically publishes ownership for an
+    /// exact presentation observation of its first live docking output.
     pub(crate) fn admit_native_create_first_live(
         &mut self,
         saga_id: NativeCreateSagaId,
@@ -1000,14 +977,6 @@ impl ViewportCoordinator {
         &mut self,
         saga_id: NativeCreateSagaId,
     ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
-        if self.native_creates.sagas.get(&saga_id).is_some_and(|saga| {
-            matches!(
-                saga.phase,
-                NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-            )
-        }) {
-            return Err(ViewportCoordinatorError::CreateSagaAlreadyTransferred { saga: saga_id });
-        }
         let saga = self
             .native_creates
             .sagas
@@ -1016,6 +985,14 @@ impl ViewportCoordinator {
         let binding = saga.binding;
         let create = saga.create;
         let resource = saga.resource;
+        let resource_owner = if matches!(
+            saga.phase,
+            NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+        ) {
+            NativeStagingResourceOwner::NativeCreateFirstLive(binding)
+        } else {
+            NativeStagingResourceOwner::NativeCreateSaga(saga_id)
+        };
         let create_may_have_executed = self.effects.record(create).is_some_and(|record| {
             record.was_emitted()
                 && !matches!(
@@ -1046,15 +1023,12 @@ impl ViewportCoordinator {
         let may_reappear = create_may_have_executed && !observed;
         if !observed && !may_reappear {
             self.terminate_pointer_passthrough_binding(binding);
-            self.release_native_staging_resource(
-                resource,
-                NativeStagingResourceOwner::NativeCreateSaga(saga_id),
-            )?;
+            self.release_native_staging_resource(resource, resource_owner)?;
             return Ok(None);
         }
         self.transition_native_staging_resource(
             resource,
-            NativeStagingResourceOwner::NativeCreateSaga(saga_id),
+            resource_owner,
             NativeStagingResourceOwner::BindingCleanup(binding),
         )?;
         self.begin_binding_cleanup(BindingCleanupRequest {
@@ -1090,17 +1064,7 @@ impl ViewportCoordinator {
     }
 
     pub(super) fn abortable_native_create_sagas(&self) -> Vec<NativeCreateSagaId> {
-        self.native_creates
-            .sagas
-            .iter()
-            .filter_map(|(id, saga)| {
-                (!matches!(
-                    saga.phase,
-                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                ))
-                .then_some(*id)
-            })
-            .collect()
+        self.native_creates.sagas.keys().copied().collect()
     }
 
     pub(super) fn native_create_snapshot_by_binding(
@@ -1118,27 +1082,20 @@ impl ViewportCoordinator {
     }
 
     pub(super) fn native_create_is_staging_binding(&self, binding: ViewportBinding) -> bool {
-        self.native_creates.sagas.values().any(|saga| {
-            saga.binding == binding
-                && !matches!(
-                    saga.phase,
-                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                )
-        })
+        self.native_creates
+            .sagas
+            .values()
+            .any(|saga| saga.binding == binding)
     }
 
     pub(super) fn abortable_native_create_for_binding(
         &self,
         binding: ViewportBinding,
     ) -> Option<NativeCreateSagaId> {
-        self.native_creates.sagas.iter().find_map(|(id, saga)| {
-            (saga.binding == binding
-                && !matches!(
-                    saga.phase,
-                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                ))
-            .then_some(*id)
-        })
+        self.native_creates
+            .sagas
+            .iter()
+            .find_map(|(id, saga)| (saga.binding == binding).then_some(*id))
     }
 
     pub(super) fn native_create_for_effect(&self, effect: EffectId) -> Option<NativeCreateSagaId> {
@@ -1150,24 +1107,20 @@ impl ViewportCoordinator {
     pub(super) fn settle_destroyed_native_create(
         &mut self,
         binding: ViewportBinding,
-    ) -> Result<Option<bool>, ViewportCoordinatorError> {
+    ) -> Result<bool, ViewportCoordinatorError> {
         let saga_id = self
             .native_creates
             .sagas
             .iter()
             .find_map(|(id, saga)| (saga.binding == binding).then_some(*id));
         let Some(saga_id) = saga_id else {
-            return Ok(None);
+            return Ok(false);
         };
         let saga = self
             .native_creates
             .sagas
             .remove(&saga_id)
             .expect("the matching native create saga was just observed");
-        let ownership_transferred = matches!(
-            saga.phase,
-            NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-        );
         let inventory_generation = self.registry.inventory_generation();
         let _ = self
             .effects
@@ -1177,33 +1130,16 @@ impl ViewportCoordinator {
                 .effects
                 .mark_destroyed(show, binding, inventory_generation);
         }
-        if !ownership_transferred {
-            self.release_native_staging_resource(
-                saga.resource,
-                NativeStagingResourceOwner::NativeCreateSaga(saga_id),
-            )?;
-        }
-        Ok(Some(ownership_transferred))
-    }
-
-    pub(super) fn retire_first_live_native_create_for_vacancy(
-        &mut self,
-        binding: ViewportBinding,
-    ) -> Option<(NativeCreateSagaId, NativeStagingResourceId)> {
-        let saga = self
-            .native_creates
-            .sagas
-            .iter()
-            .find_map(|(saga, create)| {
-                (create.binding == binding
-                    && matches!(
-                        create.phase,
-                        NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                    ))
-                .then_some(*saga)
-            })?;
-        let create = self.native_creates.sagas.remove(&saga)?;
-        Some((saga, create.resource))
+        let owner = if matches!(
+            saga.phase,
+            NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+        ) {
+            NativeStagingResourceOwner::NativeCreateFirstLive(binding)
+        } else {
+            NativeStagingResourceOwner::NativeCreateSaga(saga_id)
+        };
+        self.release_native_staging_resource(saga.resource, owner)?;
+        Ok(true)
     }
 
     pub(super) fn transition_native_staging_resource(
@@ -1238,76 +1174,12 @@ impl ViewportCoordinator {
             .map_err(ViewportCoordinatorError::from)
     }
 
-    #[must_use]
-    pub(super) fn native_staging_resource_owner(
-        &self,
-        resource: NativeStagingResourceId,
-    ) -> Option<NativeStagingResourceOwner> {
-        self.native_staging_resources.owner(resource)
-    }
-
-    /// Releases a transferred resource only for its exact pre-admission binding.
-    pub(crate) fn release_transferred_native_staging_resource(
-        &mut self,
-        resource: NativeStagingResourceId,
-        binding: ViewportBinding,
-    ) -> Result<(), ViewportCoordinatorError> {
-        self.release_native_staging_resource(
-            resource,
-            NativeStagingResourceOwner::NativeCreateFirstLive(binding),
-        )
-    }
-
-    /// Settles a resource whose logical surface vanished at the tick boundary.
-    ///
-    /// Binding retirement remains the sole owner until its exact native cleanup
-    /// terminates. Every other lifecycle must match the bound recovery before
-    /// the resource can be released.
-    pub(crate) fn settle_vacated_native_staging_resource(
-        &mut self,
-        resource: NativeStagingResourceId,
-        binding: ViewportBinding,
-        recovery_obligation: crate::surface_recovery::SurfaceRecoveryObligationId,
-    ) -> Result<(), ViewportCoordinatorError> {
-        let owner = self.native_staging_resource_owner(resource).ok_or(
-            super::native_staging_resource::NativeStagingResourceLedgerError::MissingResource {
-                resource,
-            },
-        )?;
-        let release = match owner {
-            NativeStagingResourceOwner::NativeCreateFirstLive(owner_binding) => {
-                owner_binding == binding
-            }
-            NativeStagingResourceOwner::SurfaceRecovery {
-                obligation,
-                binding: owner_binding,
-            } => obligation == recovery_obligation && owner_binding == binding,
-            NativeStagingResourceOwner::RecoveryReplacementFirstLive {
-                obligation,
-                binding: owner_binding,
-            } => obligation == recovery_obligation && owner_binding.surface() == binding.surface(),
-            NativeStagingResourceOwner::BindingCleanup(_) => return Ok(()),
-            NativeStagingResourceOwner::NativeCreateSaga(_) => false,
-        };
-        if !release {
-            return Err(ViewportCoordinatorError::NativeStagingResourceOwnerMismatch { resource });
-        }
-        self.release_native_staging_resource(resource, owner)
-    }
-
     /// Validates retained-resource conservation after a complete lifecycle reduction.
-    ///
-    /// Callers must not invoke this between publishing frame actions and reducing
-    /// those actions into the engine. A transferred binding may be moving from an
-    /// active create saga into a pending recovery during that interval.
     pub(crate) fn validate_native_staging_resource_conservation(
         &self,
     ) -> Result<(), ViewportCoordinatorError> {
-        let mut references = Vec::with_capacity(
-            self.native_creates.sagas.len()
-                + self.recovery_replacements.len()
-                + self.binding_cleanup.len(),
-        );
+        let mut references =
+            Vec::with_capacity(self.native_creates.sagas.len() + self.binding_cleanup.len());
         references.extend(self.native_creates.sagas.iter().map(|(saga, create)| {
             let owner = if matches!(
                 create.phase,
@@ -1319,31 +1191,6 @@ impl ViewportCoordinator {
             };
             (create.resource, owner)
         }));
-        for (surface, pending) in self.recovery_replacements.iter() {
-            let Some(resource) = pending.retained_staging_resource() else {
-                continue;
-            };
-            let owner = if matches!(
-                pending.status(),
-                RecoveryPendingStatus::AwaitingFirstLivePresentation
-            ) {
-                let binding = pending.replacement_binding().ok_or(
-                    ViewportCoordinatorError::PendingRecoveryRegistrationMismatch {
-                        surface: *surface,
-                    },
-                )?;
-                NativeStagingResourceOwner::RecoveryReplacementFirstLive {
-                    obligation: pending.recovery_obligation(),
-                    binding,
-                }
-            } else {
-                NativeStagingResourceOwner::SurfaceRecovery {
-                    obligation: pending.recovery_obligation(),
-                    binding: pending.destroyed_binding(),
-                }
-            };
-            references.push((resource, owner));
-        }
         references.extend(
             self.binding_cleanup
                 .iter()
@@ -1360,14 +1207,5 @@ impl ViewportCoordinator {
         self.native_staging_resources
             .validate_conservation(references)
             .map_err(ViewportCoordinatorError::from)
-    }
-
-    #[cfg(test)]
-    pub(super) fn insert_native_staging_resource_for_test(
-        &mut self,
-        descriptor: NativeStagingResourceDescriptor,
-        owner: NativeStagingResourceOwner,
-    ) -> Result<(), ViewportCoordinatorError> {
-        self.insert_native_staging_resource(descriptor, owner)
     }
 }

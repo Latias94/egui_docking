@@ -5,6 +5,8 @@ use super::*;
 use crate::model::{DockPlacement, DockspaceActionOutcome, DockspaceActionRejection};
 use crate::runtime::{DockspaceSession, SurfaceUnavailableReason};
 
+mod source_recovery;
+mod source_reservation;
 mod staging_resource;
 
 #[test]
@@ -1961,30 +1963,65 @@ fn tick_final_vacancy_suppresses_focus_for_a_newly_visible_native_binding() {
         crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
     );
     let post_show_output = emit_background_native_staging(&mut fixture, post_show);
+    let _ = observe_background_presentation_output(&mut fixture, post_show_output);
+    let measurements = surface_measurements(&fixture.engine, NATIVE_SURFACE, background_bounds());
+    let token = fixture
+        .engine
+        .begin_surface_contribution(NATIVE_SURFACE)
+        .expect("the prospective child contribution begins");
+    let contribution = fixture
+        .engine
+        .prepare_surface_contribution(token, measurements)
+        .expect("the prospective child content measurements prepare");
+    let _ =
+        submit_surface_measurement(&mut fixture.engine, fixture.presentation_host, contribution);
+    let mut paint = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    complete_host_frame_with_current_outputs(&fixture.engine, &mut paint);
+    let emitted = paint
+        .finish(&mut fixture.engine)
+        .expect("the prospective child emits a real semantic output");
+    let first_live_output = emitted
+        .presentation_emissions()
+        .iter()
+        .map(|emission| emission.output())
+        .find(|output| output.surface() == NATIVE_SURFACE)
+        .expect("the native child emitted one exact semantic output");
 
     let mut prelude = fixture
         .engine
         .begin_host_frame(fixture.presentation_host)
-        .expect("post-show settlement frame must begin");
-    prelude
-        .submit_presentation_observation(HostPresentationObservation::Batch(vec![
+        .expect("first-live settlement frame must begin");
+    let observation_entries = prelude
+        .pending_presentation_streams()
+        .into_iter()
+        .map(|stream| {
+            let output = emitted
+                .presentation_emissions()
+                .iter()
+                .map(|emission| emission.output())
+                .find(|output| output.stream() == stream)
+                .expect("every pending stream has its exact emitted output");
             HostPresentationObservationEntry::new(
-                post_show_output.stream(),
+                stream,
                 HostPresentationStreamObservation::Captured {
                     generation: HostPresentationCaptureGeneration::new(
-                        post_show_output.key().ordinal_for_test(),
+                        output.key().ordinal_for_test(),
                     ),
                     progress: HostPresentationProgress::Retired {
-                        settled_through: post_show_output.key(),
-                        presented: Authority::Known(Some(post_show_output.key())),
+                        settled_through: output.key(),
+                        presented: Authority::Known(Some(output.key())),
                     },
                 },
-            ),
-        ]))
-        .expect("post-show presentation proof must submit");
+            )
+        })
+        .collect();
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::Batch(observation_entries))
+        .expect("the exact first-live presentation proof must submit");
     let mut frame = prelude
         .seal(&fixture.engine)
-        .expect("post-show proof must transfer before semantic input");
+        .expect("first-live proof must transfer before semantic input");
+    assert_eq!(first_live_output.surface(), NATIVE_SURFACE);
     let mut semantic_writer = TestInputStream::resume(&fixture.engine, COMMAND_SOURCE);
     semantic_writer
         .append(

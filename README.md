@@ -26,7 +26,7 @@ The earlier product-boundary plan supplies the persistence and ownership context
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Caller-owned official-egui runs support tab select/close/reorder, magnetic center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | An unmodified `eframe::App::ui` callback cannot prove terminal presentation; preview-qualified drag and pane-focus settlement are typed unavailable there |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Native consolidation and fresh physical qualification remain open. The existing reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify it |
+| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Native consolidation and broader platform qualification remain open. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
 Caller-owned official-egui runs also retain explicit local touch identities:
@@ -48,10 +48,12 @@ from the 2026-10-27 audit are repaired and covered by fresh regressions. See
 [`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
 docking and multiview crate.
 
-Native creation currently publishes topology after a non-interactive PostShow
-placeholder, before exact semantic first-live admission. R15's atomic first-live
-ownership boundary remains open; the next lifecycle replacement must keep source
-ownership until that exact content output is accepted. See the current audit in
+Native creation now keeps source ownership through staging and prospective child
+painting. Only an accepted exact first-live content output publishes topology,
+workspace revision and admission together. A dropped frame or output and a
+cancelled pending create preserve source ownership. Fixed hidden staging still
+needs to become an adapter strategy before universal native-host readiness is
+claimed. See the current qualification and remaining gates in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 The experimental native adapter reserves 4,096 raw callback slots and two

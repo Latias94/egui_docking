@@ -231,28 +231,29 @@ pub(crate) const fn no_frame_invalidation_readiness(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeferredBindingAuthority {
-    CurrentSurface,
-    AwaitingFirstLive,
-    Retiring,
-    Invalid,
-}
-
-fn deferred_binding_authority(
+fn resolve_deferred_binding_paint(
+    disposition: DeferredViewportPaint,
     route_matches: bool,
     binding_is_current: bool,
     binding_is_recognized: bool,
-    surface_is_present: bool,
-) -> DeferredBindingAuthority {
+) -> DeferredViewportPaint {
     if !route_matches || !binding_is_recognized {
-        DeferredBindingAuthority::Invalid
-    } else if binding_is_current && surface_is_present {
-        DeferredBindingAuthority::CurrentSurface
+        DeferredViewportPaint::Waiting
     } else if binding_is_current {
-        DeferredBindingAuthority::AwaitingFirstLive
+        // The bridge has already checked staging. A prospective child must
+        // paint before first-live presentation can publish its durable surface.
+        disposition
     } else {
-        DeferredBindingAuthority::Retiring
+        match disposition {
+            DeferredViewportPaint::Semantic(binding) | DeferredViewportPaint::Retain(binding) => {
+                DeferredViewportPaint::Retain(binding)
+            }
+            DeferredViewportPaint::Created
+            | DeferredViewportPaint::Staging(_)
+            | DeferredViewportPaint::Waiting => {
+                unreachable!("only binding paint dispositions reach authority resolution")
+            }
+        }
     }
 }
 
@@ -945,42 +946,16 @@ impl NativeCoordinator {
                 token.create_attempt(),
             )
         });
-        let authority = deferred_binding_authority(
+        let validated = resolve_deferred_binding_paint(
+            disposition,
             current == Some(binding),
             self.session.is_current_native_binding(binding),
             self.session.recognizes_native_binding(binding),
-            self.session.view().surface(binding.surface()).is_some(),
         );
-        match (disposition, authority) {
-            (DeferredViewportPaint::Semantic(_), DeferredBindingAuthority::CurrentSurface)
-            | (DeferredViewportPaint::Retain(_), DeferredBindingAuthority::CurrentSurface) => {
-                disposition
-            }
-            (
-                DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
-                DeferredBindingAuthority::AwaitingFirstLive,
-            ) => {
-                self.bridge.block_semantic_viewport(token.viewport_id());
-                DeferredViewportPaint::Retain(binding)
-            }
-            (
-                DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
-                DeferredBindingAuthority::Retiring,
-            ) => DeferredViewportPaint::Retain(binding),
-            (
-                DeferredViewportPaint::Semantic(_) | DeferredViewportPaint::Retain(_),
-                DeferredBindingAuthority::Invalid,
-            ) => {
-                self.bridge.abandon_output(token);
-                DeferredViewportPaint::Waiting
-            }
-            (
-                DeferredViewportPaint::Created
-                | DeferredViewportPaint::Staging(_)
-                | DeferredViewportPaint::Waiting,
-                _,
-            ) => unreachable!("only binding paint dispositions reach authority resolution"),
+        if validated == DeferredViewportPaint::Waiting {
+            self.bridge.abandon_output(token);
         }
+        validated
     }
 
     /// Returns the viewport which currently owns one logical surface.

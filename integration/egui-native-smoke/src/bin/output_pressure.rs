@@ -86,12 +86,42 @@ enum Phase {
     Done,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SourceOwnership {
+    surface: SurfaceId,
+    root: RootId,
+    floating: FloatingPresentationId,
+    rect: LogicalRect,
+}
+
+impl SourceOwnership {
+    fn read(runtime: &NativeDockspaceApp<Panes>) -> Option<Self> {
+        runtime
+            .with_view(|view| {
+                let item = view.item(CHILD_ITEM)?;
+                let floating = item.contained()?;
+                let contained = view.contained(floating)?;
+                (contained.root()?.id() == item.root()).then_some(Self {
+                    surface: item.surface(),
+                    root: item.root(),
+                    floating,
+                    rect: contained.rect(),
+                })
+            })
+            .flatten()
+    }
+}
+
 struct PressureState {
     scenario: Scenario,
     phase: Phase,
     buffered: VecDeque<eframe::NativeOutputResult>,
     child_viewport: Option<ViewportId>,
     child_surface: Option<SurfaceId>,
+    source_ownership: Option<SourceOwnership>,
+    child_content_output: Option<eframe::NativeOutputToken>,
+    withheld_first_live: Option<eframe::NativeOutputResult>,
+    settled_first_live: Option<eframe::NativeOutputResult>,
     child_paused: bool,
     root_roster_has_child: bool,
     root_control_seen: bool,
@@ -120,6 +150,10 @@ impl PressureState {
             buffered: VecDeque::with_capacity(BUFFERED_TERMINALS),
             child_viewport: None,
             child_surface: None,
+            source_ownership: None,
+            child_content_output: None,
+            withheld_first_live: None,
+            settled_first_live: None,
             child_paused: false,
             root_roster_has_child: false,
             root_control_seen: false,
@@ -168,6 +202,24 @@ impl PressureState {
             Scenario::LateStaging | Scenario::LateFirstLive
         ) && self.late_terminal_after_fatal)
     }
+
+    fn check_source_ownership(&self, runtime: &NativeDockspaceApp<Panes>) -> Result<(), String> {
+        let source = self
+            .source_ownership
+            .ok_or("the source ownership boundary was not captured")?;
+        if SourceOwnership::read(runtime) != Some(source) {
+            return Err(
+                "pending child changed the source surface, root or contained bounds".into(),
+            );
+        }
+        if let Some(child) = self.child_surface
+            && (runtime.with_view(|view| view.surface(child).is_none()) != Some(true)
+                || runtime.is_surface_presented(child))
+        {
+            return Err("the withheld child output published ownership or presentation".into());
+        }
+        Ok(())
+    }
 }
 
 fn storage_limit() -> Result<NativeStorageLimit, egui_dockspace_native::NativeRuntimeError> {
@@ -205,16 +257,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         "output-pressure: {scenario:?}; selected={BYTE_LIMIT}, initial_reserved={}",
         selected.initial_reserved_bytes()
     );
+    let shared = Arc::new(Mutex::new(PressureState::new(scenario)));
     let runtime = Arc::new(Mutex::new(NativeDockspaceApp::new_with_storage_limit(
         egui::Id::unique("native-output-pressure"),
         session,
         ROOT_SURFACE,
-        Panes,
+        Panes(Arc::clone(&shared)),
         DockStyle::default(),
         NativeWindowClosePolicy::default(),
         selected,
     )?));
-    let shared = Arc::new(Mutex::new(PressureState::new(scenario)));
     let inner = lock(&runtime).native_host_handler();
     let native_host = Arc::new(host::PressureHost {
         inner,
@@ -228,6 +280,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let demand_shared = Arc::clone(&shared);
     let demand_runtime = Arc::clone(&runtime);
+    let pass_shared = Arc::clone(&shared);
     eframe::run_native(
         "Dockspace real output pressure",
         eframe::NativeOptions {
@@ -237,6 +290,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         Box::new(move |creation| {
             let context = creation.egui_ctx.clone();
+            if scenario == Scenario::LateFirstLive {
+                context.on_begin_pass(
+                    "output-pressure child content",
+                    Arc::new(move |ui| {
+                        if ui.ctx().viewport_id() != ViewportId::ROOT {
+                            // A discarded pass cannot prove content in its replacement pass.
+                            lock(&pass_shared).child_content_output = None;
+                        }
+                    }),
+                );
+            }
             std::thread::Builder::new()
                 .name("native-output-pressure-demand".to_owned())
                 .spawn(move || {
@@ -292,11 +356,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     if scenario == Scenario::LateFirstLive {
         assert!(shared.late_terminal_after_fatal);
         assert_eq!(shared.forwarded, 1);
+        assert!(shared.withheld_first_live.is_some());
+        assert_eq!(shared.settled_first_live, shared.withheld_first_live);
     }
     let backlog = lock(&runtime).output_backlog();
     let runtime = lock(&runtime);
     assert_eq!(backlog.ordinary(), 0, "window exit retains ordinary owners");
     assert_eq!(backlog.control(), 0, "window exit retains control owners");
+    if matches!(scenario, Scenario::LateStaging | Scenario::LateFirstLive) {
+        shared
+            .check_source_ownership(&runtime)
+            .map_err(io::Error::other)?;
+        assert_eq!(backlog.protected_staging(), 0);
+        assert_eq!(backlog.awaiting_staging(), 0);
+        // The final root terminal checks shutdown quiescence before event-loop
+        // exit. Destroying the external root can then enqueue a new OS fact,
+        // after the last core boundary and without retaining an output owner.
+    }
     if scenario == Scenario::Ordered {
         assert_eq!(
             runtime.error_kind(),
@@ -372,6 +448,13 @@ impl PressureApp {
                 "resident={resident}, reserved={reserved}, limit={BYTE_LIMIT}"
             ));
         }
+        if matches!(
+            state.scenario,
+            Scenario::LateStaging | Scenario::LateFirstLive
+        ) && state.source_ownership.is_some()
+        {
+            state.check_source_ownership(runtime)?;
+        }
         if let Some(error) = runtime.error_kind() {
             let (order_error, cleanup_empty) = runtime.with_errors(|primary, cleanup| {
                 (
@@ -393,19 +476,9 @@ impl PressureApp {
                     Scenario::LateStaging | Scenario::LateFirstLive
                 ) {
                     if !state.late_terminal_after_fatal {
-                        return Err("shutdown drained before the withheld staging terminal".into());
+                        return Err("shutdown drained before the withheld terminal".into());
                     }
-                    let source_preserved = runtime.with_view(|view| {
-                        view.item(CHILD_ITEM)
-                            .is_some_and(|item| item.surface() == ROOT_SURFACE)
-                    });
-                    if source_preserved != Some(true)
-                        || state
-                            .child_surface
-                            .is_some_and(|surface| runtime.is_surface_presented(surface))
-                    {
-                        return Err("late staging terminal transferred the preserved source".into());
-                    }
+                    state.check_source_ownership(runtime)?;
                 }
                 state.finish(context, Ok(()));
             }
@@ -435,6 +508,12 @@ impl PressureApp {
         }
         match state.phase {
             Phase::Bootstrap if runtime.is_surface_presented(ROOT_SURFACE) => {
+                let source = SourceOwnership::read(runtime)
+                    .ok_or("the child source is not a contained root")?;
+                if source.surface != ROOT_SURFACE || source.root != CHILD_ROOT {
+                    return Err("the child source has unexpected surface or root ownership".into());
+                }
+                state.source_ownership = Some(source);
                 runtime
                     .request_move_root_to_new_window(
                         CHILD_ROOT,
@@ -463,17 +542,17 @@ impl PressureApp {
                             CHILD_ROOT,
                             DockPlacement::Center(DockAnchor::Item(MAIN_ITEM)),
                         )
-                        .map_err(|error| format!("redock after recovered admission: {error}"))?;
+                        .map_err(|error| format!("redock after output pressure: {error}"))?;
                     state.phase = Phase::AwaitRedock;
-                    eprintln!("output-pressure: ordinary admission recovered; redocking");
+                    eprintln!("output-pressure: ordinary output owners drained; redocking");
                 }
             }
             Phase::AwaitRetirement if runtime.is_quiescent() => {
-                let restored = runtime.with_view(|view| {
+                let redocked = runtime.with_view(|view| {
                     view.item(CHILD_ITEM)
                         .is_some_and(|item| item.surface() == ROOT_SURFACE)
                 });
-                if restored == Some(true)
+                if redocked == Some(true)
                     && state
                         .child_surface
                         .is_some_and(|surface| !runtime.is_surface_presented(surface))
@@ -498,7 +577,7 @@ impl PressureApp {
     }
 }
 
-struct Panes;
+struct Panes(Shared);
 
 impl PaneView for Panes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
@@ -507,5 +586,17 @@ impl PaneView for Panes {
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
         ui.label(format!("Real output pressure pane {}", item.get()));
+        if item == CHILD_ITEM
+            && let Some(token) = eframe::current_native_output_token()
+            && token.viewport_id() != ViewportId::ROOT
+        {
+            let mut state = lock(&self.0);
+            if state.scenario == Scenario::LateFirstLive && state.phase == Phase::AwaitFirstLive {
+                assert_eq!(Some(token.viewport_id()), state.child_viewport);
+                assert_eq!(token.viewport_id(), ui.ctx().viewport_id());
+                assert!(ui.is_enabled(), "first-live child content must be enabled");
+                state.child_content_output = Some(token);
+            }
+        }
     }
 }

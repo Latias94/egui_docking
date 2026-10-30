@@ -431,9 +431,8 @@ pub enum NativeStagingPresentationPhase {
 
 /// Core-private lifecycle owner of one native staging sequence.
 ///
-/// A recovery replacement can stage an established logical surface without a
-/// retained tear-off resource. Keeping lifecycle identity separate from that
-/// optional resource prevents recovery from fabricating a native-create saga.
+/// A recovery replacement stages an established logical surface using its
+/// destroyed binding and recovery obligation, without a retained create resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum NativeStagingOwner {
     NativeCreate {
@@ -442,7 +441,6 @@ pub(crate) enum NativeStagingOwner {
     RecoveryReplacement {
         destroyed_binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
-        retained_resource: Option<NativeStagingResourceId>,
     },
 }
 
@@ -457,21 +455,14 @@ impl NativeStagingOwner {
         Some(Self::NativeCreate { resource })
     }
 
-    pub(crate) fn recovery_replacement(
+    pub(crate) const fn recovery_replacement(
         destroyed_binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
-        retained_resource: Option<NativeStagingResourceId>,
-    ) -> Option<Self> {
-        if let Some(resource) = retained_resource
-            && resource.authority_domain() != destroyed_binding.authority_domain()
-        {
-            return None;
-        }
-        Some(Self::RecoveryReplacement {
+    ) -> Self {
+        Self::RecoveryReplacement {
             destroyed_binding,
             recovery_obligation,
-            retained_resource,
-        })
+        }
     }
 
     pub(crate) const fn authority_domain(self) -> EngineAuthorityDomainId {
@@ -486,9 +477,7 @@ impl NativeStagingOwner {
     pub(crate) const fn retained_resource(self) -> Option<NativeStagingResourceId> {
         match self {
             Self::NativeCreate { resource, .. } => Some(resource),
-            Self::RecoveryReplacement {
-                retained_resource, ..
-            } => retained_resource,
+            Self::RecoveryReplacement { .. } => None,
         }
     }
 

@@ -1,10 +1,8 @@
 use super::*;
 use crate::close_plan::{CloseAuthority, CloseCoordinator, NativeCloseEdge, SurfaceCloseRequest};
-use crate::command::MovePayload;
 use crate::effect::{EffectPhase, NativeCloseResolution};
 use crate::geometry::{PhysicalRect, ScaleFactor};
-use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use crate::ids::{EngineAuthorityDomainId, ItemId, RootId, WorkspaceRevision};
+use crate::ids::{EngineAuthorityDomainId, WorkspaceRevision};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
@@ -13,20 +11,13 @@ use crate::platform::{
     WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
     WorkAreaRosterObservation,
 };
-use crate::presentation_config::PresentationConfigRevision;
-use crate::presentation_observation::{
-    NativeStagingResourceDescriptor, PresentationOutputSerial, PresentedNativeStagingPresentation,
-    PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
-};
-use crate::scene::SurfaceSceneStamp;
-use crate::scene_manifest::{
-    PolicyRevision, SurfaceMeasurementTicket, SurfaceRequirementRevision, SurfaceSceneRevision,
-};
+use crate::presentation_observation::PresentedNativeStagingPresentation;
+use crate::scene_manifest::PolicyRevision;
 use crate::transition::WorkspaceVersion;
 use crate::viewport::{
-    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateGeneration,
-    CoordinateObservationGeneration, InventoryObservationGeneration,
-    PresentationObservationGeneration, WindowIncarnation, WorkAreaObservationGeneration,
+    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
+    InventoryObservationGeneration, PresentationObservationGeneration, WindowIncarnation,
+    WorkAreaObservationGeneration,
 };
 use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
@@ -634,50 +625,11 @@ fn recovery(root: u64) -> SurfaceRecoveryObligationId {
     SurfaceRecoveryObligationId::new_for_test(root)
 }
 
-fn retained_resource_descriptor(saga: NativeCreateSagaId) -> NativeStagingResourceDescriptor {
-    let domain = EngineAuthorityDomainId::new_for_test(1);
-    let source_surface = SurfaceId::new(700);
-    let root = RootId::new(701);
-    let item = ItemId::new(702);
-    let mut builder = Workspace::builder();
-    let tabs = builder.insert_node(Node::tabs([item]));
-    builder.set_root(root, RootRecord::new(tabs));
-    builder.set_surface(source_surface, SurfacePresentation::with_main(root));
-    let workspace = builder.build().expect("test workspace must be valid");
-    let payload = MovePayload::Item(
-        workspace
-            .capture_item_source(root, tabs, item)
-            .expect("test item source must be current"),
-    );
-    let measurement = SurfaceMeasurementTicket::new(
-        domain,
-        WorkspaceEpoch::default(),
-        PresentationConfigRevision::new(1),
-        PolicyRevision::new(1),
-        SurfaceRequirementRevision::new(1),
-        source_surface,
-    );
-    let output = SurfacePresentationOutputTicket::mint(
-        domain,
-        PresentationOutputSerial::new_for_test(1),
-        SurfaceSceneStamp::new(measurement, SurfaceSceneRevision::new(1)),
-    );
-    let presentation =
-        PresentedSurfaceAuthority::mint_observed_for_test(output, CoordinateGeneration::new(1));
-    NativeStagingResourceDescriptor::mint(
-        NativeStagingResourceId::mint(domain, saga),
-        presentation,
-        payload,
-    )
-    .expect("test retained resource must share one authority domain")
-}
-
 fn ready_recovery_replacement() -> (
     ViewportCoordinator,
     ViewportBinding,
     ViewportBinding,
     SurfaceRecoveryObligationId,
-    NativeStagingResourceId,
 ) {
     let domain = EngineAuthorityDomainId::new_for_test(1);
     let epoch = WorkspaceEpoch::default();
@@ -695,21 +647,6 @@ fn ready_recovery_replacement() -> (
         WindowIncarnation::new(709),
     );
     let obligation = recovery(712);
-    let descriptor = retained_resource_descriptor(NativeCreateSagaId::new(713));
-    let resource = descriptor.id();
-    coordinator
-        .insert_native_staging_resource_for_test(
-            descriptor,
-            NativeStagingResourceOwner::SurfaceRecovery {
-                obligation,
-                binding: destroyed,
-            },
-        )
-        .expect("test recovery must retain its resource");
-    assert_eq!(
-        coordinator.validate_native_staging_resource_conservation(),
-        Err(ViewportCoordinatorError::UnreferencedNativeStagingResource { resource })
-    );
     let replacement_effect = coordinator
         .effects
         .request(PlatformEffect::RequestReplacement {
@@ -725,14 +662,13 @@ fn ready_recovery_replacement() -> (
             destroyed,
             ViewportRole::Child,
             obligation,
-            Some(resource),
             replacement,
             replacement_effect,
         ))
         .expect("test recovery replacement must register");
     coordinator
         .validate_native_staging_resource_conservation()
-        .expect("surface recovery must own exactly one retained resource");
+        .expect("surface recovery must not require a retained create resource");
 
     let emitted = coordinator.take_new_effects();
     assert!(matches!(
@@ -752,6 +688,12 @@ fn ready_recovery_replacement() -> (
         .native_staging_presentations()
         .next()
         .expect("hidden replacement must request pre-show staging");
+    assert_eq!(
+        pre_show.owner(),
+        NativeStagingOwner::recovery_replacement(destroyed, obligation)
+    );
+    assert_eq!(pre_show.native_create_saga(), None);
+    assert_eq!(pre_show.retained_resource(), None);
     let pre_show_transition = coordinator
         .observe_native_staging_presentation(
             PresentedNativeStagingPresentation::mint_observed_for_test(pre_show, 1),
@@ -790,6 +732,8 @@ fn ready_recovery_replacement() -> (
         .native_staging_presentations()
         .next()
         .expect("visible replacement must request post-show staging");
+    assert_eq!(post_show.owner(), pre_show.owner());
+    assert_eq!(post_show.retained_resource(), None);
     let action = coordinator
         .observe_native_staging_presentation(
             PresentedNativeStagingPresentation::mint_observed_for_test(post_show, 2),
@@ -805,17 +749,23 @@ fn ready_recovery_replacement() -> (
             && replacement_binding == replacement
             && recovery_obligation == obligation
     ));
+    assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
+    assert_eq!(coordinator.native_create_sagas().count(), 0);
     assert_eq!(
-        coordinator.native_staging_resource_owner(resource),
-        Some(NativeStagingResourceOwner::RecoveryReplacementFirstLive {
-            obligation,
-            binding: replacement,
-        })
+        coordinator
+            .recovery_pending(surface)
+            .expect("replacement must await exact first-live admission")
+            .status(),
+        RecoveryPendingStatus::AwaitingFirstLivePresentation
+    );
+    assert_eq!(
+        coordinator.viewport(surface).map(ViewportRecord::admission),
+        Some(ViewportAdmission::Pending)
     );
     coordinator
         .validate_native_staging_resource_conservation()
-        .expect("first-live replacement must own exactly one retained resource");
-    (coordinator, destroyed, replacement, obligation, resource)
+        .expect("first-live replacement must not fabricate a create resource");
+    (coordinator, destroyed, replacement, obligation)
 }
 
 fn register(
@@ -836,15 +786,25 @@ fn register(
 }
 
 #[test]
-fn recovery_first_live_admission_releases_retained_resource_atomically() {
-    let (mut coordinator, destroyed, replacement, obligation, resource) =
-        ready_recovery_replacement();
+fn recovery_first_live_admission_requires_exact_obligation_without_a_create_resource() {
+    let (mut coordinator, destroyed, replacement, obligation) = ready_recovery_replacement();
+
+    let before = coordinator.clone();
+    assert_eq!(
+        coordinator.admit_recovery_replacement_first_live(destroyed, replacement, recovery(714)),
+        Err(
+            ViewportCoordinatorError::PendingRecoveryObligationMismatch {
+                surface: destroyed.surface(),
+            }
+        )
+    );
+    assert_eq!(coordinator, before);
 
     coordinator
         .admit_recovery_replacement_first_live(destroyed, replacement, obligation)
         .expect("first-live replacement must admit");
 
-    assert_eq!(coordinator.native_staging_resource_owner(resource), None);
+    assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
     assert!(coordinator.recovery_pending(destroyed.surface()).is_none());
     assert_eq!(
         coordinator
@@ -854,19 +814,18 @@ fn recovery_first_live_admission_releases_retained_resource_atomically() {
     );
     coordinator
         .validate_native_staging_resource_conservation()
-        .expect("admission must release the terminal retained resource");
+        .expect("replacement admission must not create a staging resource");
 }
 
 #[test]
-fn recovered_host_can_preempt_first_live_without_losing_the_retained_resource() {
-    let (mut coordinator, destroyed, replacement, _obligation, resource) =
-        ready_recovery_replacement();
+fn recovered_host_can_preempt_first_live_without_a_create_resource() {
+    let (mut coordinator, destroyed, replacement, _obligation) = ready_recovery_replacement();
 
     coordinator
         .complete_pending_recovery(destroyed.surface())
         .expect("host recovery must atomically close the pre-admission replacement");
 
-    assert_eq!(coordinator.native_staging_resource_owner(resource), None);
+    assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
     assert!(matches!(
         coordinator
             .recovery_pending(destroyed.surface())
@@ -882,13 +841,12 @@ fn recovered_host_can_preempt_first_live_without_losing_the_retained_resource() 
     );
     coordinator
         .validate_native_staging_resource_conservation()
-        .expect("compensation must not retain an unreferenced staging resource");
+        .expect("replacement compensation must not create a staging resource");
 }
 
 #[test]
-fn workspace_replacement_quarantines_runtime_recovery_resource_until_exact_destruction() {
-    let (mut coordinator, _destroyed, replacement, _obligation, resource) =
-        ready_recovery_replacement();
+fn workspace_replacement_quarantines_recovery_binding_until_exact_destruction() {
+    let (mut coordinator, _destroyed, replacement, _obligation) = ready_recovery_replacement();
 
     coordinator
         .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new())
@@ -906,15 +864,12 @@ fn workspace_replacement_quarantines_runtime_recovery_resource_until_exact_destr
         retirement.origin(),
         BindingRetirementOrigin::WorkspaceReplaced
     );
-    assert_eq!(retirement.retained_staging_resource(), Some(resource));
+    assert_eq!(retirement.retained_staging_resource(), None);
     assert!(coordinator.recovery_replacements.is_empty());
-    assert_eq!(
-        coordinator.native_staging_resource_owner(resource),
-        Some(NativeStagingResourceOwner::BindingCleanup(replacement))
-    );
+    assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
     coordinator
         .validate_native_staging_resource_conservation()
-        .expect("binding retirement must conserve the runtime recovery resource");
+        .expect("recovery binding retirement must not create a staging resource");
 
     coordinator
         .publish_snapshot(&snapshot_with_close_at(
@@ -929,16 +884,15 @@ fn workspace_replacement_quarantines_runtime_recovery_resource_until_exact_destr
         .expect("exact replacement destruction must publish");
 
     assert!(!coordinator.binding_cleanup.contains_key(&replacement));
-    assert_eq!(coordinator.native_staging_resource_owner(resource), None);
+    assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
     coordinator
         .validate_native_staging_resource_conservation()
-        .expect("exact destruction must release the terminal retained resource");
+        .expect("exact recovery destruction must leave no staging resources");
 }
 
 #[test]
-fn pre_admission_close_destruction_returns_first_live_resource_to_surface_recovery() {
-    let (mut coordinator, destroyed, replacement, obligation, resource) =
-        ready_recovery_replacement();
+fn pre_admission_close_destruction_returns_replacement_to_recovery_host() {
+    let (mut coordinator, destroyed, replacement, obligation) = ready_recovery_replacement();
     let requested = close_observation(replacement, 4, WindowCloseState::LiveRequested);
     let close = coordinator
         .publish_snapshot(&snapshot_with_close_at(
@@ -989,13 +943,7 @@ fn pre_admission_close_destruction_returns_first_live_resource_to_surface_recove
             && *replacement_binding == replacement
             && *recovery_obligation == obligation
     ));
-    assert_eq!(
-        coordinator.native_staging_resource_owner(resource),
-        Some(NativeStagingResourceOwner::SurfaceRecovery {
-            obligation,
-            binding: destroyed,
-        })
-    );
+    assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
     let pending = coordinator
         .recovery_pending(destroyed.surface())
         .expect("source recovery must remain pending");
@@ -1006,7 +954,7 @@ fn pre_admission_close_destruction_returns_first_live_resource_to_surface_recove
     );
     coordinator
         .validate_native_staging_resource_conservation()
-        .expect("staging destruction must restore exact recovery ownership");
+        .expect("staging destruction must not create a recovery resource");
 }
 
 #[test]
@@ -2229,6 +2177,187 @@ fn runtime_vacancy_cleanup_retires_only_on_exact_destroyed_evidence() {
         .expect("exact tombstone must satisfy the stale tick authority");
     assert_eq!(settled.logical_vacated_bindings(), &[binding]);
     assert!(coordinator.registry.record(binding.surface()).is_none());
+}
+
+#[test]
+fn committed_terminal_vacancy_settles_beside_replacement_cleanup_in_either_order() {
+    let (mut coordinator, destroyed) = runtime_child_routing_coordinator();
+    let committed = coordinator.capture_surface_vacancy_authority(destroyed.surface());
+    let mut capabilities = coordinator.capabilities().clone();
+    capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
+    capabilities.set_global_window_placement(PlatformCapability::Supported);
+    coordinator
+        .publish_snapshot(
+            &platform_snapshot(
+                2,
+                capabilities,
+                unknown_focus_observation(
+                    FocusObservationGeneration::new(2),
+                    AuthorityUnavailableReason::NotReported,
+                ),
+                Vec::new(),
+                vec![close_observation(destroyed, 1, WindowCloseState::Destroyed)],
+                unknown_work_areas(2),
+            )
+            .expect("exact destruction snapshot must be valid"),
+        )
+        .expect("exact destruction must preserve a terminal binding guard");
+    assert!(coordinator.binding_cleanup.was_destroyed(destroyed));
+    coordinator
+        .defer_destroyed_surface_recovery(destroyed, recovery(243))
+        .expect("blocked host recovery must reserve a real replacement");
+    let replacement = coordinator
+        .recovery_pending(destroyed.surface())
+        .and_then(RecoveryPending::replacement_binding)
+        .expect("recovery must own a replacement binding");
+    assert_ne!(replacement, destroyed);
+    assert_eq!(replacement.surface(), destroyed.surface());
+    let emitted = coordinator.take_new_effects();
+    let [create] = emitted.as_slice() else {
+        panic!("recovery must emit one replacement request: {emitted:?}");
+    };
+    assert!(matches!(
+        create.effect(),
+        PlatformEffect::RequestReplacement { binding, .. } if *binding == replacement
+    ));
+
+    coordinator
+        .complete_pending_recovery(destroyed.surface())
+        .expect("recovered host must hand the replacement to exact cleanup");
+    let ordinary = coordinator.capture_surface_vacancy_authority(replacement.surface());
+    let record = coordinator
+        .viewport(replacement.surface())
+        .expect("replacement cleanup must retain its current registry record");
+    assert_eq!(record.binding(), replacement);
+    assert_eq!(record.admission(), ViewportAdmission::Retiring);
+    assert_eq!(record.lifecycle(), ViewportLifecycle::AwaitingDestroyed);
+    assert_eq!(coordinator.binding_cleanup.len(), 1);
+    let cleanup = retirement(&coordinator, replacement)
+        .status()
+        .cleanup_effect()
+        .expect("replacement retirement must own a cleanup effect");
+    assert!(matches!(
+        coordinator.take_new_effects().as_slice(),
+        [request]
+            if request.id() == cleanup
+                && matches!(
+                    request.effect(),
+                    PlatformEffect::CompensatingClose { binding, compensates }
+                        if *binding == replacement && *compensates == create.id()
+                )
+    ));
+
+    let before = coordinator.clone();
+    for authorities in [[ordinary, committed], [committed, ordinary]] {
+        let mut candidate = before.clone();
+        let settled = candidate
+            .settle_surface_vacancies(&authorities, &BTreeSet::new())
+            .expect(
+                "ordinary replacement and committed predecessor vacancies must settle together",
+            );
+        let expected = authorities.map(|authority| authority.binding().expect("binding is frozen"));
+        assert_eq!(settled.logical_vacated_bindings(), expected.as_slice());
+        assert!(settled.effects().is_empty());
+        assert_eq!(
+            candidate, before,
+            "settlement must preserve the exact cleanup owner"
+        );
+        let repeated = candidate
+            .settle_surface_vacancies(&authorities, &BTreeSet::new())
+            .expect("repeated vacancy settlement must not duplicate cleanup");
+        assert_eq!(repeated, settled);
+        assert_eq!(candidate, before);
+        assert!(candidate.take_new_effects().is_empty());
+    }
+}
+
+#[test]
+fn terminal_predecessor_vacancy_preserves_a_live_successor() {
+    let (mut coordinator, destroyed, committed, _) = runtime_child_vacancy();
+    coordinator
+        .publish_snapshot(&snapshot_with_close_at(
+            2,
+            Vec::new(),
+            vec![close_observation(destroyed, 1, WindowCloseState::Destroyed)],
+        ))
+        .expect("exact destruction must finish predecessor cleanup");
+    assert!(coordinator.binding_cleanup.was_destroyed(destroyed));
+    assert!(!coordinator.binding_cleanup.contains_key(&destroyed));
+    let successor = coordinator
+        .register_owned_child(destroyed.epoch(), destroyed.surface(), destroyed.token())
+        .expect("exact destruction must allow a newly minted successor incarnation");
+    assert_ne!(successor, destroyed);
+    coordinator
+        .publish_snapshot(&routing_snapshot(
+            successor,
+            3,
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(None),
+        ))
+        .expect("successor must become live independently of its predecessor");
+    assert!(
+        coordinator
+            .viewport(successor.surface())
+            .is_some_and(|record| { record.binding() == successor && record.is_routeable() })
+    );
+    let before = coordinator.clone();
+
+    let settled = coordinator
+        .settle_surface_vacancies(&[committed], &BTreeSet::new())
+        .expect("terminal predecessor vacancy must not retire its live successor");
+    assert_eq!(settled.logical_vacated_bindings(), &[destroyed]);
+    assert!(settled.effects().is_empty());
+    assert_eq!(coordinator, before);
+    assert!(coordinator.take_new_effects().is_empty());
+}
+
+#[test]
+fn predecessor_vacancy_without_terminal_owner_rejects_a_successor_atomically() {
+    let (mut coordinator, previous) = runtime_child_routing_coordinator();
+    let committed = coordinator.capture_surface_vacancy_authority(previous.surface());
+    coordinator
+        .registry
+        .detach(previous)
+        .expect("detachment alone must not synthesize terminal cleanup authority");
+    let successor = coordinator
+        .register_owned_child(previous.epoch(), previous.surface(), previous.token())
+        .expect("registry must mint a distinct successor binding");
+    assert_ne!(successor, previous);
+    coordinator
+        .publish_snapshot(&routing_snapshot(
+            successor,
+            2,
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(None),
+        ))
+        .expect("successor must publish its own live facts");
+    assert!(!coordinator.binding_cleanup.was_destroyed(previous));
+    assert!(!coordinator.binding_cleanup.contains_key(&previous));
+    let ordinary = coordinator.capture_surface_vacancy_authority(successor.surface());
+    let before = coordinator.clone();
+
+    for (authorities, actual) in [
+        (vec![committed], Some(successor)),
+        (vec![ordinary, committed], None),
+    ] {
+        assert_eq!(
+            coordinator.settle_surface_vacancies(&authorities, &BTreeSet::new()),
+            Err(ViewportCoordinatorError::SurfaceVacancyAuthorityChanged {
+                surface: previous.surface(),
+                expected: Some(previous),
+                actual,
+            })
+        );
+        assert_eq!(
+            coordinator, before,
+            "a rejected batch must roll back successor cleanup"
+        );
+        assert!(coordinator.take_new_effects().is_empty());
+    }
 }
 
 #[test]

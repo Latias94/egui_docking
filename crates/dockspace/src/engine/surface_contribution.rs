@@ -184,6 +184,12 @@ pub enum SurfaceContributionPrepareError {
         /// Surface whose non-emitting retention was requested.
         surface: SurfaceId,
     },
+    /// The pending native content no longer matches its source transaction.
+    #[error("surface {surface} native first-live projection is no longer current")]
+    NativeProjectionUnavailable {
+        /// Pending native surface whose source proof was revoked.
+        surface: SurfaceId,
+    },
     /// Exact-set validation or semantic compilation rejected the measurements.
     #[error("surface contribution compilation failed: {0}")]
     Compilation(#[source] PresentationCompilationError),
@@ -297,32 +303,57 @@ impl DockEngine {
                         });
                     projection
                 });
-        let state = match compile_surface_measurements(
-            &self.workspace,
-            self.version,
-            &self.policy,
-            &self.presentation_authority.presentation_config,
-            &self.presentation_authority.presentation_requirements,
-            &measurements,
-            &self.presentation_authority.tab_strip_states,
-            &resize_overrides,
-            contained_projection,
-        ) {
+        let native_projection = self.scene().native_first_live_projection(surface);
+        let compiled = if let Some(stamp) = native_projection {
+            let projection = self
+                .native_first_live_projection(stamp.saga)
+                .map_err(
+                    |_| SurfaceContributionPrepareError::NativeProjectionUnavailable { surface },
+                )?
+                .filter(|projection| projection.stamp() == stamp)
+                .ok_or(SurfaceContributionPrepareError::NativeProjectionUnavailable { surface })?;
+            projection.compile_with_state(
+                &measurements,
+                self.presentation_authority
+                    .presentation_requirements
+                    .popup(),
+                &self.presentation_authority.tab_strip_states,
+            )
+        } else {
+            compile_surface_measurements(
+                &self.workspace,
+                self.version,
+                &self.policy,
+                &self.presentation_authority.presentation_config,
+                &self.presentation_authority.presentation_requirements,
+                &measurements,
+                &self.presentation_authority.tab_strip_states,
+                &resize_overrides,
+                contained_projection,
+            )
+            .map_err(SurfaceContributionPrepareError::Compilation)
+        };
+        let state = match compiled {
             Ok(plan) => {
-                let validator = PresentationPlanValidator::for_manifest_surface(
-                    &self.workspace,
-                    self.version,
-                    &self.presentation_authority.presentation_requirements,
-                    &self.policy,
-                    surface,
-                )
-                .map_err(SurfaceContributionPrepareError::Validation)?;
-                let validator = validator
-                    .with_contained_projection(contained_projection)
+                let plan = if native_projection.is_some() {
+                    plan
+                } else {
+                    let validator = PresentationPlanValidator::for_manifest_surface(
+                        &self.workspace,
+                        self.version,
+                        &self.presentation_authority.presentation_requirements,
+                        &self.policy,
+                        surface,
+                    )
                     .map_err(SurfaceContributionPrepareError::Validation)?;
-                let plan = validator
-                    .validate_and_canonicalize(plan)
-                    .map_err(SurfaceContributionPrepareError::Validation)?;
+                    let validator = validator
+                        .with_contained_projection(contained_projection)
+                        .map_err(SurfaceContributionPrepareError::Validation)?;
+                    let plan = validator
+                        .validate_and_canonicalize(plan)
+                        .map_err(SurfaceContributionPrepareError::Validation)?;
+                    plan
+                };
                 if matches!(
                     token.coordinates,
                     SurfaceCoordinateCapture::NativeUnavailable { .. }
@@ -334,20 +365,25 @@ impl DockEngine {
                     PreparedSurfaceContributionState::Ready { plan }
                 }
             }
-            Err(PresentationCompilationError::Authority(authority)) => {
-                PreparedSurfaceContributionState::Unavailable(
-                    SurfaceContributionUnavailableReason::MeasurementsUnavailable(authority),
-                )
-            }
-            Err(PresentationCompilationError::Scene(
-                crate::scene_compiler::SceneCompilationError::EmptySurfaceBounds { .. },
+            Err(SurfaceContributionPrepareError::Compilation(
+                PresentationCompilationError::Authority(authority),
+            )) => PreparedSurfaceContributionState::Unavailable(
+                SurfaceContributionUnavailableReason::MeasurementsUnavailable(authority),
+            ),
+            Err(SurfaceContributionPrepareError::Compilation(
+                PresentationCompilationError::Scene(
+                    crate::scene_compiler::SceneCompilationError::EmptySurfaceBounds { .. },
+                ),
             )) => PreparedSurfaceContributionState::Unavailable(
                 SurfaceContributionUnavailableReason::EmptyBounds,
             ),
-            Err(error) => match self.popup_geometry_unavailable(surface, &error) {
-                Some(reason) => PreparedSurfaceContributionState::Unavailable(reason),
-                None => return Err(SurfaceContributionPrepareError::Compilation(error)),
-            },
+            Err(SurfaceContributionPrepareError::Compilation(error)) => {
+                match self.popup_geometry_unavailable(surface, &error) {
+                    Some(reason) => PreparedSurfaceContributionState::Unavailable(reason),
+                    None => return Err(SurfaceContributionPrepareError::Compilation(error)),
+                }
+            }
+            Err(error) => return Err(error),
         };
 
         Ok(PreparedSurfaceContribution {

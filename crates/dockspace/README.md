@@ -428,38 +428,30 @@ and physical OS behavior remain separate qualification work.
 
 Renderer failure and lifecycle cancellation are distinct operations. Dropping
 an affine output reports only that output's failure; an unresolved native create
-still owns its window, staging resource and source/first-live obligations.
+still owns its window, staging resource and first-live obligation.
 Drain accepted input before adding lifecycle cleanup. Do not append cleanup
 after an overload cancellation has closed the frame's semantic input phase.
 
-Before ownership transfer, `frame.cancel_next_native_create()` cancels at most
-one current candidate through the existing compensation protocol and preserves
-source content. It skips creates already awaiting first-live admission. Count
-each successful cancellation against the host dispatch budget and commit before
+Source content retains its durable surface and root ownership until the exact
+first-live content output is accepted. Native staging placeholders do not move
+it. A prospective child participates in the normal surface roster, measurement
+and complete semantic paint program through a checked transient projection.
+Measuring, painting, dropping or reporting failure for that projection does not
+publish its workspace command. The current exact Presented output commits the
+transfer, workspace revision and admission atomically in the host frame.
+
+`frame.cancel_next_native_create()` cancels at most one current candidate,
+including a child awaiting first-live presentation, through the existing
+compensation protocol. Source ownership remains unchanged. Count each
+successful cancellation against the host dispatch budget and commit before
 publishing any resulting cleanup work. Frame drop leaves the original saga and
-source sequence intact.
+source sequence intact. A late output can settle only its original emission;
+it cannot admit a cancelled child. Retained resources continue through ordinary
+binding cleanup and exact terminal window facts.
 
-After transfer, enumerate `frame.native_create_recovery_surfaces()` and call
-`frame.recover_transferred_native_create(surface)` for an exact pending child.
-Core resolves the current binding and its durable recovery obligation; hosts do
-not choose another target or assemble recovery geometry. The returned
-`NativeCreateRecoveryStep` distinguishes None, Applied and Blocked. Count Applied
-and Blocked attempts against the dispatch budget. Inspect the exact submitted
-identity in the committed `HostFrameReport` to observe its corresponding result.
-Applied describes logical recovery in the private candidate, not OS destruction.
-Retained resources continue through ordinary binding cleanup and real terminal
-window facts. Late first-live terminals still settle their original outputs
-without readmitting a vacated child.
-
-Blocked leaves ownership and resources intact. Try other exact candidates within
-the remaining budget rather than repeatedly selecting the first blocked child.
-Wait for relevant facts or an explicit retry; Blocked alone is not repaint
-progress. A stale recovery host needs current measurements through
-`measure_surface_with`, using its actual dock/popup bounds and pane/tab metrics.
-Commit that measurement-only frame before attempting recovery again; no new
-first-live paint is required. Stale paint fallback and native window bounds
-alone cannot substitute for these measurements. A recovered surface's removal
-also updates global popup routing, so another host may require a fresh ticket.
+After first-live admission, ordinary surface destruction uses the core's
+existing bound recovery obligation. There is no separate pre-first-live
+transferred-create recovery API.
 
 Pure lifecycle cleanup can commit while effect-report storage is occupied;
 compensating effects remain in the original ledger until delivery capacity

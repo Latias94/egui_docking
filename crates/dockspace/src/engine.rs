@@ -8,6 +8,7 @@ mod host_frame;
 mod input;
 mod native_admission;
 mod native_input;
+mod native_projection;
 mod native_tear_off;
 mod pointer_contained;
 mod pointer_edge_scroll;
@@ -37,6 +38,7 @@ mod surface_vacancy;
 mod tab_strip_input;
 mod workspace_rebase;
 
+pub(crate) use native_projection::NativeFirstLiveProjectionStamp;
 #[cfg(feature = "serde")]
 pub(crate) use workspace_rebase::WorkspaceRebaseEntity;
 pub(crate) use workspace_rebase::{WorkspaceRebaseError, rebase_workspace_presentation_identities};
@@ -1619,7 +1621,6 @@ struct StagedWorkspacePublication {
 struct BoundSurfaceRecovery {
     binding: crate::viewport::ViewportBinding,
     obligation: SurfaceRecoveryObligation,
-    retained_staging_resource: Option<NativeStagingResourceId>,
 }
 
 impl BoundSurfaceRecovery {
@@ -1630,13 +1631,7 @@ impl BoundSurfaceRecovery {
         Self {
             binding,
             obligation,
-            retained_staging_resource: None,
         }
-    }
-
-    const fn retaining_staging_resource(mut self, resource: NativeStagingResourceId) -> Self {
-        self.retained_staging_resource = Some(resource);
-        self
     }
 
     fn reauthorize(mut self, obligation: SurfaceRecoveryObligation) -> Self {
@@ -4014,9 +4009,14 @@ impl DockEngine {
     }
 
     fn native_create_reserves_root(&self, root: crate::ids::RootId) -> bool {
-        self.viewport
-            .native_create_sagas()
-            .any(|(_, saga)| saga.prepared().proposal().root() == root)
+        self.viewport.native_create_sagas().any(|(_, saga)| {
+            let prepared = saga.prepared();
+            let source_root = match prepared.payload() {
+                MovePayload::Item(source) => source.root(),
+                MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.root(),
+            };
+            prepared.proposal().root() == root || source_root == root
+        })
     }
 
     fn root_has_pending_presentation_transition(&self, root: crate::ids::RootId) -> bool {
@@ -4048,19 +4048,19 @@ impl DockEngine {
             {
                 return None;
             }
-            let WorkspaceCommand::RehomeRoot { source, .. } = saga.prepared().command() else {
-                return None;
+            let prepared = saga.prepared();
+            // Preserve the full frozen root proof, including selection and ownership.
+            let source_preserved = match prepared.payload() {
+                MovePayload::Item(source) => candidate
+                    .capture_item_source(source.root(), source.tabs(), source.item())
+                    .as_ref()
+                    == Ok(source),
+                MovePayload::Tabs(source) | MovePayload::Subtree(source) => candidate
+                    .capture_node_source(source.root(), source.node())
+                    .as_ref()
+                    == Ok(source),
             };
-            if matches!(saga.phase(), crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }) {
-                return (!self.preserves_unrecovered_first_live_surface(saga_id, candidate))
-                    .then_some(saga.prepared().source_surface());
-            }
-            (candidate
-                .capture_node_source(source.root(), source.node())
-                .ok()
-                .as_ref()
-                != Some(source))
-            .then_some(saga.prepared().source_surface())
+            (!source_preserved).then_some(prepared.source_surface())
         })
     }
 
@@ -5350,34 +5350,13 @@ impl DockEngine {
             let prepared = saga.prepared();
             let obligation = prepared.recovery_obligation();
             let surface = obligation.request().source_surface();
-            let consumes_first_live_recovery = recovery_commit == Some((surface, obligation.id()))
-                && candidate.surface(surface).is_none()
-                && self
-                    .native_create_first_live_recovery_obligation(saga_id, saga.binding())
-                    .is_some()
-                && obligation
-                    .target()
-                    .converted_main()
-                    .is_none_or(|converted| {
-                        candidate.presentation_for_root(converted.source_root())
-                            == Some(crate::RootPresentationOwner::Contained {
-                                surface: obligation.target().host_surface(),
-                                floating: converted.floating(),
-                            })
-                    });
-            if consumes_first_live_recovery {
-                continue;
-            }
             if let Some(converted) = obligation.target().converted_main()
                 && candidate.contained_floating(converted.floating()).is_some()
             {
                 // A contained source keeps this same floating identity until
                 // transfer. Its future recovery reservation must not freeze an
                 // unrelated create while that exact source is unchanged.
-                let source_preserved = !matches!(
-                    saga.phase(),
-                    crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-                ) && matches!(
+                let source_preserved = matches!(
                     self.workspace.presentation_for_root(converted.source_root()),
                     Some(crate::RootPresentationOwner::Contained { surface: source_surface, floating })
                         if source_surface == prepared.source_surface() && floating == converted.floating()
@@ -5398,9 +5377,7 @@ impl DockEngine {
                 let transferring = matches!(
                     authority, WorkspacePublicationAuthority::NativeCommit { saga } if saga == saga_id
                 );
-                let unchanged_first_live =
-                    self.preserves_unrecovered_first_live_surface(saga_id, &candidate);
-                if (!transferring && !unchanged_first_live)
+                if !transferring
                     || Self::recovery_policy_request(
                         &candidate,
                         surface,
@@ -5567,20 +5544,7 @@ impl DockEngine {
                 .get(&surface)
                 .is_some_and(|bound| Some(bound.binding) == authority.binding())
             {
-                if let Some(bound) = self.bound_surface_recoveries.remove(&surface)
-                    && let Some(resource) = bound.retained_staging_resource
-                {
-                    self.viewport
-                        .settle_vacated_native_staging_resource(
-                            resource,
-                            bound.binding,
-                            bound.obligation.id(),
-                        )
-                        .map_err(|source| EngineError::Viewport {
-                            input: self.last_input,
-                            source,
-                        })?;
-                }
+                self.bound_surface_recoveries.remove(&surface);
             }
         }
         let referenced_anchors = self

@@ -1318,6 +1318,10 @@ pub(crate) struct SurfaceRecoveryState {
 }
 
 impl SurfaceRecoveryState {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
     pub(crate) fn defer(&mut self, roster: SurfaceRosterDisposition) -> bool {
         if let Some(current) = self.pending.get(&roster.surface()) {
             current == &roster

@@ -1258,10 +1258,10 @@ fn same_tick_native_first_live_admission_then_vacancy_releases_the_child() {
         1
     );
 
-    let expected = fixture.engine.version();
     let mut semantic_writer =
         support::TestInputStream::resume(&fixture.engine, NATIVE_COMMAND_SOURCE);
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
+    let expected = frame.view().version();
     semantic_writer
         .append(
             &mut frame,

@@ -7,9 +7,9 @@ use crate::pointer_journal::PointerEdgeSequence;
 impl DockspaceSession {
     /// Returns whether native creation still owns a staging or first-live obligation.
     ///
-    /// The answer is derived from the existing lifecycle coordinator. A child
-    /// whose topology transferred remains pending until exact first-live
-    /// admission or obligated recovery settles that lifecycle.
+    /// The answer is derived from the existing lifecycle coordinator. Source
+    /// ownership stays unchanged until exact first-live presentation atomically
+    /// transfers content and admits the child; cancellation settles the same owner.
     #[must_use]
     pub fn has_pending_native_create(&self) -> bool {
         self.engine

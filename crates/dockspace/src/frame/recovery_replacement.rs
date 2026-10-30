@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::effect::EffectId;
 use crate::ids::SurfaceId;
-use crate::presentation_observation::NativeStagingResourceId;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::{ViewportBinding, ViewportRole};
 
@@ -22,7 +21,6 @@ pub(super) struct RecoveryPendingRequest {
     pub(super) destroyed_binding: ViewportBinding,
     pub(super) role: ViewportRole,
     pub(super) recovery_obligation: SurfaceRecoveryObligationId,
-    pub(super) retained_staging_resource: Option<NativeStagingResourceId>,
     phase: RecoveryReplacementPhase,
 }
 
@@ -31,13 +29,11 @@ impl RecoveryPendingRequest {
         destroyed_binding: ViewportBinding,
         role: ViewportRole,
         recovery_obligation: SurfaceRecoveryObligationId,
-        retained_staging_resource: Option<NativeStagingResourceId>,
     ) -> Self {
         Self {
             destroyed_binding,
             role,
             recovery_obligation,
-            retained_staging_resource,
             phase: RecoveryReplacementPhase::AwaitingRecoveryHost,
         }
     }
@@ -46,7 +42,6 @@ impl RecoveryPendingRequest {
         destroyed_binding: ViewportBinding,
         role: ViewportRole,
         recovery_obligation: SurfaceRecoveryObligationId,
-        retained_staging_resource: Option<NativeStagingResourceId>,
         binding: ViewportBinding,
         effect: EffectId,
     ) -> Self {
@@ -54,7 +49,6 @@ impl RecoveryPendingRequest {
             destroyed_binding,
             role,
             recovery_obligation,
-            retained_staging_resource,
             phase: RecoveryReplacementPhase::ReplacementRequested {
                 binding,
                 create: effect,
@@ -69,7 +63,6 @@ impl From<RecoveryPendingRequest> for RecoveryPending {
             destroyed_binding: request.destroyed_binding,
             role: request.role,
             recovery_obligation: request.recovery_obligation,
-            retained_staging_resource: request.retained_staging_resource,
             phase: request.phase,
             admission_not_before: None,
         }
@@ -97,9 +90,6 @@ pub(super) enum RecoveryReplacementLifecycleError {
     },
     ReplacementEffectMissing {
         surface: SurfaceId,
-    },
-    DuplicateRetainedResource {
-        resource: NativeStagingResourceId,
     },
     InvalidStatus {
         surface: SurfaceId,
@@ -153,10 +143,6 @@ impl RecoveryReplacementLifecycle {
         self.pending.values()
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.pending.len()
-    }
-
     #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.pending.is_empty()
@@ -184,14 +170,6 @@ impl RecoveryReplacementLifecycle {
             .is_some_and(|binding| binding.surface() != surface)
         {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
-        }
-        if let Some(resource) = request.retained_staging_resource
-            && self
-                .pending
-                .values()
-                .any(|pending| pending.retained_staging_resource == Some(resource))
-        {
-            return Err(RecoveryReplacementLifecycleError::DuplicateRetainedResource { resource });
         }
         if let Some(binding) = request.phase.replacement_binding() {
             self.reserve_replacement(surface, binding)?;
@@ -494,7 +472,6 @@ impl RecoveryReplacementLifecycle {
         let Some(replacement_effect) = pending.replacement_effect() else {
             return Err(RecoveryReplacementLifecycleError::ReplacementEffectMissing { surface });
         };
-        pending.retained_staging_resource = None;
         pending.phase = RecoveryReplacementPhase::AwaitingCleanup {
             binding,
             replacement_effect,

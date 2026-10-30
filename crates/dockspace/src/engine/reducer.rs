@@ -790,29 +790,20 @@ impl DockEngine {
         let held_source_surfaces = candidate.native_admission.held_source_surfaces();
         let mut vacant_surfaces = vacancy_ledger.vacant_authorities(&candidate);
         vacant_surfaces.retain(|authority| !held_source_surfaces.contains(&authority.surface()));
-        vacant_surfaces.extend(candidate.take_settleable_native_source_vacancies());
+        vacant_surfaces.extend(candidate.take_native_create_vacancies());
         let final_live_surfaces = candidate
             .workspace
             .surfaces()
             .map(|(surface, _)| surface)
             .collect::<BTreeSet<_>>();
         let vacancy_interaction_dependencies = candidate.platform_interaction_dependencies();
-        let mut vacancy_settlement = crate::frame::SurfaceVacancySettlement::default();
-        let mut pending_vacancies = vacant_surfaces.clone();
-        while !pending_vacancies.is_empty() {
-            let settled = candidate
-                .viewport
-                .settle_surface_vacancies(&pending_vacancies, &final_live_surfaces)
-                .map_err(|source| EngineError::Viewport {
-                    input: candidate.last_input,
-                    source,
-                })?;
-            candidate
-                .settle_vacated_native_first_live_barriers(settled.retired_native_creates())?;
-            vacancy_settlement.extend(settled);
-            pending_vacancies = candidate.take_settleable_native_source_vacancies();
-            vacant_surfaces.extend(pending_vacancies.iter().copied());
-        }
+        let vacancy_settlement = candidate
+            .viewport
+            .settle_surface_vacancies(&vacant_surfaces, &final_live_surfaces)
+            .map_err(|source| EngineError::Viewport {
+                input: candidate.last_input,
+                source,
+            })?;
         candidate.settle_semantic_surface_vacancies(candidate.last_input, &vacant_surfaces)?;
         let owner_vacated = vacancy_settlement
             .logical_vacated_bindings()
@@ -1226,7 +1217,6 @@ impl DockEngine {
                     | InputOutcome::PaneFocusObservationPublished { .. }
                     | InputOutcome::PaneFocusObservationStale { .. }
                     | InputOutcome::NativeCreateCancelled { .. }
-                    | InputOutcome::NativeCreateFirstLiveRecovery { .. }
                     | InputOutcome::ViewportCleanupRetried { .. }
                     | InputOutcome::WorkspaceReplaced { .. }
                     | InputOutcome::CommandProcessed { .. }
@@ -1378,17 +1368,6 @@ impl DockEngine {
             EngineInput::CancelNativeCreate { expected, saga } => {
                 self.reduce_native_create_cancellation(input.sequence, *expected, *saga)
             }
-            EngineInput::RecoverNativeCreateFirstLive {
-                expected,
-                saga,
-                binding,
-            } => self.reduce_native_create_first_live_recovery(
-                input.sequence,
-                *expected,
-                *saga,
-                *binding,
-                events,
-            ),
             EngineInput::RetryViewportCleanup {
                 expected,
                 failed_effect,

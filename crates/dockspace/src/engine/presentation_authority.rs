@@ -1,5 +1,6 @@
 //! Presentation requirements, scene authority, and output reconciliation.
 
+use super::native_projection::NativeFirstLiveProjection;
 use super::presentation_roster::HostPresentationObligationIssuer;
 use super::*;
 
@@ -148,19 +149,100 @@ impl DockEngine {
         &mut self,
         requested_influence: Option<&TabStripInfluenceDomain>,
     ) -> Result<(), PresentationRequirementFailure> {
-        let surface_semantic_snapshots = Self::capture_surface_semantic_snapshots(&self.workspace)
-            .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
+        self.native_admission
+            .reconcile_pending_creates(&self.viewport);
+        let mut surface_semantic_snapshots =
+            Self::capture_surface_semantic_snapshots(&self.workspace)
+                .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
+        let mut native_projections = BTreeMap::new();
+        let pending_creates = self
+            .viewport
+            .native_create_sagas()
+            .filter_map(|(saga, create)| {
+                (matches!(
+                    create.phase(),
+                    crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                ) && self.workspace.surface(create.binding().surface()).is_none())
+                .then_some(saga)
+            })
+            .collect::<Vec<_>>();
+        let requirements = self.presentation_requirements();
+        let unchanged_roster = surface_semantic_snapshots.len() + pending_creates.len()
+            == self.presentation_authority.surface_semantic_snapshots.len()
+            && surface_semantic_snapshots
+                .iter()
+                .all(|(surface, snapshot)| {
+                    self.presentation_authority
+                        .surface_semantic_snapshots
+                        .get(surface)
+                        == Some(snapshot)
+                })
+            && pending_creates.iter().all(|saga| {
+                self.viewport
+                    .native_create_saga(*saga)
+                    .and_then(|create| {
+                        self.scene()
+                            .native_first_live_projection(create.binding().surface())
+                    })
+                    .is_some_and(|stamp| self.native_first_live_projection_is_current(stamp))
+            });
+        if unchanged_roster
+            && self.surface_recovery.is_empty()
+            && self.bound_surface_recoveries.is_empty()
+            && requested_influence.is_none_or(TabStripInfluenceDomain::is_empty)
+            && requirements.workspace() == self.version
+            && requirements.config() == self.presentation_authority.presentation_config_revision
+            && requirements.policy() == self.policy.revision()
+            && requirements.popup()
+                == self
+                    .presentation_authority
+                    .tab_strip_states
+                    .popup_requirement()
+        {
+            // Stable pending children retain only their scene provenance.
+            // Materialize a counterfactual workspace only when inputs changed.
+            return Ok(());
+        }
+        for saga in pending_creates {
+            let Some(projection) = self
+                .native_first_live_projection(saga)
+                .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?
+            else {
+                // A new policy may revoke the prospective command before its
+                // first content output. Cancel the original lifecycle owner;
+                // source topology has never moved and needs no recovery plan.
+                self.viewport.reject_native_create(saga).map_err(|source| {
+                    PresentationRequirementFailure::Invariant(source.to_string())
+                })?;
+                let _ = self.viewport_focus.cancel_activation_reservation(saga);
+                continue;
+            };
+            let mut snapshots = Self::capture_surface_semantic_snapshots(projection.workspace())
+                .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
+            let surface = projection.surface();
+            let snapshot = snapshots.remove(&surface).ok_or_else(|| {
+                PresentationRequirementFailure::Invariant(
+                    "native content projection omitted its surface snapshot".to_owned(),
+                )
+            })?;
+            surface_semantic_snapshots.insert(surface, snapshot);
+            native_projections.insert(surface, projection);
+        }
+        self.native_admission
+            .reconcile_pending_creates(&self.viewport);
         let previous_surface_roster = self
             .presentation_authority
             .presentation_requirements
             .surfaces()
             .map(|(surface, _)| surface)
             .collect::<BTreeSet<_>>();
-        let current_surface_roster = self
-            .workspace
-            .surfaces()
-            .map(|(surface, _)| surface)
+        let current_surface_roster = surface_semantic_snapshots
+            .keys()
+            .copied()
             .collect::<BTreeSet<_>>();
+        let native_origins_changed = native_projections.iter().any(|(surface, projection)| {
+            self.scene().native_first_live_projection(*surface) != Some(projection.stamp())
+        });
         let surface_roster_changed = previous_surface_roster != current_surface_roster;
         let popup_requirement_changed = self
             .presentation_authority
@@ -192,6 +274,7 @@ impl DockEngine {
             && surface_semantic_snapshots == self.presentation_authority.surface_semantic_snapshots
             && !popup_requirement_changed
             && requested_influence.is_empty()
+            && !native_origins_changed
         {
             return Ok(());
         }
@@ -208,12 +291,15 @@ impl DockEngine {
             .clone();
         surface_requirement_revisions.retain(|surface, _| current_surface_roster.contains(surface));
         let mut revised_surfaces = BTreeSet::new();
-        for (surface, _) in self.workspace.surfaces() {
+        for surface in current_surface_roster.iter().copied() {
             let semantics_changed = self
                 .presentation_authority
                 .surface_semantic_snapshots
                 .get(&surface)
-                != surface_semantic_snapshots.get(&surface);
+                != surface_semantic_snapshots.get(&surface)
+                || native_projections.get(&surface).is_some_and(|projection| {
+                    self.scene().native_first_live_projection(surface) != Some(projection.stamp())
+                });
             if semantics_changed {
                 let revision = surface_requirement_revisions
                     .get(&surface)
@@ -239,12 +325,24 @@ impl DockEngine {
             &surface_requirement_revisions,
         )
         .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
+        for (surface, projection) in &native_projections {
+            draft.insert_native_projection(
+                projection
+                    .requirements()
+                    .clone()
+                    .with_surface_requirement(surface_requirement_revisions[surface]),
+            );
+        }
         let mut tab_strip_states = self.presentation_authority.tab_strip_states.clone();
-        let tab_strip_delta = Self::reconcile_tab_strip_state_store(
-            &self.workspace,
+        let tab_strip_delta = Self::reconcile_tab_strip_state_store_with_sources(
             &draft,
             &mut tab_strip_states,
             surface_roster_changed,
+            |surface| {
+                native_projections
+                    .get(&surface)
+                    .map_or(&self.workspace, NativeFirstLiveProjection::workspace)
+            },
         )
         .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
         let popup_mismatch_influence = if popup_requirement_changed {
@@ -289,6 +387,14 @@ impl DockEngine {
                 &surface_requirement_revisions,
             )
             .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
+            for (surface, projection) in &native_projections {
+                draft.insert_native_projection(
+                    projection
+                        .requirements()
+                        .clone()
+                        .with_surface_requirement(surface_requirement_revisions[surface]),
+                );
+            }
         }
         let requirements = draft
             .finalize(tab_strip_states.popup_requirement())
@@ -301,6 +407,16 @@ impl DockEngine {
             .scene
             .reconcile_manifest(&self.presentation_authority.presentation_requirements)
             .map_err(PresentationRequirementFailure::Scene)?;
+        for surface in current_surface_roster {
+            self.presentation_authority
+                .scene
+                .set_native_first_live_projection(
+                    surface,
+                    native_projections
+                        .get(&surface)
+                        .map(|projection| projection.stamp()),
+                );
+        }
         Ok(())
     }
 
@@ -310,9 +426,24 @@ impl DockEngine {
         states: &mut TabStripStateStore,
         surface_roster_changed: bool,
     ) -> Result<TabStripStateDelta, TabStripStateError> {
+        Self::reconcile_tab_strip_state_store_with_sources(
+            requirements,
+            states,
+            surface_roster_changed,
+            |_| workspace,
+        )
+    }
+
+    pub(super) fn reconcile_tab_strip_state_store_with_sources<'workspace>(
+        requirements: &SceneRequirementDraft,
+        states: &mut TabStripStateStore,
+        surface_roster_changed: bool,
+        workspace_for_surface: impl Fn(SurfaceId) -> &'workspace Workspace,
+    ) -> Result<TabStripStateDelta, TabStripStateError> {
         let live = requirements
             .surfaces()
             .flat_map(|(surface, requirements)| {
+                let workspace = workspace_for_surface(surface);
                 requirements.tab_strips().filter_map(move |strip| {
                     let bar = strip.bar();
                     match workspace.node(bar.tabs) {
@@ -341,7 +472,7 @@ impl DockEngine {
         Ok(delta)
     }
 
-    fn input_requirement_failure(
+    pub(super) fn input_requirement_failure(
         input: InputSequence,
         failure: PresentationRequirementFailure,
     ) -> EngineError {
@@ -1378,6 +1509,7 @@ impl DockEngine {
 
     pub(super) fn reduce_presentation_observation(
         &mut self,
+        cause: ReductionCause,
         presentation_host: PresentationHostLease,
         presentation_scope: &BTreeSet<HostPresentationStreamId>,
         observation: HostPresentationObservation,
@@ -1395,11 +1527,12 @@ impl DockEngine {
             .presentation
             .reduce_observation(presentation_host, presentation_scope, observation)
             .map_err(presentation_ledger_error)?;
-        self.apply_presentation_observation_reduction(reduction)
+        self.apply_presentation_observation_reduction(cause, reduction)
     }
 
     pub(super) fn reduce_presentation_observation_entry(
         &mut self,
+        cause: ReductionCause,
         presentation_host: PresentationHostLease,
         entry: HostPresentationObservationEntry,
     ) -> Result<
@@ -1416,11 +1549,12 @@ impl DockEngine {
             .presentation
             .reduce_observation_entry(presentation_host, entry)
             .map_err(presentation_ledger_error)?;
-        self.apply_presentation_observation_reduction(reduction)
+        self.apply_presentation_observation_reduction(cause, reduction)
     }
 
     fn apply_presentation_observation_reduction(
         &mut self,
+        cause: ReductionCause,
         reduction: PresentationObservationReduction,
     ) -> Result<
         (
@@ -1522,45 +1656,64 @@ impl DockEngine {
                 promotion.endpoint(),
                 coordinate_generation,
             );
-            match self
-                .presentation_authority
-                .scene
-                .accept_observed_authority(authority)
-            {
-                Ok(changed) => {
-                    self.admit_first_live_native_output(ticket, capture, &mut lifecycle_events)?;
-                    self.observe_pending_drag_release_presentation(
-                        promotion.key(),
-                        ticket.surface(),
-                        interaction,
-                    );
-                    self.observe_pending_presentation_rehome(
-                        promotion.key(),
-                        ticket.surface(),
-                        interaction,
-                    );
-                    self.observe_pending_contained_transform_release_presentation(
-                        promotion.key(),
-                        ticket.surface(),
-                        interaction,
-                    );
-                    if let Some(token) = interaction.drag_preview() {
-                        self.interaction
-                            .observe_presented_preview(ticket.surface(), token);
-                    }
-                    if let Some(token) = interaction.contained_transform_preview() {
-                        self.interaction
-                            .observe_presented_contained_transform_preview(ticket.surface(), token);
-                    }
-                    changed_surfaces.extend(changed);
+            if let Some(stamp) = self.scene().native_first_live_projection(ticket.surface()) {
+                if self.scene().validate_observed_authority(authority).is_err()
+                    || !self.commit_native_first_live_projection(
+                        stamp,
+                        authority,
+                        cause,
+                        &mut lifecycle_events,
+                        &mut changed_surfaces,
+                    )?
+                {
+                    continue;
                 }
-                Err(_) => {
-                    changed_surfaces.extend(
-                        self.invalidate_interaction_authority_for_current_streams(
-                            &promotion_stream,
-                        ),
-                    );
+            } else {
+                match self
+                    .presentation_authority
+                    .scene
+                    .accept_observed_authority(authority)
+                {
+                    Ok(changed) => {
+                        self.admit_first_live_native_output(
+                            ticket,
+                            capture,
+                            &mut lifecycle_events,
+                        )?;
+                        changed_surfaces.extend(changed);
+                    }
+                    Err(_) => {
+                        changed_surfaces.extend(
+                            self.invalidate_interaction_authority_for_current_streams(
+                                &promotion_stream,
+                            ),
+                        );
+                        continue;
+                    }
                 }
+            }
+            self.observe_pending_drag_release_presentation(
+                promotion.key(),
+                ticket.surface(),
+                interaction,
+            );
+            self.observe_pending_presentation_rehome(
+                promotion.key(),
+                ticket.surface(),
+                interaction,
+            );
+            self.observe_pending_contained_transform_release_presentation(
+                promotion.key(),
+                ticket.surface(),
+                interaction,
+            );
+            if let Some(token) = interaction.drag_preview() {
+                self.interaction
+                    .observe_presented_preview(ticket.surface(), token);
+            }
+            if let Some(token) = interaction.contained_transform_preview() {
+                self.interaction
+                    .observe_presented_contained_transform_preview(ticket.surface(), token);
             }
         }
         self.observe_pending_release_retirements(&outcomes);

@@ -1,10 +1,8 @@
-//! Independent transferred children must not block each other's explicit recovery.
+//! Concurrent native creates retain their sources until exact first-live admission.
 
 use super::*;
 use crate::frame::{BindingRetirementOrigin, NativeCreatePhase};
-use crate::runtime::{
-    HostInputOutcome, NativeCreateRecoveryBlockedReason, NativeCreateRecoveryStep,
-};
+use crate::runtime::{HostInputOutcome, SurfacePaintDisposition, SurfacePaintProgramOperation};
 use crate::viewport_registry::ViewportAdmission;
 
 const SECOND_HOST: SurfaceId = SurfaceId::new(2);
@@ -15,6 +13,12 @@ const FIRST_MAIN_ITEM: ItemId = ItemId::new(3);
 const THIRD_ITEM: ItemId = ItemId::new(4);
 const FOURTH_ITEM: ItemId = ItemId::new(5);
 const SECOND_MAIN_ITEM: ItemId = ItemId::new(6);
+const SOURCE_ROOTS: [RootId; 2] = [ROOT, SECOND_ROOT];
+const SOURCE_ITEMS: [[ItemId; 2]; 2] = [[ITEM, SECOND_ITEM], [THIRD_ITEM, FOURTH_ITEM]];
+const SOURCE_FLOATINGS: [FloatingPresentationId; 2] = [
+    FloatingPresentationId::new(1),
+    FloatingPresentationId::new(2),
+];
 
 fn second_host_facts() -> NativeWindowFacts {
     root_window_facts()
@@ -26,13 +30,14 @@ fn second_host_facts() -> NativeWindowFacts {
 fn observe_all(
     session: &mut DockspaceSession,
     hosts: [NativeSurfaceBinding; 2],
-    first_host: NativeWindowFacts,
+    host_facts: [NativeWindowFacts; 2],
     children: &[(NativeSurfaceBinding, NativeWindowFacts)],
 ) {
     session
         .report_managed_native_snapshot(
-            [(hosts[0], first_host), (hosts[1], second_host_facts())]
+            hosts
                 .into_iter()
+                .zip(host_facts)
                 .chain(children.iter().copied()),
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),
         )
@@ -76,7 +81,7 @@ fn present_both_staging(
 }
 
 #[inline(never)]
-fn multiple_transferred_children() -> (
+fn multiple_pending_children() -> (
     DockspaceSession,
     [NativeSurfaceBinding; 2],
     [(NativeSurfaceBinding, NativeWindowFacts); 2],
@@ -129,9 +134,13 @@ fn multiple_transferred_children() -> (
         );
     };
     let hosts = [first_host, *second_host];
-    observe_all(&mut session, hosts, root_window_facts(), &[]);
+    let host_facts = [root_window_facts(), second_host_facts()];
+    observe_all(&mut session, hosts, host_facts, &[]);
     let report = paint_and_present_all_native_surfaces(&mut session);
     assert!(report.native_admissions().is_empty());
+    let source = session.engine.workspace().clone();
+    let version = session.version();
+    let sequence = session.committed_source_sequence;
 
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -177,7 +186,7 @@ fn multiple_transferred_children() -> (
     }
     let mut observed: [_; 2] = observed.try_into().unwrap();
     let children = observed.map(|(binding, _)| binding);
-    observe_all(&mut session, hosts, root_window_facts(), &observed);
+    observe_all(&mut session, hosts, host_facts, &observed);
     let mut report = present_both_staging(
         &mut session,
         children,
@@ -198,17 +207,20 @@ fn multiple_transferred_children() -> (
             .with_presentation(NativeWindowPresentationState::Hidden, Some(shown));
     }
     // Exact show acknowledgements precede the later visibility boundary.
-    observe_all(&mut session, hosts, root_window_facts(), &observed);
+    observe_all(&mut session, hosts, host_facts, &observed);
     for (_, facts) in &mut observed {
         *facts = facts.with_presentation(NativeWindowPresentationState::Visible, None);
     }
-    observe_all(&mut session, hosts, root_window_facts(), &observed);
+    observe_all(&mut session, hosts, host_facts, &observed);
     let mut report = present_both_staging(
         &mut session,
         children,
         NativeStagingPresentationPhase::PostShow,
     );
     assert!(report.take_native_effects().is_empty());
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.committed_source_sequence, sequence + 2);
     assert_eq!(session.engine.viewport().native_create_sagas().count(), 2);
     assert_eq!(
         session
@@ -218,21 +230,13 @@ fn multiple_transferred_children() -> (
             .len(),
         2
     );
-    for (index, items) in [[ITEM, SECOND_ITEM], [THIRD_ITEM, FOURTH_ITEM]]
-        .into_iter()
-        .enumerate()
-    {
-        let child = children[index];
+    for (index, child) in children.into_iter().enumerate() {
         let saga = session
             .engine
             .viewport()
             .native_create_sagas()
             .find_map(|(_, saga)| (saga.binding() == child.binding).then_some(saga))
             .unwrap();
-        assert!(matches!(
-            saga.phase(),
-            NativeCreatePhase::AwaitingFirstLivePresentation { .. }
-        ));
         assert_eq!(
             saga.prepared()
                 .recovery_obligation()
@@ -240,21 +244,7 @@ fn multiple_transferred_children() -> (
                 .host_surface(),
             hosts[index].surface()
         );
-        assert_eq!(
-            session
-                .engine
-                .viewport()
-                .viewport(child.surface())
-                .unwrap()
-                .admission(),
-            ViewportAdmission::Pending
-        );
-        for item in items {
-            assert_eq!(
-                session.view().item(item).unwrap().surface(),
-                child.surface()
-            );
-        }
+        assert_pending_source(&session, child, index);
     }
     session
         .engine
@@ -264,72 +254,314 @@ fn multiple_transferred_children() -> (
     (session, hosts, observed)
 }
 
-fn assert_applied(
-    step: NativeCreateRecoveryStep,
-    child: NativeSurfaceBinding,
-    host: SurfaceId,
-    report: &HostFrameReport,
-) {
-    let NativeCreateRecoveryStep::Applied {
-        submitted,
-        surface,
-        host: actual_host,
-    } = step
-    else {
-        panic!("expected exact child recovery, got {step:?}");
-    };
-    assert_eq!((surface, actual_host), (child.surface(), host));
-    assert_eq!(
-        report.submitted_action_outcome(submitted),
-        Some(&HostInputOutcome::NativeCreateFirstLiveRecovered { surface, host })
+fn assert_pending_source(session: &DockspaceSession, child: NativeSurfaceBinding, index: usize) {
+    let surface = [SURFACE, SECOND_HOST][index];
+    for item in SOURCE_ITEMS[index] {
+        let source = session.view().item(item).unwrap();
+        assert_eq!(
+            (source.surface(), source.root(), source.contained()),
+            (surface, SOURCE_ROOTS[index], Some(SOURCE_FLOATINGS[index])),
+            "the pending child must not publish source ownership for {item:?}"
+        );
+    }
+    let source = session.engine.workspace().surface(surface).unwrap();
+    assert_eq!(source.main_root, Some([FIRST_MAIN, SECOND_MAIN][index]));
+    assert_eq!(source.contained, [SOURCE_FLOATINGS[index]]);
+    assert!(
+        session
+            .engine
+            .workspace()
+            .surface(child.surface())
+            .is_none()
     );
-    assert!(report.native_admissions().is_empty());
+    assert!(session.presented_surface(child.surface()).is_none());
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .viewport(child.surface())
+            .expect("the pending child retains its exact binding")
+            .admission(),
+        ViewportAdmission::Pending
+    );
+    assert!(
+        session
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .any(|(_, saga)| {
+                saga.binding() == child.binding
+                    && matches!(
+                        saga.phase(),
+                        NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                    )
+            })
+    );
 }
 
-fn assert_cleanup(
-    session: &DockspaceSession,
-    report: &mut HostFrameReport,
-    children: &[NativeSurfaceBinding],
-    delivered_children: &[NativeSurfaceBinding],
-) {
-    let mut retired = session
+fn assert_admitted_child(session: &DockspaceSession, child: NativeSurfaceBinding, index: usize) {
+    for item in SOURCE_ITEMS[index] {
+        let current = session.view().item(item).unwrap();
+        assert_eq!(
+            (current.surface(), current.root(), current.contained()),
+            (child.surface(), SOURCE_ROOTS[index], None)
+        );
+    }
+    let surface = session.engine.workspace().surface(child.surface()).unwrap();
+    assert_eq!(surface.main_root, Some(SOURCE_ROOTS[index]));
+    assert!(surface.contained.is_empty());
+    let host = session
+        .engine
+        .workspace()
+        .surface([SURFACE, SECOND_HOST][index])
+        .unwrap();
+    assert_eq!(host.main_root, Some([FIRST_MAIN, SECOND_MAIN][index]));
+    assert!(host.contained.is_empty());
+    assert!(
+        session
+            .engine
+            .workspace()
+            .contained_floating(SOURCE_FLOATINGS[index])
+            .is_none()
+    );
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .viewport(child.surface())
+            .unwrap()
+            .admission(),
+        ViewportAdmission::Admitted
+    );
+    assert!(
+        session
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .all(|(_, saga)| saga.binding() != child.binding)
+    );
+}
+
+#[inline(never)]
+fn paint_pending_children(
+    session: &mut DockspaceSession,
+    children: [NativeSurfaceBinding; 2],
+    pending: &[usize],
+) -> Vec<PaintedSurfaceOutput> {
+    let source = session.engine.workspace().clone();
+    let version = session.version();
+    let sequence = session.committed_source_sequence;
+    let mut measure = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the concurrent first-live measurement frame begins");
+    let surfaces = measure.surfaces();
+    assert_eq!(surfaces.len(), 4);
+    for surface in [
+        SURFACE,
+        SECOND_HOST,
+        children[0].surface(),
+        children[1].surface(),
+    ] {
+        assert!(surfaces.contains(&surface));
+    }
+    for surface in surfaces {
+        let (width, height) = if children.iter().any(|child| child.surface() == surface) {
+            (420.0, 320.0)
+        } else {
+            (640.0, 480.0)
+        };
+        measure
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, width, height).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    80.0,
+                )
+                .unwrap(),
+            )
+            .expect("every published host and prospective child measures");
+    }
+    measure
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = measure.commit().expect("the current measurements commit");
+    assert!(report.native_admissions().is_empty());
+    assert!(report.take_native_effects().is_empty());
+    assert!(report.take_painted_outputs().is_empty());
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.committed_source_sequence, sequence);
+
+    let mut paint = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the concurrent first-live paint frame begins");
+    let mut semantics = Vec::new();
+    for &index in pending {
+        let child = children[index];
+        let selected = SOURCE_ITEMS[index]
+            .into_iter()
+            .find(|item| paint.view().item(*item).unwrap().is_selected())
+            .expect("the source pane has one selected item");
+        let plan = paint
+            .paint_plan(child.surface())
+            .expect("the real child plan resolves through the public facade")
+            .expect("the measured child projection is paintable");
+        assert_eq!(plan.surface(), child.surface());
+        let mut roots = Vec::new();
+        let mut panes = Vec::new();
+        let mut tabs = Vec::new();
+        let mut semantic_output = None;
+        let receipt = plan
+            .execute_surface_program(|step| {
+                match step {
+                    SurfacePaintProgramStep::RootBegin { root, paint } => {
+                        assert_eq!(root.root(), SOURCE_ROOTS[index]);
+                        assert!(root.contained().is_none());
+                        assert_eq!(paint, SurfacePaintDisposition::Visible);
+                        roots.push(root.root());
+                    }
+                    SurfacePaintProgramStep::Operation {
+                        root,
+                        operation,
+                        paint,
+                    } => {
+                        assert_eq!(root.root(), SOURCE_ROOTS[index]);
+                        assert_eq!(paint, SurfacePaintDisposition::Visible);
+                        match operation {
+                            SurfacePaintProgramOperation::Pane(pane) => {
+                                assert_eq!(
+                                    pane.bounds(),
+                                    LogicalRect::new(0.0, 0.0, 420.0, 320.0).unwrap()
+                                );
+                                panes.push((pane.root(), pane.selected()));
+                            }
+                            SurfacePaintProgramOperation::Tab(tab) => {
+                                tabs.push((tab.root(), tab.item(), tab.selected()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    SurfacePaintProgramStep::SurfaceEnd {
+                        semantic_output: output,
+                    } => {
+                        assert!(semantic_output.replace(output).is_none());
+                    }
+                    _ => {}
+                }
+                Ok::<(), ()>(())
+            })
+            .expect("the renderer accepts the complete real child full-pane program");
+        assert_eq!(roots, [SOURCE_ROOTS[index]]);
+        assert_eq!(panes, [(SOURCE_ROOTS[index], Some(selected))]);
+        assert_eq!(tabs.len(), 2);
+        for item in SOURCE_ITEMS[index] {
+            assert!(tabs.contains(&(SOURCE_ROOTS[index], item, item == selected)));
+        }
+        semantics.push((
+            child,
+            semantic_output.expect("the complete child program seals"),
+        ));
+        paint.confirm_surface_painted(receipt).unwrap();
+    }
+    paint
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = paint.commit().expect("the exact child paint outputs emit");
+    assert!(report.native_admissions().is_empty());
+    assert!(report.take_native_effects().is_empty());
+    let mut outputs = report.take_painted_outputs();
+    assert_eq!(outputs.len(), pending.len());
+    let outputs = semantics
+        .into_iter()
+        .map(|(child, semantic_output)| {
+            let index = outputs
+                .iter()
+                .position(|output| output.surface() == child.surface())
+                .expect("each real child emits its own exact output");
+            let output = outputs.remove(index);
+            assert!(output.matches_native_binding(child));
+            assert!(output.matches_semantic_output(semantic_output));
+            output
+        })
+        .collect();
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.committed_source_sequence, sequence);
+    for &index in pending {
+        assert_pending_source(session, children[index], index);
+    }
+    outputs
+}
+
+#[test]
+fn concurrent_first_live_projections_measure_and_paint_without_moving_either_source() {
+    let (mut session, _, observed) = multiple_pending_children();
+    let children = observed.map(|(child, _)| child);
+    let source = session.engine.workspace().clone();
+    let version = session.version();
+    let sequence = session.committed_source_sequence;
+    let sagas = session
         .engine
         .viewport()
-        .binding_retirements()
-        .map(|(binding, retirement)| {
-            assert_eq!(retirement.origin(), BindingRetirementOrigin::SurfaceVacated);
-            binding
-        })
+        .native_create_sagas()
+        .map(|(id, saga)| (id, saga.clone()))
         .collect::<Vec<_>>();
-    let mut expected = children
+    let resources = session
+        .engine
+        .viewport()
+        .retained_native_staging_resources()
+        .cloned()
+        .collect::<Vec<_>>();
+    let outputs = paint_pending_children(&mut session, children, &[0, 1]);
+    let artifacts = outputs
         .iter()
-        .map(|child| child.binding)
+        .map(|output| output.presentation_artifact())
         .collect::<Vec<_>>();
-    retired.sort();
-    expected.sort();
-    assert_eq!(retired, expected);
-    let effects = report.take_native_effects();
-    assert_eq!(effects.len(), delivered_children.len());
-    let mut released = Vec::new();
-    for effect in effects {
-        let NativeEffectOperation::ReleaseChild { binding } = effect.operation() else {
-            panic!("recovery must release exactly the vacated children");
-        };
-        assert!(delivered_children.contains(binding));
-        released.push(binding.binding);
-        assert!(matches!(
-            effect.accepted(),
-            Some(NativeEffectAcknowledgement::Close(_))
-        ));
+
+    let report = commit_managed_frame_report(&mut session);
+    assert!(report.native_admissions().is_empty());
+    assert!(report.surface_presentation_commits().is_empty());
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    for (index, child) in children.into_iter().enumerate() {
+        assert_pending_source(&session, child, index);
     }
-    released.sort();
-    let mut delivered = delivered_children
-        .iter()
-        .map(|child| child.binding)
-        .collect::<Vec<_>>();
-    delivered.sort();
-    assert_eq!(released, delivered);
-    // Conservation also checks each retained resource's exact BindingCleanup owner.
+
+    drop(outputs);
+    let mut report = commit_managed_frame_report(&mut session);
+    assert!(report.native_admissions().is_empty());
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(report.surface_presentation_commits().len(), 2);
+    for artifact in artifacts {
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.retires(artifact))
+        );
+    }
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.committed_source_sequence, sequence);
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .map(|(id, saga)| (id, saga.clone()))
+            .collect::<Vec<_>>(),
+        sagas
+    );
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .cloned()
+            .collect::<Vec<_>>(),
+        resources
+    );
     session
         .engine
         .viewport()
@@ -338,302 +570,460 @@ fn assert_cleanup(
 }
 
 #[test]
-fn native_create_recovery_blocked_first_host_does_not_starve_ready_second_host() {
-    let (mut session, hosts, observed) = multiple_transferred_children();
-    let [first, second] = observed.map(|(binding, _)| binding);
-    measure_all_surfaces(&mut session);
-    let stale = root_window_facts()
-        .with_content_bounds(
-            PhysicalRect::new(ROOT_ORIGIN_X + 20.0, ROOT_ORIGIN_Y, 640.0, 480.0).unwrap(),
-        )
-        .with_outer_bounds(
-            PhysicalRect::new(ROOT_ORIGIN_X + 12.0, ROOT_ORIGIN_Y - 30.0, 656.0, 518.0).unwrap(),
+fn first_live_admission_invalidates_the_other_old_output_until_fresh_measure_and_paint() {
+    let (mut session, hosts, observed) = multiple_pending_children();
+    let children = observed.map(|(child, _)| child);
+    let source = session.engine.workspace().clone();
+    let version = session.version();
+    let sequence = session.committed_source_sequence;
+    let [first, stale_second] = paint_pending_children(&mut session, children, &[0, 1])
+        .try_into()
+        .unwrap_or_else(|outputs: Vec<_>| panic!("both real children must emit: {outputs:?}"));
+    let first_artifact = first.presentation_artifact();
+    let stale_artifact = stale_second.presentation_artifact();
+    session
+        .report_surface_presentation(first, SurfacePresentationResult::Presented)
+        .expect("only the exact first child output is presented");
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    for (index, child) in children.into_iter().enumerate() {
+        assert_pending_source(&session, child, index);
+    }
+
+    let ingress = session.engine.backend_ingress_committed_through();
+    let mut candidate = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the first exact admission remains rollbackable until frame commit");
+    for item in SOURCE_ITEMS[0] {
+        let current = candidate.view().item(item).unwrap();
+        assert_eq!(
+            (current.surface(), current.root(), current.contained()),
+            (children[0].surface(), ROOT, None)
         );
-    observe_all(&mut session, hosts, stale, &observed);
-    assert!(
-        session
-            .engine
-            .scene()
-            .ready_candidate(hosts[0].surface())
-            .is_none()
+    }
+    for item in SOURCE_ITEMS[1] {
+        let current = candidate.view().item(item).unwrap();
+        assert_eq!(
+            (current.surface(), current.root(), current.contained()),
+            (hosts[1].surface(), SECOND_ROOT, Some(SOURCE_FLOATINGS[1]))
+        );
+    }
+    candidate
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(candidate);
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.engine.backend_ingress_committed_through(), ingress);
+
+    let mut report = commit_managed_frame_report(&mut session);
+    assert_eq!(report.native_admissions(), &[children[0]]);
+    assert!(report.take_native_effects().is_empty());
+    let [presentation] = report.surface_presentation_commits() else {
+        panic!("the retry must settle exactly the first child's retained output");
+    };
+    assert!(presentation.presents(first_artifact));
+    assert_admitted_child(&session, children[0], 0);
+    assert_pending_source(&session, children[1], 1);
+    assert_eq!(session.version().epoch(), version.epoch());
+    assert_eq!(
+        session.version().revision().get(),
+        version.revision().get() + 1
     );
     assert!(
         session
-            .engine
-            .scene()
-            .ready_candidate(hosts[1].surface())
-            .is_some()
+            .presented_surface(children[0].surface())
+            .unwrap()
+            .matches_presentation_artifact(first_artifact)
     );
-    let first_saga = session
+    let first_version = session.version();
+    let after_first = session.engine.workspace().clone();
+    let first_surface = after_first.surface(children[0].surface()).unwrap().clone();
+    let first_root = after_first.root(ROOT).unwrap().clone();
+    let second_saga = session
         .engine
         .viewport()
         .native_create_sagas()
-        .find_map(|(_, saga)| (saga.binding() == first.binding).then_some(saga.clone()))
-        .unwrap();
-    let items = session.engine.workspace().item_multiset();
-    let roots = session
-        .engine
-        .workspace()
-        .roots()
-        .map(|(id, root)| (id, root.clone()))
+        .map(|(id, saga)| (id, saga.clone()))
         .collect::<Vec<_>>();
-    let resources = session
-        .engine
-        .viewport()
-        .retained_native_staging_resources()
-        .cloned()
-        .collect::<Vec<_>>();
-    let sequence = session.committed_source_sequence;
-    let mut frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    assert_eq!(
-        frame.native_create_recovery_surfaces().collect::<Vec<_>>(),
-        vec![first.surface(), second.surface()]
-    );
-    let blocked = frame
-        .recover_transferred_native_create(first.surface())
-        .unwrap();
-    let NativeCreateRecoveryStep::Blocked {
-        submitted,
-        surface,
-        host,
-        reason,
-    } = blocked
-    else {
-        panic!("stale first-host coordinates must block A: {blocked:?}");
-    };
-    assert_eq!(
-        (surface, host, reason),
-        (
-            first.surface(),
-            hosts[0].surface(),
-            NativeCreateRecoveryBlockedReason::HostAuthorityUnavailable
-        )
-    );
-    let applied = frame
-        .recover_transferred_native_create(second.surface())
-        .unwrap();
-    assert_eq!(
-        frame.native_create_recovery_surfaces().collect::<Vec<_>>(),
-        vec![first.surface()]
-    );
-    assert!(frame.view().surface(first.surface()).is_some());
-    assert!(frame.view().surface(second.surface()).is_none());
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let mut report = frame.commit().unwrap();
-    assert_eq!(
-        report.submitted_action_outcome(submitted),
-        Some(&HostInputOutcome::NativeCreateFirstLiveRecoveryBlocked {
-            surface,
-            host,
-            reason
-        })
-    );
-    assert_applied(applied, second, hosts[1].surface(), &report);
-    assert_eq!(session.committed_source_sequence, sequence + 2);
+    assert_eq!(second_saga.len(), 1);
     assert_eq!(
         session
             .engine
             .viewport()
-            .native_create_saga(first_saga.id()),
-        Some(&first_saga)
+            .retained_native_staging_resources()
+            .len(),
+        1
     );
-    assert_eq!(session.engine.viewport().native_create_sagas().count(), 1);
-    for item in [ITEM, SECOND_ITEM] {
-        assert_eq!(
-            session.view().item(item).unwrap().surface(),
-            first.surface()
-        );
-    }
-    for item in [THIRD_ITEM, FOURTH_ITEM] {
-        let location = session.view().item(item).unwrap();
-        assert_eq!(
-            (location.surface(), location.root()),
-            (hosts[1].surface(), SECOND_ROOT)
-        );
-        assert!(location.contained().is_some());
-    }
-    assert_eq!(session.engine.workspace().item_multiset(), items);
+
+    session
+        .report_surface_presentation(stale_second, SurfacePresentationResult::Presented)
+        .expect("the old second output still receives its exact terminal disposition");
+    assert_eq!(session.engine.workspace(), &after_first);
+    let mut report = commit_managed_frame_report(&mut session);
+    assert!(report.native_admissions().is_empty());
+    assert!(report.take_native_effects().is_empty());
+    let [presentation] = report.surface_presentation_commits() else {
+        panic!("the stale second output must settle without publishing its projection");
+    };
+    assert!(presentation.retires(stale_artifact));
+    assert_eq!(session.engine.workspace(), &after_first);
+    assert_eq!(session.version(), first_version);
+    assert_admitted_child(&session, children[0], 0);
+    assert_pending_source(&session, children[1], 1);
     assert_eq!(
         session
             .engine
-            .workspace()
-            .roots()
-            .map(|(id, root)| (id, root.clone()))
+            .viewport()
+            .native_create_sagas()
+            .map(|(id, saga)| (id, saga.clone()))
             .collect::<Vec<_>>(),
-        roots
+        second_saga
     );
     assert_eq!(
         session
             .engine
             .viewport()
             .retained_native_staging_resources()
-            .cloned()
-            .collect::<Vec<_>>(),
-        resources
+            .len(),
+        1
     );
-    assert_cleanup(&session, &mut report, &[second], &[second]);
+
+    // Settling the old terminal grants no permission to move B on a later quiet frame.
+    let report = commit_managed_frame_report(&mut session);
+    assert!(report.native_admissions().is_empty());
+    assert!(report.surface_presentation_commits().is_empty());
+    assert_eq!(session.engine.workspace(), &after_first);
+    let [fresh_second] = paint_pending_children(&mut session, children, &[1])
+        .try_into()
+        .unwrap_or_else(|outputs: Vec<_>| {
+            panic!("B must emit one fresh child output: {outputs:?}")
+        });
+    let fresh_artifact = fresh_second.presentation_artifact();
+    assert_ne!(fresh_artifact, stale_artifact);
+    assert_eq!(session.engine.workspace(), &after_first);
+    session
+        .report_surface_presentation(fresh_second, SurfacePresentationResult::Presented)
+        .expect("the freshly measured and completely painted B output is presented");
+    assert_pending_source(&session, children[1], 1);
+    assert_eq!(session.version(), first_version);
+    let mut report = commit_managed_frame_report(&mut session);
+    assert_eq!(report.native_admissions(), &[children[1]]);
+    assert!(report.take_native_effects().is_empty());
+    let [presentation] = report.surface_presentation_commits() else {
+        panic!("the fresh second output must settle exactly once");
+    };
+    assert!(presentation.presents(fresh_artifact));
+    assert!(!presentation.presents(stale_artifact));
+    assert_eq!(session.version().epoch(), version.epoch());
+    assert_eq!(
+        session.version().revision().get(),
+        version.revision().get() + 2
+    );
+    for (index, child) in children.into_iter().enumerate() {
+        assert_admitted_child(&session, child, index);
+    }
+    assert_eq!(
+        session.engine.workspace().surface(children[0].surface()),
+        Some(&first_surface)
+    );
+    assert_eq!(session.engine.workspace().root(ROOT), Some(&first_root));
+    assert_eq!(
+        session.engine.workspace().item_multiset(),
+        source.item_multiset()
+    );
+    assert_eq!(
+        session.engine.workspace().roots().collect::<Vec<_>>(),
+        source.roots().collect::<Vec<_>>()
+    );
+    for (index, host) in hosts.into_iter().enumerate() {
+        let main = [FIRST_MAIN, SECOND_MAIN][index];
+        assert_eq!(session.engine.workspace().root(main), source.root(main));
+        let item = session
+            .view()
+            .item([FIRST_MAIN_ITEM, SECOND_MAIN_ITEM][index])
+            .unwrap();
+        assert_eq!(
+            (item.surface(), item.root(), item.contained()),
+            (host.surface(), main, None)
+        );
+    }
+    assert_eq!(session.committed_source_sequence, sequence);
+    assert_eq!(session.engine.viewport().native_create_sagas().count(), 0);
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .len(),
+        0
+    );
+    session
+        .engine
+        .viewport()
+        .validate_native_staging_resource_conservation()
+        .unwrap();
 }
 
 #[test]
-fn native_create_recovery_two_hosts_refresh_measurements_between_exact_cleanup_commits() {
-    let (mut session, hosts, observed) = multiple_transferred_children();
-    let children = observed.map(|(binding, _)| binding);
-    measure_all_surfaces(&mut session);
+fn cancelling_first_live_heads_retries_without_moving_sources_or_leaking_children() {
+    let (mut session, hosts, observed) = multiple_pending_children();
+    let children = observed.map(|(child, _)| child);
+    // Revoke both source measurements; cancellation must not require recovery geometry.
+    let host_facts = [
+        root_window_facts()
+            .with_content_bounds(
+                PhysicalRect::new(ROOT_ORIGIN_X + 20.0, ROOT_ORIGIN_Y, 640.0, 480.0).unwrap(),
+            )
+            .with_outer_bounds(
+                PhysicalRect::new(ROOT_ORIGIN_X + 12.0, ROOT_ORIGIN_Y - 30.0, 656.0, 518.0)
+                    .unwrap(),
+            ),
+        second_host_facts()
+            .with_content_bounds(PhysicalRect::new(820.0, 80.0, 640.0, 480.0).unwrap())
+            .with_outer_bounds(PhysicalRect::new(812.0, 50.0, 656.0, 518.0).unwrap()),
+    ];
+    observe_all(&mut session, hosts, host_facts, &observed);
     for host in hosts {
         assert!(
             session
                 .engine
                 .scene()
                 .ready_candidate(host.surface())
-                .is_some()
+                .is_none()
         );
     }
-    let items = session.engine.workspace().item_multiset();
-    let roots = session
+    let source = session.engine.workspace().clone();
+    let version = session.version();
+    let sequence = session.committed_source_sequence;
+    let sagas = session
         .engine
-        .workspace()
-        .roots()
-        .map(|(id, root)| (id, root.clone()))
+        .viewport()
+        .native_create_sagas()
+        .map(|(id, saga)| (id, saga.clone()))
         .collect::<Vec<_>>();
+    assert_eq!(sagas.len(), 2);
+    for (index, (_, saga)) in sagas.iter().enumerate() {
+        assert_eq!(saga.binding(), children[index].binding);
+    }
     let resources = session
         .engine
         .viewport()
         .retained_native_staging_resources()
         .cloned()
         .collect::<Vec<_>>();
-    let sequence = session.committed_source_sequence;
-    let mut frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    assert_eq!(
-        frame.native_create_recovery_surfaces().collect::<Vec<_>>(),
-        children.map(|child| child.surface())
-    );
-    let first = frame
-        .recover_transferred_native_create(children[0].surface())
-        .unwrap();
-    assert!(matches!(first, NativeCreateRecoveryStep::Applied { .. }));
-    assert_eq!(
-        frame.native_create_recovery_surfaces().collect::<Vec<_>>(),
-        vec![children[1].surface()]
-    );
-    // A's saga and Pending barrier survive until commit. Removing its surface
-    // also changes the global popup roster, so B needs a fresh measured ticket.
-    assert_eq!(
-        frame.frame.view().viewport().native_create_sagas().count(),
-        2
-    );
-    assert_eq!(
-        frame
-            .frame
-            .view()
-            .viewport()
-            .viewport(children[0].surface())
-            .unwrap()
-            .admission(),
-        ViewportAdmission::Pending
-    );
-    let first_location = frame.view().item(ITEM).unwrap();
-    let restored_floating = first_location.contained().unwrap();
-    let restored = frame
-        .frame
-        .view()
-        .workspace()
-        .contained_floating(restored_floating)
-        .unwrap()
-        .clone();
-    let second = frame
-        .recover_transferred_native_create(children[1].surface())
-        .unwrap();
-    assert!(
-        matches!(
-            second,
-            NativeCreateRecoveryStep::Blocked {
-                reason: NativeCreateRecoveryBlockedReason::HostAuthorityUnavailable,
-                ..
-            }
-        ),
-        "second recovery: {second:?}"
-    );
-    assert_eq!(
-        frame
-            .frame
-            .view()
-            .workspace()
-            .contained_floating(restored_floating),
-        Some(&restored)
-    );
-    assert_eq!(
-        frame.native_create_recovery_surfaces().collect::<Vec<_>>(),
-        vec![children[1].surface()]
-    );
-    assert!(frame.view().surface(children[0].surface()).is_none());
-    assert!(frame.view().surface(children[1].surface()).is_some());
-    assert_eq!(frame.next_source_sequence, sequence + 2);
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let mut report = frame.commit().unwrap();
-    assert_applied(first, children[0], hosts[0].surface(), &report);
-    assert_eq!(session.committed_source_sequence, sequence + 2);
-    assert_cleanup(&session, &mut report, &children[..1], &children[..1]);
 
-    // No first-live paint is fabricated: one current measurement boundary is
-    // sufficient to retry B through the same exact durable obligation.
-    measure_all_surfaces(&mut session);
-    let mut frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    let second = frame
-        .recover_transferred_native_create(children[1].surface())
-        .unwrap();
-    assert!(
-        matches!(second, NativeCreateRecoveryStep::Applied { .. }),
-        "second recovery after measurement: {second:?}"
-    );
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let mut report = frame.commit().unwrap();
-    assert_applied(second, children[1], hosts[1].surface(), &report);
-    assert_eq!(session.committed_source_sequence, sequence + 3);
-    assert_eq!(session.engine.viewport().native_create_sagas().count(), 0);
-    assert_eq!(session.engine.viewport().pending_recoveries().count(), 0);
-    for (host, root, item) in [
-        (hosts[0], ROOT, ITEM),
-        (hosts[0], ROOT, SECOND_ITEM),
-        (hosts[1], SECOND_ROOT, THIRD_ITEM),
-        (hosts[1], SECOND_ROOT, FOURTH_ITEM),
-    ] {
-        let location = session.view().item(item).unwrap();
+    for index in 0..2 {
+        let child = children[index];
+        let (saga_id, saga) = &sagas[index];
+        let before_sequence = session.committed_source_sequence;
+        let ingress = session.engine.backend_ingress_committed_through();
+        let mut rollback = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the head cancellation candidate begins without source remeasurement");
+        assert!(rollback.cancel_next_native_create().unwrap());
+        assert_eq!(rollback.next_source_sequence, before_sequence + 1);
+        assert_eq!(rollback.frame.view().workspace(), &source);
+        assert_eq!(rollback.version(), version);
         assert_eq!(
-            (location.surface(), location.root()),
-            (host.surface(), root)
+            rollback
+                .frame
+                .view()
+                .viewport()
+                .native_create_sagas()
+                .map(|(id, saga)| (id, saga.clone()))
+                .collect::<Vec<_>>(),
+            sagas[index + 1..]
         );
-        assert!(location.contained().is_some());
-    }
-    assert_eq!(session.engine.workspace().item_multiset(), items);
-    assert_eq!(
+        assert!(
+            rollback
+                .frame
+                .view()
+                .viewport()
+                .viewport(child.surface())
+                .is_none()
+        );
+        rollback
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        drop(rollback);
+
+        assert_eq!(session.engine.workspace(), &source);
+        assert_eq!(session.version(), version);
+        assert_eq!(session.committed_source_sequence, before_sequence);
+        assert_eq!(session.engine.backend_ingress_committed_through(), ingress);
+        assert_eq!(
+            session
+                .engine
+                .viewport()
+                .native_create_sagas()
+                .map(|(id, saga)| (id, saga.clone()))
+                .collect::<Vec<_>>(),
+            sagas[index..]
+        );
+        assert_eq!(
+            session
+                .engine
+                .viewport()
+                .retained_native_staging_resources()
+                .cloned()
+                .collect::<Vec<_>>(),
+            resources[index..]
+        );
+        assert_eq!(session.engine.viewport().binding_retirements().count(), 0);
+        for pending in index..2 {
+            assert_pending_source(&session, children[pending], pending);
+        }
+
+        let mut retry = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the same exact head cancellation retries after rollback");
+        assert!(retry.cancel_next_native_create().unwrap());
+        assert_eq!(retry.next_source_sequence, before_sequence + 1);
+        retry
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = retry
+            .commit()
+            .expect("one cancellation input commits for this head");
+        assert!(report.native_admissions().is_empty());
+        assert!(report.presentation_transitions().is_empty());
+        assert_eq!(session.engine.workspace(), &source);
+        assert_eq!(session.version(), version);
+        assert_eq!(session.committed_source_sequence, before_sequence + 1);
+        assert!(
+            session
+                .engine
+                .viewport()
+                .native_create_saga(*saga_id)
+                .is_none()
+        );
+        assert_eq!(
+            session
+                .engine
+                .viewport()
+                .native_create_sagas()
+                .map(|(id, saga)| (id, saga.clone()))
+                .collect::<Vec<_>>(),
+            sagas[index + 1..]
+        );
+        let retirements = session
+            .engine
+            .viewport()
+            .binding_retirements()
+            .collect::<Vec<_>>();
+        assert_eq!(retirements.len(), 1);
+        assert_eq!(retirements[0].0, child.binding);
+        assert_eq!(
+            retirements[0].1.origin(),
+            BindingRetirementOrigin::NativeCreateAborted {
+                create: saga.create()
+            }
+        );
+        assert_eq!(
+            session
+                .engine
+                .viewport()
+                .retained_native_staging_resources()
+                .cloned()
+                .collect::<Vec<_>>(),
+            resources[index..]
+        );
         session
             .engine
-            .workspace()
-            .roots()
-            .map(|(id, root)| (id, root.clone()))
-            .collect::<Vec<_>>(),
-        roots
-    );
+            .viewport()
+            .validate_native_staging_resource_conservation()
+            .unwrap();
+        for pending in index + 1..2 {
+            assert_pending_source(&session, children[pending], pending);
+        }
+
+        // Settle the actual compensation through its original owner before the next head.
+        let compensation = take_only_native_effect(&mut report);
+        assert!(matches!(
+            compensation.operation(),
+            NativeEffectOperation::CompensatingClose { binding } if *binding == child
+        ));
+        let Some(NativeEffectAcknowledgement::Close(closed)) = compensation.accepted() else {
+            panic!("the original compensation must return its exact close acknowledgement");
+        };
+        let mut quiet = commit_managed_frame_report(&mut session);
+        assert!(quiet.native_admissions().is_empty());
+        assert!(quiet.take_native_effects().is_empty());
+        assert_eq!(
+            session
+                .engine
+                .viewport()
+                .retained_native_staging_resources()
+                .cloned()
+                .collect::<Vec<_>>(),
+            resources[index..]
+        );
+        let remaining = [(child, NativeWindowFacts::destroyed_after(closed))]
+            .into_iter()
+            .chain(observed[index + 1..].iter().copied())
+            .collect::<Vec<_>>();
+        observe_all(&mut session, hosts, host_facts, &remaining);
+        assert_eq!(
+            session
+                .engine
+                .viewport()
+                .retained_native_staging_resources()
+                .cloned()
+                .collect::<Vec<_>>(),
+            resources[index + 1..]
+        );
+        assert_eq!(session.engine.workspace(), &source);
+        for pending in index + 1..2 {
+            assert_pending_source(&session, children[pending], pending);
+        }
+        session
+            .report_native_binding_quiescence(child)
+            .expect("the exactly destroyed child has no remaining external callbacks");
+        let mut report = commit_managed_frame_report(&mut session);
+        assert!(report.native_admissions().is_empty());
+        assert!(report.take_native_effects().is_empty());
+        assert_eq!(session.engine.viewport().binding_retirements().count(), 0);
+        assert_eq!(session.engine.workspace(), &source);
+        assert_eq!(session.version(), version);
+        assert_eq!(session.committed_source_sequence, before_sequence + 1);
+        session
+            .engine
+            .viewport()
+            .validate_native_staging_resource_conservation()
+            .unwrap();
+    }
+
+    let mut empty = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(!empty.cancel_next_native_create().unwrap());
+    assert_eq!(empty.next_source_sequence, sequence + 2);
+    empty
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = empty.commit().unwrap();
+    assert!(report.native_admissions().is_empty());
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(session.engine.workspace(), &source);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.committed_source_sequence, sequence + 2);
+    assert_eq!(session.engine.viewport().native_create_sagas().count(), 0);
+    assert_eq!(session.engine.viewport().pending_recoveries().count(), 0);
     assert_eq!(
         session
             .engine
             .viewport()
             .retained_native_staging_resources()
-            .cloned()
-            .collect::<Vec<_>>(),
-        resources
+            .len(),
+        0
     );
-    assert_cleanup(&session, &mut report, &children, &children[1..]);
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        0
+    );
 }

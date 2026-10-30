@@ -15,26 +15,90 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
-## 2026-10-30 open R15 first-live ownership frontier
+## 2026-10-30 R15 first-live ownership replacement
 
-Independent contract review confirms that current native code does not yet meet
-R15's first-live durable-ownership boundary. PostShow is a non-interactive
-placeholder with no pane UI, hit, focus or accessibility output. Accepting its
-staging terminal nevertheless applies the frozen native workspace command,
-moves root/item presentation ownership to the child and advances the workspace
-revision. The later exact semantic first-live terminal admits routing and
-releases retained resources; it does not perform that already published transfer.
-An immutable source payload and recovery obligation preserve recoverability,
-not the original workspace ownership.
+The previous native protocol published topology at non-interactive PostShow,
+before its first semantic child output. The replacement keeps the original
+workspace, root/item ownership and version throughout staging. A checked,
+temporary workspace command feeds the existing scene compiler for the child's
+complete pane/tab program. The retained scene slot records its saga, binding,
+resource and source-version provenance; it grants no receiver authority before
+admission and does not become another topology owner.
 
-The existing transfer/recovery gates below qualify that earlier protocol, not
-R15 conformance. R15, U8 and the Definition of Done remain unchanged. The next
-core lifecycle replacement needs a transient child semantic projection before
-durable transfer, followed by one exact first-live commit for ownership and
-admission. PostShow must not publish source topology. Obsolete early-transfer
-and pre-first-live compensation paths are deleted with that replacement. Native
-readiness and the complete refactor remain open despite the passing local and
-recovery tests. This correction precedes expanding native scoped input.
+An accepted current exact first-live output commits transfer, workspace revision,
+binding admission, resource release and observation acceptance in the same
+rollbackable host-frame candidate. Dropped output, abandoned output, frame
+drop/retry, incompatible policy, cancellation, stale concurrent output and late
+predecessor facts cannot publish the prospective workspace. Pending Item, Tabs
+and Subtree sources use the same complete frozen source guard. Tick-final
+vacancy also captures a newly admitted target, so an immediate same-frame dock
+back retires the exact child and suppresses its delayed focus request.
+If a destroyed predecessor has already transferred cleanup to its exact terminal
+owner, its vacancy can settle alongside a replacement at the same logical
+surface without mutating the successor or duplicating cleanup.
+
+An active workspace popup is dismissed before transfer and requires a fresh
+Inactive child output. The popup's existing exact-roster interaction barrier
+remains closed until every surviving surface presents. A surface still awaiting
+that successor no longer erases unchanged exact proofs already accepted for its
+siblings. Inactive surface roster changes preserve independent output identity.
+Popup measurement directories are normalized in both Active and Inactive states.
+The presentation retention manifest includes exact proofs held by a staging
+popup gate, so adapters retain receiver resources until those proofs are revoked
+or replaced even while interaction remains unavailable.
+
+Every pending create can use ordinary cancellation, including first-live content
+readiness. The old transferred-create recovery API and resource handoff into
+surface recovery are removed. Admitted surface recovery still owns its logical
+roster and exact replacement lifecycle; create resources belong only to their
+original create/first-live owner or its binding cleanup.
+
+An ordered presentation observation establishes the post-observation application
+version before following surface actions. The regression rejects the former
+source-version command, accepts the current child's prepared tab action, and
+checks that dropping and retrying the whole candidate preserves input and
+producer watermarks. Independent commands after that barrier still share their
+accepted application base.
+
+Deferred native painting uses the bridge's staging decision plus exact current
+route and binding authority. It no longer requires a durable child surface as a
+prerequisite for painting that surface's first-live content. A content-ready
+pending-child fixture verifies Semantic and Retain dispositions while source
+ownership remains unchanged, including foreign, retired and forgotten binding
+rejection. Programmatic macOS redock passes with unlimited and bounded storage,
+and all five macOS output-pressure scenarios pass. The late-output scenarios
+assert shutdown quiescence in the final root terminal and zero output owners
+after event-loop exit; a later OS destruction fact for the external root is new
+teardown work rather than an unsettled child or output obligation.
+
+Frozen qualification passes 1,837 workspace tests, 86 public-consumer tests,
+10 doctests, correctness/suspicious core/native Clippy, strict core/native
+rustdoc and formatting. Native normal and assertion-disabled configurations
+each pass 453 tests, including the same-instance 10,000-lifetime model. The two
+obsolete durable-surface classification tests are replaced by the real pending
+child paint-disposition regression. An independent review of the final ordered
+version, deferred-paint and shutdown-boundary changes reports no P1/P2 findings.
+
+Programmatic macOS redock passes with unlimited and bounded storage. The bounded
+run samples 2,996,883 owned input bytes and 4,145,752 reserved bytes under 4 MiB.
+The X11/XTest physical smoke passes drag-out, exact child first-live, non-guide
+drag-back, exact DestroyNotify and retired viewport/quiescence checks in the
+Rust 1.95 Linux/arm64 Xvfb/Openbox environment. All five real-window output
+pressure scenarios pass on both macOS and X11: ordered, duplicate, reordered,
+late-staging and late-first-live. These retain their existing model, platform
+and storage-accounting boundaries; they do not certify additional physical
+platforms or transient allocator peaks.
+
+Source hashes, exact commands and outcomes are retained in
+`/tmp/dockspace-r15-qualified-snapshot.json`,
+`/tmp/dockspace-r15-qualified-qualification.json` and the consolidated
+`/tmp/dockspace-r15-qualification.json`. Native validation uses the explicit
+unpublished local egui fork override at
+`86feb7f8cc49217bff54a8924b2cb525f4af3285`; the tracked remote egui pin does not
+reproduce that source. Earlier full-suite results below describe the superseded
+protocol. The direct-prepared host strategy, native scoped/stationary input,
+broader physical matrix and complete U7/U8 remain open; R15, U8 and the
+Definition of Done have not been weakened.
 
 ## 2026-10-30 native original capture metadata and touch-route suppression
 
@@ -129,6 +193,10 @@ full plan, and still uses the explicit unpublished local egui fork override.
 
 ## 2026-10-30 recovery after transfer and before first-live admission
 
+Historical qualification of the earlier protocol, superseded by the ownership
+replacement above. Its transferred-create recovery APIs are removed; these
+results remain as provenance rather than a current API or acceptance claim.
+
 The host frame now exposes exact pending recovery surfaces and an explicit
 `recover_transferred_native_create` operation. It resolves the saga and binding
 from the current candidate, then checks phase, registry admission, retained
@@ -213,6 +281,9 @@ This slice does not establish
 cross-saturation, the broader physical platform matrix or complete U7/U8.
 
 ## 2026-10-29 fatal cleanup before native ownership transfer
+
+Historical checkpoint. The first-live replacement above extends this same
+cancellation operation to every pending phase and supersedes its old skip rule.
 
 `DockspaceHostFrame::cancel_next_native_create` selects at most one eligible
 create from the current frame candidate and uses the existing

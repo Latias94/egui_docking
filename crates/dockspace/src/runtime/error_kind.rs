@@ -228,7 +228,8 @@ pub(super) const fn surface_contribution_prepare_error_kind(
     error: &SurfaceContributionPrepareError,
 ) -> DockspaceRuntimeErrorKind {
     match error {
-        SurfaceContributionPrepareError::RetainedCandidateUnavailable { .. } => {
+        SurfaceContributionPrepareError::RetainedCandidateUnavailable { .. }
+        | SurfaceContributionPrepareError::NativeProjectionUnavailable { .. } => {
             DockspaceRuntimeErrorKind::Internal
         }
         SurfaceContributionPrepareError::Compilation(error) => {

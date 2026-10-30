@@ -748,15 +748,61 @@ impl<'a> SurfacePaintProjection<'a> {
     }
 }
 
+/// A surface scene and the pending native content provenance of that same slot.
+#[derive(Debug, Clone, PartialEq)]
+struct SurfaceSceneRecord {
+    scene: SurfaceScene,
+    native_first_live: Option<crate::engine::NativeFirstLiveProjectionStamp>,
+}
+
+impl SurfaceSceneRecord {
+    fn new(scene: SurfaceScene) -> Self {
+        Self {
+            scene,
+            native_first_live: None,
+        }
+    }
+
+    fn scene(&self) -> &SurfaceScene {
+        &self.scene
+    }
+
+    fn scene_mut(&mut self) -> &mut SurfaceScene {
+        &mut self.scene
+    }
+
+    fn replace_scene(mut self, replace: impl FnOnce(SurfaceScene) -> SurfaceScene) -> Self {
+        self.scene = replace(self.scene);
+        self
+    }
+}
+
 /// Complete independently revisioned presentation roster.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceSceneSet {
-    surfaces: BTreeMap<SurfaceId, SurfaceScene>,
+    surfaces: BTreeMap<SurfaceId, SurfaceSceneRecord>,
     revision_tombstones: BTreeMap<SurfaceId, SurfaceSceneRevision>,
     popup_interaction_gate: PopupInteractionGate,
 }
 
 impl SurfaceSceneSet {
+    pub(crate) fn native_first_live_projection(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<crate::engine::NativeFirstLiveProjectionStamp> {
+        self.surfaces.get(&surface)?.native_first_live
+    }
+
+    pub(crate) fn set_native_first_live_projection(
+        &mut self,
+        surface: SurfaceId,
+        origin: Option<crate::engine::NativeFirstLiveProjectionStamp>,
+    ) {
+        if let Some(record) = self.surfaces.get_mut(&surface) {
+            record.native_first_live = origin;
+        }
+    }
+
     pub(crate) fn new(manifest: &SceneRequirementManifest) -> Result<Self, SceneBuildError> {
         let mut set = Self {
             surfaces: BTreeMap::new(),
@@ -767,10 +813,10 @@ impl SurfaceSceneSet {
             let revision = set.next_revision(surface)?;
             set.surfaces.insert(
                 surface,
-                SurfaceScene::Bootstrap(BootstrapSurfaceScene {
+                SurfaceSceneRecord::new(SurfaceScene::Bootstrap(BootstrapSurfaceScene {
                     stamp: SurfaceSceneStamp::new(requirements.ticket(), revision),
                     reason: BootstrapSurfaceSceneReason::AwaitingContribution,
-                }),
+                })),
             );
         }
         Ok(set)
@@ -779,7 +825,7 @@ impl SurfaceSceneSet {
     /// Returns one surface authority, or `None` outside the current roster.
     #[must_use]
     pub fn surface(&self, surface: SurfaceId) -> Option<&SurfaceScene> {
-        self.surfaces.get(&surface)
+        self.surfaces.get(&surface).map(SurfaceSceneRecord::scene)
     }
 
     /// Returns one ready surface eligible for hit testing and proof creation.
@@ -796,6 +842,9 @@ impl SurfaceSceneSet {
         &self,
         surface: SurfaceId,
     ) -> Option<SurfaceInteractionProjection<'_>> {
+        if self.native_first_live_projection(surface).is_some() {
+            return None;
+        }
         let revision = self.popup_interaction_gate.interaction_revision()?;
         self.surface(surface)
             .and_then(|scene| scene.interaction_projection(revision))
@@ -831,12 +880,21 @@ impl SurfaceSceneSet {
     pub(crate) fn retained_interaction_emissions(
         &self,
     ) -> impl Iterator<Item = crate::presentation_observation::HostFrameKey> + '_ {
-        self.surfaces.values().filter_map(|scene| match scene {
-            SurfaceScene::Ready(ready) => ready
-                .interaction_authority()
-                .map(PresentedSurfaceAuthority::emission),
-            SurfaceScene::Stale(_) | SurfaceScene::Bootstrap(_) => None,
-        })
+        let active = self
+            .surfaces
+            .values()
+            .filter_map(|record| match record.scene() {
+                SurfaceScene::Ready(ready) => ready
+                    .interaction_authority()
+                    .map(PresentedSurfaceAuthority::emission),
+                SurfaceScene::Stale(_) | SurfaceScene::Bootstrap(_) => None,
+            });
+        active.chain(
+            self.popup_interaction_gate
+                .proofs
+                .values()
+                .map(|authority| authority.emission()),
+        )
     }
 
     /// Tests whether core retained this exact observed emission, including a proof
@@ -916,7 +974,7 @@ impl SurfaceSceneSet {
         ticket: SurfacePresentationOutputTicket,
     ) -> Result<SurfaceCoordinateCapture, PresentationAuthorityRejection> {
         let surface = ticket.surface();
-        let Some(scene) = self.surfaces.get(&surface) else {
+        let Some(scene) = self.surfaces.get(&surface).map(SurfaceSceneRecord::scene) else {
             return Err(PresentationAuthorityRejection::SurfaceOutsideRoster);
         };
         let SurfaceScene::Ready(ready) = scene else {
@@ -937,6 +995,20 @@ impl SurfaceSceneSet {
         })
     }
 
+    pub(crate) fn validate_observed_authority(
+        &self,
+        authority: PresentedSurfaceAuthority,
+    ) -> Result<(), PresentationAuthorityRejection> {
+        let surface = authority.surface();
+        if !self.popup_interaction_gate.roster.contains(&surface) {
+            return Err(PresentationAuthorityRejection::SurfaceOutsideRoster);
+        }
+        let Some(SurfaceScene::Ready(ready)) = self.surface(surface) else {
+            return Err(PresentationAuthorityRejection::SurfaceNotReady);
+        };
+        ready.validate_presented_authority(authority, self.popup_interaction_gate.requirement)
+    }
+
     pub(crate) fn accept_observed_authority(
         &mut self,
         authority: PresentedSurfaceAuthority,
@@ -945,7 +1017,9 @@ impl SurfaceSceneSet {
         if !self.popup_interaction_gate.roster.contains(&surface) {
             return Err(PresentationAuthorityRejection::SurfaceOutsideRoster);
         }
-        let Some(SurfaceScene::Ready(ready)) = self.surfaces.get(&surface) else {
+        let Some(SurfaceScene::Ready(ready)) =
+            self.surfaces.get(&surface).map(SurfaceSceneRecord::scene)
+        else {
             return Err(PresentationAuthorityRejection::SurfaceNotReady);
         };
         ready.validate_presented_authority(authority, self.popup_interaction_gate.requirement)?;
@@ -976,7 +1050,11 @@ impl SurfaceSceneSet {
                 BTreeSet::new()
             };
 
-        let Some(SurfaceScene::Ready(ready)) = self.surfaces.get_mut(&surface) else {
+        let Some(SurfaceScene::Ready(ready)) = self
+            .surfaces
+            .get_mut(&surface)
+            .map(SurfaceSceneRecord::scene_mut)
+        else {
             return Err(PresentationAuthorityRejection::SurfaceNotReady);
         };
         ready.observe_presented_for_paint(authority, self.popup_interaction_gate.requirement)?;
@@ -1043,7 +1121,9 @@ impl SurfaceSceneSet {
 
     /// Iterates the complete current roster in stable surface order.
     pub fn surfaces(&self) -> impl ExactSizeIterator<Item = (&SurfaceId, &SurfaceScene)> {
-        self.surfaces.iter()
+        self.surfaces
+            .iter()
+            .map(|(surface, record)| (surface, record.scene()))
     }
 
     pub(crate) fn reconcile_manifest(
@@ -1063,56 +1143,60 @@ impl SurfaceSceneSet {
                 let revision = self.next_revision(surface)?;
                 self.surfaces.insert(
                     surface,
-                    SurfaceScene::Bootstrap(BootstrapSurfaceScene {
+                    SurfaceSceneRecord::new(SurfaceScene::Bootstrap(BootstrapSurfaceScene {
                         stamp: SurfaceSceneStamp::new(ticket, revision),
                         reason: BootstrapSurfaceSceneReason::AwaitingContribution,
-                    }),
+                    })),
                 );
                 continue;
             };
-            if current.stamp().requirement() == ticket {
+            if current.scene().stamp().requirement() == ticket {
                 self.surfaces.insert(surface, current);
                 continue;
             }
 
             let epoch_replaced =
-                current.stamp().requirement().workspace_epoch() != ticket.workspace_epoch();
+                current.scene().stamp().requirement().workspace_epoch() != ticket.workspace_epoch();
             let revision = self.next_revision(surface)?;
-            let replacement = if epoch_replaced {
-                SurfaceScene::Bootstrap(BootstrapSurfaceScene {
-                    stamp: SurfaceSceneStamp::new(ticket, revision),
-                    reason: BootstrapSurfaceSceneReason::WorkspaceReplaced,
-                })
-            } else {
-                match current {
-                    SurfaceScene::Ready(previous) => {
-                        match previous.into_confirmed_paint_fallback() {
-                            Some(paint_fallback) => {
-                                SurfaceScene::Stale(Box::new(StaleSurfaceScene {
+            let replacement = current.replace_scene(|current_scene| {
+                if epoch_replaced {
+                    SurfaceScene::Bootstrap(BootstrapSurfaceScene {
+                        stamp: SurfaceSceneStamp::new(ticket, revision),
+                        reason: BootstrapSurfaceSceneReason::WorkspaceReplaced,
+                    })
+                } else {
+                    match current_scene {
+                        SurfaceScene::Ready(previous) => {
+                            match previous.into_confirmed_paint_fallback() {
+                                Some(paint_fallback) => {
+                                    SurfaceScene::Stale(Box::new(StaleSurfaceScene {
+                                        stamp: SurfaceSceneStamp::new(ticket, revision),
+                                        paint_fallback,
+                                        reason: StaleSurfaceSceneReason::RequirementsChanged,
+                                    }))
+                                }
+                                None => SurfaceScene::Bootstrap(BootstrapSurfaceScene {
                                     stamp: SurfaceSceneStamp::new(ticket, revision),
-                                    paint_fallback,
-                                    reason: StaleSurfaceSceneReason::RequirementsChanged,
-                                }))
+                                    reason: BootstrapSurfaceSceneReason::RequirementsChanged,
+                                }),
                             }
-                            None => SurfaceScene::Bootstrap(BootstrapSurfaceScene {
+                        }
+                        SurfaceScene::Stale(previous) => {
+                            SurfaceScene::Stale(Box::new(StaleSurfaceScene {
+                                stamp: SurfaceSceneStamp::new(ticket, revision),
+                                paint_fallback: previous.paint_fallback,
+                                reason: StaleSurfaceSceneReason::RequirementsChanged,
+                            }))
+                        }
+                        SurfaceScene::Bootstrap(_) => {
+                            SurfaceScene::Bootstrap(BootstrapSurfaceScene {
                                 stamp: SurfaceSceneStamp::new(ticket, revision),
                                 reason: BootstrapSurfaceSceneReason::RequirementsChanged,
-                            }),
+                            })
                         }
                     }
-                    SurfaceScene::Stale(previous) => {
-                        SurfaceScene::Stale(Box::new(StaleSurfaceScene {
-                            stamp: SurfaceSceneStamp::new(ticket, revision),
-                            paint_fallback: previous.paint_fallback,
-                            reason: StaleSurfaceSceneReason::RequirementsChanged,
-                        }))
-                    }
-                    SurfaceScene::Bootstrap(_) => SurfaceScene::Bootstrap(BootstrapSurfaceScene {
-                        stamp: SurfaceSceneStamp::new(ticket, revision),
-                        reason: BootstrapSurfaceSceneReason::RequirementsChanged,
-                    }),
                 }
-            };
+            });
             self.surfaces.insert(surface, replacement);
         }
         let requires_fresh_barrier = self.popup_interaction_gate.reconcile_identity(manifest);
@@ -1143,7 +1227,8 @@ impl SurfaceSceneSet {
             .ok_or(SceneBuildError::SyntheticPresentationRejected { surface })?;
         // Re-observing identical immutable facts does not replace an in-flight
         // candidate. Concrete paints still receive distinct emission keys.
-        if let Some(SurfaceScene::Ready(ready)) = self.surfaces.get(&surface)
+        if let Some(SurfaceScene::Ready(ready)) =
+            self.surfaces.get(&surface).map(SurfaceSceneRecord::scene)
             && ready.candidate().plan() == &plan
             && ready.candidate().coordinate_capture() == coordinate_capture
         {
@@ -1153,7 +1238,7 @@ impl SurfaceSceneSet {
             .surfaces
             .remove(&surface)
             .ok_or(SceneBuildError::SurfaceOutsideRoster { surface })?;
-        let expected_ticket = current.stamp().requirement();
+        let expected_ticket = current.scene().stamp().requirement();
         if expected_ticket != ticket {
             self.surfaces.insert(surface, current);
             return Err(SceneBuildError::PresentationTicketMismatch {
@@ -1168,18 +1253,17 @@ impl SurfaceSceneSet {
             SurfacePresentationOutputTicket::mint(authority_domain, output_serial, stamp);
         let hit_manifest = PresentationHitManifest::compile(output_ticket, &plan)?;
         let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan)?;
-        let (retained_fallback, retained_interaction, confirmed_paint_fallback) = match current {
-            SurfaceScene::Ready(ready) => ready.into_retained_authority(),
-            SurfaceScene::Stale(stale) => {
-                let confirmed = stale.paint_fallback.output_ticket();
-                (Some(stale.paint_fallback), None, Some(confirmed))
-            }
-            SurfaceScene::Bootstrap(_) => (None, None, None),
-        };
-        let paint_fallback = retained_fallback.map(ReadySurfacePaintFallback::Retained);
-        let interaction_authority = retained_interaction;
-        self.surfaces.insert(
-            surface,
+        let current = current.replace_scene(|current_scene| {
+            let (retained_fallback, interaction_authority, confirmed_paint_fallback) =
+                match current_scene {
+                    SurfaceScene::Ready(ready) => ready.into_retained_authority(),
+                    SurfaceScene::Stale(stale) => {
+                        let confirmed = stale.paint_fallback.output_ticket();
+                        (Some(stale.paint_fallback), None, Some(confirmed))
+                    }
+                    SurfaceScene::Bootstrap(_) => (None, None, None),
+                };
+            let paint_fallback = retained_fallback.map(ReadySurfacePaintFallback::Retained);
             SurfaceScene::Ready(Box::new(ReadySurfaceScene {
                 stamp,
                 candidate: Box::new(SurfacePlanScene {
@@ -1193,8 +1277,9 @@ impl SurfaceSceneSet {
                 paint_fallback,
                 confirmed_paint_fallback,
                 interaction_authority,
-            })),
-        );
+            }))
+        });
+        self.surfaces.insert(surface, current);
         if !self.popup_gate_proofs_are_current() {
             if self.popup_interaction_gate.requires_roster_barrier() {
                 self.reset_popup_interaction_barrier();
@@ -1210,7 +1295,7 @@ impl SurfaceSceneSet {
         surface: SurfaceId,
         reason: StaleSurfaceSceneReason,
     ) -> Result<SurfaceSceneStamp, SceneBuildError> {
-        match self.surfaces.get(&surface) {
+        match self.surfaces.get(&surface).map(SurfaceSceneRecord::scene) {
             Some(SurfaceScene::Ready(ready)) if !ready.has_confirmed_paint_fallback() => {
                 return Err(SceneBuildError::ReadySurfaceHasNoPaintFallback { surface });
             }
@@ -1225,26 +1310,26 @@ impl SurfaceSceneSet {
             .surfaces
             .remove(&surface)
             .expect("surface fallback preflight established roster membership");
-        let current_stamp = current.stamp();
-        let paint_fallback = match current {
-            SurfaceScene::Ready(ready) => ready
-                .into_confirmed_paint_fallback()
-                .expect("ready fallback preflight established a retained plan"),
-            SurfaceScene::Stale(stale) => stale.paint_fallback,
-            SurfaceScene::Bootstrap(_) => {
-                unreachable!("bootstrap preflight returned before scene removal")
-            }
-        };
+        let current_stamp = current.scene().stamp();
         let revision = self.next_revision(surface)?;
         let stamp = SurfaceSceneStamp::new(current_stamp.requirement(), revision);
-        self.surfaces.insert(
-            surface,
+        let current = current.replace_scene(|current_scene| {
+            let paint_fallback = match current_scene {
+                SurfaceScene::Ready(ready) => ready
+                    .into_confirmed_paint_fallback()
+                    .expect("ready fallback preflight established a retained plan"),
+                SurfaceScene::Stale(stale) => stale.paint_fallback,
+                SurfaceScene::Bootstrap(_) => {
+                    unreachable!("bootstrap preflight returned before scene removal")
+                }
+            };
             SurfaceScene::Stale(Box::new(StaleSurfaceScene {
                 stamp,
                 paint_fallback,
                 reason,
-            })),
-        );
+            }))
+        });
+        self.surfaces.insert(surface, current);
         Ok(stamp)
     }
 
@@ -1261,11 +1346,11 @@ impl SurfaceSceneSet {
             .surfaces
             .remove(&surface)
             .ok_or(SceneBuildError::SurfaceOutsideRoster { surface })?;
-        let current_stamp = current.stamp();
+        let current_stamp = current.scene().stamp();
         let revision = self.next_revision(surface)?;
         self.invalidate_popup_authority_for_surface(surface);
         let stamp = SurfaceSceneStamp::new(current_stamp.requirement(), revision);
-        let replacement = match current {
+        let current = current.replace_scene(|current_scene| match current_scene {
             SurfaceScene::Ready(ready) => match ready.into_confirmed_paint_fallback() {
                 Some(paint_fallback) => SurfaceScene::Stale(Box::new(StaleSurfaceScene {
                     stamp,
@@ -1286,8 +1371,8 @@ impl SurfaceSceneSet {
                 stamp,
                 reason: BootstrapSurfaceSceneReason::TransientPresentationChanged,
             }),
-        };
-        self.surfaces.insert(surface, replacement);
+        });
+        self.surfaces.insert(surface, current);
         Ok(stamp)
     }
 
@@ -1302,11 +1387,10 @@ impl SurfaceSceneSet {
             .ok_or(SceneBuildError::SurfaceOutsideRoster { surface })?;
         let revision = self.next_revision(surface)?;
         self.invalidate_popup_authority_for_surface(surface);
-        let stamp = SurfaceSceneStamp::new(current.stamp().requirement(), revision);
-        self.surfaces.insert(
-            surface,
-            SurfaceScene::Bootstrap(BootstrapSurfaceScene { stamp, reason }),
-        );
+        let stamp = SurfaceSceneStamp::new(current.scene().stamp().requirement(), revision);
+        let current = current
+            .replace_scene(|_| SurfaceScene::Bootstrap(BootstrapSurfaceScene { stamp, reason }));
+        self.surfaces.insert(surface, current);
         Ok(stamp)
     }
 
@@ -1319,7 +1403,7 @@ impl SurfaceSceneSet {
                     && self
                         .surfaces
                         .get(surface)
-                        .and_then(SurfaceScene::ready)
+                        .and_then(|record| record.scene().ready())
                         .is_some_and(|ready| {
                             ready
                                 .validate_presented_authority(
@@ -1357,7 +1441,9 @@ impl SurfaceSceneSet {
                 .proofs
                 .get(surface)
                 .expect("popup gate preflight established an exact proof roster");
-            let Some(SurfaceScene::Ready(ready)) = surfaces.get_mut(surface) else {
+            let Some(SurfaceScene::Ready(ready)) =
+                surfaces.get_mut(surface).map(SurfaceSceneRecord::scene_mut)
+            else {
                 unreachable!("popup gate preflight established an exact ready roster");
             };
             if ready
@@ -1380,7 +1466,8 @@ impl SurfaceSceneSet {
     fn reset_popup_interaction_barrier(&mut self) -> BTreeSet<SurfaceId> {
         self.popup_interaction_gate.reset_barrier();
         let mut changed = BTreeSet::new();
-        for (surface, scene) in &mut self.surfaces {
+        for (surface, record) in &mut self.surfaces {
+            let scene = record.scene_mut();
             let SurfaceScene::Ready(ready) = scene else {
                 continue;
             };
@@ -1392,12 +1479,19 @@ impl SurfaceSceneSet {
     }
 
     fn invalidate_popup_authority_for_surface(&mut self, surface: SurfaceId) {
-        if self.popup_interaction_gate.requires_roster_barrier() {
+        if self.popup_interaction_gate.is_active_presented() {
             self.reset_popup_interaction_barrier();
             return;
         }
+        // A staging gate already denies all interaction. A surface still
+        // awaiting its own successor must not erase unchanged exact outputs
+        // accepted for the other surfaces of that same popup epoch.
         self.popup_interaction_gate.proofs.remove(&surface);
-        if let Some(SurfaceScene::Ready(ready)) = self.surfaces.get_mut(&surface) {
+        if let Some(SurfaceScene::Ready(ready)) = self
+            .surfaces
+            .get_mut(&surface)
+            .map(SurfaceSceneRecord::scene_mut)
+        {
             ready.interaction_authority = None;
         }
     }
@@ -1410,7 +1504,11 @@ impl SurfaceSceneSet {
         let mut changed = BTreeSet::new();
         for surface in surfaces {
             self.popup_interaction_gate.proofs.remove(surface);
-            let Some(SurfaceScene::Ready(ready)) = self.surfaces.get_mut(surface) else {
+            let Some(SurfaceScene::Ready(ready)) = self
+                .surfaces
+                .get_mut(surface)
+                .map(SurfaceSceneRecord::scene_mut)
+            else {
                 continue;
             };
             if ready.interaction_authority.take().is_some() {
@@ -1431,7 +1529,7 @@ impl SurfaceSceneSet {
                     && self
                         .surfaces
                         .get(surface)
-                        .and_then(SurfaceScene::ready)
+                        .and_then(|record| record.scene().ready())
                         .is_some_and(|ready| {
                             ready
                                 .validate_presented_authority(

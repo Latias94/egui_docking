@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use crate::ids::NativeCreateSagaId;
 use crate::presentation_observation::{NativeStagingResourceDescriptor, NativeStagingResourceId};
-use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::ViewportBinding;
 
 /// The sole lifecycle owner currently responsible for a retained staging resource.
@@ -15,14 +14,6 @@ use crate::viewport::ViewportBinding;
 pub(super) enum NativeStagingResourceOwner {
     NativeCreateSaga(NativeCreateSagaId),
     NativeCreateFirstLive(ViewportBinding),
-    SurfaceRecovery {
-        obligation: SurfaceRecoveryObligationId,
-        binding: ViewportBinding,
-    },
-    RecoveryReplacementFirstLive {
-        obligation: SurfaceRecoveryObligationId,
-        binding: ViewportBinding,
-    },
     BindingCleanup(ViewportBinding),
 }
 
@@ -293,8 +284,6 @@ mod tests {
         let resource = descriptor.id();
         let original = descriptor.clone();
         let first_binding = binding(10, 20, 1);
-        let replacement_binding = binding(10, 21, 2);
-        let obligation = SurfaceRecoveryObligationId::new_for_test(30);
         let mut ledger = NativeStagingResourceLedger::default();
 
         let saga_owner = NativeStagingResourceOwner::NativeCreateSaga(saga);
@@ -304,31 +293,29 @@ mod tests {
         assert_eq!(ledger.get(resource), Some(&original));
         assert_eq!(ledger.iter().count(), 1);
         assert_eq!(ledger.owner(resource), Some(saga_owner));
+        assert_eq!(
+            ledger.validate_conservation([(resource, saga_owner)]),
+            Ok(())
+        );
 
         let first_live = NativeStagingResourceOwner::NativeCreateFirstLive(first_binding);
         ledger
             .transition(resource, saga_owner, first_live)
             .expect("native create must enter first-live ownership");
-        let recovery = NativeStagingResourceOwner::SurfaceRecovery {
-            obligation,
-            binding: first_binding,
-        };
+        assert_eq!(
+            ledger.validate_conservation([(resource, first_live)]),
+            Ok(())
+        );
+        let retirement = NativeStagingResourceOwner::BindingCleanup(first_binding);
         ledger
-            .transition(resource, first_live, recovery)
-            .expect("first-live destruction must transfer to recovery");
-        let replacement = NativeStagingResourceOwner::RecoveryReplacementFirstLive {
-            obligation,
-            binding: replacement_binding,
-        };
-        ledger
-            .transition(resource, recovery, replacement)
-            .expect("recovery replacement must acquire first-live ownership");
-        let retirement = NativeStagingResourceOwner::BindingCleanup(replacement_binding);
-        ledger
-            .transition(resource, replacement, retirement)
-            .expect("replacement cleanup must transfer to binding retirement");
+            .transition(resource, first_live, retirement)
+            .expect("cancelled first-live create must transfer to binding cleanup");
 
         assert_eq!(ledger.owner(resource), Some(retirement));
+        assert_eq!(
+            ledger.validate_conservation([(resource, retirement)]),
+            Ok(())
+        );
         assert_eq!(
             ledger
                 .release(resource, retirement)
@@ -338,6 +325,7 @@ mod tests {
         assert_eq!(ledger.get(resource), None);
         assert_eq!(ledger.iter().count(), 0);
         assert_eq!(ledger.owner(resource), None);
+        assert_eq!(ledger.validate_conservation([]), Ok(()));
     }
 
     #[test]

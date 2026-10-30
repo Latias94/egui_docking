@@ -397,20 +397,14 @@ pub enum EngineInput {
         observation: PaneFocusRequestObservation,
     },
     /// Explicitly cancel one unresolved native-create saga.
+    ///
+    /// All pending phases are cancellable, including first-live presentation.
+    /// Source ownership stays unchanged until the exact first-live output is presented.
     CancelNativeCreate {
         /// Workspace version against which the saga was inspected.
         expected: WorkspaceVersion,
         /// Exact create saga to cancel without a timeout heuristic.
         saga: NativeCreateSagaId,
-    },
-    /// Recover a transferred child before its first live output is admitted.
-    RecoverNativeCreateFirstLive {
-        /// Exact current candidate version.
-        expected: WorkspaceVersion,
-        /// Native create retaining the first-live obligation.
-        saga: NativeCreateSagaId,
-        /// Exact incarnation which must still own the retained resource.
-        binding: ViewportBinding,
     },
     /// Explicitly retry one exact failed cleanup under its phase-specific protocol.
     ///
@@ -756,7 +750,6 @@ impl EngineInput {
             Self::RegisterViewport { .. }
             | Self::BootstrapChildViewport { .. }
             | Self::CancelNativeCreate { .. }
-            | Self::RecoverNativeCreateFirstLive { .. }
             | Self::RetryViewportCleanup { .. }
             | Self::ReplaceWorkspace(_)
             | Self::RestoreWorkspace(_) => InputPriority::LifecycleControl,

@@ -1,10 +1,7 @@
 //! Fatal-session drain over the existing native host-frame protocol.
 
 use dockspace::model::SurfaceId;
-use dockspace::runtime::{
-    HostInputOutcome, HostSurfaceCommitStatus, NativeCreateRecoveryBlockedReason,
-    NativeCreateRecoveryStep, NativeDispatchFailure, NativeReceiverAnswer,
-};
+use dockspace::runtime::{HostInputOutcome, NativeDispatchFailure, NativeReceiverAnswer};
 use eframe::NativeOutputToken;
 use eframe::egui::ViewportId;
 
@@ -63,7 +60,6 @@ impl NativeShutdownAdvance {
 }
 
 impl NativeCoordinator {
-    #[cfg(test)]
     pub(crate) fn advance_shutdown_boundary_with_close_policy(
         &mut self,
         context: &eframe::egui::Context,
@@ -71,28 +67,7 @@ impl NativeCoordinator {
         external_root: SurfaceId,
         budget: &mut NativeInputBudget,
     ) -> NativeShutdownAdvance {
-        self.advance_shutdown_boundary_with_close_policy_and_measurement(
-            context,
-            policy,
-            external_root,
-            budget,
-            None,
-        )
-    }
-
-    pub(crate) fn advance_shutdown_boundary_with_close_policy_and_measurement(
-        &mut self,
-        context: &eframe::egui::Context,
-        policy: NativeWindowClosePolicy,
-        external_root: SurfaceId,
-        budget: &mut NativeInputBudget,
-        measurement: Option<(
-            SurfaceId,
-            &mut dyn FnMut(&mut NativeHostFrame<'_>, SurfaceId) -> Result<bool, NativeRuntimeError>,
-        )>,
-    ) -> NativeShutdownAdvance {
-        let mut advance =
-            self.advance_shutdown_boundary_with_measurement(context, budget, measurement);
+        let mut advance = self.advance_shutdown_boundary(context, budget);
         match self.drive_close_policy(context, policy, external_root, budget) {
             Ok(close_progress) => {
                 let presentation_transitions = self.take_internal_presentation_transitions();
@@ -131,23 +106,10 @@ impl NativeCoordinator {
         advance
     }
 
-    #[cfg(test)]
     pub(crate) fn advance_shutdown_boundary(
         &mut self,
         context: &eframe::egui::Context,
         budget: &mut NativeInputBudget,
-    ) -> NativeShutdownAdvance {
-        self.advance_shutdown_boundary_with_measurement(context, budget, None)
-    }
-
-    fn advance_shutdown_boundary_with_measurement(
-        &mut self,
-        context: &eframe::egui::Context,
-        budget: &mut NativeInputBudget,
-        measurement: Option<(
-            SurfaceId,
-            &mut dyn FnMut(&mut NativeHostFrame<'_>, SurfaceId) -> Result<bool, NativeRuntimeError>,
-        )>,
     ) -> NativeShutdownAdvance {
         let mut presentation_transitions = self.take_internal_presentation_transitions();
         let input_enable_cancelled = self.cancel_quarantined_input_results();
@@ -186,8 +148,6 @@ impl NativeCoordinator {
             }
         };
 
-        let bridge = self.dispatch_bridge();
-        let measurement_surface = measurement.as_ref().map(|(surface, _)| *surface);
         let mut host_frame = match self.poll_host_frame(budget, |_| NativeReceiverAnswer::Unknown) {
             Ok(Some(frame)) => frame,
             Ok(None) => {
@@ -210,11 +170,9 @@ impl NativeCoordinator {
         };
         let native_input_pending = host_frame.native_input_pending();
         let mut native_create_cancelled = false;
-        let mut native_create_recovered = false;
-        let mut recovery_host_to_measure = None;
-        let mut cleanup_deferred = !native_input_pending && budget.is_exhausted();
+        let cleanup_deferred = !native_input_pending && budget.is_exhausted();
         if !native_input_pending && !cleanup_deferred {
-            // One cancellation per boundary bounds its compensating effects
+            // One cancellation per complete input boundary bounds compensating effects
             // independently of the number of unfinished creates.
             match host_frame.frame.cancel_next_native_create() {
                 Ok(false) => {}
@@ -233,55 +191,6 @@ impl NativeCoordinator {
                         errors,
                         no_frame_invalidations.repaint_viewports,
                     );
-                }
-            }
-            if !native_create_cancelled {
-                let mut after = None;
-                loop {
-                    let next = host_frame
-                        .frame
-                        .native_create_recovery_surfaces()
-                        .filter(|surface| after.is_none_or(|after| *surface > after))
-                        .min();
-                    let Some(surface) = next else {
-                        break;
-                    };
-                    if budget.is_exhausted() {
-                        cleanup_deferred = true;
-                        break;
-                    }
-                    after = Some(surface);
-                    match host_frame.frame.recover_transferred_native_create(surface) {
-                        Ok(NativeCreateRecoveryStep::None) => {}
-                        Ok(NativeCreateRecoveryStep::Applied { .. }) => {
-                            budget.complete_unsequenced_records(1);
-                            native_create_recovered = true;
-                            break;
-                        }
-                        Ok(NativeCreateRecoveryStep::Blocked { host, reason, .. }) => {
-                            budget.complete_unsequenced_records(1);
-                            if reason == NativeCreateRecoveryBlockedReason::HostAuthorityUnavailable
-                            {
-                                if measurement_surface == Some(host) {
-                                    recovery_host_to_measure = Some(host);
-                                } else if let Some(viewport) =
-                                    bridge.with_viewports(|routes| routes.viewport(host))
-                                    && viewport != context.viewport_id()
-                                {
-                                    context.request_repaint_once_of(viewport);
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            errors.push(error.into());
-                            return NativeShutdownAdvance::partial_with_repaints(
-                                progress,
-                                presentation_transitions,
-                                errors,
-                                no_frame_invalidations.repaint_viewports,
-                            );
-                        }
-                    }
                 }
             }
         }
@@ -308,30 +217,6 @@ impl NativeCoordinator {
                     errors,
                     repaint_viewports,
                 );
-            }
-        }
-        let mut measured_recovery_host = None;
-        if let Some(host) = recovery_host_to_measure
-            && frame_surfaces.contains(&host)
-            && !accepted_no_frame_invalidations
-                .iter()
-                .any(|invalidation| invalidation.surface() == host)
-            && let Some((_, measure)) = measurement
-        {
-            // Measurement closes semantic input and only becomes authoritative
-            // at commit. Recovery must wait for a subsequent boundary.
-            match measure(&mut host_frame, host) {
-                Ok(true) => measured_recovery_host = Some(host),
-                Ok(false) => {}
-                Err(error) => {
-                    errors.push(error);
-                    return NativeShutdownAdvance::partial_with_repaints(
-                        progress,
-                        presentation_transitions,
-                        errors,
-                        repaint_viewports,
-                    );
-                }
             }
         }
         if let Err(error) =
@@ -373,24 +258,7 @@ impl NativeCoordinator {
                 _ => None,
             })
             .collect();
-        let had_inputs = report.inputs().iter().any(|input| {
-            !matches!(
-                input,
-                HostInputOutcome::NativeCreateFirstLiveRecoveryBlocked { .. }
-            )
-        });
-        let recovery_blocked_only = !had_inputs
-            && report.inputs().iter().any(|input| {
-                matches!(
-                    input,
-                    HostInputOutcome::NativeCreateFirstLiveRecoveryBlocked { .. }
-                )
-            });
-        let recovery_host_measured = measured_recovery_host.is_some_and(|host| {
-            report.surface_commits().iter().any(|commit| {
-                commit.surface() == host && commit.status() == HostSurfaceCommitStatus::Ready
-            })
-        });
+        let had_inputs = !report.inputs().is_empty();
         let native_snapshot_applied = match self.settle_host_frame_report(&report) {
             Ok(applied) => applied,
             Err(error) => {
@@ -407,7 +275,7 @@ impl NativeCoordinator {
         let retirement_committed = prepared_retirements.is_some();
         let abandoned_outputs = prepared_retirements
             .map_or_else(Vec::new, |prepared| self.commit_retirements(prepared));
-        let repaint_requested = !recovery_blocked_only && !report.repaint_surfaces().is_empty();
+        let repaint_requested = !report.repaint_surfaces().is_empty();
         let effects = report.take_native_effects();
         let effects_emitted = !effects.is_empty();
         self.fail_shutdown_effects(context, effects, &mut errors);
@@ -424,8 +292,6 @@ impl NativeCoordinator {
 
         let transition_progress = progress
             || native_create_cancelled
-            || native_create_recovered
-            || recovery_host_measured
             || had_inputs
             || native_snapshot_applied
             || native_close_settled
@@ -445,12 +311,7 @@ impl NativeCoordinator {
             && presentation_transitions.is_empty()
             && self.is_quiescent();
         let mut repaint_viewports = repaint_viewports;
-        if native_input_pending
-            || cleanup_deferred
-            || native_create_cancelled
-            || native_create_recovered
-            || recovery_host_measured
-        {
+        if native_input_pending || cleanup_deferred || native_create_cancelled {
             repaint_viewports.push(ViewportId::ROOT);
         }
         NativeShutdownAdvance {

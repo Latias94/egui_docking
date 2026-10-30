@@ -29,9 +29,7 @@ mod session;
 mod touch;
 
 pub use crate::interaction::PointerContinuationToken;
-pub use host_frame::{
-    DockspaceHostFrame, NativeCreateRecoveryBlockedReason, NativeCreateRecoveryStep,
-};
+pub use host_frame::DockspaceHostFrame;
 pub use layout_reset::PreparedDockspaceLayoutReset;
 pub use manipulation_feedback::{
     DockspaceManipulationCancelReason, DockspaceManipulationDelivery,
@@ -233,29 +231,6 @@ pub enum HostInputOutcome {
     ///
     /// The provider and all previously accepted release obligations remain live.
     NativeInputCancelledForOverload,
-    /// One transferred native create recovered its complete roster before admission.
-    ///
-    /// The logical recovery committed. Native cleanup may still await effect
-    /// delivery and an exact destruction observation.
-    NativeCreateFirstLiveRecovered {
-        /// Child surface whose complete roster was recovered.
-        surface: SurfaceId,
-        /// Recovery destination named by the saga's durable obligation.
-        host: SurfaceId,
-    },
-    /// One transferred native create retained its roster and recovery obligation.
-    ///
-    /// This reports a consumed recovery attempt without lifecycle progress. Hosts
-    /// should wait for relevant authority changes or an explicit retry before
-    /// scheduling another attempt.
-    NativeCreateFirstLiveRecoveryBlocked {
-        /// Child surface whose complete roster remains retained.
-        surface: SurfaceId,
-        /// Recovery destination named by the saga's durable obligation.
-        host: SurfaceId,
-        /// Authority or publication condition preventing the recovery.
-        reason: NativeCreateRecoveryBlockedReason,
-    },
     /// One validated document atomically replaced the complete workspace.
     ///
     /// Earlier input outcomes from the same frame are intentionally omitted

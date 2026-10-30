@@ -1423,29 +1423,61 @@ that regression with ButtonAlreadyPressed; restoring the implementation passes.
 - **Test scenarios:** Covers AE6. Hidden or directly prepared backends, delayed first valid output, A1/A2 replacement, no-frame, pass-through, close/veto/defer, failure recovery, redock, retirement and quiescence preserve one owner. Qualified X11 physical input docks at non-guide points and retires the child.
 - **Verification:** Public host lifecycle traces, programmatic real-window tests, and qualified X11 physical journeys pass; old distributed maps and obsolete staging contracts are removed.
 
-R15 corrective boundary (2026-10-30, unresolved): independent review confirms
-that PostShow currently publishes workspace/root/item ownership and advances the
-workspace revision before exact semantic first-live presentation. First-live
-currently commits routing/admission and retained-resource release only. Staging
-is a disabled placeholder, so this is not merely another name for an interactive
-first output. Retained source payloads/recovery obligations do not retain the
-original workspace ownership. The historical product-boundary protocol explains
-this implementation but is not an exception to current R15, U8 or the DoD.
+R15 corrective boundary (2026-10-30, ownership replacement locally qualified): the earlier
+PostShow protocol published workspace/root/item ownership before exact semantic
+first-live presentation. The replacement compiles the prospective child's full
+program from a checked temporary transaction candidate while source ownership
+and version stay durable. The scene slot retains provenance, and only exact
+current first-live acceptance atomically publishes transfer, revision, admission
+and resource release. Active popup dismissal requires a fresh Inactive child
+output; ordinary exact-roster popup gates still control later interaction.
 
-Keep the current R15 contract and replace that frontier before the next native
-scope expansion. First, compile the prospective child's full semantic program
-from one core-owned transient projection while source ownership stays durable.
-Preparing or dropping that output must not publish the native workspace command.
-Next, accept its exact current terminal and publish transfer, revision and native
-admission atomically once; stale, dropped, failed, cancelled and rolled-back
-attempts preserve the source. Reuse the original saga/resource and presentation
-owners. Remove obsolete early-transfer phases and pre-first-live compensation
-APIs as their replacement becomes authoritative; hidden pre/post-show passes
-remain host strategy, not the universal engine readiness contract. Cover the
-source/version boundary, exact content-output acceptance, failed commit/retry,
-late predecessor, concurrent creates, direct prepared hosts and the egui native
-strategy before claiming U8 completion. Existing green transfer/recovery tests
-are evidence for their earlier protocol and cannot substitute for this gate.
+Pending Item/Tabs/Subtree source proofs share one freeze guard. All pending
+creates can cancel without moving source content, including content readiness.
+The old transferred-create recovery API, early-transfer terminal branches and
+create-resource ownership inside surface recovery are deleted. Newly admitted
+targets carry exact tick-final vacancy authority for same-frame dock back.
+Stable pending scene provenance avoids unnecessary counterfactual compilation;
+recovery barriers still require full publication revalidation.
+
+Frozen qualification passes 1,837 workspace tests, 86 public-consumer tests and
+10 doctests; native normal and assertion-disabled gates each pass 453 tests,
+including their same-instance 10,000-lifetime model. Core/native
+correctness/suspicious Clippy, strict rustdoc and formatting pass. macOS
+programmatic redock passes with unlimited and 4 MiB bounded storage; the X11
+physical drag-out/first-live/non-guide drag-back/retirement journey and all five
+output-pressure scenarios on both macOS and X11 pass. The final independent
+review reports no P1/P2 in the ordered application version, prospective-child
+paint and shutdown-boundary changes. Evidence and local-fork reproducibility
+limits are recorded in `docs/VALIDATION.md`. The previous green transfer/recovery
+results qualify their earlier protocol.
+Direct-prepared hosts and removal of mandatory hidden pre/post-show choreography
+remain required before U8 completion. Native scoped/stationary expansion follows
+this ownership gate; R15, U8 and the Definition of Done remain unchanged.
+
+The next preparation-strategy cutover keeps one native create/replacement owner
+with an enrollment-frozen `DirectPrepared | Staged` strategy. A custom engine
+reports exact create acknowledgement, explicit renderer preparation, visibility
+and a complete current coordinate envelope in the existing window snapshot.
+Created and Prepared may arrive in the same post-emission snapshot; unchanged
+geometry does not require a new coordinate generation. Dispatch acceptance alone
+does not prove creation or renderer readiness. The egui adapter explicitly
+selects Staged and preserves its exact hidden/pre-show/show/post-show evidence.
+Both strategies produce one private readiness proof and use the existing
+prospective program, exact first-live barrier, transfer and cleanup path.
+DirectPrepared emits no mandatory staging paints or ShowWindow request.
+
+Preparation facts stay in the existing per-binding observation record. There is
+no second readiness registry, lifecycle controller, output acknowledgement or
+topology graph. Replace the duplicated native-create/bringup phase mirror with
+one private tagged preparation state and a semantic status projection. Readiness
+withdrawal revokes its scene provenance and output floor without reissuing an
+already applied create; stale facts or outputs cannot revive that readiness.
+Replacement windows must support the same selected strategy. Public downstream
+qualification covers both strategies, failed preparation, cancellation with late
+facts, exact binding/coordinate/readiness revocation, and source-version
+revalidation through successful first-live publication. Staging resource
+conservation and the R15 popup barrier remain mandatory in both strategies.
 
 Local resource-ownership checkpoint (2026-10-29): command/output reservations
 and deferred-window sidecars now have joined owners. An admitted create attempt
@@ -1602,7 +1634,7 @@ Reuse existing target directories and serialize builds when the machine is busy.
 | Gate | Command or evidence | Proves |
 | --- | --- | --- |
 | Core | `cargo nextest run -p dockspace --all-features --all-targets --locked --test-threads=1` | Model, transactions, input, output identity and lifecycle semantics |
-| Public engine consumer | Planned: `cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --all-features --locked --test-threads=1` | Public-only immediate/deferred integration and logical-surface independence |
+| Public engine consumer | `cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --all-features --locked --test-threads=1` | Public-only immediate/deferred integration and logical-surface independence |
 | Core dependency boundary | `cargo tree -p dockspace --all-features` plus review of packaged/public API | R19 dependency independence; no compiler/source parser gate |
 | Shared journeys | `cargo nextest run -p dockspace_host_conformance --locked --test-threads=1` | Finite normalized behavior and honest oracle classifications |
 | egui product | `cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --all-features --locked --test-threads=1` | Interactive reference behavior and exact supported boundary |
@@ -1640,9 +1672,9 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 ### Research Baselines
 
-- Core baseline: `3216855` plus the existing uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
+- Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Existing native dependencies: egui fork `660073444296f40903e92dbce0fb818a7f4771b0`, Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`. These remain current pins until U15 changes them together with validation.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses an explicit override to local egui fork `86feb7f8cc49217bff54a8924b2cb525f4af3285`. That unpublished local qualification does not establish reproducibility from the tracked remote egui pin. Native dependency packaging remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.

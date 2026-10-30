@@ -77,7 +77,7 @@ impl PressureHost {
     }
 
     fn flush_late_output_after_fatal(&self) {
-        {
+        let (scenario, withheld_first_live) = {
             let state = lock(&self.shared);
             if !matches!(
                 state.scenario,
@@ -87,8 +87,14 @@ impl PressureHost {
             {
                 return;
             }
-        }
-        {
+            if state.scenario == Scenario::LateFirstLive {
+                assert!(state.withheld_first_live.is_some());
+                assert_eq!(state.buffered.len(), 1);
+                assert_eq!(state.buffered.front().copied(), state.withheld_first_live);
+            }
+            (state.scenario, state.withheld_first_live)
+        };
+        let before = {
             let runtime = lock(&self.runtime);
             runtime.with_errors(|primary, cleanup| {
                 assert!(primary.is_some_and(|error| error.is_output_order_violation()));
@@ -96,15 +102,41 @@ impl PressureHost {
             });
             assert_eq!(runtime.output_backlog().protected_staging(), 0);
             assert!(!runtime.is_shutdown_drained());
-        }
+            lock(&self.shared)
+                .check_source_ownership(&runtime)
+                .expect("fatal drain must preserve source ownership before the late terminal");
+            runtime.output_backlog()
+        };
         // These are the original real terminals, delivered after quarantine
         // abandoned their affine paint and before the current later terminal.
         loop {
             let Some(result) = lock(&self.shared).buffered.pop_front() else {
                 break;
             };
+            if scenario == Scenario::LateFirstLive {
+                assert_eq!(Some(result), withheld_first_live);
+            }
             self.inner.on_output(result);
-            lock(&self.shared).forwarded += 1;
+            let mut state = lock(&self.shared);
+            state.forwarded += 1;
+            if scenario == Scenario::LateFirstLive {
+                assert!(state.settled_first_live.replace(result).is_none());
+            }
+        }
+        {
+            let runtime = lock(&self.runtime);
+            lock(&self.shared)
+                .check_source_ownership(&runtime)
+                .expect("a late terminal must only settle its output owner, without admission");
+            if scenario == Scenario::LateFirstLive {
+                let after = runtime.output_backlog();
+                assert_eq!(
+                    before.ordinary().checked_sub(1),
+                    Some(after.ordinary()),
+                    "the late first-live terminal must release its exact ordinary owner"
+                );
+                assert_eq!(after.control(), before.control());
+            }
         }
         lock(&self.shared).late_terminal_after_fatal = true;
         eprintln!("output-pressure: original deferred terminal delivered after fatal quarantine");
@@ -262,41 +294,47 @@ impl NativeHostHandler for PressureHost {
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
         self.flush_late_output_after_fatal();
-        let transferred = {
+        let first_live_pending = {
             let state = lock(&self.shared);
             state.scenario == Scenario::LateFirstLive
                 && state.phase == Phase::AwaitFirstLive
                 && Some(result.token().viewport_id()) == state.child_viewport
+                && Some(result.token()) == state.child_content_output
                 && result.status() == eframe::NativeOutputStatus::Presented
-        } && {
-            let runtime = lock(&self.runtime);
-            runtime.with_view(|view| {
-                view.item(CHILD_ITEM)
-                    .is_some_and(|item| item.surface() != ROOT_SURFACE)
-            }) == Some(true)
         };
-        if transferred {
+        if first_live_pending {
             let previous = {
+                let runtime = lock(&self.runtime);
                 let mut state = lock(&self.shared);
+                assert_eq!(runtime.error_kind(), None);
+                state
+                    .check_source_ownership(&runtime)
+                    .expect("full first-live content must leave durable source ownership in place");
+                let child = state
+                    .child_surface
+                    .expect("the requested child identity has already been returned");
+                assert!(!runtime.is_surface_presented(child));
+                assert!(!runtime.is_quiescent());
+                let backlog = runtime.output_backlog();
+                assert!(backlog.ordinary() > 0);
+                assert_eq!(backlog.protected_staging(), 0);
+                assert_eq!(backlog.awaiting_staging(), 0);
                 let previous = state
                     .previous_terminal
-                    .expect("a real root terminal precedes the first-live child");
+                    .expect("a previously delivered real output precedes the first-live child");
+                assert!(previous.token().same_context(result.token()));
+                assert_ne!(previous.token(), result.token());
                 assert!(previous.ordinal() < result.ordinal());
                 assert!(state.buffered.is_empty());
+                assert!(state.withheld_first_live.replace(result).is_none());
                 state.buffered.push_back(result);
                 state.phase = Phase::Draining;
                 previous
             };
-            let runtime = lock(&self.runtime);
-            let child = lock(&self.shared)
-                .child_surface
-                .expect("the requested child identity has already been returned");
-            assert!(!runtime.is_surface_presented(child));
-            assert!(runtime.output_backlog().ordinary() > 0);
-            drop(runtime);
             self.inner.on_output(previous);
             eprintln!(
-                "output-pressure: withholding real first-live terminal after ownership transfer"
+                "output-pressure: withholding real full-content first-live terminal; \
+                 source ownership preserved; duplicating a previously delivered real output"
             );
             return NativeHostWake::RepaintRootAfterCurrent;
         }
@@ -372,6 +410,16 @@ impl NativeHostHandler for PressureHost {
                 state.final_terminal_checked,
             );
             assert_eq!(runtime.output_backlog().control(), 0);
+            if matches!(
+                state.scenario,
+                Scenario::LateStaging | Scenario::LateFirstLive
+            ) {
+                state
+                    .check_source_ownership(&runtime)
+                    .expect("final root terminal must preserve the untransferred source");
+                assert_eq!(runtime.output_backlog().protected_staging(), 0);
+                assert_eq!(runtime.output_backlog().awaiting_staging(), 0);
+            }
             if state.scenario != Scenario::Ordered {
                 assert!(runtime.is_shutdown_drained());
             }

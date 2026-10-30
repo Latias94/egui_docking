@@ -20,7 +20,7 @@ mod budget;
 mod callback_prefix;
 mod close;
 mod combined_soak;
-mod first_live_recovery;
+mod first_live_cancellation;
 mod focus;
 mod held_close;
 mod ingress_create;
@@ -85,34 +85,6 @@ fn deferred_viewport_rect_never_rounds_or_accepts_empty_extents() {
 
     assert!(exact_native_rect(fractional).is_none());
     assert!(exact_native_rect(empty).is_none());
-}
-
-#[test]
-fn deferred_binding_authority_waits_for_first_live_surface_authority() {
-    assert_eq!(
-        deferred_binding_authority(true, true, true, false),
-        DeferredBindingAuthority::AwaitingFirstLive
-    );
-    assert_eq!(
-        deferred_binding_authority(true, true, true, true),
-        DeferredBindingAuthority::CurrentSurface
-    );
-    assert_eq!(
-        deferred_binding_authority(true, false, true, true),
-        DeferredBindingAuthority::Retiring
-    );
-}
-
-#[test]
-fn deferred_binding_authority_rejects_foreign_or_forgotten_bindings() {
-    assert_eq!(
-        deferred_binding_authority(false, true, true, true),
-        DeferredBindingAuthority::Invalid
-    );
-    assert_eq!(
-        deferred_binding_authority(true, false, false, true),
-        DeferredBindingAuthority::Invalid
-    );
 }
 
 #[test]

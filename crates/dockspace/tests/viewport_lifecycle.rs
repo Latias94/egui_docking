@@ -51,8 +51,12 @@ use dockspace::pointer_receiver::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::presentation_observation::NativeStagingPresentationPhase;
+use dockspace::presentation_observation::{
+    HostPresentationObservationOutcome, HostPresentationOutputPayload,
+    NativeStagingPresentationPhase,
+};
 use dockspace::scene::SurfaceScene;
+use dockspace::scene_manifest::{Measurement, SurfaceMeasurements, TabIntrinsic, TabStripMetrics};
 use dockspace::surface_recovery::{
     ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
 };
@@ -992,50 +996,138 @@ fn prepare_child_source_platform(fixture: &mut Fixture) {
     publish_windows!(fixture, vec![source_window(fixture), host_window(fixture)]);
 }
 
-fn publish_surface_for_fixture(fixture: &mut Fixture, surface: SurfaceId, bounds: LogicalRect) {
-    if fixture.engine.pointer_provider().is_none() {
-        support::publish_surface(
-            &mut fixture.engine,
-            &mut fixture.presentation_host,
-            surface,
-            bounds,
-        );
-        return;
-    }
-
+fn publish_surface_for_fixture(
+    fixture: &mut Fixture,
+    surface: SurfaceId,
+    bounds: LogicalRect,
+) -> EngineTransition {
+    let pending_create = fixture
+        .engine
+        .viewport()
+        .native_create_sagas()
+        .find(|(_, saga)| {
+            saga.binding().surface() == surface
+                && matches!(
+                    saga.phase(),
+                    NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                )
+        })
+        .map(|(id, saga)| {
+            (
+                id,
+                saga.resource(),
+                fixture.engine.workspace().clone(),
+                fixture.engine.version(),
+            )
+        });
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
     let ticket = frame
         .view()
         .begin_surface_contribution(surface)
-        .expect("active-pointer surface contribution must begin");
+        .expect("fixture surface contribution must begin in the frozen roster");
+    let view = frame.view();
+    let requirements = view
+        .presentation_requirements()
+        .surface(surface)
+        .expect("the frozen roster includes prospective first-live requirements");
+    let profile = support::MeasurementProfile::default();
+    let mut measurements = SurfaceMeasurements::new(requirements.ticket());
+    measurements
+        .set_bounds(requirements.bounds(), Measurement::Measured(bounds))
+        .expect("the exact surface bounds answer is unique");
+    if let Some(key) = requirements.popup_plane_bounds() {
+        measurements
+            .set_popup_plane_bounds(key, Measurement::Measured(bounds))
+            .expect("the exact popup-plane bounds answer is unique");
+    }
+    for key in requirements.pane_minimums() {
+        measurements
+            .insert_pane_minimum(key, Measurement::Measured(profile.pane_minimum))
+            .expect("each exact pane minimum answer is unique");
+    }
+    for key in requirements.tab_intrinsics() {
+        measurements
+            .insert_tab_intrinsic(
+                key,
+                Measurement::Measured(
+                    TabIntrinsic::new(profile.tab_content_width)
+                        .expect("the fixture tab intrinsic is valid"),
+                ),
+            )
+            .expect("each exact tab intrinsic answer is unique");
+    }
+    for key in requirements.tab_strips() {
+        measurements
+            .insert_tab_strip(
+                key,
+                Measurement::Measured(
+                    TabStripMetrics::new(profile.leading_reserved, profile.trailing_reserved)
+                        .expect("the fixture tab-strip metrics are valid"),
+                ),
+            )
+            .expect("each exact tab-strip answer is unique");
+    }
     let contribution = frame
         .view()
-        .prepare_surface_contribution(
-            ticket,
-            support::measurements(
-                &fixture.engine,
-                surface,
-                bounds,
-                support::MeasurementProfile::default(),
-            ),
-        )
-        .expect("active-pointer surface measurements must prepare");
+        .prepare_surface_contribution(ticket, measurements)
+        .expect("fixture surface measurements must prepare");
     stage_pointer_checkpoint(fixture, &mut frame);
     frame
         .push_surface_contribution(contribution)
-        .expect("active-pointer frame contributes each surface once");
+        .expect("fixture frame contributes each surface once");
     support::complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
     let transition = fixture.presentation_host.finish(frame, &mut fixture.engine);
     assert!(transition.surface_contributions().iter().any(|outcome| {
         matches!(outcome, SurfaceContributionOutcome::Ready { surface: actual, .. } if *actual == surface)
     }));
+    if let Some((_, _, source, version)) = &pending_create {
+        assert_eq!(fixture.engine.workspace(), source);
+        assert_eq!(fixture.engine.version(), *version);
+    }
 
     let mut emit_frame = fixture.presentation_host.begin(&fixture.engine);
     stage_pointer_checkpoint(fixture, &mut emit_frame);
     let emit_frame = support::complete_host_frame_with_current_outputs(&fixture.engine, emit_frame);
-    fixture
+    let emitted = fixture
         .presentation_host
         .finish_presentation(emit_frame, &mut fixture.engine);
+    assert_eq!(
+        emitted
+            .presentation_emissions()
+            .iter()
+            .filter(|emission| emission.output().surface() == surface)
+            .count(),
+        1,
+        "the measured surface must emit its real semantic output"
+    );
+    let output = emitted
+        .presentation_emissions()
+        .iter()
+        .find(|emission| emission.output().surface() == surface)
+        .expect("the measured surface emitted one exact output")
+        .output();
+    assert!(matches!(
+        output.payload(),
+        HostPresentationOutputPayload::Paint { .. }
+    ));
+    if let Some((saga, resource, source, version)) = &pending_create {
+        assert_eq!(fixture.engine.workspace(), source);
+        assert_eq!(fixture.engine.version(), *version);
+        assert!(
+            fixture
+                .engine
+                .viewport()
+                .native_create_saga(*saga)
+                .is_some()
+        );
+        assert!(
+            fixture
+                .engine
+                .viewport()
+                .retained_native_staging_resources()
+                .any(|descriptor| descriptor.id() == *resource)
+        );
+    }
 
     let mut observation_frame = fixture.presentation_host.begin(&fixture.engine);
     stage_pointer_checkpoint(fixture, &mut observation_frame);
@@ -1043,18 +1135,50 @@ fn publish_surface_for_fixture(fixture: &mut Fixture, surface: SurfaceId, bounds
         &fixture.engine,
         &mut observation_frame,
     );
-    fixture
+    let observed = fixture
         .presentation_host
         .finish(observation_frame, &mut fixture.engine);
+    if let Some((saga, resource, _, version)) = pending_create {
+        assert!(observed.presentation_observations().iter().any(|outcome| {
+            matches!(
+                outcome,
+                HostPresentationObservationOutcome::Retired {
+                    stream,
+                    presented: Authority::Known(Some(presented)),
+                    promotion_eligible: true,
+                    ..
+                } if *stream == output.stream() && *presented == output.key()
+            )
+        }));
+        assert!(fixture.engine.viewport().native_create_saga(saga).is_none());
+        assert_eq!(
+            fixture
+                .engine
+                .viewport()
+                .viewport(surface)
+                .map(|record| record.admission()),
+            Some(ViewportAdmission::Admitted)
+        );
+        assert_eq!(fixture.engine.version().epoch(), version.epoch());
+        assert_eq!(
+            fixture.engine.version().revision().get(),
+            version.revision().get() + 1
+        );
+        assert!(
+            fixture
+                .engine
+                .viewport()
+                .retained_native_staging_resources()
+                .all(|descriptor| descriptor.id() != resource)
+        );
+    }
+    observed
 }
 
 fn publish_scene(fixture: &mut Fixture) {
-    let surfaces: Vec<_> = fixture
-        .engine
-        .workspace()
-        .surfaces()
-        .map(|(surface, _)| surface)
-        .collect();
+    let frame = fixture.presentation_host.begin(&fixture.engine);
+    let surfaces = frame.surfaces().collect::<Vec<_>>();
+    drop(frame);
     let mut x = 0.0;
     for surface in surfaces {
         if fixture
@@ -1781,10 +1905,12 @@ fn effect_of_kind<'a>(
     matching[0]
 }
 
-fn advance_native_create_to_ownership_transfer(
+fn advance_native_create_to_content_readiness(
     fixture: &mut Fixture,
     request: NativeCreateRequest,
 ) -> EngineTransition {
+    let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
     let hidden = publish_windows!(
         fixture,
         vec![
@@ -1856,7 +1982,7 @@ fn advance_native_create_to_ownership_transfer(
             _ => None,
         })
         .expect("visible proof must request post-show staging");
-    let transferred = support::present_native_staging(
+    let ready = support::present_native_staging(
         &mut fixture.engine,
         &mut fixture.presentation_host,
         post_show,
@@ -1864,14 +1990,37 @@ fn advance_native_create_to_ownership_transfer(
     assert!(visible.platform_effects().iter().all(|effect| {
         !matches!(effect.effect(), PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding())
     }));
-    transferred
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(
+        fixture
+            .engine
+            .workspace()
+            .surface(request.binding().surface())
+            .is_none()
+    );
+    if let Some(saga) = fixture.engine.viewport().native_create_saga(request.saga()) {
+        assert!(matches!(
+            saga.phase(),
+            NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+        ));
+        assert_eq!(
+            fixture
+                .engine
+                .viewport()
+                .viewport(request.binding().surface())
+                .map(|record| record.admission()),
+            Some(ViewportAdmission::Pending)
+        );
+    }
+    ready
 }
 
-fn advance_native_create_to_visible(
+fn advance_native_create_to_admitted(
     fixture: &mut Fixture,
     request: NativeCreateRequest,
 ) -> EngineTransition {
-    let visible = advance_native_create_to_ownership_transfer(fixture, request);
+    let ready = advance_native_create_to_content_readiness(fixture, request);
     if matches!(
         fixture
             .engine
@@ -1880,12 +2029,16 @@ fn advance_native_create_to_visible(
             .map(|saga| saga.phase()),
         Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
     ) {
-        publish_scene(fixture);
+        return publish_surface_for_fixture(
+            fixture,
+            request.binding().surface(),
+            logical_rect(1_800.0, 0.0, 900.0, 700.0),
+        );
     }
-    visible
+    ready
 }
 
-fn transferred_child_source_awaiting_first_live() -> (
+fn child_source_awaiting_first_live() -> (
     Fixture,
     NativeCreateRequest,
     dockspace::presentation_observation::NativeStagingResourceId,
@@ -1901,12 +2054,12 @@ fn transferred_child_source_awaiting_first_live() -> (
     );
     let request = start_native_create_with_payload(&mut fixture, payload, ROOT_SOURCE);
 
-    advance_native_create_to_ownership_transfer(&mut fixture, request);
+    advance_native_create_to_content_readiness(&mut fixture, request);
     let resource = fixture
         .engine
         .viewport()
         .native_create_saga(request.saga())
-        .expect("transferred native create must retain its staging resource")
+        .expect("pending native create must retain its staging resource")
         .resource();
     publish_surface_for_fixture(
         &mut fixture,
@@ -1921,13 +2074,41 @@ fn transferred_child_source_awaiting_first_live() -> (
     (fixture, request, resource)
 }
 
-fn defer_transferred_native_recovery(
+fn admitted_child_source() -> (
+    Fixture,
+    NativeCreateRequest,
+    dockspace::presentation_observation::NativeStagingResourceId,
+) {
+    let (mut fixture, request, resource) = child_source_awaiting_first_live();
+    publish_surface_for_fixture(
+        &mut fixture,
+        SURFACE_NATIVE,
+        logical_rect(1_800.0, 0.0, 900.0, 700.0),
+    );
+    assert!(fixture.engine.workspace().surface(SURFACE_SOURCE).is_none());
+    assert!(fixture.engine.viewport().viewport(SURFACE_SOURCE).is_none());
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_NATIVE)
+            .map(|record| record.admission()),
+        Some(ViewportAdmission::Admitted)
+    );
+    assert!(!retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+    (fixture, request, resource)
+}
+
+fn defer_admitted_native_recovery(
     fixture: &mut Fixture,
     request: NativeCreateRequest,
 ) -> (EffectId, ViewportBinding) {
     let destroyed = publish_windows_with_close_observations!(
         fixture,
-        vec![source_window(fixture), unavailable_host_window(fixture)],
+        vec![unavailable_host_window(fixture)],
         &[(request.binding(), WindowCloseState::Destroyed, None)],
     );
     assert!(
@@ -1983,7 +2164,7 @@ fn requested_focus_effect(fixture: &Fixture, binding: ViewportBinding) -> Effect
 fn prepare_runtime_owned_child(fixture: &mut Fixture) -> NativeCreateRequest {
     prepare_base_platform(fixture, ViewportRole::Child);
     let request = start_native_create(fixture);
-    advance_native_create_to_visible(fixture, request);
+    advance_native_create_to_admitted(fixture, request);
     let record = fixture
         .engine
         .viewport()
@@ -1997,7 +2178,7 @@ fn prepare_runtime_owned_child(fixture: &mut Fixture) -> NativeCreateRequest {
 }
 
 fn observe_ready_and_assert_compensation(fixture: &mut Fixture, request: NativeCreateRequest) {
-    let ready = advance_native_create_to_visible(fixture, request);
+    let ready = advance_native_create_to_admitted(fixture, request);
     let compensation = effect_of_kind(fixture, &ready, |effect| {
         matches!(
             effect,
@@ -2241,6 +2422,7 @@ fn show_acknowledgement_and_visible_in_one_generation_do_not_transfer_topology()
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
     let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
 
     let _ = publish_windows!(
         &mut fixture,
@@ -2371,7 +2553,9 @@ fn show_acknowledgement_and_visible_in_one_generation_do_not_transfer_topology()
             .map(|saga| saga.phase()),
         Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
     ));
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
     assert_eq!(
         fixture
             .engine
@@ -2423,9 +2607,13 @@ fn native_ownership_transfer_waits_for_the_exact_first_live_target_output() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
+    let source = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
 
-    let transferred = advance_native_create_to_ownership_transfer(&mut fixture, request);
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
+    let ready = advance_native_create_to_content_readiness(&mut fixture, request);
+    assert_eq!(fixture.engine.workspace(), &source);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
     assert!(matches!(
         fixture
             .engine
@@ -2442,22 +2630,18 @@ fn native_ownership_transfer_waits_for_the_exact_first_live_target_output() {
             .map(|record| record.admission()),
         Some(dockspace::viewport_registry::ViewportAdmission::Pending)
     );
-    assert!(
-        platform_effects(&fixture, &transferred)
-            .iter()
-            .all(|effect| {
-                !matches!(
-                    effect.effect(),
-                    PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
-                )
-            })
-    );
+    assert!(platform_effects(&fixture, &ready).iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
+        )
+    }));
     let first_live_frame = fixture.presentation_host.begin(&fixture.engine);
     assert!(
         first_live_frame
             .surfaces()
             .any(|surface| surface == SURFACE_NATIVE),
-        "ordinary native create must restore its live slot before awaiting first-live output",
+        "the frozen roster must include the prospective child alongside its source",
     );
     assert!(
         first_live_frame
@@ -2481,6 +2665,8 @@ fn native_ownership_transfer_waits_for_the_exact_first_live_target_output() {
             .map(|saga| saga.phase()),
         Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
     ));
+    assert_eq!(fixture.engine.workspace(), &source);
+    assert_eq!(fixture.engine.version(), version);
 
     publish_surface_for_fixture(
         &mut fixture,
@@ -2502,6 +2688,11 @@ fn native_ownership_transfer_waits_for_the_exact_first_live_target_output() {
             .map(|record| record.admission()),
         Some(dockspace::viewport_registry::ViewportAdmission::Admitted)
     );
+    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
+    assert_eq!(
+        fixture.engine.workspace().item_multiset(),
+        source.item_multiset()
+    );
 }
 
 #[test]
@@ -2517,9 +2708,14 @@ fn native_source_surface_retirement_waits_for_first_live_output() {
             .expect("complete source tabs must be current"),
     );
     let request = start_native_create_with_payload(&mut fixture, payload, ROOT_SOURCE);
+    let source = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
 
-    advance_native_create_to_ownership_transfer(&mut fixture, request);
-    assert!(fixture.engine.workspace().surface(SURFACE_SOURCE).is_none());
+    advance_native_create_to_content_readiness(&mut fixture, request);
+    assert_eq!(fixture.engine.workspace(), &source);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(fixture.engine.workspace().surface(SURFACE_SOURCE).is_some());
+    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
     assert_eq!(
         fixture
             .engine
@@ -2529,7 +2725,10 @@ fn native_source_surface_retirement_waits_for_first_live_output() {
         Some(source_binding),
         "the source binding must remain live until the target presents"
     );
-    assert_eq!(fixture.engine.viewport_focus_binding(SURFACE_SOURCE), None);
+    assert_eq!(
+        fixture.engine.viewport_focus_binding(SURFACE_SOURCE),
+        Some(source_binding)
+    );
     let focused_source = publish_windows_with_global_focus!(
         &mut fixture,
         vec![
@@ -2562,6 +2761,7 @@ fn native_source_surface_retirement_waits_for_first_live_output() {
             .is_none()
     );
     assert!(fixture.engine.viewport().viewport(SURFACE_SOURCE).is_none());
+    assert!(fixture.engine.workspace().surface(SURFACE_SOURCE).is_none());
     assert_eq!(
         fixture
             .engine
@@ -2573,31 +2773,231 @@ fn native_source_surface_retirement_waits_for_first_live_output() {
 }
 
 #[test]
-fn transferred_native_close_uses_surface_protocol_before_first_live() {
-    let mut fixture = fixture();
-    prepare_base_platform(&mut fixture, ViewportRole::Child);
-    let request = start_native_create(&mut fixture);
-    advance_native_create_to_ownership_transfer(&mut fixture, request);
+fn first_live_pending_native_close_preserves_source_until_exact_cleanup() {
+    let (mut fixture, request, resource) = child_source_awaiting_first_live();
     let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    let source_binding = known_source_binding(&fixture);
 
-    let expected = fixture.engine.version();
-    let cancellation_error = submit_test_input_expect_error(
+    let requested = publish_windows_with_close_observations!(
+        &mut fixture,
+        vec![
+            source_window(&fixture),
+            host_window(&fixture),
+            native_window(request),
+        ],
+        &[(request.binding(), WindowCloseState::LiveRequested, None)],
+    );
+    assert!(requested.reduced_inputs().iter().any(|input| matches!(
+        input.outcome(),
+        InputOutcome::PlatformSnapshotPublished { native_close_edges, .. }
+            if native_close_edges.is_empty()
+    )));
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(fixture.engine.active_close_plans().count(), 0);
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .is_none()
+    );
+    assert!(fixture.engine.viewport().viewport(SURFACE_NATIVE).is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert_eq!(viewport_binding(&fixture, SURFACE_SOURCE), source_binding);
+    let cleanup = effect_of_kind(&fixture, &requested, |effect| {
+        matches!(
+            effect,
+            PlatformEffect::CompensatingClose { binding, compensates }
+                if *binding == request.binding() && *compensates == request.effect()
+        )
+    })
+    .id();
+    assert!(
+        platform_effects(&fixture, &requested).iter().all(|effect| {
+            !matches!(effect.effect(), PlatformEffect::RequestReplacement { .. })
+        })
+    );
+    assert!(retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+
+    let repeated = publish_windows!(
+        &mut fixture,
+        vec![
+            source_window(&fixture),
+            host_window(&fixture),
+            native_window(request)
+        ],
+    );
+    assert!(platform_effects(&fixture, &repeated).is_empty());
+    assert!(retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+
+    publish_windows_with_close_observations!(
+        &mut fixture,
+        vec![source_window(&fixture), host_window(&fixture)],
+        &[(
+            request.binding(),
+            WindowCloseState::Destroyed,
+            Some(cleanup)
+        )],
+    );
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(viewport_binding(&fixture, SURFACE_SOURCE), source_binding);
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .binding_retirements()
+            .all(|(binding, _)| binding != request.binding())
+    );
+    assert!(!retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+}
+
+#[test]
+fn first_live_pending_create_can_be_cancelled_without_recovery_geometry() {
+    let (mut fixture, request, resource) = child_source_awaiting_first_live();
+    publish_windows!(
+        &mut fixture,
+        vec![
+            source_window(&fixture),
+            unavailable_host_window(&fixture),
+            native_window(request)
+        ],
+    );
+    let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    let expected = version;
+    let cancelled = submit_test_input(
         &mut fixture,
         EngineInput::CancelNativeCreate {
             expected,
             saga: request.saga(),
         },
-    );
+    )
+    .expect("first-live pending cancellation must not require a recovery host");
+    let cleanup = effect_of_kind(&fixture, &cancelled, |effect| {
+        matches!(effect, PlatformEffect::CompensatingClose { binding, compensates }
+            if *binding == request.binding() && *compensates == request.effect())
+    })
+    .id();
     assert!(matches!(
-        cancellation_error,
-        EngineError::Viewport {
-            source: dockspace::frame::ViewportCoordinatorError::CreateSagaAlreadyTransferred {
-                saga,
-            },
-            ..
-        } if saga == request.saga()
+        cancelled.reduced_inputs()[0].outcome(),
+        InputOutcome::NativeCreateCancelled { saga, compensation: Some(effect) }
+            if *saga == request.saga() && *effect == cleanup
     ));
     assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .is_none()
+    );
+    assert!(fixture.engine.viewport().viewport(SURFACE_NATIVE).is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .blocked_surface_recovery(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert!(retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+
+    let failure = platform_effect_input(
+        &fixture.engine,
+        EffectResult::new(
+            cleanup,
+            version.epoch(),
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+        ),
+    );
+    let failed = submit_test_input(&mut fixture, failure)
+        .expect("first-live cancellation cleanup failure must retain its exact resource");
+    assert!(platform_effects(&fixture, &failed).is_empty());
+    assert_eq!(
+        binding_cleanup(&fixture, request.binding()).status(),
+        BindingRetirementStatus::CleanupFailed { effect: cleanup }
+    );
+    assert!(retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+
+    let retried = submit_test_input(
+        &mut fixture,
+        EngineInput::RetryViewportCleanup {
+            expected: version,
+            failed_effect: cleanup,
+        },
+    )
+    .expect("first-live cancellation cleanup retries through its exact failed effect");
+    let retry = effect_of_kind(&fixture, &retried, |effect| {
+        matches!(effect, PlatformEffect::CompensatingClose { binding, compensates }
+            if *binding == request.binding() && *compensates == request.effect())
+    })
+    .id();
+    assert_ne!(retry, cleanup);
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+
+    publish_windows_with_close_observations!(
+        &mut fixture,
+        vec![source_window(&fixture), unavailable_host_window(&fixture)],
+        &[(request.binding(), WindowCloseState::Destroyed, Some(retry))],
+    );
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert!(!retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+}
+
+#[test]
+fn admitted_native_close_uses_surface_protocol_and_requires_acknowledged_clear() {
+    let mut fixture = fixture();
+    prepare_base_platform(&mut fixture, ViewportRole::Child);
+    let request = start_native_create(&mut fixture);
+    advance_native_create_to_admitted(&mut fixture, request);
+    let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
 
     let close_observed = publish_windows_with_close_observations!(
         &mut fixture,
@@ -2619,7 +3019,7 @@ fn transferred_native_close_uses_surface_protocol_before_first_live() {
             request: SurfaceCloseRequest::RetainLayout,
         },
     )
-    .expect("transferred target close must enter the ordinary surface protocol");
+    .expect("admitted target close must enter the ordinary surface protocol");
     assert!(matches!(
         requested.reduced_inputs(),
         [input]
@@ -2634,7 +3034,7 @@ fn transferred_native_close_uses_surface_protocol_before_first_live() {
         &mut fixture,
         EngineInput::CancelSurfaceClose { expected, edge },
     )
-    .expect("transferred target close must support the ordinary cancellation lane");
+    .expect("admitted target close must support the ordinary cancellation lane");
     assert!(matches!(
         cancelled.reduced_inputs(),
         [input]
@@ -2656,14 +3056,16 @@ fn transferred_native_close_uses_surface_protocol_before_first_live() {
         SURFACE_NATIVE,
         logical_rect(1_800.0, 0.0, 900.0, 700.0),
     );
-    assert!(matches!(
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(
         fixture
             .engine
             .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
-    ));
+            .viewport(SURFACE_NATIVE)
+            .map(|record| record.lifecycle()),
+        Some(ViewportLifecycle::CloseRequested)
+    );
 
     publish_windows_with_close_observations!(
         &mut fixture,
@@ -2690,45 +3092,25 @@ fn transferred_native_close_uses_surface_protocol_before_first_live() {
             .native_create_saga(request.saga())
             .is_none()
     );
-}
-
-#[test]
-fn destroyed_transferred_target_recovers_before_first_live_and_retires_source() {
-    let mut fixture = fixture();
-    prepare_child_source_platform(&mut fixture);
-    let payload = MovePayload::Tabs(
-        fixture
-            .engine
-            .workspace()
-            .capture_node_source(ROOT_SOURCE, fixture.source_tabs)
-            .expect("complete source tabs must be current"),
-    );
-    let request = start_native_create_with_payload(&mut fixture, payload, ROOT_SOURCE);
-
-    advance_native_create_to_ownership_transfer(&mut fixture, request);
-    let resource = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .expect("transferred native create must retain its staging resource")
-        .resource();
-    assert!(retained_native_staging_resource_is_visible(
-        &mut fixture,
-        resource
-    ));
-    publish_surface_for_fixture(
-        &mut fixture,
-        SURFACE_HOST,
-        logical_rect(900.0, 0.0, 900.0, 700.0),
-    );
-    assert!(matches!(
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(fixture.engine.active_close_plans().count(), 0);
+    assert_eq!(
         fixture
             .engine
             .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
-    ));
+            .viewport(SURFACE_NATIVE)
+            .map(|record| (record.admission(), record.lifecycle())),
+        Some((ViewportAdmission::Admitted, ViewportLifecycle::Ready))
+    );
+}
+
+#[test]
+fn destroyed_first_live_pending_target_preserves_source_without_surface_recovery() {
+    let (mut fixture, request, resource) = child_source_awaiting_first_live();
+    let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    let source_binding = known_source_binding(&fixture);
     let destroyed = publish_windows_with_close_observations!(
         &mut fixture,
         vec![source_window(&fixture), host_window(&fixture)],
@@ -2744,31 +3126,47 @@ fn destroyed_transferred_target_recovers_before_first_live_and_retires_source() 
     );
     assert!(
         fixture.engine.workspace().surface(SURFACE_NATIVE).is_none(),
-        "pre-first-live destruction must recover the target roster; blocked={:?}, reduced={:?}",
+        "pre-first-live destruction must cancel the pending target; blocked={:?}, reduced={:?}",
         fixture.engine.blocked_surface_recovery(SURFACE_NATIVE),
         destroyed.reduced_inputs()
     );
-    assert!(fixture.engine.viewport().viewport(SURFACE_SOURCE).is_none());
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(viewport_binding(&fixture, SURFACE_SOURCE), source_binding);
+    assert!(fixture.engine.viewport().viewport(SURFACE_NATIVE).is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .blocked_surface_recovery(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert!(platform_effects(&fixture, &destroyed).is_empty());
     assert_eq!(
         fixture
             .engine
             .workspace()
             .presentation_for_root(ROOT_SOURCE),
-        Some(RootPresentationOwner::Contained {
-            surface: SURFACE_HOST,
-            floating: FLOATING_RECOVERY,
+        Some(RootPresentationOwner::Main {
+            surface: SURFACE_SOURCE,
         })
     );
     assert!(
         !retained_native_staging_resource_is_visible(&mut fixture, resource),
-        "recovery terminal must release the transferred staging resource"
+        "exact pending-target destruction must release its create staging resource"
     );
 }
 
 #[test]
-fn delayed_retry_recovery_releases_transferred_native_staging_resource() {
-    let (mut fixture, request, resource) = transferred_child_source_awaiting_first_live();
-    let (replacement_effect, _) = defer_transferred_native_recovery(&mut fixture, request);
+fn delayed_retry_recovery_does_not_retain_an_admitted_native_create_resource() {
+    let (mut fixture, request, resource) = admitted_child_source();
+    let (replacement_effect, _) = defer_admitted_native_recovery(&mut fixture, request);
 
     let expected_epoch = fixture.engine.version().epoch();
     let failure = platform_effect_input(
@@ -2794,33 +3192,33 @@ fn delayed_retry_recovery_releases_transferred_native_staging_resource() {
             failed: replacement_effect,
         }
     );
-    assert!(retained_native_staging_resource_is_visible(
+    assert!(!retained_native_staging_resource_is_visible(
         &mut fixture,
         resource
     ));
 
     publish_windows!(
         &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window_at_coordinate_generation(&fixture, CoordinateObservationGeneration::new(3),),
-        ],
+        vec![host_window_at_coordinate_generation(
+            &fixture,
+            CoordinateObservationGeneration::new(3),
+        ),],
     );
     publish_surface_for_fixture(
         &mut fixture,
         SURFACE_HOST,
         logical_rect(900.0, 0.0, 900.0, 700.0),
     );
-    assert!(retained_native_staging_resource_is_visible(
+    assert!(!retained_native_staging_resource_is_visible(
         &mut fixture,
         resource
     ));
     publish_windows!(
         &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window_at_coordinate_generation(&fixture, CoordinateObservationGeneration::new(4),),
-        ],
+        vec![host_window_at_coordinate_generation(
+            &fixture,
+            CoordinateObservationGeneration::new(4),
+        ),],
     );
 
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
@@ -2843,19 +3241,18 @@ fn delayed_retry_recovery_releases_transferred_native_staging_resource() {
     );
     assert!(
         !retained_native_staging_resource_is_visible(&mut fixture, resource),
-        "successful delayed RetryRecovery must release the transferred staging resource"
+        "delayed recovery must not resurrect the create resource released at admission"
     );
 }
 
 #[test]
-fn visible_recovery_replacement_retains_resource_until_exact_first_live_presentation() {
-    let (mut fixture, request, resource) = transferred_child_source_awaiting_first_live();
-    let (_, replacement_binding) = defer_transferred_native_recovery(&mut fixture, request);
+fn admitted_native_replacement_waits_for_exact_first_live_without_a_create_resource() {
+    let (mut fixture, request, resource) = admitted_child_source();
+    let (_, replacement_binding) = defer_admitted_native_recovery(&mut fixture, request);
 
     let hidden = publish_windows!(
         &mut fixture,
         vec![
-            source_window(&fixture),
             unavailable_host_window(&fixture),
             recovery_replacement_window(replacement_binding, WindowPresentationState::Hidden,),
         ],
@@ -2880,7 +3277,6 @@ fn visible_recovery_replacement_retains_resource_until_exact_first_live_presenta
     let acknowledged = publish_windows!(
         &mut fixture,
         vec![
-            source_window(&fixture),
             unavailable_host_window(&fixture),
             recovery_replacement_window(replacement_binding, WindowPresentationState::Hidden,),
         ],
@@ -2889,7 +3285,6 @@ fn visible_recovery_replacement_retains_resource_until_exact_first_live_presenta
     let visible = publish_windows!(
         &mut fixture,
         vec![
-            source_window(&fixture),
             unavailable_host_window(&fixture),
             recovery_replacement_window(replacement_binding, WindowPresentationState::Visible,),
         ],
@@ -2920,7 +3315,7 @@ fn visible_recovery_replacement_retains_resource_until_exact_first_live_presenta
             .map(|record| (record.binding(), record.admission())),
         Some((replacement_binding, ViewportAdmission::Pending))
     );
-    assert!(retained_native_staging_resource_is_visible(
+    assert!(!retained_native_staging_resource_is_visible(
         &mut fixture,
         resource
     ));
@@ -2928,7 +3323,6 @@ fn visible_recovery_replacement_retains_resource_until_exact_first_live_presenta
     publish_windows!(
         &mut fixture,
         vec![
-            source_window(&fixture),
             host_window_at_coordinate_generation(&fixture, CoordinateObservationGeneration::new(3),),
             observed_window(
                 replacement_binding,
@@ -2944,8 +3338,25 @@ fn visible_recovery_replacement_retains_resource_until_exact_first_live_presenta
         logical_rect(900.0, 0.0, 900.0, 700.0),
     );
     assert!(
-        retained_native_staging_resource_is_visible(&mut fixture, resource),
-        "an unrelated live surface must not settle the replacement barrier"
+        !retained_native_staging_resource_is_visible(&mut fixture, resource),
+        "replacement bring-up must not reacquire an admitted create resource"
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .expect("an unrelated live surface must not settle the replacement barrier")
+            .status(),
+        RecoveryPendingStatus::AwaitingFirstLivePresentation
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_NATIVE)
+            .map(|record| record.admission()),
+        Some(ViewportAdmission::Pending)
     );
 
     publish_surface_for_fixture(
@@ -2970,7 +3381,7 @@ fn visible_recovery_replacement_retains_resource_until_exact_first_live_presenta
     );
     assert!(
         !retained_native_staging_resource_is_visible(&mut fixture, resource),
-        "only the replacement's exact first live output may release the resource"
+        "replacement admission must leave the original create resource released"
     );
 }
 
@@ -3315,35 +3726,50 @@ fn joined_provider_replacement_aborts_native_create_before_ownership_transfer() 
 }
 
 #[test]
-fn joined_provider_replacement_preserves_transferred_native_create_until_first_live() {
+fn joined_provider_replacement_cancels_first_live_pending_create_and_preserves_source() {
     let mut fixture = joined_fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    advance_native_create_to_ownership_transfer(&mut fixture, request);
+    advance_native_create_to_content_readiness(&mut fixture, request);
+    let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    let resource = fixture
+        .engine
+        .viewport()
+        .native_create_saga(request.saga())
+        .expect("first-live pending create must retain its staging resource")
+        .resource();
     let predecessor = fixture.presentation_host.take_backend_ingress();
     let mut drained = predecessor.drain();
 
     let replacement = fixture
         .engine
         .begin_backend_ingress_provider_replacement(&mut drained)
-        .expect("joined provider replacement must preserve transferred native ownership");
+        .expect("joined provider replacement must cancel unadmitted lifecycle work");
     assert!(drained.is_consumed());
-    assert!(matches!(
+    assert!(
         fixture
             .engine
             .viewport()
             .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
-    ));
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
-    assert_eq!(
+            .is_none()
+    );
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(fixture.engine.viewport().viewport(SURFACE_NATIVE).is_none());
+    assert!(
         fixture
             .engine
             .viewport()
-            .viewport(SURFACE_NATIVE)
-            .map(|record| record.admission()),
-        Some(ViewportAdmission::Pending)
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .any(|descriptor| descriptor.id() == resource)
     );
 
     let (mut ticket, _) = replacement.into_parts();
@@ -3360,7 +3786,7 @@ fn joined_provider_replacement_preserves_transferred_native_create_until_first_l
     fixture.input_generation = 0;
     fixture.close_generations.clear();
 
-    publish_windows!(
+    let late = publish_windows!(
         &mut fixture,
         vec![
             source_window(&fixture),
@@ -3368,20 +3794,11 @@ fn joined_provider_replacement_preserves_transferred_native_create_until_first_l
             native_window_with_presentation(request, WindowPresentationState::Visible),
         ],
     );
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
-    ));
-
-    publish_surface_for_fixture(
-        &mut fixture,
-        SURFACE_NATIVE,
-        logical_rect(1_800.0, 0.0, 900.0, 700.0),
-    );
+    let cleanup = effect_of_kind(&fixture, &late, |effect| {
+        matches!(effect, PlatformEffect::CompensatingClose { binding, compensates }
+            if *binding == request.binding() && *compensates == request.effect())
+    })
+    .id();
     assert!(
         fixture
             .engine
@@ -3389,13 +3806,140 @@ fn joined_provider_replacement_preserves_transferred_native_create_until_first_l
             .native_create_saga(request.saga())
             .is_none()
     );
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(fixture.engine.viewport().viewport(SURFACE_NATIVE).is_none());
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert!(
+        platform_effects(&fixture, &late).iter().all(|effect| {
+            !matches!(effect.effect(), PlatformEffect::RequestReplacement { .. })
+        })
+    );
+    assert!(retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+
+    publish_windows_with_close_observations!(
+        &mut fixture,
+        vec![source_window(&fixture), host_window(&fixture)],
+        &[(
+            request.binding(),
+            WindowCloseState::Destroyed,
+            Some(cleanup)
+        )],
+    );
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(!retained_native_staging_resource_is_visible(
+        &mut fixture,
+        resource
+    ));
+}
+
+#[test]
+fn joined_provider_replacement_preserves_admitted_native_ownership() {
+    let mut fixture = joined_fixture();
+    prepare_base_platform(&mut fixture, ViewportRole::Child);
+    let request = start_native_create(&mut fixture);
+    advance_native_create_to_admitted(&mut fixture, request);
+    let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .count(),
+        0
+    );
+    let predecessor = fixture.presentation_host.take_backend_ingress();
+    let mut drained = predecessor.drain();
+    let replacement = fixture
+        .engine
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("provider replacement must preserve admitted child ownership");
+    assert!(drained.is_consumed());
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
     assert_eq!(
         fixture
             .engine
             .viewport()
             .viewport(SURFACE_NATIVE)
-            .map(|record| record.admission()),
-        Some(ViewportAdmission::Admitted)
+            .map(|record| (record.binding(), record.admission())),
+        Some((request.binding(), ViewportAdmission::Admitted))
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+
+    let (mut ticket, _) = replacement.into_parts();
+    let successor = fixture
+        .engine
+        .finish_backend_ingress_provider_replacement(&mut ticket, fixture.presentation_host.lease())
+        .expect("the joined successor must regain authority over the admitted child");
+    assert!(ticket.is_consumed());
+    fixture.presentation_host.adopt_backend_ingress(
+        &fixture.engine,
+        successor,
+        drained.pointer_through(),
+    );
+    fixture.input_generation = 0;
+    fixture.close_generations.clear();
+    let observed = publish_windows!(
+        &mut fixture,
+        vec![
+            source_window(&fixture),
+            host_window(&fixture),
+            native_window(request)
+        ],
+    );
+    assert!(platform_effects(&fixture, &observed).iter().all(|effect| {
+        !matches!(
+            effect.effect(),
+            PlatformEffect::CompensatingClose { .. } | PlatformEffect::RequestReplacement { .. }
+        )
+    }));
+    publish_scene(&mut fixture);
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_NATIVE)
+            .map(|record| (record.binding(), record.admission(), record.lifecycle())),
+        Some((
+            request.binding(),
+            ViewportAdmission::Admitted,
+            ViewportLifecycle::Ready
+        ))
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .count(),
+        0
     );
 }
 
@@ -3652,11 +4196,26 @@ fn source_surface_destruction_cancels_the_global_drag_session() {
 }
 
 #[test]
-fn create_ready_with_a_stale_source_is_compensated_without_moving_content() {
+fn pending_item_create_rejects_source_selection_before_first_live_admission() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    let initial_items = fixture.engine.workspace().item_multiset();
+    let source_before = fixture.engine.workspace().clone();
+    let version_before = fixture.engine.version();
+    let saga_before = fixture
+        .engine
+        .viewport()
+        .native_create_saga(request.saga())
+        .expect("pending item create must retain its exact saga")
+        .clone();
+    let resources_before = fixture
+        .engine
+        .viewport()
+        .retained_native_staging_resources()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(resources_before.len(), 1);
+    assert_eq!(resources_before[0].id(), saga_before.resource());
     let changing_source = fixture
         .engine
         .workspace()
@@ -3668,40 +4227,68 @@ fn create_ready_with_a_stale_source_is_compensated_without_moving_content() {
             source: changing_source,
         },
     );
-    submit_test_input(&mut fixture, input).expect("source mutation must commit");
+    let rejected = submit_test_input(&mut fixture, input)
+        .expect("pure source selection must reduce to a typed rejection");
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::CommandRejected {
+            error: CommandError::SurfaceLifecycleFrozen {
+                surface: SURFACE_SOURCE
+            },
+            version,
+        } if *version == version_before
+    ));
+    assert!(platform_effects(&fixture, &rejected).is_empty());
+    assert_eq!(fixture.engine.workspace(), &source_before);
+    assert_eq!(fixture.engine.version(), version_before);
+    assert_eq!(
+        fixture.engine.viewport().native_create_saga(request.saga()),
+        Some(&saga_before)
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .cloned()
+            .collect::<Vec<_>>(),
+        resources_before
+    );
 
-    let ready = advance_native_create_to_visible(&mut fixture, request);
-    let compensation = effect_of_kind(&fixture, &ready, |effect| {
-        matches!(
-            effect,
-            PlatformEffect::CompensatingClose {
-                binding,
-                compensates,
-            } if *binding == request.binding() && *compensates == request.effect()
-        )
-    });
-    assert_eq!(fixture.engine.workspace().item_multiset(), initial_items);
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
+    let admitted = advance_native_create_to_admitted(&mut fixture, request);
+    assert!(platform_effects(&fixture, &admitted).iter().all(|effect| {
+        !matches!(effect.effect(), PlatformEffect::CompensatingClose { binding, .. }
+            if *binding == request.binding())
+    }));
+    assert_eq!(
+        fixture.engine.workspace().item_multiset(),
+        source_before.item_multiset()
+    );
+    assert_eq!(
+        fixture.engine.workspace().node(fixture.source_tabs),
+        Some(&Node::tabs([ItemId::new(2)]))
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_NATIVE)
+            .map(|record| record.admission()),
+        Some(ViewportAdmission::Admitted)
+    );
     assert!(
         fixture
             .engine
             .viewport()
             .native_create_saga(request.saga())
-            .is_none(),
-        "a terminal create must not remain in the active saga map"
+            .is_none()
     );
-    let retirement = binding_cleanup(&fixture, request.binding());
-    assert_eq!(
-        retirement.origin(),
-        BindingRetirementOrigin::NativeCreateAborted {
-            create: request.effect(),
-        }
-    );
-    assert_eq!(
-        retirement.status(),
-        BindingRetirementStatus::CleanupRequested {
-            effect: compensation.id(),
-        }
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .all(|descriptor| descriptor.id() != saga_before.resource())
     );
 }
 
@@ -3748,13 +4335,37 @@ fn pending_complete_root_create_rejects_fingerprint_changes_atomically() {
         source_before
     );
 
-    let transferred = advance_native_create_to_ownership_transfer(&mut fixture, request);
-    assert!(platform_effects(&fixture, &transferred).iter().all(|effect| {
+    let ready = advance_native_create_to_content_readiness(&mut fixture, request);
+    assert!(platform_effects(&fixture, &ready).iter().all(|effect| {
         !matches!(
             effect.effect(),
             PlatformEffect::CompensatingClose { binding, .. } if *binding == request.binding()
         )
     }));
+    assert_eq!(fixture.engine.version(), version_before);
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .capture_node_source(ROOT_SOURCE, fixture.source_tabs)
+            .expect("PostShow readiness preserves the exact complete source"),
+        source_before
+    );
+    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .presentation_for_root(ROOT_SOURCE),
+        Some(RootPresentationOwner::Main {
+            surface: SURFACE_SOURCE
+        })
+    );
+    publish_surface_for_fixture(
+        &mut fixture,
+        SURFACE_NATIVE,
+        logical_rect(1_800.0, 0.0, 900.0, 700.0),
+    );
     assert_eq!(
         fixture
             .engine
@@ -4132,27 +4743,39 @@ fn failed_create_compensation_retries_only_after_explicit_input() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    let changing_source = fixture
-        .engine
-        .workspace()
-        .capture_item_source(ROOT_SOURCE, fixture.source_tabs, ItemId::new(2))
-        .expect("second source item must be current");
-    let input = command_input(
-        &fixture.engine,
-        WorkspaceCommand::Select {
-            source: changing_source,
+    advance_native_create_to_content_readiness(&mut fixture, request);
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .map(|saga| saga.phase()),
+        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
+    ));
+    let expected = fixture.engine.version();
+    let cancelled = submit_test_input(
+        &mut fixture,
+        EngineInput::CancelNativeCreate {
+            expected,
+            saga: request.saga(),
         },
-    );
-    submit_test_input(&mut fixture, input).expect("source mutation must commit");
-    let ready = advance_native_create_to_visible(&mut fixture, request);
-    let failed_cleanup = effect_of_kind(&fixture, &ready, |effect| {
+    )
+    .expect("explicit cancellation of a content-ready create must reduce");
+    let failed_cleanup = effect_of_kind(&fixture, &cancelled, |effect| {
         matches!(
             effect,
-            PlatformEffect::CompensatingClose { binding, .. }
-                if *binding == request.binding()
+            PlatformEffect::CompensatingClose { binding, compensates }
+                if *binding == request.binding() && *compensates == request.effect()
         )
     })
     .id();
+    assert!(matches!(
+        cancelled.reduced_inputs()[0].outcome(),
+        InputOutcome::NativeCreateCancelled {
+            saga,
+            compensation: Some(effect),
+        } if *saga == request.saga() && *effect == failed_cleanup
+    ));
     let input = platform_effect_input(
         &fixture.engine,
         EffectResult::new(
@@ -4451,7 +5074,7 @@ fn direct_native_destruction_recovers_the_whole_root_to_its_derived_source_host(
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    advance_native_create_to_visible(&mut fixture, request);
+    advance_native_create_to_admitted(&mut fixture, request);
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
     publish_scene(&mut fixture);
 

@@ -272,8 +272,9 @@ impl DockEngine {
                     self.last_focus_reducer_generation = generation;
                     return Ok(FocusCausalStamp::new(generation, presentation_cause));
                 }
-                crate::frame::ViewportLifecycleAction::TransferNativeCreate {
-                    prepared, ..
+                crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive {
+                    prepared,
+                    ..
                 } => {
                     native_create_causal.get_or_insert(prepared.focus_causal());
                 }
@@ -441,8 +442,13 @@ impl DockEngine {
         let mut observation_events = Vec::new();
         let mut observation_interaction_events = Vec::new();
         for (host, scope, observation) in observation_batches {
-            let (mut outcomes, changed, mut lifecycle_actions, mut lifecycle_events) =
-                candidate.reduce_presentation_observation(host, &scope, observation)?;
+            let (mut outcomes, changed, mut lifecycle_actions, mut lifecycle_events) = candidate
+                .reduce_presentation_observation(
+                    ReductionCause::SurfacePresentationObservationBatch { tick },
+                    host,
+                    &scope,
+                    observation,
+                )?;
             presentation_observation_outcomes.append(&mut outcomes);
             changed_surfaces.extend(changed);
             presentation_lifecycle_actions.append(&mut lifecycle_actions);
@@ -1025,12 +1031,6 @@ impl<'frame> HostFrameView<'frame> {
 }
 
 impl CoreHostFrame {
-    pub(crate) fn last_input_outcome(&self) -> Option<&crate::transition::InputOutcome> {
-        self.reduced_inputs
-            .last()
-            .map(crate::transition::ReducedInput::outcome)
-    }
-
     pub(crate) const fn presentation_attempt(&self) -> HostPresentationAttemptId {
         self.presentation_obligations.attempt()
     }
@@ -1732,7 +1732,7 @@ impl CoreHostFrame {
 
         let reduction = self
             .candidate
-            .reduce_presentation_observation_entry(host, entry);
+            .reduce_presentation_observation_entry(cause, host, entry);
         let (mut outcomes, changed_surfaces, lifecycle_actions, mut lifecycle_events) =
             match reduction {
                 Ok(reduction) => reduction,
@@ -1852,6 +1852,7 @@ impl CoreHostFrame {
             return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
         }
         self.refresh_presented_interaction_authority();
+        self.application_base = self.candidate.version;
         Ok(())
     }
 

@@ -1,7 +1,6 @@
 //! Recovery replacement state and read-only public projection.
 
 use crate::effect::EffectId;
-use crate::presentation_observation::NativeStagingResourceId;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::{InventoryGeneration, ViewportBinding, ViewportRole};
 
@@ -205,7 +204,6 @@ pub struct RecoveryPending {
     pub(super) destroyed_binding: ViewportBinding,
     pub(super) role: ViewportRole,
     pub(super) recovery_obligation: SurfaceRecoveryObligationId,
-    pub(super) retained_staging_resource: Option<NativeStagingResourceId>,
     pub(super) phase: RecoveryReplacementPhase,
     pub(super) admission_not_before: Option<InventoryGeneration>,
 }
@@ -233,12 +231,6 @@ impl RecoveryPending {
     #[must_use]
     pub const fn replacement_effect(&self) -> Option<EffectId> {
         self.phase.replacement_effect()
-    }
-
-    /// Returns the retained source resource associated with a transferred native create.
-    #[must_use]
-    pub const fn retained_staging_resource(&self) -> Option<NativeStagingResourceId> {
-        self.retained_staging_resource
     }
 
     #[must_use]

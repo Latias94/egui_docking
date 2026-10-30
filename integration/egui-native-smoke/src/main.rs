@@ -347,9 +347,22 @@ impl SmokeApp {
             return;
         }
         if Instant::now() >= self.deadline {
+            let child_surface = self
+                .dockspace
+                .with_view(|view| view.item(CHILD_ITEM).map(|pane| pane.surface()))
+                .flatten();
+            let presented = (
+                self.dockspace.is_surface_presented(ROOT_SURFACE),
+                child_surface
+                    .map(|surface| (surface, self.dockspace.is_surface_presented(surface))),
+            );
             self.finish(
                 context,
-                Err(format!("native smoke timed out in phase {:?}", self.phase)),
+                Err(format!(
+                    "native smoke timed out in phase {:?}; root/child presentation={presented:?}; output backlog={:?}",
+                    self.phase,
+                    self.dockspace.output_backlog(),
+                )),
             );
             return;
         }
