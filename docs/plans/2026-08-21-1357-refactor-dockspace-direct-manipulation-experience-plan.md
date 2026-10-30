@@ -1505,6 +1505,51 @@ change rejects that old coordinate proof while still consuming the real end.
 Unknown geometry and unqualified backends must remain explicit; callback size
 alone cannot reconstruct original touch authority.
 
+Next, implement the public native stationary contract before adapter automatic
+scheduling. Expose a Native-specific read-only projection of the existing
+`PointerContinuationRequest`, with NativePointerId/event, deadline, target
+surface/point/token, the original source binding and, for NativeLocal only,
+its still-current committed local-coordinate capability. These are scheduling
+and sampling inputs, not a sampled position or new capture authority. The
+Surface and Native getters must filter their own provider domains. Reading a
+request must not mint a token or advance input; pending recorded native input
+suppresses scheduling until it commits. The adapter must additionally drain
+accepted mailbox input, which the public session cannot inspect.
+
+Keep this slice within the existing gesture owner and exact-output state:
+
+- Add explicit HostLocal/SurfaceLocal and NativeJoined+NativeLocal/Desktop
+  eligibility only at timed/touch entrances; do not widen `scope.is_local()`
+  or standalone DesktopGlobal behavior.
+- Native Continuation requires the exact current stream/session, original
+  Primary press and freshly known Native source capture/delivery. Unknown
+  capture cannot execute or later resurrect a revoked challenge. Keep ordinary
+  pointer events and real terminals on their existing rules.
+- Pass the validated Desktop delivery route into Touch slop/long-press handling;
+  never use target hover coordinates for source motion. Preserve explicitly
+  observed Touch metadata in NativeJoined Desktop hit validation, including
+  its expanded target footprint.
+- Reject an obsolete same-stream continuation token before lane mismatch and
+  before generating receiver challenges. A Local token cleared by handoff must
+  not cancel the surviving Desktop drag. Retain structural rejection for a
+  different pointer/stream and exact cancellation on real capture loss.
+- Reuse finite hover dwell, Touch long press/yield/tap and one-step edge scroll.
+  Each scroll step waits for the target's exact accepted output. Fresh native
+  facts enter through ordinary NativePointerInput::Continuation; a dual packet
+  cannot upgrade because handoff remains Moved-only. A dropped frame retries
+  the already recorded immutable sample rather than sampling again.
+
+Public acceptance reuses the recording native fixture and the existing local
+timed/touch/edge-scroll journeys. Cover NativeLocal without desktop origin,
+ordinary Desktop and post-handoff Desktop; deadline boundaries, source/target
+point independence, same-gesture/source retention, no extra focus, expanded
+Desktop Touch hits, yield/tap/real ContactEnded, exact-output/Dropped waits,
+read-only/domain-isolated projections, pending raw terminals, stale/foreign
+capture or receivers, coordinate rebase, obsolete tokens and frame drop/retry.
+Only then add adapter deadline/output-result wakes through its existing shared
+input budget. Public fact-based tests do not qualify OS Touch or fresh native
+stationary observation; those seams remain separate work.
+
 The adjacent native prerequisite measures actual raw backing capacity and
 removes work-area/roster conversion clones. Unknown work-area settlement
 preserves token history while revoking routes. The frozen local source passes
