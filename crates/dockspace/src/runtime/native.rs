@@ -927,6 +927,7 @@ pub(super) struct RuntimeNativeState {
 struct NativeBindingState {
     binding: ViewportBinding,
     admission: Option<ViewportAdmission>,
+    cleanup_observation: bool,
     window_generation: u64,
     close_generation: u64,
 }
@@ -993,9 +994,11 @@ impl NativeProducerState {
                     .record(state.binding.surface())
                     .filter(|record| record.binding() == state.binding)
                     .map(|record| record.admission());
-                if next.admission.is_none() {
-                    // Retired windows retain close tombstone generations, but
-                    // can no longer publish live coordinate/input observations.
+                next.cleanup_observation = engine.viewport().retains_window_cleanup(state.binding);
+                if next.admission.is_none() && !next.cleanup_observation {
+                    // A bare terminal guard accepts only destruction. An exact
+                    // cleanup owner may still need a late window appearance;
+                    // it never returns that incarnation to the current registry.
                     next.window_generation = 0;
                 }
                 bindings.push(next);
@@ -1006,6 +1009,7 @@ impl NativeProducerState {
                 bindings.push(NativeBindingState {
                     binding: record.binding(),
                     admission: Some(record.admission()),
+                    cleanup_observation: false,
                     window_generation: 0,
                     close_generation: 0,
                 });
@@ -1278,6 +1282,7 @@ impl RuntimeNativeState {
                 },
             )?;
             if state.admission.is_none()
+                && !state.cleanup_observation
                 && !matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. })
             {
                 return Err(NativePlatformError::RetiredSurfaceHasLiveFacts {

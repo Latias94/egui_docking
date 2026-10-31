@@ -10,8 +10,13 @@ use crate::viewport::{NativeSurfaceEstablishmentOrigin, ViewportBinding, Viewpor
 use super::native_bringup::{NativeBringupPhase, NativeReadyProof};
 
 mod abandoned;
+mod initial;
 mod status;
 pub(super) use self::abandoned::{AbandonedReplacementCause, AbandonedReplacementDetach};
+pub(crate) use self::initial::{
+    NativeSurfaceInitialRequest, NativeSurfaceRestorePlan, QueuedInitialSurface,
+    QueuedInitialSurfaceStatus,
+};
 use self::status::RecoveryReplacementPhase;
 pub use self::status::{RecoveryPending, RecoveryPendingStatus};
 
@@ -132,13 +137,41 @@ pub(super) enum RecoveryReplacementLifecycleError {
 /// Sole owner of recovery and replacement-incarnation state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct RecoveryReplacementLifecycle {
-    pending: BTreeMap<SurfaceId, RecoveryPending>,
+    pending: BTreeMap<SurfaceId, SurfaceEstablishment>,
     by_replacement: BTreeMap<ViewportBinding, SurfaceId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SurfaceEstablishment {
+    Queued(QueuedInitialSurface),
+    Bound(RecoveryPending),
+}
+
+impl SurfaceEstablishment {
+    fn bound(&self) -> Option<&RecoveryPending> {
+        match self {
+            Self::Bound(pending) => Some(pending),
+            Self::Queued(_) => None,
+        }
+    }
+
+    fn bound_mut(&mut self) -> Option<&mut RecoveryPending> {
+        match self {
+            Self::Bound(pending) => Some(pending),
+            Self::Queued(_) => None,
+        }
+    }
+}
+
+impl From<RecoveryPendingRequest> for SurfaceEstablishment {
+    fn from(request: RecoveryPendingRequest) -> Self {
+        Self::Bound(request.into())
+    }
 }
 
 impl RecoveryReplacementLifecycle {
     pub(super) fn extend_referenced_effects(&self, effects: &mut BTreeSet<EffectId>) {
-        for pending in self.pending.values() {
+        for pending in self.values() {
             effects.extend(pending.replacement_effect());
             match pending.phase {
                 RecoveryReplacementPhase::BringingUp { phase, .. } => {
@@ -168,15 +201,21 @@ impl RecoveryReplacementLifecycle {
     }
 
     pub(super) fn pending(&self, surface: SurfaceId) -> Option<&RecoveryPending> {
-        self.pending.get(&surface)
+        self.pending
+            .get(&surface)
+            .and_then(SurfaceEstablishment::bound)
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &RecoveryPending)> {
-        self.pending.iter()
+        self.pending
+            .iter()
+            .filter_map(|(surface, entry)| Some((surface, entry.bound()?)))
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &RecoveryPending> {
-        self.pending.values()
+        self.pending
+            .values()
+            .filter_map(SurfaceEstablishment::bound)
     }
 
     #[cfg(test)]
@@ -225,6 +264,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get(&surface)
+            .and_then(SurfaceEstablishment::bound)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if pending.recovery_obligation() != recovery_obligation {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
@@ -244,12 +284,35 @@ impl RecoveryReplacementLifecycle {
         Ok(())
     }
 
+    pub(super) fn begin_initial(
+        &mut self,
+        request: RecoveryPendingRequest,
+    ) -> Result<(), RecoveryReplacementLifecycleError> {
+        let surface = request.source_binding().surface();
+        if self.queued_initial(surface).is_none() {
+            return self.begin(request);
+        }
+        if !matches!(
+            request.origin,
+            NativeSurfaceEstablishmentOrigin::Initial { .. }
+        ) {
+            return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
+        }
+        let binding = request
+            .phase
+            .replacement_binding()
+            .ok_or(RecoveryReplacementLifecycleError::ReplacementEffectMissing { surface })?;
+        self.reserve_replacement(surface, binding)?;
+        self.pending.insert(surface, request.into());
+        Ok(())
+    }
+
     pub(super) fn bringup(
         &self,
         binding: ViewportBinding,
     ) -> Option<(SurfaceId, NativeBringupPhase)> {
         let surface = self.replacement_surface(binding)?;
-        let pending = self.pending.get(&surface)?;
+        let pending = self.pending(surface)?;
         match pending.phase {
             RecoveryReplacementPhase::ReplacementRequested {
                 binding: owned,
@@ -279,8 +342,7 @@ impl RecoveryReplacementLifecycle {
     }
 
     pub(super) fn active_bringups(&self) -> Vec<(SurfaceId, ViewportBinding, NativeBringupPhase)> {
-        self.pending
-            .iter()
+        self.iter()
             .filter_map(|(surface, pending)| match pending.phase {
                 RecoveryReplacementPhase::ReplacementRequested {
                     binding,
@@ -321,6 +383,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         let matches_expected = match pending.phase {
             RecoveryReplacementPhase::ReplacementRequested {
@@ -370,6 +433,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         let phase_matches = match pending.phase {
             RecoveryReplacementPhase::ReplacementRequested {
@@ -422,6 +486,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if !matches_preparation
             || proof.binding() != binding
@@ -442,6 +507,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if pending.origin() != (NativeSurfaceEstablishmentOrigin::Initial { binding })
             || pending.replacement_binding() != Some(binding)
@@ -471,6 +537,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if pending.phase != (RecoveryReplacementPhase::AwaitingFirstLive { proof })
             || proof.binding() != binding
@@ -496,6 +563,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         pending.phase = RecoveryReplacementPhase::Failed {
             binding: Some(binding),
@@ -512,7 +580,11 @@ impl RecoveryReplacementLifecycle {
         indeterminate: bool,
         replacement_was_discarded: bool,
     ) -> bool {
-        let Some(pending) = self.pending.get_mut(&surface) else {
+        let Some(pending) = self
+            .pending
+            .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
+        else {
             return false;
         };
         if !pending.phase.owns_dispatch_effect(effect) {
@@ -557,6 +629,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         let (owned, replacement_effect, cause) = match pending.phase {
             RecoveryReplacementPhase::Failed {
@@ -631,7 +704,7 @@ impl RecoveryReplacementLifecycle {
         &self,
         effect: EffectId,
     ) -> Option<(SurfaceId, Option<ViewportBinding>)> {
-        self.pending.iter().find_map(|(surface, pending)| {
+        self.iter().find_map(|(surface, pending)| {
             pending
                 .phase
                 .owns_dispatch_effect(effect)
@@ -646,6 +719,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         let Some(binding) = pending.replacement_binding() else {
             return Err(RecoveryReplacementLifecycleError::ReplacementEffectMissing { surface });
@@ -669,6 +743,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get(&surface)
+            .and_then(SurfaceEstablishment::bound)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         let RecoveryReplacementPhase::AwaitingCleanup {
             binding: owned,
@@ -694,6 +769,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         pending.phase = RecoveryReplacementPhase::AwaitingRecoveryHost;
         pending.admission_not_before = None;
@@ -709,6 +785,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get_mut(&surface)
+            .and_then(SurfaceEstablishment::bound_mut)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if pending.replacement_binding() != Some(binding) {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
@@ -725,7 +802,7 @@ impl RecoveryReplacementLifecycle {
         let Some(surface) = self.replacement_surface(binding) else {
             return true;
         };
-        self.pending.get(&surface).is_some_and(|pending| {
+        self.pending(surface).is_some_and(|pending| {
             pending.replacement_binding() == Some(binding)
                 && pending
                     .admission_not_before()
@@ -749,6 +826,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get(&surface)
+            .and_then(SurfaceEstablishment::bound)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if pending.replacement_binding().is_some() {
             return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
@@ -766,6 +844,7 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get(&surface)
+            .and_then(SurfaceEstablishment::bound)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if pending.origin != origin
             || pending.replacement_binding() != Some(binding)
@@ -784,7 +863,13 @@ impl RecoveryReplacementLifecycle {
     pub(super) fn clear(&mut self) -> Vec<RecoveryPending> {
         self.by_replacement.clear();
         let pending = std::mem::take(&mut self.pending);
-        pending.into_values().collect()
+        pending
+            .into_values()
+            .filter_map(|entry| match entry {
+                SurfaceEstablishment::Bound(pending) => Some(pending),
+                SurfaceEstablishment::Queued(_) => None,
+            })
+            .collect()
     }
 
     fn take(
@@ -794,14 +879,14 @@ impl RecoveryReplacementLifecycle {
         let pending = self
             .pending
             .get(&surface)
+            .and_then(SurfaceEstablishment::bound)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         if let Some(binding) = pending.replacement_binding() {
             self.ensure_replacement(surface, binding)?;
         }
-        let pending = self
-            .pending
-            .remove(&surface)
-            .expect("pending recovery was validated before terminal removal");
+        let Some(SurfaceEstablishment::Bound(pending)) = self.pending.remove(&surface) else {
+            unreachable!("pending bound recovery was validated before terminal removal");
+        };
         if let Some(binding) = pending.replacement_binding() {
             self.by_replacement.remove(&binding);
         }
@@ -844,6 +929,7 @@ impl RecoveryReplacementLifecycle {
             || self
                 .pending
                 .get(&surface)
+                .and_then(SurfaceEstablishment::bound)
                 .and_then(RecoveryPending::replacement_binding)
                 != Some(binding)
         {

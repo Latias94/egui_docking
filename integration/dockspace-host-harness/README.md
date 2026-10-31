@@ -56,6 +56,16 @@ admit or retire the successor. Finite producer storage, same-frame cancellation
 and dropped/failed-frame replay exercise the public boundary. These recording
 traces do not qualify automatic native document recreation or OS creation.
 
+`tests/native_document_restore.rs` exercises the opt-in atomic native restore
+boundary using only public APIs. It preserves complete split/selected-tab/
+contained forests through identity rebasing, queues explicit Child intents,
+waits for fresh Root facts and all inherited exact predecessor guards, and
+advances creation under finite producer/effect-report storage. DirectPrepared
+and Staged use their existing first-live owners. Stopped intents stay suspended
+until explicit retry; invalid declarations and retained Root/Child conflicts
+publish nothing. Recording results remain distinct from the native example's
+separate real-window restoration journey.
+
 `tests/native_local_geometry.rs` measures and presents a native root with client
 size and independent scales, without a desktop origin or work-area facts. It
 checks stable selection, exact output, frame retry and atomic rejection of

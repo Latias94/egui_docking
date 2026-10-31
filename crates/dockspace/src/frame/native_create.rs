@@ -461,10 +461,7 @@ impl ViewportCoordinator {
     pub(crate) fn suspended_native_presentation_surfaces(
         &self,
     ) -> impl Iterator<Item = SurfaceId> + '_ {
-        self.recovery_replacements
-            .values()
-            .filter(|pending| pending.suspends_live_presentation())
-            .map(|pending| pending.source_binding().surface())
+        self.recovery_replacements.suspended_surfaces()
     }
 
     /// Returns every retained source resource still owned by native lifecycle state.

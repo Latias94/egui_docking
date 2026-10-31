@@ -2401,6 +2401,7 @@ impl CoreHostFrame {
             EngineInput::RegisterViewport { .. }
                 | EngineInput::BootstrapChildViewport { .. }
                 | EngineInput::CreateNativeSurface { .. }
+                | EngineInput::AdvanceNativeSurfaceCreate { .. }
                 | EngineInput::PublishPlatformSnapshot { .. }
                 | EngineInput::PublishNativeCloseObservation { .. }
                 | EngineInput::PublishGlobalFocusObservation { .. }

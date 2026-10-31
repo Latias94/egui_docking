@@ -16,9 +16,15 @@ impl DockspaceSession {
     pub fn has_pending_native_create(&self) -> bool {
         self.engine
             .viewport()
-            .native_create_sagas()
+            .waiting_native_surfaces()
             .next()
             .is_some()
+            || self
+                .engine
+                .viewport()
+                .native_create_sagas()
+                .next()
+                .is_some()
             || self
                 .engine
                 .viewport()

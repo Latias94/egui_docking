@@ -319,24 +319,53 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 || matches!(bridge.admission_dispatch(), NativeDispatch::Cancel { .. })
                 || self.coordinator.session().has_pending_native_input()
                 || bridge.callback_boundary_pending();
+            let pending_create = self.shutdown.is_none()
+                && bridge.accepts_new_work()
+                && self.coordinator.session().has_pending_native_create();
             if !progress {
-                break;
+                if !pending_create {
+                    break;
+                }
+                if budget.is_exhausted() {
+                    return Ok(false);
+                }
             }
             let Some(mut frame) = self.coordinator.poll_resolved_host_frame(context, budget)?
             else {
                 return Ok(false);
             };
+            let advanced_create = if self.shutdown.is_none()
+                && bridge.accepts_new_work()
+                && !frame.native_input_pending()
+                && !budget.is_exhausted()
+            {
+                frame.frame.advance_next_native_surface_create()?
+            } else {
+                false
+            };
+            if advanced_create {
+                budget.complete_unsequenced_records(1);
+            } else if !progress {
+                // Waiting for fresh facts or cleanup must not publish empty frames
+                // or keep the service loop polling an unchanged create intent.
+                drop(frame);
+                break;
+            }
             frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
             let report = frame.commit()?;
             self.settle_terminal_action_report(
                 context, token, surface, None, report, budget, false,
             )?;
             self.settle_internal_application_transitions()?;
+            let pending_create = self.shutdown.is_none()
+                && bridge.accepts_new_work()
+                && self.coordinator.session().has_pending_native_create();
             if !self.coordinator.has_pending_callback_records()
                 && !self.coordinator.session().has_pending_native_input()
                 && !self.coordinator.has_pending_output_prefix()
                 && !bridge.callback_boundary_pending()
                 && !matches!(bridge.admission_dispatch(), NativeDispatch::Cancel { .. })
+                && !pending_create
             {
                 break;
             }

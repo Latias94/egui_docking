@@ -4,9 +4,11 @@ Run in an isolated X11 test display with a window manager and xdotool. Build
 the native basic example separately, then pass its executable as the sole
 argument. Diagnostic rectangles only locate real input; the app checks current
 presentation, stable pane identity, exact text and lifecycle quiescence.
-Six edits (seven with serde) and the second child close use real X11 input.
+Six edits (eight with serde) and the second child close use real X11 input.
 Close/Allow/reopen, lock/rejected move/select/unlock, Default, JSON capture and
-restore, content unload/reload and explicit selection are programmatic.
+restore, content unload/reload and explicit selection are programmatic. Serde
+also replaces two simultaneously live children, verifies their old X11 IDs
+are destroyed, edits a fresh child, then docks both replacement children back.
 """
 
 from __future__ import annotations
@@ -27,26 +29,40 @@ def xdotool(*arguments: str) -> str:
     ).strip()
 
 
-def window(pid: int, kind: str) -> str:
+def windows(pid: int, kind: str) -> set[str]:
     title = "Dockspace panel" if kind == "child" else "Dockspace native editor"
-    matches = xdotool(
-        "search", "--all", "--onlyvisible", "--pid", str(pid), "--name", f"^{title}$"
-    ).splitlines()
+    result = subprocess.run(
+        ["xdotool", "search", "--all", "--onlyvisible", "--pid", str(pid),
+         "--name", f"^{title}$"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
+        check=False,
+    )
+    if result.returncode == 1 and not result.stdout.strip():
+        return set()
+    result.check_returncode()
+    return set(result.stdout.splitlines())
+
+
+def window(pid: int, kind: str) -> str:
+    matches = windows(pid, kind)
     if len(matches) != 1:
         raise RuntimeError(f"expected one {kind} window for process {pid}, got {matches}")
-    return matches[0]
+    return next(iter(matches))
 
 
 def assert_destroyed(window_id: str) -> None:
     result = subprocess.run(
         ["xdotool", "getwindowgeometry", window_id],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
         timeout=5,
         check=False,
     )
     if result.returncode == 0:
         raise RuntimeError(f"retired child window {window_id} still exists")
+    if not any(reason in result.stderr for reason in ("BadWindow", "BadDrawable")):
+        raise RuntimeError(f"could not verify destruction of {window_id}: {result.stderr.strip()}")
 
 
 def run(binary: Path) -> None:
@@ -55,12 +71,14 @@ def run(binary: Path) -> None:
     xdotool("getdisplaygeometry")
     process = subprocess.Popen(
         [str(binary), "--smoke"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
     )
     assert process.stdout is not None
+    assert process.stdin is not None
     lines: queue.Queue[str | None] = queue.Queue()
 
     def read_output() -> None:
@@ -77,6 +95,7 @@ def run(binary: Path) -> None:
         "REOPENED_EDIT": "4",
         "RESET_EDIT": "2",
         "RESTORED_EDIT": "4",
+        "NATIVE_RESTORED_EDIT": "4",
     }
     edits: list[str] = []
     profile: str | None = None
@@ -86,9 +105,14 @@ def run(binary: Path) -> None:
     programmatic = iter([])
     expected_programmatic = "PROFILE"
     children: list[str] = []
+    old_children: list[str] = []
+    fresh_children: list[str] = []
+    restore_destroyed: set[str] = set()
+    docked_destroyed: set[str] = set()
+    input_target: str | None = None
     os_close_sent = False
     complete = False
-    deadline = time.monotonic() + 75
+    deadline = time.monotonic() + 105
     try:
         while time.monotonic() < deadline:
             try:
@@ -117,11 +141,15 @@ def run(binary: Path) -> None:
                     "quiescent", "default-reset", "default-presented", "default-select",
                 ]
                 if profile == "serde":
-                    edits.append("RESTORED_EDIT")
+                    edits.extend(["RESTORED_EDIT", "NATIVE_RESTORED_EDIT"])
                     operations.extend([
                         "capture-preset", "restore-close-requested", "restore-allow-close",
                         "restore-closed", "unload", "document-restored", "missing-placeholder",
                         "reload", "restore-select",
+                        "multi-layout", "multi-inspector-presented", "multi-children-ready",
+                        "capture-multi-preset", "multi-restore-requested",
+                        "multi-document-restored", "multi-children-presented",
+                        "multi-inspector-docked-back", "multi-assets-docked-back",
                     ])
                 operations.append("final-quiescence")
                 if int(count) != len(edits):
@@ -132,16 +160,20 @@ def run(binary: Path) -> None:
                 expected_programmatic = next(programmatic)
                 continue
             match = re.search(
-                r"editor-smoke: input=(\w+) item=(\d+) window=(root|child) x=([\d.]+) y=([\d.]+)",
+                r"editor-smoke: input=(\w+) item=(\d+) window=(root|child) "
+                r"x=([-\d.]+) y=([-\d.]+) window_id=(\d+) "
+                r"left=([-\d.]+) top=([-\d.]+) right=([-\d.]+) bottom=([-\d.]+)",
                 line,
             )
             if match:
-                marker, item, kind, x, y = match.groups()
+                marker, item, kind, x, y, target, left, top, right, bottom = match.groups()
                 if marker != expected or edit_items.get(marker) != item:
                     raise RuntimeError(
                         f"expected {expected} and its exact item, got {marker} item={item}"
                     )
-                expected_kind = "child" if marker == "CHILD_EDIT" else "root"
+                expected_kind = (
+                    "child" if marker in {"CHILD_EDIT", "NATIVE_RESTORED_EDIT"} else "root"
+                )
                 if kind != expected_kind:
                     raise RuntimeError(f"expected {marker} in {expected_kind}, got {kind}")
                 if marker == "REOPENED_EDIT" and expected_programmatic != "lock":
@@ -152,14 +184,30 @@ def run(binary: Path) -> None:
                     "capture-preset" if profile == "serde" else "final-quiescence"
                 ):
                     raise RuntimeError("RESET_EDIT preceded fresh Default presentation/select")
-                if marker == "RESTORED_EDIT" and expected_programmatic != "final-quiescence":
+                if marker == "RESTORED_EDIT" and expected_programmatic != "multi-layout":
                     raise RuntimeError("RESTORED_EDIT preceded missing placeholder/reload/select")
+                if marker == "NATIVE_RESTORED_EDIT":
+                    if expected_programmatic != "multi-inspector-docked-back":
+                        raise RuntimeError("the eighth edit preceded both fresh Child first-live outputs")
+                    if not fresh_children or target != fresh_children[0]:
+                        raise RuntimeError("the eighth edit did not target the fresh Inspector child")
+                    if restore_destroyed != set(old_children):
+                        raise RuntimeError("the eighth edit preceded destruction of both old children")
                 if kind == "root":
                     for retired in children:
                         assert_destroyed(retired)
-                target = window(process.pid, kind)
-                if kind == "child":
+                if target not in windows(process.pid, kind):
+                    raise RuntimeError(
+                        f"actual widget window {target} is not a live {kind} owned by the app"
+                    )
+                if marker == "CHILD_EDIT":
                     children.append(target)
+                if not (
+                    float(left) < float(x) < float(right)
+                    and float(top) < float(y) < float(bottom)
+                ):
+                    raise RuntimeError(f"{marker} input point lies outside the actual widget bounds")
+                input_target = target
                 xdotool("windowactivate", "--sync", target)
                 if marker in {"REOPENED_EDIT", "RESET_EDIT", "RESTORED_EDIT"}:
                     # Wait for focused=<marker> from the actual TextEdit. A click
@@ -203,8 +251,11 @@ def run(binary: Path) -> None:
                 marker, item = match.groups()
                 if marker != expected or edit_items.get(marker) != item:
                     raise RuntimeError(f"expected focused {expected}, got {marker} item={item}")
+                if input_target is None or xdotool("getwindowfocus") != input_target:
+                    raise RuntimeError(f"{marker} widget focus did not match the real OS focus")
                 xdotool("key", "--clearmodifiers", "ctrl+End")
                 xdotool("type", "--clearmodifiers", "--delay", "1", marker)
+                input_target = None
                 expected = next(markers, "COMPLETE")
             elif "editor-smoke: accepted real focused edit" in line:
                 match = re.search(r"accepted real focused edit (\w+) item=(\d+)", line)
@@ -244,14 +295,91 @@ def run(binary: Path) -> None:
                     "quiescent", "default-reset", "default-presented", "default-select",
                 }:
                     expected_edits = edits[:5]
-                elif operation == "final-quiescence":
+                elif operation in {
+                    "final-quiescence", "multi-inspector-docked-back", "multi-assets-docked-back"
+                }:
                     expected_edits = edits
+                elif operation.startswith("multi-") or operation == "capture-multi-preset":
+                    expected_edits = edits[:7]
                 else:
                     expected_edits = edits[:6]
                 if accepted != expected_edits:
                     raise RuntimeError(
                         f"programmatic {operation} preceded its required OS edits"
                     )
+                if operation == "multi-inspector-presented":
+                    match = re.search(r"window_id=(\d+) first-live=true quiescent=true", line)
+                    if match is None or match[1] not in windows(process.pid, "child"):
+                        raise RuntimeError("Inspector first-live lacked its real OS child")
+                elif operation == "multi-children-ready":
+                    match = re.search(
+                        r"window_ids=(\d+),(\d+) first-live=true quiescent=true registry=8",
+                        line,
+                    )
+                    if match is None:
+                        raise RuntimeError("both old children need exact presented OS window IDs")
+                    old_children = list(match.groups())
+                    if len(set(old_children)) != 2 or set(old_children) & set(children):
+                        raise RuntimeError("the multi-surface predecessors reused earlier window IDs")
+                    if windows(process.pid, "child") != set(old_children):
+                        raise RuntimeError("the preset did not have two simultaneously live OS children")
+                    children.extend(old_children)
+                elif operation == "capture-multi-preset":
+                    if not old_children or windows(process.pid, "child") != set(old_children):
+                        raise RuntimeError("both predecessor windows must still be alive before restore")
+                    for predecessor in old_children:
+                        xdotool("getwindowgeometry", predecessor)
+                    process.stdin.write("multi-children-observed\n")
+                    process.stdin.flush()
+                    print(
+                        f"editor-x11: observed two live predecessors {','.join(old_children)}; restore released",
+                        flush=True,
+                    )
+                elif operation == "multi-restore-requested":
+                    if f"old-window_ids={','.join(old_children)} observed-alive=true" not in line:
+                        raise RuntimeError("restore did not replace the exact observed predecessors")
+                elif operation == "multi-document-restored":
+                    if (
+                        "logically-committed=true registry=8 tabs=preserved "
+                        "selected=preserved fresh-presented=required"
+                    ) not in line:
+                        raise RuntimeError("DocumentRestored did not check full logical tabs/selection")
+                elif operation == "multi-children-presented":
+                    match = re.search(
+                        r"window_ids=(\d+),(\d+) first-live=true quiescent=true registry=8 "
+                        r"tabs=preserved selected=preserved",
+                        line,
+                    )
+                    if match is None:
+                        raise RuntimeError("replacement first-live omitted its exact child window IDs")
+                    if len(old_children) != 2:
+                        raise RuntimeError("replacement first-live preceded the two observed predecessors")
+                    fresh_children = list(match.groups())
+                    if len(set(fresh_children)) != 2 or set(fresh_children) & set(children):
+                        raise RuntimeError("restore did not create two fresh, distinct OS children")
+                    for predecessor in old_children:
+                        assert_destroyed(predecessor)
+                        restore_destroyed.add(predecessor)
+                        print(
+                            f"editor-x11: destroyed predecessor window_id={predecessor} before fresh-child input",
+                            flush=True,
+                        )
+                    if windows(process.pid, "child") != set(fresh_children):
+                        raise RuntimeError("both fresh Child windows must really exist after first-live")
+                    children.extend(fresh_children)
+                elif operation in {
+                    "multi-inspector-docked-back", "multi-assets-docked-back"
+                }:
+                    index = 0 if operation == "multi-inspector-docked-back" else 1
+                    if len(fresh_children) != 2:
+                        raise RuntimeError("Dock Back preceded the two replacement children")
+                    assert_destroyed(fresh_children[index])
+                    docked_destroyed.add(fresh_children[index])
+                elif operation == "final-quiescence" and profile == "serde":
+                    if restore_destroyed != set(old_children) or docked_destroyed != set(fresh_children):
+                        raise RuntimeError("final quiescence preceded real replacement and Dock Back destruction")
+                    if windows(process.pid, "child"):
+                        raise RuntimeError("final quiescence retained a real OS child")
                 expected_programmatic = next(programmatic, "COMPLETE")
             elif "editor-smoke: complete;" in line:
                 if expected != "COMPLETE" or accepted != edits:
@@ -260,8 +388,9 @@ def run(binary: Path) -> None:
                     raise RuntimeError(
                         "the application completed before Default/restore quiescence"
                     )
-                if not os_close_sent or len(children) != 2:
-                    raise RuntimeError("the workflow did not exercise two child lifetimes")
+                lifetimes = 6 if profile == "serde" else 2
+                if not os_close_sent or len(children) != lifetimes or len(set(children)) != lifetimes:
+                    raise RuntimeError(f"the workflow did not exercise {lifetimes} distinct child lifetimes")
                 complete = True
         code = process.wait(timeout=5)
         if not complete or code != 0:
@@ -272,7 +401,7 @@ def run(binary: Path) -> None:
             assert_destroyed(retired)
         print(
             f"editor-x11: {len(edits)} real focused edits with exact Inspector/Document items, "
-            "two destroyed child windows, programmatic close/Allow/reopen and "
+            f"{len(children)} destroyed child windows, programmatic close/Allow/reopen and "
             f"lock/rejected move/select/unlock, Default and {profile} profile with final quiescence verified"
         )
     finally:

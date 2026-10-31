@@ -154,6 +154,10 @@ pub enum InputOutcome {
         /// Whether this request changed an active owner.
         changed: bool,
     },
+    /// An unbound document intent was cancelled without dispatching Create.
+    NativeSurfaceCreateIntentCancelled { surface: SurfaceId, changed: bool },
+    /// A committed document intent advanced through its lifecycle continuation.
+    NativeSurfaceCreateAdvanced { binding: ViewportBinding },
     /// One complete platform fact snapshot was atomically published.
     PlatformSnapshotPublished {
         /// Structured capability, inventory, and route transition.

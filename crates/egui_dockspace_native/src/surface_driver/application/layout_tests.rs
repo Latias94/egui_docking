@@ -348,31 +348,308 @@ fn lock_and_host_validation_leave_the_slot_free_and_stopped_takes_precedence() {
 mod persistence {
     use std::cell::RefCell;
 
+    use dockspace::geometry::{PhysicalRect, ScaleFactor};
     use dockspace::runtime::{
         DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
-        DockspacePersistenceErrorKind,
+        DockspacePersistenceErrorKind, HostWindowToken, NativeCloseState, NativeCreateStrategy,
+        NativeInputBudget, NativeMonotonicClock, NativePointerRoster, NativeSurfaceRole,
+        NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+        NativeWorkAreaRoster,
     };
+    use eframe::{NativeHostWake, NativeWindowingBackend};
+    use winit::window::WindowId;
 
     use super::*;
 
     const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x4c; 16]);
 
-    fn persistent_state() -> NativeRuntimeState<Panes> {
+    fn persistent_session(candidate: DockspaceLayout, policy: DockPolicy) -> DockspaceSession {
         let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
         assert_eq!(bootstrap.ensure_item("pane:first").unwrap(), FIRST);
         assert_eq!(bootstrap.ensure_item("pane:second").unwrap(), SECOND);
-        state_from_session(
-            DockspaceSession::from_persistent_layout(
-                layout(ROOT, &[FIRST, SECOND], FIRST),
-                DockPolicy::default(),
-                bootstrap,
-            )
-            .unwrap(),
-        )
+        DockspaceSession::from_persistent_layout(candidate, policy, bootstrap).unwrap()
+    }
+
+    fn persistent_state() -> NativeRuntimeState<Panes> {
+        state_from_session(persistent_session(
+            layout(ROOT, &[FIRST, SECOND], FIRST),
+            DockPolicy::default(),
+        ))
     }
 
     fn recognize(document: DockspaceDocumentId, key: &str) -> bool {
         document == DOCUMENT && matches!(key, "pane:first" | "pane:second" | "pane:new")
+    }
+
+    fn child_layout() -> DockspaceLayout {
+        DockspaceLayout::new([
+            surface(SURFACE, ROOT, &[FIRST], FIRST),
+            surface(OTHER_SURFACE, RootId::new(11), &[SECOND], SECOND),
+        ])
+        .unwrap()
+    }
+
+    fn ready_window_facts(x: f64) -> NativeWindowFacts {
+        let scale = ScaleFactor::new(1.0).unwrap();
+        NativeWindowFacts::live()
+            .with_content_bounds(PhysicalRect::new(x, 0.0, 640.0, 480.0).unwrap())
+            .with_outer_bounds(PhysicalRect::new(x - 8.0, -30.0, 656.0, 518.0).unwrap())
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_close(NativeCloseState::Clear, None)
+    }
+
+    fn commit_session_prefix(session: &mut DockspaceSession) -> HostFrameReport {
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap()
+    }
+
+    fn saved_child_document() -> Vec<u8> {
+        let mut session = persistent_session(child_layout(), DockPolicy::default());
+        session
+            .enable_managed_native_host(
+                NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                NativeWindowingBackend::Windows,
+            ))
+            .unwrap();
+        session
+            .register_native_root(SURFACE, HostWindowToken::new(11))
+            .unwrap();
+        commit_session_prefix(&mut session);
+        session
+            .register_owned_native_child(OTHER_SURFACE, HostWindowToken::new(22), SURFACE)
+            .unwrap();
+        let registration = commit_session_prefix(&mut session);
+        assert_eq!(registration.native_bindings().len(), 2);
+        session
+            .report_managed_native_snapshot(
+                registration
+                    .native_bindings()
+                    .iter()
+                    .copied()
+                    .map(|binding| {
+                        let x = if binding.surface() == SURFACE {
+                            0.0
+                        } else {
+                            720.0
+                        };
+                        (binding, ready_window_facts(x))
+                    }),
+                NativeWorkAreaRoster::Unknown,
+            )
+            .unwrap();
+        commit_session_prefix(&mut session);
+        session.save_document_json().unwrap()
+    }
+
+    fn commit_native_prefix(state: &mut NativeRuntimeState<Panes>) -> HostFrameReport {
+        let mut frame = state
+            .coordinator
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        state.coordinator.settle_host_frame_report(&report).unwrap();
+        report
+    }
+
+    fn queued_child_restore() -> NativeRuntimeState<Panes> {
+        let mut policy = DockPolicy::default();
+        policy.set_allow_native_surfaces(true);
+        let mut state = state_from_session(persistent_session(
+            layout(ROOT, &[FIRST, SECOND], FIRST),
+            policy,
+        ));
+        let registration = commit_native_prefix(&mut state);
+        let root = registration.native_bindings()[0];
+        state
+            .coordinator
+            .bind_viewport(egui::ViewportId::ROOT, WindowId::from(11), root)
+            .unwrap();
+        state
+            .request_document_restore_json(&saved_child_document(), recognize)
+            .unwrap();
+        let mut report = commit_queued(&mut state, None);
+        assert!(matches!(
+            take(&mut state),
+            NativeActionStatus::DocumentRestored { .. }
+        ));
+        assert!(report.take_native_effects().is_empty());
+        assert!(state.coordinator.session().has_pending_native_create());
+        assert!(state.coordinator.deferred_viewport_specs().is_empty());
+        assert!(state.shutdown.is_none());
+        state
+    }
+
+    fn record_fresh_root_facts(state: &mut NativeRuntimeState<Panes>) {
+        let root = state
+            .coordinator
+            .viewport_binding(egui::ViewportId::ROOT)
+            .unwrap();
+        state
+            .coordinator
+            .report_snapshot(
+                [(root, ready_window_facts(0.0))],
+                NativeWorkAreaRoster::Unknown,
+                crate::capabilities::capabilities_for_backend(NativeWindowingBackend::Windows),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn restore_rejects_an_undeclared_extra_surface_without_occupying_the_slot() {
+        let mut state = persistent_state();
+        let mut external = persistent_session(child_layout(), DockPolicy::default());
+        let saved = external.save_document_json().unwrap();
+        let before = state.coordinator.session().version();
+        let generation = state.coordinator.session().next_document_generation();
+        let error = state
+            .request_document_restore_json(&saved, recognize)
+            .unwrap_err();
+        assert_eq!(error.kind(), NativeRuntimeErrorKind::Unsupported);
+        assert_eq!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<DockspaceRuntimeError>()
+                .unwrap()
+                .kind(),
+            NativeRuntimeErrorKind::Unsupported
+        );
+        assert!(!state.application_actions.is_occupied());
+        assert!(state.take_action_status().is_none());
+        assert!(!state.coordinator.session().has_pending_native_create());
+        assert_eq!(state.coordinator.session().version(), before);
+        assert_eq!(
+            state.coordinator.session().next_document_generation(),
+            generation
+        );
+    }
+
+    #[test]
+    fn declared_child_restore_waits_for_fresh_facts_and_service_starts_it_once() {
+        let mut state = queued_child_restore();
+        let context = egui::Context::default();
+        let clock = NativeMonotonicClock::new(|| std::time::Duration::ZERO);
+        let mut prefix_budget = NativeInputBudget::new(&clock);
+        assert!(
+            state
+                .service_pending_prefixes(&context, None, SURFACE, &mut prefix_budget)
+                .unwrap()
+        );
+        assert!(prefix_budget.remaining_records() < 256);
+
+        let mut waiting_budget = NativeInputBudget::new(&clock);
+        let before = state.coordinator.session().version();
+        assert!(
+            state
+                .service_pending_prefixes(&context, None, SURFACE, &mut waiting_budget)
+                .unwrap()
+        );
+        assert_eq!(waiting_budget.remaining_records(), 256);
+        assert_eq!(state.coordinator.session().version(), before);
+        assert!(state.coordinator.session().has_pending_native_create());
+        assert!(state.coordinator.deferred_viewport_specs().is_empty());
+
+        record_fresh_root_facts(&mut state);
+        let mut snapshot = commit_native_prefix(&mut state);
+        assert!(snapshot.take_native_effects().is_empty());
+        let mut budget = NativeInputBudget::new(&clock);
+        budget.complete_unsequenced_records(255);
+        assert!(
+            !state
+                .service_pending_prefixes(&context, None, SURFACE, &mut budget)
+                .unwrap(),
+            "starting one queued child consumes the final shared record and yields"
+        );
+        assert_eq!(budget.remaining_records(), 0);
+        let specs = state.coordinator.deferred_viewport_specs();
+        assert_eq!(specs.len(), 1);
+        let child = specs[0];
+        assert_eq!(child.role(), NativeSurfaceRole::Child);
+        assert_eq!(
+            child.placement(),
+            PhysicalRect::new(712.0, -30.0, 656.0, 518.0).unwrap()
+        );
+        assert_eq!(
+            child.binding().surface(),
+            state
+                .coordinator
+                .session()
+                .view()
+                .item(SECOND)
+                .unwrap()
+                .surface()
+        );
+
+        let mut retry_budget = NativeInputBudget::new(&clock);
+        assert!(
+            state
+                .service_pending_prefixes(&context, None, SURFACE, &mut retry_budget)
+                .unwrap()
+        );
+        assert_eq!(retry_budget.remaining_records(), 256);
+        assert_eq!(state.coordinator.deferred_viewport_specs(), specs);
+        assert!(state.coordinator.session().has_pending_native_create());
+        assert!(state.shutdown.is_none());
+        assert!(eframe::current_native_output_token().is_none());
+    }
+
+    #[test]
+    fn shutdown_or_quarantined_service_does_not_start_a_queued_child_with_fresh_facts() {
+        for fatal in [false, true] {
+            let mut state = queued_child_restore();
+            assert!(
+                state
+                    .coordinator
+                    .try_report_retirement_quiescence()
+                    .unwrap()
+            );
+            record_fresh_root_facts(&mut state);
+            let mut snapshot = commit_native_prefix(&mut state);
+            assert!(snapshot.take_native_effects().is_empty());
+            if fatal {
+                state.stop_current_output(
+                    NativeHostProtocolError::RootSurfaceUnavailable(SURFACE).into(),
+                );
+            } else {
+                state.coordinator.dispatch_bridge().enter_quarantine();
+            }
+            let context = egui::Context::default();
+            let before = state.coordinator.session().version();
+            let clock = NativeMonotonicClock::new(|| std::time::Duration::ZERO);
+            let mut budget = NativeInputBudget::new(&clock);
+            assert!(
+                state
+                    .service_pending_prefixes(&context, None, SURFACE, &mut budget)
+                    .unwrap()
+            );
+            if fatal {
+                assert_eq!(
+                    state.service_native_events(&context).unwrap(),
+                    NativeHostWake::RepaintRootAfterCurrent
+                );
+            }
+            assert_eq!(budget.remaining_records(), 256);
+            assert_eq!(state.coordinator.session().version(), before);
+            assert!(state.coordinator.deferred_viewport_specs().is_empty());
+            assert!(state.coordinator.session().has_pending_native_create());
+            assert!(!state.coordinator.dispatch_bridge().accepts_new_work());
+        }
     }
 
     #[test]

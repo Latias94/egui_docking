@@ -902,6 +902,20 @@ pub enum EngineError {
         /// Exact policy restriction.
         reason: crate::policy::PolicyRejection,
     },
+    /// A native document restore could not retain its external root window.
+    #[error("native workspace replacement input {input} cannot retain root surface {surface}")]
+    NativeWorkspaceRootUnavailable {
+        input: InputSequence,
+        surface: SurfaceId,
+    },
+    /// A declared managed child still owns a retained external root window.
+    #[error(
+        "native workspace replacement input {input} cannot convert retained root {surface} into a child"
+    )]
+    NativeWorkspaceChildAlreadyHosted {
+        input: InputSequence,
+        surface: SurfaceId,
+    },
     /// Process-local engine authority identities cannot advance without wrapping.
     #[error("engine authority domain identity is exhausted")]
     EngineAuthorityDomainExhausted,
@@ -3748,6 +3762,7 @@ impl DockEngine {
         focus_causal: FocusCausalStamp,
         workspace: &Workspace,
         restored_identity_frontier: Option<PresentationIdentityFrontier>,
+        native_surfaces: Option<&crate::frame::NativeSurfaceRestorePlan>,
         application_base: &mut WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -3812,6 +3827,43 @@ impl DockEngine {
         self.bound_surface_recoveries.clear();
         self.native_admission.clear();
         self.issue_root_recovery_anchors(input, rebound_root_surfaces)?;
+        if let Some(plan) = native_surfaces {
+            if !self.viewport.viewport(plan.root).is_some_and(|record| {
+                record.role() == ViewportRole::Root
+                    && record.ownership() == crate::viewport_registry::ViewportOwnership::External
+            }) || !self.root_recovery_anchors.contains_key(&plan.root)
+            {
+                return Err(EngineError::NativeWorkspaceRootUnavailable {
+                    input,
+                    surface: plan.root,
+                });
+            }
+            for child in &plan.children {
+                if self.viewport.viewport(child.surface).is_some()
+                    || self.root_recovery_anchors.contains_key(&child.surface)
+                {
+                    return Err(EngineError::NativeWorkspaceChildAlreadyHosted {
+                        input,
+                        surface: child.surface,
+                    });
+                }
+            }
+            self.viewport
+                .enqueue_native_surface_restore(plan)
+                .map_err(|source| EngineError::Viewport { input, source })?;
+            for child in &plan.children {
+                native_focus_surfaces.insert(child.surface);
+                let roster = self
+                    .capture_surface_roster(child.surface)
+                    .map_err(|source| EngineError::SurfaceRoster { input, source })?;
+                if !self.surface_recovery.defer(roster) {
+                    return Err(EngineError::ConflictingSurfaceRecovery {
+                        input,
+                        surface: child.surface,
+                    });
+                }
+            }
+        }
         self.viewport_focus.reconcile_workspace_replacement();
         self.version = WorkspaceVersion::new(epoch, WorkspaceRevision::default());
         self.close.invalidate_stale(self.close_authority());

@@ -3,6 +3,49 @@
 use super::*;
 
 impl DockEngine {
+    pub(super) fn reduce_queued_native_surface_create(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+    ) -> Result<InputOutcome, EngineError> {
+        let Some(initial) = self.viewport.queued_native_surface(surface).cloned() else {
+            return Ok(InputOutcome::NativeSurfaceCreateRejected {
+                surface,
+                reason: crate::model::DockspaceActionRejection::Conflict,
+            });
+        };
+        if initial.status != crate::frame::QueuedInitialSurfaceStatus::Waiting
+            || !self.viewport.queued_native_surface_can_advance(&initial)
+        {
+            return Ok(InputOutcome::NativeSurfaceCreateRejected {
+                surface,
+                reason: crate::model::DockspaceActionRejection::NativeUnavailable,
+            });
+        }
+        let outcome = self.reduce_native_surface_create(
+            input,
+            expected,
+            surface,
+            initial.request.recovery_host,
+            initial.request.placement,
+        )?;
+        if let InputOutcome::NativeSurfaceCreateRejected { reason, .. } = outcome {
+            self.viewport
+                .stop_queued_native_surface(
+                    surface,
+                    crate::frame::QueuedInitialSurfaceStatus::Rejected(reason),
+                )
+                .map_err(|source| EngineError::Viewport { input, source })?;
+        }
+        Ok(match outcome {
+            InputOutcome::NativeSurfaceCreateRequested { binding } => {
+                InputOutcome::NativeSurfaceCreateAdvanced { binding }
+            }
+            other => other,
+        })
+    }
+
     pub(super) fn reduce_native_surface_cancellation(
         &mut self,
         input: InputSequence,
@@ -49,6 +92,18 @@ impl DockEngine {
             });
         }
         let reject = |reason| InputOutcome::NativeSurfaceCreateRejected { surface, reason };
+        let queued = self.viewport.queued_native_surface(surface);
+        if let Some(initial) = queued {
+            if initial.request.recovery_host != recovery_host
+                || !self.viewport.queued_native_surface_can_advance(initial)
+                || !self
+                    .surface_recovery
+                    .pending(surface)
+                    .is_some_and(|roster| roster.matches_workspace(&self.workspace))
+            {
+                return Ok(reject(Rejection::NativeUnavailable));
+            }
+        }
         if self.policy.policy().arrangement_locked()
             || self
                 .policy
@@ -169,7 +224,7 @@ impl DockEngine {
                 return Ok(reject(Rejection::PolicyDenied));
             }
         }
-        let roster = if retry.is_none() {
+        let roster = if retry.is_none() && queued.is_none() {
             Some(
                 candidate
                     .capture_surface_roster(surface)
@@ -572,7 +627,7 @@ impl DockEngine {
         )?;
         self.issue_admitted_root_recovery_anchors(input)?;
         self.surface_recovery
-            .retain_pending(|surface| self.viewport.recovery_pending(surface).is_some());
+            .retain_pending(|surface| self.viewport.has_surface_establishment(surface));
         *application_base = self.version;
         let confirmed_drag_source =
             active_drag_pointer.and_then(|pointer| self.viewport.confirmed_drag_source(pointer));
@@ -706,7 +761,7 @@ impl DockEngine {
         )?;
         self.issue_admitted_root_recovery_anchors(input)?;
         self.surface_recovery
-            .retain_pending(|surface| self.viewport.recovery_pending(surface).is_some());
+            .retain_pending(|surface| self.viewport.has_surface_establishment(surface));
         *application_base = self.version;
         match self.platform_interaction_reconciliation(
             &interaction_dependencies,

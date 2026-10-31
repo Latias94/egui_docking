@@ -130,8 +130,8 @@ pub use paint::{
 };
 #[cfg(feature = "serde")]
 pub use persistence::{
-    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceNativeSurfaceHosting,
-    DockspacePersistenceError, DockspacePersistenceErrorKind,
+    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceNativeDocumentHostingError,
+    DockspaceNativeSurfaceHosting, DockspacePersistenceError, DockspacePersistenceErrorKind,
     DockspaceSurfacePresentationPreference, DockspaceWindowPresentationPreference,
     PreparedDockspaceDocumentRestore,
 };
@@ -334,6 +334,13 @@ pub enum HostInputOutcome {
         /// Original exact binding, independent of any successor on this surface.
         binding: NativeSurfaceBinding,
         /// Whether this request changed an active creation owner.
+        changed: bool,
+    },
+    /// A document-owned initial intent stopped before any window was allocated.
+    NativeSurfaceCreateIntentCancelled {
+        /// Complete logical surface whose content remains suspended.
+        surface: SurfaceId,
+        /// Whether this input changed the intent's waiting state.
         changed: bool,
     },
     /// One complete native platform snapshot was atomically applied.
@@ -822,6 +829,18 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::Native(error) => error.kind().runtime_error_kind(),
             #[cfg(feature = "serde")]
             DockspaceRuntimeErrorSource::Persistence(_) => DockspaceRuntimeErrorKind::Persistence,
+            #[cfg(feature = "serde")]
+            DockspaceRuntimeErrorSource::NativeDocumentHosting(error) => match error {
+                DockspaceNativeDocumentHostingError::RootWindowUnavailable { .. }
+                | DockspaceNativeDocumentHostingError::ChildAlreadyHosted { .. } => {
+                    DockspaceRuntimeErrorKind::OperationConflict
+                }
+                DockspaceNativeDocumentHostingError::RootSurfaceMissing { .. }
+                | DockspaceNativeDocumentHostingError::RootDeclaredChild { .. } => {
+                    DockspaceRuntimeErrorKind::InvalidConfiguration
+                }
+                _ => DockspaceRuntimeErrorKind::Unsupported,
+            },
         }
     }
 
@@ -1020,6 +1039,9 @@ enum DockspaceRuntimeErrorSource {
     #[cfg(feature = "serde")]
     #[error(transparent)]
     Persistence(DockspacePersistenceError),
+    #[cfg(feature = "serde")]
+    #[error(transparent)]
+    NativeDocumentHosting(DockspaceNativeDocumentHostingError),
 }
 
 impl From<EngineError> for DockspaceRuntimeError {
@@ -1083,6 +1105,15 @@ impl From<DockspacePersistenceError> for DockspaceRuntimeError {
     fn from(error: DockspacePersistenceError) -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::Persistence(error),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<DockspaceNativeDocumentHostingError> for DockspaceRuntimeError {
+    fn from(error: DockspaceNativeDocumentHostingError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::NativeDocumentHosting(error),
         }
     }
 }

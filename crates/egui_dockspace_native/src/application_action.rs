@@ -209,7 +209,10 @@ pub(crate) enum NativeApplicationCommand {
     ArrangementLock(Box<DockPolicy>),
     LayoutReset(Box<PreparedDockspaceLayoutReset>),
     #[cfg(feature = "serde")]
-    DocumentRestore(Box<PreparedDockspaceDocumentRestore>),
+    DocumentRestore {
+        restore: Box<PreparedDockspaceDocumentRestore>,
+        root_surface: SurfaceId,
+    },
 }
 
 impl From<PreparedDockAction> for NativeApplicationAction {
@@ -276,9 +279,15 @@ impl NativeApplicationAction {
                 ));
             }
             #[cfg(feature = "serde")]
-            NativeApplicationCommand::DocumentRestore(restore) => {
+            NativeApplicationCommand::DocumentRestore {
+                restore,
+                root_surface,
+            } => {
                 return Ok(NativeApplicationSubmission::Replacement(
-                    NativeWorkspaceReplacement::Document(restore),
+                    NativeWorkspaceReplacement::Document {
+                        restore,
+                        root_surface,
+                    },
                 ));
             }
         };
@@ -298,7 +307,7 @@ impl NativeApplicationAction {
             }
             NativeApplicationCommand::LayoutReset(_) => NativeActionExpectation::LayoutReset,
             #[cfg(feature = "serde")]
-            NativeApplicationCommand::DocumentRestore(_) => {
+            NativeApplicationCommand::DocumentRestore { .. } => {
                 NativeActionExpectation::DocumentRestore
             }
         }
@@ -308,7 +317,7 @@ impl NativeApplicationAction {
         match self.command {
             NativeApplicationCommand::LayoutReset(_) => true,
             #[cfg(feature = "serde")]
-            NativeApplicationCommand::DocumentRestore(_) => true,
+            NativeApplicationCommand::DocumentRestore { .. } => true,
             _ => false,
         }
     }
@@ -325,7 +334,10 @@ pub(crate) enum NativeApplicationSubmission {
 pub(crate) enum NativeWorkspaceReplacement {
     Layout(Box<PreparedDockspaceLayoutReset>),
     #[cfg(feature = "serde")]
-    Document(Box<PreparedDockspaceDocumentRestore>),
+    Document {
+        restore: Box<PreparedDockspaceDocumentRestore>,
+        root_surface: SurfaceId,
+    },
 }
 
 /// Exact correlation within the committed frame; replacement is its unique terminal input.
@@ -353,8 +365,11 @@ impl NativeApplicationSubmission {
                 Ok(NativeSubmittedApplicationAction::LayoutReset)
             }
             #[cfg(feature = "serde")]
-            Self::Replacement(NativeWorkspaceReplacement::Document(restore)) => {
-                frame.submit_document_restore(&restore)?;
+            Self::Replacement(NativeWorkspaceReplacement::Document {
+                restore,
+                root_surface,
+            }) => {
+                frame.submit_native_document_restore(&restore, root_surface)?;
                 Ok(NativeSubmittedApplicationAction::DocumentRestore)
             }
             Self::Terminal(status) => Ok(NativeSubmittedApplicationAction::Terminal(status)),

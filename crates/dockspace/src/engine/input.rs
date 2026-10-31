@@ -11,6 +11,7 @@ use super::*;
 pub struct ValidatedWorkspaceRestore {
     workspace: Workspace,
     presentation_identity_frontier: PresentationIdentityFrontier,
+    native_surfaces: Option<crate::frame::NativeSurfaceRestorePlan>,
 }
 
 impl ValidatedWorkspaceRestore {
@@ -22,6 +23,7 @@ impl ValidatedWorkspaceRestore {
         Self {
             workspace,
             presentation_identity_frontier,
+            native_surfaces: None,
         }
     }
 
@@ -33,6 +35,19 @@ impl ValidatedWorkspaceRestore {
 
     pub(crate) const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
         self.presentation_identity_frontier
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn with_native_surfaces(
+        mut self,
+        plan: crate::frame::NativeSurfaceRestorePlan,
+    ) -> Self {
+        self.native_surfaces = Some(plan);
+        self
+    }
+
+    pub(crate) fn native_surfaces(&self) -> Option<&crate::frame::NativeSurfaceRestorePlan> {
+        self.native_surfaces.as_ref()
     }
 
     pub(super) fn into_parts(self) -> (Workspace, PresentationIdentityFrontier) {
@@ -349,6 +364,16 @@ pub enum EngineInput {
         recovery_host: SurfaceId,
         /// Explicit desktop-physical placement, independent of current coordinate authority.
         placement: crate::geometry::PhysicalRect,
+    },
+    /// Advances one previously committed document-owned initial creation intent.
+    AdvanceNativeSurfaceCreate {
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+    },
+    /// Cancels an unbound creation intent without allocating a window or effect.
+    CancelNativeSurfaceCreateIntent {
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
     },
     /// Explicitly cancel one initial hosting attempt without discarding logical content.
     CancelNativeSurface {
@@ -768,6 +793,8 @@ impl EngineInput {
             Self::RegisterViewport { .. }
             | Self::BootstrapChildViewport { .. }
             | Self::CreateNativeSurface { .. }
+            | Self::AdvanceNativeSurfaceCreate { .. }
+            | Self::CancelNativeSurfaceCreateIntent { .. }
             | Self::CancelNativeSurface { .. }
             | Self::CancelNativeCreate { .. }
             | Self::RetryViewportCleanup { .. }

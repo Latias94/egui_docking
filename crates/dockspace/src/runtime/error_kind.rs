@@ -350,7 +350,9 @@ pub(super) const fn engine_error_kind(error: &EngineError) -> DockspaceRuntimeEr
     match error {
         EngineError::InvalidWorkspace(_) => DockspaceRuntimeErrorKind::InvalidConfiguration,
         EngineError::WorkspaceReplacementIdentityRetired { .. }
-        | EngineError::WorkspaceReplacementPolicyDenied { .. } => {
+        | EngineError::WorkspaceReplacementPolicyDenied { .. }
+        | EngineError::NativeWorkspaceChildAlreadyHosted { .. }
+        | EngineError::NativeWorkspaceRootUnavailable { .. } => {
             DockspaceRuntimeErrorKind::OperationConflict
         }
         EngineError::PointerJournal { source } => pointer_journal_error_kind(source),

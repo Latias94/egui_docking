@@ -40,6 +40,8 @@ fn has_ordinary_application_input(transition: &crate::transition::EngineTransiti
                 InputOutcome::NativeInputCancelledForOverload
                     | InputOutcome::NativeCreateCancelled { .. }
                     | InputOutcome::NativeSurfaceCreateCancelled { .. }
+                    | InputOutcome::NativeSurfaceCreateIntentCancelled { .. }
+                    | InputOutcome::NativeSurfaceCreateAdvanced { .. }
             )
     })
 }
@@ -66,6 +68,39 @@ pub struct DockspaceHostFrame<'session> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Advances at most one committed native document creation intent.
+    ///
+    /// Fresh root coordinates, current platform capabilities, exact predecessor
+    /// quiescence and allocation capacity are required before an attempt starts.
+    /// Temporary absence of these facts returns `false` without consuming input.
+    /// A started or definitively rejected attempt returns `true`; the host must
+    /// charge one record to its shared lifecycle budget. Dropping this frame
+    /// publishes neither progress nor an effect. Shutdown should cancel instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a managed host, with pending native input or a
+    /// closed semantic phase, or if the lifecycle invariant cannot be preserved.
+    pub fn advance_next_native_surface_create(&mut self) -> Result<bool, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.session.ensure_managed_native_host_available()?;
+        let surface = {
+            let viewport = self.frame.view().viewport();
+            viewport
+                .waiting_native_surfaces()
+                .find(|initial| viewport.queued_native_surface_can_advance(initial))
+                .map(|initial| initial.request.surface)
+        };
+        let Some(surface) = surface else {
+            return Ok(false);
+        };
+        self.append(EngineInput::AdvanceNativeSurfaceCreate {
+            expected: self.frame.view().version(),
+            surface,
+        })?;
+        Ok(true)
+    }
+
     /// Creates a managed child window for an existing complete logical surface.
     ///
     /// Its main root and entire contained forest stay in the one workspace.
@@ -174,12 +209,26 @@ impl DockspaceHostFrame<'_> {
                 .then(|| pending.replacement_binding())
                 .flatten()
             });
-        let Some(binding) = initial else {
+        if let Some(binding) = initial {
+            self.append(EngineInput::CancelNativeSurface {
+                expected: self.frame.view().version(),
+                binding,
+            })?;
+            return Ok(true);
+        }
+        let queued = self
+            .frame
+            .view()
+            .viewport()
+            .waiting_native_surfaces()
+            .next()
+            .map(|initial| initial.request.surface);
+        let Some(surface) = queued else {
             return Ok(false);
         };
-        self.append(EngineInput::CancelNativeSurface {
+        self.append(EngineInput::CancelNativeSurfaceCreateIntent {
             expected: self.frame.view().version(),
-            binding,
+            surface,
         })?;
         Ok(true)
     }

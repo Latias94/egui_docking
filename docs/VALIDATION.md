@@ -15,6 +15,84 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 atomic native multi-surface document restoration
+
+The slice following `447b34b` adds the opt-in
+`submit_native_document_restore` terminal boundary. Document graph, durable
+sidecars and explicit Child creation intents publish together, with the intent
+list compiled after surface/recovery-host rebasing. One real external Root must
+survive as an exact same-window successor. Every extra surface requires an
+explicit Child declaration, that Root as recovery host and positive saved outer
+placement. A second retained external Root cannot silently change role.
+Ordinary document restore and preference reads remain inert.
+
+The existing establishment map now holds mutually exclusive unbound and bound
+branches. An unbound intent owns no binding, effect or recovery obligation;
+its complete frozen roster uses the existing recovery store. Budgeted native
+service advances at most one intent per call after fresh Root facts, known
+capabilities, exact inherited cleanup/terminal-guard quiescence and producer
+capacity. Cancellation or definite rejection stops automatic work while keeping
+the surface suspended. Explicit retry consumes the same entry only after
+revalidation. Failed/dropped frames publish no intent consumption or Create.
+Effect-report pressure retains requests in the original ledger instead of
+stopping accepted lifecycle continuation.
+
+Public regressions exposed a retired-window observation gap: cancellation before
+the first appearance retained a real cleanup owner, but the facade rejected the
+late Live facts needed to drive it. The existing producer row now projects only
+whether core still owns exact cleanup; such facts may advance that cleanup,
+without reinserting a registry record or granting input/focus/admission. A bare
+terminal guard still rejects Live. A focused core regression verifies increasing
+window generations across cleanup commits and their reset after exact destruction.
+Independent bounded reviews confirm this isolation and the retained-Root conflict
+repair. The original failed public models remain in separate `/tmp` logs.
+
+Nine public restore journeys and eight adapter layout tests pass on the final
+source. The real serde X11 workflow also passes with eight actual focused edits and
+six distinct Child lifetimes: two original journeys, two simultaneous preset
+predecessors and two replacement windows. The external X11 owner confirms both
+predecessors alive before releasing restore, checks both are destroyed before
+editing the fresh Inspector, and verifies both successors are destroyed after
+Dock Back. All eight stable pane identities, tab order, selection and application
+text survive; final quiescence is required.
+
+All 43 final checks pass against 476 frozen source, manifest, script and lockfile
+paths:
+
+| Final gate | Result and scope |
+| --- | --- |
+| Core | 1,928/1,928 workspace tests; no-default-features all-target compile; 13 focused initial-owner tests |
+| Public engine host | default 147/147; serde 173/173, including nine native document restore journeys |
+| egui product / official consumers | 114/114 and 15/15 |
+| Native serde | 561/561 including one same-coordinator 10,000-lifetime soak; opt-in wall-time case skipped |
+| Native assertion-disabled serde | 560/560; repeated long soak excluded and opt-in wall-time case skipped |
+| Linux library | 516/516 normally and assertion-disabled; repeated long soak excluded and two explicit ignore cases retained |
+| Real renderer terminal | Explicit Linux old-output test passes and releases only its predecessor resource |
+| Real-window workflows | macOS and X11 default/bounded lifecycle; X11 six basic edits and eight serde edits across six Child lifetimes, fresh output and final quiescence |
+| Pressure compatibility | Six release modes on each platform, including combined W16/O256/control2/protected1 saturation |
+| Quality | Core/native correctness/suspicious Clippy, strict rustdoc, ten doctests and workspace/public/native formatting |
+
+The pressure groups peak at 2,374,009 resident and 3,488,528 reserved bytes on
+macOS, and 2,374,905 resident and 3,489,688 reserved bytes on Linux, under their
+selected 4,194,304-byte allowance. Summed `over_2ms` counters are eight and six;
+largest measured boundaries are 9.878709 ms and 4.177 ms. The cooperative budget
+does not promise a hard OS scheduling deadline. Timing and native storage retain
+their existing measurement scope.
+
+`/tmp/dockspace-native-document-restore-source.json` and
+`/tmp/dockspace-native-document-restore-qualification.json` retain its exact scope;
+focused pre-freeze runs and original failures have separate logs. The ninth
+public journey covers definite policy rejection, no automatic reopen after
+unlock and explicit retry. Late cleanup facts do not restore old binding,
+admission, local-coordinate or focus authority; an additional core test covers
+nonzero observation-generation continuity across commits. Native dependencies
+still use the same clean local egui/winit overrides as `447b34b`; no new remote
+checkout reproducibility or macOS/Windows physical multi-surface claim is made.
+Only rebuildable project incremental and stale project test executables were
+collected during disk pressure; sources and dependency libraries were preserved.
+Complete host removal/rebinding, native overflow insertion and the remaining
+U7/U8/U9/U10/U11 Goal remain open.
+
 ## 2026-10-31 native hosting for existing logical surfaces
 
 The slice following `349a513` adds

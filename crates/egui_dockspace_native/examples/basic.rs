@@ -180,7 +180,7 @@ impl NativeExampleApp {
                     )
                     .clicked()
                 {
-                    self.request_inspector_dock_back(location.root);
+                    self.request_root_dock_back(location.root);
                 }
             } else if !root_presented {
                 ui.label("Waiting for the root output to be presented…");
@@ -203,7 +203,7 @@ impl NativeExampleApp {
             ui.spinner();
             match self.action {
                 ExampleActionState::AwaitingDockBackOutcome(_) => {
-                    ui.label("Presenting Inspector back in the root dockspace…");
+                    ui.label("Returning the window group to the main dockspace…");
                 }
                 ExampleActionState::AwaitingLayoutOutcome(operation)
                 | ExampleActionState::AwaitingSmokeOutcome(operation) => {
@@ -211,7 +211,7 @@ impl NativeExampleApp {
                 }
                 ExampleActionState::AwaitingFreshPresentation(operation) => {
                     ui.label(format!(
-                        "{operation}: logically committed; waiting for fresh presented output and native quiescence…"
+                        "{operation}: layout restored; waiting for the main window and each child window to be ready for editing…"
                     ));
                 }
                 _ => {
@@ -313,9 +313,8 @@ impl NativeExampleApp {
                 );
                 #[cfg(feature = "serde")]
                 ui.label(
-                    "7. Save and restore up to eight named JSON presets in application memory. Saving requires all eight panes in the root host, \
-                     including its contained windows. Restore commits the logical document first; wait for fresh presented output before editing. \
-                     New logical surfaces do not automatically create OS windows; this example's presets demonstrate the all-root profile.",
+                    "7. Save and restore up to eight named JSON presets in application memory, including the main window, contained windows and native child windows. \
+                     Restore applies the saved layout first, then replaces the child windows. Wait until every window has displayed its restored panes before editing.",
                 );
                 ui.small(
                     "Physical promotion is intentionally fail-closed when the host cannot provide exact cross-window pointer facts. \
@@ -326,10 +325,15 @@ impl NativeExampleApp {
     }
 
     fn request_inspector_window(&mut self, root: RootId) {
-        let placement = NativeWindowPlacement::new(
+        self.request_native_window(
+            root,
             PhysicalRect::new(760.0, 120.0, 440.0, 340.0)
                 .expect("the static child placement is valid"),
         );
+    }
+
+    fn request_native_window(&mut self, root: RootId, bounds: PhysicalRect) {
+        let placement = NativeWindowPlacement::new(bounds);
         match self
             .dockspace
             .request_move_root_to_new_window(root, placement)
@@ -342,13 +346,15 @@ impl NativeExampleApp {
         }
     }
 
-    fn request_inspector_dock_back(&mut self, root: RootId) {
+    fn request_root_dock_back(&mut self, root: RootId) {
         match self.dockspace.request_dock_root_back(root) {
             Ok(()) => {
                 self.action = ExampleActionState::AwaitingDockBackOutcome(root);
                 self.status = None;
             }
-            Err(error) => self.status = Some(format!("Could not dock Inspector back: {error}")),
+            Err(error) => {
+                self.status = Some(format!("Could not dock the window group back: {error}"))
+            }
         }
     }
 
@@ -381,7 +387,7 @@ impl NativeExampleApp {
             ) if root == expected_root => {
                 self.action = ExampleActionState::Idle;
                 self.status =
-                    Some("Inspector was presented back in the root dockspace.".to_owned());
+                    Some("The window group was presented back in the main dockspace.".to_owned());
             }
             (_, Ok(status)) => {
                 self.record_action_status(&status);
@@ -416,12 +422,11 @@ impl NativeExampleApp {
                 self.status = Some("Native child reached its first live presentation.".to_owned());
             }
             ExampleActionState::AwaitingFreshPresentation(operation)
-                if self.dockspace.is_surface_presented(SURFACE)
-                    && self.dockspace.is_quiescent() =>
+                if self.all_surfaces_presented() && self.dockspace.is_quiescent() =>
             {
                 self.action = ExampleActionState::Idle;
                 self.status = Some(format!(
-                    "{operation}: fresh root output is presented; native work is quiescent."
+                    "{operation}: the main window and every child window have displayed their panes and are ready for editing."
                 ));
             }
             _ => {}
@@ -457,6 +462,10 @@ impl From<dockspace::model::DockspaceItemView<'_>> for InspectorLocation {
 }
 
 fn example_layout() -> DockspaceLayout {
+    editor_layout(false)
+}
+
+fn editor_layout(separate_assets: bool) -> DockspaceLayout {
     let center = DockspaceNode::split(
         DockspaceAxis::Vertical,
         [
@@ -471,7 +480,14 @@ fn example_layout() -> DockspaceLayout {
     let root = DockspaceNode::split(
         DockspaceAxis::Horizontal,
         [
-            (DockspaceNode::tabs([OUTLINE, ASSETS]), 0.20),
+            (
+                DockspaceNode::tabs(if separate_assets {
+                    vec![OUTLINE]
+                } else {
+                    vec![OUTLINE, ASSETS]
+                }),
+                0.20,
+            ),
             (center, 0.80),
         ],
     )
@@ -485,12 +501,18 @@ fn example_layout() -> DockspaceLayout {
         ),
         LogicalRect::new(850.0, 80.0, 360.0, 410.0).expect("the static contained rect is valid"),
     );
-    DockspaceLayout::new([DockspaceSurfaceLayout::new(
-        SURFACE,
-        DockspaceRootLayout::new(MAIN_ROOT, root),
-    )
-    .with_contained(inspector)])
-    .expect("the static surface is valid")
+    let mut surface =
+        DockspaceSurfaceLayout::new(SURFACE, DockspaceRootLayout::new(MAIN_ROOT, root))
+            .with_contained(inspector);
+    if separate_assets {
+        surface = surface.with_contained(DockspaceContainedLayout::new(
+            FloatingPresentationId::new(2),
+            DockspaceRootLayout::new(RootId::new(3), DockspaceNode::tabs([ASSETS])),
+            LogicalRect::new(120.0, 100.0, 360.0, 300.0)
+                .expect("the static Assets placement is valid"),
+        ));
+    }
+    DockspaceLayout::new([surface]).expect("the static surface is valid")
 }
 
 struct ExamplePane {
@@ -503,6 +525,7 @@ struct ExamplePane {
     zoom: f32,
     pan: egui::Vec2,
     input: Option<(egui::ViewportId, egui::Rect, bool, f32)>,
+    window_id: Option<u64>,
 }
 
 impl ExamplePane {
@@ -511,6 +534,7 @@ impl ExamplePane {
         self.missing_painted = false;
         self.widgets.clear();
         self.input = None;
+        self.window_id = None;
     }
 }
 
@@ -542,6 +566,7 @@ impl ExamplePanes {
                 zoom: 1.0,
                 pan: egui::Vec2::ZERO,
                 input: None,
+                window_id: None,
             }))
             .collect(),
         }
@@ -614,6 +639,7 @@ impl PaneView for ExamplePanes {
         // Only widgets actually registered in this content callback qualify.
         pane.widgets.clear();
         pane.input = None;
+        pane.window_id = None;
         pane.missing_painted = false;
         ui.heading(pane.title);
         if !pane.loaded {
@@ -663,6 +689,8 @@ impl PaneView for ExamplePanes {
                 response.has_focus(),
                 ui.ctx().pixels_per_point(),
             ));
+            pane.window_id =
+                eframe::current_native_output_token().map(|token| u64::from(token.window_id()));
         }
     }
 

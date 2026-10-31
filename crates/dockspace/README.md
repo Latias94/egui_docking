@@ -588,8 +588,33 @@ create acknowledgements and outputs retain their predecessor identity. A healthy
 attempt or an existing destruction-driven recovery returns typed `Conflict`.
 If no source coordinates were ever observed, failure retains the full surface
 pending an explicit retry; requested placement is never treated as observed
-geometry for contained recovery. Reading saved hosting preferences remains
-inert. Automatic document-driven window recreation is separate adapter work.
+geometry for contained recovery. Reading saved hosting preferences remains inert.
+
+For managed native document restoration, use
+`frame.submit_native_document_restore(&restore, root_surface)` as the frame's
+terminal input. It commits the document and explicit Child creation intents
+together after surface/recovery-host rebasing. The retained external Root may
+omit its saved role declaration; every additional surface must declare Child
+hosting to that Root and a positive saved outer placement. Another retained
+external Root cannot silently become a Child. Ordinary `submit_document_restore`
+keeps native declarations inert.
+
+After committing, a managed host may call
+`frame.advance_next_native_surface_create()` once per available lifecycle work
+unit, before measurement or application terminal replacement. A temporary wait
+for fresh Root coordinates, known capabilities, exact predecessor quiescence
+or producer capacity appends no input. One successful call starts at most one
+initial attempt or records its definite rejection. The returned `true` consumes
+one unit of the host's shared dispatch budget; effect-report backpressure retains
+undelivered Create in the original ledger. Each created child still requires the
+enrolled preparation strategy and exact semantic first-live presentation.
+
+Undispatched intents own neither a native binding nor an effect. Shutdown uses
+`cancel_next_native_create` to stop them without Close. Cancelled/rejected intents
+retain their complete suspended logical surface but no longer count as pending
+creation; only explicit creation retries them. Saved preferences are never
+scanned each frame to reopen windows. Hosts retain their ordinary exact output,
+cleanup, Destroyed and producer-quiescence responsibilities.
 
 Pure lifecycle cleanup can commit while effect-report storage is occupied;
 compensating effects remain in the original ledger until delivery capacity

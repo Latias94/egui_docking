@@ -40,7 +40,7 @@ The next completion work is concrete:
 
 | Remaining boundary | Next acceptance |
 | --- | --- |
-| U10 native layout management | Single-host default/preset reset and document restore, exact retained-root successors and missing-pane recovery pass 43 checks at `dbfae70`, including six/seven real X11 edits. Document V2 hosting/recovery-host preferences and their read-only projection pass 18 checks at `349a513`. Existing logical surfaces now use the shared native creation/first-live owner with explicit Initial/Destroyed origins and failed/cancelled-attempt retry; 42 final checks pass for that slice. Automatic multi-surface window recreation and complete host removal/rebinding remain open. |
+| U10 native layout management | Single-host default/preset reset, exact retained-root successors and missing-pane recovery have qualified checkpoints. Document V2 hosting preferences pass 18 checks at `349a513`; existing-surface native creation passes 42 at `447b34b`. Atomic multi-surface restoration queues explicit rebased Child intents inside the existing establishment owner; all 43 final checks pass, including its eight-edit/six-Child X11 journey. Complete host removal/rebinding remains open. |
 | U10 native overflow | Qualify a finite real-input overflowed/clipped tab insertion, including preview, final order and cleanup; reuse the existing overflow owner. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
@@ -2240,7 +2240,7 @@ edits. The new Initial API itself has public recording/coordinator evidence;
 these platform compatibility runs do not claim an additional real Initial
 creation journey. Source and limitations remain in `docs/VALIDATION.md`.
 
-The next native document cutover uses one terminal replacement plus a core-owned
+The native document cutover uses one terminal replacement plus a core-owned
 initial-establishment continuation. Generate Child intents only after document
 surface/recovery-host rebasing, require explicit Child hosting and positive
 saved placement, and retain the real configured Root successor. Keep the
@@ -2276,6 +2276,41 @@ its own preparation and first-live admission. Additional roots or absent
 placement remain typed unsupported in the fixed-root reference facade until
 their separate hosting contract is implemented.
 
+Implementation now passes all 43 final checks. The native application slot
+submits the new opt-in terminal restore; normal budgeted service advances the
+existing unbound owner, and shutdown only cancels. Independent review exposed a
+retained external Root/declared Child conflict, now rejected atomically before
+enqueue. Final Child IDs also join the existing native focus wait. A public
+finite-capacity regression exposed cancellation-before-appearance facts being
+rejected despite a retained cleanup owner; the existing producer row now derives
+that exact cleanup observation permission without restoring current admission.
+Generation and authority isolation have a focused regression and bounded review.
+
+The native example now saves all explicit Root/Child layouts. On the final
+source, its X11 serde journey passes eight real focused edits across six Child
+lifetimes, including two simultaneously live saved predecessors, their actual
+destruction, two fresh first-live successors, an edit in the new Inspector and
+both Dock Back destructions. Nine public recording journeys and eight adapter
+layout tests pass, including policy-stop/retry. Workspace 1,928, public 147/173,
+product/official 114/15, native serde 561 with 10,000 lifetimes, noassert 560 without
+repeating that soak and Linux library 516 in both assertion modes pass. Both
+platforms' default/bounded workflows and six pressure modes pass; exact source
+and measurement limits remain in `docs/VALIDATION.md`. These checkpoints do not
+complete U10 or the complete Goal.
+
+The next finite overflow acceptance can reuse the existing three-item physical
+fixture without waiting for positive stationary capture facts. Give its three
+tabs one fixed width so the two-tab target still overflows after Child leaves.
+Use actual XTest backward-scroll/selection clicks and wait for fresh output;
+require the selected Main tab to remain partially clipped. Extend only the
+existing passive diagnostic switch with member full/visible bounds, visibility,
+strip viewport and maximum scroll offset from the public paint records. Choose
+one safe point inside the clipped fragment and the original tab's left half,
+outside controls, guides and edge-scroll bands. Require the exact insertion
+preview, `[Anchor, Child, Main]` final order with Child selected, exact old-child
+destruction and quiescence. This is a fixed geometry oracle, not a second target
+solver or a claim of successful stationary OS auto-scrolling.
+
 ### U11. Certify Windows and macOS capability claims
 
 - **Goal:** Add verified native platforms without delaying generic core delivery.
@@ -2295,6 +2330,21 @@ their separate hosting contract is implemented.
 - **Approach:** Reconcile public-host, egui, model, real-window, and physical evidence; remove superseded APIs/tests/helpers and update package boundaries. Preserve historical reference provenance without requiring Open-GPUI cutover.
 - **Test scenarios:** Full local journey parity, assertion-disabled native operation, stable retained output, long-run lifecycle quiescence, public packaging, and stale-output rejection pass with the documented host capabilities.
 - **Verification:** No obsolete terminal owner, hidden required host API, ignored release blocker, or fork-only requirement is marketed as generic core support.
+
+The 2026-10-31 local dependency audit confirms a concrete reproducibility
+dependency: egui `92c921f7235c` still pins winit `f378b50f29ca` internally, despite
+using the pointer-observation APIs from local winit `6c10c87da2a0`. Close that
+inner dependency and its lockfile first, commit the resulting egui state, then
+synchronize all eight integration egui-family patches and smoke's direct
+`egui_inspection` dependency plus their shared lockfile. The tracked integration
+egui pin `0716beee5b72` omits nine currently consumed local fork commits; the
+tracked winit pin omits three. Local origin tracking refs alone cannot establish
+remote availability, and local path overrides do not qualify a clean checkout.
+The root/official/product registry dependencies already use egui 0.37.0 and are
+separate from this optional-native repin. Native output/service, command
+correlation, close control, callback geometry and pointer-observation seams are
+current consumers, so deletion must follow actual dependency use rather than
+the number of fork-history commits.
 
 ---
 

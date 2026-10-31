@@ -31,6 +31,7 @@ fn native_replacement_prefix_outcome(outcome: &HostInputOutcome) -> bool {
             | HostInputOutcome::NativeSurfaceCreateRequested { .. }
             | HostInputOutcome::NativeSurfaceCreateRejected { .. }
             | HostInputOutcome::NativeSurfaceCreateCancelled { .. }
+            | HostInputOutcome::NativeSurfaceCreateIntentCancelled { .. }
             | HostInputOutcome::NativePlatformSnapshotApplied { .. }
             | HostInputOutcome::NativeCloseObservationApplied { .. }
             | HostInputOutcome::NativeFocusObservationApplied
@@ -90,7 +91,8 @@ impl HostFrameReport {
         });
         for reduced in transition.reduced_inputs() {
             let outcome = match reduced.outcome() {
-                InputOutcome::NativeSurfaceCreateRequested { binding } => {
+                InputOutcome::NativeSurfaceCreateRequested { binding }
+                | InputOutcome::NativeSurfaceCreateAdvanced { binding } => {
                     native_provider.map(|provider| HostInputOutcome::NativeSurfaceCreateRequested {
                         binding: NativeSurfaceBinding::from_binding(provider, *binding),
                     })
@@ -99,6 +101,12 @@ impl HostFrameReport {
                     Some(HostInputOutcome::NativeSurfaceCreateRejected {
                         surface: *surface,
                         reason: *reason,
+                    })
+                }
+                InputOutcome::NativeSurfaceCreateIntentCancelled { surface, changed } => {
+                    Some(HostInputOutcome::NativeSurfaceCreateIntentCancelled {
+                        surface: *surface,
+                        changed: *changed,
                     })
                 }
                 InputOutcome::NativeSurfaceCreateCancelled { binding, changed } => native_provider

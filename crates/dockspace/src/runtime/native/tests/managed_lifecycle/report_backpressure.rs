@@ -89,6 +89,116 @@ fn pending_staging_show() -> (
     (session, binding, show)
 }
 
+#[test]
+fn retired_cleanup_observations_keep_window_generation_without_restoring_admission() {
+    let (mut session, binding, show) = pending_staging_show();
+    assert!(matches!(
+        show.accepted(),
+        Some(NativeEffectAcknowledgement::Presentation(_))
+    ));
+    let root = session
+        .native
+        .as_ref()
+        .unwrap()
+        .current_binding(SURFACE)
+        .unwrap();
+    let before = session
+        .native
+        .as_ref()
+        .unwrap()
+        .producer
+        .binding(binding.binding)
+        .unwrap()
+        .window_generation;
+    assert!(before > 0);
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(frame.cancel_next_native_create().unwrap());
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut cancelled = frame.commit().unwrap();
+    let cleanup = take_only_native_effect(&mut cancelled);
+    assert!(
+        matches!(cleanup.operation(), NativeEffectOperation::CompensatingClose { binding: actual } if *actual == binding)
+    );
+    let state = session
+        .native
+        .as_ref()
+        .unwrap()
+        .producer
+        .binding(binding.binding)
+        .unwrap();
+    assert!(state.admission.is_none());
+    assert!(state.cleanup_observation);
+    assert_eq!(state.window_generation, before);
+    for expected in [before + 1, before + 2] {
+        session
+            .report_managed_native_snapshot(
+                [
+                    (root, root_window_facts()),
+                    (
+                        binding,
+                        NativeWindowFacts::live()
+                            .with_presentation(NativeWindowPresentationState::Hidden, None),
+                    ),
+                ],
+                NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+            )
+            .unwrap();
+        let mut report = commit_managed_frame_report(&mut session);
+        assert!(report.take_native_effects().is_empty());
+        assert_eq!(report.native_bindings(), &[root]);
+        assert!(report.native_admissions().is_empty());
+        assert!(session.native_local_coordinates(binding).is_none());
+        assert!(!session.native_binding_can_report_focus(binding));
+        let state = session
+            .native
+            .as_ref()
+            .unwrap()
+            .producer
+            .binding(binding.binding)
+            .unwrap();
+        assert_eq!(state.window_generation, expected);
+        assert!(state.cleanup_observation);
+        commit_managed_frame(&mut session);
+        assert_eq!(
+            session
+                .native
+                .as_ref()
+                .unwrap()
+                .producer
+                .binding(binding.binding)
+                .unwrap()
+                .window_generation,
+            expected
+        );
+    }
+    let Some(NativeEffectAcknowledgement::Close(destroyed)) = cleanup.accepted() else {
+        panic!("the exact cancelled window retains its destruction capability");
+    };
+    session
+        .report_managed_native_snapshot(
+            [
+                (root, root_window_facts()),
+                (binding, NativeWindowFacts::destroyed_after(destroyed)),
+            ],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .unwrap();
+    commit_managed_frame(&mut session);
+    let state = session
+        .native
+        .as_ref()
+        .unwrap()
+        .producer
+        .binding(binding.binding)
+        .unwrap();
+    assert!(!state.cleanup_observation);
+    assert_eq!(state.window_generation, 0);
+}
+
 fn assert_staging_close_backpressure(abandon_show: bool) {
     let (mut session, binding, show) = pending_staging_show();
     let version = session.version();

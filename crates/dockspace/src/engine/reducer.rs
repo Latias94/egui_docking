@@ -1234,6 +1234,8 @@ impl DockEngine {
                     | InputOutcome::NativeSurfaceCreateRequested { .. }
                     | InputOutcome::NativeSurfaceCreateRejected { .. }
                     | InputOutcome::NativeSurfaceCreateCancelled { .. }
+                    | InputOutcome::NativeSurfaceCreateIntentCancelled { .. }
+                    | InputOutcome::NativeSurfaceCreateAdvanced { .. }
                     | InputOutcome::ViewportCleanupRetried { .. }
                     | InputOutcome::WorkspaceReplaced { .. }
                     | InputOutcome::CommandProcessed { .. }
@@ -1323,6 +1325,31 @@ impl DockEngine {
                 *recovery_host,
                 *placement,
             ),
+            EngineInput::AdvanceNativeSurfaceCreate { expected, surface } => {
+                self.reduce_queued_native_surface_create(input.sequence, *expected, *surface)
+            }
+            EngineInput::CancelNativeSurfaceCreateIntent { expected, surface } => {
+                if *expected != self.version {
+                    return Ok(InputOutcome::StaleRejected {
+                        expected: *expected,
+                        accepted_base: self.version,
+                    });
+                }
+                let changed = self
+                    .viewport
+                    .stop_queued_native_surface(
+                        *surface,
+                        crate::frame::QueuedInitialSurfaceStatus::Cancelled,
+                    )
+                    .map_err(|source| EngineError::Viewport {
+                        input: input.sequence,
+                        source,
+                    })?;
+                Ok(InputOutcome::NativeSurfaceCreateIntentCancelled {
+                    surface: *surface,
+                    changed,
+                })
+            }
             EngineInput::CancelNativeSurface { expected, binding } => {
                 self.reduce_native_surface_cancellation(input.sequence, *expected, *binding)
             }
@@ -1409,6 +1436,7 @@ impl DockEngine {
                 focus_causal,
                 workspace,
                 None,
+                None,
                 application_base,
                 events,
                 interaction_events,
@@ -1418,6 +1446,7 @@ impl DockEngine {
                 focus_causal,
                 restore.workspace(),
                 Some(restore.presentation_identity_frontier()),
+                restore.native_surfaces(),
                 application_base,
                 events,
                 interaction_events,

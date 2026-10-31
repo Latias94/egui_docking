@@ -49,10 +49,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .coordinator
             .session()
             .prepare_document_restore_json(bytes, recognize)?;
-        self.validate_replacement_host(restore.view())?;
+        restore.validate_native_surface_hosting(self.root_surface)?;
         let action = NativeApplicationAction::new(
             self.coordinator.session().version(),
-            NativeApplicationCommand::DocumentRestore(Box::new(restore)),
+            NativeApplicationCommand::DocumentRestore {
+                restore: Box::new(restore),
+                root_surface: self.root_surface,
+            },
         );
         self.enqueue_application_action(action)?;
         Ok(())

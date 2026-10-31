@@ -63,8 +63,13 @@ An existing complete logical surface can explicitly acquire native hosting
 through the public host frame. It shares readiness, exact first-live and cleanup
 ownership while retaining its topology and workspace version. Failed or cancelled
 initial attempts can retry with a fresh window incarnation; old acknowledgements
-and outputs remain tied to their original window. Automatic multi-surface native
-document recreation remains a separate unfinished integration step.
+and outputs remain tied to their original window. Managed native document
+restore now atomically queues explicit Child declarations with their rebased
+surface IDs and saved placement. Budgeted frames wait for fresh Root facts and
+exact predecessor quiescence before creating each child once. The X11 reference
+workflow verifies two live predecessors, two restored children and real content
+editing. Complete host removal/rebinding and the remaining native completion
+gates are still open.
 
 Managed engine hosts can also capture native client coordinates from committed
 size and scale facts without desktop position or work areas. The joined recorder

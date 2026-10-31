@@ -34,6 +34,11 @@ use self::pointer_passthrough::{
     PointerPassthroughLifecycleError, PointerPassthroughRecovery,
 };
 use self::recovery_cleanup::AbandonedReplacementRetirementMode;
+#[cfg(feature = "serde")]
+pub(crate) use self::recovery_replacement::NativeSurfaceInitialRequest;
+pub(crate) use self::recovery_replacement::{
+    NativeSurfaceRestorePlan, QueuedInitialSurface, QueuedInitialSurfaceStatus,
+};
 pub use self::recovery_replacement::{RecoveryPending, RecoveryPendingStatus};
 use self::recovery_replacement::{
     RecoveryPendingRequest, RecoveryReplacementLifecycle, RecoveryReplacementLifecycleError,
@@ -656,6 +661,10 @@ impl ViewportCoordinator {
             || self.binding_cleanup.is_terminal(binding)
     }
 
+    pub(crate) fn retains_window_cleanup(&self, binding: ViewportBinding) -> bool {
+        self.binding_cleanup.contains_key(&binding)
+    }
+
     #[cfg(test)]
     pub(crate) fn record_terminal_binding_guard_for_test(
         &mut self,
@@ -705,7 +714,7 @@ impl ViewportCoordinator {
         if role == ViewportRole::Child && recovery_obligation.is_none() {
             return Err(ViewportCoordinatorError::ChildRecoveryRequired { surface });
         }
-        if self.recovery_replacements.pending(surface).is_some() {
+        if self.recovery_replacements.contains_surface(surface) {
             return Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { surface });
         }
         let binding = self
@@ -732,7 +741,7 @@ impl ViewportCoordinator {
         if self.binding_cleanup.token_is_reserved(token) {
             return Err(ViewportCoordinatorError::RetiredTokenReserved { token });
         }
-        if self.recovery_replacements.pending(surface).is_some() {
+        if self.recovery_replacements.contains_surface(surface) {
             return Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { surface });
         }
         let binding = self
@@ -3373,11 +3382,7 @@ impl ViewportCoordinator {
                 .iter()
                 .map(|binding| binding.surface()),
         );
-        retained.extend(
-            self.recovery_replacements
-                .iter()
-                .map(|(surface, _)| *surface),
-        );
+        retained.extend(self.recovery_replacements.surfaces());
         self.registry
             .compact_surface_authority_generations(&retained)
     }
@@ -3393,6 +3398,74 @@ impl ViewportCoordinator {
     #[must_use]
     pub fn recovery_pending(&self, surface: SurfaceId) -> Option<&RecoveryPending> {
         self.recovery_replacements.pending(surface)
+    }
+
+    pub(crate) fn has_surface_establishment(&self, surface: SurfaceId) -> bool {
+        self.recovery_replacements.contains_surface(surface)
+    }
+
+    pub(crate) fn queued_native_surface(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<&QueuedInitialSurface> {
+        self.recovery_replacements.queued_initial(surface)
+    }
+
+    pub(crate) fn waiting_native_surfaces(&self) -> impl Iterator<Item = &QueuedInitialSurface> {
+        self.recovery_replacements.waiting_initial()
+    }
+
+    pub(crate) fn queued_native_surface_can_advance(&self, initial: &QueuedInitialSurface) -> bool {
+        self.registry
+            .record(initial.request.recovery_host)
+            .is_some_and(|root| {
+                root.role() == ViewportRole::Root
+                    && root.ownership() == ViewportOwnership::External
+                    && root.admission() == ViewportAdmission::Admitted
+                    && root.has_coordinate_authority()
+            })
+            && !matches!(
+                self.native_exact_placement_create_capability(),
+                PlatformCapability::Unknown(_)
+            )
+            && initial.dependencies.iter().all(|binding| {
+                !self.binding_cleanup.contains_key(binding)
+                    && !self.binding_cleanup.is_terminal(*binding)
+            })
+            && (self.native_binding_allocation_available()
+                || matches!(
+                    self.native_exact_placement_create_capability(),
+                    PlatformCapability::Unsupported(_)
+                ))
+    }
+
+    pub(crate) fn enqueue_native_surface_restore(
+        &mut self,
+        plan: &NativeSurfaceRestorePlan,
+    ) -> Result<(), ViewportCoordinatorError> {
+        let dependencies = std::sync::Arc::new(
+            self.binding_cleanup
+                .keys()
+                .copied()
+                .chain(self.binding_cleanup.terminal_bindings().iter().copied())
+                .collect(),
+        );
+        for &request in &plan.children {
+            self.recovery_replacements
+                .enqueue_initial(request, std::sync::Arc::clone(&dependencies))
+                .map_err(recovery_replacement_error)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop_queued_native_surface(
+        &mut self,
+        surface: SurfaceId,
+        status: QueuedInitialSurfaceStatus,
+    ) -> Result<bool, ViewportCoordinatorError> {
+        self.recovery_replacements
+            .stop_initial(surface, status)
+            .map_err(recovery_replacement_error)
     }
 
     pub fn pending_recoveries(&self) -> impl Iterator<Item = (SurfaceId, &RecoveryPending)> {
@@ -3694,7 +3767,7 @@ impl ViewportCoordinator {
         } else {
             candidate
                 .recovery_replacements
-                .begin(RecoveryPendingRequest::initial(
+                .begin_initial(RecoveryPendingRequest::initial(
                     binding,
                     ViewportRole::Child,
                     recovery_obligation,

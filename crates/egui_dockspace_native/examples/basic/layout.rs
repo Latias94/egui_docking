@@ -69,6 +69,20 @@ impl NativeExampleApp {
         }) == Some(true)
     }
 
+    pub(super) fn all_surfaces_presented(&self) -> bool {
+        let surfaces = self.dockspace.with_view(|view| {
+            view.surfaces()
+                .map(|surface| surface.id())
+                .collect::<Vec<_>>()
+        });
+        surfaces.is_some_and(|surfaces| {
+            surfaces.contains(&SURFACE)
+                && surfaces
+                    .into_iter()
+                    .all(|surface| self.dockspace.is_surface_presented(surface))
+        })
+    }
+
     #[cfg(feature = "serde")]
     fn show_preset_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
@@ -82,13 +96,12 @@ impl NativeExampleApp {
             if ui
                 .add_enabled(
                     self.controls_available()
-                        && self.all_root_profile()
-                        && self.dockspace.is_surface_presented(SURFACE)
+                        && self.all_surfaces_presented()
                         && self.dockspace.is_quiescent(),
                     egui::Button::new("Save JSON preset"),
                 )
                 .on_disabled_hover_text(
-                    "Bring all eight panes back to the root host and wait for presentation and native cleanup.",
+                    "Wait until the main window and every child window have displayed their panes and finished changing layout.",
                 )
                 .clicked()
                 && let Err(error) = self.save_named_preset()
@@ -131,7 +144,8 @@ impl NativeExampleApp {
         });
         ui.small(
             "Session-only JSON · up to 8 names, 64 characters each; saving replaces that name's slot. \
-             Profile: all eight panes in the root host, including contained windows. New logical surfaces do not create OS windows.",
+             Saves the complete layout across the main window, contained windows and native child windows. \
+             After restore, wait for every child window to display its saved panes before editing.",
         );
     }
 
@@ -147,12 +161,12 @@ impl NativeExampleApp {
             );
         }
         if self.action.is_pending()
-            || !self.all_root_profile()
-            || !self.dockspace.is_surface_presented(SURFACE)
+            || !self.all_surfaces_presented()
             || !self.dockspace.is_quiescent()
         {
             return Err(
-                "Saving requires all eight panes in the presented, quiescent root host.".to_owned(),
+                "Wait for the main window and every child window to be ready before saving."
+                    .to_owned(),
             );
         }
         let json = self
@@ -161,7 +175,7 @@ impl NativeExampleApp {
             .map_err(|error| error.to_string())?;
         self.presets.insert(name.to_owned(), json);
         self.status = Some(format!(
-            "Saved JSON preset '{name}' (all-root profile; pane data stays in the application)."
+            "Saved JSON preset '{name}' with the complete window layout; pane data stays in the application."
         ));
         Ok(())
     }
@@ -503,11 +517,11 @@ pub(super) fn describe_status(status: &NativeActionStatus) -> String {
             if *locked { "locked" } else { "unlocked" }
         ),
         NativeActionStatus::LayoutReset { previous, current } => format!(
-            "Default layout logically committed ({previous:?} → {current:?}); waiting for fresh presented output and native quiescence."
+            "Default layout applied ({previous:?} → {current:?}); waiting for the windows to display their panes and be ready for editing."
         ),
         #[cfg(feature = "serde")]
         NativeActionStatus::DocumentRestored { previous, current } => format!(
-            "Document logically restored ({previous:?} → {current:?}); waiting for fresh presented output and native quiescence."
+            "Saved layout applied ({previous:?} → {current:?}); waiting for the main window and each replacement child window to display their panes and be ready for editing."
         ),
     }
 }
