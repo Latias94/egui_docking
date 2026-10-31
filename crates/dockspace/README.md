@@ -677,7 +677,8 @@ does not require serde, JSON, document lineage or a second docking session:
 # use dockspace::runtime::{DockspaceSession, SurfaceUnavailableReason};
 # fn apply(session: &mut DockspaceSession, default: DockspaceLayout) -> Result<(), Box<dyn std::error::Error>> {
 let reset = session.prepare_layout_reset(default)?;
-let mut frame = session.begin_layout_reset_frame(&reset)?;
+let mut frame = session.begin_host_frame()?;
+frame.submit_layout_reset(&reset)?;
 // A renderer may measure this candidate here. This example defers its surfaces.
 frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
 let report = frame.commit()?;
@@ -691,15 +692,40 @@ commit leaves it available for retry; successful reset advances the workspace
 epoch and invalidates it. A reset is the frame's last semantic mutation, followed
 by measurement contributions or explicit unavailability. Measurements install
 Ready scenes on commit, and a later frame paints them. Managed native hosts use
-`begin_native_layout_reset_frame` to reduce their accepted native prefix before
-the same replacement. Retired root, surface and contained identities are rebased
-against that candidate; stable pane items and declared selections remain intact.
+their existing `poll_native_host_frame` budget to finish accepted input, then
+call `frame.submit_layout_reset(&reset)` when `native_input_pending()` is false.
+Partial committed prefixes remain separate; an atomic group paused in a private
+candidate resumes without repeating its already answered receiver questions.
+The reset is appended to that final candidate rather than restarting replay.
+`begin_layout_reset_frame` and `begin_native_layout_reset_frame` remain
+synchronous conveniences over the same submission path. Retired root, surface
+and contained identities are rebased against the current candidate; stable pane
+items and declared selections remain intact.
 
 For a document-bound session, layout reset preserves key history and save
 generation. Every item must already have a recognized key, including closed
 history entries. Register new application keys before preparing the reset.
 Arrangement lock requires an explicit committed unlock. Existing policy and
 application pane data are not replaced by the supplied layout.
+
+With serde enabled, `prepare_document_restore_json` similarly prepares a
+complete lineage-bound restore, and `frame.submit_document_restore(&restore)`
+appends it after the existing input prefix. The old document's item scope
+governs every earlier input. A private final-replacement operation admits only
+the reconciled target scope, retaining all known keys and admitting newly
+recognized items solely for the restore. Scope expansion and append failure
+poison the same candidate; a dropped or failed frame publishes no workspace,
+key map, placement, generation or input watermark. The synchronous document
+restore conveniences also resume the same candidate.
+
+Reset and document restore supersede earlier product outcomes in their frame:
+the report exposes one `LayoutReset` or `DocumentRestored` result with its
+replacement-before and replacement-after versions. Measurement may follow,
+but later semantic/configuration input is rejected. The input replay budget
+does not impose a hard time bound on layout construction or document decoding.
+For native replacement, consume the complete `native_bindings()` successor
+roster; old binding and output authority cannot revive interaction. Logical
+surfaces without a binding do not automatically become new OS windows.
 
 ## Manipulation feedback and focus
 

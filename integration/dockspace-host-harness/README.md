@@ -89,6 +89,22 @@ check publication deduplication, and preserve pending cancellation on producer
 retirement. These recording tests distinguish command/feedback semantics from
 adapter focus execution and physical presentation.
 
+`tests/layout_reset.rs` submits application defaults on an ordinary final host
+frame or after a budgeted native prefix. A real presented receiver is answered
+before an atomic input group yields; both final `poll + submit` and synchronous
+convenience paths process only its remaining edge. Dropped attempts replay from
+the published watermark, while a committed reset publishes one replacement and
+the complete native root successor roster. Reset rebases current candidate
+identities, rejects stale/foreign/locked preparations and retires old output
+and focus authority.
+
+With serde enabled, `tests/terminal_restore.rs` adds new recognized document
+keys only at the terminal restore, after earlier input used the old identity
+scope. It verifies failed/dropped publication, append-only key history and save
+generation, document-sidecar invalidation, native root replacement and unloaded
+application content. These are core host-contract models, not automatic native
+window recreation or the native showcase's preset UI.
+
 `examples/engine_host.rs` is a runnable integration walkthrough using this same
 recording sink: two logical surfaces, deferred owned output, Presented/Dropped
 settlement, application focus, stable-item commands, per-item root-close approval

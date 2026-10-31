@@ -878,7 +878,7 @@ impl DockspaceHostFrame<'_> {
         self.next_application_source_sequence()
     }
 
-    fn next_application_source_sequence(
+    pub(super) fn next_application_source_sequence(
         &mut self,
     ) -> Result<SourceSequence, DockspaceRuntimeError> {
         self.next_source_sequence = self

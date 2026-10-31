@@ -31,14 +31,16 @@ host/package acceptance. No new core blocker was confirmed in the current
 bounded review. Continuous X11 input, finite center/edge/nested physical targets,
 fractional create placement, selected-capacity models and W16/O256 real windows
 have scoped qualifications. Finite native stationary scheduling is qualified
-with truthful missing-fact rejection and same-gesture recovery. The content-input
-and eight-pane editor slice has 61 passing final checks in `docs/VALIDATION.md`.
+with truthful missing-fact rejection and same-gesture recovery. The native
+close/reopen/lock slice has 40 passing final checks; the following renderer-neutral
+terminal replacement boundary has 22, including the new-key and replay-rollback
+contracts. Both retain their exact source scope in `docs/VALIDATION.md`.
 
 The next completion work is concrete:
 
 | Remaining boundary | Next acceptance |
 | --- | --- |
-| U10 native layout management | Close/decision, reopen and arrangement lock now share the existing bounded application action owner, qualified by 40 final checks and five real X11 edits. Next add default/preset reset and document restore at the bounded terminal-frame boundary, including host replacement/rebinding after a complete host-root removal and restore-time focus/missing-pane recovery. |
+| U10 native layout management | Close/decision, reopen and arrangement lock share the existing bounded application action owner, qualified by 40 final checks and five real X11 edits. The core terminal replacement boundary is qualified by 22 checks. Next expose default/preset reset and document restore through the native action owner, including host replacement/rebinding after a complete host-root removal and restore-time focus/missing-pane recovery. |
 | U10 native overflow | Qualify a finite real-input overflowed/clipped tab insertion, including preview, final order and cleanup; reuse the existing overflow owner. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
@@ -2169,6 +2171,17 @@ soak, two-platform finite pressure refresh and five real X11 edits. The fifth
 edit follows actual widget focus recovery after close/Allow/reopen; lock rejects
 a native move while selection remains available. Exact final qualification is recorded in
 `docs/VALIDATION.md`.
+
+The terminal replacement follow-up adds `DockspaceHostFrame::submit_layout_reset`
+and serde `submit_document_restore` for a host that has already completed its
+bounded native prefix. Synchronous conveniences reuse those submissions, and
+the old replacement-specific pending-candidate rebuild path is removed.
+Document input retains the old key scope until the final scoped restore admits
+the reconciled target keys; failures poison the same unpublished candidate.
+This renderer-neutral boundary passes 22 final checks: workspace 1,907/1,907,
+public host 134/134 default and 145/145 serde, the native compatibility gates
+and five real X11 edits. It prepares the native facade's default/preset/document
+work without completing host rebinding or application preset storage in this slice.
 
 ### U11. Certify Windows and macOS capability claims
 

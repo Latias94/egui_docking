@@ -28,6 +28,8 @@ mod presentation;
 mod presentation_commands;
 mod report;
 mod session;
+#[cfg(all(test, feature = "serde"))]
+mod terminal_replacement_tests;
 mod touch;
 
 pub use crate::interaction::PointerContinuationToken;

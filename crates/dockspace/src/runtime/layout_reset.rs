@@ -7,7 +7,6 @@ use crate::graph::Workspace;
 use crate::ids::EngineAuthorityDomainId;
 use crate::model::{DockspaceLayout, WorkspaceVersion};
 
-use super::session::HostFrameReplacement;
 use super::{
     DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession, NativeReceiverAnswer,
     NativeReceiverQuery,
@@ -78,7 +77,9 @@ impl DockspaceSession {
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
         self.ensure_standalone_replacement_available()?;
         self.ensure_prepared_layout_reset_current(reset)?;
-        self.begin_host_frame_with_replacement(None, Some(HostFrameReplacement::LayoutReset(reset)))
+        let mut frame = self.begin_host_frame()?;
+        frame.submit_layout_reset(reset)?;
+        Ok(frame)
     }
 
     /// Replays ordered native input before resetting the candidate layout.
@@ -99,10 +100,9 @@ impl DockspaceSession {
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
         self.ensure_managed_native_host_available()?;
         self.ensure_prepared_layout_reset_current(reset)?;
-        self.begin_host_frame_with_replacement(
-            Some(&mut resolve),
-            Some(HostFrameReplacement::LayoutReset(reset)),
-        )
+        let mut frame = self.begin_native_host_frame(&mut resolve)?;
+        frame.submit_layout_reset(reset)?;
+        Ok(frame)
     }
 
     fn ensure_prepared_layout_reset_current(
@@ -133,6 +133,39 @@ impl DockspaceSession {
         }
         #[cfg(not(feature = "serde"))]
         let _ = workspace;
+        Ok(())
+    }
+}
+
+impl DockspaceHostFrame<'_> {
+    /// Resets the layout after this frame's complete ordered input prefix.
+    ///
+    /// Buffered native hosts may first finish [`DockspaceSession::poll_native_host_frame`]
+    /// under their existing budget and submit here when
+    /// [`Self::native_input_pending`] is false. This operation keeps that exact
+    /// candidate and its already reduced input; it starts no second replay.
+    ///
+    /// The preparation remains bound to the published session, while presentation
+    /// identities rebase against this frame's current candidate. Earlier product
+    /// outcomes are superseded by the report's single `LayoutReset` result.
+    /// Measurement may follow, but further semantic and configuration input may
+    /// not. Dropping the frame leaves `reset` available for an exact retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incomplete native input, stale or foreign preparation,
+    /// arrangement lock, unknown document items, a previously submitted replacement,
+    /// or a frame which has already entered configuration or presentation.
+    pub fn submit_layout_reset(
+        &mut self,
+        reset: &PreparedDockspaceLayoutReset,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.session.ensure_prepared_layout_reset_current(reset)?;
+        self.complete_pointer_input()?;
+        let input = reset.replacement_input(self.frame.view())?;
+        self.append(input)?;
+        self.replacement_submitted = true;
         Ok(())
     }
 }

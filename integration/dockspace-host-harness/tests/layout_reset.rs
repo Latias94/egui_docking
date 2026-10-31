@@ -3,14 +3,14 @@
 use dockspace::close::CloseDecision;
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::model::{
-    DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockPlacement, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::{CloseCapability, DockPolicy};
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
-    DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport, HostInputOutcome,
-    SurfacePaintDisposition, SurfacePresentationResult, SurfaceUnavailableReason,
+    DockPresentationConfig, DockspaceHostFrame, DockspacePaneFocusObservation,
+    DockspacePaneFocusRequest, DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport,
+    HostInputOutcome, SurfacePaintDisposition, SurfacePresentationResult, SurfaceUnavailableReason,
     UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
@@ -283,7 +283,7 @@ fn reset_reserves_incoming_fresh_identities_before_rebasing_retired_ones() {
 }
 
 #[test]
-fn reset_authority_rejects_locked_foreign_and_stale_preparations_without_mutation() {
+fn terminal_reset_rejects_locked_foreign_and_stale_preparations_without_mutation() {
     let defaults = default_layout();
     let mut session = session(defaults.clone());
     let prepared = session.prepare_layout_reset(defaults.clone()).unwrap();
@@ -301,9 +301,9 @@ fn reset_authority_rejects_locked_foreign_and_stale_preparations_without_mutatio
             .kind(),
         DockspaceRuntimeErrorKind::OperationConflict
     );
-    let error = match session.begin_layout_reset_frame(&prepared) {
-        Ok(_) => panic!("a reset prepared before locking must not bypass the lock"),
-        Err(error) => error,
+    let error = {
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.submit_layout_reset(&prepared).unwrap_err()
     };
     assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
 
@@ -326,9 +326,11 @@ fn reset_authority_rejects_locked_foreign_and_stale_preparations_without_mutatio
     let mut other = DockspaceSession::from_layout(defaults.clone(), policy()).unwrap();
     let other_version = other.version();
     let other_ids = assert_default_content(&other);
-    let error = match other.begin_layout_reset_frame(&prepared) {
-        Ok(_) => panic!("a reset must remain bound to its preparing session"),
-        Err(error) => error,
+    let error = {
+        let mut frame = other.begin_host_frame().unwrap();
+        let error = frame.submit_layout_reset(&prepared).unwrap_err();
+        frame.select_item_current(FIRST).unwrap();
+        error
     };
     assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
     assert_eq!(other.version(), other_version);
@@ -338,28 +340,30 @@ fn reset_authority_rejects_locked_foreign_and_stale_preparations_without_mutatio
     frame.select_item_current(FIRST).unwrap();
     commit_measured(frame);
     let changed = session.version();
-    let error = match session.begin_layout_reset_frame(&prepared) {
-        Ok(_) => panic!("a committed semantic mutation must stale the preparation"),
-        Err(error) => error,
+    let error = {
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.submit_layout_reset(&prepared).unwrap_err()
     };
     assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
     assert_eq!(session.version(), changed);
     assert!(session.view().item(FIRST).unwrap().is_selected());
 
     let reset = session.prepare_layout_reset(defaults).unwrap();
-    commit_measured(session.begin_layout_reset_frame(&reset).unwrap());
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_layout_reset(&reset).unwrap();
+    commit_measured(frame);
     assert_default_content(&session);
     let current = session.version();
-    let error = match session.begin_layout_reset_frame(&reset) {
-        Ok(_) => panic!("a successful reset must consume the prepared version"),
-        Err(error) => error,
+    let error = {
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.submit_layout_reset(&reset).unwrap_err()
     };
     assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
     assert_eq!(session.version(), current);
 }
 
 #[test]
-fn dropped_reset_retries_exactly_and_old_action_output_and_focus_cannot_authorize() {
+fn terminal_reset_rebases_current_prefix_and_retries_without_old_authority() {
     let defaults = default_layout();
     let mut session = session(defaults.clone());
     let mut select = session.begin_host_frame().unwrap();
@@ -384,9 +388,24 @@ fn dropped_reset_retries_exactly_and_old_action_output_and_focus_cannot_authoriz
     let reset = session.prepare_layout_reset(defaults).unwrap();
     let before = session.version();
     let current_policy = session.policy().clone();
+    let prefix = session.prepare_float_item(THIRD, SURFACE);
 
-    let candidate_ids = {
-        let mut candidate = session.begin_layout_reset_frame(&reset).unwrap();
+    let (candidate_ids, prefix_version) = {
+        let mut candidate = session.begin_host_frame().unwrap();
+        candidate.submit_prepared_action(prefix).unwrap();
+        let floated = candidate.view().item(THIRD).unwrap();
+        let prefix_root = floated.root();
+        let prefix_floating = floated.contained().unwrap();
+        assert_ne!(prefix_root, FLOATING_ROOT);
+        assert_ne!(prefix_floating, FLOATING);
+        candidate
+            .dock_item_current(FOURTH, DockPlacement::After(SECOND))
+            .unwrap();
+        assert!(candidate.view().root(FLOATING_ROOT).is_none());
+        assert!(candidate.view().contained(FLOATING).is_none());
+        let prefix_version = candidate.version();
+        assert_ne!(prefix_version, before);
+        candidate.submit_layout_reset(&reset).unwrap();
         let main = candidate.view().item(SECOND).unwrap();
         let contained = candidate.view().item(FOURTH).unwrap();
         let ids = (
@@ -396,6 +415,13 @@ fn dropped_reset_retries_exactly_and_old_action_output_and_focus_cannot_authoriz
             contained.contained(),
         );
         assert!(main.is_selected());
+        assert_eq!(main.root(), ROOT);
+        assert!(contained.root().get() > prefix_root.get());
+        assert!(contained.contained().unwrap().get() > prefix_floating.get());
+        assert_eq!(
+            candidate.submit_layout_reset(&reset).unwrap_err().kind(),
+            DockspaceRuntimeErrorKind::OperationConflict
+        );
         assert_eq!(
             candidate.select_item_current(FIRST).unwrap_err().kind(),
             DockspaceRuntimeErrorKind::OperationConflict
@@ -404,12 +430,19 @@ fn dropped_reset_retries_exactly_and_old_action_output_and_focus_cannot_authoriz
             candidate.replace_policy(current_policy).unwrap_err().kind(),
             DockspaceRuntimeErrorKind::OperationConflict
         );
+        assert_eq!(
+            candidate
+                .replace_presentation_config(DockPresentationConfig::default())
+                .unwrap_err()
+                .kind(),
+            DockspaceRuntimeErrorKind::OperationConflict
+        );
         measure(&mut candidate);
         assert!(
             candidate.paint_plan(ids.0).unwrap().is_none(),
             "measurement contributions install the replacement scene only when their frame commits"
         );
-        ids
+        (ids, prefix_version)
     };
     assert_eq!(session.version(), before);
     assert_eq!(session.view().item(FIRST).unwrap().root(), ROOT);
@@ -426,7 +459,14 @@ fn dropped_reset_retries_exactly_and_old_action_output_and_focus_cannot_authoriz
         );
     }
 
-    let retry = session.begin_layout_reset_frame(&reset).unwrap();
+    let prefix = session.prepare_float_item(THIRD, SURFACE);
+    let mut retry = session.begin_host_frame().unwrap();
+    let submitted = retry.submit_prepared_action(prefix).unwrap();
+    retry
+        .dock_item_current(FOURTH, DockPlacement::After(SECOND))
+        .unwrap();
+    assert_eq!(retry.version(), prefix_version);
+    retry.submit_layout_reset(&reset).unwrap();
     let main = retry.view().item(SECOND).unwrap();
     let contained = retry.view().item(FOURTH).unwrap();
     assert_eq!(
@@ -439,10 +479,13 @@ fn dropped_reset_retries_exactly_and_old_action_output_and_focus_cannot_authoriz
         candidate_ids
     );
     let report = commit_measured(retry);
+    assert_eq!(report.before(), before);
+    assert_eq!(report.after(), session.version());
+    assert!(report.submitted_action_outcome(submitted).is_none());
     assert_eq!(
         report.inputs(),
         &[HostInputOutcome::LayoutReset {
-            previous: before,
+            previous: prefix_version,
             current: session.version(),
         }]
     );
@@ -467,7 +510,9 @@ fn dropped_reset_retries_exactly_and_old_action_output_and_focus_cannot_authoriz
     let mut paint = session.begin_host_frame().unwrap();
     let plan = paint.paint_plan(surface).unwrap().unwrap();
     let fresh = plan.pane_focus_request().unwrap();
-    assert_eq!(fresh.item(), Some(SECOND));
+    // The terminal prefix explicitly focused FOURTH. It remains selected in
+    // the restored contained group, so replacement preserves that newer intent.
+    assert_eq!(fresh.item(), Some(FOURTH));
     assert_ne!(fresh, old_focus);
     assert!(
         plan.prepare_pane_focus_observation(old_focus, DockspacePaneFocusObservation::Focused)
@@ -591,6 +636,388 @@ fn managed_native_prefix_and_reset_retry_share_one_publication_boundary() {
     assert!(!session.is_current_native_binding(old));
     assert!(session.is_current_native_binding(*current));
     assert_default_content(&session);
+}
+
+#[test]
+fn budgeted_native_prefix_rejects_reset_until_the_final_poll() {
+    use dockspace::runtime::{
+        NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
+        NativeHostErrorKind, NativeInputBudget, NativeMonotonicClock, NativePointerEvent,
+        NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+        NativePointerRoster, NativeReceiverAnswer,
+    };
+    use std::time::Duration;
+
+    let mut session = session(single_pane_layout(FIRST));
+    session
+        .enable_managed_native_host(
+            NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
+        .unwrap();
+    commit_deferred(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    let reset = session.prepare_layout_reset(default_layout()).unwrap();
+    let before = session.version();
+    let recorded = session.native_input_recorded_count();
+    let movement = NativePointerInput::new(
+        NativePointerId::new(1),
+        NativePointerEvent::Moved,
+        NativeDesktopPointerLocation::new(
+            NativeDesktopPosition::Unknown,
+            NativePointerHover::Unknown,
+            None,
+        ),
+        NativePointerOwner::Unknown,
+        NativePointerOwner::Unknown,
+    );
+    session
+        .record_native_pointer_sequence([movement; 2])
+        .unwrap();
+    let clock = NativeMonotonicClock::new(|| Duration::ZERO);
+    let mut budget = NativeInputBudget::new(&clock);
+    budget.complete_unsequenced_records(255);
+    let mut prefix = session
+        .poll_native_host_frame(&mut budget, |_| {
+            panic!("unknown pointer locations cannot ask a receiver question")
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(budget.remaining_records(), 0);
+    assert!(prefix.native_input_pending());
+    let error = prefix.submit_layout_reset(&reset).unwrap_err();
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
+    assert_eq!(
+        error.native_kind(),
+        Some(NativeHostErrorKind::OperationConflict)
+    );
+    assert!(prefix.view().item(SECOND).is_none());
+    assert!(commit_deferred(prefix).native_input_pending());
+    assert_eq!(session.version(), before);
+    assert!(session.has_pending_native_input());
+
+    let mut budget = NativeInputBudget::new(&clock);
+    let mut final_prefix = session
+        .poll_native_host_frame(&mut budget, |_| {
+            panic!("the final unknown pointer record has no receiver")
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(budget.remaining_records(), 255);
+    assert!(!final_prefix.native_input_pending());
+    final_prefix.submit_layout_reset(&reset).unwrap();
+    let report = commit_measured(final_prefix);
+    assert!(!report.native_input_pending());
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::LayoutReset {
+            previous: before,
+            current: session.version(),
+        }]
+    );
+    assert_eq!(session.native_input_recorded_count(), recorded + 2);
+    assert!(!session.has_pending_native_input());
+    assert_default_content(&session);
+}
+
+#[test]
+fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_boundary() {
+    use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
+    use dockspace::runtime::{
+        HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
+        NativeHostCapabilities, NativeHostCapability, NativeInputBudget, NativeMonotonicClock,
+        NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
+        NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
+        NativeReceiverPurpose, NativeWindowFacts, NativeWindowInputState,
+        NativeWindowPresentationState, NativeWorkAreaRoster, PointerDeviceKind,
+        PointerEventMetadata,
+    };
+    use std::time::Duration;
+
+    for synchronous_wrapper in [false, true] {
+        let mut session = session(default_layout());
+        session
+            .enable_managed_native_host(
+                NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
+            .unwrap();
+        let capabilities = [
+            NativeHostCapability::AuthoritativeInventory,
+            NativeHostCapability::AuthoritativeButtonState,
+            NativeHostCapability::PointerHitTestObservation,
+            NativeHostCapability::DesktopPointerPosition,
+            NativeHostCapability::HoveredWindow,
+            NativeHostCapability::GlobalWindowPlacement,
+        ]
+        .into_iter()
+        .fold(NativeHostCapabilities::none_supported(), |caps, cap| {
+            caps.with(cap)
+        });
+        session
+            .configure_managed_native_capabilities(capabilities)
+            .unwrap();
+        session
+            .register_native_root(SURFACE, HostWindowToken::new(7))
+            .unwrap();
+        let registration = commit_deferred(
+            session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap(),
+        );
+        let [old] = registration.native_bindings() else {
+            panic!("the public native root registration must publish one binding");
+        };
+        let old = *old;
+        let content = PhysicalRect::new(100.0, 80.0, 900.0, 650.0).unwrap();
+        let scale = ScaleFactor::new(1.0).unwrap();
+        let facts = NativeWindowFacts::live()
+            .with_content_bounds(content)
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None);
+        session
+            .report_managed_native_snapshot([(old, facts)], NativeWorkAreaRoster::Unknown)
+            .unwrap();
+        commit_measured(
+            session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap(),
+        );
+
+        let mut paint = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let plan = paint.paint_plan(SURFACE).unwrap().unwrap();
+        let receiver = plan.tab_receiver(FIRST).unwrap();
+        let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
+        assert!(recording.records.contains(&OwnedRecord::Receiver(receiver)));
+        paint.confirm_surface_painted(receipt).unwrap();
+        let [output] = paint
+            .commit()
+            .unwrap()
+            .take_painted_outputs()
+            .try_into()
+            .unwrap();
+        assert!(output.matches_native_binding(old));
+        let artifact = output.presentation_artifact();
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        commit_deferred(
+            session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap(),
+        );
+        assert!(session.bind_presented_receiver(&receiver).is_some());
+        assert!(!session.has_pending_native_input());
+
+        let reset = session.prepare_layout_reset(default_layout()).unwrap();
+        let before = session.version();
+        let recorded = session.native_input_recorded_count();
+        let point = receiver.center();
+        let metadata =
+            PointerEventMetadata::new(PointerDeviceKind::Touch, Duration::from_millis(10));
+        let release_metadata =
+            PointerEventMetadata::new(PointerDeviceKind::Touch, Duration::from_millis(20));
+        let location = NativeDesktopPointerLocation::new(
+            NativeDesktopPosition::Exact(
+                PhysicalPoint::new(content.x() + point.x(), content.y() + point.y()).unwrap(),
+            ),
+            NativePointerHover::Dock(old),
+            None,
+        );
+        let press = NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            location,
+            NativePointerOwner::Native(old),
+            NativePointerOwner::Native(old),
+        )
+        .with_metadata(metadata);
+        let release = NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::ContactEnded(NativePointerButton::Primary),
+            location,
+            NativePointerOwner::Native(old),
+            NativePointerOwner::Native(old),
+        )
+        .with_metadata(release_metadata);
+        session
+            .record_native_pointer_batch([press, release])
+            .unwrap();
+        assert_eq!(session.native_input_recorded_count(), recorded + 2);
+
+        let clock = NativeMonotonicClock::new(|| Duration::ZERO);
+        let mut first_budget = NativeInputBudget::new(&clock);
+        first_budget.complete_unsequenced_records(255);
+        let mut queries = Vec::new();
+        assert!(
+            session
+                .poll_native_host_frame(&mut first_budget, |query| {
+                    assert!(query.matches_native_binding(old));
+                    assert!(query.matches_presentation_artifact(artifact));
+                    assert_eq!(query.metadata(), metadata);
+                    assert_eq!(query.point(), Some(point));
+                    queries.push(query);
+                    NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                })
+                .unwrap()
+                .is_none(),
+            "the completed press must remain private inside its atomic input group"
+        );
+        assert!(first_budget.is_exhausted());
+        assert_eq!(first_budget.remaining_records(), 0);
+        assert_eq!(first_budget.elapsed(), Duration::ZERO);
+        assert_eq!(
+            queries
+                .iter()
+                .map(|query| *query.purpose())
+                .collect::<Vec<_>>(),
+            [
+                NativeReceiverPurpose::ClickDelivery,
+                NativeReceiverPurpose::DragDelivery
+            ]
+        );
+        assert_eq!(session.version(), before);
+        assert!(session.view().item(SECOND).unwrap().is_selected());
+        assert!(session.has_pending_native_input());
+        assert!(session.is_current_native_binding(old));
+        assert_eq!(session.native_input_recorded_count(), recorded + 2);
+
+        let mut tail_budget = NativeInputBudget::new(&clock);
+        let mut remaining_queries = Vec::new();
+        let mut candidate = session
+            .poll_native_host_frame(&mut tail_budget, |query| {
+                assert!(query.matches_native_binding(old));
+                assert!(query.matches_presentation_artifact(artifact));
+                assert_eq!(query.metadata(), release_metadata);
+                assert_eq!(query.point(), Some(point));
+                remaining_queries.push(query);
+                NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(tail_budget.remaining_records(), 255);
+        assert_eq!(
+            remaining_queries
+                .iter()
+                .map(|query| *query.purpose())
+                .collect::<Vec<_>>(),
+            [
+                NativeReceiverPurpose::ClickDelivery,
+                NativeReceiverPurpose::DragDelivery
+            ]
+        );
+        assert!(!candidate.native_input_pending());
+        assert!(candidate.view().item(FIRST).unwrap().is_selected());
+        let prefix_version = candidate.version();
+        assert_ne!(prefix_version, before);
+        candidate.submit_layout_reset(&reset).unwrap();
+        let replacement_version = candidate.version();
+        assert!(candidate.view().item(SECOND).unwrap().is_selected());
+        measure(&mut candidate);
+        drop(candidate);
+        assert_eq!(session.version(), before);
+        assert!(session.view().item(SECOND).unwrap().is_selected());
+        assert!(!session.has_active_gesture());
+        assert!(session.has_pending_native_input());
+        assert!(session.is_current_native_binding(old));
+        assert!(session.bind_presented_receiver(&receiver).is_some());
+        assert_eq!(session.native_input_recorded_count(), recorded + 2);
+
+        let mut retry_budget = NativeInputBudget::new(&clock);
+        let mut retry_queries = Vec::new();
+        let retry = if synchronous_wrapper {
+            retry_budget.complete_unsequenced_records(255);
+            assert!(
+                session
+                    .poll_native_host_frame(&mut retry_budget, |query| {
+                        assert_eq!(query.metadata(), metadata);
+                        retry_queries.push(query);
+                        NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                    })
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(retry_budget.remaining_records(), 0);
+            assert_eq!(retry_queries, queries);
+            assert_eq!(session.version(), before);
+            assert!(session.view().item(SECOND).unwrap().is_selected());
+            assert!(session.has_pending_native_input());
+            assert!(session.is_current_native_binding(old));
+            assert_eq!(session.native_input_recorded_count(), recorded + 2);
+            session
+                .begin_native_layout_reset_frame(&reset, |query| {
+                    assert_eq!(query.metadata(), release_metadata);
+                    retry_queries.push(query);
+                    NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                })
+                .unwrap()
+        } else {
+            let mut retry = session
+                .poll_native_host_frame(&mut retry_budget, |query| {
+                    retry_queries.push(query);
+                    NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(retry_budget.remaining_records(), 254);
+            assert!(retry.view().item(FIRST).unwrap().is_selected());
+            assert_eq!(retry.version(), prefix_version);
+            retry.submit_layout_reset(&reset).unwrap();
+            retry
+        };
+        assert_eq!(retry_queries, [queries, remaining_queries].concat());
+        assert!(!retry.native_input_pending());
+        assert!(retry.view().item(SECOND).unwrap().is_selected());
+        assert_eq!(retry.version(), replacement_version);
+        let report = commit_measured(retry);
+        assert!(report.workspace_changed());
+        assert!(!report.native_input_pending());
+        assert_eq!(report.before(), before);
+        assert_eq!(report.after(), replacement_version);
+        assert_eq!(
+            report.inputs(),
+            &[HostInputOutcome::LayoutReset {
+                previous: prefix_version,
+                current: replacement_version,
+            }]
+        );
+        let (surface, ..) = assert_default_content(&session);
+        let [current] = report.native_bindings() else {
+            panic!("reset and its native prefix must publish one root successor roster");
+        };
+        assert_ne!(*current, old);
+        assert_eq!(current.surface(), surface);
+        assert_eq!(current.window_token(), old.window_token());
+        assert!(!session.is_current_native_binding(old));
+        assert!(session.is_current_native_binding(*current));
+        assert!(!session.has_pending_native_input());
+        assert!(!session.has_active_gesture());
+        assert!(session.bind_presented_receiver(&receiver).is_none());
+        assert_eq!(session.native_input_recorded_count(), recorded + 2);
+
+        let mut idle_budget = NativeInputBudget::new(&clock);
+        let idle = session
+            .poll_native_host_frame(&mut idle_budget, |_| {
+                panic!("the committed input group must not query its retired receiver again")
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(idle_budget.remaining_records(), 256);
+        assert!(!idle.native_input_pending());
+        let idle = commit_deferred(idle);
+        assert!(idle.inputs().is_empty());
+        assert!(!idle.workspace_changed());
+        assert_eq!(idle.native_bindings(), &[*current]);
+        assert_eq!(session.version(), replacement_version);
+        assert_eq!(session.native_input_recorded_count(), recorded + 2);
+    }
 }
 
 #[cfg(feature = "serde")]

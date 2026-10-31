@@ -15,6 +15,74 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 terminal replacement after bounded native replay
+
+The slice following `a136e86` adds public
+`DockspaceHostFrame::submit_layout_reset` and serde
+`submit_document_restore`. Hosts append either replacement to the ordinary
+final frame returned after their bounded native prefix. Synchronous conveniences
+use that same submission path. The replacement-specific branch which discarded
+a pending candidate and rebuilt replay under a different item scope is deleted.
+
+Earlier native and application input uses the published document's identity
+scope. Only the final document-replacement append admits the reconciled target
+scope, requiring the original scope to match and every old key to remain
+recognized. Scope expansion and append form one private operation; failed
+append poisons the candidate. Sequence allocation occurs before scope changes.
+Workspace, key history, placement preferences, generation and input watermarks
+still publish through the existing single commit. Layout construction, decoding
+and atomic replacement are not covered by a hard 2-ms wall-time guarantee.
+
+The public reset models now cover direct final-frame submission, stale/foreign/
+locked preparations, measurement, old output/focus retirement and identity
+rebasing against earlier same-frame mutations. A real presented receiver answers
+the first edge of an atomic native group before a record budget yields. Both
+`poll + submit` and the synchronous reset wrapper process only the remaining
+edge, preserve its candidate selection and publish the same root successor.
+Dropping that frame retries from the committed watermark rather than leaking
+private input or allocator progress.
+
+Four serde consumer tests cover new recognized keys, previously known closed
+items, unavailable content identity, exact generation/key history, sidecar
+invalidation, locked restore, replacement input fences and native binding
+successors. Their controlled record budgets also verify partial commit,
+unpublished suffix resumption and drop/failed-commit replay counts. A separate
+internal regression forces duplicate-sequence failure after scope expansion;
+later input and finish reject, all published frontiers remain unchanged, and a
+fresh prepared restore retries successfully. No public test seam is added.
+
+All 22 final checks pass against 464 frozen tracked source/manifest/script paths.
+The focused 12 consumer tests and internal poison regression also pass. Exact
+final compatibility results are:
+
+| Final gate | Result and scope |
+| --- | --- |
+| Workspace | 1,907/1,907 with all features and targets |
+| Public host / product / official consumers | default 134/134, serde 145/145; product 114/114 and official 15/15 |
+| Native normal | 543/543, including the same-coordinator 10,000-lifetime soak; opt-in wall-time case skipped |
+| Native assertion-disabled | 542/542; the long soak is intentionally excluded from this repeat and covered by the normal run above, while the opt-in wall-time case stays skipped |
+| Linux library | 498/498 normally and assertion-disabled; long soak excluded here |
+| Real-window compatibility | macOS default/bounded lifecycle; X11 five real edits, actual reopened focus, two child lifetimes, close/Allow/reopen/lock/unlock and quiescence |
+| Quality | core/native correctness/suspicious Clippy, strict docs, ten doctests, workspace/native/public formatting |
+
+Current artifacts are
+`/tmp/dockspace-terminal-replacement-source.json` and
+`/tmp/dockspace-terminal-replacement-qualification.json`. The first new focus
+assertion expected a central fallback after its own prefix explicitly focused a
+different still-selected pane; the corrected assertion follows the existing
+newer-intent contract, with production focus logic unchanged.
+Independent production review found no confirmed P1/P2 and requested the
+receiver-resumption and expanded-scope append-failure models described above;
+both now pass. This slice does not rerun the preceding six-pressure, physical
+docking or 1 kHz matrices, whose dated evidence retains its earlier source scope.
+Fork sources remain unchanged and local overrides remain necessary; clean remote
+pin reproduction and package delivery are still separate U9 work.
+
+This completes a renderer-neutral replacement integration boundary only. Native
+application reset/preset/document commands, root-window rebinding and showcase
+restore/missing-pane journeys remain subsequent work. The earlier fixed-host
+`HostSurfaceRequired` constraint remains in force.
+
 ## 2026-10-31 native content-close and arrangement commands
 
 The slice following `117578c` extends the existing single application-action

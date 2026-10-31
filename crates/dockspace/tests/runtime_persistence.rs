@@ -498,7 +498,7 @@ fn managed_native_restore_joins_the_native_host_frame_atomically() {
 }
 
 #[test]
-fn managed_restore_rebuilds_a_budget_paused_candidate_with_the_new_identity_scope() {
+fn managed_restore_resumes_a_budget_paused_candidate_before_admitting_new_document_items() {
     use dockspace::runtime::{
         NativeDesktopPointerLocation, NativeDesktopPosition, NativeInputBudget,
         NativeMonotonicClock, NativePointerEvent, NativePointerHover, NativePointerId,
@@ -562,7 +562,7 @@ fn managed_restore_rebuilds_a_budget_paused_candidate_with_the_new_identity_scop
 
     let mut restore = target
         .begin_native_document_restore_frame(&prepared, |_| NativeReceiverAnswer::Unknown)
-        .expect("a restore must rebuild the paused candidate with its expanded identity scope");
+        .expect("a restore must resume the paused prefix before admitting its new item scope");
     assert!(restore.view().item(second).is_some());
     assert_eq!(restore.external_key_for_item(second), Some("pane:second"));
     restore

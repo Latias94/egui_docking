@@ -3,16 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::command::ContentCloseTarget;
-#[cfg(feature = "serde")]
-use crate::document::PreparedRuntimeDocumentRestore;
 use crate::engine::{DockEngine, EngineError};
 #[cfg(test)]
 use crate::graph::Workspace;
 use crate::model::{DockPlacement, DockspaceLayout, DockspaceView, WorkspaceVersion};
 use crate::presentation_observation::PresentationHostLease;
 
-#[cfg(feature = "serde")]
-use super::DockspacePersistenceError;
 use super::close::PreparedCloseRequest;
 use super::host_frame::DockspaceHostFrame;
 use super::{
@@ -21,12 +17,6 @@ use super::{
     NativeWindowPlacement, PreparedDockAction,
 };
 use super::{interaction, native, native_effect, presentation};
-
-pub(super) enum HostFrameReplacement<'prepared> {
-    LayoutReset(&'prepared super::PreparedDockspaceLayoutReset),
-    #[cfg(feature = "serde")]
-    DocumentRestore(PreparedRuntimeDocumentRestore),
-}
 
 /// Renderer-neutral owner of one docking workspace and one application host.
 ///
@@ -391,7 +381,7 @@ impl DockspaceSession {
         mut resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
     ) -> Result<Option<DockspaceHostFrame<'_>>, DockspaceRuntimeError> {
         self.ensure_managed_native_host_available()?;
-        self.poll_host_frame_with_options(Some(&mut resolve), Some(budget), None)
+        self.poll_host_frame_with_options(Some(&mut resolve), Some(budget))
     }
 
     fn require_native_host(&self) -> Result<&native::RuntimeNativeState, DockspaceRuntimeError> {
@@ -412,7 +402,8 @@ impl DockspaceSession {
         &mut self,
         resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
-        self.begin_host_frame_with_replacement(resolver, None)
+        self.poll_host_frame_with_options(resolver, None)?
+            .ok_or_else(|| NativePlatformError::ProtocolInvariant.into())
     }
 
     pub(super) fn ensure_standalone_replacement_available(
@@ -428,33 +419,15 @@ impl DockspaceSession {
         Ok(())
     }
 
-    pub(super) fn begin_host_frame_with_replacement(
-        &mut self,
-        resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
-        replacement: Option<HostFrameReplacement<'_>>,
-    ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
-        self.poll_host_frame_with_options(resolver, None, replacement)?
-            .ok_or_else(|| NativePlatformError::ProtocolInvariant.into())
-    }
-
     fn poll_host_frame_with_options(
         &mut self,
         resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
         budget: Option<&mut NativeInputBudget>,
-        replacement: Option<HostFrameReplacement<'_>>,
     ) -> Result<Option<DockspaceHostFrame<'_>>, DockspaceRuntimeError> {
         let pending = self
             .native
             .as_mut()
             .and_then(native::RuntimeNativeState::take_pending_replay);
-        let pending = if replacement.is_some() {
-            // A replacement must revalidate the full ordered prefix under its
-            // current item scope, rather than reuse an unpublished candidate.
-            drop(pending);
-            None
-        } else {
-            pending
-        };
         let (mut frame, submitted_presentation, ingress_pending, prelude_pending) =
             if let Some(pending) = pending {
                 (
@@ -485,9 +458,7 @@ impl DockspaceSession {
                         .and_then(native::RuntimeNativeState::binding_allocation_budget),
                 );
                 #[cfg(feature = "serde")]
-                if let Some(HostFrameReplacement::DocumentRestore(restore)) = replacement.as_ref() {
-                    prelude.restrict_item_identity_scope(restore.item_identity_scope());
-                } else if let Some(document) = self.document.as_ref() {
+                if let Some(document) = self.document.as_ref() {
                     prelude.restrict_item_identity_scope(document.item_identity_scope());
                 }
                 let submitted_presentation = if let Some(native) = self.native.as_mut() {
@@ -560,25 +531,6 @@ impl DockspaceSession {
             #[cfg(feature = "serde")]
             document_restore: None,
         };
-        let mut host_frame = host_frame;
-        match replacement {
-            Some(HostFrameReplacement::LayoutReset(reset)) => {
-                host_frame.ensure_semantic_input_allowed()?;
-                let input = reset.replacement_input(host_frame.frame.view())?;
-                host_frame.append(input)?;
-                host_frame.replacement_submitted = true;
-            }
-            #[cfg(feature = "serde")]
-            Some(HostFrameReplacement::DocumentRestore(restore)) => {
-                let (input, pending) = restore
-                    .into_engine_input(host_frame.frame.view())
-                    .map_err(DockspacePersistenceError::session)?;
-                host_frame.append(input)?;
-                host_frame.document_restore = Some(pending);
-                host_frame.replacement_submitted = true;
-            }
-            None => {}
-        }
         Ok(Some(host_frame))
     }
 }

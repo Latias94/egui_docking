@@ -1371,6 +1371,41 @@ impl CoreHostFrame {
         self.input_terminated_for_overload
     }
 
+    /// Admits reconciled keys only for this final document-replacement input.
+    #[cfg(feature = "serde")]
+    pub(crate) fn append_document_replacement(
+        &mut self,
+        source: StableInputSourceId,
+        sequence: SourceSequence,
+        input: EngineInput,
+        source_scope: &BTreeSet<ItemId>,
+        target_scope: Arc<BTreeSet<ItemId>>,
+    ) -> Result<(), CoreHostFrameError> {
+        if let Some(error) = self.poison {
+            return Err(error);
+        }
+        self.ensure_input_prefix_complete()?;
+        if self.configuration_phase_started {
+            return self.reject(CoreHostFrameError::SemanticAfterConfiguration);
+        }
+        if self.presentation_phase_started {
+            return self.reject(CoreHostFrameError::InputAfterPresentation);
+        }
+        if !matches!(input, EngineInput::RestoreWorkspace(_)) {
+            return self.reject(CoreHostFrameError::InputPhaseMismatch {
+                phase: HostFrameInputPhase::Semantic,
+                actual: input.priority(),
+            });
+        }
+        if self.item_identity_scope.as_deref() != Some(source_scope)
+            || !target_scope.is_superset(source_scope)
+        {
+            return self.reject(CoreHostFrameError::ItemIdentityScopeMismatch);
+        }
+        self.item_identity_scope = Some(target_scope);
+        self.append_input(source, sequence, input)
+    }
+
     pub(crate) const fn backend_ingress_through(&self) -> BackendIngressOrdinal {
         self.candidate.backend_ingress.committed_through()
     }

@@ -255,12 +255,9 @@ impl DockspaceSession {
     ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
         self.ensure_standalone_replacement_available()?;
         self.ensure_prepared_document_restore_current(restore)?;
-        self.begin_host_frame_with_replacement(
-            None,
-            Some(super::session::HostFrameReplacement::DocumentRestore(
-                restore.inner.clone(),
-            )),
-        )
+        let mut frame = self.begin_host_frame()?;
+        frame.submit_document_restore(restore)?;
+        Ok(frame)
     }
 
     /// Begins one native host frame that atomically replaces the live document.
@@ -291,12 +288,9 @@ impl DockspaceSession {
     ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
         self.ensure_managed_native_host_available()?;
         self.ensure_prepared_document_restore_current(restore)?;
-        self.begin_host_frame_with_replacement(
-            Some(&mut resolve),
-            Some(super::session::HostFrameReplacement::DocumentRestore(
-                restore.inner.clone(),
-            )),
-        )
+        let mut frame = self.begin_native_host_frame(&mut resolve)?;
+        frame.submit_document_restore(restore)?;
+        Ok(frame)
     }
 
     fn ensure_prepared_document_restore_current(
@@ -405,6 +399,60 @@ impl DockspaceSession {
             .map_err(DockspacePersistenceError::encode_json)?;
         let _ = document.commit_capture(prepared);
         Ok(encoded)
+    }
+}
+
+impl super::DockspaceHostFrame<'_> {
+    /// Restores a prepared document after this frame's complete ordered input.
+    ///
+    /// A buffered native host can finish its existing budgeted poll and submit
+    /// here without restarting replay. Earlier input uses the published
+    /// document's item identities. Only this final replacement admits new keys
+    /// from the already validated and reconciled restore; they cannot authorize
+    /// an earlier input.
+    ///
+    /// The restored workspace, key history, placement preferences and generation
+    /// publish together at commit. Earlier product outcomes are superseded by
+    /// the report's `DocumentRestored` result. Measurement may follow, while
+    /// further semantic and configuration input is rejected. Dropping or failing
+    /// the frame retains the preparation for an exact retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incomplete native input, a stale or foreign
+    /// preparation, changed document sidecars, arrangement lock, a previous
+    /// replacement, or a frame already in configuration or presentation.
+    pub fn submit_document_restore(
+        &mut self,
+        restore: &PreparedDockspaceDocumentRestore,
+    ) -> Result<(), super::DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.session
+            .ensure_prepared_document_restore_current(restore)?;
+        self.complete_pointer_input()?;
+        let source_scope = self
+            .session
+            .document
+            .as_ref()
+            .ok_or_else(DockspacePersistenceError::not_configured)?
+            .item_identity_scope();
+        let target_scope = restore.inner.item_identity_scope();
+        let (input, pending) = restore
+            .inner
+            .clone()
+            .into_engine_input(self.frame.view())
+            .map_err(DockspacePersistenceError::session)?;
+        let sequence = self.next_application_source_sequence()?;
+        self.frame.append_document_replacement(
+            super::host_frame::APPLICATION_INPUT_SOURCE,
+            sequence,
+            input,
+            source_scope.as_ref(),
+            target_scope,
+        )?;
+        self.document_restore = Some(pending);
+        self.replacement_submitted = true;
+        Ok(())
     }
 }
 
