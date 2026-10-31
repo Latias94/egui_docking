@@ -24,7 +24,9 @@ use super::assertions::{
     PhysicalPoint, ROOT_PANE_CONTENT_LABEL,
 };
 use super::driver;
-use super::pointer_load::{PointerLoad, PointerSource, load_storage_limit, pointer_load_enabled};
+use super::pointer_load::{
+    PointerLoad, PointerSource, active_service_start, load_storage_limit, pointer_load_enabled,
+};
 
 #[path = "nested.rs"]
 mod nested;
@@ -368,7 +370,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let native_result = eframe::run_native(
         ROOT_WINDOW_TITLE,
         options,
         Box::new(move |creation| {
@@ -404,15 +406,16 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 overflow_target,
             }))
         }),
-    )?;
+    );
 
     let (lock, _) = &*shared;
-    match lock
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .driver_result
-        .take()
-    {
+    let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(load) = &state.pointer_load {
+        // Preserve service diagnostics even when injection or another existing gate fails.
+        load.service.report();
+    }
+    native_result?;
+    match state.driver_result.take() {
         Some(Ok(())) => Ok(()),
         Some(Err(message)) => Err(io::Error::other(message).into()),
         None => Err(io::Error::other(
@@ -501,7 +504,21 @@ struct DiagnosticNativeHost {
 
 impl eframe::NativeHostHandler for DiagnosticNativeHost {
     fn on_service(&self, context: &egui::Context) -> eframe::NativeHostWake {
-        self.inner.on_service(context)
+        let started = active_service_start(&self.shared, self.measure_pointer_load);
+        let wake = self.inner.on_service(context);
+        if let Some(started) = started {
+            let elapsed = started.elapsed();
+            if let Some(load) = &mut self
+                .shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pointer_load
+            {
+                load.service.host_event(elapsed);
+            }
+        }
+        wake
     }
 
     fn before_output_input(
@@ -510,7 +527,22 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         token: eframe::NativeOutputToken,
         has_input: bool,
     ) -> eframe::NativeOutputInputAdmission {
-        self.inner.before_output_input(context, token, has_input)
+        let admission = self.inner.before_output_input(context, token, has_input);
+        if self.measure_pointer_load
+            && matches!(admission, eframe::NativeOutputInputAdmission::Defer(_))
+        {
+            let ended = Instant::now();
+            if let Some(load) = &mut self
+                .shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pointer_load
+            {
+                load.service.input_deferred(token, ended);
+            }
+        }
+        admission
     }
 
     fn install_output_pass_finalizer(
@@ -678,6 +710,9 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         window: eframe::NativeWindowSnapshot,
         root_roster: Option<eframe::NativeViewportRoster<'_>>,
     ) -> eframe::NativeOutputAdmission {
+        // Begin before admission, so the later input prelude and every Repeat
+        // pass share this one outer synchronous service interval.
+        let started = active_service_start(&self.shared, self.measure_pointer_load);
         if let Some(roster) = root_roster {
             let key = RootRosterKey::capture(roster);
             let work_area = validated_x11_work_area(roster);
@@ -694,7 +729,20 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 changed.notify_all();
             }
         }
-        self.inner.on_output_begin(token, window, root_roster)
+        let admission = self.inner.on_output_begin(token, window, root_roster);
+        if let Some(started) = started {
+            let ended = Instant::now();
+            if let Some(load) = &mut self
+                .shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pointer_load
+            {
+                load.service.admitted(token, started, ended, admission);
+            }
+        }
+        admission
     }
 
     fn on_output_pass_finalized(
@@ -702,7 +750,24 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         finalization: eframe::NativeOutputPassFinalization<'_>,
     ) -> eframe::NativeHostWake {
         let token = eframe::current_native_output_token();
+        let disposition = finalization.disposition();
         let wake = self.inner.on_output_pass_finalized(finalization);
+        if self.measure_pointer_load {
+            let ended = Instant::now();
+            if let Some(load) = &mut self
+                .shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pointer_load
+            {
+                load.service.finalized(
+                    token.expect("a real host finalizer has its active output token"),
+                    ended,
+                    disposition,
+                );
+            }
+        }
         if self.stationary_negative {
             let (lock, changed) = &*self.shared;
             if let Some(probe) = &mut lock
@@ -723,6 +788,16 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
     }
 
     fn on_output(&self, result: eframe::NativeOutputResult) -> eframe::NativeHostWake {
+        if self.measure_pointer_load
+            && let Some(load) = &mut self
+                .shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pointer_load
+        {
+            load.service.terminal(result.token());
+        }
         self.inner.on_output(result)
     }
 
@@ -850,7 +925,7 @@ impl eframe::App for PhysicalSmokeApp {
                 .as_ref()
                 .and_then(|probe| probe.result)
         });
-        let started = self.measure_pointer_load.then(Instant::now);
+        let started = active_service_start(&self.shared, self.measure_pointer_load);
         <NativeDockspaceApp<SmokePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
         if self.stationary_negative {
             let slow_suffix = {

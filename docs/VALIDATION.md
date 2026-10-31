@@ -15,6 +15,54 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 complete host service during the active 1 kHz journey
+
+The physical X11 runner now selects service samples by their entry time between
+the first matched native motion and the original native Primary release. Each
+accepted output retains one admission start through `before_output_input`, UI
+and its last successful Terminal finalizer. Repeat keeps that start; a later
+unwind after only Repeat is incomplete, not a successful terminal sample.
+Eframe exposes the frozen disposition through a read-only accessor so a wrapping
+host forwards the same affine finalization. Admission/input Defer, absent final
+passes and standalone `on_service` work are reported separately. Pending
+diagnostics are bounded to 32 entries, with backing reported outside the runtime
+input budget. An admitted tail can finish after release.
+
+All 57 Linux physical-runner tests and Clippy correctness/suspicious pass. The
+optimized real X11 journey matches all 1,000 callbacks at 1,004.7 Hz after
+999.7 Hz injection with no catch-up. Release-to-model is bounded by 20.874 ms;
+the sampled root UI maximum alone is 0.106 ms. Full Root, Child and standalone
+service each have 25 actual samples, with maxima 0.329, 0.176 and 0.985 ms. There
+are no missing final passes, deferred samples, duplicate admissions or pending
+diagnostic entries in that run. No Repeat or Defer happened in this real trace;
+controlled-time regressions cover those branches and the interrupted-Repeat
+negative case. Input owned/reserved peaks are 2,338,009/3,492,512 bytes under
+4,194,304 bytes. Diagnostic backing is 3,976 bytes, separately reported.
+
+These are elapsed observations for the stated finite active profile, including
+scheduling and wrapper overhead. They exclude rendering/terminal delay after
+the finalizer and do not prove a hard OS-loop yield or 2 ms wall-time guarantee.
+The initialization/atomic overruns in earlier pressure results remain valid.
+The adapter now also requires active Primary for a stationary device lookup;
+Secondary alone, including after Primary release, grants no continuation query.
+The focused native Primary/stationary regression set passes 10/10. Positive OS
+stationary capture is still unavailable.
+
+Existing native regression cases pass 570/570 with assertions and 570/570 without
+native assertions, with Clippy and formatting. These runs exclude the unchanged
+10,000-lifetime soak and the new mixed-owner test that is still failing; the
+separately qualified wall-time profile is not repeated. The unchanged core and
+public-host library retain their preceding source qualification.
+
+Evidence is `/tmp/dockspace-active-service-source.json`,
+`/tmp/dockspace-active-service-native-qualification.json`,
+`/tmp/dockspace-mixed-service-linux-final.json` and the matching qualified logs.
+Eframe's accessor is local fork commit
+`8231fb5ab0f37b72684f1c0f7807716be16c877e`, with unchanged Winit
+`6c10c87da2a0`. These explicit local overrides do not qualify remote tracked
+pins. The new mixed close/create/release model remains under investigation and
+is not included in this successful service claim.
+
 ## 2026-11-01 application Default and named presets after Root continuation
 
 The example following `c011e98` now restores its immutable Default using the

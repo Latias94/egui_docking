@@ -42,7 +42,7 @@ The next completion work is concrete:
 | --- | --- |
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
-| U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
+| U7/U8 capacity and service | Finish combined close/create/release ownership and the actual fork callback boundary. Complete synchronous service in the finite 1 kHz profile is now measured with real Root/Child/standalone samples; retain its exact scope rather than repeating W16/O256. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
 | U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
@@ -1810,6 +1810,32 @@ held receipt. Keep absent evidence Unknown. Acceptance needs one real XTest
 move followed by no injected motion until dwell commits exactly once through
 the matching output; ordinary pane input must remain unchanged.
 
+The 2026-11-01 bounded X11 probes now reproduce the key negative contracts on
+the isolated Xvfb/Openbox reference display. Exact-master, source-directed,
+unconfined asynchronous XIGrabDevice delivers Motion to A while the pointer is
+over B. Unmapping/remapping A's parent removes the grab even though a later query
+sees A viewable. A same-client ungrab while the pointer is in the grab window
+produces no crossing notification. A separate client's master-keyboard grab with
+paired synchronous pointer mode leaves XIQueryPointer reporting Primary down
+after physical release; an asynchronous pointer renewal returns GrabFrozen (4).
+Thaw then delivers the release. Evidence is
+`/tmp/dockspace-x11-capture-contract-probe.json` and
+`/tmp/dockspace-x11-freeze-contract-probe.json`; these are platform probes, not
+positive docking qualification or proof for other devices/window managers.
+
+The next implementation must bind queries to the original Primary press on the
+existing capture row, make every supported local grab mutation invalidate that
+identity before dispatch, and reject queued predecessor events through a
+server-ordered fence. Primary release ends its eligibility even while another
+button remains held. Renewal can only maintain an exact still-valid lease;
+failure cannot recreate it. Sample freshness also needs the post-sample
+asynchronous check and unchanged event boundary, not just one pre-query success.
+Ancestor coverage remains an admission condition; a first bounded profile may
+require a direct-root source while reparented/embedded windows stay Unknown.
+Neither a second lifecycle registry nor a new input clock is justified by this
+platform work. The current backend still fails closed for positive stationary
+input, and no new OS capability is enabled by these observations.
+
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
 roster and 32 original property identities coexist while ordinary input reaches
@@ -1833,6 +1859,22 @@ The new case and five preceding pressure journeys pass on macOS and X11 under
 window/output cross-saturation gap, while remaining close/create owner classes,
 actual wall-time service and broader native qualification remain open. See
 `docs/VALIDATION.md` for exact profiles, measurements and source evidence.
+
+The 2026-11-01 active-input service slice now measures the actual output
+admission-to-Terminal-finalizer interval, including input preparation and Repeat,
+and separately measures standalone native service in the same 1,000-motion run.
+Only entries beginning between the first matched native motion and Primary
+release qualify; admitted tails keep their complete duration. Missing Terminal
+passes, including interruption after Repeat, are failures rather than zero-cost
+samples. Linux 57 runner tests, Clippy, native 570 cases in both assertion modes
+and formatting pass; the unchanged 10,000-lifetime profile is not repeated.
+The optimized real run matches all 1,000 callbacks after 999.7 Hz injection with
+20.874 ms release-to-model upper bound, and 25 Root/Child/standalone samples with
+0.329/0.176/0.985 ms maxima. Measurements and source boundaries are in
+`docs/VALIDATION.md`; they do not prove hard OS-loop latency. Primary alone now
+controls stationary lookup eligibility. The mixed close/create cleanup and
+accepted-release regression remains under investigation rather than included
+in this passing service claim.
 
 An explicit ignored release test now measures each actual callback-prefix
 claim/translation/core-poll segment with the same system clock as ingress age
