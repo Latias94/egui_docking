@@ -35,7 +35,7 @@ mod work_area;
 
 pub use app::NativeDockspaceApp;
 pub use application_action::{
-    NativeActionFailure, NativeActionInterruption, NativeActionRequestError,
+    NativeActionFailure, NativeActionInterruption, NativeActionRequestError, NativeActionStatus,
 };
 pub use close_control::NativeWindowClosePolicy;
 pub use coordinator::NativeStorageLimit;

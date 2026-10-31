@@ -191,6 +191,23 @@ fill those gaps from the expected window or cached implicit capture. The
 renderer-neutral core supports stationary continuations when a host can supply
 complete native facts.
 
+The native application facade uses one bounded command/result slot for docking,
+selection, reopening, content-close requests, exact initial/deferred close
+decisions and arrangement locking. Consume `take_action_status()` before queuing
+another command; `NativeActionStatus::Dock` carries the original docking status.
+`pending_content_close_plans()` discovers current chrome and application requests
+directly from the core's existing inventory. The `basic` example shows the eight
+application-owned pane entries and explicit Allow/Veto/Defer controls. Pane data
+remains application-owned while an item is closed.
+
+This facade keeps its configured root logical surface. A close that would remove
+its only presentation returns `NativeActionRequestError::HostSurfaceRequired`,
+including an exact Allow for a chrome-created plan. Closing individual panes in
+a central root retains its empty dock area and permits reopening. Closing a
+complete root when another presentation remains uses the ordinary atomic close.
+Native host replacement, defaults/presets and document restore remain later
+layout-management work; this boundary is not a complete U10 readiness claim.
+
 Hosts that own official crates.io egui's complete run use the Dockspace wrapper
 to bind local settlement to that run without application-managed frame counts:
 

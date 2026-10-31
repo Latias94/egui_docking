@@ -8,11 +8,11 @@ use dockspace::model::{
     DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId,
     NativeWindowPlacement, RootId, SurfaceId,
 };
-use dockspace::policy::DockPolicy;
+use dockspace::policy::{CloseCapability, DockPolicy};
 use dockspace::runtime::DockspaceSession;
 use eframe::egui;
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
-use egui_dockspace_native::NativeDockspaceApp;
+use egui_dockspace_native::{NativeActionStatus, NativeDockspaceApp};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
@@ -27,12 +27,15 @@ const HISTORY: ItemId = ItemId::new(6);
 const PROFILER: ItemId = ItemId::new(7);
 const ASSETS: ItemId = ItemId::new(8);
 
+#[path = "basic/layout.rs"]
+mod layout;
 #[path = "basic/smoke.rs"]
 mod smoke;
 
 fn main() -> eframe::Result {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
+    policy.set_close_capability(CloseCapability::DeferredAllowed);
     let session = DockspaceSession::from_layout(example_layout(), policy)
         .expect("the static native example layout is valid");
     let dockspace = NativeDockspaceApp::new(
@@ -46,7 +49,7 @@ fn main() -> eframe::Result {
     let native_host = dockspace.native_host_handler();
     let app = NativeExampleApp {
         dockspace,
-        action: InspectorActionState::Idle,
+        action: ExampleActionState::Idle,
         status: None,
         smoke: std::env::args()
             .any(|argument| argument == "--smoke")
@@ -66,21 +69,23 @@ fn main() -> eframe::Result {
 
 struct NativeExampleApp {
     dockspace: NativeDockspaceApp<ExamplePanes>,
-    action: InspectorActionState,
+    action: ExampleActionState,
     status: Option<String>,
     smoke: Option<smoke::EditorSmoke>,
 }
 
 #[derive(Clone, Copy, Default)]
-enum InspectorActionState {
+enum ExampleActionState {
     #[default]
     Idle,
     AwaitingTearOffOutcome,
     AwaitingFirstPresentation(SurfaceId),
     AwaitingDockBackOutcome(RootId),
+    AwaitingLayoutOutcome(&'static str),
+    AwaitingSmokeOutcome(&'static str),
 }
 
-impl InspectorActionState {
+impl ExampleActionState {
     const fn is_pending(self) -> bool {
         !matches!(self, Self::Idle)
     }
@@ -90,8 +95,9 @@ impl eframe::App for NativeExampleApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if matches!(
             self.action,
-            InspectorActionState::AwaitingTearOffOutcome
-                | InspectorActionState::AwaitingDockBackOutcome(_)
+            ExampleActionState::AwaitingTearOffOutcome
+                | ExampleActionState::AwaitingDockBackOutcome(_)
+                | ExampleActionState::AwaitingLayoutOutcome(_)
         ) {
             self.collect_action_status();
         }
@@ -111,10 +117,6 @@ impl eframe::App for NativeExampleApp {
 impl NativeExampleApp {
     fn show_controls(&mut self, ui: &mut egui::Ui) {
         self.finish_first_live_wait();
-        if self.action.is_pending() {
-            self.show_pending_controls(ui);
-            return;
-        }
         let inspector = self
             .dockspace
             .with_view(|view| view.item(INSPECTOR).map(InspectorLocation::from))
@@ -125,7 +127,10 @@ impl NativeExampleApp {
             ui.strong("Dockspace native editor");
             ui.separator();
             let contained_root = inspector.filter(|location| location.is_contained());
-            let enabled = root_presented && contained_root.is_some();
+            let enabled = self.controls_available()
+                && !self.dockspace.arrangement_locked()
+                && root_presented
+                && contained_root.is_some();
             if ui
                 .add_enabled(enabled, egui::Button::new("Open Inspector Window ↗"))
                 .on_disabled_hover_text(
@@ -137,38 +142,47 @@ impl NativeExampleApp {
                 self.request_inspector_window(location.root);
             }
             if let Some(location) = inspector.filter(|location| location.is_native_child()) {
-                if ui.button("Dock Inspector Back").clicked() {
+                if ui
+                    .add_enabled(
+                        self.controls_available() && !self.dockspace.arrangement_locked(),
+                        egui::Button::new("Dock Inspector Back"),
+                    )
+                    .clicked()
+                {
                     self.request_inspector_dock_back(location.root);
                 }
             } else if !root_presented {
                 ui.label("Waiting for the root output to be presented…");
             }
         });
+        self.show_layout_controls(ui);
+        if self.action.is_pending() {
+            self.show_pending_controls(ui);
+        }
         self.show_capability_status(ui, inspector, root_presented);
         self.show_presentation_state(ui, inspector, root_presented);
         self.show_walkthrough(ui);
         if let Some(status) = &self.status {
-            ui.small(format!("Last presentation action: {status}"));
+            ui.small(format!("Last action: {status}"));
         }
     }
 
     fn show_pending_controls(&self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Dockspace native editor");
-            ui.separator();
             ui.spinner();
             match self.action {
-                InspectorActionState::AwaitingDockBackOutcome(_) => {
+                ExampleActionState::AwaitingDockBackOutcome(_) => {
                     ui.label("Presenting Inspector back in the root dockspace…");
+                }
+                ExampleActionState::AwaitingLayoutOutcome(operation)
+                | ExampleActionState::AwaitingSmokeOutcome(operation) => {
+                    ui.label(format!("{operation}: waiting for the committed result…"));
                 }
                 _ => {
                     ui.label("Creating and presenting the native child window…");
                 }
             }
         });
-        if let Some(status) = &self.status {
-            ui.small(format!("Last presentation action: {status}"));
-        }
     }
 
     fn show_capability_status(
@@ -177,18 +191,25 @@ impl NativeExampleApp {
         inspector: Option<InspectorLocation>,
         root_presented: bool,
     ) {
-        let local = if root_presented {
+        let locked = self.dockspace.arrangement_locked();
+        let local = if root_presented && locked {
+            "selection ready; arrangement locked"
+        } else if root_presented {
             "ready"
         } else {
             "waiting for the root surface"
         };
-        let contained = if inspector.is_some_and(InspectorLocation::is_contained) {
+        let contained = if locked {
+            "arrangement locked"
+        } else if inspector.is_some_and(InspectorLocation::is_contained) {
             "ready"
         } else {
             "not currently presented"
         };
         let native = if self.dockspace.error_kind().is_some() {
             "unavailable (runtime stopped)"
+        } else if locked {
+            "arrangement locked"
         } else {
             "programmatic window hosting ready; physical input requires backend facts"
         };
@@ -243,11 +264,18 @@ impl NativeExampleApp {
                      Drag a tab from the child over document content into a center or edge docking basin; guides are visual hints. \
                      Closing an OS child restores its recovery target and keeps pane data.",
                 );
+                ui.label(
+                    "5. Pane inventory lists all eight application-owned panes. Select an open pane, \
+                     request a pane or group close, then explicitly Allow, Veto or Defer each pending decision. \
+                     Finish a deferred decision with its continuation controls. Reopen restores the same pane data \
+                     beside the current Document, or in the current main root when Document is closed. \
+                     Lock arrangement disables layout changes while selection and content editing remain available.",
+                );
                 ui.small(
                     "Physical promotion is intentionally fail-closed when the host cannot provide exact cross-window pointer facts. \
                      X11 is the physical reference; macOS has programmatic hosting evidence. \
                      Other platforms and mixed DPI require their own qualification. Use the presentation commands when physical facts are unavailable. \
-                     Layout presets and closed-pane inventory are demonstrated separately by the official workspace_persistence example.",
+                     Layout presets and document restore are demonstrated separately by the official workspace_persistence example.",
                 );
             });
     }
@@ -262,7 +290,7 @@ impl NativeExampleApp {
             .request_move_root_to_new_window(root, placement)
         {
             Ok(()) => {
-                self.action = InspectorActionState::AwaitingTearOffOutcome;
+                self.action = ExampleActionState::AwaitingTearOffOutcome;
                 self.status = None;
             }
             Err(error) => self.status = Some(format!("Could not open native window: {error}")),
@@ -272,7 +300,7 @@ impl NativeExampleApp {
     fn request_inspector_dock_back(&mut self, root: RootId) {
         match self.dockspace.request_dock_root_back(root) {
             Ok(()) => {
-                self.action = InspectorActionState::AwaitingDockBackOutcome(root);
+                self.action = ExampleActionState::AwaitingDockBackOutcome(root);
                 self.status = None;
             }
             Err(error) => self.status = Some(format!("Could not dock Inspector back: {error}")),
@@ -285,69 +313,54 @@ impl NativeExampleApp {
         };
         match (self.action, status) {
             (
-                InspectorActionState::AwaitingTearOffOutcome,
-                Ok(DockspaceActionStatus::Applied(
+                ExampleActionState::AwaitingTearOffOutcome,
+                Ok(NativeActionStatus::Dock(DockspaceActionStatus::Applied(
                     DockspaceActionOutcome::NativeRootTearOffRequested { target_surface, .. },
-                )),
+                ))),
             ) => {
-                self.action = InspectorActionState::AwaitingFirstPresentation(target_surface);
+                self.action = ExampleActionState::AwaitingFirstPresentation(target_surface);
                 self.status = Some(
                     "Native child creation accepted; waiting for first live presentation."
                         .to_owned(),
                 );
             }
             (
-                InspectorActionState::AwaitingDockBackOutcome(expected_root),
-                Ok(DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
-                    root,
-                    changed: true,
-                    ..
-                })),
+                ExampleActionState::AwaitingDockBackOutcome(expected_root),
+                Ok(NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                    DockspaceActionOutcome::RootDocked {
+                        root,
+                        changed: true,
+                        ..
+                    },
+                ))),
             ) if root == expected_root => {
-                self.action = InspectorActionState::Idle;
+                self.action = ExampleActionState::Idle;
                 self.status =
                     Some("Inspector was presented back in the root dockspace.".to_owned());
             }
-            (_, Ok(DockspaceActionStatus::Applied(outcome))) => {
-                self.action = InspectorActionState::Idle;
-                self.status = Some(format!(
-                    "Unexpected native demo action outcome: {outcome:?}"
-                ));
-            }
-            (_, Ok(DockspaceActionStatus::Rejected(reason))) => {
-                self.action = InspectorActionState::Idle;
-                self.status = Some(format!("The presentation action was rejected: {reason:?}"));
-            }
-            (_, Ok(DockspaceActionStatus::Stale { .. })) => {
-                self.action = InspectorActionState::Idle;
-                self.status =
-                    Some("The layout changed before the request committed; try again.".to_owned());
-            }
-            (_, Ok(DockspaceActionStatus::PresentationFailed { reason, .. })) => {
-                self.action = InspectorActionState::Idle;
-                self.status = Some(format!(
-                    "The target presentation did not complete: {reason:?}"
-                ));
+            (_, Ok(status)) => {
+                self.action = ExampleActionState::Idle;
+                self.status = Some(layout::describe_status(&status));
             }
             (_, Err(error)) => {
-                self.action = InspectorActionState::Idle;
+                self.action = ExampleActionState::Idle;
                 self.status = Some(format!("The native action was interrupted: {error}"));
             }
         }
     }
 
     fn finish_first_live_wait(&mut self) {
-        let InspectorActionState::AwaitingFirstPresentation(surface) = self.action else {
+        let ExampleActionState::AwaitingFirstPresentation(surface) = self.action else {
             return;
         };
         if self.dockspace.is_surface_presented(surface) {
-            self.action = InspectorActionState::Idle;
+            self.action = ExampleActionState::Idle;
             self.status = Some("Native child reached its first live presentation.".to_owned());
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct InspectorLocation {
     root: RootId,
     surface: SurfaceId,

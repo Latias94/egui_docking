@@ -1,22 +1,37 @@
-//! Bounded application-owned product action ingress.
+//! Bounded application-owned docking, close and configuration ingress.
 
-use dockspace::model::{DockspaceActionOutcome, WorkspaceVersion};
+use dockspace::close::{
+    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+};
+use dockspace::model::{DockspaceActionOutcome, SurfaceId, WorkspaceVersion};
+use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
+    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
+    DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspaceHostFrame,
     DockspacePresentationTransition, DockspacePresentationTransitionId,
-    DockspacePresentationTransitionResult, HostInputOutcome, PreparedDockAction,
+    DockspacePresentationTransitionResult, DockspaceRuntimeError, DockspaceSubmittedAction,
+    HostInputOutcome, PreparedCloseRequest, PreparedDockAction,
 };
 use egui_dockspace::DockspaceActionStatus;
 
 use crate::NativeRuntimeErrorKind;
 
-/// Failure to queue one application-owned product action.
+/// Failure to queue one application-owned command.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeActionRequestError {
-    /// Another application action is waiting for the next final root pass.
+    /// Another command, presentation terminal or unconsumed result owns the slot.
     Busy,
     /// The native runtime has entered terminal shutdown.
     Stopped,
+    /// This fixed-host facade cannot remove its own logical surface.
+    ///
+    /// Keep an empty central root or another presentation on this surface.
+    /// Native surface replacement and rebinding require a separate lifecycle.
+    HostSurfaceRequired {
+        /// The native application's fixed logical host surface.
+        surface: SurfaceId,
+    },
 }
 
 impl NativeActionRequestError {
@@ -34,6 +49,9 @@ impl std::fmt::Display for NativeActionRequestError {
         let message = match self {
             Self::Busy => "a native dockspace application action is already pending",
             Self::Stopped => "the native dockspace runtime is stopped",
+            Self::HostSurfaceRequired { .. } => {
+                "keep a central dock area or another group open before closing this content"
+            }
         };
         formatter.write_str(message)
     }
@@ -99,7 +117,172 @@ impl std::fmt::Display for NativeActionFailure {
 
 impl std::error::Error for NativeActionFailure {}
 
-pub(crate) type NativeActionTerminal = Result<DockspaceActionStatus, NativeActionFailure>;
+/// Exact committed result of one application command.
+///
+/// Close requests return the core plan without deciding on the application's
+/// behalf. Consume this result before submitting a decision or another command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeActionStatus {
+    /// A docking, selection, or reopening command reached its terminal status.
+    Dock(DockspaceActionStatus),
+    /// A content-close request opened or reused one core-owned plan.
+    CloseRequested {
+        /// Current exact plan, including application decision tokens.
+        plan: DockspaceClosePlan,
+        /// Whether an unresolved plan already existed for this target.
+        reused: bool,
+    },
+    /// Current policy or topology rejected a content-close request.
+    CloseRejected(DockspaceCloseRequestRejection),
+    /// One initial or deferred close decision was consumed.
+    CloseDecisionProcessed {
+        /// Exact resolution, including inert stale or duplicate tokens.
+        resolution: DockspaceCloseResolution,
+        /// Latest core plan when its retained detail remains available.
+        plan: Option<DockspaceClosePlan>,
+        /// Atomic close result after the final allow decision.
+        application: Option<Result<DockspaceCloseOutcome, DockspaceCloseRejection>>,
+        /// Whether this decision changed durable topology.
+        changed: bool,
+    },
+    /// The arrangement policy committed at its terminal configuration boundary.
+    ArrangementLockChanged {
+        /// Requested arrangement lock state.
+        locked: bool,
+        /// Whether the policy differed from its previous value.
+        changed: bool,
+        /// Workspace version after the configuration input.
+        version: WorkspaceVersion,
+    },
+    /// A content-close request was prepared from an obsolete workspace version.
+    Stale {
+        /// Version frozen when the command was queued.
+        expected: WorkspaceVersion,
+        /// Version accepted by the reducer.
+        accepted: WorkspaceVersion,
+    },
+}
+
+pub(crate) type NativeActionTerminal = Result<NativeActionStatus, NativeActionFailure>;
+
+/// One affine command retained by the existing application slot.
+#[derive(Debug)]
+pub(crate) struct NativeApplicationAction {
+    expected: WorkspaceVersion,
+    pub(crate) command: NativeApplicationCommand,
+}
+
+#[derive(Debug)]
+pub(crate) enum NativeApplicationCommand {
+    Dock(PreparedDockAction),
+    Close(PreparedCloseRequest),
+    DecideClose {
+        request: CloseRequestId,
+        token: CloseDecisionToken,
+        decision: CloseDecision,
+    },
+    ContinueClose {
+        request: CloseRequestId,
+        token: DeferredCloseToken,
+        decision: DeferredCloseDecision,
+    },
+    ArrangementLock(Box<DockPolicy>),
+}
+
+impl From<PreparedDockAction> for NativeApplicationAction {
+    fn from(action: PreparedDockAction) -> Self {
+        Self {
+            expected: action.expected_version(),
+            command: NativeApplicationCommand::Dock(action),
+        }
+    }
+}
+
+impl From<PreparedCloseRequest> for NativeApplicationAction {
+    fn from(request: PreparedCloseRequest) -> Self {
+        Self {
+            expected: request.expected_version(),
+            command: NativeApplicationCommand::Close(request),
+        }
+    }
+}
+
+impl NativeApplicationAction {
+    pub(crate) const fn new(expected: WorkspaceVersion, command: NativeApplicationCommand) -> Self {
+        Self { expected, command }
+    }
+
+    pub(crate) const fn expected_version(&self) -> WorkspaceVersion {
+        self.expected
+    }
+
+    pub(crate) fn submit(
+        self,
+        frame: &mut DockspaceHostFrame<'_>,
+    ) -> Result<NativeApplicationSubmission, DockspaceRuntimeError> {
+        let submitted = match self.command {
+            NativeApplicationCommand::Dock(action) => frame.submit_prepared_action(action)?,
+            NativeApplicationCommand::Close(request) => {
+                frame.submit_prepared_close_request(request)?
+            }
+            NativeApplicationCommand::DecideClose {
+                request,
+                token,
+                decision,
+            } => frame.resolve_close(request, token, decision)?,
+            NativeApplicationCommand::ContinueClose {
+                request,
+                token,
+                decision,
+            } => frame.continue_deferred_close(request, token, decision)?,
+            NativeApplicationCommand::ArrangementLock(policy) => {
+                return Ok(NativeApplicationSubmission::Configuration(policy));
+            }
+        };
+        Ok(NativeApplicationSubmission::Input(submitted))
+    }
+
+    fn expectation(&self) -> NativeActionExpectation {
+        match &self.command {
+            NativeApplicationCommand::Dock(_) => NativeActionExpectation::Dock,
+            NativeApplicationCommand::Close(_) => NativeActionExpectation::Close,
+            NativeApplicationCommand::DecideClose { .. }
+            | NativeApplicationCommand::ContinueClose { .. } => {
+                NativeActionExpectation::CloseDecision
+            }
+            NativeApplicationCommand::ArrangementLock(policy) => {
+                NativeActionExpectation::ArrangementLock(policy.arrangement_locked())
+            }
+        }
+    }
+}
+
+/// Stack-local phase distinction within one rollbackable core frame.
+pub(crate) enum NativeApplicationSubmission {
+    Input(DockspaceSubmittedAction),
+    Configuration(Box<DockPolicy>),
+}
+
+impl NativeApplicationSubmission {
+    /// Appends configuration after all earlier local and focus input.
+    pub(crate) fn finish(
+        self,
+        frame: &mut DockspaceHostFrame<'_>,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        match self {
+            Self::Input(submitted) => Ok(submitted),
+            Self::Configuration(policy) => frame.replace_policy(*policy),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NativeActionExpectation {
+    Dock,
+    Close,
+    CloseDecision,
+    ArrangementLock(bool),
+}
 
 /// Single-slot queue consumed only by the final root pass.
 #[derive(Debug, Default)]
@@ -110,8 +293,11 @@ pub(crate) struct NativeApplicationActions {
 #[derive(Debug)]
 enum NativeApplicationActionState {
     Vacant,
-    Queued(PreparedDockAction),
-    UncommittedFrame(WorkspaceVersion),
+    Queued(NativeApplicationAction),
+    UncommittedFrame {
+        expected: WorkspaceVersion,
+        kind: NativeActionExpectation,
+    },
     AwaitingPresentation {
         requested: DockspaceActionOutcome,
         transition: DockspacePresentationTransitionId,
@@ -129,12 +315,12 @@ impl Default for NativeApplicationActionState {
 impl NativeApplicationActions {
     pub(crate) fn enqueue(
         &mut self,
-        action: PreparedDockAction,
+        action: impl Into<NativeApplicationAction>,
     ) -> Result<(), NativeActionRequestError> {
         if self.is_occupied() {
             return Err(NativeActionRequestError::busy());
         }
-        self.state = NativeApplicationActionState::Queued(action);
+        self.state = NativeApplicationActionState::Queued(action.into());
         Ok(())
     }
 
@@ -146,13 +332,16 @@ impl NativeApplicationActions {
         matches!(self.state, NativeApplicationActionState::Queued(_))
     }
 
-    pub(crate) fn take(&mut self) -> Option<PreparedDockAction> {
+    pub(crate) fn take(&mut self) -> Option<NativeApplicationAction> {
         let state = std::mem::take(&mut self.state);
         let NativeApplicationActionState::Queued(action) = state else {
             self.state = state;
             return None;
         };
-        self.state = NativeApplicationActionState::UncommittedFrame(action.expected_version());
+        self.state = NativeApplicationActionState::UncommittedFrame {
+            expected: action.expected_version(),
+            kind: action.expectation(),
+        };
         Some(action)
     }
 
@@ -165,7 +354,7 @@ impl NativeApplicationActions {
             NativeApplicationActionState::Vacant
             | NativeApplicationActionState::Queued(_)
             | NativeApplicationActionState::Terminal(_) => Ok(false),
-            NativeApplicationActionState::UncommittedFrame(expected) => {
+            NativeApplicationActionState::UncommittedFrame { expected, kind } => {
                 let Some(input) = input else {
                     self.set_terminal_failure(
                         NativeRuntimeErrorKind::Internal,
@@ -173,31 +362,87 @@ impl NativeApplicationActions {
                     );
                     return Err(());
                 };
-                let settlement = match input {
-                    HostInputOutcome::ProductActionApplied(outcome) => {
-                        ReductionSettlement::Terminal(DockspaceActionStatus::Applied(
-                            outcome.clone(),
-                        ))
-                    }
-                    HostInputOutcome::ProductPresentationActionRequested {
-                        outcome,
-                        transition,
-                    } => ReductionSettlement::Presentation {
+                let settlement = match (kind, input) {
+                    (
+                        NativeActionExpectation::Dock,
+                        HostInputOutcome::ProductActionApplied(outcome),
+                    ) => ReductionSettlement::Terminal(DockspaceActionStatus::Applied(
+                        outcome.clone(),
+                    )),
+                    (
+                        NativeActionExpectation::Dock,
+                        HostInputOutcome::ProductPresentationActionRequested {
+                            outcome,
+                            transition,
+                        },
+                    ) => ReductionSettlement::Presentation {
                         requested: outcome.clone(),
                         transition: *transition,
                     },
-                    HostInputOutcome::ProductActionRejected(reason) => {
-                        ReductionSettlement::Terminal(DockspaceActionStatus::Rejected(*reason))
+                    (
+                        NativeActionExpectation::Dock,
+                        HostInputOutcome::ProductActionRejected(reason),
+                    ) => ReductionSettlement::Terminal(DockspaceActionStatus::Rejected(*reason)),
+                    (
+                        _,
+                        HostInputOutcome::StaleRejected {
+                            expected: stale,
+                            accepted,
+                        },
+                    ) if *stale == *expected => {
+                        let status = if matches!(kind, NativeActionExpectation::Dock) {
+                            NativeActionStatus::Dock(DockspaceActionStatus::Stale {
+                                expected: *stale,
+                                accepted: *accepted,
+                            })
+                        } else {
+                            NativeActionStatus::Stale {
+                                expected: *stale,
+                                accepted: *accepted,
+                            }
+                        };
+                        ReductionSettlement::ApplicationTerminal(status)
                     }
-                    HostInputOutcome::StaleRejected {
-                        expected: stale,
-                        accepted,
-                    } if *stale == *expected => {
-                        ReductionSettlement::Terminal(DockspaceActionStatus::Stale {
-                            expected: *stale,
-                            accepted: *accepted,
-                        })
+                    (
+                        NativeActionExpectation::Close,
+                        HostInputOutcome::CloseRequested { plan, reused, .. },
+                    ) => ReductionSettlement::ApplicationTerminal(
+                        NativeActionStatus::CloseRequested {
+                            plan: plan.clone(),
+                            reused: *reused,
+                        },
+                    ),
+                    (NativeActionExpectation::Close, HostInputOutcome::CloseRejected(reason)) => {
+                        ReductionSettlement::ApplicationTerminal(NativeActionStatus::CloseRejected(
+                            *reason,
+                        ))
                     }
+                    (
+                        NativeActionExpectation::CloseDecision,
+                        HostInputOutcome::CloseDecisionProcessed {
+                            resolution,
+                            plan,
+                            application,
+                            changed,
+                        },
+                    ) => ReductionSettlement::ApplicationTerminal(
+                        NativeActionStatus::CloseDecisionProcessed {
+                            resolution: *resolution,
+                            plan: plan.clone(),
+                            application: application.clone(),
+                            changed: *changed,
+                        },
+                    ),
+                    (
+                        NativeActionExpectation::ArrangementLock(locked),
+                        HostInputOutcome::PolicyReplaced { changed, version },
+                    ) => ReductionSettlement::ApplicationTerminal(
+                        NativeActionStatus::ArrangementLockChanged {
+                            locked: *locked,
+                            changed: *changed,
+                            version: *version,
+                        },
+                    ),
                     _ => {
                         self.set_terminal_failure(
                             NativeRuntimeErrorKind::Internal,
@@ -221,6 +466,12 @@ impl NativeApplicationActions {
                             );
                             return Err(());
                         }
+                        self.state = NativeApplicationActionState::Terminal(Ok(
+                            NativeActionStatus::Dock(status),
+                        ));
+                        Ok(true)
+                    }
+                    ReductionSettlement::ApplicationTerminal(status) => {
                         self.state = NativeApplicationActionState::Terminal(Ok(status));
                         Ok(true)
                     }
@@ -301,7 +552,7 @@ impl NativeApplicationActions {
                 reason: transition.result(),
             }
         };
-        self.state = NativeApplicationActionState::Terminal(Ok(status));
+        self.state = NativeApplicationActionState::Terminal(Ok(NativeActionStatus::Dock(status)));
         Ok(true)
     }
 
@@ -326,7 +577,7 @@ impl NativeApplicationActions {
         }
         match self.state {
             NativeApplicationActionState::Queued(_)
-            | NativeApplicationActionState::UncommittedFrame(_) => {
+            | NativeApplicationActionState::UncommittedFrame { .. } => {
                 self.set_terminal_failure(kind, NativeActionInterruption::NotCommitted);
                 true
             }
@@ -369,6 +620,7 @@ impl NativeApplicationActions {
 
 enum ReductionSettlement {
     Terminal(DockspaceActionStatus),
+    ApplicationTerminal(NativeActionStatus),
     Presentation {
         requested: DockspaceActionOutcome,
         transition: DockspacePresentationTransitionId,

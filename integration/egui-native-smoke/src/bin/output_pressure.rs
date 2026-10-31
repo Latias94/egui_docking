@@ -23,7 +23,8 @@ use dockspace::runtime::{
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::{
-    NativeDockspaceApp, NativeRuntimeErrorKind, NativeStorageLimit, NativeWindowClosePolicy,
+    NativeActionStatus, NativeDockspaceApp, NativeRuntimeErrorKind, NativeStorageLimit,
+    NativeWindowClosePolicy,
 };
 
 #[path = "output_pressure/combined.rs"]
@@ -547,23 +548,25 @@ impl PressureApp {
         }
         if let Some(status) = runtime.take_action_status() {
             match status {
-                Ok(DockspaceActionStatus::Applied(ref outcome))
+                Ok(NativeActionStatus::Dock(DockspaceActionStatus::Applied(ref outcome)))
                     if state
                         .combined
                         .as_mut()
                         .is_some_and(|combined| combined.on_action(outcome)) => {}
-                Ok(DockspaceActionStatus::Applied(
+                Ok(NativeActionStatus::Dock(DockspaceActionStatus::Applied(
                     DockspaceActionOutcome::NativeRootTearOffRequested {
                         root,
                         target_surface,
                         ..
                     },
-                )) if root == CHILD_ROOT => state.child_surface = Some(target_surface),
-                Ok(DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
-                    root,
-                    changed: true,
-                    ..
-                })) if root == CHILD_ROOT && state.phase == Phase::AwaitRedock => {
+                ))) if root == CHILD_ROOT => state.child_surface = Some(target_surface),
+                Ok(NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                    DockspaceActionOutcome::RootDocked {
+                        root,
+                        changed: true,
+                        ..
+                    },
+                ))) if root == CHILD_ROOT && state.phase == Phase::AwaitRedock => {
                     state.phase = Phase::AwaitRetirement;
                 }
                 status => return Err(format!("unexpected application result {status:?}")),

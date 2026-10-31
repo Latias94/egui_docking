@@ -4,6 +4,8 @@ Run in an isolated X11 test display with a window manager and xdotool. Build
 the native basic example separately, then pass its executable as the sole
 argument. Diagnostic rectangles only locate real input; the app checks current
 presentation, stable pane identity, exact text and lifecycle quiescence.
+Five edits and the second child close use real X11 input. Content close/Allow,
+reopening and arrangement lock/rejected move/select/unlock are programmatic.
 """
 
 from __future__ import annotations
@@ -66,9 +68,27 @@ def run(binary: Path) -> None:
         lines.put(None)
 
     threading.Thread(target=read_output, daemon=True).start()
-    markers = iter(["ROOT_EDIT", "CHILD_EDIT", "BACK_EDIT", "RECOVERED_EDIT"])
+    edits = ["ROOT_EDIT", "CHILD_EDIT", "BACK_EDIT", "RECOVERED_EDIT", "REOPENED_EDIT"]
+    markers = iter(edits)
     expected = next(markers)
+    accepted: list[str] = []
+    programmatic = iter(
+        [
+            "close-requested",
+            "allow-close",
+            "closed",
+            "reopen",
+            "reopen-focus",
+            "lock",
+            "locked-move-rejected",
+            "select-while-locked",
+            "unlock",
+            "quiescent",
+        ]
+    )
+    expected_programmatic = next(programmatic)
     children: list[str] = []
+    os_close_sent = False
     complete = False
     deadline = time.monotonic() + 75
     try:
@@ -92,6 +112,13 @@ def run(binary: Path) -> None:
                 marker, kind, x, y = match.groups()
                 if marker != expected:
                     raise RuntimeError(f"expected {expected}, got {marker}")
+                expected_kind = "child" if marker == "CHILD_EDIT" else "root"
+                if kind != expected_kind:
+                    raise RuntimeError(f"expected {marker} in {expected_kind}, got {kind}")
+                if marker == "REOPENED_EDIT" and expected_programmatic != "lock":
+                    raise RuntimeError(
+                        "the fifth OS edit was requested before close/Allow/reopen"
+                    )
                 if kind == "root":
                     for retired in children:
                         assert_destroyed(retired)
@@ -99,6 +126,12 @@ def run(binary: Path) -> None:
                 if kind == "child":
                     children.append(target)
                 xdotool("windowactivate", "--sync", target)
+                if marker == "REOPENED_EDIT":
+                    # The actual TextEdit has already confirmed restored focus.
+                    # Its geometric center may lie behind the surviving floating
+                    # Preview; typing here verifies focus without a new click.
+                    print("editor-x11: fifth edit uses the restored widget focus", flush=True)
+                    continue
                 local_x, local_y = round(float(x)), round(float(y))
                 xdotool("mousemove", "--window", target, str(local_x), str(local_y))
                 geometry = subprocess.check_output(
@@ -132,15 +165,56 @@ def run(binary: Path) -> None:
                 xdotool("key", "--clearmodifiers", "ctrl+End")
                 xdotool("type", "--clearmodifiers", "--delay", "1", marker)
                 expected = next(markers, "COMPLETE")
+            elif "editor-smoke: accepted real focused edit" in line:
+                match = re.search(r"accepted real focused edit (\w+) item=(\d+)", line)
+                if match is None:
+                    raise RuntimeError(
+                        "the accepted OS edit omitted its stable item identity"
+                    )
+                marker, item = match.groups()
+                if (
+                    len(accepted) >= len(edits)
+                    or marker != edits[len(accepted)]
+                    or item != "4"
+                ):
+                    raise RuntimeError(f"unexpected accepted OS edit: {marker} item={item}")
+                accepted.append(marker)
             elif "editor-smoke: close-child;" in line:
+                if os_close_sent or accepted != edits[:3]:
+                    raise RuntimeError("the OS child close did not follow the first three edits")
                 target = window(process.pid, "child")
                 children.append(target)
                 xdotool("windowactivate", "--sync", target)
                 # The window manager generates a real WM_DELETE_WINDOW request.
                 xdotool("key", "--clearmodifiers", "alt+F4")
+                os_close_sent = True
+            elif "editor-smoke: programmatic=" in line:
+                operation = line.split("programmatic=", 1)[1].split()[0]
+                if operation != expected_programmatic:
+                    raise RuntimeError(
+                        f"expected programmatic {expected_programmatic}, got {operation}"
+                    )
+                expected_edits = (
+                    edits[:4]
+                    if operation in {
+                        "close-requested", "allow-close", "closed", "reopen", "reopen-focus"
+                    }
+                    else edits
+                )
+                if accepted != expected_edits:
+                    raise RuntimeError(
+                        f"programmatic {operation} preceded its required OS edits"
+                    )
+                expected_programmatic = next(programmatic, "COMPLETE")
             elif "editor-smoke: complete;" in line:
-                if expected != "COMPLETE":
-                    raise RuntimeError("the application completed before all four OS edits")
+                if expected != "COMPLETE" or accepted != edits:
+                    raise RuntimeError("the application completed before all five OS edits")
+                if expected_programmatic != "COMPLETE":
+                    raise RuntimeError(
+                        "the application completed before close/reopen/lock quiescence"
+                    )
+                if not os_close_sent or len(children) != 2:
+                    raise RuntimeError("the workflow did not exercise two child lifetimes")
                 complete = True
         code = process.wait(timeout=5)
         if not complete or code != 0:
@@ -149,7 +223,11 @@ def run(binary: Path) -> None:
             )
         for retired in children:
             assert_destroyed(retired)
-        print("editor-x11: four real focused edits and two child-window lifetimes verified")
+        print(
+            "editor-x11: five real focused edits on the same Inspector item, "
+            "two destroyed child windows, programmatic close/Allow/reopen and "
+            "lock/rejected move/select/unlock with final quiescence verified"
+        )
     finally:
         if process.poll() is None:
             process.terminate()

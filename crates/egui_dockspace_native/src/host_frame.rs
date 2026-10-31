@@ -5,8 +5,7 @@ use std::sync::Arc;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSubmittedAction, HostFrameReport, HostInputOutcome,
-    PreparedDockAction, PreparedPaneFocusObservation, PreparedSurfaceAction,
-    SurfaceUnavailableReason,
+    PreparedPaneFocusObservation, PreparedSurfaceAction, SurfaceUnavailableReason,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, PaneView};
@@ -200,15 +199,6 @@ impl<'session> NativeHostFrame<'session> {
     ) -> Result<(), NativeRuntimeError> {
         self.frame
             .submit_pane_focus_observation(observation)
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn submit_prepared_action(
-        &mut self,
-        action: PreparedDockAction,
-    ) -> Result<DockspaceSubmittedAction, NativeRuntimeError> {
-        self.frame
-            .submit_prepared_action(action)
             .map_err(Into::into)
     }
 

@@ -323,9 +323,14 @@ Physical targets use registered TextEdit content; completed-pass tests cover
 Button/canvas mapping and overlay blocking separately. Final refreshed gate
 results and source hashes are recorded in that entry.
 
-Native layout-management facade work, complete overflow/stationary acceptance
-and the remaining U7/U8/U10 criteria are still open. This bounded example does
-not certify the entire native editor surface.
+The next layout slice adds a bounded application facade for close decisions,
+reopen and arrangement locking. Its current qualification is recorded separately
+in `VALIDATION.md`. The fixed host surface cannot be removed by content close:
+the facade reports `HostSurfaceRequired`, while individual-item closes can leave
+an empty central dock area for reopening. Replacing/rebinding that host, native
+defaults/presets/document restore, complete overflow/stationary acceptance and
+the remaining U7/U8/U10 criteria stay open. This bounded example does not certify
+the entire native editor surface.
 
 ## Dependency reproducibility and open scope
 

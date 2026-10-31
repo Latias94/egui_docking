@@ -21,8 +21,8 @@ use dockspace::runtime::{
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::{
-    NativeActionRequestError, NativeCloseProgress, NativeDockspaceApp, NativeStorageLimit,
-    NativeWindowClosePolicy,
+    NativeActionRequestError, NativeActionStatus, NativeCloseProgress, NativeDockspaceApp,
+    NativeStorageLimit, NativeWindowClosePolicy,
 };
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
@@ -419,20 +419,20 @@ impl SmokeApp {
             return;
         };
         match status {
-            Ok(DockspaceActionStatus::Applied(
+            Ok(NativeActionStatus::Dock(DockspaceActionStatus::Applied(
                 DockspaceActionOutcome::NativeRootTearOffRequested {
                     root,
                     source_surface,
                     target_surface,
                     items,
                 },
-            )) if root == CHILD_ROOT
+            ))) if root == CHILD_ROOT
                 && source_surface == ROOT_SURFACE
                 && items == [CHILD_ITEM, CHILD_DETAIL] =>
             {
                 self.transition(SmokePhase::AwaitFirstLive { target_surface });
             }
-            Ok(DockspaceActionStatus::Stale { .. }) => {
+            Ok(NativeActionStatus::Dock(DockspaceActionStatus::Stale { .. })) => {
                 self.queue_tear_off(context);
             }
             status => self.fail_without_context(format!(
@@ -637,12 +637,14 @@ impl SmokeApp {
             return;
         };
         match status {
-            Ok(DockspaceActionStatus::Applied(DockspaceActionOutcome::RootDocked {
-                root,
-                target_root,
-                items,
-                changed: true,
-            })) if root == CHILD_ROOT
+            Ok(NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                DockspaceActionOutcome::RootDocked {
+                    root,
+                    target_root,
+                    items,
+                    changed: true,
+                },
+            ))) if root == CHILD_ROOT
                 && target_root == MAIN_ROOT
                 && items == [CHILD_ITEM, CHILD_DETAIL] =>
             {
@@ -662,7 +664,7 @@ impl SmokeApp {
                     );
                 }
             }
-            Ok(DockspaceActionStatus::Stale { .. }) => {
+            Ok(NativeActionStatus::Dock(DockspaceActionStatus::Stale { .. })) => {
                 self.queue_redock(context, target_surface);
             }
             status => self.fail_without_context(format!(

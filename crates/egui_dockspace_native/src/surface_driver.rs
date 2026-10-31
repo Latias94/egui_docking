@@ -1,6 +1,6 @@
 //! Shared root/child surface driver over one native coordinator.
 
-use dockspace::model::{DockPlacement, DockspaceView, NativeWindowPlacement, RootId, SurfaceId};
+use dockspace::model::{DockspaceView, SurfaceId};
 use dockspace::runtime::{
     DockspaceSubmittedAction, HostFrameReport, HostInputOutcome, HostWindowToken,
     NativeInputBudget, PreparedPaneFocusObservation, PreparedSurfaceAction,
@@ -13,9 +13,7 @@ use eframe::{NativeHostWake, NativeOutputToken};
 use egui_dockspace::DockspaceActionStatus;
 use egui_dockspace::{DockStyle, PaneView};
 
-use crate::application_action::{
-    NativeActionRequestError, NativeActionTerminal, NativeApplicationActions,
-};
+use crate::application_action::NativeApplicationActions;
 use crate::close_control::NativeWindowClosePolicy;
 #[cfg(test)]
 use crate::coordinator::split_no_frame_invalidations_for_frame;
@@ -27,6 +25,8 @@ use crate::error::{NativeHostProtocolError, NativeRuntimeError};
 use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::mailbox::NativeDispatch;
 use crate::pass_actions::{NativeFinalPass, NativePassActionError, NativePassActions};
+
+mod application;
 
 const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
 
@@ -523,57 +523,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
             && !self.application_actions.is_occupied()
             && !self.pass_actions.has_retained_action_work()
             && self.coordinator.is_quiescent()
-    }
-
-    pub(crate) fn request_dock_root(
-        &mut self,
-        root: RootId,
-        placement: DockPlacement,
-    ) -> Result<(), NativeActionRequestError> {
-        if self.shutdown.is_some() {
-            return Err(NativeActionRequestError::stopped());
-        }
-        let action = self
-            .coordinator
-            .session()
-            .prepare_dock_root(root, placement);
-        self.application_actions.enqueue(action)?;
-        self.request_root_repaint();
-        Ok(())
-    }
-
-    pub(crate) fn request_dock_root_back(
-        &mut self,
-        root: RootId,
-    ) -> Result<(), NativeActionRequestError> {
-        if self.shutdown.is_some() {
-            return Err(NativeActionRequestError::stopped());
-        }
-        let action = self.coordinator.session().prepare_dock_root_back(root);
-        self.application_actions.enqueue(action)?;
-        self.request_root_repaint();
-        Ok(())
-    }
-
-    pub(crate) fn request_move_root_to_new_window(
-        &mut self,
-        root: RootId,
-        placement: NativeWindowPlacement,
-    ) -> Result<(), NativeActionRequestError> {
-        if self.shutdown.is_some() {
-            return Err(NativeActionRequestError::stopped());
-        }
-        let action = self
-            .coordinator
-            .session()
-            .prepare_move_root_to_new_window(root, placement);
-        self.application_actions.enqueue(action)?;
-        self.request_root_repaint();
-        Ok(())
-    }
-
-    pub(crate) fn take_action_status(&mut self) -> Option<NativeActionTerminal> {
-        self.application_actions.take_result()
     }
 
     fn request_root_repaint(&self) {
@@ -1245,12 +1194,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if !host_frame.frame.surfaces().contains(&surface) {
             return Err(NativeHostProtocolError::MultipassOutputChanged.into());
         }
-        let submitted_application_action = if application_action_ready {
+        let application_submission = if application_action_ready {
             let action = self
                 .application_actions
                 .take()
                 .ok_or(NativeHostProtocolError::MultipassOutputChanged)?;
-            Some(host_frame.submit_prepared_action(action)?)
+            Some(action.submit(&mut host_frame.frame)?)
         } else {
             None
         };
@@ -1267,14 +1216,17 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .map_err(map_pass_action_error)?;
             debug_assert_eq!(local_actions.surface(), surface);
             let (_, actions) = local_actions.into_parts();
-            let core_result = (|| -> Result<HostFrameReport, NativeRuntimeError> {
+            let core_result = (|| -> Result<_, NativeRuntimeError> {
                 for action in actions {
                     host_frame.submit_surface_action(action)?;
                 }
+                let submitted = application_submission
+                    .map(|submission| submission.finish(&mut host_frame.frame))
+                    .transpose()?;
                 host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                host_frame.commit()
+                Ok((host_frame.commit()?, submitted))
             })();
-            let report = match local_action_attempt
+            let (report, submitted_application_action) = match local_action_attempt
                 .settle(core_result)
                 .map_err(map_pass_action_error)?
             {
@@ -1293,6 +1245,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 )
                 .map(|()| true);
         }
+        let submitted_application_action = application_submission
+            .map(|submission| submission.finish(&mut host_frame.frame))
+            .transpose()?;
         host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let report = host_frame.commit()?;
         self.settle_terminal_action_report(
@@ -2203,8 +2158,10 @@ mod tests {
         assert!(state.application_actions.is_occupied());
         assert!(matches!(
             state.take_action_status(),
-            Some(Ok(DockspaceActionStatus::Rejected(
-                dockspace::model::DockspaceActionRejection::PolicyDenied
+            Some(Ok(crate::NativeActionStatus::Dock(
+                DockspaceActionStatus::Rejected(
+                    dockspace::model::DockspaceActionRejection::PolicyDenied
+                )
             )))
         ));
 
@@ -2369,8 +2326,10 @@ mod tests {
 
         assert!(matches!(
             state.take_action_status(),
-            Some(Ok(DockspaceActionStatus::Rejected(
-                dockspace::model::DockspaceActionRejection::PolicyDenied
+            Some(Ok(crate::NativeActionStatus::Dock(
+                DockspaceActionStatus::Rejected(
+                    dockspace::model::DockspaceActionRejection::PolicyDenied
+                )
             )))
         ));
         assert!(!state.application_actions.is_occupied());

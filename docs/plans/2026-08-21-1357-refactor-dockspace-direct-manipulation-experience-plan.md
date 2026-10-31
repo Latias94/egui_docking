@@ -38,7 +38,7 @@ The next completion work is concrete:
 
 | Remaining boundary | Next acceptance |
 | --- | --- |
-| U10 native layout management | Expose core close/decision, reopen, arrangement lock and reset/restore through the existing bounded application action owner; exercise application presets and focus recovery in the native showcase. |
+| U10 native layout management | Close/decision, reopen and arrangement lock now share the existing bounded application action owner, qualified by 40 final checks and five real X11 edits. Next add default/preset reset and document restore at the bounded terminal-frame boundary, including host replacement/rebinding after a complete host-root removal and restore-time focus/missing-pane recovery. |
 | U10 native overflow | Qualify a finite real-input overflowed/clipped tab insertion, including preview, final order and cleanup; reuse the existing overflow owner. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
@@ -2144,9 +2144,31 @@ Application UI runs normally after admission, without speculative post-UI
 framebuffer retention. Each standalone event uses the existing shared clock and
 bounded input profile; output admission continues to use its exact token's
 existing budget. No new graph, registry or input replay was introduced. The
-unexposed native close/reopen/reset/persistence facade and
-U8's full acceptance criteria remain separate work; this slice does not close
-U10 or expand any platform claim.
+native reset/persistence facade and U8's full acceptance criteria remain
+separate work; this slice does not close U10 or expand any platform claim.
+
+The subsequent native application-command slice exposes selection, reopening,
+item/root close requests, initial/deferred decisions, current close-plan
+discovery and arrangement locking through the same single command/result slot.
+Core close and policy inputs now return exact submission identities; policy
+reports retain each input's actual intermediate version. The final root frame
+appends configuration after local and pane-focus observations. No second close
+plan inventory, topology or lifecycle registry is introduced.
+
+The fixed host surface is an explicit facade constraint: a close that would
+remove its last presentation returns `HostSurfaceRequired`, including an exact
+Allow for a chrome-issued plan. Closing all individual panes in a central root
+retains its empty dock area; reopening and lock/unlock remain usable. A group
+may close atomically while another presentation remains. Complete removal and
+replacement/rebinding of the fixed host remain part of the next native layout
+replacement boundary, not an implicitly completed behavior. Nine native
+coordinator regressions cover these boundaries in addition to seven new core
+exact-result/discovery regressions. Forty final checks pass, including native
+543/543 normally and assertion-disabled, the same-coordinator 10,000-lifetime
+soak, two-platform finite pressure refresh and five real X11 edits. The fifth
+edit follows actual widget focus recovery after close/Allow/reopen; lock rejects
+a native move while selection remains available. Exact final qualification is recorded in
+`docs/VALIDATION.md`.
 
 ### U11. Certify Windows and macOS capability claims
 

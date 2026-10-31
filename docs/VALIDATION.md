@@ -15,10 +15,99 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 native content-close and arrangement commands
+
+The slice following `117578c` extends the existing single application-action
+slot with selection, reopen, item/root close requests, initial/deferred decisions
+and arrangement locking. Results now use `NativeActionStatus`; docking results
+retain their existing `DockspaceActionStatus` inside `Dock`. An unconsumed
+result still owns the slot. Configuration is appended after local and focus
+input in the same final root frame. Native surface-close policy remains a
+separate existing OS-request owner.
+
+The core now returns exact `DockspaceSubmittedAction` identities for close
+requests, both decision kinds and policy replacement. Policy reports include
+each input's `changed` flag and intermediate workspace version. The native
+facade uses `submitted_action_outcome`, including when other close requests
+share that frame. `pending_content_close_plans` projects current item/root plans
+from the existing core inventory, including chrome requests and deferred
+continuations; it adds no history or registry and excludes native surface
+requests, stale plans and terminal plans.
+
+Seven core regressions cover exact multiple-request/decision/configuration
+results, dropped-attempt and foreign-session isolation, deferred continuation,
+current chrome discovery and invalidation. Nine native coordinator regressions
+cover the same facade boundary with bounded result retention, group voting,
+reopen with application data intact, local selection before lock, selection
+while locked, stale requests and foreign tokens. All sixteen pass. The full
+workspace passes 1,906/1,906; public-host default and serde pass 132/132 and
+139/139, product and official consumers pass 114/114 and 15/15. Core Clippy,
+strict rustdoc and all ten doctests also pass.
+
+An independent review found that closing the fixed host's only root could prune
+its logical surface and leave later application actions without their host
+roster. The corresponding guard was observed red before repair and green
+afterward. The facade now returns `HostSurfaceRequired` for that close and for
+an exact initial/deferred Allow from a chrome-created plan. Busy/stopped ordering,
+Veto/Deferred and stale/foreign/duplicate-token handling remain unchanged.
+Closing all individual panes in a central root keeps its empty dock area;
+the regression continues through lock/unlock and reopening. A complete group
+may still close when another presentation remains, and reopening allocates a
+fresh root. Core's `RootClosed` contract is unchanged. Replacement/rebinding
+after removing the complete fixed host remains explicit future work.
+
+The native `basic` inventory and close-decision UI now have finite real-window
+qualification. X11 adds programmatic close/Allow/reopen, actual TextEdit focus
+before announcing the fifth external edit, then lock/rejected move/select/unlock
+and final quiescence. The five edits use real X11 keyboard input on the same
+Inspector ItemId, and both child windows are confirmed destroyed. The fifth
+edit types using the already restored widget focus. Its original extra click
+hit the surviving contained Preview which covered the TextEdit center and
+caused a timeout; that failed run and a geometry diagnostic remain separate
+attempts. The corrected workflow passed before and after the fixed-host repair.
+These results exercise public commands, not physical clicks on every inventory
+or decision control.
+
+All 40 final checks pass against 462 frozen tracked source/manifest/script paths.
+Earlier native checks before the fixed-host repair are retained in
+`/tmp/dockspace-layout-actions-pre-host-guard-qualification.json` with their
+separate source snapshot. Current evidence is
+`/tmp/dockspace-layout-actions-qualification.json` and
+`/tmp/dockspace-layout-actions-source.json`; the host guard's focused red and
+green logs use the matching `-host-surface-red.log` and `-host-surface-green.log`
+names. These are local evidence artifacts rather than checkout assets.
+
+| Final gate | Result and scope |
+| --- | --- |
+| Workspace | 1,906/1,906, all targets/features |
+| Public host / product / official consumers | 132/132 default, 139/139 serde; 114/114 product and 15/15 official |
+| Native normal / assertion-disabled | 543/543 each, including same-coordinator 10,000-lifetime soak; opt-in wall-time case skipped |
+| Linux native library | 498/498 per configuration, long soak excluded here and included above |
+| Native real windows | macOS and X11 default/bounded flows and all six optimized pressure scenarios per platform |
+| X11 editor | five real focused edits, close/Allow/reopen, automatic focus recovery, rejected locked move, selection while locked, unlock, Destroyed and quiescence |
+| Quality | core/native/Linux correctness/suspicious Clippy, strict core/native docs, ten doctests, workspace/native/public formatting |
+
+Across the six pressure scenarios, standalone service maxima are 469.208
+microseconds on macOS and 948.5 microseconds on X11. Full output callback maxima
+are 9.4905 ms and 2.465792 ms; over-2-ms observations remain in the logs. These
+measurements retain the cooperative budget boundary and make no hard-real-time
+claim. This slice does not refresh the previous twelve-target physical docking
+or 1 kHz qualification; their dated results keep their original source scope.
+Forks remain unchanged and unpublished, using the same explicit local overrides.
+Final independent static review confirms no P1/P2 in the fixed-host guard.
+The focused models do not enumerate rootless-only-contained, simultaneous
+shutdown/busy and every active-plan token replay combination; this is bounded
+coverage rather than exhaustive state-space certification.
+Reset/defaults, named presets, document restore and the other open
+native/platform/package gates remain outside this completion claim.
+
 ## 2026-10-31 native content input and bounded editor showcase
 
-This slice is qualified by 61 passing final checks against 444 frozen Rust and
-script paths following `233657c`. The locally committed egui/eframe fork is
+This slice is qualified by 61 passing final checks against 436 tracked Rust and
+script source paths following `233657c`. Its original snapshot also included
+eight generated `target/` files; those are excluded from the committed-source
+count. All 436 source paths and both forks' recorded sources match their
+committed blobs. The main commit is `117578c`. The locally committed egui/eframe fork is
 `92c921f7235c87ae28ea09ae522ef55fd8333b41`; Winit remains
 `6c10c87da2a06871371de7d30fedc656cf7c3681`. Earlier stationary
 results retain their historical source scope; they do not qualify this change.
