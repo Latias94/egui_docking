@@ -15,6 +15,59 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 cancelled create cleanup with an accepted release
+
+The next mixed-owner model exposed a real lifecycle gap. Once a create saga was
+cancelled, its original dispatch still had an exact callback/cleanup owner. A
+late Failed result reached the effect ledger, but the cleanup reducer indexed
+only destructive cleanup effects. The original create ID was absent from that
+index, leaving `may_reappear=true` forever and no terminal binding guard when
+the recorder later reclaimed its quiescence prefix.
+
+The existing cleanup owner now recognizes its exact compensated create on
+DispatchFailed/Unsupported, only before any window observation or destructive
+cleanup lineage. It clears the appearance possibility and reuses normal
+drive/Finish, staging release and provider-bound guard publication. Unknown
+outcome, a different create, an observed window and an existing destructive
+predecessor keep their obligations. There is no second index or lifecycle
+registry, and a missing terminal guard remains an error.
+
+Two core state regressions and both finite owner cases pass. The W4/A1, E1,
+M4/C0/L2 mixed case retains two close successors and the cancelled create's OS
+attempt, accepts a local Primary release before fixed freeze B and then fills
+ordinary ingress. Dropped release/cancellation/Failed/presentation candidates
+retry exactly. Cancellation finishes without waiting for those owners. An
+unrelated surface's Presented output cannot deliver the release; only its exact
+output produces one Delivered(Dock) with the same manipulation ID and reorder
+`[3,5,6]` to `[5,6,3]`. Cleanup and quiescence finish under the same 4 MiB bound.
+
+The initial fixture attempted a new gesture during a still-active create saga
+and was correctly rejected by PresentationTransitionPending. The corrected
+scenario cancels that semantic transition while retaining its genuine pending
+OS-attempt owner; it does not weaken the gesture gate. The subsequent missing
+guard failure and backtrace are preserved in
+`/tmp/dockspace-mixed-service-focused-guard-backtrace.log`.
+
+All 24 affected final checks pass: workspace 1,942; public 148/176;
+product/official 114/15; native 571 in both assertion modes; Linux library 525
+in both assertion modes; no-default compilation, Clippy, strict documentation,
+10 doctests and formatting. The unchanged 10,000-lifetime soak is not repeated.
+Optimized macOS and X11 builds and their late-staging/late-first-live real-window
+journeys pass. Those existing journeys preserve their original compatibility
+scope; they are not the new mixed close/create/release OS acceptance.
+
+Evidence is `/tmp/dockspace-cancelled-create-qualification.json`,
+`/tmp/dockspace-cancelled-create-real-qualification.json` and
+`/tmp/dockspace-cancelled-create-source.json`; focused results are in
+`/tmp/dockspace-cancelled-create-focused.json`. Independent review found no
+confirmed P1/P2 in the constrained fallback and its tests. Explicit local forks
+remain egui `8231fb5ab0f3` and Winit `6c10c87da2a0`, not the tracked remote pins.
+This model uses test close
+cancellation and create admission/Failed, plus real core affine painted outputs.
+It does not certify canonical fork-held close and actual OS-create callbacks
+crossing one freeze boundary, nor does it cover nonzero ordinary command slots.
+Those native acceptance boundaries, positive stationary input and U9 remain open.
+
 ## 2026-11-01 complete host service during the active 1 kHz journey
 
 The physical X11 runner now selects service samples by their entry time between
@@ -60,8 +113,8 @@ Evidence is `/tmp/dockspace-active-service-source.json`,
 Eframe's accessor is local fork commit
 `8231fb5ab0f37b72684f1c0f7807716be16c877e`, with unchanged Winit
 `6c10c87da2a0`. These explicit local overrides do not qualify remote tracked
-pins. The new mixed close/create/release model remains under investigation and
-is not included in this successful service claim.
+pins. The mixed close/create/release model was still under investigation at
+this service checkpoint; its subsequent fix and qualification are recorded above.
 
 ## 2026-11-01 application Default and named presets after Root continuation
 

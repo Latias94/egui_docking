@@ -941,13 +941,27 @@ impl BindingCleanupLifecycle {
         Ok(request)
     }
 
-    /// Reduces the current phase of an exact cleanup effect through the indexed owner.
+    /// Reduces an exact cleanup effect or the original create retained for compensation.
     pub(super) fn reduce_effect(
         &mut self,
         effect: EffectId,
         phase: EffectPhase,
     ) -> Result<Option<ViewportBinding>, BindingCleanupError> {
         let Some(binding) = self.by_cleanup_effect.get(&effect).copied() else {
+            if matches!(phase, EffectPhase::DispatchFailed(_) | EffectPhase::Unsupported(_))
+                && let Some(retirement) = self.entries.values_mut().find(|retirement| {
+                    matches!(retirement.cleanup, BindingCleanupAction::CompensateCreate { create } if create == effect)
+                        && !retirement.observed
+                        && retirement.status.cleanup_effect().is_none()
+                        && retirement.cleanup_predecessor.is_none()
+                })
+            {
+                // A cancelled saga can outlive its original dispatch. A proven
+                // failure ends only this unobserved appearance wait; the normal
+                // drive/Finish path still owns staging release and its guard.
+                retirement.may_reappear = false;
+                return Ok(Some(retirement.binding));
+            }
             return Ok(None);
         };
         let retirement = self

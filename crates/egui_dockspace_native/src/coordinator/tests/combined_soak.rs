@@ -641,18 +641,39 @@ fn configured_maximum_roster_and_terminal_fanout_survive_ordinary_freeze_and_ret
 
 #[test]
 fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() {
+    assert_close_and_create_pressure(false);
+}
+
+#[test]
+fn accepted_release_keeps_its_exact_output_across_close_create_pressure_and_cancel_retry() {
+    assert_close_and_create_pressure(true);
+}
+
+fn assert_close_and_create_pressure(with_accepted_release: bool) {
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
+    use dockspace::geometry::LogicalPoint;
     use dockspace::model::{
         DockspaceContainedLayout, FloatingPresentationId, NativeWindowPlacement,
     };
-    use dockspace::runtime::{NativeProducerStorageLimit, NativeReportStorageLimit};
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, PointerEventFacts};
+    use dockspace::runtime::{
+        DockspaceManipulationDelivery, DockspaceManipulationPendingReason,
+        DockspaceManipulationStatus, NativeProducerStorageLimit, NativeReceiverPurpose,
+        NativeReportStorageLimit,
+    };
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    use winit::event::{
+        DeviceId, ElementState, MouseButton, PointerEventFacts, PointerEventGeometry,
+        PointerWindowRoute,
+    };
 
     use super::close::begin_model_cancellation;
+
+    const INITIAL_TABS: [ItemId; 3] = [ItemId::new(3), ItemId::new(5), ItemId::new(6)];
+    const REORDERED_TABS: [ItemId; 3] = [ItemId::new(5), ItemId::new(6), ItemId::new(3)];
+    const RELEASE_ORDINAL: u64 = 104;
 
     // This finite owner model uses real core effects and journal captures. It
     // does not manufacture canonical fork close/create or renderer output tokens.
@@ -682,7 +703,11 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
             SurfaceId::new(id),
             DockspaceRootLayout::new(
                 RootId::new(id),
-                DockspaceNode::central_tabs([ItemId::new(id)]),
+                DockspaceNode::central_tabs(if with_accepted_release && id == 3 {
+                    INITIAL_TABS.to_vec()
+                } else {
+                    vec![ItemId::new(id)]
+                }),
             ),
         );
         if id == 3 {
@@ -844,6 +869,228 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
     drop(report);
     peaks.observe(&native, 0);
 
+    if with_accepted_release {
+        // A live create saga intentionally excludes a new gesture. Cancellation
+        // ends that semantic transition, while the already admitted OS attempt
+        // must retain its exact callback/cleanup owner until Failed arrives.
+        let mut cancel = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        assert!(cancel.frame.cancel_next_native_create().unwrap());
+        cancel
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = cancel.commit().unwrap();
+        native.settle_host_frame_report(&report).unwrap();
+        native
+            .accept_native_effects(&context, report.take_native_effects())
+            .unwrap();
+        assert!(!native.session.has_pending_native_create());
+        assert!(native.bridge.with_viewports(|routes| {
+            routes.has_admitted_create_attempt(child_viewport, child)
+        }));
+        assert!(native.effects.references_binding(child));
+        peaks.observe(&native, 0);
+    }
+
+    let (_, input_window, input_binding) = routes[2];
+    let input_surface = input_binding.surface();
+    let tab_order = |native: &NativeCoordinator| {
+        native
+            .session
+            .view()
+            .item(ItemId::new(3))
+            .unwrap()
+            .tabs()
+            .items()
+            .to_vec()
+    };
+    let (receivers, points, mut unrelated_output) = if with_accepted_release {
+        // Repaint after close/create enrollment so receiver facts come from the
+        // actual current output, independently of the pending native owners.
+        let mut paint = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let plan = paint.frame.paint_plan(input_surface).unwrap().unwrap();
+        let receivers = [
+            plan.tab_receiver(ItemId::new(3)).unwrap(),
+            plan.tab_receiver(ItemId::new(6)).unwrap(),
+        ];
+        let mut points = [None; 2];
+        plan.visit_surface_program(|step| {
+            if let SurfacePaintProgramStep::Operation {
+                operation: SurfacePaintProgramOperation::Tab(tab),
+                ..
+            } = step
+            {
+                for (index, item, fraction) in [(0, 3, 0.25), (1, 6, 0.625)] {
+                    if tab.item() == ItemId::new(item) {
+                        let bounds = tab.visible_bounds();
+                        let point = LogicalPoint::new(
+                            bounds.x() + bounds.width() * fraction,
+                            bounds.y() + bounds.height() * 0.5,
+                        )
+                        .unwrap();
+                        assert!(receivers[index].bounds().contains(point));
+                        points[index] = Some(point);
+                    }
+                }
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        for surface in [input_surface, bindings[0].surface()] {
+            let receipt = paint
+                .frame
+                .paint_plan(surface)
+                .unwrap()
+                .unwrap()
+                .execute_surface_program(|_| Ok::<(), ()>(()))
+                .unwrap();
+            paint.frame.confirm_surface_painted(receipt).unwrap();
+        }
+        paint
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = paint.commit().unwrap();
+        native.settle_host_frame_report(&report).unwrap();
+        assert!(report.take_native_effects().is_empty());
+        let mut source_output = None;
+        let mut unrelated = None;
+        for output in report.take_painted_outputs() {
+            if output.surface() == input_surface {
+                assert!(source_output.replace(output).is_none());
+            } else {
+                assert_eq!(output.surface(), bindings[0].surface());
+                assert!(unrelated.replace(output).is_none());
+            }
+        }
+        native
+            .session
+            .report_surface_presentation(
+                source_output.unwrap(),
+                SurfacePresentationResult::Presented,
+            )
+            .unwrap();
+        drop(commit_boundary(&mut native));
+        (
+            Some(receivers),
+            Some(points.map(Option::unwrap)),
+            Some(unrelated.unwrap()),
+        )
+    } else {
+        (None, None, None)
+    };
+    let resolve = |query: NativeReceiverQuery| {
+        let Some([source, target]) = receivers else {
+            return NativeReceiverAnswer::Unknown;
+        };
+        if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
+            let receiver = if query
+                .point()
+                .is_some_and(|point| source.bounds().contains(point))
+            {
+                &source
+            } else {
+                &target
+            };
+            query.clear_hover_lane(receiver).map_or(
+                NativeReceiverAnswer::Unknown,
+                NativeReceiverAnswer::ClearHoverLane,
+            )
+        } else {
+            query
+                .bind_receiver(&source)
+                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+        }
+    };
+    let capture_pointer =
+        |native: &NativeCoordinator, ordinal, point: LogicalPoint, state: Option<ElementState>| {
+            let coordinates = native
+                .session
+                .native_local_coordinates(input_binding)
+                .unwrap();
+            let geometry = coordinates.geometry();
+            let scale = geometry.presentation_scale_factor().get();
+            let position = PhysicalPosition::new(point.x() * scale, point.y() * scale);
+            let facts = PointerEventFacts {
+                surface_position: Some(position),
+                desktop_position: None,
+                geometry: Some(PointerEventGeometry {
+                    surface_size: PhysicalSize::new(640, 480),
+                    scale_factor: geometry.native_scale_factor().get(),
+                }),
+                modifiers: None,
+                hover: PointerWindowRoute::Unknown,
+                capture: if state == Some(ElementState::Released) {
+                    PointerWindowRoute::None
+                } else {
+                    PointerWindowRoute::Window(input_window)
+                },
+            };
+            let event = match state {
+                Some(state) => WindowEvent::MouseInput {
+                    device_id: DeviceId::dummy(),
+                    state,
+                    button: MouseButton::Left,
+                    facts,
+                },
+                None => WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position,
+                    facts,
+                },
+            };
+            native.bridge.with_viewports(|routes| {
+                NativeWindowEventRecord::for_test_local_capture(
+                    ordinal,
+                    input_window,
+                    Some(ViewportId::ROOT),
+                    event,
+                    routes,
+                    Some(coordinates),
+                    Some(geometry),
+                )
+            })
+        };
+    if let Some([source, target]) = points {
+        now.store(5, Ordering::Relaxed);
+        for (ordinal, point, state) in [
+            (102, source, Some(ElementState::Pressed)),
+            (103, target, None),
+        ] {
+            let record = capture_pointer(&native, ordinal, point, state);
+            let captured = native.bridge.captured_through_for_test();
+            native.bridge.push_record(HostRecord::WindowEvent(record));
+            assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
+            let mut budget = test_budget();
+            assert_eq!(
+                native
+                    .reduce_callback_prefix(&context, &mut budget)
+                    .unwrap(),
+                Some(NonZeroUsize::MIN)
+            );
+            let mut frame = native
+                .poll_host_frame(&mut budget, resolve)
+                .unwrap()
+                .unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            let report = frame.commit().unwrap();
+            assert!(
+                report.manipulation_feedback().is_empty(),
+                "gesture prefix ordinal={ordinal}: {:?}",
+                report.manipulation_feedback()
+            );
+            drop(settle_report(&mut native, report));
+            peaks.observe(&native, 0);
+        }
+        assert!(native.session.has_active_gesture());
+        assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
+        assert_eq!(tab_order(&native), INITIAL_TABS);
+    }
+
     let successors = [close_event(0, 101), close_event(1, 7_000)];
     let successor_capture = |native: &NativeCoordinator, binding| {
         native.bridge.with_close_control(|control| {
@@ -859,8 +1106,10 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
         .push_record(HostRecord::WindowEvent(successors[0].clone()));
     let first_capture = successor_capture(&native, bindings[0]).unwrap();
     assert_eq!(first_capture.1, Duration::from_millis(10));
-    let (_, input_window, input_binding) = routes[2];
-    let cursor = |ordinal| {
+    let cursor = |native: &NativeCoordinator, ordinal| {
+        if let Some([_, target]) = points {
+            return HostRecord::WindowEvent(capture_pointer(native, ordinal, target, None));
+        }
         HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             ordinal,
             input_window,
@@ -874,10 +1123,22 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
         ))
     };
     now.store(11, Ordering::Relaxed);
+    let release_through = points.map(|[_, target]| {
+        let record = capture_pointer(
+            &native,
+            RELEASE_ORDINAL,
+            target,
+            Some(ElementState::Released),
+        );
+        let captured = native.bridge.captured_through_for_test();
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
+        native.bridge.captured_through_for_test()
+    });
     let mut accepted = 0;
     for ordinal in 1_000..5_096 {
         let captured = native.bridge.captured_through_for_test();
-        native.bridge.push_record(cursor(ordinal));
+        native.bridge.push_record(cursor(&native, ordinal));
         peaks.observe(&native, 0);
         if native.bridge.captured_through_for_test() == captured {
             break;
@@ -886,7 +1147,14 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
     }
     assert!((1..4_096).contains(&accepted));
     let boundary = native.bridge.captured_through_for_test();
-    native.bridge.push_record(cursor(6_000));
+    if let Some(release_through) = release_through {
+        assert!(
+            release_through < boundary,
+            "B must include the accepted release and its successors"
+        );
+        assert!(native.session.has_active_gesture());
+    }
+    native.bridge.push_record(cursor(&native, 6_000));
     assert_eq!(native.bridge.captured_through_for_test(), boundary);
     assert_eq!(
         native.bridge.admission_dispatch(),
@@ -931,11 +1199,14 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
             .record_viewport_create_failure_for_test(child_viewport),
         NativeHostWake::Wait
     );
-    native.bridge.push_record(cursor(7_001));
+    native.bridge.push_record(cursor(&native, 7_001));
     assert_eq!(native.bridge.captured_through_for_test(), boundary + 2);
     assert_eq!(native.close_progress().requests_retained(), 4);
     peaks.observe(&native, 0);
 
+    let mut release_output = None;
+    let mut release_feedback = Vec::new();
+    let mut dropped_release = false;
     drop(commit_boundary(&mut native));
     for _ in 0..64 {
         match native.bridge.admission_dispatch() {
@@ -949,17 +1220,78 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
                 panic!("the fixed pre-B prefix must drain before cancellation: {dispatch:?}")
             }
         }
+        let release = with_accepted_release
+            && native.bridge.front_event().is_some_and(|event| {
+                event.ordinal() == RELEASE_ORDINAL
+                    && matches!(
+                        event.event(),
+                        WindowEvent::MouseInput {
+                            state: ElementState::Released,
+                            ..
+                        }
+                    )
+            });
         let mut budget = test_budget();
         native
             .reduce_callback_prefix(&context, &mut budget)
             .unwrap();
-        let Some(mut frame) = native
-            .poll_host_frame(&mut budget, |_| NativeReceiverAnswer::Unknown)
-            .unwrap()
-        else {
+        let recorded = native.session.native_input_recorded_count();
+        let version = native.session.version();
+        let Some(mut frame) = native.poll_host_frame(&mut budget, resolve).unwrap() else {
             assert!(budget.is_exhausted());
             continue;
         };
+        if release {
+            assert!(!dropped_release);
+            let receipt = frame
+                .frame
+                .paint_plan(input_surface)
+                .unwrap()
+                .unwrap()
+                .execute_surface_program(|_| Ok::<(), ()>(()))
+                .unwrap();
+            frame.frame.confirm_surface_painted(receipt).unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            drop(frame);
+            assert_eq!(native.session.version(), version);
+            assert_eq!(native.session.native_input_recorded_count(), recorded);
+            assert_eq!(tab_order(&native), INITIAL_TABS);
+            assert!(native.session.has_active_gesture());
+            assert_eq!(
+                native.session.has_pending_native_create(),
+                !with_accepted_release
+            );
+            assert!(native.bridge.callback_boundary_pending());
+            peaks.observe(&native, 0);
+            assert!(
+                native
+                    .reduce_callback_prefix(&context, &mut budget)
+                    .unwrap()
+                    .is_none(),
+                "retry must reuse the retained release rather than translate its raw successor"
+            );
+            assert_eq!(native.session.native_input_recorded_count(), recorded);
+            frame = native
+                .poll_host_frame(&mut budget, resolve)
+                .unwrap()
+                .unwrap();
+            let plan = frame.frame.paint_plan(input_surface).unwrap().unwrap();
+            let mut preview = false;
+            let receipt = plan
+                .execute_surface_program(|step| {
+                    preview |= matches!(step, SurfacePaintProgramStep::DragPreview(_));
+                    Ok::<(), ()>(())
+                })
+                .unwrap();
+            assert!(
+                preview,
+                "the actual retried release must paint its docking preview"
+            );
+            frame.frame.confirm_surface_painted(receipt).unwrap();
+            dropped_release = true;
+        }
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .unwrap();
@@ -970,6 +1302,27 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
                 .inputs()
                 .contains(&HostInputOutcome::NativeInputCancelledForOverload)
         );
+        if release {
+            let [pending] = report.manipulation_feedback() else {
+                panic!("the accepted release must publish one pending outcome: {report:?}");
+            };
+            assert_eq!(
+                pending.status(),
+                DockspaceManipulationStatus::Pending(
+                    DockspaceManipulationPendingReason::AwaitingPresentation
+                )
+            );
+            release_feedback.push(*pending);
+            let [output] = report.take_painted_outputs().try_into().unwrap();
+            assert!(output.matches_native_binding(input_binding));
+            assert!(release_output.replace(output).is_none());
+        } else {
+            assert!(report.manipulation_feedback().is_empty());
+            assert!(report.take_painted_outputs().is_empty());
+        }
+        if with_accepted_release {
+            assert_eq!(tab_order(&native), INITIAL_TABS);
+        }
         native.settle_host_frame_report(&report).unwrap();
         peaks.observe(&native, 0);
     }
@@ -977,6 +1330,8 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
         native.bridge.admission_dispatch(),
         NativeDispatch::Cancel { boundary }
     );
+    assert_eq!(dropped_release, with_accepted_release);
+    assert_eq!(release_output.is_some(), with_accepted_release);
     now.store(40, Ordering::Relaxed);
     for (index, &binding) in bindings[..2].iter().enumerate() {
         assert_eq!(successor_capture(&native, binding), Some(captures[index]));
@@ -1007,7 +1362,10 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
         native.bridge.admission_dispatch(),
         NativeDispatch::Cancel { boundary }
     );
-    assert!(native.session.has_pending_native_create());
+    assert_eq!(
+        native.session.has_pending_native_create(),
+        !with_accepted_release
+    );
     assert!(!native.try_report_retirement_quiescence().unwrap());
     peaks.observe(&native, 0);
     let cancelled = commit_boundary(&mut native);
@@ -1019,6 +1377,18 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
             .count(),
         1
     );
+    assert!(cancelled.manipulation_feedback().is_empty());
+    assert_eq!(
+        native.session.has_pending_native_create(),
+        !with_accepted_release
+    );
+    assert_eq!(native.close_progress().cancellations_committed(), 0);
+    assert!(!native.is_quiescent());
+    if with_accepted_release {
+        assert_eq!(release_feedback.len(), 1);
+        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert!(!native.session.has_active_gesture());
+    }
     drop(cancelled);
 
     assert_eq!(
@@ -1062,13 +1432,21 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
     drop(failed);
     assert_eq!(native.session.version(), version);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
-    assert!(native.session.has_pending_native_create());
-    assert!(native.session.is_current_native_binding(child));
+    assert_eq!(
+        native.session.has_pending_native_create(),
+        !with_accepted_release
+    );
+    assert_eq!(
+        native.session.is_current_native_binding(child),
+        !with_accepted_release
+    );
     assert!(!native.bridge.retirement_is_quiescence_candidate(child));
     assert!(!native.try_report_retirement_quiescence().unwrap());
     assert_eq!(native.bridge.captured_through_for_test(), boundary + 2);
     peaks.observe(&native, 0);
-    drop(commit_boundary(&mut native));
+    let failed = commit_boundary(&mut native);
+    assert!(failed.manipulation_feedback().is_empty());
+    drop(failed);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
     assert!(!native.session.has_pending_native_create());
     assert!(!native.session.is_current_native_binding(child));
@@ -1088,6 +1466,81 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
     drop(commit_boundary(&mut native));
     assert!(!native.binding_has_retained_host_references(child));
     peaks.observe(&native, 0);
+
+    if let Some(output) = release_output.take() {
+        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert!(!native.is_quiescent());
+        let unrelated = unrelated_output.take().unwrap();
+        let unrelated_artifact = unrelated.presentation_artifact();
+        native
+            .session
+            .report_surface_presentation(unrelated, SurfacePresentationResult::Presented)
+            .unwrap();
+        let unrelated = commit_boundary(&mut native);
+        assert_eq!(
+            unrelated
+                .surface_presentation_commits()
+                .iter()
+                .filter(|commit| commit.settles(unrelated_artifact))
+                .count(),
+            1
+        );
+        assert!(unrelated.manipulation_feedback().is_empty());
+        assert_eq!(tab_order(&native), INITIAL_TABS);
+        drop(unrelated);
+        let artifact = output.presentation_artifact();
+        native
+            .session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let version = native.session.version();
+        let mut settlement = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        settlement
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        drop(settlement);
+        let recorded = native.session.native_input_recorded_count();
+        assert_eq!(native.session.version(), version);
+        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert_eq!(native.close_progress().cancellations_committed(), 0);
+        for (index, &binding) in bindings[..2].iter().enumerate() {
+            assert_eq!(successor_capture(&native, binding), Some(captures[index]));
+        }
+        let delivered = commit_boundary(&mut native);
+        assert_eq!(native.session.native_input_recorded_count(), recorded);
+        assert_eq!(
+            delivered
+                .surface_presentation_commits()
+                .iter()
+                .filter(|commit| commit.settles(artifact))
+                .count(),
+            1
+        );
+        release_feedback.extend_from_slice(delivered.manipulation_feedback());
+        let [pending, terminal] = release_feedback.as_slice() else {
+            panic!("one release must have one pending and one terminal: {release_feedback:?}");
+        };
+        assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
+        assert_eq!(
+            terminal.status(),
+            DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
+        );
+        assert!(delivered.workspace_changed());
+        assert_eq!(tab_order(&native), REORDERED_TABS);
+        drop(delivered);
+        let version = native.session.version();
+        let repeated = commit_boundary(&mut native);
+        assert!(repeated.manipulation_feedback().is_empty());
+        assert_eq!(native.session.version(), version);
+        assert_eq!(native.session.native_input_recorded_count(), recorded);
+        assert!(
+            !native.is_quiescent(),
+            "the original close owners still await Clear"
+        );
+        peaks.observe(&native, 0);
+    }
 
     for index in 0..2 {
         let (viewport, _, binding) = routes[index];
@@ -1222,9 +1675,13 @@ fn configured_close_and_create_owners_survive_freeze_and_exact_terminal_retry() 
             .inputs()
             .contains(&HostInputOutcome::NativeInputCancelledForOverload)
     );
+    assert!(report.manipulation_feedback().is_empty());
+    if with_accepted_release {
+        assert_eq!(tab_order(&native), REORDERED_TABS);
+    }
     assert_eq!(peaks.observe(&native, 0), idle);
     eprintln!(
-        "close-create: W4/A1 E1 M4/C0/L2, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
+        "close-create: W4/A1 E1 M4/C0/L2, accepted_release={with_accepted_release}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
         peaks.resident, peaks.reserved
     );
 }

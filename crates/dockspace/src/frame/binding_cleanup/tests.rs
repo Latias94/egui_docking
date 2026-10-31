@@ -52,6 +52,87 @@ fn provider_pair() -> (PlatformObservationLease, PlatformObservationLease) {
 }
 
 #[test]
+fn cancelled_create_failure_finishes_only_its_exact_unobserved_appearance_wait() {
+    for phase in [
+        EffectPhase::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+        EffectPhase::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+    ] {
+        let binding = binding(1, 10);
+        let create = EffectId::new(7);
+        let mut request = runtime_request(binding, BindingRetirementStatus::AwaitingAppearance);
+        request.origin = BindingRetirementOrigin::NativeCreateAborted { create };
+        request.observed = false;
+        request.may_reappear = true;
+        request.cleanup = BindingCleanupAction::CompensateCreate { create };
+        let mut lifecycle = BindingCleanupLifecycle::default();
+        lifecycle.begin(request).unwrap();
+        assert_eq!(
+            lifecycle.reduce_effect(EffectId::new(8), phase).unwrap(),
+            None
+        );
+        assert_eq!(
+            lifecycle
+                .reduce_effect(
+                    create,
+                    EffectPhase::Indeterminate(EffectIndeterminateReason::AcknowledgementLost)
+                )
+                .unwrap(),
+            None
+        );
+        assert!(lifecycle.get(&binding).unwrap().may_reappear);
+        assert!(lifecycle.plan_drive(binding, false).unwrap().is_none());
+        assert_eq!(
+            lifecycle.reduce_effect(create, phase).unwrap(),
+            Some(binding)
+        );
+        assert!(!lifecycle.get(&binding).unwrap().may_reappear);
+        let Some(BindingCleanupDirective::Finish(terminal)) =
+            lifecycle.plan_drive(binding, false).unwrap()
+        else {
+            panic!("a proven never-created binding must finish through its existing owner");
+        };
+        assert_eq!(terminal.binding(), binding);
+        assert_eq!(terminal.uncreated_effect(), Some(create));
+        assert!(lifecycle.get(&binding).is_none());
+    }
+}
+
+#[test]
+fn cancelled_create_failure_preserves_observed_windows_and_destructive_lineage() {
+    for observed in [false, true] {
+        for destructive in [false, true] {
+            if !observed && !destructive {
+                continue;
+            }
+            let binding = binding(1, 10);
+            let create = EffectId::new(7);
+            let mut request = runtime_request(binding, BindingRetirementStatus::AwaitingAppearance);
+            request.observed = observed;
+            request.may_reappear = true;
+            request.cleanup = BindingCleanupAction::CompensateCreate { create };
+            let mut lifecycle = BindingCleanupLifecycle::default();
+            lifecycle.begin(request).unwrap();
+            if destructive {
+                lifecycle
+                    .accept_cleanup_effect(binding, EffectId::new(8))
+                    .unwrap();
+            }
+            let before = lifecycle.clone();
+            assert_eq!(
+                lifecycle
+                    .reduce_effect(
+                        create,
+                        EffectPhase::DispatchFailed(DispatchFailureReason::WindowUnavailable)
+                    )
+                    .unwrap(),
+                None
+            );
+            assert_eq!(lifecycle, before);
+        }
+    }
+}
+
+#[test]
 fn provider_replacement_rebases_retired_binding_observation_generations() {
     let binding = binding(1, 10);
     let mut input_observations = WindowInputObservationStream::default();
