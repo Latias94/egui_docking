@@ -2,6 +2,7 @@
 
 use super::owner_storage::{combined_profile, layout};
 use super::*;
+use crate::focus_control::NativeViewportFocusRecord;
 
 const LIFETIME_CYCLES: u64 = 10_000;
 const TOTAL_BYTES: usize = 4 * 1024 * 1024;
@@ -10,6 +11,7 @@ const TOTAL_BYTES: usize = 4 * 1024 * 1024;
 struct CapacityPeaks {
     resident: usize,
     reserved: usize,
+    ordinary_commands: usize,
 }
 
 impl CapacityPeaks {
@@ -26,6 +28,9 @@ impl CapacityPeaks {
         );
         self.resident = self.resident.max(resident);
         self.reserved = self.reserved.max(reserved);
+        self.ordinary_commands = self
+            .ordinary_commands
+            .max(native.effects.pending_command_count());
         (resident, reserved)
     }
 }
@@ -649,14 +654,251 @@ fn accepted_release_keeps_its_exact_output_across_close_create_pressure_and_canc
     assert_close_and_create_pressure(true);
 }
 
+#[test]
+fn ordinary_focus_peak_one_survives_release_pressure_and_late_predecessor_callbacks() {
+    assert_close_and_create_command_pressure(true, true);
+}
+
 fn assert_close_and_create_pressure(with_accepted_release: bool) {
+    assert_close_and_create_command_pressure(with_accepted_release, false);
+}
+
+fn dispatch_model_focus(
+    native: &mut NativeCoordinator,
+    context: &egui::Context,
+    peaks: &mut CapacityPeaks,
+) -> NativeViewportFocusRecord {
+    let (viewport, binding, window) = native.focus_control.queued_route().unwrap();
+    // Dispatch the real ordinary queue populated by accept_native_effects, then
+    // model only its terminal callback. The default context has no OS attachment.
+    assert_eq!(native.effects.pending_command_count(), 1);
+    peaks.observe(native, 0);
+    assert!(native.dispatch_viewport_commands(context).unwrap());
+    let token = native.focus_control.pending_token().unwrap();
+    assert_eq!(native.effects.pending_command_count(), 0);
+    assert!(native.focus_control.queued_route().is_none());
+    assert!(native.focus_control.references_binding(binding));
+    peaks.observe(native, 0);
+    NativeViewportFocusRecord::for_test(
+        token,
+        viewport,
+        window,
+        Some(binding),
+        NativeViewportFocusStatus::Retired,
+    )
+}
+
+fn settle_model_focus(
+    native: &mut NativeCoordinator,
+    context: &egui::Context,
+    focus: NativeViewportFocusRecord,
+) {
+    assert_eq!(native.bridge.front_viewport_focus(), Some(focus));
+    let captured = native.bridge.captured_through_for_test();
+    let recorded = native.session.native_input_recorded_count();
+    assert_eq!(
+        native
+            .reduce_callback_prefix(context, &mut test_budget())
+            .unwrap(),
+        Some(std::num::NonZeroUsize::MIN)
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(!native.focus_control.has_pending_work());
+    let version = native.session.version();
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(frame);
+    assert_eq!(native.session.version(), version);
+    assert!(native.bridge.callback_boundary_pending());
+    assert!(
+        native
+            .reduce_callback_prefix(context, &mut test_budget())
+            .unwrap()
+            .is_none()
+    );
+    let report = commit_boundary(native);
+    assert!(report.manipulation_feedback().is_empty());
+    assert!(!native.session.has_pending_native_input());
+    native.bridge.push_record(HostRecord::ViewportFocus(focus));
+    assert_eq!(native.bridge.captured_through_for_test(), captured);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(native.pending_effect_results.is_empty());
+    assert!(native.take_callback_error().is_none());
+}
+
+// Keep focus-only frame candidates out of the shared fixture's debug stack,
+// including when its original C0 callers skip every focus branch.
+#[inline(never)]
+fn register_model_focus_child(
+    native: &mut NativeCoordinator,
+    recovery_host: NativeSurfaceBinding,
+) -> (ViewportId, WindowId, NativeSurfaceBinding) {
+    native
+        .session
+        .register_owned_native_child(
+            SurfaceId::new(4),
+            HostWindowToken::new(4),
+            recovery_host.surface(),
+        )
+        .unwrap();
+    let report = commit_boundary(native);
+    assert_eq!(report.native_bindings().len(), 4);
+    let binding = *report
+        .native_bindings()
+        .iter()
+        .find(|binding| binding.surface() == SurfaceId::new(4))
+        .unwrap();
+    let viewport = ViewportId::from_hash_of("finite-focus-rehome-child");
+    let window = WindowId::from(44);
+    native.bind_viewport(viewport, window, binding).unwrap();
+    (viewport, window, binding)
+}
+
+#[inline(never)]
+fn request_model_focus_child_rehome(native: &mut NativeCoordinator, host: NativeSurfaceBinding) {
+    native
+        .session
+        .report_native_global_focus(NativeGlobalFocus::Foreign)
+        .unwrap();
+    drop(commit_boundary(native));
+    let mut rehome = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    rehome
+        .frame
+        .float_item_current(ItemId::new(4), host.surface())
+        .unwrap();
+    rehome
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = rehome.commit().unwrap();
+    drop(settle_report(native, report));
+}
+
+#[inline(never)]
+fn finish_model_focus_child_rehome(
+    native: &mut NativeCoordinator,
+    context: &egui::Context,
+    peaks: &mut CapacityPeaks,
+    bindings: &[NativeSurfaceBinding; 3],
+    child: (ViewportId, WindowId, NativeSurfaceBinding),
+    host_window: WindowId,
+) {
+    let (viewport, window, binding) = child;
+    let mut report = paint_and_present_all_surfaces(native);
+    let effects = report.take_native_effects();
+    assert_eq!(effects.len(), 2);
+    assert!(effects.iter().any(|request| {
+        request.operation() == &NativeEffectOperation::ReleaseChild { binding }
+    }));
+    assert!(effects.iter().any(|request| {
+        request.operation()
+            == &NativeEffectOperation::RequestFocus {
+                binding: bindings[2],
+            }
+    }));
+    native.accept_native_effects(context, effects).unwrap();
+    drop(settle_report(native, report));
+    assert_eq!(
+        native.focus_control.queued_route(),
+        Some((ViewportId::ROOT, bindings[2], host_window))
+    );
+    let destroyed = native.bridge.with_viewports_mut(|routes| {
+        NativeWindowEventRecord::for_test_ingress(
+            90,
+            window,
+            Some(viewport),
+            WindowEvent::Destroyed,
+            routes,
+        )
+    });
+    assert_eq!(destroyed.binding(), Some(binding));
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(destroyed));
+    assert!(
+        native
+            .reduce_callback_prefix(context, &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    drop(commit_boundary(native));
+    native
+        .bridge
+        .push_viewport_roster(NativeViewportRosterRecord::for_test(
+            bindings.iter().enumerate().map(|(index, &binding)| {
+                CompiledWindowObservation::new(binding, ready_window_facts(index as f64 * 720.0))
+                    .with_focus_reportable_for_test()
+            }),
+            true,
+        ));
+    assert!(
+        native
+            .reduce_callback_prefix(context, &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    drop(commit_boundary(native));
+    let prepared = native.prepare_committed_retirements().unwrap().unwrap();
+    assert!(native.commit_retirements(prepared).is_empty());
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    drop(commit_boundary(native));
+    drop(commit_boundary(native));
+    assert!(!native.session.recognizes_native_binding(binding));
+    assert!(!native.binding_has_retained_host_references(binding));
+    assert_eq!(native.lifecycle_progress().quiescent_retirements(), 1);
+    let presented = paint_and_present_all_surfaces(native);
+    drop(settle_report(native, presented));
+    assert_eq!(
+        native.focus_control.queued_route(),
+        Some((ViewportId::ROOT, bindings[2], host_window))
+    );
+    assert_eq!(native.focus_control.pending_binding(), Some(bindings[2]));
+    assert!(native.effects.references_binding(bindings[2]));
+    assert!(!native.is_quiescent());
+    peaks.observe(native, 0);
+}
+
+#[inline(never)]
+fn commit_model_focus_request(
+    native: &mut NativeCoordinator,
+    context: &egui::Context,
+    binding: NativeSurfaceBinding,
+) -> HostFrameReport {
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame.commit().unwrap();
+    let effects = report.take_native_effects();
+    assert!(
+        matches!(effects.as_slice(), [request]
+            if request.operation() == &NativeEffectOperation::RequestFocus { binding }),
+        "expected one exact focus request; effects={effects:?}, inputs={:?}",
+        report.inputs()
+    );
+    native.accept_native_effects(context, effects).unwrap();
+    settle_report(native, report)
+}
+
+fn assert_close_and_create_command_pressure(
+    with_accepted_release: bool,
+    with_ordinary_focus: bool,
+) {
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     use dockspace::geometry::LogicalPoint;
     use dockspace::model::{
-        DockspaceContainedLayout, FloatingPresentationId, NativeWindowPlacement,
+        DockspaceActionOutcome, DockspaceContainedLayout, FloatingPresentationId,
+        NativeWindowPlacement,
     };
     use dockspace::runtime::{
         DockspaceManipulationDelivery, DockspaceManipulationPendingReason,
@@ -675,6 +917,9 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     const REORDERED_TABS: [ItemId; 3] = [ItemId::new(5), ItemId::new(6), ItemId::new(3)];
     const RELEASE_ORDINAL: u64 = 104;
 
+    assert!(!with_ordinary_focus || with_accepted_release);
+    let effect_slots = if with_ordinary_focus { 2 } else { 1 };
+    let command_slots = if with_ordinary_focus { 2 } else { 0 };
     // This finite owner model uses real core effects and journal captures. It
     // does not manufacture canonical fork close/create or renderer output tokens.
     let mut profile = combined_profile();
@@ -687,18 +932,19 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         ))
         .with_report_storage_limit(NativeReportStorageLimit::new(
             NonZeroUsize::new(64).unwrap(),
-            NonZeroUsize::MIN,
+            NonZeroUsize::new(effect_slots).unwrap(),
             256 * 1024,
         ));
     profile.owners = NativeOwnerStorageLimit {
         resource_slots: 4,
-        command_slots: 0,
+        command_slots,
         close_slots: 2,
-        byte_limit: NativeOwnerStorageLimit::required_bytes(4, 1, 4, 0, 2).unwrap(),
+        byte_limit: NativeOwnerStorageLimit::required_bytes(4, effect_slots, 4, command_slots, 2)
+            .unwrap(),
     };
     assert_eq!(profile.byte_limit, TOTAL_BYTES);
     assert!(profile.initial_required_bytes().unwrap() <= TOTAL_BYTES);
-    let layout = DockspaceLayout::new((1..=3).map(|id| {
+    let surfaces = (1..=3).map(|id| {
         let surface = DockspaceSurfaceLayout::new(
             SurfaceId::new(id),
             DockspaceRootLayout::new(
@@ -710,7 +956,7 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
                 }),
             ),
         );
-        if id == 3 {
+        if id == 3 && !with_ordinary_focus {
             surface.with_contained(DockspaceContainedLayout::new(
                 FloatingPresentationId::new(4),
                 DockspaceRootLayout::new(RootId::new(4), DockspaceNode::tabs([ItemId::new(4)])),
@@ -719,7 +965,13 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         } else {
             surface
         }
-    }))
+    });
+    let layout = DockspaceLayout::new(surfaces.chain(with_ordinary_focus.then(|| {
+        DockspaceSurfaceLayout::new(
+            SurfaceId::new(4),
+            DockspaceRootLayout::new(RootId::new(4), DockspaceNode::tabs([ItemId::new(4)])),
+        )
+    })))
     .unwrap();
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
@@ -765,12 +1017,15 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     for &(viewport, window, binding) in &routes {
         native.bind_viewport(viewport, window, binding).unwrap();
     }
+    let focus_child =
+        with_ordinary_focus.then(|| register_model_focus_child(&mut native, bindings[2]));
     native
         .report_snapshot(
             bindings
                 .iter()
                 .enumerate()
-                .map(|(index, &binding)| (binding, ready_window_facts(index as f64 * 720.0))),
+                .map(|(index, &binding)| (binding, ready_window_facts(index as f64 * 720.0)))
+                .chain(focus_child.map(|(_, _, binding)| (binding, ready_window_facts(2160.0)))),
             NativeWorkAreaRoster::Unknown,
             test_managed_capabilities(),
         )
@@ -778,6 +1033,30 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     drop(commit_boundary(&mut native));
     let presented = paint_and_present_all_surfaces(&mut native);
     drop(settle_report(&mut native, presented));
+
+    if let Some(child) = focus_child {
+        // Return the bootstrapped child to the original fixture's contained root.
+        // Its presentation-gated product action emits both ReleaseChild and a
+        // genuine RequestFocus; E2 also leaves room for the later old create attempt.
+        request_model_focus_child_rehome(&mut native, bindings[2]);
+        finish_model_focus_child_rehome(
+            &mut native,
+            &context,
+            &mut peaks,
+            &bindings,
+            child,
+            routes[2].1,
+        );
+    }
+    let (source_root, source_contained) = {
+        let view = native.session.view();
+        let source = view.item(ItemId::new(4)).unwrap();
+        (source.root(), source.contained().unwrap())
+    };
+    if !with_ordinary_focus {
+        assert_eq!(source_root, RootId::new(4));
+        assert_eq!(source_contained, FloatingPresentationId::new(4));
+    }
 
     let close_event = |index: usize, ordinal| {
         let (viewport, window, binding) = routes[index];
@@ -822,7 +1101,7 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     create
         .frame
         .move_root_to_new_window_current(
-            RootId::new(4),
+            source_root,
             NativeWindowPlacement::new(PhysicalRect::new(2200.0, 80.0, 420.0, 320.0).unwrap()),
         )
         .unwrap();
@@ -831,13 +1110,30 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         .unwrap();
     let mut report = create.commit().unwrap();
     native.settle_host_frame_report(&report).unwrap();
+    assert!(
+        report.inputs().iter().any(|input| matches!(
+            input,
+            HostInputOutcome::ProductActionApplied(
+                DockspaceActionOutcome::NativeRootTearOffRequested {
+                    root, source_surface, items, ..
+                }
+            ) if *root == source_root
+                && *source_surface == bindings[2].surface()
+                && items.as_slice() == [ItemId::new(4)]
+        )),
+        "the current item root must enter the create saga; inputs={:?}",
+        report.inputs()
+    );
     let effects = report.take_native_effects();
     let child = match effects.as_slice() {
         [request] => match request.operation() {
             NativeEffectOperation::CreateWindow { binding, .. } => *binding,
             operation => panic!("expected the sole create request, got {operation:?}"),
         },
-        requests => panic!("expected one create request, got {requests:?}"),
+        requests => panic!(
+            "expected one create request, got {requests:?}; inputs={:?}",
+            report.inputs()
+        ),
     };
     native.accept_native_effects(&context, effects).unwrap();
     let child_viewport = viewport_id_for(child);
@@ -1135,6 +1431,20 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
         native.bridge.captured_through_for_test()
     });
+    let predecessor_focus = with_ordinary_focus.then(|| {
+        assert!(release_through.is_some());
+        assert_eq!(native.close_progress().cancellations_committed(), 0);
+        assert_eq!(native.close_progress().requests_retained(), 3);
+        assert!(native.effects.references_binding(child));
+        assert!(native.effects.references_binding(input_binding));
+        assert!(!native.session.has_pending_native_create());
+        assert!(native.bridge.with_viewports(|routes| {
+            routes.has_admitted_create_attempt(child_viewport, child)
+        }));
+        // The accepted release, old create attempt, close successors and one
+        // real ordinary queue entry coexist before its protected callback is reserved.
+        dispatch_model_focus(&mut native, &context, &mut peaks)
+    });
     let mut accepted = 0;
     for ordinal in 1_000..5_096 {
         let captured = native.bridge.captured_through_for_test();
@@ -1188,6 +1498,46 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     });
     assert_eq!(failure_capture.1, boundary + 2);
     assert_eq!(failure_capture.2, Duration::from_millis(30));
+    if let Some(focus) = predecessor_focus {
+        let captured = native.bridge.captured_through_for_test();
+        let recorded = native.session.native_input_recorded_count();
+        assert_eq!(
+            NativeHostHandler::on_viewport_property_command_retired(
+                native.bridge.as_ref(),
+                eframe::NativeViewportPropertyCommandRetirement::Focus {
+                    viewport_id: routes[0].0,
+                    token: focus.token(),
+                },
+            ),
+            NativeHostWake::Wait,
+        );
+        assert_eq!(native.bridge.captured_through_for_test(), captured);
+        now.store(35, Ordering::Relaxed);
+        let retirement = eframe::NativeViewportPropertyCommandRetirement::Focus {
+            viewport_id: focus.viewport(),
+            token: focus.token(),
+        };
+        assert_eq!(
+            NativeHostHandler::on_viewport_property_command_retired(
+                native.bridge.as_ref(),
+                retirement
+            ),
+            NativeHostWake::RepaintRootAfterCurrent,
+        );
+        assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
+        assert_eq!(
+            NativeHostHandler::on_viewport_property_command_retired(
+                native.bridge.as_ref(),
+                retirement
+            ),
+            NativeHostWake::Wait,
+        );
+        assert_eq!(native.session.native_input_recorded_count(), recorded);
+        assert!(native.bridge.front_viewport_focus().is_none());
+        assert!(native.effects.references_binding(child));
+        peaks.observe(&native, 0);
+    }
+    let terminal_through = boundary + 2 + u64::from(with_ordinary_focus);
     for successor in &successors {
         native
             .bridge
@@ -1200,7 +1550,7 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         NativeHostWake::Wait
     );
     native.bridge.push_record(cursor(&native, 7_001));
-    assert_eq!(native.bridge.captured_through_for_test(), boundary + 2);
+    assert_eq!(native.bridge.captured_through_for_test(), terminal_through);
     assert_eq!(native.close_progress().requests_retained(), 4);
     peaks.observe(&native, 0);
 
@@ -1332,6 +1682,7 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     );
     assert_eq!(dropped_release, with_accepted_release);
     assert_eq!(release_output.is_some(), with_accepted_release);
+    assert_eq!(native.focus_control.has_pending_work(), with_ordinary_focus);
     now.store(40, Ordering::Relaxed);
     for (index, &binding) in bindings[..2].iter().enumerate() {
         assert_eq!(successor_capture(&native, binding), Some(captures[index]));
@@ -1384,6 +1735,7 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     );
     assert_eq!(native.close_progress().cancellations_committed(), 0);
     assert!(!native.is_quiescent());
+    assert_eq!(native.focus_control.has_pending_work(), with_ordinary_focus);
     if with_accepted_release {
         assert_eq!(release_feedback.len(), 1);
         assert_eq!(tab_order(&native), INITIAL_TABS);
@@ -1442,19 +1794,45 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     );
     assert!(!native.bridge.retirement_is_quiescence_candidate(child));
     assert!(!native.try_report_retirement_quiescence().unwrap());
-    assert_eq!(native.bridge.captured_through_for_test(), boundary + 2);
+    assert_eq!(native.bridge.captured_through_for_test(), terminal_through);
     peaks.observe(&native, 0);
-    let failed = commit_boundary(&mut native);
+    let failed = if let Some(focus) = predecessor_focus {
+        // Failed releases E capacity for the queued focus successor. Production
+        // rejects it while the predecessor still owns the single focus lane.
+        assert_eq!(native.focus_control.pending_token(), Some(focus.token()));
+        let report = commit_model_focus_request(&mut native, &context, input_binding);
+        assert_eq!(native.focus_control.pending_token(), Some(focus.token()));
+        assert_eq!(native.focus_control.pending_binding(), Some(input_binding));
+        assert_eq!(native.effects.pending_command_count(), 0);
+        assert!(native.pending_effect_results.is_empty());
+        assert!(native.session.has_pending_native_input());
+        report
+    } else {
+        commit_boundary(&mut native)
+    };
     assert!(failed.manipulation_feedback().is_empty());
     drop(failed);
-    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        recorded + 1 + u64::from(with_ordinary_focus)
+    );
     assert!(!native.session.has_pending_native_create());
     assert!(!native.session.is_current_native_binding(child));
     assert!(native.session.recognizes_native_binding(child));
     assert!(native.bridge.retirement_is_quiescence_candidate(child));
+    if let Some(focus) = predecessor_focus {
+        settle_model_focus(&mut native, &context, focus);
+        assert_eq!(native.bridge.captured_through_for_test(), terminal_through);
+        assert_eq!(native.close_progress().cancellations_committed(), 0);
+        assert_eq!(tab_order(&native), INITIAL_TABS);
+        peaks.observe(&native, 0);
+    }
     assert!(native.try_report_retirement_quiescence().unwrap());
     assert!(!native.try_report_retirement_quiescence().unwrap());
-    assert_eq!(native.session.native_input_recorded_count(), recorded + 2);
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        recorded + 2 + 2 * u64::from(with_ordinary_focus)
+    );
     assert!(!native.session.recognizes_native_binding(child));
     assert_eq!(
         native
@@ -1508,7 +1886,11 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         for (index, &binding) in bindings[..2].iter().enumerate() {
             assert_eq!(successor_capture(&native, binding), Some(captures[index]));
         }
-        let delivered = commit_boundary(&mut native);
+        let delivered = if with_ordinary_focus {
+            commit_model_focus_request(&mut native, &context, input_binding)
+        } else {
+            commit_boundary(&mut native)
+        };
         assert_eq!(native.session.native_input_recorded_count(), recorded);
         assert_eq!(
             delivered
@@ -1529,6 +1911,11 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         );
         assert!(delivered.workspace_changed());
         assert_eq!(tab_order(&native), REORDERED_TABS);
+        let successor_focus = with_ordinary_focus.then(|| {
+            let successor = dispatch_model_focus(&mut native, &context, &mut peaks);
+            assert_ne!(successor.token(), predecessor_focus.unwrap().token());
+            successor
+        });
         drop(delivered);
         let version = native.session.version();
         let repeated = commit_boundary(&mut native);
@@ -1540,8 +1927,77 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
             "the original close owners still await Clear"
         );
         peaks.observe(&native, 0);
+
+        if let Some(successor) = successor_focus {
+            let predecessor = predecessor_focus.unwrap();
+            // Real earlier tokens and wrong routes may be admitted as ordinary
+            // callbacks again, but none may spend the successor's exact owner.
+            for unrelated in [
+                NativeViewportFocusRecord::for_test(
+                    predecessor.token(),
+                    successor.viewport(),
+                    successor.window(),
+                    Some(input_binding),
+                    NativeViewportFocusStatus::AlreadyFocused,
+                ),
+                NativeViewportFocusRecord::for_test(
+                    successor.token(),
+                    successor.viewport(),
+                    routes[0].1,
+                    Some(bindings[0]),
+                    NativeViewportFocusStatus::AlreadyFocused,
+                ),
+            ] {
+                assert_eq!(
+                    native.focus_control.classify(unrelated),
+                    NativeFocusResultDisposition::Unrelated
+                );
+                let captured = native.bridge.captured_through_for_test();
+                let recorded = native.session.native_input_recorded_count();
+                native
+                    .bridge
+                    .push_record(HostRecord::ViewportFocus(unrelated));
+                assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
+                assert_eq!(
+                    native
+                        .reduce_callback_prefix(&context, &mut test_budget())
+                        .unwrap(),
+                    Some(NonZeroUsize::MIN)
+                );
+                assert_eq!(native.session.native_input_recorded_count(), recorded);
+                let report = commit_boundary(&mut native);
+                assert!(report.inputs().is_empty());
+                assert!(report.manipulation_feedback().is_empty());
+                assert_eq!(native.focus_control.pending_binding(), Some(input_binding));
+                assert_eq!(native.close_progress().cancellations_committed(), 0);
+                assert_eq!(tab_order(&native), REORDERED_TABS);
+            }
+            let retirement = eframe::NativeViewportPropertyCommandRetirement::Focus {
+                viewport_id: successor.viewport(),
+                token: successor.token(),
+            };
+            let captured = native.bridge.captured_through_for_test();
+            assert_eq!(
+                NativeHostHandler::on_viewport_property_command_retired(
+                    native.bridge.as_ref(),
+                    retirement
+                ),
+                NativeHostWake::RepaintRootAfterCurrent
+            );
+            assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
+            settle_model_focus(&mut native, &context, successor);
+            assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
+            assert!(!native.effects.has_pending_work());
+            assert_eq!(
+                peaks.ordinary_commands, 1,
+                "C2 is configured; its actual peak is C1"
+            );
+            peaks.observe(&native, 0);
+        }
     }
 
+    let settled_through = terminal_through + 3 * u64::from(with_ordinary_focus);
+    assert_eq!(native.bridge.captured_through_for_test(), settled_through);
     for index in 0..2 {
         let (viewport, _, binding) = routes[index];
         let (close, acknowledgement) = closes[index];
@@ -1626,7 +2082,7 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
             native.close_progress().cancellations_committed(),
             (index as u64 + 1) * 2
         );
-        assert_eq!(native.bridge.captured_through_for_test(), boundary + 2);
+        assert_eq!(native.bridge.captured_through_for_test(), settled_through);
         peaks.observe(&native, 0);
     }
 
@@ -1652,15 +2108,15 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     assert!(!native.bridge.retirement_has_pending_work());
     assert_eq!(native.close_progress().requests_retained(), 4);
     assert_eq!(native.close_progress().cancellations_committed(), 4);
-    assert_eq!(native.lifecycle_progress().quiescent_retirements(), 1);
+    assert_eq!(
+        native.lifecycle_progress().quiescent_retirements(),
+        1 + u64::from(with_ordinary_focus)
+    );
     let view = native.session.view();
     let source_item = view.item(ItemId::new(4)).unwrap();
     assert_eq!(source_item.surface(), bindings[2].surface());
-    assert_eq!(source_item.root(), RootId::new(4));
-    assert_eq!(
-        source_item.contained(),
-        Some(FloatingPresentationId::new(4))
-    );
+    assert_eq!(source_item.root(), source_root);
+    assert_eq!(source_item.contained(), Some(source_contained));
     assert_eq!(
         native
             .bridge
@@ -1668,6 +2124,8 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
         3
     );
     assert!(native.is_quiescent());
+    assert!(!native.focus_control.has_pending_work());
+    assert_eq!(peaks.ordinary_commands, usize::from(with_ordinary_focus));
     let idle = peaks.observe(&native, 0);
     let report = commit_boundary(&mut native);
     assert!(
@@ -1681,7 +2139,7 @@ fn assert_close_and_create_pressure(with_accepted_release: bool) {
     }
     assert_eq!(peaks.observe(&native, 0), idle);
     eprintln!(
-        "close-create: W4/A1 E1 M4/C0/L2, accepted_release={with_accepted_release}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
-        peaks.resident, peaks.reserved
+        "close-create: W4/A1 E{effect_slots} M4/C{command_slots}/L2, accepted_release={with_accepted_release}, ordinary_peak={}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
+        peaks.ordinary_commands, peaks.resident, peaks.reserved
     );
 }

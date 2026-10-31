@@ -199,6 +199,11 @@ impl NativeEffectCoordinator {
             || !self.pending_commands.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_command_count(&self) -> usize {
+        self.pending_commands.len()
+    }
+
     pub(crate) fn awaiting_viewport_callbacks(
         &self,
     ) -> impl Iterator<Item = NativeViewportEffectPlan> + '_ {

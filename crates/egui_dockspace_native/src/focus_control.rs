@@ -388,6 +388,11 @@ impl<Request> NativeFocusControl<Request> {
         self.pending.as_ref().map(|pending| pending.binding)
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_token(&self) -> Option<NativeViewportFocusCommandToken> {
+        self.pending.as_ref().and_then(|pending| pending.token)
+    }
+
     pub(crate) fn queued_route(&self) -> Option<(ViewportId, NativeSurfaceBinding, WindowId)> {
         let pending = self.pending.as_ref()?;
         matches!(pending.state, PendingNativeFocusState::Queued(_)).then_some((

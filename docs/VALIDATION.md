@@ -15,6 +15,47 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 ordinary Focus ownership across the mixed boundary
+
+`ordinary_focus_peak_one_survives_release_pressure_and_late_predecessor_callbacks`
+extends the finite close/create/accepted-release model with one ordinary Focus
+command. An owned child's real semantic rehome emits ReleaseChild and
+RequestFocus; production `accept_native_effects` and
+`dispatch_viewport_commands` populate and drain the actual ordinary queue.
+The fixture models the resulting terminal callback, rather than running an OS
+window. C2/E2 is configured, while the measured ordinary queue peak is C1.
+
+The dispatched predecessor's protected callback remains outstanding across
+ordinary ingress freeze, cancelled-create Failed cleanup and dropped/retried
+frame candidates. Failed cleanup emits another genuine RequestFocus, which
+production rejects through its existing single Focus owner without replacing
+the predecessor token or losing the rejection input. Retiring that predecessor
+allows the accepted release's exact output to deliver once and dispatch its
+successor. Late predecessor and wrong-route callbacks cannot spend the
+successor's owner. Canonical command retirement, close Clear, source layout and
+full quiescence remain checked.
+
+The final three-file source passes the new exact Linux test, all four affected
+finite mixed models on Linux normally and without native debug assertions,
+all four with macOS nextest, Linux all-target/all-feature correctness/suspicious
+Clippy, package formatting and diff checks. The new model accepts 934 ordinary
+records and samples 2,593,248 owned / 4,194,240 reserved bytes under 4 MiB.
+The unchanged 10,000-lifetime soak and full core/native suites are not repeated
+for this test-only extension and two `cfg(test)` read-only accessors.
+
+Evidence is `/tmp/dockspace-focus-owner-source.json`,
+`/tmp/dockspace-focus-owner-qualification.json` and the corresponding
+`/tmp/dockspace-focus-owner-*.log` files. The final combined fixture SHA-256 is
+`cf854ca94604c9471ba2e69730ad8872b3207de8a070351fc628bd03f77a2af9`.
+Earlier fixture failures remain recorded: debug-stack overflow, a terminal
+roster used for normal retirement, a stale hard-coded Root identity, missing
+repaint after retirement, and an unhandled genuine recovery Focus request.
+Bounded helpers retain the default test stack, and every emitted native request
+is now consumed through production handling. Qualification freezes Winit at
+`6c10c87d` independently from ongoing capture-owner development; egui remains
+`8231fb5a`. This model does not certify real OS Focus callback interleaving,
+two-command occupancy, positive stationary input or the complete plan.
+
 ## 2026-11-01 real close/create callbacks across an age boundary
 
 The opt-in Linux test
