@@ -626,7 +626,7 @@ impl NativeCoordinator {
         if matches!(plan.kind(), NativeViewportEffectKind::Replacement) && predecessor.is_none() {
             return Err(request);
         }
-        let Some(requested_rect) = exact_native_rect(plan.placement()) else {
+        let Some(requested_rect) = native_create_rect(plan.placement()) else {
             return Err(request);
         };
         if !self

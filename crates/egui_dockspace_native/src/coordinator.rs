@@ -3022,12 +3022,15 @@ impl NativeCoordinator {
     }
 }
 
-fn exact_native_rect(rect: PhysicalRect) -> Option<NativePhysicalRect> {
+/// Quantizes a desired window request for the integer native API. Geometry
+/// authority still comes only from subsequent real window observations.
+fn native_create_rect(rect: PhysicalRect) -> Option<NativePhysicalRect> {
     Some(NativePhysicalRect::new(
-        exact_i32(rect.x())?,
-        exact_i32(rect.y())?,
-        exact_non_zero_u32(rect.width())?,
-        exact_non_zero_u32(rect.height())?,
+        exact_i32(rect.x().round())?,
+        exact_i32(rect.y().round())?,
+        // Preserve the requested size and any expanded minimum in whole pixels.
+        exact_non_zero_u32(rect.width().ceil())?,
+        exact_non_zero_u32(rect.height().ceil())?,
     ))
 }
 

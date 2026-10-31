@@ -161,8 +161,18 @@ fn publish_desktop_authority_with_input(
 fn measure_and_present_source(
     native: &mut NativeCoordinator,
 ) -> dockspace::runtime::DockspaceReceiverDescriptor {
-    let metrics = UniformSurfaceMetrics::new(
+    measure_and_present_source_in_bounds(
+        native,
         LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("logical bounds validate"),
+    )
+}
+
+fn measure_and_present_source_in_bounds(
+    native: &mut NativeCoordinator,
+    bounds: LogicalRect,
+) -> dockspace::runtime::DockspaceReceiverDescriptor {
+    let metrics = UniformSurfaceMetrics::new(
+        bounds,
         LogicalSize::new(0.0, 0.0).expect("logical minimum validates"),
         80.0,
     )
@@ -607,6 +617,45 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
         .expect("source item stays reachable until the native lifecycle barrier");
     assert_eq!(source_after.surface(), source_surface);
     assert_eq!(source_after.root(), source_root);
+}
+
+#[test]
+fn fractional_native_placement_reserves_create_without_inventing_observed_geometry() {
+    for (width, height, pixel_width, pixel_height) in
+        [(179.75, 520.0, 180, 520), (420.25, 320.75, 421, 321)]
+    {
+        let mut native = tear_off_coordinator();
+        let source = register_source(&mut native);
+        publish_desktop_authority(&mut native, source);
+        let receiver = measure_and_present_source_in_bounds(
+            &mut native,
+            LogicalRect::new(0.0, 0.0, width, height).unwrap(),
+        );
+        let version = native.session.version();
+        let child = request_native_child(&mut native, receiver);
+        let viewport = viewport_id_for(child);
+        let specs = native.deferred_viewport_specs();
+        assert_eq!(specs[0].binding(), child);
+        let placement = specs[0].placement();
+        assert_eq!(placement.width(), width);
+        assert_eq!(placement.height(), height);
+        let expected = NativePhysicalRect::new(
+            placement.x().round() as i32,
+            placement.y().round() as i32,
+            pixel_width,
+            pixel_height,
+        );
+        assert!(native.bridge.reserve_create(viewport, child, expected));
+        assert!(native.effects.has_pending_work());
+        assert!(native.session.has_pending_native_create());
+        assert_eq!(native.session.version(), version);
+        assert_eq!(
+            native.session.view().item(SOURCE_ITEM).unwrap().surface(),
+            SOURCE_SURFACE
+        );
+        assert!(native.session.view().surface(child.surface()).is_none());
+        assert!(native.session.native_local_coordinates(child).is_none());
+    }
 }
 
 #[test]

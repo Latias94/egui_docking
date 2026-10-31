@@ -69,9 +69,9 @@ fn ready_window_facts(x: f64) -> NativeWindowFacts {
 }
 
 #[test]
-fn deferred_viewport_rect_requires_exact_physical_pixels() {
+fn deferred_viewport_request_preserves_integral_physical_pixels() {
     let exact = PhysicalRect::new(-120.0, 48.0, 800.0, 600.0).expect("test rect is valid");
-    let rect = exact_native_rect(exact).expect("integral physical rect is accepted");
+    let rect = native_create_rect(exact).expect("integral physical rect is accepted");
 
     assert_eq!(rect.x(), -120);
     assert_eq!(rect.y(), 48);
@@ -80,12 +80,29 @@ fn deferred_viewport_rect_requires_exact_physical_pixels() {
 }
 
 #[test]
-fn deferred_viewport_rect_never_rounds_or_accepts_empty_extents() {
-    let fractional = PhysicalRect::new(10.5, 20.0, 800.0, 600.0).expect("fractional rect is valid");
-    let empty = PhysicalRect::new(10.0, 20.0, 0.0, 600.0).expect("empty rect is representable");
+fn deferred_viewport_request_quantizes_position_and_expands_fractional_extents() {
+    let fractional = PhysicalRect::new(-120.375, -30.625, 420.25, 320.75).unwrap();
+    let rect = native_create_rect(fractional).unwrap();
+    assert_eq!(rect, NativePhysicalRect::new(-120, -31, 421, 321));
+    let subpixel = PhysicalRect::new(10.5, 20.125, 0.125, 0.25).unwrap();
+    assert_eq!(
+        native_create_rect(subpixel),
+        Some(NativePhysicalRect::new(11, 20, 1, 1))
+    );
+}
 
-    assert!(exact_native_rect(fractional).is_none());
-    assert!(exact_native_rect(empty).is_none());
+#[test]
+fn deferred_viewport_request_rejects_empty_and_out_of_range_geometry() {
+    let empty = PhysicalRect::new(10.0, 20.0, 0.0, 600.0).expect("empty rect is representable");
+    assert!(native_create_rect(empty).is_none());
+    for rect in [
+        PhysicalRect::new(f64::from(i32::MAX) + 0.5, 0.0, 10.0, 10.0).unwrap(),
+        PhysicalRect::new(f64::from(i32::MIN) - 0.5, 0.0, 10.0, 10.0).unwrap(),
+        PhysicalRect::new(0.0, 0.0, f64::from(u32::MAX) + 0.25, 10.0).unwrap(),
+        PhysicalRect::new(0.0, 0.0, 10.0, f64::from(u32::MAX) + 0.25).unwrap(),
+    ] {
+        assert!(native_create_rect(rect).is_none(), "{rect:?}");
+    }
 }
 
 #[test]
