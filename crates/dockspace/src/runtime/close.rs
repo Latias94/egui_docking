@@ -20,6 +20,8 @@ use crate::model::WorkspaceVersion;
 use crate::policy::CloseCapability;
 use crate::transition::ContentCloseRequestRejection;
 
+use super::DockspaceSession;
+
 pub(crate) const fn product_close_target(target: ContentCloseTarget) -> ClosePlanTarget {
     match target {
         ContentCloseTarget::Item(item) => ClosePlanTarget::Item { item },
@@ -333,6 +335,29 @@ impl DockspaceClosePlan {
     #[must_use]
     pub const fn phase(&self) -> DockspaceClosePhase {
         self.phase
+    }
+}
+
+impl DockspaceSession {
+    /// Returns published item and root close plans which still require a decision.
+    ///
+    /// Plans retain core request order and include pending deferred continuations.
+    /// Both application and interaction requests are visible. Surface close plans
+    /// remain owned by the native close workflow and are excluded.
+    ///
+    /// This query retains no history and grants no authority beyond the existing
+    /// exact decision tokens. Settling, terminal, stale, and compacted plans are
+    /// omitted; decisions are still validated when submitted through a host frame.
+    pub fn pending_content_close_plans(&self) -> impl Iterator<Item = DockspaceClosePlan> + '_ {
+        self.engine
+            .close_plans()
+            .filter(|plan| {
+                matches!(
+                    plan.target(),
+                    ClosePlanTarget::Item { .. } | ClosePlanTarget::Root { .. }
+                ) && DockspaceClosePhase::from_core(plan).requires_decision()
+            })
+            .map(DockspaceClosePlan::from_core)
     }
 }
 

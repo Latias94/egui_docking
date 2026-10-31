@@ -89,6 +89,12 @@ impl HostFrameReport {
                     InputOutcome::ProductActionRejected { reason, .. } => {
                         Some(HostInputOutcome::ProductActionRejected(*reason))
                     }
+                    InputOutcome::PolicyReplaced { changed, version } => {
+                        Some(HostInputOutcome::PolicyReplaced {
+                            changed: *changed,
+                            version: *version,
+                        })
+                    }
                     InputOutcome::ContentCloseRequested { plan, reused, .. } => {
                         Some(HostInputOutcome::CloseRequested {
                             plan: DockspaceClosePlan::from_core(plan),

@@ -398,6 +398,8 @@ impl DockspaceHostFrame<'_> {
 
     /// Submits one revision-bound programmatic close request.
     ///
+    /// Returns the identity for querying this request's exact committed outcome.
+    ///
     /// # Errors
     ///
     /// Returns an error without poisoning the frame when the request belongs to
@@ -406,12 +408,17 @@ impl DockspaceHostFrame<'_> {
     pub fn submit_prepared_close_request(
         &mut self,
         prepared: PreparedCloseRequest,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
         self.ensure_semantic_input_allowed()?;
         let input = prepared
             .into_engine_input(self.session.engine.authority_domain())
             .map_err(DockspaceRuntimeError::prepared_close_request_authority_mismatch)?;
-        self.append(input)
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(input)?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Opens or reuses one core-owned close plan for an item.
@@ -447,10 +454,12 @@ impl DockspaceHostFrame<'_> {
             self.frame.view().version(),
             target,
         );
-        self.submit_prepared_close_request(prepared)
+        self.submit_prepared_close_request(prepared).map(|_| ())
     }
 
     /// Resolves one initial close decision token.
+    ///
+    /// Returns the identity for querying this decision's exact committed outcome.
     ///
     /// # Errors
     ///
@@ -460,12 +469,17 @@ impl DockspaceHostFrame<'_> {
         request: CloseRequestId,
         token: CloseDecisionToken,
         decision: CloseDecision,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::ResolveClose {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::ResolveClose {
             request,
             token,
             decision,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Visits current unresolved initial decisions without cloning a complete plan.
@@ -505,6 +519,8 @@ impl DockspaceHostFrame<'_> {
 
     /// Resolves one deferred close continuation.
     ///
+    /// Returns the identity for querying this continuation's exact committed outcome.
+    ///
     /// # Errors
     ///
     /// Returns an error when the affine frame rejects the input structurally.
@@ -513,12 +529,17 @@ impl DockspaceHostFrame<'_> {
         request: CloseRequestId,
         token: DeferredCloseToken,
         decision: DeferredCloseDecision,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::ContinueDeferredClose {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::ContinueDeferredClose {
             request,
             token,
             decision,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Replaces the complete declarative docking policy at the terminal configuration phase.
@@ -527,15 +548,22 @@ impl DockspaceHostFrame<'_> {
     /// semantic input is rejected, while surface contributions may still settle the frame's
     /// pre-configuration presentation before the replacement invalidates it atomically.
     ///
+    /// Returns the identity for querying this replacement's exact committed outcome,
+    /// including an unchanged policy and its version at this point in reducer order.
+    ///
     /// # Errors
     ///
     /// Returns an error when the input prefix is incomplete, document replacement already owns
     /// the terminal phase, or the private application source sequence is exhausted.
-    pub fn replace_policy(&mut self, policy: DockPolicy) -> Result<(), DockspaceRuntimeError> {
+    pub fn replace_policy(
+        &mut self,
+        policy: DockPolicy,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
         let sequence = self.begin_configuration_input()?;
         self.frame
             .append_policy_replacement(APPLICATION_INPUT_SOURCE, sequence, policy)?;
-        Ok(())
+        Ok(DockspaceSubmittedAction::new(frame_attempt, sequence))
     }
 
     /// Replaces renderer-neutral presentation geometry at the terminal configuration phase.

@@ -7,6 +7,8 @@
 //! authority.
 
 mod close;
+#[cfg(test)]
+mod content_actions_tests;
 pub(crate) mod direct_manipulation;
 mod error_kind;
 mod focus;
@@ -265,6 +267,13 @@ pub enum HostInputOutcome {
     },
     /// One stable item- or root-centric product action was rejected without mutation.
     ProductActionRejected(DockspaceActionRejection),
+    /// Application policy was replaced or found equal.
+    PolicyReplaced {
+        /// Whether policy state changed.
+        changed: bool,
+        /// Workspace version immediately after processing this replacement.
+        version: WorkspaceVersion,
+    },
     /// One core-owned touch or context-menu interaction was reported.
     Touch(DockspaceTouchEvent),
     /// One content-close request opened or reused a plan.

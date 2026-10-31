@@ -589,6 +589,19 @@ Allow, Veto and deferred-continuation loop without a renderer or pointer host.
 
 Inspect `HostFrameReport::inputs()` for `HostInputOutcome::CloseRequested`.
 Each plan contains stable item identities and their exact decision tokens.
+`DockspaceSession::pending_content_close_plans()` also discovers current item
+and root requests after their original report has been consumed, including
+requests from tab or contained chrome and deferred continuations. It projects
+the existing core plans, excludes native surface-close plans and omits stale or
+terminal requests. Keep each report's exact action result separately when
+reporting completion; this query is current state rather than an event history.
+
+`submit_prepared_close_request`, `resolve_close` and `continue_deferred_close`
+return a `DockspaceSubmittedAction`. Use
+`HostFrameReport::submitted_action_outcome(id)` to read that exact input when
+other requests or decisions share its frame. An identifier from a dropped
+attempt or another session cannot match a later report.
+
 Hosts which retain only a request identity can visit
 `DockspaceHostFrame::pending_close_decisions(request)` to read current unresolved
 initial decisions without cloning the complete plan. Take a bounded prefix of
@@ -627,6 +640,10 @@ The lock is an independent policy restriction. It preserves operation filters
 and per-item rules, so unlocking restores their original behavior. Replacing
 policy is the frame's terminal configuration step: commit an unlocked policy
 before submitting layout edits or applying a saved layout in a later frame.
+`replace_policy` returns the same exact submission identifier; its
+`HostInputOutcome::PolicyReplaced { changed, version }` records the version at
+that input even when several configurations share one commit or a policy is
+unchanged.
 Dropping the unlock frame retains the published lock. Live document restore
 rejects a locked arrangement; constructing an initially locked session is valid.
 

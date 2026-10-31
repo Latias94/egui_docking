@@ -2281,12 +2281,16 @@ fn terminal_configuration_commits_after_semantic_actions() {
     assert_eq!(session.presentation_config(), &presentation);
     assert_eq!(
         report.inputs(),
-        &[HostInputOutcome::ProductActionApplied(
-            DockspaceActionOutcome::Selected {
+        &[
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
                 item: SECOND,
                 changed: true,
+            }),
+            HostInputOutcome::PolicyReplaced {
+                changed: true,
+                version: report.after(),
             },
-        )]
+        ]
     );
 }
 
