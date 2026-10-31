@@ -139,9 +139,9 @@ impl NativePointerTranslator {
         })
     }
 
-    /// Finds an existing winit mouse device while a button remains active.
+    /// Finds an existing winit mouse device while Primary remains active.
     ///
-    /// Native stationary continuations require an ongoing press. This lookup
+    /// Native stationary continuations require an ongoing Primary press. This lookup
     /// never enrolls a device or revives a retired identity.
     pub(crate) fn mouse_device_for_pointer(&self, pointer: NativePointerId) -> Option<DeviceId> {
         self.devices.iter().find_map(|(key, entry)| {
@@ -153,11 +153,10 @@ impl NativePointerTranslator {
                 return None;
             };
             (state.pointer == pointer
-                && state
-                    .mouse
-                    .buttons
-                    .values()
-                    .any(|button| matches!(button, NativeMouseButtonState::Active { .. })))
+                && matches!(
+                    state.mouse.buttons.get(&NativePointerButton::Primary),
+                    Some(NativeMouseButtonState::Active { .. })
+                ))
             .then_some(*device)
         })
     }
@@ -976,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_device_lookup_is_read_only_and_requires_an_active_button() {
+    fn mouse_device_lookup_is_read_only_and_requires_active_primary() {
         let mut translator = NativePointerTranslator::default();
         assert_read_only_mouse_device_lookup(&translator, NativePointerId::new(1), None);
 
@@ -989,8 +988,26 @@ mod tests {
             NativePointerEvent::ButtonPressed(NativePointerButton::Secondary),
             routes,
         ));
+        assert_read_only_mouse_device_lookup(&translator, pointer, None);
+        assert!(translator.device_mut(key).unwrap().mouse.observe(
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            routes,
+        ));
         assert_read_only_mouse_device_lookup(&translator, pointer, Some(device));
         assert_read_only_mouse_device_lookup(&translator, NativePointerId::new(u64::MAX), None);
+        assert!(translator.device_mut(key).unwrap().mouse.observe(
+            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            routes,
+        ));
+        assert!(
+            translator
+                .device_mut(key)
+                .unwrap()
+                .mouse
+                .buttons
+                .contains_key(&NativePointerButton::Secondary)
+        );
+        assert_read_only_mouse_device_lookup(&translator, pointer, None);
         assert!(translator.device_mut(key).unwrap().mouse.observe(
             NativePointerEvent::ButtonReleased(NativePointerButton::Secondary),
             routes,
