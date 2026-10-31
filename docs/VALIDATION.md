@@ -15,6 +15,59 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 real close/create callbacks across an age boundary
+
+The opt-in Linux test
+`app::native_boundary_x11::real_native_close_create_age_boundary` runs the
+production `NativeDockspaceApp`, Glow renderer, host and affine pass finalizer
+under isolated Xvfb/Openbox. It uses W4/A1, E2, M4/C2/L2 and a 4 MiB combined
+allowance. C2 is configured capacity, not a two-command occupancy claim.
+
+A reaches real first-live. B receives an actual deferred create admission;
+the fixture defers its first output, cancels the semantic saga and preserves
+the original OS-attempt owner. XTest Alt-F4 produces q1's real WM close,
+HoldClose and canonical Veto callback. The fixture retains that callback, then
+requires a distinct q2 parked behind it. It also retains one actual Root
+renderer terminal. With service and new UI paused, real Root motion ages past
+250 ms. Initial freeze correctly requires `ContinueBoundary`; q2 is within the
+previously accepted prefix, without claiming to read exact B.
+
+Real standalone host service commits overload cancellation while all three
+owners remain outstanding. Returning the original callback and terminal and
+admitting B's actual first output then produces a production Created receipt,
+exact A/B Destroyed observations, two quiescent retirements and unchanged
+source ownership. Tabs remain `[3,5,6]`. Selected owner states satisfy the
+combined storage queries and 4 MiB allowance. No token, callback, snapshot,
+release or renderer terminal is manufactured.
+
+Final zero-output observation is deliberately controlled by the fixture: it
+routes the final real terminal's wake to GUI service, lets that production
+service commit, then closes ordinary UI admission only after quiescence and
+zero backlog are observed together on the GUI thread. It does not directly
+clear an owner. This checks finite cleanup, not natural idle rendering.
+It also does not qualify physical drag/release or the model's once-only
+accepted-release delivery.
+
+The final source passes the first corrected real run and three consecutive
+repeats, one assertion-disabled all-feature real run, Linux all-target/all-feature
+Clippy correctness/suspicious, targeted formatting and diff checks. The test
+is ignored by ordinary suites because it requires an isolated X11 display,
+XTest, `xdotool` and a WM with Alt-F4; these explicit ignored runs are the
+positive qualification. Existing core and native suites keep their preceding
+qualification; no new whole-workspace count is claimed here.
+
+Earlier failures remain in `/tmp/dockspace-real-boundary-physical*.log`: the
+first fixture expected Replay before the mandatory boundary; a repeated
+`xdotool --sync` motion to its current point stalled; and driver-thread
+polling either blocked the last settlement or raced a continuous Root output.
+The final fixture uses two distinct real motions and GUI-service drain.
+Evidence is `/tmp/dockspace-real-boundary-source.json`,
+`/tmp/dockspace-real-boundary-qualification.json`,
+`/tmp/dockspace-real-boundary-drain-repeat.json` and the matching logs. Forks
+remain local egui `8231fb5a` and Winit `6c10c87d`. Broader command combinations,
+positive stationary facts, remote reproducibility and the overall plan remain
+open.
+
 ## 2026-11-01 core and official adapter archive consumers
 
 The local U9 package gate at `7809e57` verifies both publishable crates in one

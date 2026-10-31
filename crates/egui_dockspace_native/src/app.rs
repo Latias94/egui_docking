@@ -29,6 +29,9 @@ use crate::{
     NativeActionFailure, NativeActionRequestError, NativeActionStatus, NativeLayoutRequestError,
 };
 
+#[cfg(all(test, target_os = "linux"))]
+mod native_boundary_x11;
+
 /// Fork-backed eframe application whose [`DockspaceSession`] is the sole graph authority.
 ///
 /// Root and child callbacks borrow the same locked runtime state. The lock is

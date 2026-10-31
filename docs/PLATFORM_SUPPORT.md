@@ -1,8 +1,8 @@
 ---
 title: "Dockspace Platform Support"
 status: "Scoped evidence; native qualification incomplete"
-reviewed: "2026-10-31"
-baseline_source_revision: "5d42e1e6527c68672c99ffc01644db62af68ec70"
+reviewed: "2026-11-01"
+baseline_source_revision: "7809e57"
 ---
 
 # Dockspace Platform Support
@@ -15,12 +15,9 @@ Implementing an API or publishing a capability bit does not certify physical
 input on that backend.
 
 This snapshot follows the [canonical engine-host plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md)
-and the dated [validation record](VALIDATION.md). The production/physical
-baseline preceding stationary qualification is `5d42e1e`, including the
-current-roster callback correction and fractional create-request conversion.
-Dated records below identify their own source and scope. The finite stationary
-extension is recorded separately
-below. Overall U9 and the complete plan remain open.
+and the dated [validation record](VALIDATION.md). The current production
+baseline is `7809e57`; each physical or model record below identifies its own
+source and scope. Overall U9 and the complete plan remain open.
 Earlier dated qualifications
 retain their historical scope; the 2026-10-31 entries supersede earlier
 physical-smoke coverage limits.
@@ -79,8 +76,8 @@ The [2026-10-31 L03 qualification](VALIDATION.md#2026-10-31-l03-single-batch-bur
 passes the complete 60-case local product matrix, including a complete gesture
 in one raw egui packet. Local timed hover, explicit Touch arming and edge
 scrolling share the core continuation and exact-output barrier. These local
-results do not qualify native physical Touch or automatic native stationary
-input.
+results do not qualify native physical Touch or successful native stationary
+input. The limited automatic native scheduler is qualified separately below.
 
 ## Fork-backed native capabilities and qualification
 
@@ -110,7 +107,7 @@ These bits must be read separately from the evidence:
 
 | Platform | Recorded finite qualification | Remaining platform limit |
 | --- | --- | --- |
-| X11 | Twelve finite XTest tear-off/first-live/redock/retirement journeys; three center-only high-rate cases; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
+| X11 | Thirteen finite XTest target journeys; a separate stationary-negative entry and center-only high-rate profile; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
 | macOS | Real-window default/bounded programmatic tear-off, first-live, redock and retirement; six output-pressure cases. Same-window event-time facts have Winit test coverage, and local mouse geometry has deterministic producer/adapter coverage. | Programmatic and same-window fact evidence does not certify a physical cross-window release. `AuthoritativeButtonState` remains absent; cross-surface physical promotion stays fail-closed. Retina/mixed-DPI and the complete physical matrix remain unqualified. |
 | Windows | Conservative capability mapping and shared host/adapter contracts. | No current Windows real-input/platform certification is established by the cited records. Hovered-window, desktop-pointer and authoritative-button bits remain absent; placement/lifecycle bits alone do not qualify cross-window docking. |
 | Wayland | Limited observation/control mapping; deterministic event-time local mouse geometry and Touch position/geometry-pair contracts. | No compositor/physical-input qualification. Managed native lifecycle, global placement, work area and desktop pointer/hover authority remain unavailable in this mapping. Proven local operations need no global desktop lane. |
@@ -137,7 +134,10 @@ records eight physical journeys at `13dd127`. The subsequent
 [tab-half qualification](VALIDATION.md#2026-10-31-x11-physical-tab-half-insertion)
 adds two and reruns all ten. The subsequent
 [nested qualification](VALIDATION.md#2026-10-31-synchronous-native-host-service-and-nested-physical-targets)
-adds the fixed center/west leaf cases and reruns all twelve:
+adds the fixed center/west leaf cases and reruns all twelve. The subsequent
+[overflow qualification](VALIDATION.md#2026-10-31-physical-overflow-insertion-and-retained-focus)
+adds one clipped target and refreshes the full 15-entry matrix, including the
+separate stationary-negative and load profiles:
 
 | `EGUI_DOCKSPACE_PHYSICAL_TARGET` | Target | Required final layout |
 | --- | --- | --- |
@@ -153,6 +153,7 @@ adds the fixed center/west leaf cases and reruns all twelve:
 | `tab-half-after` | Physical point inside its available right half before Close Main | Exact insertion marker and ordered `[Main,Child]` tabs. |
 | `nested-pane-center` | Non-guide Main content in the fixed two-axis layout | Center merge in the target leaf; empty central, ancestor weights and Sibling remain exact. |
 | `nested-pane-edge` | Non-guide west basin of that Main leaf | Inner `[Child,Main]` split; ancestor weights, empty central and Sibling remain exact. |
+| `overflow-tab-before` | Checked visible Main body after real backward scrolling in a fixed three-tab overflow strip | Exact before-Main insertion, `[Anchor, Child, Main]`, Child selected, destruction and quiescence. |
 
 Pane points are normalized to current content. Physical rounding must stay in
 the named inner-pane basin, outside the outer-root band and every actual guide
@@ -166,8 +167,10 @@ neither is a native release receipt or GPU presentation proof.
 Tab-half selection uses an opt-in passive diagnostic copied from the painted
 tab's complete visible bounds; the Tab accessibility receiver still excludes
 its close button. These diagnostics confer no input or presentation authority.
-The finite single fully visible target has no overflow chrome; clipped and
-overflowed tab-half insertion remain unqualified. The nested fixture preserves
+The original single fully visible target has no overflow chrome. The later
+overflow fixture qualifies one partially clipped Main target after real manual
+scrolling; arbitrary overflow geometry and positive stationary scrolling remain
+unqualified. The nested fixture preserves
 Horizontal→Vertical ancestry and requires the additional Horizontal split only
 inside the target leaf for west docking. Painted content/tab diagnostics confer
 no target authority. The fractional source width (179.75 pixels) also exercises
@@ -323,14 +326,16 @@ Physical targets use registered TextEdit content; completed-pass tests cover
 Button/canvas mapping and overlay blocking separately. Final refreshed gate
 results and source hashes are recorded in that entry.
 
-The next layout slice adds a bounded application facade for close decisions,
-reopen and arrangement locking. Its current qualification is recorded separately
-in `VALIDATION.md`. The fixed host surface cannot be removed by content close:
+The bounded application facade supplies close decisions, reopen and arrangement
+locking. Its qualification is recorded separately in `VALIDATION.md`. The fixed
+host surface cannot be removed by content close:
 the facade reports `HostSurfaceRequired`, while individual-item closes can leave
-an empty central dock area for reopening. Replacing/rebinding that host, native
-defaults/presets/document restore, complete overflow/stationary acceptance and
-the remaining U7/U8/U10 criteria stay open. This bounded example does not certify
-the entire native editor surface.
+an empty central dock area for reopening. Subsequent public Root continuation
+and example qualifications cover replacing that host and restoring Default or
+named presets after rebinding, preserving actual text edits and stable item
+identities. Their [dated evidence](VALIDATION.md#2026-11-01-application-default-and-named-presets-after-root-continuation)
+does not certify arbitrary native layout migration or the entire editor.
+Positive stationary and the remaining U7/U8/U10 criteria stay open.
 
 ## Dependency reproducibility and open scope
 
@@ -338,7 +343,7 @@ Current native results depend on unpublished local overrides:
 
 | Dependency | Locally qualified revision | Tracked remote revision |
 | --- | --- | --- |
-| egui/eframe fork | `92c921f7235c87ae28ea09ae522ef55fd8333b41` | `0716beee5b7284389f2e80ffb6b24b5af6ae2910` |
+| egui/eframe fork | `8231fb5ab0f37b72684f1c0f7807716be16c877e` | `0716beee5b7284389f2e80ffb6b24b5af6ae2910` |
 | Winit fork | `6c10c87da2a06871371de7d30fedc656cf7c3681` | `f378b50f29cafafec31cd8675c17646b4ef57d70` |
 
 The tracked revisions are visible in the
@@ -353,15 +358,15 @@ cannot reproduce this native qualification.
 Validation references such as `/tmp/dockspace-physical-edge-qualification.json`
 and `/tmp/dockspace-physical-load-final-qualification.json` identify local
 artifacts recorded in `VALIDATION.md`; they are not portable checkout assets.
-The current dated snapshot records fresh native gates, programmatic windows,
-release pressure and the twelve-target X11 physical refresh; earlier dated
-results retain their separate source scope.
+Current dated snapshots record native gates, programmatic windows, release
+pressure, finite physical targets and measured active service; earlier results
+retain their separate source scope. The extracted core/official-adapter archive
+gate passes independently of these optional-native fork dependencies.
 
-Still open are remaining close/create owner
-capacity and sustained active host-service qualification; overflowed/clipped
-tab insertion, arbitrary nested and mixed-DPI physical coverage; fresh
+Still open are broader combined close/create/command owner capacity and hard
+host-service bounds; arbitrary overflow/nested and mixed-DPI physical coverage; fresh
 stationary capture and successful automatic execution, and
 native-local/Touch OS evidence; Windows/macOS platform certification; the complete
-native layout-management showcase; and U9 dependency publication, clean-checkout reproduction, package
-and remaining evidence/deletion closure. The twelve-journey and
-center-load results retain their finite scope.
+native layout-management showcase; and U9 dependency publication, clean-checkout
+reproduction and remaining evidence/deletion closure. The finite target,
+negative stationary, active-service and center-load results retain their scope.

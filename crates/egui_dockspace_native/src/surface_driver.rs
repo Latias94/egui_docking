@@ -233,6 +233,16 @@ struct NativeShutdownState {
 }
 
 impl<P: PaneView> NativeRuntimeState<P> {
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn boundary_coordinator(&mut self) -> &mut NativeCoordinator {
+        &mut self.coordinator
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn boundary_close_policy(&mut self) -> &mut NativeWindowClosePolicy {
+        &mut self.close_policy
+    }
+
     pub(crate) fn prepare_output_input(
         &mut self,
         context: &egui::Context,

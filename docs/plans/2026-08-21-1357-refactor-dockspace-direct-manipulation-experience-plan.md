@@ -2003,6 +2003,21 @@ substitute for that physical entry. No fallback from the
 expected source identity or cached implicit capture is permitted. NativeLocal
 and Touch automatic sampling remain outside this Desktop Mouse implementation.
 
+The 2026-11-01 opt-in X11 callback fixture now verifies a finite real
+close/create/age combination through the production application and Glow host.
+A reaches first-live; B's actual admitted attempt survives semantic cancellation
+while its first output is deferred. A real canonical q1 Veto callback, distinct
+parked q2 and Root renderer terminal remain outstanding across natural 250 ms
+age freeze and real standalone-service overload cancellation. Returning those
+owners produces actual B Created, exact A/B Destroyed, retirement and unchanged
+source ownership under the configured 4 MiB allowance. The corrected source
+passes four normal real runs, one noassert/all-feature run and Clippy. Final
+zero-output observation controls GUI-service wake/admission after real
+settlement, so it does not certify natural idle rendering. No drag/release or
+C2 occupancy is claimed; model accepted-release delivery and this actual
+callback slice remain separate. Full source/evidence and earlier failed fixture
+attempts are recorded in `docs/VALIDATION.md`. U7/U8 and the Goal remain open.
+
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
 - **Goal:** Preserve core native semantics while making resource ownership engine-implementable.

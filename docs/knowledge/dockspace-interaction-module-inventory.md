@@ -1,14 +1,14 @@
 ---
 title: "Dockspace Interaction Module Inventory"
 status: "Source-reviewed; qualification scoped"
-reviewed: "2026-10-31"
-source_revision: "13dd12747b600d7c92921effa8cf521bfd120359"
+reviewed: "2026-11-01"
+source_revision: "7809e57"
 ---
 
 # Dockspace Interaction Module Inventory
 
-This inventory describes production ownership at `13dd127` and the W16
-model-test evidence committed as `9140b18` on 2026-10-31.
+This inventory describes production ownership through `7809e57`. Earlier
+W16 model, physical-input and stationary checkpoints retain their dated scopes.
 `dockspace` is the renderer-neutral product; engine hosts own their drawing,
 input facts, scheduling and platform resources. The egui adapters consume the
 same public runtime and never own another docking graph.
@@ -119,10 +119,13 @@ under 4 MiB, with the recorded input-data exclusions. This is a constant-clock
 model, with no OS windows/output tokens, O256 combination or active-release
 qualification for that cursor-only fixture.
 
-The public native stationary projection is implemented, but automatic native
-adapter scheduling is not qualified. Fresh query capture/delivery remain
-`Unknown`; the [pointer-observation prerequisite](../VALIDATION.md#2026-10-30-native-pointer-observation-prerequisite)
-does not authorize a timer to reuse retained capture or generate motion.
+The finite Desktop Mouse scheduler is qualified by 19 focused models and the
+[stationary checkpoint](../VALIDATION.md#2026-10-31-finite-native-stationary-scheduling)
+with native526/526 and a real negative X11 query. Primary must remain active.
+Fresh query capture/delivery remain `Unknown`, so successful stationary
+selection/scrolling is still unavailable. NativeLocal and Touch automatic
+sampling are outside this slice; a timer cannot reuse retained capture or
+generate motion.
 
 ## Conformance and physical evidence
 
@@ -134,12 +137,15 @@ does not authorize a timer to reuse retained capture or generate motion.
 | `integration/egui-native-smoke/src/main.rs`, `integration/egui-native-smoke/src/bin/output_pressure/host.rs` | Programmatic real-window lifecycle and finite real output-owner pressure cases. | Observe first-live, exact retirement, bounded input-data samples and quiescence. | Programmatic redock is not a physical drag or complete configured-cap qualification. |
 | `integration/egui-native-smoke/src/bin/physical_x11/app.rs`, `assertions.rs` | Minimal application, passive current semantic facts and model/preview checks. | Read-only inspection reflects actual emitted program and current workspace. | No constructed drop target or programmatic tear-off bypass. |
 | `physical_x11/driver/inspection.rs`, `physical_x11/driver/x11.rs` | Bounded loopback AccessKit inspection, checked XTest input and exact XID destruction. | Paths continue under the same smoke `src/bin/` directory. | No generic GUI automation API or core gesture injection. |
-| `physical_x11/driver/scenario.rs`, `physical_x11/pointer_load.rs` | Eight finite target journeys and optional center-only 1 kHz injection/callback measurement. | Current semantic bounds, normalized samples, physical rounding, held input, emitted preview, model, DestroyNotify, retirement and quiescence. | No fallback target, screenshot oracle or step-as-release/presentation proof; load rejects edge/guide targets. |
+| `physical_x11/driver/scenario.rs`, `physical_x11/pointer_load.rs` | Thirteen ordinary target journeys, a separate stationary-negative entry and center-only 1 kHz injection/callback measurement. | Current semantic bounds, normalized samples, physical rounding, held input, emitted preview, model, DestroyNotify, retirement and quiescence. | No fallback target, screenshot oracle or step-as-release/presentation proof; load rejects edge/guide targets. |
 
-The [latest edge record](../VALIDATION.md#2026-10-31-x11-non-guide-pane-edge-docking)
-qualifies four edge, three center and one guide-control physical journeys at
-`13dd127`. The [load record](../VALIDATION.md#2026-10-31-continuous-x11-input-and-pending-release-wake)
-qualifies its separate center-only finite profile. X11 authority is limited to
+The [overflow record](../VALIDATION.md#2026-10-31-physical-overflow-insertion-and-retained-focus)
+qualifies 13 ordinary physical targets, including tab halves, fixed nested
+targets and one clipped overflow insertion. The separate stationary-negative
+entry and center-only load bring that finite matrix to 15 journeys. The
+[active-service record](../VALIDATION.md#2026-11-01-complete-host-service-during-the-active-1-khz-journey)
+measures complete synchronous service during the finite load profile; it does
+not establish a hard OS-loop yield or successful stationary input. X11 authority is limited to
 the first X screen with one exact identity-transformed active CRTC/work-area
 authority. macOS programmatic/same-window facts, Windows/Wayland limits and
 stationary `Unknown` facts are detailed in [platform support](../PLATFORM_SUPPORT.md).
@@ -151,8 +157,9 @@ claims. Earlier authority/conformance plans, pointer-journal design documents
 and Open-GPUI catalogs remain historical design/reference material where their
 API names or ownership differ from this source. Open-GPUI cutover is deferred.
 
-Native qualification uses unpublished local egui `70f7b517` and Winit
-`6c10c87d`; tracked remote pins remain `0716beee` and `f378b50f`. Required seams
+The latest native qualification uses unpublished local egui `8231fb5a` and
+Winit `6c10c87d`; earlier records retain their own fork revisions. Tracked
+remote pins remain `0716beee` and `f378b50f`. Required seams
 are missing from that tracked pair, so a remote-only clean checkout cannot
 reproduce these native results. Full revisions and evidence are in
 [platform support](../PLATFORM_SUPPORT.md#dependency-reproducibility-and-open-scope).
@@ -168,7 +175,10 @@ binding-publication provider distinguishes a committed Pending binding from a
 same-candidate create/cancel and from later effect delivery. It adds no owner
 or registry; exact producer quiescence still gates prefix reclamation.
 
-The remaining close/create capacity, service-time, broader
-physical/platform, stationary capture, native showcase, dependency/package and
-evidence/deletion gates retain their existing owners in the canonical plan.
+The finite cancelled-create/accepted-release model and active-service records
+close their stated slices only. Broader combined owner capacity, hard service
+bounds, physical/platform coverage, stationary capture, native showcase,
+dependency reproducibility and evidence/deletion gates retain their existing
+owners in the canonical plan. The extracted core/official-adapter package gate
+is recorded separately in the [U9 archive checkpoint](../VALIDATION.md#2026-11-01-core-and-official-adapter-archive-consumers).
 This update adds no runtime tool, replacement plan or overall U9 completion claim.
