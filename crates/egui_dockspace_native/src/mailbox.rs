@@ -1037,7 +1037,6 @@ mod tests {
                 effect.operation(),
                 NativeEffectOperation::CreateWindow { .. }
                     | NativeEffectOperation::CompensatingClose { .. }
-                    | NativeEffectOperation::RequestRootClose { .. }
                     | NativeEffectOperation::RequestReplacement { .. }
             )
         }));

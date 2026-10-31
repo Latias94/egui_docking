@@ -21,8 +21,7 @@ use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
     NativeViewportCreateAttempt, NativeViewportCreateFailureKind, NativeViewportFocusStatus,
     NativeViewportPointerPassthroughCommandToken, NativeViewportPointerPassthroughStatus,
-    NativeViewportVisibilityStatus,
-    egui::{ViewportCommand, ViewportId},
+    NativeViewportVisibilityStatus, egui::ViewportId,
 };
 use winit::window::WindowId;
 
@@ -30,8 +29,7 @@ use crate::NativeRuntimeError;
 use crate::capabilities::capabilities_for_backend;
 use crate::deferred_viewport::{DeferredViewportDriver, DeferredViewportSpec, viewport_id_for};
 use crate::effect_coordinator::{
-    NativeEffectCoordinator, NativeViewportCommand, NativeViewportEffectKind,
-    NativeViewportEffectPlan,
+    NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
 };
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
@@ -461,10 +459,7 @@ impl NativeCoordinator {
             owners.validate(binding_slots, effect_slots)?;
         }
         let input_control = NativeInputControl::with_storage_limits(binding_slots, effect_slots)?;
-        let effects = NativeEffectCoordinator::with_storage_limits(
-            effect_slots,
-            owner_limit.map(|limit| limit.command_slots),
-        )?;
+        let effects = NativeEffectCoordinator::with_storage_limits(effect_slots)?;
         let deferred_viewports = match owner_limit {
             Some(_) => DeferredViewportDriver::with_capacity_limit(
                 binding_slots.expect("owner storage validates the binding bound"),
@@ -825,7 +820,7 @@ impl NativeCoordinator {
         Ok(specs)
     }
 
-    fn dispatch_queued_focus(
+    pub(crate) fn dispatch_viewport_commands(
         &mut self,
         context: &eframe::egui::Context,
     ) -> Result<bool, NativeRuntimeError> {
@@ -839,13 +834,11 @@ impl NativeCoordinator {
                 .bridge
                 .reserve_focus_callback(viewport, binding, window, token)
             {
-                let Some(NativeFocusTermination::Queued { viewport, request }) =
+                let Some(NativeFocusTermination::Queued(request)) =
                     self.focus_control.take_queued_terminal(binding)
                 else {
                     return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
                 };
-                self.effects
-                    .remove_command(viewport, binding, &ViewportCommand::Focus);
                 self.queue_pending_effect_result(
                     request.dispatch_failed(NativeDispatchFailure::AdapterRejected),
                     None,
@@ -855,38 +848,10 @@ impl NativeCoordinator {
                     return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
                 }
                 prepared.enqueue(context);
-                let removed =
-                    self.effects
-                        .remove_command(viewport, binding, &ViewportCommand::Focus);
-                debug_assert!(
-                    removed,
-                    "the dispatched focus request owns its queued command"
-                );
             }
             return Ok(true);
         }
         Ok(false)
-    }
-
-    pub(crate) fn dispatch_viewport_commands(
-        &mut self,
-        context: &eframe::egui::Context,
-    ) -> Result<bool, NativeRuntimeError> {
-        let mut progressed = self.dispatch_queued_focus(context)?;
-        for (viewport, command) in self.effects.drain_commands() {
-            context.send_viewport_cmd_to(viewport, command);
-            progressed = true;
-        }
-        Ok(progressed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn take_viewport_commands(
-        &mut self,
-        context: &eframe::egui::Context,
-    ) -> Result<Vec<(ViewportId, ViewportCommand)>, NativeRuntimeError> {
-        self.dispatch_queued_focus(context)?;
-        Ok(self.effects.take_commands())
     }
 
     pub(crate) fn pointer_passthrough_command(&self) -> Option<NativePointerPassthroughCommand> {
@@ -1003,7 +968,6 @@ impl NativeCoordinator {
             self.bridge.clear_presentation_ack(binding);
             self.effects.remove_show(binding);
             self.terminalize_focus(binding);
-            self.effects.remove_commands(binding);
             self.bridge
                 .with_close_control(|control| control.retire_binding(binding));
             self.retain_retired_input_results(binding);
@@ -1387,30 +1351,19 @@ impl NativeCoordinator {
         let Some(termination) = self.focus_control.take_terminal(binding) else {
             return;
         };
-        self.queue_focus_termination(binding, termination);
+        self.queue_focus_termination(termination);
     }
 
     fn terminalize_queued_focus(&mut self, binding: NativeSurfaceBinding) {
         let Some(termination) = self.focus_control.take_queued_terminal(binding) else {
             return;
         };
-        self.queue_focus_termination(binding, termination);
+        self.queue_focus_termination(termination);
     }
 
-    fn queue_focus_termination(
-        &mut self,
-        binding: NativeSurfaceBinding,
-        termination: NativeFocusTermination,
-    ) {
+    fn queue_focus_termination(&mut self, termination: NativeFocusTermination) {
         let result = match termination {
-            NativeFocusTermination::Queued { viewport, request } => {
-                let removed =
-                    self.effects
-                        .remove_command(viewport, binding, &ViewportCommand::Focus);
-                debug_assert!(
-                    removed,
-                    "a queued focus request retains its viewport command"
-                );
+            NativeFocusTermination::Queued(request) => {
                 request.dispatch_failed(NativeDispatchFailure::ProviderStopped)
             }
             NativeFocusTermination::Dispatched(request) => {

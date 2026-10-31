@@ -262,9 +262,9 @@ fn storage_limit(
             768 * 1024,
         ));
     if combined {
-        NativeStorageLimit::new(input, BYTE_LIMIT, 48, 32, 16)
+        NativeStorageLimit::new(input, BYTE_LIMIT, 48, 16)
     } else {
-        NativeStorageLimit::new(input, BYTE_LIMIT, 4, 2, 2)
+        NativeStorageLimit::new(input, BYTE_LIMIT, 4, 2)
     }
 }
 

@@ -42,7 +42,7 @@ The next completion work is concrete:
 | --- | --- |
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
-| U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze, and the mixed accepted-release model now qualifies an actual ordinary Focus queue peak of one with predecessor/successor isolation. Configured C2 is not a two-command occupancy claim. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples; the 2 ms cooperative yield target is not a hard OS scheduling guarantee. Broader owner/platform combinations retain their documented limits. |
+| U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze, and the mixed accepted-release model qualifies one queued Focus with predecessor/successor isolation. The unreachable Root-close chain, duplicate ordinary command Vec and configurable command-slot quota are removed; one existing Focus owner remains. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples; the 2 ms cooperative yield target is not a hard OS scheduling guarantee. Broader owner/platform combinations retain their documented limits. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
 | U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
@@ -1836,6 +1836,19 @@ Neither a second lifecycle registry nor a new input clock is justified by this
 platform work. The current backend still fails closed for positive stationary
 input, and no new OS capability is enabled by these observations.
 
+The local-mutation prerequisite is now qualified in Winit `3084fc09`. One
+XConnection capture owner joins event production and supported window mutation
+paths. Existing event depth plus an RAII invalidation fence bracket request
+dispatch without holding Display/capture locks; server sync and normal FIFO
+drain reject queued predecessor presses. The final direct-root XTest fixture
+fails on `6c10c87d` and passes normally/noassert/repeated, with 51 Winit unit
+tests in each mode and independent lock review. Joined X11 actual close/create,
+pressure, center/nested, stationary-negative and 1 kHz journeys pass. Original
+Primary-press identity, ancestor coverage and positive capture/delivery remain
+the next boundaries; this prerequisite does not enable successful stationary
+input. Exact source, failed lock design and fixture limitations are retained in
+`docs/VALIDATION.md`.
+
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
 roster and 32 original property identities coexist while ordinary input reaches
@@ -2523,6 +2536,21 @@ declared core dependency. Exact hashes and local evidence are recorded in
 the retained yanked `clipboard-win 5.4.1` lockfile warning and the remaining
 native/overall acceptance are separate work; this checkpoint does not close U9.
 
+The subsequent bounded deletion slice removes the unreachable RuntimeOwned
+Root-close effect chain from core/public/native APIs. Existing registration,
+recovery and reservation rules admit External Root or RuntimeOwned Child only;
+external Root close and Child cleanup retain their actual protocols. The
+redundant private cleanup-request enum is also removed. Native Focus now
+dispatches directly from its existing sole Queued/Dispatched owner, deleting
+the duplicate command Vec and breaking the storage constructor to remove its
+command-slot quota. Exact callback reservation, request/result backing and
+retirement isolation remain. Fresh qualification passes workspace1,942,
+public148/176, native570/570 with both 10,000-lifetime soaks, Linux523/523,
+strict docs/lints/doctests/formatting. Independent review confirms the finite
+ownership/deletion boundary. Exact source and qualifications are recorded in
+`docs/VALIDATION.md`; optional-native fork reproducibility, positive stationary
+facts and the remaining overall criteria stay open.
+
 The 2026-10-31 local dependency audit confirms a concrete reproducibility
 dependency: egui `92c921f7235c` still pins winit `f378b50f29ca` internally, despite
 using the pointer-observation APIs from local winit `6c10c87da2a0`. Close that
@@ -2589,7 +2617,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `8231fb5ab0f37b72684f1c0f7807716be16c877e` and Winit fork `6c10c87da2a06871371de7d30fedc656cf7c3681`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `8231fb5ab0f37b72684f1c0f7807716be16c877e` and Winit fork `3084fc09` (the single-Focus model gates freeze `6c10c87d` independently). That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.

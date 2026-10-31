@@ -82,11 +82,6 @@ pub enum NativeEffectOperation {
         /// Exact logical/native binding under observation.
         binding: NativeSurfaceBinding,
     },
-    /// Request closure of an application-root window.
-    RequestRootClose {
-        /// Exact logical/native root binding.
-        binding: NativeSurfaceBinding,
-    },
     /// Change pointer pass-through for one exact native binding.
     SetPointerPassthrough {
         /// Exact logical/native binding.
@@ -131,7 +126,6 @@ impl NativeEffectOperation {
             | Self::RetainChild { binding }
             | Self::ReleaseChild { binding }
             | Self::AwaitCleanup { binding }
-            | Self::RequestRootClose { binding }
             | Self::SetPointerPassthrough { binding, .. }
             | Self::RequestFocus { binding, .. }
             | Self::RequestReplacement { binding, .. } => *binding,
@@ -255,12 +249,6 @@ impl NativeEffectRequest {
                     binding: native_binding,
                 },
                 NativeEffectCorrelationKind::Cleanup,
-            ),
-            PlatformEffect::RequestRootClose { .. } => (
-                NativeEffectOperation::RequestRootClose {
-                    binding: native_binding,
-                },
-                NativeEffectCorrelationKind::Close,
             ),
             PlatformEffect::SetPointerPassthrough { enabled, .. } => (
                 NativeEffectOperation::SetPointerPassthrough {

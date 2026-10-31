@@ -13,10 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use self::binding_cleanup::{
-    BindingCleanupAction, BindingCleanupDirective, BindingCleanupEffectRequest,
-    BindingCleanupError, BindingCleanupLifecycle, BindingCleanupPurpose, BindingCleanupRequest,
-    BindingCleanupTerminal, RecoveryReplacementCleanupCompletion,
-    RecoveryReplacementCleanupRequirement,
+    BindingCleanupAction, BindingCleanupDirective, BindingCleanupError, BindingCleanupLifecycle,
+    BindingCleanupPurpose, BindingCleanupRequest, BindingCleanupTerminal,
+    RecoveryReplacementCleanupCompletion, RecoveryReplacementCleanupRequirement,
 };
 pub use self::binding_cleanup::{
     BindingRetirement, BindingRetirementOrigin, BindingRetirementStatus,
@@ -1404,7 +1403,7 @@ impl ViewportCoordinator {
                     .and_then(|staging| staging.cleanup)
                     .unwrap_or_else(|| match facts.ownership() {
                         ViewportOwnership::External => BindingCleanupAction::KeepExternal,
-                        ViewportOwnership::RuntimeOwned => BindingCleanupAction::ReleaseOwnedWindow,
+                        ViewportOwnership::RuntimeOwned => BindingCleanupAction::ReleaseChild,
                     });
             let origin = staging.map_or(BindingRetirementOrigin::WorkspaceReplaced, |staging| {
                 staging.origin
@@ -2193,10 +2192,10 @@ impl ViewportCoordinator {
 
     fn request_retirement_cleanup(
         &mut self,
-        request: BindingCleanupEffectRequest,
+        effect: PlatformEffect,
     ) -> Result<EffectId, ViewportCoordinatorError> {
         self.effects
-            .request_in(self.workspace_epoch, request.platform_effect())
+            .request_in(self.workspace_epoch, effect)
             .map_err(ViewportCoordinatorError::Effect)
     }
 
@@ -3308,7 +3307,7 @@ impl ViewportCoordinator {
             let may_reappear = ever_observed && !matches!(lifecycle, ViewportLifecycle::Destroyed);
             let cleanup = match ownership {
                 ViewportOwnership::External => BindingCleanupAction::KeepExternal,
-                ViewportOwnership::RuntimeOwned => BindingCleanupAction::ReleaseOwnedWindow,
+                ViewportOwnership::RuntimeOwned => BindingCleanupAction::ReleaseChild,
             };
             // Inventory absence cannot establish that an external window was destroyed.
             // Keep its token owned by this exact binding until a Destroyed observation

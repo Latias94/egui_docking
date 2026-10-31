@@ -15,6 +15,114 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 X11 local mutation capture revocation
+
+Local Winit fork `3084fc09` moves the existing implicit capture state into one
+XConnection mutex shared by event production and supported window mutation
+paths. Grab/ungrab, drag initiation, immediate/deferred unmap and window Drop
+invalidate retained capture evidence before request dispatch. A mutation guard
+uses the existing native-event depth, holds no Display/capture lock while
+sending, and closes admission again before releasing its depth on normal exit
+or unwind. A server sync plus normal FIFO drain must complete before another
+first press can acquire evidence. Invalidated devices also require observed
+all-up. Native modifier/enter/wheel callbacks reread the sole owner after
+reentrant application work.
+
+The first implementation held a user Display lock across XCB dispatch. Source
+review of libxcb socket handover and libX11 return_socket confirmed a possible
+cross-thread wait cycle. The qualified implementation removes that lock;
+XSync and XEventsQueued also run outside the capture mutex. Bounded production
+guard tests cover nested mutation, sync completion before/after Drop, stale
+empty-queue results, callback depth, unwind and failed fences.
+
+An opt-in real XTest test uses a direct-root override-redirect source. It queues
+release/press during the original press callback, performs a local grab
+mutation, and requires the queued press to remain Unknown. Held unmap/remap
+cannot restore capture; observed all-up and a new press restore it. The final
+fixture fails precisely on the old `6c10c87d` source and passes on the fix
+normally, without Winit debug assertions, and in two normal repeats. Winit
+library tests pass 51/51 in both modes; all-target correctness/suspicious Clippy
+and nightly formatting pass. Confined may succeed or be rejected after its
+preceding ungrab: the test does not claim both branches or confinement success.
+An earlier WM-managed fixture encountered a rejected grab and inconsistent
+baseline activation; those logs remain, and its results do not qualify ordinary
+WM-managed window continuity.
+
+The joined native single-Focus source passes another Linux library run (523,
+three ignored and the already qualified soak skipped), the actual close/create
+age-boundary test, optimized late-staging/late-first-live/combined pressure,
+pane-center and nested-edge physical journeys, stationary-negative and active
+1 kHz input. Each checks its existing exact output/Destroyed/retirement boundary.
+The 1,000 injected points match all native callbacks; release-to-model upper
+bound is 34.742083 ms. Root/Child service maxima are 0.361917/0.380459 ms and
+standalone service has one 2.144375 ms sample above the cooperative 2 ms
+threshold. These measurements retain overruns and establish no hard latency
+bound. macOS optimized late-staging, late-first-live and combined pressure also
+pass against the frozen pre-X11 Winit source, qualifying the shared Focus
+cleanup independently from Linux changes.
+
+Evidence is `/tmp/dockspace-x11-capture-owner-source.json`,
+`/tmp/dockspace-x11-capture-owner-qualification.json`, the final
+`/tmp/dockspace-x11-capture-owner-baseline-direct-root.log` control and
+`/tmp/dockspace-single-focus-capture-real-qualification.json`. Independent
+review confirms the final six-path hashes and finds no confirmed P1/P2 within
+this boundary. This slice does not prove ancestor unmap/reparent continuity,
+arbitrary WMs, actual cross-thread Xlib/XCB contention, original Primary-press
+identity or positive stationary capture/delivery. Queries still report those
+missing facts Unknown. Native remote pins remain unreproducible; neither U7/U8
+nor the full Goal is closed.
+
+## 2026-11-01 removal of unreachable Root close and duplicate Focus queue
+
+Production registration has forbidden RuntimeOwned Root windows since the
+owned-Child contract: existing windows are External, owned registrations are
+Child, and reservation rejects RuntimeOwned Root. Recovery and replacement
+preserve those facts. The old `RequestRootClose` cleanup effect therefore had
+no supported producer. This breaking cleanup removes both public effect
+variants, the native CloseViewport branch and its injected legacy queue tests.
+External Root held-close/Allow/Veto/Clear and Child cleanup retain their exact
+protocols. Private cleanup now returns the existing PlatformEffect directly,
+preserving exact binding, ownership, role and compensating-create checks.
+
+Focus was the only reachable ordinary queue command. Its existing
+`NativeFocusControl` already retained request, route, token and Queued versus
+Dispatched state. Dispatch now consumes that single owner directly, removing
+the second command Vec and mirrored route/state. Callback reservation still
+precedes enqueue; failure retains the exact request's AdapterRejected result.
+Retirement/reset preserve Queued ProviderStopped versus dispatched
+AcknowledgementLost and keep original callback receipts through settlement.
+
+`NativeStorageLimit::new` now takes `(input, byte_limit, resource_slots,
+close_slots)`. The command-slot argument and backing reservation are removed;
+one inline Focus owner is counted once. Its request/result budget and protected
+callback receipt remain prepaid through the existing effect/resource owners.
+Historical C0/C2 records below describe their dated source, not this API.
+
+Frozen core qualification passes workspace 1,942, public 148/176, ten doctests,
+strict rustdoc, correctness/suspicious Clippy and formatting. Native all-targets
+qualification passes 570 normally and 570 without native debug assertions,
+including both fresh same-coordinator 10,000-lifetime soaks. Linux library gates
+pass 523 in each mode, explicitly skipping its unchanged 10,000-lifetime case
+already run on macOS and leaving three opt-in tests ignored. Native Clippy,
+strict rustdoc and formatting pass. The finite Focus mixed model still checks
+production rejection, drop/retry, exact release delivery and late-token
+isolation; its current sampled owned/reserved peak is
+2,593,056/4,194,048 bytes under 4 MiB, with queued Focus peak one.
+
+These native model gates freeze Winit at `6c10c87d`, with egui `8231fb5a`;
+ongoing X11 capture changes have separate evidence. Source and commands are in
+`/tmp/dockspace-unique-focus-core-source.json`,
+`/tmp/dockspace-unique-focus-core-qualification.json`,
+`/tmp/dockspace-unique-focus-core-followup.json`,
+`/tmp/dockspace-unique-focus-native-source.json` and
+`/tmp/dockspace-unique-focus-native-qualification.json`. The first native compile
+retains its diagnostic for one omitted real-close call-site migration; the
+qualified source fixes that call and retains canonical Allow plus Child
+retirement. Final native aggregate SHA-256 is
+`1323f5c704f8a6945917fba09c1581d1b9862ec390a92e8662cfe4f94f5eacc8`.
+Independent core/native review found no confirmed P1/P2. This closes a bounded
+deletion/ownership slice, not overall U9 or the complete plan.
+
 ## 2026-11-01 ordinary Focus ownership across the mixed boundary
 
 `ordinary_focus_peak_one_survives_release_pressure_and_late_predecessor_callbacks`

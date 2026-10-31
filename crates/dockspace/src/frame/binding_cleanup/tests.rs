@@ -33,7 +33,7 @@ fn runtime_request(
         input_observations: WindowInputObservationStream::default(),
         close_observations: WindowCloseObservationStream::default(),
         may_reappear: false,
-        cleanup: BindingCleanupAction::ReleaseOwnedWindow,
+        cleanup: BindingCleanupAction::ReleaseChild,
         retained_staging_resource: None,
         purpose: BindingCleanupPurpose::Retired,
     }

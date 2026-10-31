@@ -11,7 +11,7 @@ const TOTAL_BYTES: usize = 4 * 1024 * 1024;
 struct CapacityPeaks {
     resident: usize,
     reserved: usize,
-    ordinary_commands: usize,
+    queued_focus: usize,
 }
 
 impl CapacityPeaks {
@@ -28,9 +28,9 @@ impl CapacityPeaks {
         );
         self.resident = self.resident.max(resident);
         self.reserved = self.reserved.max(reserved);
-        self.ordinary_commands = self
-            .ordinary_commands
-            .max(native.effects.pending_command_count());
+        self.queued_focus = self
+            .queued_focus
+            .max(usize::from(native.focus_control.queued_route().is_some()));
         (resident, reserved)
     }
 }
@@ -669,13 +669,11 @@ fn dispatch_model_focus(
     peaks: &mut CapacityPeaks,
 ) -> NativeViewportFocusRecord {
     let (viewport, binding, window) = native.focus_control.queued_route().unwrap();
-    // Dispatch the real ordinary queue populated by accept_native_effects, then
+    // Dispatch the single focus owner retained by accept_native_effects, then
     // model only its terminal callback. The default context has no OS attachment.
-    assert_eq!(native.effects.pending_command_count(), 1);
     peaks.observe(native, 0);
     assert!(native.dispatch_viewport_commands(context).unwrap());
     let token = native.focus_control.pending_token().unwrap();
-    assert_eq!(native.effects.pending_command_count(), 0);
     assert!(native.focus_control.queued_route().is_none());
     assert!(native.focus_control.references_binding(binding));
     peaks.observe(native, 0);
@@ -731,7 +729,7 @@ fn settle_model_focus(
 }
 
 // Keep focus-only frame candidates out of the shared fixture's debug stack,
-// including when its original C0 callers skip every focus branch.
+// including when its original callers skip every focus branch.
 #[inline(never)]
 fn register_model_focus_child(
     native: &mut NativeCoordinator,
@@ -858,7 +856,7 @@ fn finish_model_focus_child_rehome(
         Some((ViewportId::ROOT, bindings[2], host_window))
     );
     assert_eq!(native.focus_control.pending_binding(), Some(bindings[2]));
-    assert!(native.effects.references_binding(bindings[2]));
+    assert!(native.focus_control.references_binding(bindings[2]));
     assert!(!native.is_quiescent());
     peaks.observe(native, 0);
 }
@@ -919,7 +917,6 @@ fn assert_close_and_create_command_pressure(
 
     assert!(!with_ordinary_focus || with_accepted_release);
     let effect_slots = if with_ordinary_focus { 2 } else { 1 };
-    let command_slots = if with_ordinary_focus { 2 } else { 0 };
     // This finite owner model uses real core effects and journal captures. It
     // does not manufacture canonical fork close/create or renderer output tokens.
     let mut profile = combined_profile();
@@ -937,10 +934,8 @@ fn assert_close_and_create_command_pressure(
         ));
     profile.owners = NativeOwnerStorageLimit {
         resource_slots: 4,
-        command_slots,
         close_slots: 2,
-        byte_limit: NativeOwnerStorageLimit::required_bytes(4, effect_slots, 4, command_slots, 2)
-            .unwrap(),
+        byte_limit: NativeOwnerStorageLimit::required_bytes(4, effect_slots, 4, 2).unwrap(),
     };
     assert_eq!(profile.byte_limit, TOTAL_BYTES);
     assert!(profile.initial_required_bytes().unwrap() <= TOTAL_BYTES);
@@ -1436,13 +1431,13 @@ fn assert_close_and_create_command_pressure(
         assert_eq!(native.close_progress().cancellations_committed(), 0);
         assert_eq!(native.close_progress().requests_retained(), 3);
         assert!(native.effects.references_binding(child));
-        assert!(native.effects.references_binding(input_binding));
+        assert!(native.focus_control.references_binding(input_binding));
         assert!(!native.session.has_pending_native_create());
         assert!(native.bridge.with_viewports(|routes| {
             routes.has_admitted_create_attempt(child_viewport, child)
         }));
         // The accepted release, old create attempt, close successors and one
-        // real ordinary queue entry coexist before its protected callback is reserved.
+        // queued focus owner coexist before its protected callback is reserved.
         dispatch_model_focus(&mut native, &context, &mut peaks)
     });
     let mut accepted = 0;
@@ -1803,7 +1798,7 @@ fn assert_close_and_create_command_pressure(
         let report = commit_model_focus_request(&mut native, &context, input_binding);
         assert_eq!(native.focus_control.pending_token(), Some(focus.token()));
         assert_eq!(native.focus_control.pending_binding(), Some(input_binding));
-        assert_eq!(native.effects.pending_command_count(), 0);
+        assert!(native.focus_control.queued_route().is_none());
         assert!(native.pending_effect_results.is_empty());
         assert!(native.session.has_pending_native_input());
         report
@@ -1989,8 +1984,8 @@ fn assert_close_and_create_command_pressure(
             assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
             assert!(!native.effects.has_pending_work());
             assert_eq!(
-                peaks.ordinary_commands, 1,
-                "C2 is configured; its actual peak is C1"
+                peaks.queued_focus, 1,
+                "the single inline focus owner permits one queued command"
             );
             peaks.observe(&native, 0);
         }
@@ -2125,7 +2120,7 @@ fn assert_close_and_create_command_pressure(
     );
     assert!(native.is_quiescent());
     assert!(!native.focus_control.has_pending_work());
-    assert_eq!(peaks.ordinary_commands, usize::from(with_ordinary_focus));
+    assert_eq!(peaks.queued_focus, usize::from(with_ordinary_focus));
     let idle = peaks.observe(&native, 0);
     let report = commit_boundary(&mut native);
     assert!(
@@ -2139,7 +2134,7 @@ fn assert_close_and_create_command_pressure(
     }
     assert_eq!(peaks.observe(&native, 0), idle);
     eprintln!(
-        "close-create: W4/A1 E{effect_slots} M4/C{command_slots}/L2, accepted_release={with_accepted_release}, ordinary_peak={}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
-        peaks.ordinary_commands, peaks.resident, peaks.reserved
+        "close-create: W4/A1 E{effect_slots} M4/L2 focus_owner=single, accepted_release={with_accepted_release}, queued_focus_peak={}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
+        peaks.queued_focus, peaks.resident, peaks.reserved
     );
 }

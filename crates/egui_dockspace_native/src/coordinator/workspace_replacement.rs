@@ -68,7 +68,6 @@ impl NativeCoordinator {
             self.bridge.clear_presentation_ack(predecessor);
             self.effects.remove_show(predecessor);
             self.terminalize_focus(predecessor);
-            self.effects.remove_commands(predecessor);
             self.bridge
                 .with_close_control(|control| control.retire_binding(predecessor));
             self.retain_retired_input_results(predecessor);

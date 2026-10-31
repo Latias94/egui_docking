@@ -325,9 +325,8 @@ fn bounded(resources: usize, window: Option<WindowId>) -> NativeCoordinator {
         ));
     let owners = NativeOwnerStorageLimit {
         resource_slots: resources,
-        command_slots: 2,
         close_slots: 2,
-        byte_limit: NativeOwnerStorageLimit::required_bytes(2, 2, resources, 2, 2).unwrap(),
+        byte_limit: NativeOwnerStorageLimit::required_bytes(2, 2, resources, 2).unwrap(),
     };
     let mut native = NativeCoordinator::new_with_storage_limits(
         DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap(),
@@ -1003,7 +1002,7 @@ mod native_output {
                     .settle_retained_output_token(token, true)
                     .unwrap();
                 fixture.done = true;
-                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
             ui.ctx().request_repaint();
         }

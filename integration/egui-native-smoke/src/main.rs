@@ -141,7 +141,7 @@ fn bounded_storage_limit() -> Result<NativeStorageLimit, egui_dockspace_native::
             slots(16),
             256 * 1024,
         ));
-    NativeStorageLimit::new(input, STORAGE_BYTE_LIMIT, 48, 32, 16)
+    NativeStorageLimit::new(input, STORAGE_BYTE_LIMIT, 48, 16)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

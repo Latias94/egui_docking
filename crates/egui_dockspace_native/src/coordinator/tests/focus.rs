@@ -475,7 +475,7 @@ fn already_focused_callback_completes_only_its_exact_command_token() {
 }
 
 #[test]
-fn quarantine_cancels_only_an_undispatched_focus_request() {
+fn single_focus_owner_rejects_successors_and_quarantine_cancels_only_undispatched() {
     let mut native = coordinator();
     let (binding, _) = register_roots(&mut native);
     let context = egui::Context::default();
@@ -485,12 +485,12 @@ fn quarantine_cancels_only_an_undispatched_focus_request() {
     focus
         .retain(viewport, window, binding, 7)
         .expect("the queued test focus request is retained");
+    assert_eq!(focus.retain(viewport, window, binding, 8), Err(8));
+    assert_eq!(focus.queued_route(), Some((viewport, binding, window)));
+    assert_eq!(focus.pending_token(), None);
     assert!(matches!(
         focus.take_queued_terminal(binding),
-        Some(NativeFocusTermination::Queued {
-            viewport: queued_viewport,
-            request: 7,
-        }) if queued_viewport == viewport
+        Some(NativeFocusTermination::Queued(7))
     ));
 
     focus
@@ -498,6 +498,9 @@ fn quarantine_cancels_only_an_undispatched_focus_request() {
         .expect("the dispatched test focus request is retained");
     let token = eframe::queue_native_viewport_focus(&context, viewport);
     assert!(focus.mark_dispatched(viewport, token));
+    assert_eq!(focus.retain(viewport, window, binding, 10), Err(10));
+    assert_eq!(focus.pending_token(), Some(token));
+    assert!(focus.queued_route().is_none());
     assert!(focus.take_queued_terminal(binding).is_none());
     assert!(focus.references_binding(binding));
     assert!(matches!(

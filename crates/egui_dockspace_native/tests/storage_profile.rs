@@ -51,7 +51,7 @@ fn public_storage_profile_rejects_incomplete_or_short_limits_and_selects_bounded
         transport.with_report_storage_limit(reports),
     ] {
         assert_eq!(
-            NativeStorageLimit::new(incomplete, total, 48, 32, 16)
+            NativeStorageLimit::new(incomplete, total, 48, 16)
                 .unwrap_err()
                 .kind(),
             NativeRuntimeErrorKind::InvalidConfiguration,
@@ -60,20 +60,20 @@ fn public_storage_profile_rejects_incomplete_or_short_limits_and_selects_bounded
     let input = transport
         .with_producer_storage_limit(producer)
         .with_report_storage_limit(reports);
-    let profile = NativeStorageLimit::new(input, total, 48, 32, 16).unwrap();
+    let profile = NativeStorageLimit::new(input, total, 48, 16).unwrap();
     let required = profile.initial_reserved_bytes();
     assert!(required > 0 && required <= profile.byte_limit());
     // The public profile rejects insufficient storage before taking a session.
     assert_eq!(
-        NativeStorageLimit::new(input, required - 1, 48, 32, 16)
+        NativeStorageLimit::new(input, required - 1, 48, 16)
             .unwrap_err()
             .kind(),
         NativeRuntimeErrorKind::OperationConflict,
     );
 
-    let exact = NativeStorageLimit::new(input, required, 48, 32, 16).unwrap();
+    let exact = NativeStorageLimit::new(input, required, 48, 16).unwrap();
     for (resources, closes) in [(0, 16), (48, 0)] {
-        let insufficient = NativeStorageLimit::new(input, total, resources, 32, closes).unwrap();
+        let insufficient = NativeStorageLimit::new(input, total, resources, closes).unwrap();
         let error = NativeDockspaceApp::new_with_storage_limit(
             egui::Id::unique("public-storage-without-root-owner"),
             session(),

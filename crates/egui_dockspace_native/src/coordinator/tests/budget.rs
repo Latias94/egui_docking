@@ -451,11 +451,10 @@ fn policy_queued_before_a_yield_is_not_requeued_when_its_exact_plan_resumes() {
             .unwrap()
     );
     assert!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch")
-            .is_empty(),
-        "tokenless policy still cannot dispatch platform close"
+        !native
+            .dispatch_viewport_commands(&egui::Context::default())
+            .expect("no native focus command is queued"),
+        "tokenless close policy must not dispatch an unrelated focus command"
     );
 }
 

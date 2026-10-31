@@ -242,7 +242,7 @@ fn show_fixture() -> (DockspaceSession, NativeSurfaceBinding, NativeEffectReques
 #[test]
 fn direct_prepared_create_cannot_acquire_deferred_effect_storage() {
     let fixture = create_fixture_with_strategy(NativeCreateStrategy::DirectPrepared);
-    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1), Some(0)).unwrap();
+    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1)).unwrap();
     let baseline = effects.owned_data_capacity_bytes();
     let backing = effects.pending_viewports.as_ptr();
     assert!(
@@ -265,7 +265,7 @@ fn direct_prepared_create_cannot_acquire_deferred_effect_storage() {
 fn one_effect_slot_returns_the_original_request_for_retry_without_growing_backing() {
     let first = create_fixture();
     let second = create_fixture();
-    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1), Some(0)).unwrap();
+    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1)).unwrap();
     let baseline = effects.owned_data_capacity_bytes();
     let pointers = (
         effects.pending_viewports.as_ptr(),
@@ -328,7 +328,7 @@ fn one_effect_slot_returns_the_original_request_for_retry_without_growing_backin
 fn create_and_show_share_one_slot_and_only_exact_visibility_can_settle_it() {
     let create = create_fixture();
     let (_session, binding, show) = show_fixture();
-    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1), Some(0)).unwrap();
+    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1)).unwrap();
     let baseline = effects.owned_data_capacity_bytes();
     let create_viewport = ViewportId::from_hash_of("held create");
     let show_viewport = ViewportId::from_hash_of("held show");
@@ -432,95 +432,25 @@ fn unlimited_create_and_show_preflight_reserve_backing_before_retaining_requests
 }
 
 #[test]
-fn independent_command_bound_returns_the_original_command_and_drain_keeps_order_and_backing() {
-    let (_session, binding) = root_session(NativeCreateStrategy::Staged);
-    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(0), Some(2)).unwrap();
-    let baseline = effects.owned_data_capacity_bytes();
-    let backing = effects.pending_commands.as_ptr();
-    let first = ViewportId::from_hash_of("command first");
-    let second = ViewportId::from_hash_of("command second");
-    assert!(effects.can_queue_command());
-    effects
-        .queue_command(first, binding, NativeViewportCommand::Close)
-        .unwrap();
-    effects
-        .queue_command(second, binding, NativeViewportCommand::Focus)
-        .unwrap();
-    assert!(!effects.can_queue_command());
-    let rejected = effects
-        .queue_command(ViewportId::ROOT, binding, NativeViewportCommand::Close)
-        .unwrap_err();
-    assert_eq!(rejected, NativeViewportCommand::Close);
-    assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-    assert_eq!(
-        effects.drain_commands().collect::<Vec<_>>(),
-        [
-            (first, ViewportCommand::Close),
-            (second, ViewportCommand::Focus),
-        ]
-    );
-    assert_eq!(effects.pending_commands.as_ptr(), backing);
-    assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-    effects
-        .queue_command(ViewportId::ROOT, binding, rejected)
-        .unwrap();
-    assert_eq!(
-        effects.drain_commands().collect::<Vec<_>>(),
-        [(ViewportId::ROOT, ViewportCommand::Close)]
-    );
-    assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-    effects
-        .queue_command(first, binding, NativeViewportCommand::Focus)
-        .unwrap();
-    effects
-        .queue_command(second, binding, NativeViewportCommand::Close)
-        .unwrap();
-    let mut drain = effects.drain_commands();
-    assert_eq!(drain.next(), Some((first, ViewportCommand::Focus)));
-    drop(drain);
-    assert!(!effects.has_pending_work());
-    assert!(effects.can_queue_command());
-    assert_eq!(effects.pending_commands.as_ptr(), backing);
-    assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-}
-
-#[test]
-fn reservations_count_both_effect_stores_and_independent_commands_with_checked_arithmetic() {
-    for (effect_slots, command_slots) in [
-        (None, None),
-        (Some(0), Some(0)),
-        (Some(1), Some(1)),
-        (Some(2), Some(7)),
-        (Some(7), Some(1)),
-        (Some(3), None),
-        (None, Some(5)),
-    ] {
-        let effects =
-            NativeEffectCoordinator::with_storage_limits(effect_slots, command_slots).unwrap();
-        let required =
-            NativeEffectCoordinator::reservation_bytes(effect_slots, command_slots).unwrap();
+fn reservations_count_both_effect_stores_with_checked_arithmetic() {
+    for effect_slots in [None, Some(0), Some(1), Some(2), Some(7)] {
+        let effects = NativeEffectCoordinator::with_storage_limits(effect_slots).unwrap();
+        let required = NativeEffectCoordinator::reservation_bytes(effect_slots).unwrap();
         assert_eq!(effects.owned_data_capacity_bytes(), required);
         assert_eq!(
             effects.pending_viewports.capacity(),
             effect_slots.unwrap_or(0)
         );
         assert_eq!(effects.pending_shows.capacity(), effect_slots.unwrap_or(0));
-        assert_eq!(
-            effects.pending_commands.capacity(),
-            command_slots.unwrap_or(0)
-        );
     }
-    for limits in [(Some(usize::MAX), Some(1)), (Some(1), Some(usize::MAX))] {
-        assert_eq!(
-            NativeEffectCoordinator::reservation_bytes(limits.0, limits.1),
-            None
-        );
-        assert_eq!(
-            NativeEffectCoordinator::with_storage_limits(limits.0, limits.1).unwrap_err(),
-            NativeHostProtocolError::NativeReportStorageUnavailable
-        );
-    }
-    let mut zero = NativeEffectCoordinator::with_storage_limits(Some(0), Some(0)).unwrap();
-    assert!(!zero.can_queue_command());
+    assert_eq!(
+        NativeEffectCoordinator::reservation_bytes(Some(usize::MAX)),
+        None
+    );
+    assert_eq!(
+        NativeEffectCoordinator::with_storage_limits(Some(usize::MAX)).unwrap_err(),
+        NativeHostProtocolError::NativeReportStorageUnavailable
+    );
+    let zero = NativeEffectCoordinator::with_storage_limits(Some(0)).unwrap();
     assert!(!zero.can_retain_effect());
 }

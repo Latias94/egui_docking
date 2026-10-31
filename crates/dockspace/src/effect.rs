@@ -163,9 +163,6 @@ pub enum PlatformEffect {
         predecessor: EffectId,
         after: Option<EffectId>,
     },
-    RequestRootClose {
-        binding: ViewportBinding,
-    },
     SetPointerPassthrough {
         binding: ViewportBinding,
         enabled: bool,
@@ -212,7 +209,6 @@ impl PlatformEffect {
             | Self::RetainChild { binding }
             | Self::ReleaseChild { binding }
             | Self::ContinueCleanup { binding, .. }
-            | Self::RequestRootClose { binding }
             | Self::SetPointerPassthrough { binding, .. }
             | Self::RequestFocus { binding, .. }
             | Self::RequestReplacement { binding, .. } => *binding,
@@ -227,7 +223,6 @@ impl PlatformEffect {
             Self::CreateWindow { .. }
                 | Self::CompensatingClose { .. }
                 | Self::ReleaseChild { .. }
-                | Self::RequestRootClose { .. }
                 | Self::RequestReplacement { .. }
                 | Self::ResolveNativeClose {
                     resolution: NativeCloseResolution::Accept,
@@ -244,9 +239,7 @@ impl PlatformEffect {
     pub const fn is_destructive_cleanup(&self) -> bool {
         matches!(
             self,
-            Self::CompensatingClose { .. }
-                | Self::ReleaseChild { .. }
-                | Self::RequestRootClose { .. }
+            Self::CompensatingClose { .. } | Self::ReleaseChild { .. }
         )
     }
 }

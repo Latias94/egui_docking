@@ -2,12 +2,13 @@
 title: "Dockspace Interaction Module Inventory"
 status: "Source-reviewed; qualification scoped"
 reviewed: "2026-11-01"
-source_revision: "7809e57"
+source_revision: "426dc49 + qualified single-Focus cleanup"
 ---
 
 # Dockspace Interaction Module Inventory
 
-This inventory describes production ownership through `7809e57`. Earlier
+This inventory describes production ownership through the qualified single-Focus
+cleanup after `426dc49`. Earlier
 W16 model, physical-input and stationary checkpoints retain their dated scopes.
 `dockspace` is the renderer-neutral product; engine hosts own their drawing,
 input facts, scheduling and platform resources. The egui adapters consume the
@@ -92,6 +93,7 @@ are not current owners.
 | `close_control.rs`, `coordinator/close_driver.rs` | Sole held-close state in `NativeHostState`, with configured policy execution. | Capture exact request before Hold; a fixed successor retains the original reservation until committed cancellation and semantic Clear. | No duplicate resource close slot, lifecycle close counter or inferred application-exit policy. |
 | `receiver.rs` | Query exact final-presented hit/scroll facts against retained output/widget identity. | Bind framework answers to current core receiver descriptors at the input ordinal. | No live-hover approximation or independent target resolver. |
 | `coordinator.rs`, `coordinator/effect_dispatch.rs` | Join the session, original prefixes, snapshots and correlated native effect results. | Dispatch retains affine effect identity; multiple prefixes within one UI invocation share the same original token budget. | No second graph or promise that the whole UI invocation is one atomic transaction. |
+| `focus_control.rs` | One pending Focus request owns its Queued/Dispatched state, exact route and callback token. | Dispatch reserves the existing resource receipt before enqueue; retirement/reset retain the original request's terminal result. | No separate ordinary command Vec, mirrored Focus queue or configurable command-slot backing. RuntimeOwned Root close is unreachable and its obsolete effect chain is removed. |
 | `coordinator/storage.rs`, `mailbox/capacity.rs`, `mailbox/roster.rs`, `mailbox/terminal_roster.rs` | Prepay/account bounded owner storage and complete-roster backing before admission. | Preserve original owners during ordinary freeze and protected terminal progress. | Owner-level limits/samples alone do not certify combined W16/O256 saturation or reducer service time. |
 | `host_frame.rs`, `surface_driver.rs`, `pass_actions.rs` | Join the public frame, root/child semantic or control paint, exact output binding and semantic-action settlement. | Complete frame commit precedes callback-prefix release; pending exact outputs/semantic work retain an after-current wake. | No second presentation ledger, replay of consumed affine actions or UI-frame-number proof. |
 | `application_action.rs` | Exactly-once public status for one programmatic action. | Correlates submitted action and presentation transition IDs. | Does not match by root/source heuristics. |

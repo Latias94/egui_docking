@@ -3,7 +3,6 @@ use dockspace::runtime::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
     NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
 };
-use eframe::egui::ViewportCommand;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     DeviceId, ElementState, MouseButton, MouseScrollDelta, PointerEventFacts, PointerWindowRoute,
@@ -1081,32 +1080,11 @@ fn redocked_external_root_does_not_request_platform_close() {
         "an externally owned root unbinds without a platform close effect"
     );
     assert!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch")
-            .is_empty()
+        !native
+            .dispatch_viewport_commands(&egui::Context::default())
+            .expect("no native focus command is queued")
     );
     assert!(!native.session().is_current_native_binding(second));
-}
-
-#[test]
-fn queued_viewport_close_retains_its_exact_binding_until_dispatch() {
-    let mut native = coordinator();
-    let (_, binding) = register_roots(&mut native);
-    let viewport = ViewportId::from_hash_of("queued-root-close-command");
-
-    native
-        .effects
-        .queue_command(viewport, binding, NativeViewportCommand::Close)
-        .unwrap();
-    assert!(native.effects.references_binding(binding));
-    assert_eq!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch"),
-        [(viewport, ViewportCommand::Close)]
-    );
-    assert!(!native.effects.references_binding(binding));
 }
 
 #[test]

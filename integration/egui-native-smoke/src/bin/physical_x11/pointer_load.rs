@@ -589,7 +589,7 @@ pub(super) fn load_storage_limit()
             slots(16),
             256 * 1024,
         ));
-    NativeStorageLimit::new(input, LOAD_BYTE_LIMIT, 48, 32, 16)
+    NativeStorageLimit::new(input, LOAD_BYTE_LIMIT, 48, 16)
 }
 
 #[cfg(test)]

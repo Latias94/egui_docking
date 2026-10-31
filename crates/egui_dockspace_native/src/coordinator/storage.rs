@@ -17,9 +17,9 @@ impl NativeStorageLimit {
     /// Selects a combined byte allowance and independent host-owner bounds.
     ///
     /// `input` must select producer and report storage limits. Resource entries
-    /// are keyed by exact viewport/binding, ordinary commands and native closes
-    /// have independent limits, and retired obligations keep their original
-    /// slots until settlement. These counts are not inferred from window count.
+    /// are keyed by exact viewport/binding, and native closes have an independent
+    /// limit. One inline focus owner is always included; retired obligations keep
+    /// their original slots until settlement.
     ///
     /// # Errors
     ///
@@ -29,7 +29,6 @@ impl NativeStorageLimit {
         input: NativeInputStorageLimit,
         byte_limit: usize,
         resource_slots: usize,
-        command_slots: usize,
         close_slots: usize,
     ) -> Result<Self, NativeRuntimeError> {
         let producer = input
@@ -42,7 +41,6 @@ impl NativeStorageLimit {
             producer.binding_slots().get(),
             reports.effect_slots().get(),
             resource_slots,
-            command_slots,
             close_slots,
         )
         .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
@@ -51,7 +49,6 @@ impl NativeStorageLimit {
             byte_limit,
             owners: NativeOwnerStorageLimit {
                 resource_slots,
-                command_slots,
                 close_slots,
                 byte_limit: owner_bytes,
             },
@@ -117,6 +114,8 @@ impl NativeCombinedStorageLimit {
         // The selected O/S/R promises already own these headers. Preserve all
         // other inline fields and padding, including the permanent translator;
         // its separate bridge promise holds the overlapping retry copy.
+        // NativeFocusControl is included here once and owns no dynamic backing.
+        // Its shared request lease remains part of the core effect reservation.
         size_of::<NativeCoordinator>()
             .checked_sub(size_of::<DockspaceSession>())?
             .checked_sub(size_of::<NativeReceiverStore>())?
@@ -152,12 +151,11 @@ impl NativeCombinedStorageLimit {
     }
 }
 
-/// Independent host-owner bounds; window lifetimes and effect leases do not
-/// imply a fixed number of retained resource or ordinary command entries.
+/// Independent resource and close-owner bounds. The single inline focus owner
+/// is included in the coordinator's fixed storage, without a separate queue.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeOwnerStorageLimit {
     pub(crate) resource_slots: usize,
-    pub(crate) command_slots: usize,
     pub(crate) close_slots: usize,
     pub(crate) byte_limit: usize,
 }
@@ -181,7 +179,6 @@ impl NativeOwnerStorageLimit {
         bindings: usize,
         effects: usize,
         resources: usize,
-        commands: usize,
         closes: usize,
     ) -> Option<usize> {
         size_of::<Option<Self>>()
@@ -206,10 +203,7 @@ impl NativeOwnerStorageLimit {
                 Some(bindings),
                 Some(effects),
             )?)?
-            .checked_add(NativeEffectCoordinator::reservation_bytes(
-                Some(effects),
-                Some(commands),
-            )?)?
+            .checked_add(NativeEffectCoordinator::reservation_bytes(Some(effects))?)?
             .checked_add(DeferredViewportDriver::reservation_bytes(bindings)?)?
             .checked_add(size_of::<Vec<DeferredViewportSpec>>())?
             .checked_add(bindings.checked_mul(size_of::<DeferredViewportSpec>())?)
@@ -223,14 +217,8 @@ impl NativeOwnerStorageLimit {
         let (Some(bindings), Some(effects)) = (bindings, effects) else {
             return Err(NativeHostProtocolError::NativeOwnerStorageConfiguration.into());
         };
-        if Self::required_bytes(
-            bindings,
-            effects,
-            self.resource_slots,
-            self.command_slots,
-            self.close_slots,
-        )
-        .is_none_or(|required| required > self.byte_limit)
+        if Self::required_bytes(bindings, effects, self.resource_slots, self.close_slots)
+            .is_none_or(|required| required > self.byte_limit)
         {
             return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
         }

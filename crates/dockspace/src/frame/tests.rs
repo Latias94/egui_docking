@@ -1907,15 +1907,8 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
         Some(BindingRetirementStatus::AwaitingExactDestruction)
     ));
     assert!(coordinator.effects.records().all(|(_, record)| {
-        !matches!(
-            record.request().effect(),
-            PlatformEffect::ReleaseChild { binding: actual }
-                | PlatformEffect::RequestRootClose { binding: actual }
-                | PlatformEffect::CompensatingClose {
-                    binding: actual,
-                    ..
-                } if *actual == binding
-        )
+        let effect = record.request().effect();
+        effect.binding() != binding || !effect.is_destructive_cleanup()
     }));
 
     coordinator
@@ -4780,14 +4773,11 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
             after: Some(after),
         } if *actual == binding && *after == emitted_restore
     ));
-    assert!(current.iter().all(|request| {
-        !matches!(
-            request.effect(),
-            PlatformEffect::RequestRootClose { binding: actual }
-                | PlatformEffect::ReleaseChild { binding: actual }
-                if *actual == binding
-        )
-    }));
+    assert_eq!(
+        current.len(),
+        1,
+        "only the exact pointer restore may be emitted before its acknowledgement"
+    );
 
     coordinator
         .publish_snapshot(&routing_snapshot(
@@ -5110,11 +5100,10 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
                 _ => None,
             })
             .expect("emitted cleanup must receive an observation-only successor");
-        assert!(migrated.iter().all(|emission| !matches!(
+        assert!(migrated.iter().all(|emission| matches!(
             emission.effect(),
-            PlatformEffect::SetPointerPassthrough { .. }
-                | PlatformEffect::ReleaseChild { .. }
-                | PlatformEffect::RequestRootClose { .. }
+            PlatformEffect::ContinueCleanup { binding: actual, predecessor, .. }
+                if *actual == binding && *predecessor == cleanup
         )));
 
         assert_eq!(

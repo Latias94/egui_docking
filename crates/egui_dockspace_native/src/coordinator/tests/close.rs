@@ -109,11 +109,10 @@ fn tokenless_close_policy_rejects_dispatch_without_waiting_for_later_callbacks()
         Some(close)
     );
     assert!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch")
-            .is_empty(),
-        "failed typed cancellation must not fall back to ordinary Close/CancelClose"
+        !native
+            .dispatch_viewport_commands(&egui::Context::default())
+            .expect("no native focus command is queued"),
+        "failed typed cancellation must not dispatch an unrelated focus command"
     );
 
     assert!(
@@ -311,10 +310,9 @@ fn model_cancellation_retains_binding_until_clear_commits() {
     );
     assert!(native.session.is_current_native_binding(binding));
     assert!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch")
-            .is_empty()
+        !native
+            .dispatch_viewport_commands(&egui::Context::default())
+            .expect("no native focus command is queued")
     );
 }
 
@@ -335,10 +333,9 @@ fn model_destroyed_during_cancellation_retires_close_sidecar_and_allows_quiescen
 
     begin_model_cancellation(&mut native, close, viewport);
     assert!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch")
-            .is_empty()
+        !native
+            .dispatch_viewport_commands(&egui::Context::default())
+            .expect("no native focus command is queued")
     );
     assert!(
         native
@@ -453,10 +450,9 @@ fn model_accepted_close_settles_only_once_after_exact_destroyed_observation() {
             .with_close_control(|control| control.accept_close(close))
     );
     assert!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch")
-            .is_empty(),
+        !native
+            .dispatch_viewport_commands(&egui::Context::default())
+            .expect("no native focus command is queued"),
         "the model transition does not dispatch a host command"
     );
     assert!(
@@ -582,10 +578,9 @@ fn quarantined_shutdown_rejects_tokenless_allow_without_marking_accepted() {
     );
     assert!(!advance.commands_dispatched);
     assert!(
-        native
-            .take_viewport_commands(&egui::Context::default())
-            .expect("queued native commands dispatch")
-            .is_empty()
+        !native
+            .dispatch_viewport_commands(&egui::Context::default())
+            .expect("no native focus command is queued")
     );
     assert!(
         native
@@ -704,10 +699,9 @@ fn tokenless_allow_and_veto_fail_closed_without_ordinary_close_commands() {
         );
         assert!(native.session.is_current_native_binding(binding));
         assert!(
-            native
-                .take_viewport_commands(&egui::Context::default())
-                .expect("queued native commands dispatch")
-                .is_empty()
+            !native
+                .dispatch_viewport_commands(&egui::Context::default())
+                .expect("no native focus command is queued")
         );
         assert!(
             native

@@ -442,7 +442,7 @@ fn fixture() -> NativeDockspaceApp<Panes> {
             slots(2),
             256 * 1024,
         ));
-    let storage = NativeStorageLimit::new(input, LIMIT, 4, 2, 2).unwrap();
+    let storage = NativeStorageLimit::new(input, LIMIT, 4, 2).unwrap();
     assert!(storage.initial_reserved_bytes() <= LIMIT);
     NativeDockspaceApp::new_with_storage_limit(
         Id::unique("native-boundary-x11"),

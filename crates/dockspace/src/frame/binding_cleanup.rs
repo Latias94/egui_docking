@@ -268,7 +268,7 @@ impl BindingRetirement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BindingCleanupAction {
     CompensateCreate { create: EffectId },
-    ReleaseOwnedWindow,
+    ReleaseChild,
     KeepExternal,
 }
 
@@ -309,42 +309,6 @@ impl From<BindingCleanupRequest> for BindingRetirement {
     }
 }
 
-/// Effect request emitted by the lifecycle without mutating the effect ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BindingCleanupEffectRequest {
-    CompensatingClose {
-        binding: ViewportBinding,
-        create: EffectId,
-    },
-    RequestRootClose {
-        binding: ViewportBinding,
-    },
-    ReleaseChild {
-        binding: ViewportBinding,
-    },
-}
-
-impl BindingCleanupEffectRequest {
-    pub(super) const fn binding(self) -> ViewportBinding {
-        match self {
-            Self::CompensatingClose { binding, .. }
-            | Self::RequestRootClose { binding }
-            | Self::ReleaseChild { binding } => binding,
-        }
-    }
-
-    pub(super) const fn platform_effect(self) -> PlatformEffect {
-        match self {
-            Self::CompensatingClose { binding, create } => PlatformEffect::CompensatingClose {
-                binding,
-                compensates: create,
-            },
-            Self::RequestRootClose { binding } => PlatformEffect::RequestRootClose { binding },
-            Self::ReleaseChild { binding } => PlatformEffect::ReleaseChild { binding },
-        }
-    }
-}
-
 /// Retired binding removed from lifecycle ownership after a terminal fact.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct BindingCleanupTerminal {
@@ -364,9 +328,7 @@ impl BindingCleanupTerminal {
         if !self.retirement.observed && !self.retirement.may_reappear {
             match self.retirement.cleanup {
                 BindingCleanupAction::CompensateCreate { create } => Some(create),
-                BindingCleanupAction::ReleaseOwnedWindow | BindingCleanupAction::KeepExternal => {
-                    None
-                }
+                BindingCleanupAction::ReleaseChild | BindingCleanupAction::KeepExternal => None,
             }
         } else {
             None
@@ -384,7 +346,7 @@ impl BindingCleanupTerminal {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum BindingCleanupDirective {
     Drive { binding: ViewportBinding },
-    RequestCleanup(BindingCleanupEffectRequest),
+    RequestCleanup(PlatformEffect),
     Finish(BindingCleanupTerminal),
     ExactDestroyed(BindingCleanupTerminal),
 }
@@ -928,7 +890,7 @@ impl BindingCleanupLifecycle {
     pub(super) fn plan_cleanup_redispatch(
         &mut self,
         binding: ViewportBinding,
-    ) -> Result<Option<BindingCleanupEffectRequest>, BindingCleanupError> {
+    ) -> Result<Option<PlatformEffect>, BindingCleanupError> {
         let observed = self
             .entries
             .get(&binding)
@@ -1076,7 +1038,7 @@ impl BindingCleanupLifecycle {
     pub(super) fn plan_destructive_retry(
         &self,
         failed_effect: EffectId,
-    ) -> Result<Option<BindingCleanupEffectRequest>, BindingCleanupError> {
+    ) -> Result<Option<PlatformEffect>, BindingCleanupError> {
         let Some(binding) = self.by_cleanup_effect.get(&failed_effect).copied() else {
             return Ok(None);
         };
@@ -1196,7 +1158,7 @@ impl BindingCleanupLifecycle {
     fn cleanup_request(
         &self,
         binding: ViewportBinding,
-    ) -> Result<BindingCleanupEffectRequest, BindingCleanupError> {
+    ) -> Result<PlatformEffect, BindingCleanupError> {
         let retirement = self
             .entries
             .get(&binding)
@@ -1211,13 +1173,15 @@ impl BindingCleanupLifecycle {
         }
         match retirement.cleanup {
             BindingCleanupAction::CompensateCreate { create } => {
-                Ok(BindingCleanupEffectRequest::CompensatingClose { binding, create })
+                Ok(PlatformEffect::CompensatingClose {
+                    binding,
+                    compensates: create,
+                })
             }
-            BindingCleanupAction::ReleaseOwnedWindow => match retirement.role {
-                ViewportRole::Root => Ok(BindingCleanupEffectRequest::RequestRootClose { binding }),
-                ViewportRole::Child => Ok(BindingCleanupEffectRequest::ReleaseChild { binding }),
-            },
-            BindingCleanupAction::KeepExternal => {
+            BindingCleanupAction::ReleaseChild if retirement.role == ViewportRole::Child => {
+                Ok(PlatformEffect::ReleaseChild { binding })
+            }
+            BindingCleanupAction::ReleaseChild | BindingCleanupAction::KeepExternal => {
                 Err(BindingCleanupError::CleanupOwnershipMismatch {
                     binding,
                     ownership: retirement.ownership,

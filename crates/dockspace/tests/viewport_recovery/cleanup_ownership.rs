@@ -430,14 +430,12 @@ fn workspace_restore_continues_an_emitted_pre_admission_cleanup() {
             _ => None,
         })
         .expect("restore must continue observation of the existing cleanup");
-    assert!(restored.platform_effects().iter().all(|emission| {
-        !matches!(
-            emission.effect(),
-            PlatformEffect::CompensatingClose { .. }
-                | PlatformEffect::ReleaseChild { .. }
-                | PlatformEffect::RequestRootClose { .. }
-        )
-    }));
+    assert!(
+        restored
+            .platform_effects()
+            .iter()
+            .all(|emission| !emission.effect().is_destructive_cleanup())
+    );
     let retirement = pending
         .fixture
         .engine

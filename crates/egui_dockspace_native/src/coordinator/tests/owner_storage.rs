@@ -34,28 +34,27 @@ fn input_limit() -> NativeInputStorageLimit {
         ))
 }
 
-fn owners(resources: usize, commands: usize) -> NativeOwnerStorageLimit {
+fn owners(resources: usize) -> NativeOwnerStorageLimit {
     NativeOwnerStorageLimit {
         resource_slots: resources,
-        command_slots: commands,
         close_slots: 2,
-        byte_limit: NativeOwnerStorageLimit::required_bytes(2, 2, resources, commands, 2).unwrap(),
+        byte_limit: NativeOwnerStorageLimit::required_bytes(2, 2, resources, 2).unwrap(),
     }
 }
 
-fn bounded(resources: usize, commands: usize) -> NativeCoordinator {
+fn bounded(resources: usize) -> NativeCoordinator {
     NativeCoordinator::new_with_storage_limits(
         DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap(),
         NativePointerRoster::Exact(Vec::new()),
         Some(input_limit()),
-        Some(owners(resources, commands)),
+        Some(owners(resources)),
     )
     .unwrap()
 }
 
 #[test]
 fn owner_configuration_requires_real_producer_and_report_bounds_and_the_complete_prepaid_bytes() {
-    let config = owners(2, 2);
+    let config = owners(2);
     for selected in [
         None,
         Some(NativeInputStorageLimit::new(
@@ -87,8 +86,8 @@ fn owner_configuration_requires_real_producer_and_report_bounds_and_the_complete
         .unwrap_err()
         .is_input_capacity()
     );
-    assert!(NativeOwnerStorageLimit::required_bytes(2, 2, usize::MAX, 2, 2).is_none());
-    let native = bounded(2, 2);
+    assert!(NativeOwnerStorageLimit::required_bytes(2, 2, usize::MAX, 2).is_none());
+    let native = bounded(2);
     assert_eq!(native.owner_storage.unwrap().byte_limit, config.byte_limit);
     assert!(
         native.input_control.owned_data_capacity_bytes()
@@ -100,7 +99,7 @@ fn owner_configuration_requires_real_producer_and_report_bounds_and_the_complete
 
 #[test]
 fn zero_resource_capacity_refuses_a_root_route_before_any_backend_work_or_source_capture() {
-    let mut native = bounded(0, 0);
+    let mut native = bounded(0);
     let (binding, _) = register_roots(&mut native);
     let window = WindowId::from(11);
     assert!(matches!(
@@ -125,7 +124,7 @@ fn zero_resource_capacity_refuses_a_root_route_before_any_backend_work_or_source
 
 #[test]
 fn manual_quiescence_shares_the_automatic_guard_for_stable_input_observations() {
-    let mut native = bounded(1, 1);
+    let mut native = bounded(1);
     let (binding, _) = register_roots(&mut native);
     let prepared = eframe::prepare_native_viewport_pointer_passthrough(ViewportId::ROOT, false);
     // Install a stable sidecar directly to isolate the quiescence boundary.
@@ -178,7 +177,7 @@ fn manual_quiescence_shares_the_automatic_guard_for_stable_input_observations() 
 
 #[test]
 fn finite_no_frame_preparation_reuses_one_ready_backing_and_keeps_the_exact_owner_until_commit() {
-    let mut native = bounded(2, 1);
+    let mut native = bounded(2);
     let (first, second) = register_roots(&mut native);
     let child = ViewportId::from_hash_of("prepaid-no-frame-child");
     native
@@ -245,10 +244,8 @@ pub(super) fn combined_profile() -> NativeCombinedStorageLimit {
             )),
         owners: NativeOwnerStorageLimit {
             resource_slots: 48,
-            command_slots: 32,
             close_slots: 16,
-            byte_limit: NativeOwnerStorageLimit::required_bytes(windows, effects, 48, 32, 16)
-                .unwrap(),
+            byte_limit: NativeOwnerStorageLimit::required_bytes(windows, effects, 48, 16).unwrap(),
         },
         byte_limit: 4 * 1024 * 1024,
     }

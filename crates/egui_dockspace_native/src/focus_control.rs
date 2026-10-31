@@ -162,10 +162,7 @@ enum PendingNativeFocusState<Request> {
 
 #[derive(Debug)]
 pub(crate) enum NativeFocusTermination<Request = NativeEffectRequest> {
-    Queued {
-        viewport: ViewportId,
-        request: Request,
-    },
+    Queued(Request),
     Dispatched(Request),
 }
 
@@ -354,10 +351,7 @@ impl<Request> NativeFocusControl<Request> {
         let PendingNativeFocusState::Queued(request) = pending.state else {
             unreachable!("the queued focus state was checked before extraction")
         };
-        Some(NativeFocusTermination::Queued {
-            viewport: pending.viewport,
-            request,
-        })
+        Some(NativeFocusTermination::Queued(request))
     }
 
     pub(crate) fn take_terminal(
@@ -373,10 +367,7 @@ impl<Request> NativeFocusControl<Request> {
         }
         let pending = self.pending.take()?;
         Some(match pending.state {
-            PendingNativeFocusState::Queued(request) => NativeFocusTermination::Queued {
-                viewport: pending.viewport,
-                request,
-            },
+            PendingNativeFocusState::Queued(request) => NativeFocusTermination::Queued(request),
             PendingNativeFocusState::AwaitingCallback(request)
             | PendingNativeFocusState::AwaitingGlobalFocus(request) => {
                 NativeFocusTermination::Dispatched(request)

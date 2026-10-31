@@ -350,7 +350,6 @@ impl NativeCoordinator {
                     | NativeEffectOperation::ReleaseChild { .. }
                     | NativeEffectOperation::CompensatingClose { .. }
                     | NativeEffectOperation::AwaitCleanup { .. }
-                    | NativeEffectOperation::RequestRootClose { .. }
                     | NativeEffectOperation::SetPointerPassthrough { enabled: false, .. }
             ) {
                 if let Err(error) = self.accept_native_effects(context, vec![request]) {

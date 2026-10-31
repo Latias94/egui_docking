@@ -2,12 +2,6 @@
 
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeRetirementDispatch {
-    OmitDeferredViewport,
-    CloseViewport,
-}
-
 pub(super) enum ViewportFailureOrigin {
     CapturedCallback,
     RetirementDispatch,
@@ -122,7 +116,6 @@ impl NativeCoordinator {
         self.deferred_viewports.remove(binding);
         self.effects.remove_show(binding);
         self.terminalize_focus(binding);
-        self.effects.remove_commands(binding);
         self.retain_retired_input_results(binding);
         self.receivers.retire_binding(binding);
         self.bridge
@@ -133,7 +126,6 @@ impl NativeCoordinator {
         &mut self,
         request: NativeEffectRequest,
         binding: NativeSurfaceBinding,
-        dispatch: NativeRetirementDispatch,
     ) -> Result<(), NativeRuntimeError> {
         let Some(viewport) = self.exact_viewport_for_binding(binding) else {
             if self.session.is_current_native_binding(binding) {
@@ -148,10 +140,6 @@ impl NativeCoordinator {
         {
             return self.submit_unsupported_effect(request);
         }
-        if dispatch == NativeRetirementDispatch::CloseViewport && !self.effects.can_queue_command()
-        {
-            return self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected);
-        }
         self.fail_pending_viewport_effect(
             viewport,
             binding,
@@ -165,11 +153,6 @@ impl NativeCoordinator {
             .bridge
             .retirement_begin_release(viewport, binding, acknowledgement);
         assert!(inserted, "preflighted native retirement must insert");
-        if dispatch == NativeRetirementDispatch::CloseViewport {
-            self.effects
-                .queue_command(viewport, binding, NativeViewportCommand::Close)
-                .expect("the retirement command backing was reserved before accepted dispatch");
-        }
         Ok(())
     }
 
@@ -179,8 +162,7 @@ impl NativeCoordinator {
     /// eframe reports the first exact callback or a typed create failure.
     /// `ShowWindow` is accepted only for an existing exact retained viewport.
     /// `ReleaseChild` stops re-declaring the child but retains its route until
-    /// an exact destruction callback commits. `RequestRootClose` uses the same
-    /// retirement lane and additionally queues one exact eframe close command.
+    /// an exact destruction callback commits.
     /// Unrelated platform operations remain explicitly unsupported.
     pub(crate) fn accept_native_effects(
         &mut self,
@@ -322,19 +304,7 @@ impl NativeCoordinator {
                 NativeEffectOperation::ReleaseChild { binding }
                 | NativeEffectOperation::CompensatingClose { binding } => {
                     let binding = *binding;
-                    self.accept_retirement_effect(
-                        request,
-                        binding,
-                        NativeRetirementDispatch::OmitDeferredViewport,
-                    )?;
-                }
-                NativeEffectOperation::RequestRootClose { binding } => {
-                    let binding = *binding;
-                    self.accept_retirement_effect(
-                        request,
-                        binding,
-                        NativeRetirementDispatch::CloseViewport,
-                    )?;
+                    self.accept_retirement_effect(request, binding)?;
                 }
                 NativeEffectOperation::ResolveNativeClose { close, resolution } => {
                     let close = *close;
@@ -363,11 +333,7 @@ impl NativeCoordinator {
                                 )?;
                                 continue;
                             }
-                            self.accept_retirement_effect(
-                                request,
-                                close.binding(),
-                                NativeRetirementDispatch::OmitDeferredViewport,
-                            )?;
+                            self.accept_retirement_effect(request, close.binding())?;
                             if !self
                                 .bridge
                                 .with_close_control(|control| control.accept_close(close))
@@ -403,27 +369,11 @@ impl NativeCoordinator {
                         )?;
                         continue;
                     };
-                    if !self.effects.can_queue_command() {
-                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
-                        continue;
-                    }
-                    match self
+                    if let Err(request) = self
                         .focus_control
                         .retain(viewport, window, binding, request)
                     {
-                        Ok(()) => {
-                            self.effects
-                                .queue_command(viewport, binding, NativeViewportCommand::Focus)
-                                .expect(
-                                    "focus command backing was reserved before request retention",
-                                );
-                        }
-                        Err(request) => {
-                            self.submit_failed_effect(
-                                request,
-                                NativeDispatchFailure::AdapterRejected,
-                            )?;
-                        }
+                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
                     }
                 }
                 NativeEffectOperation::SetPointerPassthrough { binding, enabled } => {

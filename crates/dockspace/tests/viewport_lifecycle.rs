@@ -5215,13 +5215,8 @@ fn restore_unbinds_an_observed_external_child_without_destroying_it_or_reusing_i
         platform_effects(&fixture, &transition)
             .iter()
             .all(|request| {
-                !matches!(
-                    request.effect(),
-                    PlatformEffect::ReleaseChild { binding }
-                        | PlatformEffect::RequestRootClose { binding }
-                        | PlatformEffect::CompensatingClose { binding, .. }
-                        if *binding == host_binding
-                )
+                let effect = request.effect();
+                effect.binding() != host_binding || !effect.is_destructive_cleanup()
             })
     );
     let retirement = binding_cleanup(&fixture, host_binding);
@@ -5585,12 +5580,8 @@ fn cleanup_continuation_fixture() -> CleanupContinuationFixture {
         .request(),
     );
     assert!(platform_effects(&fixture, &second).iter().all(|request| {
-        !matches!(
-            request.effect(),
-            PlatformEffect::ReleaseChild { binding }
-                | PlatformEffect::RequestRootClose { binding }
-                if *binding == host_binding
-        )
+        let effect = request.effect();
+        effect.binding() != host_binding || !effect.is_destructive_cleanup()
     }));
 
     CleanupContinuationFixture {
@@ -5693,12 +5684,8 @@ fn retry_cleanup_continuation(case: &mut CleanupContinuationFixture) -> EffectId
         platform_effects(&case.fixture, &retried)
             .iter()
             .all(|request| {
-                !matches!(
-                    request.effect(),
-                    PlatformEffect::ReleaseChild { binding }
-                        | PlatformEffect::RequestRootClose { binding }
-                        if *binding == case.host_binding
-                )
+                let effect = request.effect();
+                effect.binding() != case.host_binding || !effect.is_destructive_cleanup()
             })
     );
     retry
