@@ -40,7 +40,7 @@ The next completion work is concrete:
 
 | Remaining boundary | Next acceptance |
 | --- | --- |
-| U10 native layout management | Explicit external Root continuation now passes all 61 final checks, including atomic app-field/route publication, ordinary conflict rejection and real X11 seven/ten-edit workflows. Default/preset application call sites still need to choose the incoming host explicitly after that host changes; final layout-shell closure remains open. |
+| U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
@@ -2372,6 +2372,19 @@ fixtures live in `docs/VALIDATION.md`. An occupancy precheck now distinguishes a
 active target from a retired route whose surface will rebase, and later ordinary
 continuation rejection settles only its command. This checkpoint does not close
 the complete U10 or Goal.
+
+The following application-only slice now chooses the immutable Default's host
+and saves each bounded named preset's Root alongside its JSON. Ordinary
+same-surface replacement remains unchanged; differing hosts request explicit
+continuation without inspecting document internals or predicting rebase IDs.
+Eight affected checks pass, including the original X11 six/eight-edit workflows
+and extended eight/twelve-edit workflows. The extension invokes these application
+methods after Root replacement and verifies fresh focused editing, stable pane
+IDs/text/tabs/selection, original physical Root continuity, exact Child retirement
+and final quiescence. Core/native library source remains `c011e98`; its full
+qualification above is unchanged. Detailed source/measurement scope is recorded
+in `docs/VALIDATION.md`. This closes the identified Default/preset wiring gap,
+not positive native stationary input or the complete Goal.
 
 ### U11. Certify Windows and macOS capability claims
 

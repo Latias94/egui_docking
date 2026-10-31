@@ -11,6 +11,12 @@ const MAX_PRESETS: usize = 8;
 #[cfg(feature = "serde")]
 const MAX_PRESET_NAME_CHARS: usize = 64;
 
+#[cfg(feature = "serde")]
+pub(super) struct NamedPreset {
+    json: Vec<u8>,
+    root_surface: SurfaceId,
+}
+
 impl NativeExampleApp {
     pub(super) fn controls_available(&self) -> bool {
         !self.action.is_pending() && self.smoke.is_none() && self.dockspace.error_kind().is_none()
@@ -37,9 +43,7 @@ impl NativeExampleApp {
                 )
                 .clicked()
             {
-                let request = self
-                    .dockspace
-                    .request_layout_reset(self.default_layout.clone());
+                let request = self.request_default_layout();
                 self.begin_layout_action("Default layout", request);
             }
             ui.menu_button("Pane inventory (8)", |ui| self.show_pane_inventory(ui));
@@ -83,6 +87,17 @@ impl NativeExampleApp {
                     .into_iter()
                     .all(|surface| self.dockspace.is_surface_presented(surface))
         })
+    }
+
+    pub(super) fn request_default_layout(&self) -> Result<(), String> {
+        let layout = self.default_layout.clone();
+        let request = if self.dockspace.root_surface() == SURFACE {
+            self.dockspace.request_layout_reset(layout)
+        } else {
+            self.dockspace
+                .request_layout_reset_rebinding_root(layout, SURFACE)
+        };
+        request.map_err(|error| error.to_string())
     }
 
     #[cfg(feature = "serde")]
@@ -175,7 +190,13 @@ impl NativeExampleApp {
             .dockspace
             .save_document_json()
             .map_err(|error| error.to_string())?;
-        self.presets.insert(name.to_owned(), json);
+        self.presets.insert(
+            name.to_owned(),
+            NamedPreset {
+                json,
+                root_surface: self.dockspace.root_surface(),
+            },
+        );
         self.status = Some(format!(
             "Saved JSON preset '{name}' with the complete window layout; pane data stays in the application."
         ));
@@ -184,7 +205,7 @@ impl NativeExampleApp {
 
     #[cfg(feature = "serde")]
     pub(super) fn request_named_preset(&self) -> Result<(), String> {
-        let json = self
+        let preset = self
             .presets
             .get(self.preset_name.trim())
             .ok_or("Choose a saved JSON preset.")?;
@@ -196,11 +217,20 @@ impl NativeExampleApp {
                 .map(|pane| pane.key)
                 .collect::<Vec<_>>()
         });
-        self.dockspace
-            .request_document_restore_json(json, |document, key| {
-                document == DOCUMENT_ID && keys.contains(&key)
-            })
-            .map_err(|error| error.to_string())
+        let recognizes = |document: DockspaceDocumentId, key: &str| {
+            document == DOCUMENT_ID && keys.contains(&key)
+        };
+        let request = if self.dockspace.root_surface() == preset.root_surface {
+            self.dockspace
+                .request_document_restore_json(&preset.json, recognizes)
+        } else {
+            self.dockspace.request_document_restore_json_rebinding_root(
+                &preset.json,
+                preset.root_surface,
+                recognizes,
+            )
+        };
+        request.map_err(|error| error.to_string())
     }
 
     fn show_pane_inventory(&mut self, ui: &mut egui::Ui) {

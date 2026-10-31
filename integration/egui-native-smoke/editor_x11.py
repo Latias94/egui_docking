@@ -147,6 +147,8 @@ def run(binary: Path) -> None:
         "NATIVE_RESTORED_EDIT": "4",
         "ROOT_REBIND_LAYOUT_EDIT": "2",
         "ROOT_REBIND_DOCUMENT_EDIT": "2",
+        "ROOT_REBIND_DEFAULT_EDIT": "2",
+        "ROOT_REBIND_PRESET_EDIT": "2",
     }
     edits: list[str] = []
     profile: str | None = None
@@ -238,6 +240,17 @@ def run(binary: Path) -> None:
                             "root-rebind-document-requested", "root-rebind-document-committed",
                             "root-rebind-document-presented",
                         ])
+                    edits.append("ROOT_REBIND_DEFAULT_EDIT")
+                    operations.extend([
+                        "root-rebind-default-requested", "root-rebind-default-committed",
+                        "root-rebind-default-presented",
+                    ])
+                    if profile == "serde":
+                        edits.append("ROOT_REBIND_PRESET_EDIT")
+                        operations.extend([
+                            "root-rebind-preset-requested", "root-rebind-preset-committed",
+                            "root-rebind-preset-presented",
+                        ])
                 operations.append("final-quiescence")
                 if int(count) != len(edits):
                     raise RuntimeError("the workflow profile declared the wrong OS edit count")
@@ -283,11 +296,18 @@ def run(binary: Path) -> None:
                     if restore_destroyed != set(old_children):
                         raise RuntimeError("the eighth edit preceded destruction of both old children")
                 if marker.startswith("ROOT_REBIND_"):
-                    after_input = (
-                        "root-rebind-document-requested"
-                        if marker == "ROOT_REBIND_LAYOUT_EDIT" and profile == "serde"
-                        else "final-quiescence"
-                    )
+                    after_input = {
+                        "ROOT_REBIND_LAYOUT_EDIT": (
+                            "root-rebind-document-requested" if profile == "serde"
+                            else "root-rebind-default-requested"
+                        ),
+                        "ROOT_REBIND_DOCUMENT_EDIT": "root-rebind-default-requested",
+                        "ROOT_REBIND_DEFAULT_EDIT": (
+                            "root-rebind-preset-requested" if profile == "serde"
+                            else "final-quiescence"
+                        ),
+                        "ROOT_REBIND_PRESET_EDIT": "final-quiescence",
+                    }[marker]
                     if expected_programmatic != after_input or target != original_root:
                         raise RuntimeError("Root input preceded fresh presentation in the original OS window")
                     root_checkpoint()
@@ -322,6 +342,7 @@ def run(binary: Path) -> None:
                 if marker in {
                     "REOPENED_EDIT", "RESET_EDIT", "RESTORED_EDIT",
                     "ROOT_REBIND_LAYOUT_EDIT", "ROOT_REBIND_DOCUMENT_EDIT",
+                    "ROOT_REBIND_DEFAULT_EDIT", "ROOT_REBIND_PRESET_EDIT",
                 }:
                     # Wait for focused=<marker> from the actual TextEdit. A click
                     # here would replace the focus transfer being verified; its
@@ -414,7 +435,14 @@ def run(binary: Path) -> None:
                     expected_edits = edits[:8]
                 elif operation.startswith("root-rebind-"):
                     base_edits = 8 if profile == "serde" else 6
-                    expected_edits = edits[:base_edits + int(operation.startswith("root-rebind-document-"))]
+                    prior_root_edits = {
+                        "capture": 0,
+                        "layout": 0,
+                        "document": 1,
+                        "default": 2 if profile == "serde" else 1,
+                        "preset": 3,
+                    }[operation.split("-")[2]]
+                    expected_edits = edits[:base_edits + prior_root_edits]
                 elif operation.startswith("multi-") or operation == "capture-multi-preset":
                     expected_edits = edits[:7]
                 else:

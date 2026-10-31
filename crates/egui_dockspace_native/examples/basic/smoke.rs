@@ -3,7 +3,8 @@
 //! Close, reopen, locking, default reset and JSON restore use public application APIs.
 //! Diagnostic content rectangles locate input only; presented surfaces and native
 //! quiescence remain the product readiness checks.
-//! `EGUI_DOCKSPACE_EDITOR_ROOT_REBIND=1` appends one Root edit, or two with serde.
+//! `EGUI_DOCKSPACE_EDITOR_ROOT_REBIND=1` appends two Root edits, or four with serde,
+//! including the application's Default and named-preset restore call sites.
 
 use std::time::{Duration, Instant};
 
@@ -159,7 +160,7 @@ impl EditorSmoke {
     fn edit_count(root_rebinding_enabled: bool) -> usize {
         let base = if cfg!(feature = "serde") { 8 } else { 6 };
         base + if root_rebinding_enabled {
-            if cfg!(feature = "serde") { 2 } else { 1 }
+            if cfg!(feature = "serde") { 4 } else { 2 }
         } else {
             0
         }
@@ -648,9 +649,7 @@ impl EditorSmoke {
                     "editor-smoke: programmatic=quiescent item={} registry=8",
                     INSPECTOR.get()
                 );
-                let request = app
-                    .dockspace
-                    .request_layout_reset(app.default_layout.clone());
+                let request = app.request_default_layout();
                 self.submit(app, request, "Smoke: Default layout", Stage::DefaultReset)?;
             }
             Stage::DefaultReset => {

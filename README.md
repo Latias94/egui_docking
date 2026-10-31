@@ -72,8 +72,9 @@ editing. Explicit Root continuation can also remove the old logical host and
 retain the same external OS window on another surface. Candidate and committed
 exact binding pairs let hosts prepay resources and atomically publish the native
 route and their root-surface field. The reference X11 workflow verifies layout
-and JSON Root rebinding, fresh content editing and unchanged physical window
-identity. Positive stationary OS facts, remaining native completion gates and
+and JSON Root rebinding, then Default and named-preset restore through their saved
+host identities, fresh content editing and unchanged physical window identity.
+Positive stationary OS facts, remaining native completion gates and
 reproducible fork delivery are still open.
 
 Managed engine hosts can also capture native client coordinates from committed

@@ -96,7 +96,7 @@ struct NativeExampleApp {
     dockspace: NativeDockspaceApp<ExamplePanes>,
     default_layout: DockspaceLayout,
     #[cfg(feature = "serde")]
-    presets: BTreeMap<String, Vec<u8>>,
+    presets: BTreeMap<String, layout::NamedPreset>,
     #[cfg(feature = "serde")]
     preset_name: String,
     action: ExampleActionState,

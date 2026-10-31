@@ -3,6 +3,57 @@
 use super::*;
 
 const INCOMING_ROOT: SurfaceId = SurfaceId::new(1_000);
+#[cfg(feature = "serde")]
+const REBOUND_PRESET: &str = "Rebound Root";
+
+#[derive(Clone, Copy)]
+enum Replacement {
+    Layout,
+    #[cfg(feature = "serde")]
+    Document,
+    Default,
+    #[cfg(feature = "serde")]
+    Preset,
+}
+
+impl Replacement {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::Layout => "layout",
+            #[cfg(feature = "serde")]
+            Self::Document => "document",
+            Self::Default => "default",
+            #[cfg(feature = "serde")]
+            Self::Preset => "preset",
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Layout => "ROOT_REBIND_LAYOUT_EDIT",
+            #[cfg(feature = "serde")]
+            Self::Document => "ROOT_REBIND_DOCUMENT_EDIT",
+            Self::Default => "ROOT_REBIND_DEFAULT_EDIT",
+            #[cfg(feature = "serde")]
+            Self::Preset => "ROOT_REBIND_PRESET_EDIT",
+        }
+    }
+
+    fn accepts(self, status: &NativeActionStatus) -> bool {
+        match (self, status) {
+            (
+                Self::Layout | Self::Default,
+                NativeActionStatus::LayoutReset { previous, current },
+            ) => previous != current,
+            #[cfg(feature = "serde")]
+            (
+                Self::Document | Self::Preset,
+                NativeActionStatus::DocumentRestored { previous, current },
+            ) => previous != current,
+            _ => false,
+        }
+    }
+}
 
 enum Step {
     Committed,
@@ -18,9 +69,11 @@ pub(super) struct RootRebinding {
     current_surface: SurfaceId,
     window_id: u64,
     tabs: Vec<SavedTabs>,
-    restoring_document: bool,
+    replacement: Replacement,
     #[cfg(feature = "serde")]
     document: Option<(Vec<u8>, SurfaceId, Vec<SavedTabs>)>,
+    #[cfg(feature = "serde")]
+    preset: Option<(SurfaceId, Vec<SavedTabs>)>,
 }
 
 impl RootRebinding {
@@ -32,21 +85,7 @@ impl RootRebinding {
         let old_surface = app.dockspace.root_surface();
         let window_id = Self::root_window(app).ok_or("the current Editor has no Root output")?;
         let layout = editor_layout_on_surface(false, INCOMING_ROOT);
-        let tabs = smoke
-            .expected
-            .keys()
-            .map(|item| {
-                let pane = layout
-                    .view()
-                    .item(*item)
-                    .expect("the complete eight-pane layout");
-                SavedTabs {
-                    item: *item,
-                    items: pane.tabs().items().to_vec(),
-                    selected: pane.tabs().selected(),
-                }
-            })
-            .collect();
+        let tabs = Self::layout_tabs(smoke, &layout);
         #[cfg(feature = "serde")]
         let document = {
             let bytes = app
@@ -81,9 +120,11 @@ impl RootRebinding {
             current_surface: old_surface,
             window_id,
             tabs,
-            restoring_document: false,
+            replacement: Replacement::Layout,
             #[cfg(feature = "serde")]
             document,
+            #[cfg(feature = "serde")]
+            preset: None,
         })
     }
 
@@ -92,27 +133,13 @@ impl RootRebinding {
         smoke: &mut EditorSmoke,
         app: &mut NativeExampleApp,
     ) -> Result<bool, String> {
-        let operation = if self.restoring_document {
-            "document"
-        } else {
-            "layout"
-        };
+        let operation = self.replacement.operation();
         match self.step {
             Step::Committed => {
                 let Some(status) = smoke.take_status(app)? else {
                     return Ok(false);
                 };
-                let committed = match status {
-                    NativeActionStatus::LayoutReset { previous, current } => {
-                        !self.restoring_document && previous != current
-                    }
-                    #[cfg(feature = "serde")]
-                    NativeActionStatus::DocumentRestored { previous, current } => {
-                        self.restoring_document && previous != current
-                    }
-                    _ => false,
-                };
-                if !committed {
+                if !self.replacement.accepts(&status) {
                     return Err(format!(
                         "Root {operation} rebinding did not commit: {status:?}"
                     ));
@@ -159,15 +186,17 @@ impl RootRebinding {
                 if Self::root_window(app) != Some(self.window_id) {
                     return Err("the fresh Editor output lost the original Root window".to_owned());
                 }
-                let marker = if self.restoring_document {
-                    "ROOT_REBIND_DOCUMENT_EDIT"
-                } else {
-                    "ROOT_REBIND_LAYOUT_EDIT"
-                };
+                let marker = self.replacement.marker();
                 if !smoke.input(app, EDITOR, marker, false)? {
                     return Ok(false);
                 }
                 smoke.check_text(app)?;
+                #[cfg(feature = "serde")]
+                if matches!(self.replacement, Replacement::Layout) {
+                    app.preset_name = REBOUND_PRESET.to_owned();
+                    app.save_named_preset()?;
+                    self.preset = Some((self.current_surface, smoke.capture_tabs(app)?));
+                }
                 #[cfg(feature = "serde")]
                 if let Some((bytes, incoming_surface, tabs)) = self.document.take() {
                     let keys = app.dockspace.with_panes(|panes| {
@@ -191,10 +220,60 @@ impl RootRebinding {
                     self.old_surface = self.current_surface;
                     self.incoming_surface = incoming_surface;
                     self.tabs = tabs;
-                    self.restoring_document = true;
+                    self.replacement = Replacement::Document;
                     self.step = Step::Committed;
                     eprintln!(
                         "editor-smoke: programmatic=root-rebind-document-requested old_surface={} incoming_surface={} window_id={}",
+                        self.old_surface.get(),
+                        self.incoming_surface.get(),
+                        self.window_id
+                    );
+                    return Ok(false);
+                }
+                let reset_default = match self.replacement {
+                    Replacement::Layout => true,
+                    #[cfg(feature = "serde")]
+                    Replacement::Document => true,
+                    _ => false,
+                };
+                if reset_default {
+                    let request = app.request_default_layout();
+                    smoke.submit(
+                        app,
+                        request,
+                        "Smoke: Default after Root rebinding",
+                        Stage::RootRebinding,
+                    )?;
+                    self.old_surface = self.current_surface;
+                    self.incoming_surface = SURFACE;
+                    self.tabs = Self::layout_tabs(smoke, &app.default_layout);
+                    self.replacement = Replacement::Default;
+                    self.step = Step::Committed;
+                    eprintln!(
+                        "editor-smoke: programmatic=root-rebind-default-requested old_surface={} incoming_surface={} window_id={}",
+                        self.old_surface.get(),
+                        self.incoming_surface.get(),
+                        self.window_id
+                    );
+                    return Ok(false);
+                }
+                #[cfg(feature = "serde")]
+                if let Some((incoming_surface, tabs)) = self.preset.take() {
+                    app.preset_name = REBOUND_PRESET.to_owned();
+                    let request = app.request_named_preset();
+                    smoke.submit(
+                        app,
+                        request,
+                        "Smoke: named preset after Root rebinding",
+                        Stage::RootRebinding,
+                    )?;
+                    self.old_surface = self.current_surface;
+                    self.incoming_surface = incoming_surface;
+                    self.tabs = tabs;
+                    self.replacement = Replacement::Preset;
+                    self.step = Step::Committed;
+                    eprintln!(
+                        "editor-smoke: programmatic=root-rebind-preset-requested old_surface={} incoming_surface={} window_id={}",
                         self.old_surface.get(),
                         self.incoming_surface.get(),
                         self.window_id
@@ -208,6 +287,24 @@ impl RootRebinding {
             _ => {}
         }
         Ok(false)
+    }
+
+    fn layout_tabs(smoke: &EditorSmoke, layout: &DockspaceLayout) -> Vec<SavedTabs> {
+        smoke
+            .expected
+            .keys()
+            .map(|item| {
+                let pane = layout
+                    .view()
+                    .item(*item)
+                    .expect("the complete eight-pane layout");
+                SavedTabs {
+                    item: *item,
+                    items: pane.tabs().items().to_vec(),
+                    selected: pane.tabs().selected(),
+                }
+            })
+            .collect()
     }
 
     pub(super) fn check_layout(

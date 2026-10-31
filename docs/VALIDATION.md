@@ -15,6 +15,36 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 application Default and named presets after Root continuation
+
+The example following `c011e98` now restores its immutable Default using the
+initial layout's incoming host identity. Each bounded named preset stores its
+JSON alongside the Root identity from the same saved layout. Both preserve the
+ordinary same-surface APIs and explicitly request Root continuation when the
+current host differs; they do not parse the document or predict rebased IDs.
+
+All eight affected checks pass: native Clippy correctness/suspicious and
+formatting, Linux basic/persistence builds, both original six/eight-edit X11
+workflows and both extended eight/twelve-edit workflows. The extension executes
+the actual application Default and named-preset methods after the Root changes,
+waits for fresh presentation and then edits the real focused TextEdit. The
+persistence path traverses surfaces 1, 1000, 1001, 1002 and 1003 in the observed
+run; these are observations, not an ID allocation contract. All eight pane IDs,
+tab order, selected items and text survive. An independent X11 connection sees
+the same original Root throughout without DestroyNotify; all two/six Child
+lifetimes retire before final quiescence. Static independent review found no
+confirmed P1/P2 in the five changed example/script paths. The first Clippy
+attempt exposed an inferred closure lifetime; explicit input types fixed it
+before these final checks.
+
+Evidence is `/tmp/dockspace-example-root-presets-source.json`,
+`/tmp/dockspace-example-root-presets-qualification.json` and the corresponding
+`/tmp/dockspace-example-root-presets-*.log`. Only example and executor sources
+change, so this qualification reuses `c011e98`'s unchanged core/native library
+evidence below rather than claiming a new full-workspace run. Local fork
+overrides remain explicit. Positive stationary OS facts, combined capacity and
+service cases and U9 delivery are still open.
+
 ## 2026-11-01 external Root continuation across logical surfaces
 
 The slice following `ba10cb6` adds explicit native layout/document replacement
