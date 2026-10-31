@@ -1205,9 +1205,9 @@ fn wrong_winner_suffix_rolls_back_handoff_and_retries_the_original_batch_once() 
 }
 
 #[test]
-fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_cross_window_drop()
+fn handoff_queries_b_at_its_desktop_hover_point_but_missing_hit_observation_cannot_authorize_drop()
 {
-    let (mut session, bindings, [source_scene, target_scene]) = fixture(true);
+    let (mut session, bindings, [source_scene, target_scene]) = fixture_with_routing(true, true);
     let source = bindings[0];
     let destination = bindings[1];
     start_local_drag(&mut session, source, &source_scene);
@@ -1242,7 +1242,9 @@ fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_
             assert_eq!(query.point(), Some(hover_point));
             assert_ne!(query.point(), Some(manipulation.surface_position()));
             b_hover_queries += 1;
-            target_scene.answer(query)
+            // Exact native hover and hit-test control cannot supply the missing
+            // independent observation of the rendered receiver at this edge.
+            NativeReceiverAnswer::Unknown
         })
         .unwrap();
     let target = render(&mut frame, B);
@@ -1250,6 +1252,7 @@ fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_
     let mut report = finish(frame);
     assert!(b_hover_queries > 0);
     assert_no_delivery(&report);
+    assert!(report.take_native_effects().is_empty());
     assert!(session.has_active_gesture());
     assert_eq!(session.version(), version);
     let target_output = take_output(&mut report, &target, destination);
@@ -1259,8 +1262,7 @@ fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_
             .is_empty()
     );
 
-    // This host intentionally lacks the complete physical routing capability.
-    // Handoff cannot supply a missing host capability.
+    // Presenting a real output cannot supply an unobserved release-time hit.
     session
         .record_native_pointer(NativePointerInput::new(
             POINTER,
@@ -1273,11 +1275,14 @@ fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_
     let frame = session
         .begin_native_host_frame(|query| {
             assert_eq!(query.surface(), B);
+            assert!(query.matches_native_binding(destination));
             assert_eq!(query.point(), Some(hover_point));
-            target.answer(query)
+            NativeReceiverAnswer::Unknown
         })
         .unwrap();
-    assert_no_delivery(&finish(frame));
+    let mut report = finish(frame);
+    assert_no_delivery(&report);
+    assert!(report.take_native_effects().is_empty());
     assert_eq!(session.version(), version);
     assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
     assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
@@ -1289,109 +1294,150 @@ fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_
 
 #[test]
 fn cross_window_handoff_preserves_root_input_and_waits_for_exact_presented_target_output() {
-    let (mut session, bindings, [source_scene, target_scene]) = fixture_with_routing(true, true);
-    let [source, destination] = bindings;
-    start_local_drag(&mut session, source, &source_scene);
-    let version = session.version();
-    let point = target_scene.insertion(OTHER, true);
-    let desktop_point = desktop_point(B, point);
-    let source_client = PhysicalPoint::new(
-        desktop_point.x() - bounds(A).x(),
-        desktop_point.y() - bounds(A).y(),
-    )
-    .unwrap();
-    let local = capture_client(
-        session.native_local_coordinates(source).unwrap(),
-        source,
-        source_client,
-    );
-    assert_ne!(local.surface_position(), point);
-    session
-        .record_native_pointer(handoff(
-            POINTER,
-            source,
-            Event::Moved,
-            local,
-            desktop_location(destination, desktop_point),
-            NativePointerOwner::Native(source),
-        ))
+    for with_hit_test_control in [false, true] {
+        let (mut session, bindings, [source_scene, target_scene]) =
+            fixture_with_routing(true, with_hit_test_control);
+        let [source, destination] = bindings;
+        start_local_drag(&mut session, source, &source_scene);
+        let version = session.version();
+        let cap = session.native_local_coordinates(source).unwrap();
+        let point = target_scene.insertion(OTHER, true);
+        let desktop_point = desktop_point(B, point);
+        let source_client = PhysicalPoint::new(
+            desktop_point.x() - bounds(A).x(),
+            desktop_point.y() - bounds(A).y(),
+        )
         .unwrap();
-    let mut frame = session
-        .begin_native_host_frame(|query| {
-            assert_eq!(query.surface(), B);
-            assert_eq!(query.point(), Some(point));
-            target_scene.answer(query)
-        })
-        .unwrap();
-    let target = render(&mut frame, B);
-    target.assert_preview(true);
-    let mut report = finish(frame);
-    assert_no_delivery(&report);
-    assert!(report.take_native_effects().is_empty());
-    let target_output = take_output(&mut report, &target, destination);
-    present(&mut session, target_output);
-    assert_eq!(session.version(), version);
-    // Change the insertion side after presenting the first preview, so release
-    // still waits for the newly compiled target output rather than reusing it.
-    let release_point = target.insertion(OTHER, false);
-    let release_desktop = self::desktop_point(B, release_point);
-    assert_ne!(release_point, point);
-    session
-        .record_native_pointer_batch([Event::Moved, Event::ButtonReleased(Button::Primary)].map(
-            |event| {
-                NativePointerInput::new(
-                    POINTER,
-                    event,
-                    desktop_location(destination, release_desktop),
-                    NativePointerOwner::Native(source),
-                    capture_for(source, event),
-                )
-            },
-        ))
-        .unwrap();
-    let mut frame = session
-        .begin_native_host_frame(|query| {
-            assert_eq!(query.surface(), B);
-            assert_eq!(query.point(), Some(release_point));
-            assert_ne!(query.point(), Some(local.surface_position()));
-            target.answer(query)
-        })
-        .unwrap();
-    let preview = render(&mut frame, B);
-    preview.assert_preview(true);
-    let mut report = finish(frame);
-    let pending = assert_pending(&report);
-    assert!(report.take_native_effects().is_empty());
-    let exact = take_output(&mut report, &preview, destination);
-    assert_no_delivery(&idle(&mut session));
-    assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
-    assert_eq!(session.version(), version);
-    let delivered = present(&mut session, exact);
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
-    assert_eq!(
-        session.view().item(OTHER).unwrap().tabs().items(),
-        [OTHER, FIRST]
-    );
-    assert_eq!(
-        session.view().item(SECOND).unwrap().tabs().items(),
-        [SECOND, THIRD]
-    );
-    assert!(
-        bindings
-            .into_iter()
-            .all(|binding| session.is_current_native_binding(binding))
-    );
-    assert_clean_idle(&mut session);
+        let local = capture_client(cap, source, source_client);
+        assert_ne!(local.surface_position(), point);
+        session
+            .record_native_pointer(handoff(
+                POINTER,
+                source,
+                Event::Moved,
+                local,
+                desktop_location(destination, desktop_point),
+                NativePointerOwner::Native(source),
+            ))
+            .unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|query| {
+                assert_eq!(query.surface(), B);
+                assert!(query.matches_native_binding(destination));
+                assert_eq!(query.point(), Some(point));
+                target_scene.answer(query)
+            })
+            .unwrap();
+        let target = render(&mut frame, B);
+        target.assert_preview(true);
+        let mut report = finish(frame);
+        assert_no_delivery(&report);
+        assert!(report.take_native_effects().is_empty());
+        assert!(session.has_active_gesture());
+        let target_output = take_output(&mut report, &target, destination);
+        let mut presented = present(&mut session, target_output);
+        assert_no_delivery(&presented);
+        assert!(presented.take_native_effects().is_empty());
+        assert_eq!(session.version(), version);
+        assert_eq!(session.native_local_coordinates(source), Some(cap));
+
+        // Keep one real pre-release preview unpresented so its late settlement
+        // must not satisfy the newly compiled release output.
+        let (old_preview, old_output) = paint(&mut session, destination);
+        old_preview.assert_preview(true);
+        let old_artifact = old_output.presentation_artifact();
+        let release_point = target.insertion(OTHER, false);
+        let release_desktop = self::desktop_point(B, release_point);
+        assert_ne!(release_point, point);
+        session
+            .record_native_pointer_batch(
+                [Event::Moved, Event::ButtonReleased(Button::Primary)].map(|event| {
+                    NativePointerInput::new(
+                        POINTER,
+                        event,
+                        desktop_location(destination, release_desktop),
+                        NativePointerOwner::Native(source),
+                        capture_for(source, event),
+                    )
+                }),
+            )
+            .unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|query| {
+                assert_eq!(query.surface(), B);
+                assert!(query.matches_native_binding(destination));
+                assert_eq!(query.point(), Some(release_point));
+                assert_ne!(query.point(), Some(local.surface_position()));
+                target.answer(query)
+            })
+            .unwrap();
+        let preview = render(&mut frame, B);
+        preview.assert_preview(true);
+        let mut report = finish(frame);
+        let pending = assert_pending(&report);
+        assert!(report.take_native_effects().is_empty());
+        assert!(!session.has_active_gesture());
+        assert!(!session.has_pending_native_input());
+        let exact = take_output(&mut report, &preview, destination);
+        let exact_artifact = exact.presentation_artifact();
+        assert_ne!(old_artifact, exact_artifact);
+        assert_no_delivery(&idle(&mut session));
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+        assert_eq!(session.version(), version);
+
+        let mut late = present(&mut session, old_output);
+        assert!(
+            late.surface_presentation_commits()
+                .iter()
+                .any(|ack| ack.settles(old_artifact))
+        );
+        assert!(
+            !late
+                .surface_presentation_commits()
+                .iter()
+                .any(|ack| ack.settles(exact_artifact))
+        );
+        assert_no_delivery(&late);
+        assert!(late.manipulation_feedback().is_empty());
+        assert!(late.take_native_effects().is_empty());
+        assert_eq!(session.version(), version);
+        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+        assert_eq!(session.view().item(OTHER).unwrap().surface(), B);
+
+        let mut delivered = present(&mut session, exact);
+        let terminal = feedback(&delivered);
+        assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
+        assert_ne!(terminal.id(), pending.id());
+        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+        assert!(delivered.workspace_changed());
+        assert_eq!(delivered.before(), version);
+        assert_eq!(delivered.after(), session.version());
+        assert_ne!(session.version(), version);
+        assert!(delivered.take_native_effects().is_empty());
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+        assert_eq!(
+            session.view().item(OTHER).unwrap().tabs().items(),
+            [OTHER, FIRST]
+        );
+        assert_eq!(
+            session.view().item(SECOND).unwrap().tabs().items(),
+            [SECOND, THIRD]
+        );
+        assert!(
+            bindings
+                .into_iter()
+                .all(|binding| session.is_current_native_binding(binding))
+        );
+        assert_clean_idle(&mut session);
+    }
 }
 
 #[test]
 fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cross_window_route() {
-    for routing in [false, true] {
+    for with_hit_test_control in [false, true] {
         let (mut session, bindings, [source_scene, target_scene]) =
-            fixture_with_destination(true, routing, [OTHER, FIFTH]);
+            fixture_with_destination(true, with_hit_test_control, [OTHER, FIFTH]);
         let [source, destination] = bindings;
         start_local_drag(&mut session, source, &source_scene);
         let version = session.version();
@@ -1429,16 +1475,16 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
                 .unwrap(),
         );
         assert!(!report.workspace_changed());
-        let initial_request = session.native_pointer_continuation();
+        let initial_request = session
+            .native_pointer_continuation()
+            .expect("the preserving source route is current with either control roster");
         assert!(report.take_native_effects().is_empty());
-        if routing {
-            let initial_request = initial_request.expect("the preserving source route is current");
-            assert_eq!(initial_request.source_binding(), source);
-            assert_eq!(initial_request.surface(), B);
-            assert_eq!(initial_request.deadline(), Duration::from_millis(160));
-        } else {
-            assert!(initial_request.is_none());
-        }
+        assert_eq!(initial_request.pointer(), POINTER);
+        assert_eq!(initial_request.source_binding(), source);
+        assert_eq!(initial_request.surface(), B);
+        assert_eq!(initial_request.position(), hover);
+        assert!(initial_request.local_coordinates().is_none());
+        assert_eq!(initial_request.deadline(), Duration::from_millis(160));
         let observed = |event, millis| {
             NativePointerInput::new(
                 POINTER,
@@ -1452,7 +1498,7 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
         session
             .record_native_pointer(observed(Event::Moved, 20))
             .unwrap();
-        let report = finish(
+        let mut report = finish(
             session
                 .begin_native_host_frame(|query| {
                     assert_eq!(query.surface(), B);
@@ -1462,41 +1508,18 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
                 .unwrap(),
         );
         assert!(!report.workspace_changed());
-        let Some(request) = session.native_pointer_continuation() else {
-            assert!(
-                !routing,
-                "confirmed routing must schedule the destination dwell"
-            );
-            session
-                .record_native_pointer(
-                    NativePointerInput::new(
-                        POINTER,
-                        Event::ContactEnded(Button::Primary),
-                        desktop_location(destination, desktop),
-                        NativePointerOwner::Native(source),
-                        NativePointerOwner::None,
-                    )
-                    .with_metadata(metadata(30)),
-                )
-                .unwrap();
-            finish(
-                session
-                    .begin_native_host_frame(|query| {
-                        NativeReceiverAnswer::Blocked(query.presented_surface())
-                    })
-                    .unwrap(),
-            );
-            assert!(!session.has_active_gesture());
-            assert_eq!(session.version(), version);
-            continue;
-        };
-        assert!(routing);
+        assert!(report.take_native_effects().is_empty());
+        assert_eq!(session.version(), version);
+        let request = session
+            .native_pointer_continuation()
+            .expect("confirmed preserving routing must schedule the destination dwell");
+        assert_eq!(request.pointer(), POINTER);
         assert_eq!(request.source_binding(), source);
         assert_eq!(request.surface(), B);
         assert_eq!(request.position(), hover);
         assert!(request.local_coordinates().is_none());
-        assert_eq!(request.deadline(), initial_request.unwrap().deadline());
-        assert_ne!(request.token(), initial_request.unwrap().token());
+        assert_eq!(request.deadline(), initial_request.deadline());
+        assert_ne!(request.token(), initial_request.token());
         session
             .record_native_pointer(observed(request.event(), 160))
             .unwrap();
@@ -1509,8 +1532,12 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
             })
             .unwrap();
         measure(&mut frame);
-        let report = finish(frame);
+        let mut report = finish(frame);
         assert!(report.workspace_changed());
+        assert_eq!(report.before(), version);
+        assert_eq!(report.after(), session.version());
+        assert_ne!(session.version(), version);
+        assert!(report.take_native_effects().is_empty());
         assert!(session.view().item(FIFTH).unwrap().is_selected());
         assert!(!session.view().item(OTHER).unwrap().is_selected());
         assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
@@ -1547,6 +1574,11 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
         assert!(report.take_native_effects().is_empty());
         idle(&mut session);
         assert_eq!(fresh.surface, B);
+        assert!(
+            bindings
+                .into_iter()
+                .all(|binding| session.is_current_native_binding(binding))
+        );
         assert_clean_idle(&mut session);
     }
 }

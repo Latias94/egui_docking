@@ -225,6 +225,12 @@ own receipts. Identity matching grants no capture or delivery authority.
 Content drags preserve their source window's native hit regions. Only a
 runtime-owned Child whose complete sole main root is being dragged, without
 contained siblings, uses the correlated pass-through and restore lifecycle.
+Hosts declare backend support through `runtime::NativeHostCapabilities`. Core
+selects and freezes the source mode: Preserve does not require
+`PointerHitTestControl`; PassThrough does. Both still require independent
+inventory, hover, desktop position, button and hit observations, plus the
+current edge's delivery/capture authority. The source mode and capability
+composition remain internal decisions.
 
 The native application facade uses one bounded command/result slot for docking,
 selection, reopening, content-close requests, exact initial/deferred close

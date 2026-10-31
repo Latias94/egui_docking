@@ -7,7 +7,7 @@ use crate::geometry::{
     PhysicalSize, ScaleFactor,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
-use crate::platform::{ObservedWorkArea, WindowCoordinateObservation};
+use crate::platform::{NativeDragSourceInput, ObservedWorkArea, WindowCoordinateObservation};
 use crate::platform_provider::PlatformObservationLease;
 use crate::pointer_journal::PointerInputLease;
 use crate::viewport::{
@@ -80,6 +80,7 @@ pub struct TearOffPlacementProof {
     pointer_provider: PointerInputLease,
     platform_provider: PlatformObservationLease,
     pointer: crate::intent::PointerId,
+    source_input: NativeDragSourceInput,
     desktop_position: PhysicalPoint,
     work_area: WorkAreaToken,
     work_area_generation: WorkAreaGeneration,
@@ -104,6 +105,12 @@ impl TearOffPlacementProof {
     #[must_use]
     pub const fn pointer(self) -> crate::intent::PointerId {
         self.pointer
+    }
+
+    /// Returns the source-window input requirement frozen by the originating drag.
+    #[must_use]
+    pub const fn source_input(self) -> NativeDragSourceInput {
+        self.source_input
     }
 
     /// Returns the exact desktop-physical pointer anchor.
@@ -142,6 +149,7 @@ pub(crate) fn solve_tear_off_placement(
     pointer_provider: PointerInputLease,
     platform_provider: PlatformObservationLease,
     pointer: crate::intent::PointerId,
+    source_input: NativeDragSourceInput,
     desktop_position: PhysicalPoint,
     work_area: ObservedWorkArea,
     work_area_generation: WorkAreaGeneration,
@@ -158,6 +166,7 @@ pub(crate) fn solve_tear_off_placement(
         pointer_provider,
         platform_provider,
         pointer,
+        source_input,
         desktop_position,
         work_area: work_area.token(),
         work_area_generation,

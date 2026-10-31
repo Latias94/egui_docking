@@ -507,7 +507,7 @@ fn released_unobserved_enable_for(
         .begin_drag_routing(
             PointerId::new(1),
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("enable effect must exist");
@@ -1851,7 +1851,7 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("external drag route must begin")
         .expect("receiving input must request pass-through");
@@ -1937,7 +1937,7 @@ fn runtime_vacancy_detaches_only_after_exact_input_restore() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("runtime child drag route must begin")
         .expect("receiving input must request pass-through");
@@ -2601,7 +2601,7 @@ fn preserving_drag_route_uses_current_input_facts_without_a_passthrough_saga() {
     for _ in 0..2 {
         assert_eq!(
             coordinator
-                .begin_drag_routing(pointer, binding.surface(), PointerDragInputMode::Preserve)
+                .begin_drag_routing(pointer, binding.surface(), NativeDragSourceInput::Preserve)
                 .expect("content routing must retain the exact source"),
             None
         );
@@ -2654,13 +2654,13 @@ fn preserving_drag_route_cannot_bypass_an_unsettled_passthrough_restore() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("complete child route must begin")
         .expect("complete child needs an enable effect");
     let _ = coordinator.take_new_effects();
     let restore = coordinator
-        .begin_drag_routing(pointer, binding.surface(), PointerDragInputMode::Preserve)
+        .begin_drag_routing(pointer, binding.surface(), NativeDragSourceInput::Preserve)
         .expect("changing to content routing must preserve restoration")
         .expect("the original enable still needs an ordered restore");
     assert_ne!(restore, enable);
@@ -2712,13 +2712,17 @@ fn pointer_hit_test_lease_restores_only_after_the_last_holder() {
 
     assert!(
         coordinator
-            .begin_drag_routing(first, binding.surface(), PointerDragInputMode::PassThrough)
+            .begin_drag_routing(first, binding.surface(), NativeDragSourceInput::PassThrough)
             .expect("first lease must begin")
             .is_some()
     );
     assert_eq!(
         coordinator
-            .begin_drag_routing(second, binding.surface(), PointerDragInputMode::PassThrough)
+            .begin_drag_routing(
+                second,
+                binding.surface(),
+                NativeDragSourceInput::PassThrough
+            )
             .expect("second lease holder must begin"),
         None
     );
@@ -2799,10 +2803,14 @@ fn ending_all_pointer_passthrough_holders_is_atomic() {
     let first = PointerId::new(1);
     let second = PointerId::new(2);
     let _ = coordinator
-        .begin_drag_routing(first, binding.surface(), PointerDragInputMode::PassThrough)
+        .begin_drag_routing(first, binding.surface(), NativeDragSourceInput::PassThrough)
         .expect("first route holder must begin");
     let _ = coordinator
-        .begin_drag_routing(second, binding.surface(), PointerDragInputMode::PassThrough)
+        .begin_drag_routing(
+            second,
+            binding.surface(),
+            NativeDragSourceInput::PassThrough,
+        )
         .expect("second route holder must begin");
     coordinator
         .end_all_drag_routing()
@@ -2824,7 +2832,7 @@ fn wrong_effect_and_stale_capture_cannot_attribute_a_late_enable() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -2961,7 +2969,7 @@ fn unknown_acknowledgement_does_not_erase_known_input_state_authority() {
         .begin_drag_routing(
             PointerId::new(1),
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must remain total")
         .expect("known receiving state must request passthrough");
@@ -2992,7 +3000,7 @@ fn newer_passthrough_state_with_unknown_ack_does_not_retry_failed_enable() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3078,7 +3086,7 @@ fn late_enable_after_active_failure_still_restores_after_release() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3140,7 +3148,7 @@ fn lost_enable_acknowledgement_cannot_block_restore_queue() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3184,7 +3192,7 @@ fn control_loss_between_enable_and_release_cannot_block_the_first_restore() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3267,7 +3275,7 @@ fn versioned_gap_watermark_allows_newer_safe_state_to_settle_failed_restore() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3351,7 +3359,7 @@ fn stale_pre_restore_receiving_state_cannot_settle_a_failed_restore() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3420,7 +3428,7 @@ fn safe_state_keeps_requested_restore_as_the_next_drag_predecessor() {
         .begin_drag_routing(
             first_pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3464,7 +3472,7 @@ fn safe_state_keeps_requested_restore_as_the_next_drag_predecessor() {
         .begin_drag_routing(
             PointerId::new(2),
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("a new drag must preserve the pointer-input lane")
         .expect("the new drag must request pass-through again");
@@ -3495,7 +3503,7 @@ fn restore_failure_requires_a_safe_observation_newer_than_its_report() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -3585,7 +3593,7 @@ fn preexisting_passthrough_needs_neither_control_capability_nor_restore() {
             .begin_drag_routing(
                 pointer,
                 binding.surface(),
-                PointerDragInputMode::PassThrough
+                NativeDragSourceInput::PassThrough
             )
             .expect("existing passthrough must be leased"),
         None
@@ -3619,7 +3627,7 @@ fn receiving_source_without_hit_test_control_still_freezes_the_source() {
             .begin_drag_routing(
                 pointer,
                 binding.surface(),
-                PointerDragInputMode::PassThrough
+                NativeDragSourceInput::PassThrough
             )
             .expect("missing control must still freeze the drag source"),
         None
@@ -3649,7 +3657,7 @@ fn definitive_enable_failure_waits_for_a_new_fact_edge_before_retry() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("initial enable must begin")
         .expect("receiving input must request passthrough");
@@ -3742,7 +3750,7 @@ fn unsupported_and_indeterminate_enable_attempts_do_not_retry_each_snapshot() {
             .begin_drag_routing(
                 PointerId::new(1),
                 binding.surface(),
-                PointerDragInputMode::PassThrough,
+                NativeDragSourceInput::PassThrough,
             )
             .expect("initial enable must begin")
             .expect("receiving input must request passthrough");
@@ -3787,7 +3795,7 @@ fn late_enable_after_drag_end_cannot_overtake_the_queued_restore() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("enable must begin")
         .expect("receiving input must request passthrough");
@@ -3873,7 +3881,7 @@ fn failed_restore_waits_for_a_capability_edge_before_retry() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("enable must begin")
         .expect("receiving input must request passthrough");
@@ -3977,7 +3985,7 @@ fn indeterminate_restore_is_not_reissued_concurrently() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("enable must begin")
         .expect("receiving input must request passthrough");
@@ -4051,7 +4059,7 @@ fn explicit_destruction_tombstone_terminates_active_and_released_pointer_sagas()
             .begin_drag_routing(
                 pointer,
                 binding.surface(),
-                PointerDragInputMode::PassThrough,
+                NativeDragSourceInput::PassThrough,
             )
             .expect("drag routing must begin")
             .expect("enable effect must exist");
@@ -4110,7 +4118,7 @@ fn window_unavailable_waits_for_explicit_destruction_without_retrying() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("enable effect must exist");
@@ -5526,7 +5534,7 @@ fn retired_observed_window_restores_input_before_cleanup_can_fail() {
         .begin_drag_routing(
             pointer,
             binding.surface(),
-            PointerDragInputMode::PassThrough,
+            NativeDragSourceInput::PassThrough,
         )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
@@ -5636,7 +5644,7 @@ fn hidden_and_minimized_windows_cannot_start_pointer_routing() {
                 .begin_drag_routing(
                     PointerId::new(1),
                     binding.surface(),
-                    PointerDragInputMode::PassThrough
+                    NativeDragSourceInput::PassThrough
                 )
                 .expect("non-routeable presentation is a supported no-op"),
             None

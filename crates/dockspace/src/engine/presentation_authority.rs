@@ -750,9 +750,9 @@ impl DockEngine {
         pending: &PendingDragRelease,
         dependencies: &mut PlatformInteractionDependencies,
     ) {
-        if let Some(binding) = pending.physical_route {
+        if let Some((binding, input)) = pending.physical_route {
             dependencies.owner_bindings.insert(binding);
-            dependencies.routed = true;
+            dependencies.route_input = Some(input);
         } else {
             self.insert_current_viewport_binding(
                 &mut dependencies.owner_bindings,
@@ -801,7 +801,7 @@ impl DockEngine {
         };
         if let Some(binding) = self.viewport.drag_source(drag.owner.pointer()) {
             dependencies.owner_bindings.insert(binding);
-            dependencies.routed = true;
+            dependencies.route_input = self.viewport.drag_source_input(drag.owner.pointer());
         } else if let Some(surface) = self.payload_surface(&drag.payload) {
             self.insert_current_viewport_binding(&mut dependencies.owner_bindings, surface);
         }
@@ -827,7 +827,7 @@ impl DockEngine {
         } else if drag.native_offer.is_some()
             && self
                 .viewport
-                .physical_native_drag_capability()
+                .physical_native_drag_capability(self.native_drag_source_input(drag))
                 .is_supported()
         {
             dependencies.native = true;
@@ -894,7 +894,11 @@ impl DockEngine {
         target_authority_lost |= invalidated_scene_bindings
             .iter()
             .any(|binding| dependencies.target_bindings.contains(binding));
-        let current_physical_native_drag = self.viewport.physical_native_drag_capability();
+        let source_input = dependencies
+            .route_input
+            .unwrap_or(crate::platform::NativeDragSourceInput::Preserve);
+        let current_physical_native_drag =
+            self.viewport.physical_native_drag_capability(source_input);
         if dependencies.native
             && previous_physical_native_drag.is_supported()
             && !current_physical_native_drag.is_supported()
@@ -908,9 +912,10 @@ impl DockEngine {
         if dependencies.native && transition.work_areas_changed() {
             target_authority_lost = true;
         }
-        let current_physical_cross_surface_drag =
-            self.viewport.physical_cross_surface_drag_capability();
-        if dependencies.routed
+        let current_physical_cross_surface_drag = self
+            .viewport
+            .physical_cross_surface_drag_capability(source_input);
+        if dependencies.route_input.is_some()
             && previous_physical_cross_surface_drag.is_supported()
             && !current_physical_cross_surface_drag.is_supported()
         {

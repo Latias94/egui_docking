@@ -114,13 +114,15 @@ and XIQueryPointer does not identify a grab or protocol freeze. Traversing a
 mutable external window tree with multiple queries also cannot prove one atomic
 hover observation, so this seam does not do so.
 
-The adapter does not enroll automatic native stationary scheduling from these
-facts. It treats unowned observation retirements as Unreserved. A future host
-must reserve a bounded request owner, preserve raw/output ordering and sample
-time, keep core continuation identity outside the fork and require complete
-native facts before recording a continuation. Unsupported backends remain
-Unsupported; Unknown capture never inherits the expected source identity.
-The public core's explicit fact-based stationary contract remains independent.
+The current adapter enrolls a finite Desktop Mouse scheduler on the existing
+core continuation and bounded request owner. It preserves raw/output ordering,
+sample time and the expected original press identity outside the fork; unowned
+observation retirements remain Unreserved. A terminal Unknown or unavailable
+result cannot retry the same core token. The X11 query still lacks independent
+capture, delivery, ancestry and freeze proof, so it cannot execute a positive
+stationary mutation. Unsupported backends remain Unsupported; Unknown capture
+never inherits the expected source identity. The public core's explicit
+fact-based stationary contract remains independent.
 
 This seam can be removed when upstream offers equivalent correlated observation
 and retirement boundaries, or when the native validation adapter no longer

@@ -17,10 +17,11 @@ use dockspace::interaction::{
     InteractionStatus, PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome,
 };
 use dockspace::platform::{
-    InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
-    PlatformCapability, PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
-    PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowInputObservation,
-    WindowInputState, WindowPresentationObservation, WindowPresentationState,
+    InputEffectAcknowledgement, NativeDragSourceInput, ObservedWindow, ObservedWorkArea,
+    PlatformCapabilities, PlatformCapability, PlatformCapabilityReason, PlatformRequirement,
+    PlatformSnapshot, PresentationEffectAcknowledgement, WindowCoordinateObservation,
+    WindowInputObservation, WindowInputState, WindowPresentationObservation,
+    WindowPresentationState,
 };
 use dockspace::pointer_journal::{
     DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PointerCaptureOwner, PointerEdge,
@@ -540,14 +541,19 @@ fn publish_capabilities_during_drag(
     let coordinate_generation = CoordinateObservationGeneration::new(generation);
     let presentation_generation = PresentationObservationGeneration::new(generation);
     let input_generation = InputObservationGeneration::new(generation);
-    let route_effect = pointer_passthrough_effect(engine, source, true);
+    let source_input = engine
+        .viewport()
+        .viewport(source.surface())
+        .and_then(|record| record.input_observation())
+        .expect("capability-only snapshot retains the source input observation");
+    assert_eq!(source_input.binding(), source);
     let source_window =
         observed_window(source, coordinate_generation, SOURCE_ORIGIN_X, SOURCE_SCALE)
             .with_input_observation(WindowInputObservation::new(
                 source,
                 input_generation,
-                Authority::Known(WindowInputState::PassThrough),
-                InputEffectAcknowledgement::known(Some(route_effect)),
+                source_input.state(),
+                source_input.acknowledged_effect(),
             ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 source,
@@ -2132,6 +2138,10 @@ fn complete_owned_child_root_confirms_cross_drop_and_restores_input() {
         engine.viewport().confirmed_drag_source(POINTER),
         Some(source_binding)
     );
+    assert_eq!(
+        engine.viewport().drag_source_input(POINTER),
+        Some(NativeDragSourceInput::PassThrough)
+    );
     assert!(matches!(
         engine
             .viewport()
@@ -2202,46 +2212,256 @@ fn complete_owned_child_root_confirms_cross_drop_and_restores_input() {
 }
 
 #[test]
-fn owned_child_partial_tabs_or_roots_with_other_presentations_preserve_source_input() {
-    for case in [
-        "partial_tab",
-        "main_with_contained_sibling",
-        "contained_not_main",
+fn preserve_sources_cross_drop_without_pointer_hit_test_control() {
+    for control in [
+        PlatformCapability::unknown(
+            PlatformRequirement::PointerHitTestControl,
+            PlatformCapabilityReason::EnvironmentUnavailable,
+        ),
+        PlatformCapability::unsupported(
+            PlatformRequirement::PointerHitTestControl,
+            PlatformCapabilityReason::BackendUnsupported,
+        ),
     ] {
-        let mut builder = Workspace::builder();
-        let main_items = match case {
-            "partial_tab" => vec![ItemId::new(1), ItemId::new(3)],
-            "main_with_contained_sibling" => vec![ItemId::new(1)],
-            "contained_not_main" => vec![ItemId::new(3)],
-            _ => unreachable!(),
-        };
-        let source_tabs = builder.insert_node(Node::tabs(main_items));
-        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
-        builder.set_root(SOURCE_ROOT, RootRecord::new(source_tabs));
-        builder.set_root(TARGET_ROOT, RootRecord::new(target_tabs));
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
-        builder.set_surface(TARGET_SURFACE, SurfacePresentation::with_main(TARGET_ROOT));
-        if case != "partial_tab" {
-            let item = if case == "contained_not_main" {
-                ItemId::new(1)
-            } else {
-                ItemId::new(4)
+        for case in [
+            "external_root",
+            "partial_tab",
+            "main_with_contained_sibling",
+            "contained_not_main",
+        ] {
+            let mut builder = Workspace::builder();
+            let main_items = match case {
+                "partial_tab" => vec![ItemId::new(1), ItemId::new(3)],
+                "external_root" | "main_with_contained_sibling" => vec![ItemId::new(1)],
+                "contained_not_main" => vec![ItemId::new(3)],
+                _ => unreachable!(),
             };
-            let contained_tabs = builder.insert_node(Node::tabs([item]));
-            let contained_root = RootId::new(3);
-            let floating = FloatingPresentationId::new(1);
-            builder.set_root(contained_root, RootRecord::new(contained_tabs));
-            builder.set_contained_floating(
-                floating,
-                ContainedFloating::new(contained_root, logical_rect(280.0, 200.0, 320.0, 240.0)),
+            let source_tabs = builder.insert_node(Node::tabs(main_items));
+            let target_tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
+            builder.set_root(SOURCE_ROOT, RootRecord::new(source_tabs));
+            builder.set_root(TARGET_ROOT, RootRecord::new(target_tabs));
+            builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+            builder.set_surface(TARGET_SURFACE, SurfacePresentation::with_main(TARGET_ROOT));
+            if matches!(case, "main_with_contained_sibling" | "contained_not_main") {
+                let item = if case == "contained_not_main" {
+                    ItemId::new(1)
+                } else {
+                    ItemId::new(4)
+                };
+                let contained_tabs = builder.insert_node(Node::tabs([item]));
+                let contained_root = RootId::new(3);
+                let floating = FloatingPresentationId::new(1);
+                builder.set_root(contained_root, RootRecord::new(contained_tabs));
+                builder.set_contained_floating(
+                    floating,
+                    ContainedFloating::new(
+                        contained_root,
+                        logical_rect(280.0, 200.0, 320.0, 240.0),
+                    ),
+                );
+                builder
+                    .attach_contained(SOURCE_SURFACE, floating)
+                    .expect("the owned source retains its contained presentation");
+            }
+            let workspace = builder
+                .build()
+                .expect("the owned source workspace is valid");
+            let DesktopNativeFixture {
+                mut engine,
+                mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+            } = if case == "external_root" {
+                desktop_native_fixture_from_workspace(workspace, target_tabs, 1.0)
+            } else {
+                desktop_owned_child_fixture_from_workspace(workspace, target_tabs, 1.0)
+            };
+            let mut reduced = capabilities();
+            reduced.set_pointer_hit_test_control(control);
+            let _ = publish_capabilities_during_drag(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                0,
+                reduced,
             );
-            builder
-                .attach_contained(SOURCE_SURFACE, floating)
-                .expect("the owned source retains its contained presentation");
+            let before = engine.workspace().clone();
+            arm_native_tab_press(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            );
+            let (_, target_point) =
+                center_drop_point(interaction(&engine, TARGET_SURFACE), target_tabs);
+            let moved = submit_active_drag_edge_after(
+                &mut engine,
+                &mut host,
+                provider,
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                target_binding,
+                target_tabs,
+                target_point,
+                PointerEdgeKind::Moved,
+                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                1,
+            );
+
+            assert!(
+                matches!(
+                    moved.reduced_pointer_edges()[0].interaction_outcomes(),
+                    [
+                        InteractionOutcome::DragBegan { .. },
+                        InteractionOutcome::PreviewUpdated {
+                            preview: Some(_),
+                            status: PreviewResolutionStatus::Resolved,
+                            ..
+                        }
+                    ]
+                ),
+                "Preserve must resolve the cross-window preview for {case}: {control:?}"
+            );
+            assert!(matches!(
+                engine.interaction().status(),
+                InteractionStatus::Dragging { .. }
+            ));
+            assert_eq!(engine.viewport().drag_source(POINTER), Some(source_binding));
+            assert_eq!(
+                engine.viewport().confirmed_drag_source(POINTER),
+                Some(source_binding)
+            );
+            assert_eq!(engine.viewport().drag_route_effect(POINTER), None);
+            assert_eq!(
+                engine.viewport().drag_source_input(POINTER),
+                Some(NativeDragSourceInput::Preserve)
+            );
+            let source = engine
+                .viewport()
+                .viewport(SOURCE_SURFACE)
+                .expect("the owned child retains its source binding");
+            assert_eq!(source.binding(), source_binding);
+            assert!(source.is_routeable());
+            assert_eq!(
+                source
+                    .input_observation()
+                    .map(|observation| observation.state()),
+                Some(Authority::Known(WindowInputState::ReceivesInput))
+            );
+            assert_eq!(engine.workspace(), &before);
+            let preview = engine
+                .interaction()
+                .preview()
+                .expect("cross-window preview exists")
+                .token();
+            let mut paint_frame = host.begin(&engine);
+            paint_frame
+                .submit_pointer_journal(
+                    provider,
+                    PointerEdgeJournal::new(
+                        PointerEdgeSequence::new(2),
+                        PointerEdgeSequence::new(2),
+                        Vec::new(),
+                    )
+                    .expect("Preserve paint retains the pointer watermark"),
+                )
+                .expect("Preserve paint checkpoint stages");
+            paint_frame
+                .submit_pointer_receiver_receipts(
+                    PointerReceiverReceiptBatch::new(Vec::new())
+                        .expect("Preserve paint needs no receiver probes"),
+                )
+                .expect("Preserve paint receipts stage");
+            let paint_frame = complete_host_frame_with_current_outputs(&engine, paint_frame);
+            let painted = host.finish_presentation(paint_frame, &mut engine);
+            let preview_output = painted
+                .presentation_emissions()
+                .iter()
+                .map(|emission| emission.output())
+                .find(|output| {
+                    output
+                        .payload()
+                        .interaction()
+                        .is_some_and(|interaction| interaction.drag_preview() == Some(preview))
+                })
+                .expect("Preserve emits the exact cross-window preview");
+            let released = submit_active_drag_edge_after(
+                &mut engine,
+                &mut host,
+                provider,
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                target_binding,
+                target_tabs,
+                target_point,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                Authority::Known(PointerCaptureOwner::None),
+                2,
+            );
+            assert!(
+                released
+                    .presentation_observations()
+                    .iter()
+                    .any(|observation| matches!(
+                        observation,
+                        HostPresentationObservationOutcome::Retired {
+                            stream,
+                            settled_through,
+                            presented: Authority::Known(Some(presented)),
+                            promotion_eligible: true,
+                            ..
+                        } if *stream == preview_output.stream()
+                            && *settled_through == preview_output.key()
+                            && *presented == preview_output.key()
+                    ))
+            );
+            assert!(matches!(
+                released.reduced_pointer_edges()[0].interaction_outcomes(),
+                [InteractionOutcome::DragDelivered { .. }]
+            ));
+            assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+            assert!(engine.pending_release_preview().is_none());
+            assert!(matches!(
+                engine.workspace().node(target_tabs),
+                Some(Node::Tabs { items, .. })
+                    if items.as_slice().contains(&ItemId::new(1))
+                        && items.as_slice().contains(&ItemId::new(2))
+            ));
+            assert!(
+                engine.viewport().effects().records().all(|(_, record)| {
+                    !matches!(
+                        record.request().effect(),
+                        PlatformEffect::SetPointerPassthrough { binding, .. }
+                            if *binding == source_binding
+                    )
+                }),
+                "Preserve must not enable passthrough for {case}: {control:?}"
+            );
         }
-        let workspace = builder
-            .build()
-            .expect("the owned source workspace is valid");
+    }
+}
+
+#[test]
+fn complete_owned_child_without_pointer_hit_test_control_cannot_route_or_tear_off() {
+    for (control, expected_status) in [
+        (
+            PlatformCapability::unknown(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::EnvironmentUnavailable,
+            ),
+            PreviewResolutionStatus::NativeCapabilityUnknown,
+        ),
+        (
+            PlatformCapability::unsupported(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::BackendUnsupported,
+            ),
+            PreviewResolutionStatus::NativeCapabilityUnavailable,
+        ),
+    ] {
         let DesktopNativeFixture {
             mut engine,
             mut host,
@@ -2249,8 +2469,19 @@ fn owned_child_partial_tabs_or_roots_with_other_presentations_preserve_source_in
             source_binding,
             target_binding,
             target_tabs,
-        } = desktop_owned_child_fixture_from_workspace(workspace, target_tabs, 1.0);
+        } = desktop_owned_child_fixture(1.0);
         let before = engine.workspace().clone();
+        let mut reduced = capabilities();
+        reduced.set_pointer_hit_test_control(control);
+        let _ = publish_capabilities_during_drag(
+            &mut engine,
+            &mut host,
+            provider,
+            source_binding,
+            target_binding,
+            0,
+            reduced,
+        );
         arm_native_tab_press(
             &mut engine,
             &mut host,
@@ -2272,50 +2503,72 @@ fn owned_child_partial_tabs_or_roots_with_other_presentations_preserve_source_in
             Authority::Known(PointerCaptureOwner::Native(source_binding)),
             1,
         );
-
-        assert!(
-            matches!(
-                moved.reduced_pointer_edges()[0].interaction_outcomes(),
-                [
-                    InteractionOutcome::DragBegan { .. },
-                    InteractionOutcome::PreviewUpdated { .. }
-                ]
-            ),
-            "the owned child must keep its drag source active for {case}"
-        );
         assert!(matches!(
-            engine.interaction().status(),
-            InteractionStatus::Dragging { .. }
+            moved.reduced_pointer_edges()[0].interaction_outcomes(),
+            [
+                InteractionOutcome::DragBegan { .. },
+                InteractionOutcome::PreviewUpdated { preview: None, status, .. }
+            ] if *status == expected_status
         ));
-        assert_eq!(engine.viewport().drag_source(POINTER), Some(source_binding));
-        assert_eq!(
-            engine.viewport().confirmed_drag_source(POINTER),
-            Some(source_binding)
-        );
+        assert_eq!(engine.viewport().drag_source(POINTER), None);
+        assert_eq!(engine.viewport().drag_source_input(POINTER), None);
+        assert_eq!(engine.viewport().confirmed_drag_source(POINTER), None);
         assert_eq!(engine.viewport().drag_route_effect(POINTER), None);
-        let source = engine
-            .viewport()
-            .viewport(SOURCE_SURFACE)
-            .expect("the owned child retains its source binding");
-        assert_eq!(source.binding(), source_binding);
-        assert!(source.is_routeable());
-        assert_eq!(
-            source
-                .input_observation()
-                .map(|observation| observation.state()),
-            Some(Authority::Known(WindowInputState::ReceivesInput))
-        );
+
+        let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
+        for (previous, kind) in [
+            (2, PointerEdgeKind::Moved),
+            (3, PointerEdgeKind::ButtonReleased(PointerButton::Primary)),
+        ] {
+            let journal = pointer_edge_journal_with_delivery(
+                previous,
+                kind,
+                PointerEdgeLocation::Desktop {
+                    route: outside_all_route(&engine, outside),
+                },
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            );
+            let mut frame = host.begin(&engine);
+            frame
+                .submit_pointer_journal(provider, journal)
+                .expect("unsupported owned-child edge stages");
+            frame
+                .submit_pointer_receiver_receipts(unknown_receipts(&frame))
+                .expect("outside-all edge has no widget receiver");
+            complete(&engine, &mut frame);
+            let transition = host.finish(frame, &mut engine);
+            assert!(
+                transition.reduced_pointer_edges()[0]
+                    .interaction_outcomes()
+                    .iter()
+                    .all(|outcome| !matches!(
+                        outcome,
+                        InteractionOutcome::PreviewUpdated {
+                            preview: Some(_),
+                            ..
+                        } | InteractionOutcome::ReleasePending { .. }
+                            | InteractionOutcome::DragDelivered { .. }
+                    ))
+            );
+            if kind == PointerEdgeKind::Moved {
+                assert!(
+                    matches!(transition.reduced_pointer_edges()[0].interaction_outcomes(),
+                        [InteractionOutcome::PreviewUpdated { preview: None, status, .. }]
+                            if *status == expected_status
+                    )
+                );
+            }
+        }
+        assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+        assert!(engine.interaction().preview().is_none());
+        assert!(engine.pending_release_preview().is_none());
         assert_eq!(engine.workspace(), &before);
-        assert!(
-            engine.viewport().effects().records().all(|(_, record)| {
-                !matches!(
-                    record.request().effect(),
-                    PlatformEffect::SetPointerPassthrough { binding, .. }
-                        if *binding == source_binding
-                )
-            }),
-            "the owned child must not enable passthrough for {case}"
-        );
+        assert!(engine.viewport().native_create_sagas().next().is_none());
+        assert!(engine.viewport().effects().records().all(|(_, record)| !matches!(
+            record.request().effect(),
+            PlatformEffect::SetPointerPassthrough { binding, .. } if *binding == source_binding
+        )));
     }
 }
 
@@ -2564,6 +2817,400 @@ fn routed_physical_drag_cancels_when_release_authority_is_lost() {
                 reason,
             } if *cancelled == session && *reason == expected_reason
         )));
+    }
+}
+
+#[test]
+fn active_control_loss_preserves_cross_drop_or_cancels_passthrough_with_restore() {
+    for (control, expected_reason) in [
+        (
+            PlatformCapability::unknown(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::EnvironmentUnavailable,
+            ),
+            InteractionCancelReason::NativeCapabilityUnknown,
+        ),
+        (
+            PlatformCapability::unsupported(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::BackendUnsupported,
+            ),
+            InteractionCancelReason::NativeCapabilityUnavailable,
+        ),
+    ] {
+        for source_input in [
+            NativeDragSourceInput::Preserve,
+            NativeDragSourceInput::PassThrough,
+        ] {
+            let DesktopNativeFixture {
+                mut engine,
+                mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+            } = match source_input {
+                NativeDragSourceInput::Preserve => desktop_native_fixture(),
+                NativeDragSourceInput::PassThrough => desktop_owned_child_fixture(1.0),
+            };
+            let target_point = arm_native_drag(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+                0,
+            );
+            let before = engine.workspace().clone();
+            let status = engine.interaction().status();
+            let InteractionStatus::Dragging { session } = status else {
+                panic!("fixture must retain its routed drag");
+            };
+            let preview = engine
+                .interaction()
+                .preview()
+                .expect("cross-window preview exists")
+                .token();
+            let enable_effect = engine.viewport().drag_route_effect(POINTER);
+            assert_eq!(
+                engine.viewport().drag_source_input(POINTER),
+                Some(source_input)
+            );
+            let mut reduced = capabilities();
+            reduced.set_pointer_hit_test_control(control);
+            let transition = publish_capabilities_during_drag(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                ACTIVE_DRAG_POINTER_THROUGH,
+                reduced,
+            );
+            assert_eq!(engine.workspace(), &before);
+            if source_input == NativeDragSourceInput::PassThrough {
+                assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+                assert!(engine.interaction().preview().is_none());
+                assert!(engine.pending_release_preview().is_none());
+                assert!(transition.interaction_events().iter().any(|event| matches!(
+                    event.kind(),
+                    dockspace::interaction::InteractionEventKind::Cancelled {
+                        status: InteractionStatus::Dragging { session: cancelled }, reason,
+                    } if *cancelled == session && *reason == expected_reason
+                )));
+                let restore = pointer_passthrough_effect(&engine, source_binding, false);
+                let record = engine
+                    .viewport()
+                    .effects()
+                    .record(restore)
+                    .expect("restore obligation remains");
+                assert!(matches!(record.request().effect(),
+                    PlatformEffect::SetPointerPassthrough { after, .. } if *after == enable_effect
+                ));
+                assert!(!matches!(
+                    record.phase(),
+                    EffectPhase::ObservedApplied { .. }
+                ));
+                assert!(engine.viewport().native_create_sagas().next().is_none());
+                continue;
+            }
+            assert_eq!(engine.interaction().status(), status);
+            assert_eq!(
+                engine
+                    .interaction()
+                    .preview()
+                    .map(|preview| preview.token()),
+                Some(preview)
+            );
+            assert_eq!(
+                engine.viewport().drag_source_input(POINTER),
+                Some(source_input)
+            );
+            assert_eq!(
+                engine.viewport().confirmed_drag_source(POINTER),
+                Some(source_binding)
+            );
+            assert!(
+                transition
+                    .interaction_events()
+                    .iter()
+                    .all(|event| !matches!(
+                        event.kind(),
+                        dockspace::interaction::InteractionEventKind::Cancelled { .. }
+                    ))
+            );
+            let continued = submit_active_drag_edge(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+                target_point,
+                PointerEdgeKind::Moved,
+                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            );
+            assert!(matches!(
+                continued.reduced_pointer_edges()[0].interaction_outcomes(),
+                [InteractionOutcome::PreviewUpdated {
+                    preview: Some(_),
+                    status: PreviewResolutionStatus::Resolved,
+                    ..
+                }]
+            ));
+            let pointer_through = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
+            let mut paint_frame = host.begin(&engine);
+            paint_frame
+                .submit_pointer_journal(
+                    provider,
+                    PointerEdgeJournal::new(pointer_through, pointer_through, Vec::new())
+                        .expect("paint retains the watermark"),
+                )
+                .expect("continued Preserve paint stages");
+            paint_frame
+                .submit_pointer_receiver_receipts(
+                    PointerReceiverReceiptBatch::new(Vec::new())
+                        .expect("paint needs no receiver probes"),
+                )
+                .expect("continued Preserve paint receipts stage");
+            let paint_frame = complete_host_frame_with_current_outputs(&engine, paint_frame);
+            host.finish_presentation(paint_frame, &mut engine);
+            let released = submit_active_drag_edge_after(
+                &mut engine,
+                &mut host,
+                provider,
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                target_binding,
+                target_tabs,
+                target_point,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                Authority::Known(PointerCaptureOwner::None),
+                pointer_through.get(),
+            );
+            assert!(matches!(
+                released.reduced_pointer_edges()[0].interaction_outcomes(),
+                [InteractionOutcome::DragDelivered { .. }]
+            ));
+            assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+            assert!(engine.pending_release_preview().is_none());
+            assert!(matches!(engine.workspace().node(target_tabs),
+                Some(Node::Tabs { items, .. }) if items.as_slice().contains(&ItemId::new(1))
+                    && items.as_slice().contains(&ItemId::new(2))
+            ));
+            assert!(engine.viewport().effects().records().all(|(_, record)| !matches!(
+                record.request().effect(), PlatformEffect::SetPointerPassthrough { binding, .. }
+                    if *binding == source_binding
+            )));
+        }
+    }
+}
+
+#[test]
+fn pending_native_control_loss_preserves_exact_output_or_cancels_passthrough_with_restore() {
+    for (control, expected_reason) in [
+        (
+            PlatformCapability::unknown(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::EnvironmentUnavailable,
+            ),
+            InteractionCancelReason::NativeCapabilityUnknown,
+        ),
+        (
+            PlatformCapability::unsupported(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::BackendUnsupported,
+            ),
+            InteractionCancelReason::NativeCapabilityUnavailable,
+        ),
+    ] {
+        for source_input in [
+            NativeDragSourceInput::Preserve,
+            NativeDragSourceInput::PassThrough,
+        ] {
+            let DesktopNativeFixture {
+                mut engine,
+                mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+            } = match source_input {
+                NativeDragSourceInput::Preserve => desktop_native_fixture(),
+                NativeDragSourceInput::PassThrough => desktop_owned_child_fixture(1.0),
+            };
+            let _ = arm_native_drag(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+                0,
+            );
+            let before = engine.workspace().clone();
+            let enable_effect = engine.viewport().drag_route_effect(POINTER);
+            assert_eq!(
+                engine.viewport().drag_source_input(POINTER),
+                Some(source_input)
+            );
+            let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
+            let journal = pointer_edge_journal_with_delivery(
+                ACTIVE_DRAG_POINTER_THROUGH,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                PointerEdgeLocation::Desktop {
+                    route: outside_all_route(&engine, outside),
+                },
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::None),
+            );
+            let mut frame = host.begin(&engine);
+            frame
+                .submit_pointer_journal(provider, journal)
+                .expect("native pending release stages");
+            frame
+                .submit_pointer_receiver_receipts(unknown_receipts(&frame))
+                .expect("outside-all release has no widget receiver");
+            complete(&engine, &mut frame);
+            let released = host.finish(frame, &mut engine);
+            assert!(
+                matches!(released.reduced_pointer_edges()[0].interaction_outcomes(),
+                    [
+                        InteractionOutcome::PreviewUpdated { preview: Some(preview), status: PreviewResolutionStatus::Resolved, .. },
+                        InteractionOutcome::ReleasePending { .. }
+                    ] if matches!(preview.visual(), PreviewVisual::Native { .. })
+                )
+            );
+            let pending = engine
+                .pending_release_preview()
+                .expect("native release waits for its exact output");
+            let pointer_through = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
+            let mut reduced = capabilities();
+            reduced.set_pointer_hit_test_control(control);
+            let transition = publish_capabilities_during_drag(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                pointer_through.get(),
+                reduced,
+            );
+            assert_eq!(engine.workspace(), &before);
+            assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+            if source_input == NativeDragSourceInput::PassThrough {
+                assert!(engine.pending_release_preview().is_none());
+                assert!(transition.interaction_events().iter().any(|event| matches!(
+                    event.kind(), dockspace::interaction::InteractionEventKind::Cancelled {
+                        status: InteractionStatus::Dragging { session }, reason,
+                    } if *session == pending.0 && *reason == expected_reason
+                )));
+                let restore = pointer_passthrough_effect(&engine, source_binding, false);
+                let record = engine
+                    .viewport()
+                    .effects()
+                    .record(restore)
+                    .expect("pending cancellation retains restore");
+                assert!(matches!(record.request().effect(),
+                    PlatformEffect::SetPointerPassthrough { after, .. } if *after == enable_effect
+                ));
+                assert!(!matches!(
+                    record.phase(),
+                    EffectPhase::ObservedApplied { .. }
+                ));
+                assert!(engine.viewport().native_create_sagas().next().is_none());
+                continue;
+            }
+            assert_eq!(engine.pending_release_preview(), Some(pending));
+            assert!(
+                transition
+                    .interaction_events()
+                    .iter()
+                    .all(|event| !matches!(
+                        event.kind(),
+                        dockspace::interaction::InteractionEventKind::Cancelled { .. }
+                    ))
+            );
+            let mut paint_frame = host.begin(&engine);
+            paint_frame
+                .submit_pointer_journal(
+                    provider,
+                    PointerEdgeJournal::new(pointer_through, pointer_through, Vec::new())
+                        .expect("pending paint retains the watermark"),
+                )
+                .expect("pending Preserve paint stages");
+            paint_frame
+                .submit_pointer_receiver_receipts(
+                    PointerReceiverReceiptBatch::new(Vec::new())
+                        .expect("pending paint needs no receiver probes"),
+                )
+                .expect("pending Preserve paint receipts stage");
+            let paint_frame = complete_host_frame_with_current_outputs(&engine, paint_frame);
+            let painted = host.finish_presentation(paint_frame, &mut engine);
+            let preview_output = painted
+                .presentation_emissions()
+                .iter()
+                .map(|emission| emission.output())
+                .find(|output| {
+                    output
+                        .payload()
+                        .interaction()
+                        .is_some_and(|interaction| interaction.drag_preview() == Some(pending.1))
+                })
+                .expect("pending Preserve emits its exact preview after control loss");
+            assert_eq!(engine.pending_release_preview(), Some(pending));
+            assert_eq!(engine.workspace(), &before);
+            assert!(engine.viewport().native_create_sagas().next().is_none());
+            let mut settle_frame = host.begin(&engine);
+            settle_frame
+                .submit_pointer_journal(
+                    provider,
+                    PointerEdgeJournal::new(pointer_through, pointer_through, Vec::new())
+                        .expect("settlement retains the release watermark"),
+                )
+                .expect("pending Preserve settlement stages");
+            settle_frame
+                .submit_pointer_receiver_receipts(
+                    PointerReceiverReceiptBatch::new(Vec::new())
+                        .expect("settlement needs no receiver probes"),
+                )
+                .expect("pending Preserve settlement receipts stage");
+            complete(&engine, &mut settle_frame);
+            let delivered = host.finish(settle_frame, &mut engine);
+            assert!(delivered.presentation_observations().iter().any(|observation| matches!(
+                observation, HostPresentationObservationOutcome::Retired {
+                    stream, settled_through, presented: Authority::Known(Some(presented)), promotion_eligible: true, ..
+                } if *stream == preview_output.stream() && *settled_through == preview_output.key()
+                    && *presented == preview_output.key()
+            )));
+            assert!(engine.pending_release_preview().is_none());
+            assert_eq!(engine.workspace(), &before);
+            assert_eq!(engine.viewport().native_create_sagas().count(), 1);
+            let (_, saga) = engine
+                .viewport()
+                .native_create_sagas()
+                .next()
+                .expect("the exact output starts one native create");
+            assert_eq!(
+                delivered
+                    .interaction_events()
+                    .iter()
+                    .filter_map(|event| {
+                        match event.kind() {
+                        dockspace::interaction::InteractionEventKind::NativePresentationRequested(
+                            request,
+                        ) => Some((request.saga(), request.effect(), request.binding())),
+                        _ => None,
+                    }
+                    })
+                    .collect::<Vec<_>>(),
+                vec![(saga.id(), saga.create(), saga.binding())]
+            );
+            assert!(engine.viewport().effects().records().all(|(_, record)| !matches!(
+                record.request().effect(), PlatformEffect::SetPointerPassthrough { binding, .. }
+                    if *binding == source_binding
+            )));
+        }
     }
 }
 
@@ -3035,139 +3682,201 @@ fn native_preview_rejects_when_the_post_move_recovery_host_would_disappear() {
 
 #[test]
 fn desktop_global_journal_requests_native_create_after_painted_outside_all_preview() {
-    let ActiveNativeDragFixture {
-        mut engine,
-        mut host,
-        provider,
-        source_binding,
-        ..
-    } = active_native_drag();
-    let before = engine.workspace().clone();
-    let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
-
-    let move_journal = pointer_edge_journal(
-        ACTIVE_DRAG_POINTER_THROUGH,
-        PointerEdgeKind::Moved,
-        PointerEdgeLocation::Desktop {
-            route: outside_all_route(&engine, outside),
-        },
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
-    );
-    let mut move_frame = host.begin(&engine);
-    move_frame
-        .submit_pointer_journal(provider, move_journal)
-        .expect("outside-all move stages");
-    move_frame
-        .submit_pointer_receiver_receipts(unknown_receipts(&move_frame))
-        .expect("outside-all move has no widget receiver");
-    complete(&engine, &mut move_frame);
-    let moved = host.finish(move_frame, &mut engine);
-
-    assert!(matches!(
-        moved.reduced_pointer_edges()[0].interaction_outcomes(),
-        [InteractionOutcome::PreviewUpdated {
-            preview: Some(preview),
-            status: PreviewResolutionStatus::Resolved,
-            ..
-        }] if matches!(preview.visual(), PreviewVisual::Native { .. })
-    ));
-    assert_eq!(engine.workspace(), &before);
-    let preview_token = engine
-        .interaction()
-        .preview()
-        .expect("outside-all move publishes a native preview")
-        .token();
-    let mut paint_frame = host.begin(&engine);
-    let pointer_sequence = moved.reduced_pointer_edges()[0].edge().sequence();
-    paint_frame
-        .submit_pointer_journal(
+    for control in [
+        PlatformCapability::Supported,
+        PlatformCapability::unknown(
+            PlatformRequirement::PointerHitTestControl,
+            PlatformCapabilityReason::EnvironmentUnavailable,
+        ),
+        PlatformCapability::unsupported(
+            PlatformRequirement::PointerHitTestControl,
+            PlatformCapabilityReason::BackendUnsupported,
+        ),
+    ] {
+        let ActiveNativeDragFixture {
+            mut engine,
+            mut host,
             provider,
-            PointerEdgeJournal::new(pointer_sequence, pointer_sequence, Vec::new())
-                .expect("preview paint preserves the pointer watermark"),
-        )
-        .expect("preview paint pointer checkpoint stages");
-    paint_frame
-        .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new(Vec::new())
-                .expect("preview paint has no pointer receiver probes"),
-        )
-        .expect("preview paint receiver checkpoint stages");
-    let paint_frame = complete_host_frame_with_current_outputs(&engine, paint_frame);
-    let painted = host.finish_presentation(paint_frame, &mut engine);
-    let preview_output = painted
-        .presentation_emissions()
-        .iter()
-        .map(|emission| emission.output())
-        .find(|output| {
-            output
-                .payload()
-                .interaction()
-                .is_some_and(|interaction| interaction.drag_preview() == Some(preview_token))
-        })
-        .expect("preview paint emits the exact active preview token");
-    let release_journal = pointer_edge_journal_with_delivery(
-        pointer_sequence.get(),
-        PointerEdgeKind::ButtonReleased(PointerButton::Primary),
-        PointerEdgeLocation::Desktop {
-            route: outside_all_route(&engine, outside),
-        },
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-        Authority::Known(PointerCaptureOwner::None),
-    );
-    let mut release_frame = host.begin(&engine);
-    release_frame
-        .submit_pointer_journal(provider, release_journal)
-        .expect("outside-all release stages");
-    release_frame
-        .submit_pointer_receiver_receipts(unknown_receipts(&release_frame))
-        .expect("outside-all release has no widget receiver");
-    complete(&engine, &mut release_frame);
-    let released = host.finish(release_frame, &mut engine);
+            source_binding,
+            ..
+        } = if control.is_supported() {
+            active_native_drag()
+        } else {
+            let DesktopNativeFixture {
+                mut engine,
+                mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+            } = desktop_native_fixture();
+            let mut reduced = capabilities();
+            reduced.set_pointer_hit_test_control(control);
+            let _ = publish_capabilities_during_drag(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                0,
+                reduced,
+            );
+            let target_point = arm_native_drag(
+                &mut engine,
+                &mut host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+                0,
+            );
+            assert_eq!(
+                engine.viewport().drag_source_input(POINTER),
+                Some(NativeDragSourceInput::Preserve)
+            );
+            ActiveNativeDragFixture {
+                engine,
+                host,
+                provider,
+                source_binding,
+                target_binding,
+                target_tabs,
+                target_point,
+            }
+        };
+        let before = engine.workspace().clone();
+        let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
 
-    assert!(
-        released
-            .presentation_observations()
-            .iter()
-            .any(|observation| {
-                matches!(
-                    observation,
-                    HostPresentationObservationOutcome::Retired {
-                        stream,
-                        settled_through,
-                        presented: Authority::Known(Some(presented)),
-                        promotion_eligible: true,
-                        ..
-                    } if *stream == preview_output.stream()
-                        && *settled_through == preview_output.key()
-                        && *presented == preview_output.key()
-                )
-            })
-    );
-    let requested = released.reduced_pointer_edges()[0]
-        .interaction_outcomes()
-        .iter()
-        .find_map(|outcome| match outcome {
-            InteractionOutcome::DragDelivered {
-                delivery: InteractionDelivery::NativeRequested(request),
+        let move_journal = pointer_edge_journal(
+            ACTIVE_DRAG_POINTER_THROUGH,
+            PointerEdgeKind::Moved,
+            PointerEdgeLocation::Desktop {
+                route: outside_all_route(&engine, outside),
+            },
+            Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        );
+        let mut move_frame = host.begin(&engine);
+        move_frame
+            .submit_pointer_journal(provider, move_journal)
+            .expect("outside-all move stages");
+        move_frame
+            .submit_pointer_receiver_receipts(unknown_receipts(&move_frame))
+            .expect("outside-all move has no widget receiver");
+        complete(&engine, &mut move_frame);
+        let moved = host.finish(move_frame, &mut engine);
+
+        assert!(matches!(
+            moved.reduced_pointer_edges()[0].interaction_outcomes(),
+            [InteractionOutcome::PreviewUpdated {
+                preview: Some(preview),
+                status: PreviewResolutionStatus::Resolved,
                 ..
-            } => Some(*request),
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "outside-all release must request one native create saga: {:#?}",
-                released.reduced_pointer_edges()[0].interaction_outcomes()
+            }] if matches!(preview.visual(), PreviewVisual::Native { .. })
+        ));
+        assert_eq!(engine.workspace(), &before);
+        let preview_token = engine
+            .interaction()
+            .preview()
+            .expect("outside-all move publishes a native preview")
+            .token();
+        let mut paint_frame = host.begin(&engine);
+        let pointer_sequence = moved.reduced_pointer_edges()[0].edge().sequence();
+        paint_frame
+            .submit_pointer_journal(
+                provider,
+                PointerEdgeJournal::new(pointer_sequence, pointer_sequence, Vec::new())
+                    .expect("preview paint preserves the pointer watermark"),
             )
-        });
-    assert_eq!(engine.workspace(), &before);
-    assert_eq!(requested.binding().surface(), SurfaceId::new(3));
-    assert!(
-        engine
-            .viewport()
-            .native_create_saga(requested.saga())
-            .is_some()
-    );
-    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+            .expect("preview paint pointer checkpoint stages");
+        paint_frame
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new(Vec::new())
+                    .expect("preview paint has no pointer receiver probes"),
+            )
+            .expect("preview paint receiver checkpoint stages");
+        let paint_frame = complete_host_frame_with_current_outputs(&engine, paint_frame);
+        let painted = host.finish_presentation(paint_frame, &mut engine);
+        let preview_output = painted
+            .presentation_emissions()
+            .iter()
+            .map(|emission| emission.output())
+            .find(|output| {
+                output
+                    .payload()
+                    .interaction()
+                    .is_some_and(|interaction| interaction.drag_preview() == Some(preview_token))
+            })
+            .expect("preview paint emits the exact active preview token");
+        let release_journal = pointer_edge_journal_with_delivery(
+            pointer_sequence.get(),
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            PointerEdgeLocation::Desktop {
+                route: outside_all_route(&engine, outside),
+            },
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+            Authority::Known(PointerCaptureOwner::None),
+        );
+        let mut release_frame = host.begin(&engine);
+        release_frame
+            .submit_pointer_journal(provider, release_journal)
+            .expect("outside-all release stages");
+        release_frame
+            .submit_pointer_receiver_receipts(unknown_receipts(&release_frame))
+            .expect("outside-all release has no widget receiver");
+        complete(&engine, &mut release_frame);
+        let released = host.finish(release_frame, &mut engine);
+
+        assert!(
+            released
+                .presentation_observations()
+                .iter()
+                .any(|observation| {
+                    matches!(
+                        observation,
+                        HostPresentationObservationOutcome::Retired {
+                            stream,
+                            settled_through,
+                            presented: Authority::Known(Some(presented)),
+                            promotion_eligible: true,
+                            ..
+                        } if *stream == preview_output.stream()
+                            && *settled_through == preview_output.key()
+                            && *presented == preview_output.key()
+                    )
+                })
+        );
+        let requested = released.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .iter()
+            .find_map(|outcome| match outcome {
+                InteractionOutcome::DragDelivered {
+                    delivery: InteractionDelivery::NativeRequested(request),
+                    ..
+                } => Some(*request),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "outside-all release must request one native create saga: {:#?}",
+                    released.reduced_pointer_edges()[0].interaction_outcomes()
+                )
+            });
+        assert_eq!(engine.workspace(), &before);
+        assert_eq!(requested.binding().surface(), SurfaceId::new(3));
+        assert!(
+            engine
+                .viewport()
+                .native_create_saga(requested.saga())
+                .is_some()
+        );
+        assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+        if !control.is_supported() {
+            assert!(engine.viewport().effects().records().all(|(_, record)| !matches!(
+            record.request().effect(), PlatformEffect::SetPointerPassthrough { binding, .. }
+                if *binding == source_binding
+        )));
+        }
+    }
 }
 
 #[test]

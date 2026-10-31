@@ -74,8 +74,12 @@ impl DockEngine {
         owner.is_desktop()
             && self
                 .viewport
-                .physical_cross_surface_drag_capability()
-                .is_supported()
+                .drag_source_input(owner.pointer())
+                .is_some_and(|input| {
+                    self.viewport
+                        .physical_cross_surface_drag_capability(input)
+                        .is_supported()
+                })
             && self.viewport.confirmed_drag_source(owner.pointer()) == Some(source)
     }
 

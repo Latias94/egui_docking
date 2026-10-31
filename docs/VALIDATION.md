@@ -15,6 +15,92 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 source-specific physical drag capability requirements
+
+The source, native, real-window and extracted-package gates below pass.
+Internal `NativeDragSourceInput::{Preserve, PassThrough}` replaces the private
+input-mode enum, and both `physical_cross_surface_drag(source_input)` and
+`physical_native_drag(source_input)` now require an explicit profile. The
+redundant `native_outside_all_tear_off` query and its coordinator wrapper are
+removed. These are core implementation queries; the public host continues to
+declare `runtime::NativeHostCapabilities` and supply independent facts.
+Preserve does not require `PointerHitTestControl`, since it dispatches
+no such effect. PassThrough still requires that control. Neither mode bypasses
+inventory, desktop hover/position, button state, hit observation, exact source
+delivery/capture, current presentation or placement requirements.
+
+Core still selects the actual mode from source ownership and complete payload;
+capability composition does not override that decision. The existing route
+freezes that mode. Pending release retains `(binding, source_input)` before
+routing ends, and the tear-off placement proof retains its original source mode.
+Snapshot and close observation reconciliation compare old and new capabilities
+under that same profile. No second route owner, lifecycle registry or authority
+issuer is added.
+
+The focused regressions cover External Root, partial Child, complete main with
+contained siblings and complete contained content under Unknown/Unsupported
+control; complete sole owned Child remains rejected. Active capability loss
+and native pending release retain Preserve or cancel PassThrough with its typed
+reason and exact restore obligation. Independent capture/delivery negatives
+remain. Public handoff and stationary cases run with and without control and
+retain stream/session, exact output, stale artifact and continuation checks.
+The first focused run exposed a test expecting a workspace Delivered event at
+native create request time. Its corrected assertion checks the exact emitted
+NativePresentationRequested saga/effect/binding and unchanged source topology;
+first-live transfer remains a separate gate.
+
+Final qualification passes the 38 focused regressions, workspace1,952, public
+default/serde148/176 and doctests10. Native normal572 includes a fresh same-owner
+10,000-lifetime case in 168.654 seconds; native noassert571 skips that just-run
+long case. Linux library525 passes with three explicit opt-in OS tests ignored
+and the soak filtered; the real retained-query/close/create/age OS fixture runs
+separately and passes. Both workspaces pass correctness/suspicious Clippy,
+strict rustdoc and formatting. Other advisory Clippy and existing dead-code
+warnings remain outside those enforced lint groups.
+
+The real refresh passes default/bounded macOS redock, six output-pressure cases
+on each of macOS and X11, and all fifteen X11 physical entries. Root never
+enables whole-window pass-through; complete Child still requires exact Applied
+enable and restore. X11 Combined retains O256/control2 plus W16, forwards all
+258 terminals and finishes within resident/reserved2,375,289/3,490,072 bytes.
+The 1 kHz journey matches all 1,000 native callbacks at 1,007.0 Hz after 999.9 Hz
+injection, with a release-to-model upper bound of 25.610958 ms. Selected
+Root/Child/standalone service maxima are 0.367416/0.346541/2.011792 ms; one
+standalone sample exceeds the 2 ms cooperative target. These are finite
+measurements, not a hard timing guarantee or positive stationary OS execution.
+
+Both packages verify. All 274/36 archived Rust files and their READMEs match
+the source; extracted public consumers pass148/176, the self-drawn engine
+example and official-egui15. Core dependency isolation passes. Package hashes
+are `a6f149e2c86f58fd2af86123b2b173bf5d4f850041fef9b8145729272144d29a`
+for dockspace and
+`75083b3c0183155bb42bdf7d18cdc865ba0210144e95d7a4f2da271df2296e69`
+for egui_dockspace. The temporary extractor initially used a tarfile keyword
+unsupported by the local Python; checked regular-file extraction resumed the
+already successful package gate without rerunning physical checks. The
+existing yanked `clipboard-win 5.4.1` lockfile warning remains.
+
+Independent source review confirmed no P1/P2 in the frozen profile, pending
+release, proof-currentness, no-route rejection or snapshot-loss paths. The
+renderer-neutral audit found no confirmed core-owner conflict, duplicate
+terminal authority or required public host API blocker. It corrected an
+intermediate documentation mistake: the mode, composed queries and placement
+proofs stay internal, while public hosts use `runtime::NativeHostCapabilities`.
+This is an internal behavior correction, not a new public mode-selection API.
+These reviews are source-only, separate from the main-thread execution above.
+
+Evidence is `/tmp/dockspace-source-input-qualified-source.json`,
+`/tmp/dockspace-source-input-qualified.json`,
+`/tmp/dockspace-source-input-window-qualification.json`,
+`/tmp/dockspace-source-input-package-qualification.json` and
+`/tmp/dockspace-source-input-review.json`. The implementation extends `8d43aee`
+without changing the aligned unpublished egui/Winit revisions. The next
+protocol audit is `/tmp/dockspace-source-input-next-protocol-review.json`:
+deadline acquisition cannot retroactively authorize earlier dwell; a fresh
+lease needs its own accepted timing boundary and successor-safe release.
+Positive stationary OS capture, delivery, ancestry and freeze proof, remote
+fork availability and the complete Goal remain open.
+
 ## 2026-11-01 expected-press queries and source-window input preservation
 
 The source, native and real-window gates below pass. Winit

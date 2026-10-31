@@ -253,6 +253,19 @@ impl PlatformCapability {
     }
 }
 
+/// Required treatment of a physical drag's source native window.
+///
+/// Core derives this from the source ownership and complete payload. Hosts may
+/// query the corresponding capability requirements; this value alone supplies
+/// no input, capture, delivery or pass-through acknowledgement authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeDragSourceInput {
+    /// Keep the source window's native hit regions for ordinary content dragging.
+    Preserve,
+    /// Exclude the complete owned source window and restore it at gesture end.
+    PassThrough,
+}
+
 /// Complete capability roster for one accepted platform snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformCapabilities {
@@ -351,12 +364,6 @@ impl PlatformCapabilities {
         ])
     }
 
-    /// Returns whether an outside-all pointer drop can create a native window safely.
-    #[must_use]
-    pub fn native_outside_all_tear_off(&self) -> PlatformCapability {
-        self.physical_native_drag()
-    }
-
     /// Returns whether a pointer can be routed across native windows without inference.
     #[must_use]
     pub fn cross_surface_routing(&self) -> PlatformCapability {
@@ -377,15 +384,22 @@ impl PlatformCapabilities {
     /// Returns whether one physical drag can be routed and released across native windows.
     ///
     /// Placement support is intentionally absent: existing-window routing needs exact hover,
-    /// desktop position, button/capture authority, rendered hit observations, and controllable
-    /// pointer pass-through. Being able to position a window proves none of those interaction
-    /// facts.
+    /// desktop position, button/capture authority and rendered hit observations. Only a source
+    /// which must exclude its whole window additionally requires pointer pass-through control.
+    /// Core selects the source treatment from exact ownership and the dragged payload; choosing
+    /// a query parameter does not grant a route or authorize a host to override that decision.
     #[must_use]
-    pub fn physical_cross_surface_drag(&self) -> PlatformCapability {
+    pub fn physical_cross_surface_drag(
+        &self,
+        source_input: NativeDragSourceInput,
+    ) -> PlatformCapability {
         combine_required([
             self.cross_surface_routing(),
             self.authoritative_release(),
-            self.pointer_hit_test_control,
+            match source_input {
+                NativeDragSourceInput::Preserve => PlatformCapability::Supported,
+                NativeDragSourceInput::PassThrough => self.pointer_hit_test_control,
+            },
         ])
     }
 
@@ -396,9 +410,9 @@ impl PlatformCapabilities {
     /// continues to use [`Self::native_exact_placement_create`] and does not require pointer
     /// capabilities.
     #[must_use]
-    pub fn physical_native_drag(&self) -> PlatformCapability {
+    pub fn physical_native_drag(&self, source_input: NativeDragSourceInput) -> PlatformCapability {
         combine_required([
-            self.physical_cross_surface_drag(),
+            self.physical_cross_surface_drag(source_input),
             self.native_window_lifecycle,
             self.global_window_placement,
             self.work_area,
@@ -2845,7 +2859,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            capabilities.native_outside_all_tear_off(),
+            capabilities.physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough),
             PlatformCapability::Unsupported(issue)
                 if issue.requirement() == PlatformRequirement::AuthoritativeInventory
         ));
@@ -2866,12 +2880,12 @@ mod tests {
         assert!(capabilities.native_exact_placement_create().is_supported());
         assert!(capabilities.cross_surface_routing().is_supported());
         assert!(matches!(
-            capabilities.physical_cross_surface_drag(),
+            capabilities.physical_cross_surface_drag(crate::platform::NativeDragSourceInput::PassThrough),
             PlatformCapability::Unknown(issue)
                 if issue.requirement() == PlatformRequirement::AuthoritativeButtonState
         ));
         assert!(matches!(
-            capabilities.physical_native_drag(),
+            capabilities.physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough),
             PlatformCapability::Unknown(issue)
                 if issue.requirement() == PlatformRequirement::AuthoritativeButtonState
         ));
@@ -2887,9 +2901,79 @@ mod tests {
         capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
         capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
 
-        assert!(capabilities.physical_cross_surface_drag().is_supported());
+        assert!(
+            capabilities
+                .physical_cross_surface_drag(crate::platform::NativeDragSourceInput::PassThrough)
+                .is_supported()
+        );
         assert!(!capabilities.native_exact_placement_create().is_supported());
-        assert!(!capabilities.physical_native_drag().is_supported());
+        assert!(
+            !capabilities
+                .physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough)
+                .is_supported()
+        );
+    }
+
+    #[test]
+    fn content_drag_requires_observed_routes_but_not_whole_window_input_control() {
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_hovered_window(PlatformCapability::Supported);
+        capabilities.set_desktop_pointer_position(PlatformCapability::Supported);
+        capabilities.set_authoritative_button_state(PlatformCapability::Supported);
+        capabilities.set_global_window_placement(PlatformCapability::Supported);
+        capabilities.set_work_area(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+
+        for control in [
+            PlatformCapability::unknown(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::EnvironmentUnavailable,
+            ),
+            PlatformCapability::unsupported(
+                PlatformRequirement::PointerHitTestControl,
+                PlatformCapabilityReason::BackendUnsupported,
+            ),
+        ] {
+            capabilities.set_pointer_hit_test_control(control);
+            assert!(
+                capabilities
+                    .physical_cross_surface_drag(NativeDragSourceInput::Preserve)
+                    .is_supported()
+            );
+            assert!(
+                capabilities
+                    .physical_native_drag(NativeDragSourceInput::Preserve)
+                    .is_supported()
+            );
+            assert_eq!(
+                capabilities.physical_cross_surface_drag(NativeDragSourceInput::PassThrough),
+                control
+            );
+            assert_eq!(
+                capabilities.physical_native_drag(NativeDragSourceInput::PassThrough),
+                control
+            );
+        }
+
+        capabilities.set_pointer_hit_test_observation(PlatformCapability::unsupported(
+            PlatformRequirement::PointerHitTestObservation,
+            PlatformCapabilityReason::BackendUnsupported,
+        ));
+        for source_input in [
+            NativeDragSourceInput::Preserve,
+            NativeDragSourceInput::PassThrough,
+        ] {
+            assert!(
+                matches!(capabilities.physical_cross_surface_drag(source_input),
+                PlatformCapability::Unsupported(issue)
+                    if issue.requirement() == PlatformRequirement::PointerHitTestObservation)
+            );
+            assert!(matches!(capabilities.physical_native_drag(source_input),
+                PlatformCapability::Unsupported(issue)
+                    if issue.requirement() == PlatformRequirement::PointerHitTestObservation));
+        }
     }
 
     #[test]

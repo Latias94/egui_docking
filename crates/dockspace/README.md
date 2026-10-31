@@ -250,6 +250,16 @@ qualification work.
 
 ## Budgeted Native Input
 
+Declare backend support through `runtime::NativeHostCapabilities` and supply
+independent event-time facts. Core derives a source mode from exact ownership
+and complete payload: Preserve content drags do not require whole-window
+`PointerHitTestControl`; PassThrough drags do. Inventory, hover, desktop pointer,
+button state and hit observation remain required for both. Native tear-off adds
+lifecycle and exact placement requirements. Core freezes the mode in the
+existing route and retains it through pending release and placement-proof
+validation. Hosts supply facts and execute effects without selecting an
+internal source mode or constructing a placement proof.
+
 Buffered native hosts can create a shared `NativeMonotonicClock` and start one
 `NativeInputBudget` before claiming an immutable input prefix. Pass that same
 budget to `DockspaceSession::poll_native_host_frame`; do not reset it between

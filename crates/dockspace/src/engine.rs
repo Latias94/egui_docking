@@ -1810,7 +1810,10 @@ struct PendingDragRelease {
     focus_causal: FocusCausalStamp,
     session: crate::interaction::DragSessionId,
     drag: crate::interaction::ActiveDrag,
-    physical_route: Option<crate::viewport::ViewportBinding>,
+    physical_route: Option<(
+        crate::viewport::ViewportBinding,
+        crate::platform::NativeDragSourceInput,
+    )>,
     release_decision: PreviewDecision,
     preview: crate::interaction::PreviewToken,
     presentation_outputs: BTreeSet<HostFrameKey>,
@@ -2000,7 +2003,7 @@ struct PreparedContainedTabOrigin {
 struct PlatformInteractionDependencies {
     owner_bindings: BTreeSet<crate::viewport::ViewportBinding>,
     target_bindings: BTreeSet<crate::viewport::ViewportBinding>,
-    routed: bool,
+    route_input: Option<crate::platform::NativeDragSourceInput>,
     native: bool,
 }
 
@@ -3244,7 +3247,7 @@ impl DockEngine {
                     && self.viewport.work_area(proof.work_area()).is_some()
                     && self
                         .viewport
-                        .physical_native_drag_capability()
+                        .physical_native_drag_capability(proof.source_input())
                         .is_supported()
             }
             NativePlacementProof::Surface(_) => self.viewport.native_placement_is_current(proof),
@@ -4168,22 +4171,25 @@ impl DockEngine {
         })
     }
 
-    fn native_drag_input_mode(
+    fn native_drag_source_input(
         &self,
         drag: &crate::interaction::ActiveDrag,
-    ) -> crate::frame::PointerDragInputMode {
-        use crate::frame::PointerDragInputMode;
+    ) -> crate::platform::NativeDragSourceInput {
+        use crate::platform::NativeDragSourceInput;
+        if let Some(input) = self.viewport.drag_source_input(drag.owner.pointer()) {
+            return input;
+        }
         let Some(record) = self.viewport.viewport(drag.source_surface) else {
-            return PointerDragInputMode::Preserve;
+            return NativeDragSourceInput::Preserve;
         };
         if record.ownership() != crate::viewport_registry::ViewportOwnership::RuntimeOwned
             || record.role() != crate::viewport::ViewportRole::Child
         {
             // An external window may contain application UI outside this dockspace.
-            return PointerDragInputMode::Preserve;
+            return NativeDragSourceInput::Preserve;
         }
         let Some(source) = drag.complete_root.as_ref() else {
-            return PointerDragInputMode::Preserve;
+            return NativeDragSourceInput::Preserve;
         };
         if self
             .workspace
@@ -4192,9 +4198,9 @@ impl DockEngine {
                 surface.main_root == Some(source.root()) && surface.contained.is_empty()
             })
         {
-            PointerDragInputMode::PassThrough
+            NativeDragSourceInput::PassThrough
         } else {
-            PointerDragInputMode::Preserve
+            NativeDragSourceInput::Preserve
         }
     }
 

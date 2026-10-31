@@ -531,9 +531,7 @@ impl DockEngine {
                 current_epoch: self.version.epoch(),
             });
         }
-        let previous_physical_native_drag = self.viewport.physical_native_drag_capability();
-        let previous_physical_cross_surface_drag =
-            self.viewport.physical_cross_surface_drag_capability();
+
         let active_drag_pointer = match self.interaction.status() {
             InteractionStatus::Dragging { session } => self
                 .interaction
@@ -549,6 +547,14 @@ impl DockEngine {
         let previous_confirmed_drag_source =
             active_drag_pointer.and_then(|pointer| self.viewport.confirmed_drag_source(pointer));
         let interaction_dependencies = self.platform_interaction_dependencies();
+        let source_input = interaction_dependencies
+            .route_input
+            .unwrap_or(crate::platform::NativeDragSourceInput::Preserve);
+        let previous_physical_native_drag =
+            self.viewport.physical_native_drag_capability(source_input);
+        let previous_physical_cross_surface_drag = self
+            .viewport
+            .physical_cross_surface_drag_capability(source_input);
         let version_before_actions = self.version;
         let transition = self
             .viewport
@@ -707,10 +713,15 @@ impl DockEngine {
             });
         }
 
-        let previous_physical_native_drag = self.viewport.physical_native_drag_capability();
-        let previous_physical_cross_surface_drag =
-            self.viewport.physical_cross_surface_drag_capability();
         let interaction_dependencies = self.platform_interaction_dependencies();
+        let source_input = interaction_dependencies
+            .route_input
+            .unwrap_or(crate::platform::NativeDragSourceInput::Preserve);
+        let previous_physical_native_drag =
+            self.viewport.physical_native_drag_capability(source_input);
+        let previous_physical_cross_surface_drag = self
+            .viewport
+            .physical_cross_surface_drag_capability(source_input);
         let version_before_actions = self.version;
         let transition = self
             .viewport

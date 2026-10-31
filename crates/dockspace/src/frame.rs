@@ -28,7 +28,6 @@ use self::native_staging_resource::{
     NativeStagingResourceConservationError, NativeStagingResourceLedger,
     NativeStagingResourceLedgerError, NativeStagingResourceOwner,
 };
-pub(crate) use self::pointer_passthrough::PointerDragInputMode;
 use self::pointer_passthrough::{
     PointerPassthroughEffectRequest, PointerPassthroughEvidence, PointerPassthroughLifecycle,
     PointerPassthroughLifecycleError, PointerPassthroughRecovery,
@@ -61,10 +60,10 @@ pub use crate::ids::NativeCreateSagaId;
 use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId, WorkspaceEpoch};
 use crate::intent::{NativePlacementProof, PointerId};
 use crate::platform::{
-    CapabilityRosterObservationStream, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
-    PlatformSnapshot, WindowCloseObservation, WindowCloseState, WindowInputObservation,
-    WindowInputState, WindowInventoryObservationStream, WindowPresentationObservation,
-    WindowPresentationState, WorkAreaRosterObservationStream,
+    CapabilityRosterObservationStream, NativeDragSourceInput, ObservedWorkArea,
+    PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
+    WindowCloseState, WindowInputObservation, WindowInputState, WindowInventoryObservationStream,
+    WindowPresentationObservation, WindowPresentationState, WorkAreaRosterObservationStream,
 };
 use crate::platform_provider::{
     PlatformObservationAuthority, PlatformObservationAuthorityError, PlatformObservationLease,
@@ -3406,18 +3405,19 @@ impl ViewportCoordinator {
     }
 
     #[must_use]
-    pub fn native_outside_all_tear_off_capability(&self) -> PlatformCapability {
-        self.capabilities.native_outside_all_tear_off()
+    pub fn physical_cross_surface_drag_capability(
+        &self,
+        source_input: NativeDragSourceInput,
+    ) -> PlatformCapability {
+        self.capabilities.physical_cross_surface_drag(source_input)
     }
 
     #[must_use]
-    pub fn physical_cross_surface_drag_capability(&self) -> PlatformCapability {
-        self.capabilities.physical_cross_surface_drag()
-    }
-
-    #[must_use]
-    pub fn physical_native_drag_capability(&self) -> PlatformCapability {
-        self.capabilities.physical_native_drag()
+    pub fn physical_native_drag_capability(
+        &self,
+        source_input: NativeDragSourceInput,
+    ) -> PlatformCapability {
+        self.capabilities.physical_native_drag(source_input)
     }
 
     #[must_use]
@@ -3653,7 +3653,10 @@ impl ViewportCoordinator {
                 self.platform_provider() == Some(proof.platform_provider())
                     && self.work_area_generation == proof.work_area_generation()
                     && self.work_areas.contains_key(&proof.work_area())
-                    && self.capabilities.physical_native_drag().is_supported()
+                    && self
+                        .capabilities
+                        .physical_native_drag(proof.source_input())
+                        .is_supported()
             }
         }
     }
@@ -3662,7 +3665,7 @@ impl ViewportCoordinator {
         &mut self,
         pointer: PointerId,
         surface: SurfaceId,
-        input: PointerDragInputMode,
+        input: NativeDragSourceInput,
     ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
         let Some(record) = self.registry.record(surface) else {
             return Ok(None);
@@ -3695,7 +3698,8 @@ impl ViewportCoordinator {
     pub(crate) fn confirmed_drag_source(&self, pointer: PointerId) -> Option<ViewportBinding> {
         let binding = self.pointer_passthrough.drag_source(pointer)?;
         let evidence = self.pointer_passthrough_evidence(binding);
-        if self.pointer_passthrough.drag_input_mode(pointer) == Some(PointerDragInputMode::Preserve)
+        if self.pointer_passthrough.drag_source_input(pointer)
+            == Some(NativeDragSourceInput::Preserve)
         {
             return (!self.pointer_passthrough.contains_binding(binding)
                 && self
@@ -3724,8 +3728,8 @@ impl ViewportCoordinator {
 
     #[must_use]
     pub(crate) fn drag_route_effect(&self, pointer: PointerId) -> Option<EffectId> {
-        if self.pointer_passthrough.drag_input_mode(pointer)
-            != Some(PointerDragInputMode::PassThrough)
+        if self.pointer_passthrough.drag_source_input(pointer)
+            != Some(NativeDragSourceInput::PassThrough)
         {
             return None;
         }
@@ -3733,8 +3737,8 @@ impl ViewportCoordinator {
         self.pointer_passthrough.effect_attempts(binding).enable()
     }
 
-    pub(crate) fn drag_input_mode(&self, pointer: PointerId) -> Option<PointerDragInputMode> {
-        self.pointer_passthrough.drag_input_mode(pointer)
+    pub(crate) fn drag_source_input(&self, pointer: PointerId) -> Option<NativeDragSourceInput> {
+        self.pointer_passthrough.drag_source_input(pointer)
     }
 
     pub(crate) fn end_drag_routing(

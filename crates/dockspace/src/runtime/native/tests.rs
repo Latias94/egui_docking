@@ -1075,13 +1075,13 @@ fn native_capability_profiles_are_explicit_and_honest() {
     assert!(windows.native_exact_placement_create().is_supported());
     assert!(windows.cross_surface_routing().is_supported());
     assert!(matches!(
-        windows.physical_cross_surface_drag(),
+        windows.physical_cross_surface_drag(crate::platform::NativeDragSourceInput::PassThrough),
         PlatformCapability::Unsupported(issue)
             if issue.requirement()
                 == crate::platform::PlatformRequirement::AuthoritativeButtonState
     ));
     assert!(matches!(
-        windows.physical_native_drag(),
+        windows.physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough),
         PlatformCapability::Unsupported(issue)
             if issue.requirement()
                 == crate::platform::PlatformRequirement::AuthoritativeButtonState
@@ -1109,9 +1109,18 @@ fn native_capability_profiles_are_explicit_and_honest() {
         .known_roster()
         .expect("X11 capability roster is exact");
     assert!(x11.native_exact_placement_create().is_supported());
-    assert!(!x11.native_outside_all_tear_off().is_supported());
-    assert!(!x11.physical_cross_surface_drag().is_supported());
-    assert!(!x11.physical_native_drag().is_supported());
+    assert!(
+        !x11.physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough)
+            .is_supported()
+    );
+    assert!(
+        !x11.physical_cross_surface_drag(crate::platform::NativeDragSourceInput::PassThrough)
+            .is_supported()
+    );
+    assert!(
+        !x11.physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough)
+            .is_supported()
+    );
     assert!(!x11.hovered_window().is_supported());
     assert!(!x11.work_area().is_supported());
 
@@ -1133,9 +1142,21 @@ fn native_capability_profiles_are_explicit_and_honest() {
         .known_roster()
         .expect("Wayland capability roster is exact");
     assert!(!wayland.native_exact_placement_create().is_supported());
-    assert!(!wayland.native_outside_all_tear_off().is_supported());
-    assert!(!wayland.physical_cross_surface_drag().is_supported());
-    assert!(!wayland.physical_native_drag().is_supported());
+    assert!(
+        !wayland
+            .physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough)
+            .is_supported()
+    );
+    assert!(
+        !wayland
+            .physical_cross_surface_drag(crate::platform::NativeDragSourceInput::PassThrough)
+            .is_supported()
+    );
+    assert!(
+        !wayland
+            .physical_native_drag(crate::platform::NativeDragSourceInput::PassThrough)
+            .is_supported()
+    );
     assert!(!wayland.desktop_pointer_position().is_supported());
     assert!(!wayland.global_window_placement().is_supported());
 }

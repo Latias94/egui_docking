@@ -202,17 +202,17 @@ impl DockEngine {
             .map_err(|_| EngineError::ReductionCauseInvariant {
                 detail: "validated native handoff could not update its exact gesture owner",
             })?;
+        let drag = self.interaction.active_drag(session).map_err(|_| {
+            EngineError::ReductionCauseInvariant {
+                detail: "native handoff lost its active payload",
+            }
+        })?;
+        let input = self.native_drag_source_input(drag);
         if self
             .viewport
-            .physical_cross_surface_drag_capability()
+            .physical_cross_surface_drag_capability(input)
             .is_supported()
         {
-            let drag = self.interaction.active_drag(session).map_err(|_| {
-                EngineError::ReductionCauseInvariant {
-                    detail: "native handoff lost its active payload",
-                }
-            })?;
-            let input = self.native_drag_input_mode(drag);
             let _ = self
                 .viewport
                 .begin_drag_routing(owner.pointer(), source, input)

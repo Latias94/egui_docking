@@ -15,9 +15,9 @@ Implementing an API or publishing a capability bit does not certify physical
 input on that backend.
 
 This snapshot follows the [canonical engine-host plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md)
-and the dated [validation record](VALIDATION.md). The current production
-baseline is `7809e57`; each physical or model record below identifies its own
-source and scope. Overall U9 and the complete plan remain open.
+and the dated [validation record](VALIDATION.md). The source-input capability
+split extends baseline `8d43aee`; each physical or model record below identifies
+its own source and scope. Overall U9 and the complete plan remain open.
 Earlier dated qualifications
 retain their historical scope; the 2026-10-31 entries supersede earlier
 physical-smoke coverage limits.
@@ -175,6 +175,19 @@ requires current receiving-input facts and independent edge delivery/capture;
 it cannot bypass an unsettled pass-through restoration. The physical runner
 checks that no Root enable occurs throughout drag-out, redock and retirement,
 while the complete Child still enables and restores input.
+
+The internal `physical_cross_surface_drag(source_input)` and
+`physical_native_drag(source_input)` queries distinguish these requirements
+with `NativeDragSourceInput`. Hosts declare support through the public
+`runtime::NativeHostCapabilities`; the internal platform module and placement
+proof types are implementation details. Preserve does not depend on
+`PointerHitTestControl`; PassThrough does. The mode comes from core's exact
+ownership and payload decision, survives pending release and is retained in
+the tear-off placement proof. Losing control cannot cancel a preserving route
+by itself; it cancels a PassThrough route or pending release with the typed
+capability reason while retaining its restore obligation. Independent input,
+hit-observation and presentation requirements remain unchanged. This capability
+split does not supply missing positive stationary OS facts.
 
 Tab-half selection uses an opt-in passive diagnostic copied from the painted
 tab's complete visible bounds; the Tab accessibility receiver still excludes

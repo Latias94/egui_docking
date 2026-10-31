@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::effect::{EffectDispatchResult, EffectId, EffectPhase};
 use crate::intent::PointerId;
 use crate::platform::{
-    InputEffectAcknowledgement, PlatformCapability, WindowInputObservation, WindowInputState,
+    InputEffectAcknowledgement, NativeDragSourceInput, PlatformCapability, WindowInputObservation,
+    WindowInputState,
 };
 use crate::viewport::{InputObservationGeneration, ViewportBinding};
 
@@ -16,18 +17,10 @@ pub(super) struct PointerPassthroughLifecycle {
     sagas: BTreeMap<ViewportBinding, PointerPassthroughSaga>,
 }
 
-/// Content drags retain the host window's hit regions. Only a complete owned
-/// presentation may exclude its entire native window from hit testing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PointerDragInputMode {
-    Preserve,
-    PassThrough,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PointerDragRoute {
     binding: ViewportBinding,
-    input: PointerDragInputMode,
+    input: NativeDragSourceInput,
 }
 
 /// Immutable recovery state captured before a workspace or binding migration.
@@ -196,7 +189,7 @@ impl PointerPassthroughLifecycle {
         self.drag_sources.get(&pointer).map(|route| route.binding)
     }
 
-    pub(super) fn drag_input_mode(&self, pointer: PointerId) -> Option<PointerDragInputMode> {
+    pub(super) fn drag_source_input(&self, pointer: PointerId) -> Option<NativeDragSourceInput> {
         self.drag_sources.get(&pointer).map(|route| route.input)
     }
 
@@ -213,12 +206,12 @@ impl PointerPassthroughLifecycle {
         &mut self,
         pointer: PointerId,
         binding: ViewportBinding,
-        input: PointerDragInputMode,
+        input: NativeDragSourceInput,
     ) -> Result<Option<PointerRouteChange>, PointerPassthroughLifecycleError> {
         let route = PointerDragRoute { binding, input };
         let previous = self.drag_sources.get(&pointer).copied();
         if previous == Some(route) {
-            if input == PointerDragInputMode::PassThrough
+            if input == NativeDragSourceInput::PassThrough
                 && !self
                     .sagas
                     .get(&binding)
@@ -232,7 +225,7 @@ impl PointerPassthroughLifecycle {
         if let Some(previous) = previous {
             self.release_holder(pointer, previous)?;
         }
-        if input == PointerDragInputMode::PassThrough {
+        if input == NativeDragSourceInput::PassThrough {
             self.sagas
                 .entry(binding)
                 .or_insert_with(|| PointerPassthroughSaga::new(pointer))
@@ -262,7 +255,7 @@ impl PointerPassthroughLifecycle {
         pointer: PointerId,
         route: PointerDragRoute,
     ) -> Result<(), PointerPassthroughLifecycleError> {
-        if route.input == PointerDragInputMode::Preserve {
+        if route.input == NativeDragSourceInput::Preserve {
             self.drag_sources.remove(&pointer);
             return Ok(());
         }
@@ -969,10 +962,10 @@ mod tests {
         let mut lifecycle = PointerPassthroughLifecycle::default();
 
         lifecycle
-            .begin_routing(pointer, first, PointerDragInputMode::PassThrough)
+            .begin_routing(pointer, first, NativeDragSourceInput::PassThrough)
             .expect("first route must be accepted");
         let change = lifecycle
-            .begin_routing(pointer, successor, PointerDragInputMode::PassThrough)
+            .begin_routing(pointer, successor, NativeDragSourceInput::PassThrough)
             .expect("route reassignment must be accepted")
             .expect("a different binding must produce a route change");
 

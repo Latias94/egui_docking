@@ -30,8 +30,10 @@ single-batch Burst matrix have qualified checkpoints, including U12's public
 host/package acceptance. The latest real-query journey exposed and corrected
 whole-window input exclusion during External Root content dragging; native
 never-admitted cancellation and cross-reset exact retirement now pass their
-final native gates. Continuous
-X11 input, finite center/edge/nested physical targets,
+final native gates. Source-specific capability composition also keeps Preserve
+content routing independent from whole-window input control through pending
+release, while PassThrough retains exact control and restore requirements.
+Continuous X11 input, finite center/edge/nested physical targets,
 fractional create placement, selected-capacity models and W16/O256 real windows
 have scoped qualifications. Finite native stationary scheduling is qualified
 with truthful missing-fact rejection and same-gesture recovery. The native
@@ -334,12 +336,17 @@ The 2026-10-27 selection audit chose egui/eframe 0.37.0, released 2026-10-15,
 with Rust 1.95 still matching this workspace. The current workspace and official
 harness now pin the matched 0.37.0 family. The optional native adapter is locally
 qualified against the rebased, unpublished 0.37 fork. Its current Git pins and
-lockfiles align with local egui `6e601d79b` and Winit `cd1a739a`, with
+lockfiles align with local egui `687558fd4` and Winit `8334294b`, with
 locked/offline qualification and no path overrides. The local Git objects are
 not evidence of remote clean-checkout reproducibility. Winit remains on the
 reviewed 0.30.13 fork; prerelease 0.31 work
 is not a prerequisite. The updated local egui_tiles checkout is reference
 material; it is not a runtime dependency.
+
+The 2026-11-01 release refresh still resolves the official latest stable
+[egui release to 0.37.0](https://github.com/emilk/egui/releases/tag/0.37.0) and
+[Winit release to 0.30.13](https://github.com/rust-windowing/winit/releases/tag/v0.30.13).
+No newer stable baseline requires another dependency cutover in this slice.
 
 | Change or boundary | Adaptation work | Owner |
 | --- | --- | --- |
@@ -1915,10 +1922,58 @@ qualified protocol path can satisfy the contract. The
 [XIQueryPointer](https://xorg.freedesktop.org/archive/X11R7.5/doc/man/man3/XIQueryPointer.3.html)
 and [XIGrabDevice](https://xorg.freedesktop.org/archive/X11R7.5/doc/man/man3/XIGrabDevice.3.html)
 protocol interfaces define the separate query/acquisition boundaries.
-Separately, consider
-splitting content routing from whole-window pass-through capability so a
-Preserve source need not require a control effect it never dispatches. These
-are independent follow-up units, not permission to infer absent authority.
+The independent content-routing capability split is now qualified. Internal
+`NativeDragSourceInput::{Preserve, PassThrough}` makes
+both core physical capability queries explicit. Public hosts continue to use
+`runtime::NativeHostCapabilities` and independent event-time facts, with no new
+mode-selection API. Only PassThrough requires
+`PointerHitTestControl`; inventory, hover, desktop position, button authority,
+hit observation and each edge's capture/delivery checks remain independent.
+Core derives the mode from ownership and complete payload, freezes it in the
+existing route, retains it across pending release and includes it in the
+tear-off placement proof. This removes no protocol prerequisite for positive
+stationary input.
+
+Its fresh checkpoint passes focused38, workspace1,952, public148/176,
+doctests10, native572 with a fresh 10,000-lifetime case and noassert571, Linux525
+plus the separate real retained-query/close/create/age fixture. Both platform
+pressure matrices, macOS redock and all fifteen X11 physical entries pass.
+Both extracted packages pass public148/176, official15, the self-drawn engine
+example and dependency isolation. The finite 1 kHz run records one standalone
+service sample of 2.011792 ms; the 2 ms target remains cooperative. Source,
+scope and complete evidence are in `docs/VALIDATION.md`. The renderer-neutral
+audit found no confirmed owner or public-host blocker requiring another broad
+kernel rewrite. Native protocol and delivery completion criteria remain open.
+
+The follow-up source audit narrows the positive stationary design further.
+The adapter currently waits until a continuation deadline before querying, and
+core retains the target's earlier `started_at`. Acquiring an explicit grab at
+that deadline cannot retroactively qualify the earlier dwell. Schedule an
+acquisition only after the exact drag has committed beyond its threshold,
+preserve the original Primary identity and frozen source mode, and establish
+the next challenge from the acquisition's accepted boundary. Core must own
+that non-motion timing transition; the adapter must not synthesize Moved or
+duplicate dwell policy. An acquisition which first completes at a deadline
+must begin a fresh dwell rather than immediately satisfy the old one.
+
+Keep acquisition, usable lease and irrevocable revocation on the existing
+per-device capture row. Reuse the existing typed property command, terminal
+receipt and normal FIFO drain; every late release must check its original
+lease so it cannot ungrab a successor. A first finite candidate is Preserve
+with a verified direct-root source, exact enabled master pointer and no source
+input-shape mutation. Reparented/embedded sources, unqualified target ancestry
+and PassThrough remain Unknown. Current `set_cursor_hittest` does not pass
+through the local capture-mutation guard, so its effect on a lease requires
+explicit qualification rather than an assumed synchronous revocation.
+
+The XIGrabDevice contract distinguishes active acquisition and source-directed
+routing from observation, permits failure for an existing grab or protocol
+freeze, and automatically releases a non-viewable grab window. Before enabling
+the candidate, qualify pre/post-sample asynchronous checks, normal queued-event
+rejection, short freeze/thaw with delayed release/repress, Primary-up while
+Secondary remains held, cancellation and successor-safe release. These checks
+may prove a current sampled lease; they do not prove the whole earlier dwell
+was never frozen. This remains a design boundary, not a positive platform claim.
 
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
@@ -2698,7 +2753,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `6e601d79b88baee69148e9a15496d4c2e12d081e` and Winit fork `cd1a739a231248a5bb567db65ca64dcf890a9ab5`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `687558fd469dc4849783c5ae3b9fd7244a0f92c5` and Winit fork `8334294b2a8b21cf68269d1af931a17e68d21559`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.
