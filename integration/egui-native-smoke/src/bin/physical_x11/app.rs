@@ -16,10 +16,12 @@ use dockspace::runtime::DockspaceSession;
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, PaneView};
 use egui_dockspace_native::NativeDockspaceApp;
+use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::window::WindowId;
 
 use super::assertions::{
     NestedPaneCase, PHYSICAL_TARGET_ENV, POINTER_DIAGNOSTIC_LABEL, PaneEdgeCase, PhysicalBounds,
-    ROOT_PANE_CONTENT_LABEL,
+    PhysicalPoint, ROOT_PANE_CONTENT_LABEL,
 };
 use super::driver;
 use super::pointer_load::{PointerLoad, PointerSource, load_storage_limit, pointer_load_enabled};
@@ -31,11 +33,13 @@ pub(super) const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
 const MAIN_ITEM: ItemId = ItemId::new(1);
 pub(super) const CHILD_ITEM: ItemId = ItemId::new(2);
+const ANCHOR_ITEM: ItemId = ItemId::new(4);
 pub(super) const ROOT_WINDOW_TITLE: &str = "egui_dockspace physical X11 smoke";
 pub(super) const ROOT_TARGET_LABEL: &str = "Root docking target";
 pub(super) const CHILD_TAB_LABEL: &str = "Child";
 pub(super) const CHILD_CLOSE_LABEL: &str = "Close Child";
 pub(super) const CENTER_DROP_GUIDE_LABEL: &str = "Dockspace center drop guide";
+const STATIONARY_ENV: &str = "EGUI_DOCKSPACE_PHYSICAL_STATIONARY";
 
 pub(super) type Shared = Arc<(Mutex<SharedState>, Condvar)>;
 
@@ -60,6 +64,7 @@ pub(super) struct ProductObservation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RedockLayout {
     Center,
+    StationaryCenter,
     TabBefore,
     Edge(PaneEdgeCase),
     Nested(NestedPaneCase),
@@ -106,12 +111,126 @@ fn observed_redock_layout(view: DockspaceView<'_>) -> Option<RedockLayout> {
     Some(RedockLayout::Edge(edge))
 }
 
+fn observed_stationary_redock_layout(view: DockspaceView<'_>) -> Option<RedockLayout> {
+    for id in [MAIN_ITEM, ANCHOR_ITEM, CHILD_ITEM] {
+        let item = view.item(id)?;
+        if item.surface() != ROOT_SURFACE || item.root() != MAIN_ROOT || item.contained().is_some()
+        {
+            return None;
+        }
+    }
+    let surface = view.surface(ROOT_SURFACE)?;
+    if view.surfaces().count() != 1 || surface.contained_count() != 0 {
+        return None;
+    }
+    let root = surface.main_root()?;
+    let tabs = root.content()?.tabs()?;
+    (root.id() == MAIN_ROOT
+        && tabs.is_central()
+        && tabs.items() == [ANCHOR_ITEM, MAIN_ITEM, CHILD_ITEM]
+        && tabs.selected() == Some(CHILD_ITEM))
+    .then_some(RedockLayout::StationaryCenter)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PointerPassthroughObservation {
     pub(super) sequence: u64,
     pub(super) viewport: ViewportId,
     pub(super) enabled: bool,
     pub(super) status: eframe::NativeViewportPointerPassthroughStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct StationaryPress {
+    pub(super) viewport: ViewportId,
+    pub(super) window: WindowId,
+    pub(super) device: DeviceId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SourceSelection {
+    pub(super) main_selected: bool,
+    pub(super) anchor_selected: bool,
+    pub(super) child_selected: bool,
+}
+
+impl SourceSelection {
+    pub(super) const INACTIVE_MAIN: Self = Self {
+        main_selected: false,
+        anchor_selected: true,
+        child_selected: true,
+    };
+}
+
+/// One bounded diagnostic of the real query; it owns no input or continuation.
+#[derive(Debug, Default)]
+pub(super) struct StationaryProbe {
+    pub(super) press: Option<StationaryPress>,
+    pub(super) target: Option<PhysicalPoint>,
+    pub(super) hover_observed: bool,
+    pub(super) selection: Option<SourceSelection>,
+    pub(super) result: Option<eframe::NativeViewportPointerObservationResult>,
+    pub(super) model_after_result: Option<eframe::NativeViewportPointerObservationCommandToken>,
+    pub(super) invalidation: Option<&'static str>,
+    pub(super) stress_active: bool,
+    pub(super) repeated_output: Option<eframe::NativeOutputToken>,
+    pub(super) repeat_finalizations: usize,
+    pub(super) slow_suffixes: usize,
+    pub(super) complete: bool,
+}
+
+impl StationaryProbe {
+    fn observe_event(&mut self, event: eframe::NativeWindowEvent<'_>) {
+        if self.complete {
+            return;
+        }
+        match event.event() {
+            WindowEvent::MouseInput {
+                device_id,
+                button: MouseButton::Left,
+                state,
+                ..
+            } => {
+                if self.target.is_some() {
+                    self.invalidation
+                        .get_or_insert("a primary-button edge interrupted the stationary hold");
+                } else {
+                    self.press = (*state == ElementState::Pressed)
+                        .then(|| {
+                            event.viewport_id().map(|viewport| StationaryPress {
+                                viewport,
+                                window: event.window_id(),
+                                device: *device_id,
+                            })
+                        })
+                        .flatten();
+                }
+            }
+            WindowEvent::CursorMoved {
+                device_id, facts, ..
+            } => {
+                if let Some(target) = self.target {
+                    if self.press.is_some_and(|press| {
+                        event.viewport_id() == Some(press.viewport)
+                            && event.window_id() == press.window
+                            && *device_id == press.device
+                    }) && facts.desktop_position.is_some_and(|point| {
+                        point.x == f64::from(target.x) && point.y == f64::from(target.y)
+                    }) {
+                        self.hover_observed = true;
+                    } else {
+                        self.invalidation
+                            .get_or_insert("native motion left the exact stationary target/stream");
+                    }
+                }
+            }
+            WindowEvent::Destroyed if self.target.is_some() => {
+                self.invalidation
+                    .get_or_insert("a native window was destroyed during the stationary hold");
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -155,11 +274,13 @@ pub(super) struct SharedState {
     pub(super) driver_result: Option<Result<(), String>>,
     pub(super) last_primary_press: Option<PointerSource>,
     pub(super) pointer_load: Option<PointerLoad>,
+    pub(super) stationary: Option<StationaryProbe>,
 }
 
 pub(super) fn run() -> Result<(), Box<dyn Error>> {
-    let inspection_endpoint = inspection_endpoint_from_env()?;
     let measure_pointer_load = pointer_load_enabled()?;
+    let stationary_negative = stationary_negative_from_env(measure_pointer_load)?;
+    let inspection_endpoint = inspection_endpoint_from_env()?;
     let nested_target = std::env::var(PHYSICAL_TARGET_ENV)
         .ok()
         .and_then(|value| NestedPaneCase::parse(&value));
@@ -173,6 +294,8 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     policy.set_allow_native_surfaces(true);
     let layout = if nested_target.is_some() {
         nested::smoke_layout()
+    } else if stationary_negative {
+        stationary_smoke_layout()
     } else {
         smoke_layout()
     };
@@ -197,12 +320,19 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
             DockStyle::default(),
         )?
     };
-    let shared = Arc::new((Mutex::new(SharedState::default()), Condvar::new()));
+    let shared = Arc::new((
+        Mutex::new(SharedState {
+            stationary: stationary_negative.then(StationaryProbe::default),
+            ..SharedState::default()
+        }),
+        Condvar::new(),
+    ));
     let native_host = dockspace.native_host_handler();
     let native_host: Arc<dyn eframe::NativeHostHandler> = Arc::new(DiagnosticNativeHost {
         inner: native_host,
         shared: Arc::clone(&shared),
         measure_pointer_load,
+        stationary_negative,
     });
     let app_shared = Arc::clone(&shared);
     let options = eframe::NativeOptions {
@@ -243,6 +373,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 shared: Arc::clone(&app_shared),
                 measure_pointer_load,
                 nested_target: nested_target.is_some(),
+                stationary_negative,
             }))
         }),
     )?;
@@ -261,6 +392,24 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         )
         .into()),
     }
+}
+
+fn stationary_negative_from_env(measure_pointer_load: bool) -> Result<bool, String> {
+    match std::env::var(STATIONARY_ENV) {
+        Err(std::env::VarError::NotPresent) => return Ok(false),
+        Ok(value) if value == "negative" => {}
+        value => {
+            return Err(format!(
+                "{STATIONARY_ENV}: expected negative or an unset variable, found {value:?}"
+            ));
+        }
+    }
+    if measure_pointer_load || std::env::var_os(PHYSICAL_TARGET_ENV).is_some() {
+        return Err(format!(
+            "{STATIONARY_ENV}=negative requires its fixed anchor layout and default guide-control target ({PHYSICAL_TARGET_ENV} unset), without the 1 kHz load"
+        ));
+    }
+    Ok(true)
 }
 
 fn inspection_endpoint_from_env() -> io::Result<SocketAddr> {
@@ -319,6 +468,7 @@ struct DiagnosticNativeHost {
     inner: Arc<dyn eframe::NativeHostHandler>,
     shared: Shared,
     measure_pointer_load: bool,
+    stationary_negative: bool,
 }
 
 impl eframe::NativeHostHandler for DiagnosticNativeHost {
@@ -365,6 +515,17 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                     observed_at,
                 );
         }
+        if self.stationary_negative {
+            let (lock, changed) = &*self.shared;
+            if let Some(probe) = &mut lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+            {
+                probe.observe_event(event);
+            }
+            changed.notify_all();
+        }
         self.inner.on_window_event(event)
     }
 
@@ -375,6 +536,21 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .observe_device_removal();
+        }
+        if self.stationary_negative {
+            let (lock, changed) = &*self.shared;
+            if let Some(probe) = &mut lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+                && !probe.complete
+            {
+                probe.press = None;
+                probe
+                    .invalidation
+                    .get_or_insert("a device was removed before the stationary barrier");
+            }
+            changed.notify_all();
         }
         self.inner.on_device_removed(removal);
     }
@@ -426,6 +602,35 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         self.inner.on_viewport_property_command_retired(retirement)
     }
 
+    fn on_viewport_pointer_observation(
+        &self,
+        result: eframe::NativeViewportPointerObservationResult,
+    ) -> eframe::NativeHostWake {
+        let wake = self.inner.on_viewport_pointer_observation(result);
+        if self.stationary_negative {
+            eprintln!(
+                "physical-smoke: stationary-negative forwarded raw_result={result:?} host_wake={wake:?}"
+            );
+            let (lock, changed) = &*self.shared;
+            if let Some(probe) = &mut lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+                && probe.hover_observed
+                && !probe.complete
+            {
+                probe.result.get_or_insert(result);
+                if wake != eframe::NativeHostWake::RepaintRootAfterCurrent {
+                    probe
+                        .invalidation
+                        .get_or_insert("the real query result was not admitted by the native host");
+                }
+            }
+            changed.notify_all();
+        }
+        wake
+    }
+
     fn on_output_begin(
         &self,
         token: eframe::NativeOutputToken,
@@ -455,7 +660,25 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         &self,
         finalization: eframe::NativeOutputPassFinalization<'_>,
     ) -> eframe::NativeHostWake {
-        self.inner.on_output_pass_finalized(finalization)
+        let token = eframe::current_native_output_token();
+        let wake = self.inner.on_output_pass_finalized(finalization);
+        if self.stationary_negative {
+            let (lock, changed) = &*self.shared;
+            if let Some(probe) = &mut lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+                && token.is_some()
+                && probe.repeated_output == token
+                && !probe.complete
+            {
+                // Two real pass finalizations for one outer output prove that
+                // its requested discard actually repeated before terminal UI.
+                probe.repeat_finalizations += 1;
+                changed.notify_all();
+            }
+        }
+        wake
     }
 
     fn on_output(&self, result: eframe::NativeOutputResult) -> eframe::NativeHostWake {
@@ -570,12 +793,47 @@ struct PhysicalSmokeApp {
     shared: Shared,
     measure_pointer_load: bool,
     nested_target: bool,
+    stationary_negative: bool,
 }
 
 impl eframe::App for PhysicalSmokeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // Only a result forwarded before this UI can label its later model observation.
+        let stationary_result = self.stationary_negative.then(|| {
+            self.shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+                .as_ref()
+                .and_then(|probe| probe.result)
+        });
         let started = self.measure_pointer_load.then(Instant::now);
         <NativeDockspaceApp<SmokePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
+        if self.stationary_negative {
+            let slow_suffix = {
+                let mut shared = self.shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+                shared.stationary.as_mut().is_some_and(|probe| {
+                    if !probe.stress_active || probe.complete {
+                        return false;
+                    }
+                    if let Some(token) = eframe::current_native_output_token()
+                        && probe.repeated_output.is_none()
+                    {
+                        probe.repeated_output = Some(token);
+                        ui.ctx()
+                            .request_discard("stationary query survives a repeated slow UI");
+                    }
+                    probe.slow_suffixes += 1;
+                    true
+                })
+            };
+            if slow_suffix {
+                // Model ordinary wrapper work after the dockspace UI. Query
+                // preparation must already have paid the shared 2 ms budget.
+                std::thread::sleep(std::time::Duration::from_millis(3));
+            }
+        }
         if let Some(started) = started {
             if let Some(load) = self
                 .shared
@@ -588,7 +846,7 @@ impl eframe::App for PhysicalSmokeApp {
                 load.max_root_update = load.max_root_update.max(started.elapsed());
             }
         }
-        self.publish_observation();
+        self.publish_observation(stationary_result.flatten().map(|result| result.token()));
         let driver_finished = {
             let (lock, _) = &*self.shared;
             lock.lock()
@@ -604,7 +862,10 @@ impl eframe::App for PhysicalSmokeApp {
 }
 
 impl PhysicalSmokeApp {
-    fn publish_observation(&mut self) {
+    fn publish_observation(
+        &mut self,
+        stationary_result: Option<eframe::NativeViewportPointerObservationCommandToken>,
+    ) {
         let root_presented = self.dockspace.is_surface_presented(ROOT_SURFACE);
         let child_location = self
             .dockspace
@@ -629,6 +890,8 @@ impl PhysicalSmokeApp {
                     .with_view(|view| {
                         if self.nested_target {
                             nested::observed_redock_layout(view)
+                        } else if self.stationary_negative {
+                            observed_stationary_redock_layout(view)
                         } else {
                             observed_redock_layout(view)
                         }
@@ -636,7 +899,10 @@ impl PhysicalSmokeApp {
                     .flatten()
             })
             .flatten();
-        let center_merge_verified = redock_layout == Some(RedockLayout::Center);
+        let center_merge_verified = matches!(
+            redock_layout,
+            Some(RedockLayout::Center | RedockLayout::StationaryCenter)
+        );
         let retired = self
             .child_surface
             .is_some_and(|surface| redocked && !self.dockspace.is_surface_presented(surface));
@@ -677,8 +943,48 @@ impl PhysicalSmokeApp {
         } else {
             None
         };
+        let source_selection =
+            self.stationary_negative
+                .then(|| {
+                    self.dockspace
+                        .with_view(|view| {
+                            let main = view.item(MAIN_ITEM)?;
+                            let anchor = view.item(ANCHOR_ITEM)?;
+                            let child = view.item(CHILD_ITEM)?;
+                            if [main, anchor].iter().any(|item| {
+                                item.surface() != ROOT_SURFACE || item.root() != MAIN_ROOT
+                            }) || self.child_surface != Some(child.surface())
+                                || child.surface() == ROOT_SURFACE
+                            {
+                                return None;
+                            }
+                            Some(SourceSelection {
+                                main_selected: main.is_selected(),
+                                anchor_selected: anchor.is_selected(),
+                                child_selected: child.is_selected(),
+                            })
+                        })
+                        .flatten()
+                })
+                .flatten();
+        let stationary_semantic =
+            self.stationary_negative && !self.dockspace.current_output_is_retained();
         let (lock, changed) = &*self.shared;
         let mut shared = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(probe) = &mut shared.stationary
+            && !probe.complete
+        {
+            probe.selection = source_selection;
+            if probe.target.is_some() && source_selection != Some(SourceSelection::INACTIVE_MAIN) {
+                probe
+                    .invalidation
+                    .get_or_insert("the public model changed the inactive Main/source selection");
+            }
+            if stationary_semantic {
+                probe.model_after_result = stationary_result;
+            }
+            changed.notify_all();
+        }
         if let Some(load) = &mut shared.pointer_load {
             load.observe_model(center_merge_verified, Instant::now());
             if let Some((owned, reserved)) = &load_storage {
@@ -710,6 +1016,19 @@ fn smoke_layout() -> DockspaceLayout {
         .expect("the physical smoke layout validates")
 }
 
+fn stationary_smoke_layout() -> DockspaceLayout {
+    let root = DockspaceRootLayout::new(
+        MAIN_ROOT,
+        DockspaceNode::central_tabs_with_selection(
+            [ANCHOR_ITEM, MAIN_ITEM, CHILD_ITEM],
+            Some(CHILD_ITEM),
+        )
+        .expect("the stationary payload starts selected beside an inactive Main"),
+    );
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(ROOT_SURFACE, root)])
+        .expect("the fixed stationary smoke layout validates")
+}
+
 struct SmokePane {
     title: &'static str,
     body: &'static str,
@@ -738,6 +1057,13 @@ impl SmokePanes {
                     },
                 ),
                 (
+                    ANCHOR_ITEM,
+                    SmokePane {
+                        title: "Anchor",
+                        body: "Keep Main inactive after native tear-off",
+                    },
+                ),
+                (
                     nested::SIBLING_ITEM,
                     SmokePane {
                         title: "Sibling",
@@ -759,7 +1085,7 @@ impl PaneView for SmokePanes {
             ui.label("Missing smoke pane");
             return;
         };
-        if item == MAIN_ITEM {
+        if item == MAIN_ITEM || item == ANCHOR_ITEM {
             publish_root_pane_content_diagnostic(ui);
             publish_root_target_diagnostic(ui);
             ui.label(pane.body);

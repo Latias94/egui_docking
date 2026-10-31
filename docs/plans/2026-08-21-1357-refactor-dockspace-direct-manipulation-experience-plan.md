@@ -34,8 +34,10 @@ are locally qualified; they do not replace
 those remaining acceptance gates. The finite nested center/west physical
 journeys now expose and cover fractional native-create requests; complete
 synchronous output-host timing is measured separately from reducer timing.
-Neither establishes mixed-DPI, automatic native stationary input or hard
-real-time qualification. Open-GPUI and the user's actual engine remain
+Neither establishes mixed-DPI, successful OS stationary execution or hard
+real-time qualification. Finite native stationary scheduling is now qualified
+with truthful X11 missing-fact rejection and same-gesture recovery.
+Open-GPUI and the user's actual engine remain
 outside the completion dependencies. Exact current results and failed attempts
 are recorded in `docs/VALIDATION.md`.
 
@@ -1869,13 +1871,33 @@ actual observed geometry. This does not add integer-platform assumptions to
 renderer-neutral layout or fabricate observation authority. Exact source and
 qualification are recorded in `docs/VALIDATION.md`.
 
-The remaining automatic native stationary slice must reuse the existing core
-continuation, coordinator, shared clock/budget and prepaid command terminal
-receipts. It needs one in-flight observation, deadline-only wake scheduling,
-ordered result reduction and exact target-output rearming. The current X11
-query still has Unknown fresh capture/delivery, so successful OS stationary
-execution remains unavailable until those facts can be proved. No fallback
-from the expected source identity or cached implicit capture is permitted.
+The automatic native stationary slice now reuses the existing core continuation,
+coordinator, shared clock/budget and prepaid command terminal receipts. Only a
+final non-Repeat pass can dispatch a due Desktop Mouse query. Unqueued
+preparation pre-pays the shared budget before application painting, survives
+Repeat of its exact outer output, and grants no callback authority until final
+revalidation and receipt reservation. One observation
+remains in flight through its full ordered commit, including stale or rejected
+results. Future deadlines request a timer; a due deadline which exhausts the
+shared budget attaches one root wake to the current exact output terminal.
+Observation callbacks freeze native routes once and retain their original
+journal ordinal/time. Unavailable or unsupported results do not mint input, and
+each unchanged core token is queried at most once. Only core can issue its
+successor. Exact target-output acceptance remains the existing continuation
+rearming boundary. Nineteen focused adapter models pass. Full native526/526,
+workspace1,897, public132/serde139, product114 and official15 are freshly
+qualified, alongside real window/pressure and the ordinary X11 physical matrix.
+
+The current X11 query still has Unknown fresh capture/delivery, so successful OS
+stationary execution remains unavailable until those facts can be proved. The
+bounded negative physical entry passes with a real Observed callback under a
+3 ms UI suffix and real Repeat; missing facts cannot select Main, and the same
+held Child gesture resumes via real motion and redocks/retires. Core now revokes
+the timed action rather than inferring gesture loss from missing query facts;
+explicit owner loss remains cancelling. Absent queries or Unavailable cannot
+substitute for that physical entry. No fallback from the
+expected source identity or cached implicit capture is permitted. NativeLocal
+and Touch automatic sampling remain outside this Desktop Mouse implementation.
 
 ### U8. Consolidate optional viewport hosting and certify native readiness
 
@@ -2087,9 +2109,21 @@ actions revoke timed work; smooth manual ownership blocks reacquisition until
 its terminal boundary. Product journeys cover automatic scroll, explicit strip
 scroll, menu selection and selection reveal, with independent public-host
 stationary, retry, terminal-order and receiver-proof checks. Deferred renderer
-results wake an idle official-egui host once for acceptance. Native stationary
-routing and the native editor showcase remain open; full U10 readiness still
+results wake an idle official-egui host once for acceptance. The finite Desktop
+Mouse native scheduler is qualified, while successful OS stationary execution
+and the native editor showcase remain open; full U10 readiness still
 requires their stated qualification. See `docs/VALIDATION.md` for current gates.
+
+The next bounded native-showcase slice should extend the existing native
+`basic` example with eight representative panes, using the official
+`workspace_persistence` example's text, scroll and canvas patterns. Reuse the
+current `PaneView` content-widget declarations, stable focus IDs and native
+presentation commands. Qualify docking over actual registered child controls,
+overlay blocking, retained application content through first-live/Dock Back/OS
+close recovery, and input returning to the intended content focus. Keep the
+unexposed native close/reopen/reset/persistence facade work in its own later
+slice. This preparation does not waive U8's prerequisite for full native
+showcase qualification or expand any platform claim.
 
 ### U11. Certify Windows and macOS capability claims
 

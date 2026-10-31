@@ -1,0 +1,251 @@
+//! One deadline-driven sampler for the existing committed native gesture.
+
+use dockspace::runtime::{NativePointerContinuation, PointerContinuationToken};
+
+use super::*;
+use crate::pointer_observation::NativePointerObservationKey;
+
+#[derive(Debug, Default)]
+pub(super) struct NativeStationaryState {
+    prepared: Option<(NativeOutputToken, NativeStationaryPreparation)>,
+    attempt: Option<StationaryAttempt>,
+    blocked: Option<PointerContinuationToken>,
+}
+
+pub(super) struct NativeStationaryPreparation {
+    request: NativePointerContinuation,
+    key: NativePointerObservationKey,
+    command:
+        eframe::PreparedNativeViewportCommand<eframe::NativeViewportPointerObservationCommandToken>,
+}
+
+impl std::fmt::Debug for NativeStationaryPreparation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeStationaryPreparation")
+            .field("request", &self.request)
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StationaryAttempt {
+    request: NativePointerContinuation,
+    key: NativePointerObservationKey,
+}
+
+impl NativeStationaryState {
+    pub(super) fn has_pending_work(&self) -> bool {
+        self.attempt.is_some()
+    }
+}
+
+impl NativeCoordinator {
+    pub(crate) fn stage_stationary_observation(
+        &mut self,
+        context: &eframe::egui::Context,
+        token: NativeOutputToken,
+        budget: &mut NativeInputBudget,
+    ) {
+        if self.stationary.prepared.is_none()
+            && let Some(prepared) = self.prepare_stationary_observation(context, budget)
+        {
+            self.stationary.prepared = Some((token, prepared));
+        }
+    }
+
+    pub(crate) fn abandon_stationary_output(&mut self, token: NativeOutputToken) {
+        if self
+            .stationary
+            .prepared
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == token)
+        {
+            self.stationary.prepared = None;
+        }
+    }
+
+    pub(super) fn discard_stationary_preparation(&mut self) {
+        self.stationary.prepared = None;
+    }
+
+    pub(super) fn finish_stationary_observation(&mut self) {
+        if self
+            .stationary
+            .prepared
+            .as_ref()
+            .is_some_and(|(owner, _)| self.bridge.output_reservation(*owner).is_none())
+        {
+            self.stationary.prepared = None;
+        }
+        let Some(attempt) = self.stationary.attempt else {
+            return;
+        };
+        if !self.bridge.pointer_observation_pending(attempt.key) {
+            // An unavailable result, unchanged challenge, or rejected sample must
+            // not continuously reschedule its own deadline or terminal wake.
+            self.stationary.blocked = Some(attempt.request.token());
+            self.stationary.attempt = None;
+        }
+    }
+
+    pub(crate) fn schedule_stationary_observation(
+        &mut self,
+        context: &eframe::egui::Context,
+        token: NativeOutputToken,
+        budget: &mut NativeInputBudget,
+    ) -> Result<(), NativeRuntimeError> {
+        let staged = self
+            .stationary
+            .prepared
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == token);
+        let prepared = if staged {
+            self.stationary
+                .prepared
+                .take()
+                .map(|(_, prepared)| prepared)
+        } else {
+            self.prepare_stationary_observation(context, budget)
+        };
+        if let Some(command) =
+            prepared.and_then(|prepared| self.admit_stationary_observation(prepared))
+        {
+            command.enqueue(context);
+        } else if budget.is_exhausted()
+            && self.stationary.prepared.is_none()
+            && self.stationary.attempt.is_none()
+            && self.bridge.accepts_new_work()
+            && let Some(request) = self.session.native_pointer_continuation()
+            && self.stationary.blocked != Some(request.token())
+            && request.local_coordinates().is_none()
+            && self
+                .pointer_translator
+                .mouse_device_for_pointer(request.pointer())
+                .is_some()
+        {
+            let now = self.bridge.observation_time();
+            if now < request.deadline() {
+                context.request_repaint_after_for(request.deadline() - now, ViewportId::ROOT);
+            } else if !self.bridge.require_output_wake_after_current(token) {
+                return Err(NativeHostProtocolError::OutputBudgetUnavailable.into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn prepare_stationary_observation(
+        &mut self,
+        context: &eframe::egui::Context,
+        budget: &mut NativeInputBudget,
+    ) -> Option<NativeStationaryPreparation> {
+        self.finish_stationary_observation();
+        if self.stationary.prepared.is_some()
+            || self.stationary.attempt.is_some()
+            || budget.is_exhausted()
+            || !self.bridge.accepts_new_work()
+            || self.has_pending_callback_records()
+            || self.bridge.callback_boundary_pending()
+        {
+            return None;
+        }
+        let request = self.session.native_pointer_continuation()?;
+        if request.local_coordinates().is_some() || self.stationary.blocked == Some(request.token())
+        {
+            return None;
+        }
+        let device = self
+            .pointer_translator
+            .mouse_device_for_pointer(request.pointer())?;
+        let (viewport, window) = self.exact_window_route_for_binding(request.source_binding())?;
+        let now = self.bridge.observation_time();
+        if now < request.deadline() {
+            context.request_repaint_after_for(request.deadline() - now, ViewportId::ROOT);
+            return None;
+        }
+        // Pay before application painting can exhaust the dispatch budget.
+        // This unqueued command owns no callback or presentation authority.
+        let command = eframe::prepare_native_viewport_pointer_observation(viewport, window, device);
+        let key = NativePointerObservationKey {
+            token: command.token(),
+            viewport,
+            window,
+            device,
+        };
+        budget.complete_unsequenced_records(1);
+        Some(NativeStationaryPreparation {
+            request,
+            key,
+            command,
+        })
+    }
+
+    pub(super) fn admit_stationary_observation(
+        &mut self,
+        prepared: NativeStationaryPreparation,
+    ) -> Option<
+        eframe::PreparedNativeViewportCommand<eframe::NativeViewportPointerObservationCommandToken>,
+    > {
+        let NativeStationaryPreparation {
+            request,
+            key,
+            command,
+        } = prepared;
+        if self.stationary.attempt.is_some()
+            || !self.bridge.accepts_new_work()
+            || self.has_pending_callback_records()
+            || self.bridge.callback_boundary_pending()
+            || self.session.native_pointer_continuation() != Some(request)
+            || self.stationary.blocked == Some(request.token())
+            || self
+                .pointer_translator
+                .mouse_device_for_pointer(request.pointer())
+                != Some(key.device)
+            || self.exact_window_route_for_binding(request.source_binding())
+                != Some((key.viewport, key.window))
+            || self.bridge.observation_time() < request.deadline()
+            || !self
+                .bridge
+                .reserve_pointer_observation(key, request.source_binding())
+        {
+            return None;
+        }
+        self.stationary.attempt = Some(StationaryAttempt { request, key });
+        Some(command)
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_stationary_key(&self) -> Option<NativePointerObservationKey> {
+        self.stationary.attempt.map(|attempt| attempt.key)
+    }
+
+    pub(super) fn reduce_next_pointer_observation(&mut self) -> Result<bool, NativeRuntimeError> {
+        let Some((record, captured_at)) = self.bridge.front_pointer_observation() else {
+            return Ok(false);
+        };
+        if let Some(attempt) = self.stationary.attempt
+            && self.bridge.accepts_new_work()
+            && attempt.key == record.key()
+            && self.session.native_pointer_continuation() == Some(attempt.request)
+            && self
+                .pointer_translator
+                .mouse_device_for_pointer(attempt.request.pointer())
+                == Some(attempt.key.device)
+            && self.exact_window_route_for_binding(attempt.request.source_binding())
+                == Some((attempt.key.viewport, attempt.key.window))
+            && captured_at >= attempt.request.deadline()
+        {
+            let work_areas = &self.work_areas;
+            if let Some(input) = record.into_input(attempt.request, captured_at, |point| {
+                work_areas.binding_at(point)
+            }) {
+                self.record_pointer(input)?;
+            }
+        }
+        if !self.bridge.acknowledge_pointer_observation(record.key()) {
+            return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
+        }
+        Ok(true)
+    }
+}

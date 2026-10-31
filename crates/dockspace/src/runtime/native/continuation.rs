@@ -18,6 +18,9 @@ use crate::runtime::PointerContinuationToken;
 /// or scheduling it grants no observed position, capture, or receiver authority.
 /// Return its event through the normal native input journal with fresh native
 /// facts and an observation time on the same clock as the original input.
+/// Missing delivery or capture facts revoke the pending timed action without
+/// proving that the held gesture lost its owner. Explicit owner loss still
+/// cancels the gesture; a later real motion may rearm after missing facts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativePointerContinuation {
     request: PointerContinuationRequest,

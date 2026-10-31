@@ -24,6 +24,7 @@ mod lifecycle_progress;
 mod mailbox;
 mod pass_actions;
 mod pointer_event;
+mod pointer_observation;
 mod receiver;
 mod retirement;
 mod surface_driver;

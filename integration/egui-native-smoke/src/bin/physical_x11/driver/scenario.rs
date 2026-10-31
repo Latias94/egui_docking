@@ -10,12 +10,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use eframe::egui::accesskit::TreeUpdate;
 use eframe::egui::{self, ViewportId};
 use egui_inspection::{ViewportClass, ViewportDescriptor};
+use winit::event::PointerWindowRoute;
 
 #[cfg(test)]
 use super::super::app::SharedState;
 use super::super::app::{
     CENTER_DROP_GUIDE_LABEL, CHILD_CLOSE_LABEL, CHILD_TAB_LABEL, PointerPassthroughObservation,
     ProductObservation, ProductPhase, ROOT_TARGET_LABEL, ROOT_WINDOW_TITLE, RedockLayout, Shared,
+    SourceSelection,
 };
 use super::super::assertions::{
     ActualGuideHit, DockPreviewEmission, LogicalBounds, NestedPaneCase, PHYSICAL_TARGET_ENV,
@@ -485,18 +487,46 @@ impl PhysicalDriver {
             self.stage.name(),
             |observation| observation.phase == ProductPhase::Retired && observation.quiescent,
         )?;
-        if final_observation.redock_layout != Some(self.target.expected_layout()) {
+        let expected_layout = if self
+            .shared
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stationary
+            .is_some()
+        {
+            RedockLayout::StationaryCenter
+        } else {
+            self.target.expected_layout()
+        };
+        if final_observation.redock_layout != Some(expected_layout) {
             return Err(format!(
                 "{}: {:?}; expected {:?} in the original root, observed {:?}",
                 self.target.name(),
                 PaneCenterError::FinalLayoutMismatch,
-                self.target.expected_layout(),
+                expected_layout,
                 final_observation.redock_layout
             ));
         }
         self.verify_retired_viewport(retirement)?;
         if pointer_load_enabled()? {
             verify_pointer_load(&self.shared)?;
+        }
+        if let Some(probe) = &self
+            .shared
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stationary
+        {
+            if !probe.complete {
+                return Err(format!(
+                    "stationary-negative barrier was incomplete: {probe:?}"
+                ));
+            }
+            eprintln!(
+                "physical-smoke: stationary-negative qualification only; after real tear-off/first-live, cross-window Observed query denied stationary selection; same held gesture redocked [Anchor, Main, Child], DestroyNotify/quiescence verified; no successful stationary dwell claimed"
+            );
         }
         eprintln!(
             "physical-smoke: target-case={} verified target layout, retirement and quiescence",
@@ -591,7 +621,6 @@ impl PhysicalDriver {
             "physical-smoke: root-window={:?} source={source:?} threshold={threshold:?} outside={outside:?} routed-outside={routed_outside:?} work-area={work_area:?}",
             root_window.bounds
         );
-
         self.set_stage(ScenarioStage::DragOutX11Events);
         inject_drag(
             &self.shared,
@@ -691,6 +720,16 @@ impl PhysicalDriver {
             "physical-smoke: child-window={:?} source={child_source:?} threshold={child_threshold:?} root-ingress={ingress:?} routed-root-ingress={routed_ingress:?}",
             child_window.bounds
         );
+        let stationary = self
+            .shared
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stationary
+            .as_ref()
+            .map(|_| StationaryNegativeTarget {
+                source_window: child_window.window,
+            });
 
         self.set_stage(ScenarioStage::DragBackX11Events);
         let drag_back = inject_redock_drag(
@@ -709,6 +748,7 @@ impl PhysicalDriver {
                 threshold: child_threshold,
                 ingress,
                 routed_ingress,
+                stationary,
                 deadline: self.deadline,
             },
             self.target,
@@ -780,6 +820,11 @@ struct RetirementTarget {
 }
 
 #[derive(Clone, Copy)]
+struct StationaryNegativeTarget {
+    source_window: u32,
+}
+
+#[derive(Clone, Copy)]
 struct DragRequest<'a> {
     label: &'a str,
     source_viewport: ViewportId,
@@ -813,6 +858,7 @@ struct GuideDragRequest<'a> {
     threshold: PhysicalPoint,
     ingress: PhysicalPoint,
     routed_ingress: PhysicalPoint,
+    stationary: Option<StationaryNegativeTarget>,
     deadline: Instant,
 }
 
@@ -950,6 +996,338 @@ fn inject_drag(
     Ok(DragResult { preview, released })
 }
 
+fn stationary_main_point(
+    snapshot: &ViewportTreeSnapshot,
+    client: PhysicalBounds,
+) -> Result<PhysicalPoint, String> {
+    let main = selector_bounds(
+        snapshot,
+        SemanticSelector {
+            role: egui::accesskit::Role::Tab,
+            text: SemanticText::Label("Main"),
+        },
+    )?;
+    let close = selector_bounds(
+        snapshot,
+        SemanticSelector {
+            role: egui::accesskit::Role::Button,
+            text: SemanticText::Label("Close Main"),
+        },
+    )?;
+    let logical = tab_drag_point(main, [close])
+        .ok_or("stationary-negative: Main has no tab-body point outside Close Main")?;
+    let point = viewport_logical_to_desktop(client, snapshot.pixels_per_point, logical)
+        .map_err(|error| format!("stationary-negative: Main desktop point: {error:?}"))?;
+    let logical = desktop_to_viewport_logical(client, snapshot.pixels_per_point, point)
+        .map_err(|error| format!("stationary-negative: rounded Main point: {error:?}"))?;
+    if !client.contains(point)
+        || logical.x <= main.min_x
+        || logical.x >= main.max_x
+        || logical.y <= main.min_y
+        || logical.y >= main.max_y
+        || close.contains(logical)
+    {
+        return Err(
+            "stationary-negative: rounded point is outside the safe Main tab body".to_owned(),
+        );
+    }
+    for (_, node) in &snapshot.tree.nodes {
+        if node.is_hidden()
+            || node.role() != egui::accesskit::Role::Label
+            || !matches!(
+                node.label(),
+                Some(
+                    "Dockspace center drop guide"
+                        | "Dockspace left drop guide"
+                        | "Dockspace right drop guide"
+                        | "Dockspace top drop guide"
+                        | "Dockspace bottom drop guide"
+                )
+            )
+        {
+            continue;
+        }
+        let bounds = node
+            .bounds()
+            .ok_or("stationary-negative: visible guide is missing bounds")?;
+        if ![bounds.x0, bounds.y0, bounds.x1, bounds.y1]
+            .into_iter()
+            .all(f64::is_finite)
+            || bounds.x0 > bounds.x1
+            || bounds.y0 > bounds.y1
+            || (logical.x >= bounds.x0
+                && logical.x <= bounds.x1
+                && logical.y >= bounds.y0
+                && logical.y <= bounds.y1)
+        {
+            return Err(format!(
+                "stationary-negative: Main point is not proven outside guide {:?}",
+                node.label()
+            ));
+        }
+    }
+    Ok(point)
+}
+
+#[allow(clippy::too_many_lines)]
+fn stationary_negative_while_pressed(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    desktop: &X11Desktop,
+    request: GuideDragRequest<'_>,
+    target: StationaryNegativeTarget,
+    source_ingress_step: u64,
+) -> Result<(ViewportTreeSnapshot, ViewportTreeSnapshot), String> {
+    let deadline = bounded_stage_deadline(request.deadline, Duration::from_secs(5));
+    let main_selector = SemanticSelector {
+        role: egui::accesskit::Role::Tab,
+        text: SemanticText::Label("Main"),
+    };
+    let (threshold, _) = wait_for_stable_selector_bounds(
+        shared,
+        inspection,
+        request.target_viewport,
+        main_selector,
+        deadline,
+        "stationary-negative ROOT Main after native-child threshold and passthrough",
+    )?;
+    let root = desktop.window_for_title(request.target_window_title)?;
+    let point = stationary_main_point(&threshold, root.bounds)?;
+    let press = {
+        let mut state = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.observation.phase != ProductPhase::ChildFirstLive
+            || request.source_viewport == request.target_viewport
+            || request.target_viewport != ViewportId::ROOT
+            || target.source_window == root.window
+        {
+            return Err(
+                "stationary-negative requires a first-live Child source distinct from ROOT"
+                    .to_owned(),
+            );
+        }
+        let probe = state
+            .stationary
+            .as_mut()
+            .ok_or("stationary probe is absent")?;
+        if probe.complete
+            || probe.target.is_some()
+            || probe.result.is_some()
+            || probe.invalidation.is_some()
+            || probe.selection != Some(SourceSelection::INACTIVE_MAIN)
+        {
+            return Err(format!(
+                "stationary-negative: invalid before-move model/probe: {probe:?}"
+            ));
+        }
+        let press = probe
+            .press
+            .ok_or("stationary-negative: no real native primary press")?;
+        if press.viewport != request.source_viewport
+            || u64::from(press.window) != u64::from(target.source_window)
+        {
+            return Err(format!(
+                "stationary-negative: native press {press:?} does not match child X11 window {}",
+                target.source_window
+            ));
+        }
+        probe.target = Some(point);
+        // Start pressure before the real motion can mint its continuation.
+        // Callback delay cannot make a pre-pressure query qualify this run.
+        probe.stress_active = true;
+        eprintln!(
+            "physical-smoke: stationary-negative before move: native_press={press:?}, public_model_selection={:?}, Main desktop target={point:?}",
+            probe.selection
+        );
+        press
+    };
+    desktop.move_pointer(point)?;
+    desktop.assert_pointer(point, Some(true))?;
+    let hovered = input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source_ingress_step,
+        request.source_client,
+        request.source_pixels_per_point,
+        point,
+        true,
+        deadline,
+        "stationary-negative inactive Main hover with primary held",
+    )?;
+    let (hover_scene, _) = wait_for_stable_selector_bounds(
+        shared,
+        inspection,
+        request.target_viewport,
+        main_selector,
+        deadline,
+        "stationary-negative current Main after hover",
+    )?;
+    if hover_scene.step <= threshold.step
+        || stationary_main_point(&hover_scene, root.bounds)? != point
+    {
+        return Err("stationary-negative: Main safe point changed after native motion".to_owned());
+    }
+    {
+        let mut state = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let probe = state
+            .stationary
+            .as_mut()
+            .ok_or("stationary probe is absent")?;
+        if !probe.hover_observed
+            || probe.invalidation.is_some()
+            || probe.selection != Some(SourceSelection::INACTIVE_MAIN)
+        {
+            return Err(format!(
+                "stationary-negative: Main must retain its semantic scene under slow/repeat pressure: {probe:?}"
+            ));
+        }
+    }
+    // The adapter's deadline wakes the real query. This wait creates no pointer facts.
+    let result = {
+        let (lock, changed) = &**shared;
+        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(error) = &state.fatal_error {
+                return Err(format!("stationary-negative: {error}"));
+            }
+            let probe = state
+                .stationary
+                .as_ref()
+                .ok_or("stationary probe is absent")?;
+            if let Some(reason) = probe.invalidation {
+                return Err(format!("stationary-negative: {reason}; probe={probe:?}"));
+            }
+            if let Some(result) = probe.result {
+                break result;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(format!(
+                    "stationary-negative: timed out waiting for a real forwarded query callback while Main was held; hover_step={}, probe={probe:?}, product={:?}; tree={}",
+                    hovered.step,
+                    state.observation,
+                    semantic_tree_summary(&hovered.tree)
+                ));
+            }
+            let (next, _) = changed
+                .wait_timeout(state, deadline.saturating_duration_since(now))
+                .unwrap_or_else(PoisonError::into_inner);
+            state = next;
+        }
+    };
+    if result.viewport_id() != press.viewport
+        || result.expected_window_id() != press.window
+        || result.device_id() != press.device
+    {
+        return Err(format!(
+            "stationary-negative: query request identity differs from native press {press:?}: {result:?}"
+        ));
+    }
+    let eframe::NativeViewportPointerObservation::Observed { facts, delivery } =
+        result.observation()
+    else {
+        return Err(format!(
+            "stationary-negative requires a real current X11 Observed result; no query/Unavailable/Unsupported cannot qualify: {result:?}"
+        ));
+    };
+    if facts.hover != PointerWindowRoute::Unknown
+        || facts.capture != PointerWindowRoute::Unknown
+        || delivery != PointerWindowRoute::Unknown
+        || !facts.desktop_position.is_some_and(|position| {
+            position.x == f64::from(point.x) && position.y == f64::from(point.y)
+        })
+    {
+        return Err(format!(
+            "stationary-negative requires fresh Main position and independently Unknown hover/capture/delivery: {result:?}"
+        ));
+    }
+    let after = input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        hovered.step,
+        request.source_client,
+        request.source_pixels_per_point,
+        point,
+        true,
+        deadline,
+        "stationary-negative model/hover after the real query result",
+    )?;
+    let (after_scene, _) = wait_for_stable_selector_bounds(
+        shared,
+        inspection,
+        request.target_viewport,
+        main_selector,
+        deadline,
+        "stationary-negative current Main after result",
+    )?;
+    let current_root = desktop.window_for_title(request.target_window_title)?;
+    let current_source = desktop
+        .process_windows()?
+        .into_iter()
+        .find(|window| window.window == target.source_window)
+        .ok_or("stationary-negative: source window disappeared during the hold")?;
+    if current_root.window != root.window
+        || current_root.bounds != root.bounds
+        || current_source.bounds != request.source_client
+        || after.pixels_per_point != request.source_pixels_per_point
+        || after_scene.pixels_per_point != threshold.pixels_per_point
+        || stationary_main_point(&after_scene, root.bounds)? != point
+    {
+        return Err("stationary-negative: root/Main geometry changed during the hold".to_owned());
+    }
+    desktop.assert_pointer(point, Some(true))?;
+    let (lock, changed) = &**shared;
+    let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        if let Some(error) = &state.fatal_error {
+            return Err(format!("stationary-negative: {error}"));
+        }
+        let probe = state
+            .stationary
+            .as_ref()
+            .ok_or("stationary probe is absent")?;
+        if probe.invalidation.is_some() || probe.selection != Some(SourceSelection::INACTIVE_MAIN) {
+            return Err(format!(
+                "stationary-negative: hold/model was invalidated: {probe:?}"
+            ));
+        }
+        if probe.model_after_result == Some(result.token())
+            && probe.repeated_output.is_some()
+            && probe.repeat_finalizations >= 2
+            && probe.slow_suffixes >= 2
+        {
+            break;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "stationary-negative: no semantic model and real repeat finalizations after exact callback token {:?}: {probe:?}",
+                result.token()
+            ));
+        }
+        let (next, _) = changed
+            .wait_timeout(state, deadline.saturating_duration_since(now))
+            .unwrap_or_else(PoisonError::into_inner);
+        state = next;
+    }
+    let probe = state
+        .stationary
+        .as_mut()
+        .ok_or("stationary probe is absent")?;
+    probe.complete = true;
+    eprintln!(
+        "physical-smoke: stationary-negative barrier: exact_raw_result={result:?}, native_press={press:?}, AccessKit Main-held source steps={} -> {}, public_model_after={:?}, slow_suffixes={}, repeated_output={:?}, real_pass_finalizations={}; request identity grants no observed delivery/capture, Unknown did not select Main; continuing the held redock gesture",
+        hovered.step,
+        after.step,
+        probe.selection,
+        probe.slow_suffixes,
+        probe.repeated_output,
+        probe.repeat_finalizations
+    );
+    Ok((after, after_scene))
+}
+
 fn native_drag_preview_barrier(
     shared: &Shared,
     inspection: &mut InspectionClient,
@@ -1016,13 +1394,52 @@ fn inject_redock_drag(
     )?;
     press_primary_with_cleanup(desktop, request.label)?;
     let pressed = (|| {
-        let (source_ingress_step, ingress_tree) = reach_target_surface_while_pressed(
+        let (mut source_ingress_step, mut ingress_tree) = reach_target_surface_while_pressed(
             shared,
             inspection,
             desktop,
             request,
             source_at_hover.step,
         )?;
+        if let Some(probe) = request.stationary {
+            let (source_after_main, _) = stationary_negative_while_pressed(
+                shared,
+                inspection,
+                desktop,
+                request,
+                probe,
+                source_ingress_step,
+            )?;
+            // The rejected observation clears hover authority. A real motion
+            // must establish the next candidate before the held gesture docks.
+            desktop.move_pointer(request.routed_ingress)?;
+            desktop.assert_pointer(request.routed_ingress, Some(true))?;
+            let source_after_resume = input_barrier(
+                shared,
+                inspection,
+                request.source_viewport,
+                source_after_main.step,
+                request.source_client,
+                request.source_pixels_per_point,
+                request.routed_ingress,
+                true,
+                request.deadline,
+                "stationary-negative resume held redock with real motion",
+            )?;
+            let (resumed, _) = wait_for_stable_selector_bounds(
+                shared,
+                inspection,
+                request.target_viewport,
+                SemanticSelector {
+                    role: egui::accesskit::Role::Label,
+                    text: SemanticText::Label(CENTER_DROP_GUIDE_LABEL),
+                },
+                bounded_stage_deadline(request.deadline, Duration::from_secs(3)),
+                "stationary-negative fresh Center guide after real resume",
+            )?;
+            source_ingress_step = source_after_resume.step;
+            ingress_tree = resumed;
+        }
         match target {
             RedockTarget::GuideControl => move_to_center_guide_while_pressed(
                 shared,

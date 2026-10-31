@@ -524,6 +524,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
         self.abandon_unfinalized_output_passes(&context)?;
+        self.coordinator
+            .stage_stationary_observation(&context, token, budget);
         let prelude = {
             let coordinator = &mut self.coordinator;
             (|| {
@@ -840,6 +842,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             || !report.repaint_surfaces().is_empty()
             || semantic_retry_pending;
         require_durable_root_cycle(coordinator, token, durable_armed)?;
+        coordinator.stage_stationary_observation(&context, token, budget);
         Ok(if retain_previous_output {
             NativeSurfaceUpdate::RetainPrevious
         } else {
@@ -859,6 +862,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.pass_actions
                 .abandon(token)
                 .map_err(map_pass_action_error)?;
+            self.coordinator.abandon_stationary_output(token);
             let wake = self.coordinator.abandon_output_token(token);
             debug_assert_eq!(
                 wake,
@@ -891,6 +895,22 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     fn settle_egui_pass_budgeted(
+        &mut self,
+        context: &egui::Context,
+        output: &mut egui::FullOutput,
+        token: NativeOutputToken,
+        discarded: bool,
+        budget: &mut NativeInputBudget,
+    ) -> Result<(), NativeRuntimeError> {
+        self.settle_final_output_pass(context, output, token, discarded, budget)?;
+        if !discarded {
+            self.coordinator
+                .schedule_stationary_observation(context, token, budget)?;
+        }
+        Ok(())
+    }
+
+    fn settle_final_output_pass(
         &mut self,
         context: &egui::Context,
         output: &mut egui::FullOutput,

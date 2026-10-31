@@ -67,7 +67,9 @@ mod close_driver;
 mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
+mod stationary;
 mod storage;
+use stationary::NativeStationaryState;
 pub use storage::NativeStorageLimit;
 pub(crate) use storage::{
     NativeCombinedStorageLimit, NativeOwnerStorageLimit, NativeSnapshotStorageLimit,
@@ -116,6 +118,7 @@ pub(crate) struct NativeCoordinator {
     focus_control: NativeFocusControl,
     input_control: NativeInputControl,
     lifecycle_progress: NativeLifecycleProgress,
+    stationary: NativeStationaryState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -556,6 +559,7 @@ impl NativeCoordinator {
             focus_control: NativeFocusControl::default(),
             input_control,
             lifecycle_progress: NativeLifecycleProgress::default(),
+            stationary: NativeStationaryState::default(),
         };
         if let Some(producer) =
             storage_limit.and_then(NativeInputStorageLimit::producer_storage_limit)
@@ -632,6 +636,7 @@ impl NativeCoordinator {
             && !self.bridge.retirement_has_pending_work()
             && !self.focus_control.has_pending_work()
             && !self.input_control.has_pending_work()
+            && !self.stationary.has_pending_work()
     }
 
     fn retain_internal_presentation_transitions(&mut self, report: &HostFrameReport) {
@@ -1574,6 +1579,7 @@ impl NativeCoordinator {
         budget: &mut NativeInputBudget,
     ) -> Result<Option<std::num::NonZeroUsize>, NativeRuntimeError> {
         self.bridge.admission_dispatch();
+        self.finish_stationary_observation();
         let recorded_before = self.session.native_input_recorded_count();
         let allowance_before = budget.remaining_records();
         let result = self
@@ -1628,6 +1634,9 @@ impl NativeCoordinator {
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_pointer_passthrough()? {
+            return Ok(Some(std::num::NonZeroUsize::MIN));
+        }
+        if self.reduce_next_pointer_observation()? {
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_global_focus()? {
@@ -2769,7 +2778,10 @@ impl NativeCoordinator {
             ));
         }
         let requires_commit_wake = self.session.presented_surface(output.surface()).is_none()
-            || self.session.surface_requires_presentation(output.surface());
+            || self.session.surface_requires_presentation(output.surface())
+            || self
+                .session
+                .native_pointer_continuation_awaits_presentation(output.surface());
         if self
             .receivers
             .stage(context, token, binding, &output, paint)
@@ -2890,6 +2902,7 @@ impl NativeCoordinator {
         &mut self,
         mut notify: impl FnMut(NativeOutputToken),
     ) {
+        self.discard_stationary_preparation();
         self.bridge.enter_quarantine();
         if self.requires_terminal_snapshot() {
             self.bridge.require_terminal_roster();

@@ -65,8 +65,8 @@ retains one input order, and each gesture freezes its coordinate lane through
 exact output settlement. The reference adapter now freezes event-time local
 samples at callback capture and accounts for their immutable payloads within the
 same bounded input budget. Its callback contract is qualified; native-local OS
-input and native stationary scheduling remain separate acceptance work. The
-public engine-host contract now also qualifies explicit local-to-desktop handoff
+input remains separate acceptance work. The public engine-host contract also
+qualifies explicit local-to-desktop handoff
 within one active drag, preserving its stream, session and semantic source while
 revoking old target/output state. The reference adapter's same-event packet
 capture/emission and full raw-to-output handoff traces are also qualified;
@@ -75,9 +75,11 @@ real native-local OS handoff evidence remains separate from those contracts.
 The public native host API also qualifies explicit stationary hover selection,
 Touch long press/tap/yield and tab-strip edge scrolling through the same gesture
 and exact-output state. Native requests expose scheduling and sampling inputs;
-the host still supplies fresh native facts. Automatic reference-adapter wakes,
-OS stationary/Touch observation and the complete native readiness matrix remain
-unfinished.
+the host still supplies fresh native facts. The reference adapter now schedules
+Desktop Mouse observations at core deadlines, retaining at most one query until
+its ordered terminal fully commits. Unknown or unavailable facts cannot trigger
+an automatic retry of the same core token. Successful OS stationary execution,
+physical Touch and the complete native readiness matrix remain unfinished.
 
 Native binding retention now uses `terminal_binding_guards()` in the diagnostic
 manifest. It covers observed destruction and conclusively never-created
@@ -175,12 +177,13 @@ The fork branch `dockspace-native-seam-0.37` retains graph-neutral seams for
 exact native facts and output finalization. Winit remains on stable `0.30.13`,
 and egui_tiles remains reference-only.
 
-The optional native pointer observation seam does not enable automatic
-stationary gestures. Its current X11 query reports server-logical desktop
+The optional native pointer observation seam feeds the adapter's finite
+stationary scheduler. Its current X11 query reports server-logical desktop
 position and limited direct-root-child hover; capture and delivery remain
-Unknown. Hosts must not fill those gaps from the expected window or cached
-implicit capture. The renderer-neutral core separately supports explicit
-stationary continuations when a host can supply complete native facts.
+Unknown, so querying does not authorize a stationary gesture. Hosts must not
+fill those gaps from the expected window or cached implicit capture. The
+renderer-neutral core supports stationary continuations when a host can supply
+complete native facts.
 
 Hosts that own official crates.io egui's complete run use the Dockspace wrapper
 to bind local settlement to that run without application-managed frame counts:

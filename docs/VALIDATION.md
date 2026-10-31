@@ -15,6 +15,139 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 finite native stationary scheduling
+
+The reference adapter now connects the existing core continuation to eframe's
+prepared pointer-observation command. It adds no docking graph, continuation
+issuer, clock owner or lifecycle registry. Scheduling is limited to an existing
+Winit Mouse identity with an active button and a committed Desktop continuation.
+NativeLocal, Touch and unknown devices do not enter this sampler.
+
+A future deadline requests a root timer without input facts. Due preparation
+pre-pays one record from the shared callback budget before application painting
+can exhaust it. The unqueued command has no callback or input authority. It can
+survive Repeat passes of that exact outer output; finalization revalidates the
+core request, device, window and input boundary before reserving the existing
+receipt and dispatching. Abandonment, a lost output owner and quarantine drop
+unqueued preparation. Only the final non-Repeat output pass can dispatch.
+If no preparation could fit the budget, a future deadline still uses a timer;
+an already due deadline retains one wake on the exact current output terminal.
+There is at most one in-flight observation per session, and an obsolete query
+occupies its original receipt until full commit. Output acceptance for pending
+stationary geometry uses the existing presentation wake and receiver owner.
+
+The callback freezes actual desktop, hover, delivery and capture routes once
+into the existing window command receipt. The raw journal holds only its small
+correlation key. Replay retains the original ordinal and shared-clock capture
+time, emits the existing `Continuation(token)` event and uses current exact
+receiver authority. It never creates a synthetic motion or release. Unknown
+facts stay Unknown; Unsupported, Unavailable and retirement produce a terminal
+without a sample. Each unchanged core token can trigger at most one query.
+Only a new core token, including one from a valid same-position real motion,
+can authorize another attempt.
+
+Nineteen focused tests pass: seven real-core/Winit coordinator models, four
+mailbox lifecycle tests, five frozen-sample tests and three read-only device
+lookup tests. They cover deadline/budget admission, one in-flight receipt,
+full-commit release, original sequence/time through frame drop and retry,
+unavailable/unknown results, late release, successor isolation, detach and
+post-overload terminal admission. The two added preparation models explicitly
+advance the shared clock beyond 2 ms before final admission and reject raw
+input arriving after preparation without creating a callback obligation. An
+independent review identified a conditional progress risk in the original
+finalizer-only scheduler behind ordinary application work after the docking UI;
+preparation now pre-pays the original budget. The earlier implementation and
+its completed 524-test normal run are superseded, while its assertion-disabled
+run was intentionally interrupted. A model presents a new concrete artifact
+before the sample arrives and proves that old bound receiver/hover authority
+cannot authorize selection, including on retry. A paint descriptor for the
+same semantic scene can still be rebound to a new presentation; it is not
+itself presentation authority. These are controlled backend/core contracts,
+not successful OS stationary execution.
+
+The real X11 journey exposed a core distinction: a stationary query which
+cannot observe delivery is not an input edge proving delivery loss. Previously
+that Unknown value cancelled the held gesture, so even a subsequent exact real
+motion could not restore its target. The native coordinator regression failed
+at the active-gesture assertion before the repair. The continuation reducer now
+revokes its pending timed action without inferring loss or replacing known
+capture with Unknown. Known delivery and capture loss still use the existing
+gates, independently; ordinary Moved/Release and obsolete-token handling retain
+their prior rules. Two public Desktop/NativeLocal regressions cover Unknown
+delivery with known/unknown capture, duplicate rejection, same-gesture rearming
+and exact-output release, plus None/Foreign delivery/capture cancellation
+controls. The full native-stationary public target passes 13/13 normally and
+with core debug assertions disabled. Static review finds no remaining confirmed
+P1/P2; wrong-source/stale-binding rejection retains its existing gates. The new
+positive release case re-confirms facts through real motion before release;
+it does not separately certify direct release immediately after an Unknown
+sample.
+
+The new opt-in X11 entry sets
+`EGUI_DOCKSPACE_PHYSICAL_STATIONARY=negative` and leaves physical target/load
+unset. Its fixed `[Anchor, Main, Child]` layout leaves Main inactive after Child
+tear-off. It holds a real Child-window press over ROOT Main, requires a real
+`Observed` query callback, checks independent Unknown hover/capture/delivery
+and unchanged public-model selection after that exact result, then resumes real
+motion in the same held gesture and checks exact center redock, destruction and
+quiescence. Pressure starts before Main motion can mint its continuation; the
+entry requires query progress with a 3 ms application suffix and one real
+repeated output. No query, Unavailable, Unsupported or timeout is accepted as
+this negative qualification.
+Final X11 qualification passes that complete journey. Its sample records 18
+slow suffixes and two actual pass finalizations for one outer output. The
+callback-following UI observation alone does not prove exact receipt commit;
+the coordinator models prove full ordered commit, and the physical journey
+separately proves subsequent same-gesture redock and retirement. The initial
+physical fixture incorrectly assumed a source-window hover would mint a Desktop
+continuation and timed out without a query; it is not a passing negative gate.
+Later failed fixtures retain their missing semantic boundary, first-remaining
+tab selection, stale bind-mount binary and pre-repair cancellation evidence.
+
+Current X11 sampling cannot prove a grab owner or delivery route. This
+implementation does not enable successful OS stationary selection or scrolling
+by filling that gap from the expected window or cached implicit capture.
+NativeLocal/Touch automatic sampling, broader platform readiness, the native
+showcase and U9 remain open.
+
+Final core and macOS test refresh against the frozen source:
+
+| Gate | Result |
+| --- | --- |
+| Workspace, all features and targets | 1,897 passed |
+| Public consumer, default / serde | 132 / 139 passed |
+| Product / official-egui consumer | 114 / 15 passed |
+| Public native stationary, core assertions disabled | 13 passed |
+| Native all-targets, normal / adapter assertions disabled | 526 / 526 passed |
+| Same-coordinator 10,000-lifetime soak | Independently passed in both native runs |
+| Workspace doctests | 10 passed |
+| Linux adapter library, normal / adapter assertions disabled | 484 / 484 passed; soak filtered on Linux |
+| Linux physical-runner unit target | 50 passed |
+| macOS and X11 real-window redock | Default and bounded on each platform |
+| macOS and X11 release output pressure | All six cases on each platform |
+| X11 physical docking | All twelve ordinary targets, separate 1 kHz and stationary-negative entries |
+| Core/native Clippy, strict rustdoc, formatting and patch integrity | Passed |
+
+One explicit opt-in native wall-time test remains skipped in ordinary suites;
+its separate scope is unchanged. The 1 kHz entry matches 1,000/1,000 callbacks,
+with a release-to-model upper bound of 34.865 ms. Its actual root UI envelope
+and the separate Combined synchronous-host envelope retain their distinct
+measurement boundaries. Combined root maxima are 8.387417 ms on macOS and
+2.231459 ms on Linux, including respectively three and one over-2-ms samples;
+no hard service bound follows. Bounded redock holds 2,335,691/3,488,144 bytes
+owned/reserved on macOS and 2,336,180/3,489,304 on Linux under the unchanged
+4 MiB allowance. These are observed input-data capacities, not process RSS.
+
+The 55 successful final records are at
+`/tmp/dockspace-auto-stationary-final-qualification.json`, tied to all 447 Rust
+source hashes in `/tmp/dockspace-auto-stationary-final-snapshot.json`; logs use
+the same prefix. Three independent review scopes cover scheduling/receipts,
+physical negative predicates and core missing-owner semantics, with no remaining
+confirmed P1/P2. The native builds still use unpublished local egui/Winit
+overrides, unchanged from `70f7b517`/`6c10c87d`; tracked remote pins do not
+reproduce them. This entry supersedes the earlier pre-Unknown-delivery native
+results of the same test count. The full Goal remains active.
+
 ## 2026-10-31 queued native callbacks and fractional create requests
 
 Real release output pressure exposed a child callback which was still valid at

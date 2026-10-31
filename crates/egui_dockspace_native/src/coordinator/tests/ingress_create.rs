@@ -26,6 +26,8 @@ const SOURCE_ITEM: ItemId = ItemId::new(61);
 
 #[path = "ingress_create/active_load.rs"]
 mod active_load;
+#[path = "ingress_create/stationary.rs"]
+mod stationary;
 
 fn program_has_drag_preview(plan: SurfacePaintPlan<'_>) -> bool {
     let mut previewed = false;

@@ -22,6 +22,7 @@ use crate::coordinator::PendingNoFrameInvalidation;
 use crate::error::NativeHostProtocolError;
 use crate::focus_control::NativeViewportFocusRecord;
 use crate::input_control::NativePointerPassthroughRecord;
+use crate::pointer_observation::{NativePointerObservationKey, NativePointerObservationRecord};
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
 #[derive(Debug)]
@@ -198,9 +199,9 @@ impl NativeWindowResources {
     }
 
     pub(super) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        self.entries
-            .iter()
-            .any(|resource| resource.binding == binding)
+        self.entries.iter().any(|resource| {
+            resource.binding == binding || resource.callbacks.references_binding(binding)
+        })
     }
 
     pub(super) fn references_viewport_binding(
@@ -906,10 +907,8 @@ impl NativeWindowResources {
         make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
         let viewport = match &retirement {
-            NativeViewportPropertyCommandRetirement::PointerObservation { .. } => {
-                return CommandCallbackAdmission::Unreserved;
-            }
-            NativeViewportPropertyCommandRetirement::Focus { viewport_id, .. }
+            NativeViewportPropertyCommandRetirement::PointerObservation { viewport_id, .. }
+            | NativeViewportPropertyCommandRetirement::Focus { viewport_id, .. }
             | NativeViewportPropertyCommandRetirement::Visibility { viewport_id, .. }
             | NativeViewportPropertyCommandRetirement::PointerPassthrough { viewport_id, .. } => {
                 *viewport_id
@@ -923,6 +922,106 @@ impl NativeWindowResources {
         owner
             .callbacks
             .retire_property_command(viewport, owner.binding, retirement, make_ingress)
+    }
+
+    pub(super) fn reserve_observation(
+        &mut self,
+        key: NativePointerObservationKey,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        // There is one core manipulation and at most one outstanding sampler.
+        // An obsolete command still occupies its original terminal receipt.
+        if let Some(owner) = self
+            .entries
+            .iter()
+            .find(|owner| owner.callbacks.has_observation_token(key.token))
+        {
+            return owner.viewport == key.viewport
+                && owner.binding == binding
+                && owner.callbacks.matches_observation(key);
+        }
+        if self
+            .entries
+            .iter()
+            .any(|owner| owner.callbacks.has_pending_observation())
+        {
+            return false;
+        }
+        self.command_owner(key.viewport, binding)
+            .is_some_and(|owner| owner.callbacks.reserve_observation(key))
+    }
+
+    pub(super) fn observation_pending(&self, key: NativePointerObservationKey) -> bool {
+        self.entries
+            .iter()
+            .any(|owner| owner.callbacks.observation_pending(key))
+    }
+
+    pub(super) fn observation_record(
+        &self,
+        key: NativePointerObservationKey,
+    ) -> Option<NativePointerObservationRecord> {
+        self.entries
+            .iter()
+            .find_map(|owner| owner.callbacks.observation_record(key))
+    }
+
+    pub(super) fn accept_observation(
+        &mut self,
+        result: eframe::NativeViewportPointerObservationResult,
+        viewports: &crate::viewport_map::NativeViewportMap,
+        make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
+    ) -> CommandCallbackAdmission {
+        let key = NativePointerObservationKey::from_result(result);
+        let Some(owner) = self
+            .entries
+            .iter_mut()
+            .find(|owner| owner.callbacks.matches_observation(key))
+        else {
+            return CommandCallbackAdmission::Unreserved;
+        };
+        let record = NativePointerObservationRecord::capture(result, owner.binding, viewports);
+        owner
+            .callbacks
+            .accept_observation(record, || make_ingress(HostRecord::PointerObservation(key)))
+    }
+
+    #[cfg(test)]
+    pub(super) fn receive_observation_record(
+        &mut self,
+        record: NativePointerObservationRecord,
+        make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
+    ) -> CommandCallbackAdmission {
+        let key = record.key();
+        let Some(owner) = self.entries.iter_mut().find(|owner| {
+            owner.binding == record.binding() && owner.callbacks.matches_observation(key)
+        }) else {
+            return CommandCallbackAdmission::Unreserved;
+        };
+        owner
+            .callbacks
+            .accept_observation(record, || make_ingress(HostRecord::PointerObservation(key)))
+    }
+
+    pub(super) fn detach_observation(
+        &mut self,
+        make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
+    ) {
+        let Some(owner) = self
+            .entries
+            .iter_mut()
+            .find(|owner| owner.callbacks.awaiting_observation().is_some())
+        else {
+            return;
+        };
+        let key = owner
+            .callbacks
+            .awaiting_observation()
+            .expect("the single pending observation was checked");
+        owner.callbacks.accept_observation(
+            NativePointerObservationRecord::retired(key, owner.binding),
+            || make_ingress(HostRecord::PointerObservation(key)),
+        );
     }
 
     pub(super) fn callback_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {

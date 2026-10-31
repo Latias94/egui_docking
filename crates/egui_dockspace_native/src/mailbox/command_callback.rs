@@ -11,6 +11,7 @@ use winit::window::WindowId;
 use super::{HostRecord, journal::ReservedHostRecord};
 use crate::focus_control::NativeViewportFocusRecord;
 use crate::input_control::NativePointerPassthroughRecord;
+use crate::pointer_observation::{NativePointerObservationKey, NativePointerObservationRecord};
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,17 +130,99 @@ pub(super) struct NativeCommandCallbacks {
     pointer: CallbackSlot<(NativeViewportPointerPassthroughCommandToken, WindowId, bool)>,
     focus: CallbackSlot<(NativeViewportFocusCommandToken, WindowId)>,
     visibility: CallbackSlot<(NativeViewportVisibilityCommandToken, WindowId, bool)>,
+    observation: CallbackSlot<NativePointerObservationKey>,
+    observation_record: Option<NativePointerObservationRecord>,
 }
 
 impl NativeCommandCallbacks {
     pub(super) fn is_empty(&self) -> bool {
-        self.pointer.is_empty() && self.focus.is_empty() && self.visibility.is_empty()
+        self.pointer.is_empty()
+            && self.focus.is_empty()
+            && self.visibility.is_empty()
+            && self.observation.is_empty()
     }
 
     pub(super) fn has_pending_work(&self) -> bool {
         self.pointer.has_pending_work()
             || self.focus.has_pending_work()
             || self.visibility.has_pending_work()
+            || self.observation.has_pending_work()
+    }
+
+    pub(super) fn reserve_observation(&mut self, key: NativePointerObservationKey) -> bool {
+        if self
+            .observation
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.key.token == key.token && receipt.key != key)
+        {
+            return false;
+        }
+        if self.observation.contains(&key) {
+            return true;
+        }
+        if !self.observation.reserve(key) {
+            return false;
+        }
+        self.observation_record = None;
+        true
+    }
+
+    pub(super) fn has_observation_token(
+        &self,
+        token: eframe::NativeViewportPointerObservationCommandToken,
+    ) -> bool {
+        self.observation
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.key.token == token)
+    }
+
+    pub(super) fn matches_observation(&self, key: NativePointerObservationKey) -> bool {
+        self.observation.contains(&key)
+    }
+
+    pub(super) fn observation_pending(&self, key: NativePointerObservationKey) -> bool {
+        self.observation.contains(&key) && self.observation.has_pending_work()
+    }
+
+    pub(super) fn has_pending_observation(&self) -> bool {
+        self.observation.has_pending_work()
+    }
+
+    pub(super) fn awaiting_observation(&self) -> Option<NativePointerObservationKey> {
+        self.observation
+            .receipt
+            .as_ref()
+            .filter(|receipt| receipt.state == ReceiptState::Awaiting)
+            .map(|receipt| receipt.key)
+    }
+
+    pub(super) fn observation_record(
+        &self,
+        key: NativePointerObservationKey,
+    ) -> Option<NativePointerObservationRecord> {
+        self.observation
+            .contains(&key)
+            .then_some(self.observation_record)
+            .flatten()
+    }
+
+    pub(super) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.observation_record
+            .is_some_and(|record| record.references_binding(binding))
+    }
+
+    pub(super) fn accept_observation(
+        &mut self,
+        record: NativePointerObservationRecord,
+        reserve: impl FnOnce() -> ReservedHostRecord,
+    ) -> CommandCallbackAdmission {
+        let admission = self.observation.accept(record.key(), reserve);
+        if admission == CommandCallbackAdmission::First {
+            self.observation_record = Some(record);
+        }
+        admission
     }
 
     pub(super) fn reserve_pointer(
@@ -261,7 +344,17 @@ impl NativeCommandCallbacks {
         retirement: &NativeViewportPropertyCommandRetirement,
     ) -> bool {
         match retirement {
-            NativeViewportPropertyCommandRetirement::PointerObservation { .. } => false,
+            NativeViewportPropertyCommandRetirement::PointerObservation {
+                viewport_id,
+                token,
+                expected_window_id,
+                device_id,
+            } => self.matches_observation(NativePointerObservationKey {
+                token: *token,
+                viewport: *viewport_id,
+                window: *expected_window_id,
+                device: *device_id,
+            }),
             NativeViewportPropertyCommandRetirement::Focus { token, .. } => {
                 self.has_focus_token(*token)
             }
@@ -288,8 +381,25 @@ impl NativeCommandCallbacks {
         make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
         match retirement {
-            NativeViewportPropertyCommandRetirement::PointerObservation { .. } => {
-                CommandCallbackAdmission::Unreserved
+            NativeViewportPropertyCommandRetirement::PointerObservation {
+                viewport_id,
+                token,
+                expected_window_id,
+                device_id,
+            } => {
+                let key = NativePointerObservationKey {
+                    token,
+                    viewport: viewport_id,
+                    window: expected_window_id,
+                    device: device_id,
+                };
+                if viewport_id != viewport {
+                    return CommandCallbackAdmission::Unreserved;
+                }
+                self.accept_observation(
+                    NativePointerObservationRecord::retired(key, binding),
+                    || make_ingress(HostRecord::PointerObservation(key)),
+                )
             }
             NativeViewportPropertyCommandRetirement::Focus { viewport_id, token } => {
                 let Some(receipt) = self.focus.receipt.as_ref() else {
@@ -358,6 +468,7 @@ impl NativeCommandCallbacks {
             self.pointer.ingress(),
             self.focus.ingress(),
             self.visibility.ingress(),
+            self.observation.ingress(),
         ]
         .into_iter()
         .flatten()
@@ -368,12 +479,22 @@ impl NativeCommandCallbacks {
             .take_ingress(ordinal)
             .or_else(|| self.focus.take_ingress(ordinal))
             .or_else(|| self.visibility.take_ingress(ordinal))
+            .or_else(|| self.observation.take_ingress(ordinal))
     }
 
     pub(super) fn commit_transferred(&mut self) {
         self.pointer.commit_transferred();
         self.focus.commit_transferred();
         self.visibility.commit_transferred();
+        self.observation.commit_transferred();
+        if self
+            .observation
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.state == ReceiptState::Committed)
+        {
+            self.observation_record = None;
+        }
     }
 }
 

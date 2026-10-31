@@ -364,14 +364,22 @@ impl DockEngine {
         }
         if !self.stationary_edge_has_authority(owner, edge) {
             self.clear_pointer_continuation(owner);
-            let (delivery, outcome) = self.gate_journal_delivery_action(
-                cause,
-                owner,
-                edge.delivery_owner(),
-                interaction_events,
-            )?;
-            let mut outcomes = outcome.into_iter().collect::<Vec<_>>();
-            if delivery {
+            // An optional stationary observation cannot infer owner loss from
+            // missing facts. Explicit delivery and capture loss still count.
+            let mut outcomes = Vec::new();
+            if matches!(edge.delivery_owner(), Authority::Known(_)) {
+                let (delivery, outcome) = self.gate_journal_delivery_action(
+                    cause,
+                    owner,
+                    edge.delivery_owner(),
+                    interaction_events,
+                )?;
+                outcomes.extend(outcome);
+                if !delivery {
+                    return Ok(outcomes);
+                }
+            }
+            if matches!(edge.capture_owner(), Authority::Known(_)) {
                 let (_, outcome) = self.gate_journal_capture_action(
                     cause,
                     owner,

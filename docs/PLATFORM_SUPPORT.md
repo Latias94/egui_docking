@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Scoped evidence; native qualification incomplete"
 reviewed: "2026-10-31"
-source_revision: "5d42e1e6527c68672c99ffc01644db62af68ec70"
+baseline_source_revision: "5d42e1e6527c68672c99ffc01644db62af68ec70"
 ---
 
 # Dockspace Platform Support
@@ -16,9 +16,11 @@ input on that backend.
 
 This snapshot follows the [canonical engine-host plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md)
 and the dated [validation record](VALIDATION.md). The production/physical
-baseline is now `5d42e1e`, including the current-roster callback correction
-and fractional create-request conversion. Dated records below identify their
-own source and scope. Overall U9 and the complete plan remain open.
+baseline preceding stationary qualification is `5d42e1e`, including the
+current-roster callback correction and fractional create-request conversion.
+Dated records below identify their own source and scope. The finite stationary
+extension is recorded separately
+below. Overall U9 and the complete plan remain open.
 Earlier dated qualifications
 retain their historical scope; the 2026-10-31 entries supersede earlier
 physical-smoke coverage limits.
@@ -176,10 +178,10 @@ scale 1, a 2-CPU/4-GiB container and software GL with one renderer thread.
 [`physical_x11/driver/scenario.rs`](../integration/egui-native-smoke/src/bin/physical_x11/driver/scenario.rs),
 [`driver/x11.rs`](../integration/egui-native-smoke/src/bin/physical_x11/driver/x11.rs)
 and [`assertions.rs`](../integration/egui-native-smoke/src/bin/physical_x11/assertions.rs)
-own the finite scenario, OS evidence and semantic checks. The latest slice
-passes 50 Linux runner tests. The macOS native all-targets gates each pass 507
-tests normally and with adapter assertions disabled, including two separate
-10,000-lifetime runs. Linux additionally passes the focused request regression
+own the finite scenario, OS evidence and semantic checks. The roster/geometry
+slice passed 50 Linux runner tests. Its macOS native all-targets gates each
+passed 507 tests normally and with adapter assertions disabled, including two
+separate 10,000-lifetime runs. Linux additionally passes the focused request regression
 in both assertion configurations and the three request-conversion tests.
 Core, product and official-egui results retain the `7003b13` qualification;
 this adapter-only slice does not claim they were rerun.
@@ -274,9 +276,31 @@ The [native pointer observation prerequisite](VALIDATION.md#2026-10-30-native-po
 can query a limited X11 desktop point/root-child hover with exact device/window
 correlation. **Fresh native stationary capture and delivery remain `Unknown`.**
 `XIQueryPointer` does not identify a current grab owner, and retained implicit
-capture cannot repair that gap. The seam emits no motion and enables no automatic
-adapter timer/continuation. Automatic native stationary scheduling, physical
-Touch and native-local OS handoff remain unqualified.
+capture cannot repair that gap. The seam reports observations without
+synthesizing motion. The adapter uses that result seam for finite Desktop Mouse
+scheduling: deadlines request wakes, only final passes dispatch, and one query
+keeps its existing command receipt until full ordered commit. Unknown or
+Unavailable results cannot continuously reschedule the same core token. The
+[finite scheduling qualification](VALIDATION.md#2026-10-31-finite-native-stationary-scheduling)
+passes native526/526 and the full bounded X11 negative journey. Successful OS
+stationary execution, physical Touch and native-local OS handoff remain
+unqualified.
+
+Incomplete stationary observations revoke only their pending timed action;
+they do not infer delivery or capture loss. Explicit None/Foreign/mismatched
+owners still use the ordinary cancellation gates. The bounded X11 negative
+journey starts pressure before the real Main motion, observes a genuine query
+with Unknown hover/capture/delivery and unchanged selection, then continues
+the same held gesture through real-motion rearming and exact redock/retirement.
+Its fixed three-tab layout and timing are separate from the twelve ordinary
+physical journeys. The callback-following UI observation is not independently
+an exact receipt-commit proof; core/adapter models cover ordered full commit.
+The final qualification also refreshes all twelve ordinary physical targets,
+the separate 1 kHz entry, six pressure cases per platform and both programmatic
+storage profiles. Linux library484/484 excludes the soak; the macOS native
+normal/noassert runs each retain their separate 10,000-lifetime soak. Public
+default/serde132/139, workspace1,897, product114 and official15 are freshly rerun
+for the core missing-fact semantic correction.
 
 ## Dependency reproducibility and open scope
 
@@ -306,7 +330,7 @@ results retain their separate source scope.
 Still open are remaining close/create owner
 capacity and sustained active host-service qualification; overflowed/clipped
 tab insertion, arbitrary nested and mixed-DPI physical coverage; fresh
-stationary capture, automatic scheduling and
+stationary capture and successful automatic execution, and
 native-local/Touch OS evidence; Windows/macOS platform certification; the native
 showcase; and U9 dependency publication, clean-checkout reproduction, package
 and remaining evidence/deletion closure. The twelve-journey and

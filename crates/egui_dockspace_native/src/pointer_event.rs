@@ -139,6 +139,29 @@ impl NativePointerTranslator {
         })
     }
 
+    /// Finds an existing winit mouse device while a button remains active.
+    ///
+    /// Native stationary continuations require an ongoing press. This lookup
+    /// never enrolls a device or revives a retired identity.
+    pub(crate) fn mouse_device_for_pointer(&self, pointer: NativePointerId) -> Option<DeviceId> {
+        self.devices.iter().find_map(|(key, entry)| {
+            let (
+                NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Winit(device)),
+                NativePointerDeviceEntry::Live(state),
+            ) = (key, entry)
+            else {
+                return None;
+            };
+            (state.pointer == pointer
+                && state
+                    .mouse
+                    .buttons
+                    .values()
+                    .any(|button| matches!(button, NativeMouseButtonState::Active { .. })))
+            .then_some(*device)
+        })
+    }
+
     /// Forgets adapter state after core overload cancellation commits.
     ///
     /// Core already terminated the semantic streams. Only phaseful scroll
@@ -930,6 +953,192 @@ mod overload;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_read_only_mouse_device_lookup(
+        translator: &NativePointerTranslator,
+        pointer: NativePointerId,
+        expected: Option<DeviceId>,
+    ) {
+        let storage_and_watermarks = || {
+            (
+                translator.next_device_identity,
+                translator.next_scroll_sequence,
+                translator.devices.len(),
+                translator.owned_data_capacity_bytes(),
+                translator.reserved_translation_capacity_bytes(),
+            )
+        };
+        let before = storage_and_watermarks();
+        for _ in 0..2 {
+            assert_eq!(translator.mouse_device_for_pointer(pointer), expected);
+        }
+        assert_eq!(storage_and_watermarks(), before);
+    }
+
+    #[test]
+    fn mouse_device_lookup_is_read_only_and_requires_an_active_button() {
+        let mut translator = NativePointerTranslator::default();
+        assert_read_only_mouse_device_lookup(&translator, NativePointerId::new(1), None);
+
+        let device = DeviceId::dummy();
+        let key = NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Winit(device));
+        let pointer = translator.device_mut(key).expect("mouse enrolls").pointer;
+        assert_read_only_mouse_device_lookup(&translator, pointer, None);
+        let routes = NativePointerRoutes::from_binding(None);
+        assert!(translator.device_mut(key).unwrap().mouse.observe(
+            NativePointerEvent::ButtonPressed(NativePointerButton::Secondary),
+            routes,
+        ));
+        assert_read_only_mouse_device_lookup(&translator, pointer, Some(device));
+        assert_read_only_mouse_device_lookup(&translator, NativePointerId::new(u64::MAX), None);
+        assert!(translator.device_mut(key).unwrap().mouse.observe(
+            NativePointerEvent::ButtonReleased(NativePointerButton::Secondary),
+            routes,
+        ));
+        assert_read_only_mouse_device_lookup(&translator, pointer, None);
+    }
+
+    #[test]
+    fn mouse_device_lookup_does_not_borrow_touch_scroll_or_test_devices() {
+        let mut translator = NativePointerTranslator::default();
+        let device = DeviceId::dummy();
+        let physical = NativePhysicalDeviceKey::Winit(device);
+        let mut other_pointers = Vec::new();
+        for key in [
+            NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Test(1)),
+            NativeInputDeviceKey::Touch {
+                device: physical,
+                contact: 7,
+            },
+            NativeInputDeviceKey::Scroll(physical),
+        ] {
+            let state = translator.device_mut(key).expect("device enrolls");
+            // An active button cannot grant a different device lane mouse access.
+            state.mouse.buttons.insert(
+                NativePointerButton::Primary,
+                NativeMouseButtonState::Active { origin: None },
+            );
+            other_pointers.push(state.pointer);
+        }
+        for pointer in &other_pointers {
+            assert_read_only_mouse_device_lookup(&translator, *pointer, None);
+        }
+
+        let mouse = translator
+            .device_mut(NativeInputDeviceKey::Mouse(physical))
+            .expect("mouse enrolls separately");
+        mouse.mouse.buttons.insert(
+            NativePointerButton::Primary,
+            NativeMouseButtonState::Active { origin: None },
+        );
+        let pointer = mouse.pointer;
+        assert_read_only_mouse_device_lookup(&translator, pointer, Some(device));
+        for pointer in other_pointers {
+            assert_read_only_mouse_device_lookup(&translator, pointer, None);
+        }
+    }
+
+    #[test]
+    fn mouse_device_lookup_invalidates_retired_removed_and_overloaded_mouse() {
+        use dockspace::model::{
+            DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+            RootId, SurfaceId,
+        };
+        use dockspace::policy::DockPolicy;
+        use dockspace::runtime::{
+            DockspaceSession, HostInputOutcome, HostWindowToken, NativeCreateStrategy,
+            NativePointerRoster, SurfaceUnavailableReason,
+        };
+
+        let surface = SurfaceId::new(1);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            surface,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .unwrap();
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+        session
+            .enable_managed_native_host(NativeCreateStrategy::Staged, NativePointerRoster::Unknown)
+            .unwrap();
+        session
+            .register_native_root(surface, HostWindowToken::new(1))
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        let binding = report
+            .inputs()
+            .iter()
+            .find_map(|outcome| match outcome {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .expect("registration emits a binding");
+
+        let mut translator = NativePointerTranslator::default();
+        let device = DeviceId::dummy();
+        let key = NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Winit(device));
+        let mouse = translator.device_mut(key).expect("mouse enrolls");
+        mouse.mouse.buttons.insert(
+            NativePointerButton::Primary,
+            NativeMouseButtonState::Active {
+                origin: Some(binding),
+            },
+        );
+        let retired_pointer = mouse.pointer;
+        assert_read_only_mouse_device_lookup(&translator, retired_pointer, Some(device));
+
+        translator.retire_binding(binding);
+        assert!(matches!(
+            translator.devices.get(&key),
+            Some(NativePointerDeviceEntry::Live(state))
+                if matches!(
+                    state.mouse.buttons.get(&NativePointerButton::Primary),
+                    Some(NativeMouseButtonState::Cancelled)
+                )
+        ));
+        assert_read_only_mouse_device_lookup(&translator, retired_pointer, None);
+
+        translator.forget_removed_devices();
+        assert!(matches!(
+            translator.devices.get(&key),
+            Some(NativePointerDeviceEntry::Removed)
+        ));
+        assert_read_only_mouse_device_lookup(&translator, retired_pointer, None);
+
+        let mouse = translator.device_mut(key).expect("fresh mouse enrolls");
+        mouse.mouse.buttons.insert(
+            NativePointerButton::Primary,
+            NativeMouseButtonState::Active { origin: None },
+        );
+        let overloaded_pointer = mouse.pointer;
+        assert_ne!(overloaded_pointer, retired_pointer);
+        assert_read_only_mouse_device_lookup(&translator, retired_pointer, None);
+        assert_read_only_mouse_device_lookup(&translator, overloaded_pointer, Some(device));
+
+        translator.finish_overload_cancellation();
+        assert!(!translator.devices.contains_key(&key));
+        assert_read_only_mouse_device_lookup(&translator, overloaded_pointer, None);
+        let mouse = translator
+            .device_mut(key)
+            .expect("post-overload mouse enrolls");
+        mouse.mouse.buttons.insert(
+            NativePointerButton::Primary,
+            NativeMouseButtonState::Active { origin: None },
+        );
+        let fresh_pointer = mouse.pointer;
+        assert_ne!(fresh_pointer, overloaded_pointer);
+        assert_read_only_mouse_device_lookup(&translator, overloaded_pointer, None);
+        assert_read_only_mouse_device_lookup(&translator, fresh_pointer, Some(device));
+
+        *translator.devices.get_mut(&key).unwrap() = NativePointerDeviceEntry::ScrollTail;
+        assert_read_only_mouse_device_lookup(&translator, fresh_pointer, None);
+    }
 
     #[test]
     fn desktop_location_uses_only_same_record_desktop_facts_and_frozen_hover() {

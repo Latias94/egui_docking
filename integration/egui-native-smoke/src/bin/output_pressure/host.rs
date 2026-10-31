@@ -205,6 +205,13 @@ impl NativeHostHandler for PressureHost {
         self.inner.on_viewport_pointer_passthrough(result)
     }
 
+    fn on_viewport_pointer_observation(
+        &self,
+        result: eframe::NativeViewportPointerObservationResult,
+    ) -> NativeHostWake {
+        self.inner.on_viewport_pointer_observation(result)
+    }
+
     fn on_viewport_property_command_retired(
         &self,
         retirement: eframe::NativeViewportPropertyCommandRetirement,
