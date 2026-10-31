@@ -339,6 +339,24 @@ pub enum EngineInput {
         /// Adapter facts from which the core constructs the exact recovery target.
         recovery: SurfaceRecoveryBootstrap,
     },
+    /// Creates native hosting for a complete logical surface without moving its content.
+    CreateNativeSurface {
+        /// Published workspace version whose logical surface was inspected.
+        expected: WorkspaceVersion,
+        /// Existing logical surface to materialize.
+        surface: SurfaceId,
+        /// Current application-root surface which receives failed/destroyed content.
+        recovery_host: SurfaceId,
+        /// Explicit desktop-physical placement, independent of current coordinate authority.
+        placement: crate::geometry::PhysicalRect,
+    },
+    /// Explicitly cancel one initial hosting attempt without discarding logical content.
+    CancelNativeSurface {
+        /// Workspace version whose pending binding was inspected.
+        expected: WorkspaceVersion,
+        /// Exact initial establishment owner; replacements are not interchangeable.
+        binding: ViewportBinding,
+    },
     /// Publish one complete frame-before-paint platform snapshot.
     PublishPlatformSnapshot {
         /// Exact platform provider which captured this complete batch.
@@ -749,6 +767,8 @@ impl EngineInput {
         match self {
             Self::RegisterViewport { .. }
             | Self::BootstrapChildViewport { .. }
+            | Self::CreateNativeSurface { .. }
+            | Self::CancelNativeSurface { .. }
             | Self::CancelNativeCreate { .. }
             | Self::RetryViewportCleanup { .. }
             | Self::ReplaceWorkspace(_)

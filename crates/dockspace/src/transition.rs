@@ -135,6 +135,25 @@ pub enum InputOutcome {
         /// Missing stable logical surface.
         surface: crate::ids::SurfaceId,
     },
+    /// The shared lifecycle owns creation for an existing logical surface.
+    NativeSurfaceCreateRequested {
+        /// Exact pending binding; no live interaction authority exists yet.
+        binding: ViewportBinding,
+    },
+    /// The existing-surface native creation request was rejected without mutation.
+    NativeSurfaceCreateRejected {
+        /// Logical surface whose request was rejected.
+        surface: SurfaceId,
+        /// Stable policy, availability or conflict reason.
+        reason: crate::model::DockspaceActionRejection,
+    },
+    /// One initial native-hosting attempt was explicitly cancelled.
+    NativeSurfaceCreateCancelled {
+        /// Exact original initial establishment binding.
+        binding: ViewportBinding,
+        /// Whether this request changed an active owner.
+        changed: bool,
+    },
     /// One complete platform fact snapshot was atomically published.
     PlatformSnapshotPublished {
         /// Structured capability, inventory, and route transition.

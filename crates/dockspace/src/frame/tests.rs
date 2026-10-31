@@ -751,12 +751,12 @@ fn ready_recovery_replacement() -> (
         .expect("post-show staging must reduce");
     assert!(matches!(
         action,
-        Some(ViewportLifecycleAction::RecoveryReplacementReady {
-            destroyed_binding,
-            replacement_binding,
+        Some(ViewportLifecycleAction::NativeSurfaceReady {
+            origin,
+            binding,
             recovery_obligation,
-        }) if destroyed_binding == destroyed
-            && replacement_binding == replacement
+        }) if origin == NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed }
+            && binding == replacement
             && recovery_obligation == obligation
     ));
     assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
@@ -801,7 +801,11 @@ fn recovery_first_live_admission_requires_exact_obligation_without_a_create_reso
 
     let before = coordinator.clone();
     assert_eq!(
-        coordinator.admit_recovery_replacement_first_live(destroyed, replacement, recovery(714)),
+        coordinator.admit_native_surface_first_live(
+            NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed },
+            replacement,
+            recovery(714)
+        ),
         Err(
             ViewportCoordinatorError::PendingRecoveryObligationMismatch {
                 surface: destroyed.surface(),
@@ -811,7 +815,11 @@ fn recovery_first_live_admission_requires_exact_obligation_without_a_create_reso
     assert_eq!(coordinator, before);
 
     coordinator
-        .admit_recovery_replacement_first_live(destroyed, replacement, obligation)
+        .admit_native_surface_first_live(
+            NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed },
+            replacement,
+            obligation,
+        )
         .expect("first-live replacement must admit");
 
     assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
@@ -933,12 +941,12 @@ fn pre_admission_close_revokes_first_live_once_before_destruction_returns_to_hos
 
     assert!(matches!(
         close.actions(),
-        [ViewportLifecycleAction::RecoveryReplacementLost {
-            destroyed_binding,
-            replacement_binding,
+        [ViewportLifecycleAction::NativeSurfaceLost {
+            origin,
+            binding,
             recovery_obligation,
-        }] if *destroyed_binding == destroyed
-            && *replacement_binding == replacement
+        }] if *origin == NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed }
+            && *binding == replacement
             && *recovery_obligation == obligation
     ));
 

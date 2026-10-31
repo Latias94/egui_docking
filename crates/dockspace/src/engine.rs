@@ -3125,7 +3125,7 @@ impl DockEngine {
             .viewport
             .recovery_pending(surface)
             .is_some_and(|pending| {
-                pending.destroyed_binding() == bound.binding
+                pending.source_binding() == bound.binding
                     && pending.recovery_obligation() == bound.obligation.id()
             });
         (live || retained).then(|| bound.obligation.target())
@@ -3146,7 +3146,7 @@ impl DockEngine {
             .recovery_pending(binding.surface())
             .filter(|pending| {
                 pending.role() == ViewportRole::Child
-                    && pending.destroyed_binding() == bound.binding
+                    && pending.source_binding() == bound.binding
                     && pending.recovery_obligation() == bound.obligation.id()
             });
         let exact = match self.viewport.viewport(binding.surface()) {
@@ -3157,7 +3157,7 @@ impl DockEngine {
                         || pending
                             .is_some_and(|pending| pending.replacement_binding() == Some(binding)))
             }
-            None => pending.is_some_and(|pending| pending.destroyed_binding() == binding),
+            None => pending.is_some_and(|pending| pending.source_binding() == binding),
         };
         exact.then(|| bound.obligation.target().host_surface())
     }

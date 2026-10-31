@@ -15,6 +15,82 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 native hosting for existing logical surfaces
+
+The slice following `349a513` adds
+`DockspaceHostFrame::create_native_surface_current`. A complete existing
+logical surface keeps its main root, split weights, selected tabs and ordered
+contained forest while acquiring a native child window. An admitted application
+root owns the fallback recovery destination. The existing replacement lifecycle
+now carries a typed Initial or Destroyed origin; creation uses `CreateWindow`
+and shares strategy, readiness, exact first-live, failure and cleanup ownership.
+First-live admission changes neither topology nor workspace version.
+
+Healthy Initial attempts cannot trigger automatic contained recovery. Failed
+or cancelled attempts with no observed coordinates preserve the complete
+logical roster. Explicit retry reuses its recovery obligation and reserved
+converted-main identity, revalidates current policy/host/roster, and allocates a
+fresh binding. Predecessor cleanup and terminal guards retain their exact
+incarnation. Cancellation is typed and never fabricates Destroyed or a dispatch
+failure. The existing shutdown cancellation query also covers Initial owners.
+
+Independent review exposed a policy gap: global native enablement and fallback
+recovery authorization alone did not honor a surface's Native exclusion or a
+root/item's `NativeSurface` restriction. Two public regressions first observed
+the incorrect Create request. The existing pure policy evaluator now checks
+every normalized root and all its items, including unselected tabs, for both
+initial creation and explicit retry. Ten public-only tests pass, including 32
+policy rejection combinations across DirectPrepared and Staged. The other
+journeys cover readiness revocation, exact first-live, failure/retry,
+cancellation, late Create/Presented/Destroyed, producer quiescence and frame
+rollback under finite storage.
+
+All 42 final checks pass against 474 frozen source, manifest, script and lockfile
+paths. The final qualification includes:
+
+| Final gate | Result and scope |
+| --- | --- |
+| Focused initial/retry lifecycle | 13/13 exact owner, cancellation and retry tests |
+| Workspace | 1,927/1,927 with all features and targets |
+| Public engine host | default 147/147; serde 164/164, including ten existing-surface native creation journeys |
+| egui product / official consumers | 114/114 and 15/15 |
+| Native serde | 558/558 including one same-coordinator 10,000-lifetime soak; opt-in wall-time test skipped |
+| Native assertion-disabled serde | 557/557; repeated long soak excluded and opt-in wall-time test skipped |
+| Linux library | 513/513 normally and assertion-disabled; repeated long soak excluded and two explicit ignore cases retained |
+| Exact real renderer terminal | Linux old-output token test runs explicitly and releases only its predecessor resource |
+| Real-window compatibility | macOS and X11 default/bounded lifecycle; X11 six basic and seven serde focused edits, two destroyed children and final quiescence |
+| Pressure compatibility | Six release modes on each platform, including combined W16/O256/control2/protected1 saturation |
+| Quality | Core/native correctness/suspicious Clippy, strict rustdoc, ten doctests and workspace/public/native formatting |
+
+The pressure modes peak at 2,374,009 resident and 3,488,528 reserved bytes on
+macOS, and 2,384,105 resident and 3,489,688 reserved bytes on Linux, within the
+selected 4,194,304-byte allowance. Their summed `over_2ms` counters are ten and
+fourteen; the largest measured boundaries are 9.730166 ms and 2.581916 ms. These
+are cooperative service measurements, not a hard 2 ms scheduling guarantee.
+
+A prior assertion-disabled run exposed a test that assumed a system-clock 2 ms
+budget must drain in one service call. It now injects the existing fixed clock
+for its semantic-drain assertion; independent budget/yield tests remain intact.
+The first workspace attempt
+stopped during compilation because the project target exhausted available disk;
+it ran no tests. Only rebuildable project incremental caches were collected,
+and subsequent checks disable incremental compilation.
+
+Evidence is `/tmp/dockspace-native-surface-create-source.json` and
+`/tmp/dockspace-native-surface-create-qualification.json`, with the original
+policy red/green and fixed-clock focused logs retained separately. Independent
+bounded review confirms the policy repair and reports no new confirmed P1/P2.
+The platform runs refresh existing native compatibility; the new Initial API is
+qualified by public recording and coordinator journeys, not by an additional OS
+creation journey. Native runs use clean local overrides at egui
+`92c921f7235c87ae28ea09ae522ef55fd8333b41` and winit
+`6c10c87da2a06871371de7d30fedc656cf7c3681`. Tracked remote pins are still older,
+so this does not prove reproducibility from a clean remote checkout.
+
+Document preferences remain inert reads. The native facade's automatic
+multi-surface restore, complete host removal/rebinding and the wider
+U7/U8/U9/U10/U11 plan remain open.
+
 ## 2026-10-31 explicit document surface hosting
 
 The multi-surface restore follow-up starts from `dbfae70` by replacing an

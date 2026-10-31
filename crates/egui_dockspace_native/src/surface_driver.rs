@@ -1664,9 +1664,14 @@ mod tests {
         let pass_before = context.cumulative_pass_nr_for(ViewportId::ROOT);
         assert!(eframe::current_native_output_token().is_none());
 
-        assert_eq!(
-            state.service_native_events(&context).unwrap(),
-            NativeHostWake::Wait
+        // Budget yielding has separate clock-driven tests. This semantic drain
+        // must not depend on whether the OS deschedules one call for two milliseconds.
+        let clock = dockspace::runtime::NativeMonotonicClock::new(|| std::time::Duration::ZERO);
+        let mut budget = NativeInputBudget::new(&clock);
+        assert!(
+            state
+                .service_pending_prefixes(&context, None, SURFACE, &mut budget)
+                .unwrap()
         );
         assert_eq!(bridge.admission_dispatch(), NativeDispatch::Idle);
         assert_eq!(
@@ -1677,9 +1682,11 @@ mod tests {
         assert_eq!(state.output_backlog().ordinary(), 0);
         assert!(state.error().is_none());
 
-        assert_eq!(
-            state.service_native_events(&context).unwrap(),
-            NativeHostWake::Wait
+        let mut budget = NativeInputBudget::new(&clock);
+        assert!(
+            state
+                .service_pending_prefixes(&context, None, SURFACE, &mut budget)
+                .unwrap()
         );
         assert_eq!(bridge.admission_dispatch(), NativeDispatch::Idle);
     }

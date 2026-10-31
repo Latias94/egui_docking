@@ -8,8 +8,10 @@ impl DockspaceSession {
     /// Returns whether native creation still owns a staging or first-live obligation.
     ///
     /// The answer is derived from the existing lifecycle coordinator. Source
-    /// ownership stays unchanged until exact first-live presentation atomically
-    /// transfers content and admits the child; cancellation settles the same owner.
+    /// ownership stays unchanged until exact first-live presentation admits the
+    /// child. A drag-out transfers its content at that boundary; an existing
+    /// logical surface retains its complete topology. Cancellation settles the
+    /// same owner.
     #[must_use]
     pub fn has_pending_native_create(&self) -> bool {
         self.engine
@@ -17,6 +19,16 @@ impl DockspaceSession {
             .native_create_sagas()
             .next()
             .is_some()
+            || self
+                .engine
+                .viewport()
+                .pending_recoveries()
+                .any(|(_, pending)| {
+                    matches!(
+                        pending.origin(),
+                        crate::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. }
+                    ) && pending.replacement_binding().is_some()
+                })
     }
 
     /// Returns the cumulative number of records accepted by this native producer.

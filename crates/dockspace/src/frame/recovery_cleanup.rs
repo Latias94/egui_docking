@@ -150,6 +150,11 @@ impl ViewportCoordinator {
                     last_effect,
                 }
             }
+            AbandonedReplacementCause::Cancelled => {
+                BindingRetirementOrigin::NativeSurfaceCancelled {
+                    create: replacement,
+                }
+            }
         };
         let existing_cleanup = existing_cleanup.filter(|effect| {
             self.effects

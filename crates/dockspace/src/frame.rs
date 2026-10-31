@@ -51,7 +51,7 @@ use crate::effect::{
     EffectPhase, EffectRecord, EffectResult, EffectTransition, NativeCloseResolution,
     PlatformEffect, PlatformEffectEmission,
 };
-use crate::geometry::LogicalRect;
+use crate::geometry::{LogicalRect, PhysicalRect};
 pub use crate::ids::NativeCreateSagaId;
 use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId, WorkspaceEpoch};
 use crate::intent::{NativePlacementProof, PointerId};
@@ -65,15 +65,17 @@ use crate::platform_provider::{
     PlatformObservationAuthority, PlatformObservationAuthorityError, PlatformObservationLease,
     PlatformProviderAuthorityFrontier, PlatformProviderReservation,
 };
-use crate::presentation_observation::{NativeStagingOwner, NativeStagingResourceId};
+#[cfg(test)]
+use crate::presentation_observation::NativeStagingOwner;
+use crate::presentation_observation::NativeStagingResourceId;
 use crate::retention::{BindingRetentionManifest, EffectRetentionManifest};
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 #[cfg(test)]
 use crate::viewport::InventoryGeneration;
 use crate::viewport::{
     CapabilityGeneration, InputObservationGeneration, InventoryObservationGeneration,
-    PlatformSnapshotGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration,
-    WorkAreaObservationGeneration, WorkAreaToken,
+    NativeSurfaceEstablishmentOrigin, PlatformSnapshotGeneration, ViewportBinding, ViewportRole,
+    WindowToken, WorkAreaGeneration, WorkAreaObservationGeneration, WorkAreaToken,
 };
 use crate::viewport_registry::{
     DetachedViewportFacts, NativeCloseEdgeDisposition, RegistryEvent, ViewportAdmission,
@@ -142,22 +144,22 @@ pub(crate) enum ViewportLifecycleAction {
         observation: WindowCloseObservation,
         source_coordinates: Option<RecoveryCoordinateSnapshot>,
     },
-    /// A retained recovery's replacement acquired current renderer readiness.
-    /// Its original recovery owner awaits the exact semantic first-live output.
-    RecoveryReplacementReady {
-        destroyed_binding: ViewportBinding,
-        replacement_binding: ViewportBinding,
+    /// An existing logical surface acquired current native renderer readiness.
+    /// Its establishment owner awaits the exact semantic first-live output.
+    NativeSurfaceReady {
+        origin: NativeSurfaceEstablishmentOrigin,
+        binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     },
     /// A pending replacement lost readiness or disappeared. Revoke its old
     /// first-live barrier before a later preparation can establish a new one.
-    RecoveryReplacementLost {
-        destroyed_binding: ViewportBinding,
-        replacement_binding: ViewportBinding,
+    NativeSurfaceLost {
+        origin: NativeSurfaceEstablishmentOrigin,
+        binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     },
     RetryRecovery {
-        destroyed_binding: ViewportBinding,
+        source_binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     },
 }
@@ -475,7 +477,7 @@ impl ViewportCoordinator {
                     return None;
                 };
                 Some((
-                    pending.destroyed_binding().surface(),
+                    pending.source_binding().surface(),
                     pending.replacement_binding()?,
                     replacement,
                 ))
@@ -869,18 +871,18 @@ impl ViewportCoordinator {
                 );
                 if let Some(cleanup) = self.binding_cleanup.recovery_cleanup(binding) {
                     if cleanup.recovery_cleanup_owner()
-                        != Some((pending.destroyed_binding(), pending.recovery_obligation()))
+                        != Some((pending.source_binding(), pending.recovery_obligation()))
                     {
                         return Err(
                             ViewportCoordinatorError::PendingRecoveryRegistrationMismatch {
-                                surface: pending.destroyed_binding().surface(),
+                                surface: pending.source_binding().surface(),
                             },
                         );
                     }
                     if let Some(effect) = cleanup.status().cleanup_effect() {
                         let replacement = pending.replacement_effect().ok_or(
                             ViewportCoordinatorError::MissingReplacementEffect {
-                                surface: pending.destroyed_binding().surface(),
+                                surface: pending.source_binding().surface(),
                             },
                         )?;
                         let _ = self.validated_compensating_close(effect, binding, replacement)?;
@@ -1818,19 +1820,19 @@ impl ViewportCoordinator {
     /// Returns whether a retained recovery is exclusively owned by a pending
     /// pre-admission cleanup rather than by normal recovery retry.
     ///
-    /// The binding is intentionally matched together with the exact destroyed
+    /// The binding is intentionally matched together with the exact source
     /// binding and obligation. This makes an old abort unable to suppress a
     /// later recovery incarnation on the same logical surface.
     pub(crate) fn recovery_retry_is_suppressed(
         &self,
-        destroyed_binding: ViewportBinding,
+        source_binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     ) -> bool {
         let Some(pending) = self
             .recovery_replacements
-            .pending(destroyed_binding.surface())
+            .pending(source_binding.surface())
             .filter(|pending| {
-                pending.destroyed_binding() == destroyed_binding
+                pending.source_binding() == source_binding
                     && pending.recovery_obligation() == recovery_obligation
             })
         else {
@@ -1842,7 +1844,7 @@ impl ViewportCoordinator {
         self.binding_cleanup
             .recovery_cleanup(replacement)
             .and_then(BindingRetirement::recovery_cleanup_owner)
-            == Some((destroyed_binding, recovery_obligation))
+            == Some((source_binding, recovery_obligation))
     }
 
     /// Consumes one native close request which targets a pre-admission binding.
@@ -1955,7 +1957,7 @@ impl ViewportCoordinator {
             },
             retained_staging_resource: None,
             purpose: BindingCleanupPurpose::RecoveryReplacement {
-                destroyed_binding: pending.destroyed_binding(),
+                destroyed_binding: pending.source_binding(),
                 recovery_obligation: pending.recovery_obligation(),
                 requirement: RecoveryReplacementCleanupRequirement::ConditionalClose {
                     requested,
@@ -2161,22 +2163,16 @@ impl ViewportCoordinator {
         }
         let mut queued = BTreeSet::new();
         for pending in self.recovery_replacements.values() {
-            if matches!(
-                pending.status(),
-                RecoveryPendingStatus::AwaitingRecoveryHost
-                    | RecoveryPendingStatus::ReplacementRequested { .. }
-                    | RecoveryPendingStatus::ReplacementIndeterminate { .. }
-                    | RecoveryPendingStatus::ReplacementFailed { .. }
-                    | RecoveryPendingStatus::ReplacementProviderLost { .. }
-            ) && !suppress_recovery_retry.contains(&pending.destroyed_binding().surface())
+            if pending.permits_recovery_retry()
+                && !suppress_recovery_retry.contains(&pending.source_binding().surface())
                 && !self.recovery_retry_is_suppressed(
-                    pending.destroyed_binding(),
+                    pending.source_binding(),
                     pending.recovery_obligation(),
                 )
-                && queued.insert(pending.destroyed_binding().surface())
+                && queued.insert(pending.source_binding().surface())
             {
                 actions.push(ViewportLifecycleAction::RetryRecovery {
-                    destroyed_binding: pending.destroyed_binding(),
+                    source_binding: pending.source_binding(),
                     recovery_obligation: pending.recovery_obligation(),
                 });
             }
@@ -2191,7 +2187,7 @@ impl ViewportCoordinator {
         self.binding_cleanup
             .recovery_cleanup(binding)
             .and_then(BindingRetirement::recovery_cleanup_owner)
-            .map(|(destroyed_binding, _)| destroyed_binding.surface())
+            .map(|(source_binding, _)| source_binding.surface())
     }
 
     fn reduce_ready_binding(
@@ -2200,12 +2196,12 @@ impl ViewportCoordinator {
     ) -> Result<Vec<ViewportLifecycleAction>, ViewportCoordinatorError> {
         let provider = self.active_platform_provider()?;
         let mut actions = Vec::new();
-        actions.extend(self.reduce_ready_recovery_replacement(provider, binding)?);
+        actions.extend(self.reduce_ready_native_surface(provider, binding)?);
         actions.extend(self.reduce_ready_native_create(provider, binding)?);
         Ok(actions)
     }
 
-    fn reduce_ready_recovery_replacement(
+    fn reduce_ready_native_surface(
         &mut self,
         provider: PlatformObservationLease,
         binding: ViewportBinding,
@@ -2224,9 +2220,9 @@ impl ViewportCoordinator {
                     .recovery_replacements
                     .pending(surface)
                     .ok_or(ViewportCoordinatorError::MissingRecoveryPending { surface })?;
-                actions.push(ViewportLifecycleAction::RecoveryReplacementLost {
-                    destroyed_binding: pending.destroyed_binding(),
-                    replacement_binding: binding,
+                actions.push(ViewportLifecycleAction::NativeSurfaceLost {
+                    origin: pending.origin(),
+                    binding,
                     recovery_obligation: pending.recovery_obligation(),
                 });
                 self.recovery_replacements
@@ -2241,10 +2237,9 @@ impl ViewportCoordinator {
             .recovery_replacements
             .pending(surface)
             .ok_or(ViewportCoordinatorError::MissingRecoveryPending { surface })?;
-        let destroyed_binding = pending.destroyed_binding();
+        let origin = pending.origin();
         let recovery_obligation = pending.recovery_obligation();
-        let owner =
-            NativeStagingOwner::recovery_replacement(destroyed_binding, recovery_obligation);
+        let owner = pending.staging_owner();
         let failed = self
             .registry
             .record(binding.surface())
@@ -2282,9 +2277,9 @@ impl ViewportCoordinator {
                 self.recovery_replacements
                     .mark_awaiting_first_live(binding, phase, proof)
                     .map_err(recovery_replacement_error)?;
-                actions.push(ViewportLifecycleAction::RecoveryReplacementReady {
-                    destroyed_binding,
-                    replacement_binding: binding,
+                actions.push(ViewportLifecycleAction::NativeSurfaceReady {
+                    origin,
+                    binding,
                     recovery_obligation,
                 });
                 Ok(actions)
@@ -2599,7 +2594,7 @@ impl ViewportCoordinator {
             .recovery_replacements
             .pending(surface)
             .filter(|pending| {
-                pending.destroyed_binding() == destroyed_binding
+                pending.source_binding() == destroyed_binding
                     && pending.recovery_obligation() == recovery_obligation
                     && pending.replacement_binding() == Some(binding)
             })
@@ -2636,9 +2631,9 @@ impl ViewportCoordinator {
             .reset_lost_replacement(surface, binding)
             .map_err(recovery_replacement_error)?;
         if was_awaiting_first_live {
-            actions.push(ViewportLifecycleAction::RecoveryReplacementLost {
-                destroyed_binding: pending.destroyed_binding(),
-                replacement_binding: binding,
+            actions.push(ViewportLifecycleAction::NativeSurfaceLost {
+                origin: pending.origin(),
+                binding,
                 recovery_obligation: pending.recovery_obligation(),
             });
         }
@@ -2672,7 +2667,7 @@ impl ViewportCoordinator {
                 self.effects
                     .mark_destroyed(effect, binding, self.registry.inventory_generation());
         }
-        let destroyed_binding = pending.destroyed_binding();
+        let origin = pending.origin();
         let recovery_obligation = pending.recovery_obligation();
         let was_awaiting_first_live = matches!(
             pending.status(),
@@ -2686,9 +2681,9 @@ impl ViewportCoordinator {
             .reset_lost_replacement(surface, binding)
             .map_err(recovery_replacement_error)?;
         if was_awaiting_first_live {
-            actions.push(ViewportLifecycleAction::RecoveryReplacementLost {
-                destroyed_binding,
-                replacement_binding: binding,
+            actions.push(ViewportLifecycleAction::NativeSurfaceLost {
+                origin,
+                binding,
                 recovery_obligation,
             });
         }
@@ -3644,13 +3639,148 @@ impl ViewportCoordinator {
         Ok(())
     }
 
+    /// Establishes a native child for a logical surface already present in the workspace.
+    /// A detached terminal initial attempt may retry under its existing recovery obligation.
+    pub(crate) fn start_native_surface(
+        &mut self,
+        surface: SurfaceId,
+        placement: PhysicalRect,
+        recovery_obligation: SurfaceRecoveryObligationId,
+    ) -> Result<ViewportBinding, ViewportCoordinatorError> {
+        let mut candidate = self.clone();
+        let capability = candidate.native_exact_placement_create_capability();
+        if !capability.is_supported() {
+            return Err(ViewportCoordinatorError::NativeCapabilityUnavailable { capability });
+        }
+        let retry_initial = if let Some(pending) = candidate.recovery_replacements.pending(surface)
+        {
+            if pending.recovery_obligation() != recovery_obligation {
+                return Err(
+                    ViewportCoordinatorError::PendingRecoveryObligationMismatch { surface },
+                );
+            }
+            if !pending.permits_initial_retry() {
+                return Err(
+                    ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { surface },
+                );
+            }
+            true
+        } else {
+            false
+        };
+        let binding = candidate
+            .registry
+            .reserve(candidate.workspace_epoch, surface, ViewportRole::Child)
+            .map_err(ViewportCoordinatorError::Registry)?;
+        let create = candidate
+            .effects
+            .request(PlatformEffect::CreateWindow {
+                binding,
+                placement,
+                role: ViewportRole::Child,
+                strategy: candidate.native_create_strategy,
+            })
+            .map_err(ViewportCoordinatorError::Effect)?;
+        if retry_initial {
+            candidate
+                .recovery_replacements
+                .retry_initial(
+                    binding,
+                    recovery_obligation,
+                    create,
+                    candidate.native_create_strategy,
+                )
+                .map_err(recovery_replacement_error)?;
+        } else {
+            candidate
+                .recovery_replacements
+                .begin(RecoveryPendingRequest::initial(
+                    binding,
+                    ViewportRole::Child,
+                    recovery_obligation,
+                    create,
+                    candidate.native_create_strategy,
+                ))
+                .map_err(recovery_replacement_error)?;
+        }
+        *self = candidate;
+        Ok(binding)
+    }
+
+    /// Cancels only the exact active initial establishment, retaining its logical recovery.
+    pub(crate) fn cancel_initial_native_surface(
+        &mut self,
+        binding: ViewportBinding,
+    ) -> Result<bool, ViewportCoordinatorError> {
+        let Some(pending) = self
+            .recovery_replacements
+            .pending(binding.surface())
+            .filter(|pending| {
+                pending.origin() == (NativeSurfaceEstablishmentOrigin::Initial { binding })
+                    && pending.replacement_binding() == Some(binding)
+                    && !matches!(
+                        pending.status(),
+                        RecoveryPendingStatus::ReplacementCancelled { .. }
+                    )
+            })
+        else {
+            return Ok(false);
+        };
+        let create = pending.replacement_effect().ok_or(
+            ViewportCoordinatorError::MissingReplacementEffect {
+                surface: binding.surface(),
+            },
+        )?;
+        let mut candidate = self.clone();
+        let create_may_have_executed = candidate.effect_may_have_executed(create);
+        let effects = candidate
+            .effects
+            .records()
+            .filter_map(|(effect, record)| {
+                (effect == create
+                    || matches!(
+                        record.request().effect(),
+                        PlatformEffect::ShowWindow { binding: owned, .. } if *owned == binding
+                    ))
+                .then_some(effect)
+            })
+            .collect::<Vec<_>>();
+        for effect in effects {
+            let _ = candidate
+                .effects
+                .invalidate_unemitted(effect, EffectInvalidation::NativeSurfaceCancelled);
+        }
+        let binding_was_discarded = !create_may_have_executed
+            && candidate
+                .binding_cleanup
+                .recovery_cleanup(binding)
+                .is_none()
+            && candidate.registry.discard_unobserved(binding).is_ok();
+        let surface = candidate
+            .recovery_replacements
+            .mark_cancelled(binding, binding_was_discarded)
+            .map_err(recovery_replacement_error)?;
+        if binding_was_discarded {
+            candidate.terminate_pointer_passthrough_binding(binding);
+            candidate.retain_uncreated_binding_guard(binding, create);
+        } else {
+            let _ = candidate.retire_abandoned_recovery_replacement_in_place(
+                surface,
+                binding,
+                AbandonedReplacementRetirementMode::DriveImmediately,
+            )?;
+        }
+        *self = candidate;
+        Ok(true)
+    }
+
     pub(crate) fn defer_destroyed_surface_recovery(
         &mut self,
         binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     ) -> Result<(), ViewportCoordinatorError> {
         if let Some(pending) = self.recovery_replacements.pending(binding.surface()) {
-            if pending.destroyed_binding() == binding
+            if pending.origin() == (NativeSurfaceEstablishmentOrigin::Destroyed { binding })
                 && pending.recovery_obligation() == recovery_obligation
             {
                 return Ok(());
@@ -3750,7 +3880,7 @@ impl ViewportCoordinator {
                 surface: destroyed_surface,
             },
         )?;
-        let owner = (pending.destroyed_binding(), pending.recovery_obligation());
+        let owner = (pending.source_binding(), pending.recovery_obligation());
         if let Some(cleanup) = candidate.binding_cleanup.recovery_cleanup(replacement) {
             if cleanup.recovery_cleanup_owner() != Some(owner) {
                 return Err(
@@ -3810,7 +3940,7 @@ impl ViewportCoordinator {
                 },
                 retained_staging_resource: None,
                 purpose: BindingCleanupPurpose::RecoveryReplacement {
-                    destroyed_binding: pending.destroyed_binding(),
+                    destroyed_binding: pending.source_binding(),
                     recovery_obligation: pending.recovery_obligation(),
                     requirement: RecoveryReplacementCleanupRequirement::Mandatory,
                 },
@@ -3824,25 +3954,24 @@ impl ViewportCoordinator {
         Ok(())
     }
 
-    /// Admits a recovery replacement only after its exact first live docking
+    /// Admits an established native surface only after its exact first live docking
     /// output has been accepted by the engine.
-    pub(crate) fn admit_recovery_replacement_first_live(
+    pub(crate) fn admit_native_surface_first_live(
         &mut self,
-        destroyed_binding: ViewportBinding,
-        replacement_binding: ViewportBinding,
+        origin: NativeSurfaceEstablishmentOrigin,
+        binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     ) -> Result<(), ViewportCoordinatorError> {
-        let surface = destroyed_binding.surface();
-        if !self.replacement_is_admissible(replacement_binding)
+        let surface = origin.binding().surface();
+        if !self.replacement_is_admissible(binding)
             || !self.registry.record(surface).is_some_and(|record| {
-                record.binding() == replacement_binding
-                    && record.admission() == ViewportAdmission::Pending
+                record.binding() == binding && record.admission() == ViewportAdmission::Pending
             })
             || !self
                 .recovery_replacements
                 .pending(surface)
                 .and_then(RecoveryPending::first_live_proof)
-                .is_some_and(|proof| proof.binding() == replacement_binding)
+                .is_some_and(|proof| proof.binding() == binding)
         {
             return Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { surface });
         }
@@ -3850,11 +3979,11 @@ impl ViewportCoordinator {
         let mut candidate = self.clone();
         let _ = candidate
             .recovery_replacements
-            .complete_first_live(destroyed_binding, replacement_binding, recovery_obligation)
+            .complete_first_live(origin, binding, recovery_obligation)
             .map_err(recovery_replacement_error)?;
         candidate
             .registry
-            .admit(replacement_binding)
+            .admit(binding)
             .map_err(ViewportCoordinatorError::Registry)?;
         *self = candidate;
         Ok(())

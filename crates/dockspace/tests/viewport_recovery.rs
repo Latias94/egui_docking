@@ -774,7 +774,7 @@ fn pending_fixture_from(mut fixture: Fixture) -> PendingFixture {
         .viewport()
         .recovery_pending(SURFACE_CHILD)
         .expect("destroyed child must retain a queryable recovery");
-    assert_eq!(pending.destroyed_binding(), fixture.child_binding);
+    assert_eq!(pending.source_binding(), fixture.child_binding);
     assert_eq!(
         fixture.engine.surface_recovery_target(SURFACE_CHILD),
         Some(fixture.recovery_target)

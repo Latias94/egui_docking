@@ -1231,6 +1231,9 @@ impl DockEngine {
                     | InputOutcome::PaneFocusObservationPublished { .. }
                     | InputOutcome::PaneFocusObservationStale { .. }
                     | InputOutcome::NativeCreateCancelled { .. }
+                    | InputOutcome::NativeSurfaceCreateRequested { .. }
+                    | InputOutcome::NativeSurfaceCreateRejected { .. }
+                    | InputOutcome::NativeSurfaceCreateCancelled { .. }
                     | InputOutcome::ViewportCleanupRetried { .. }
                     | InputOutcome::WorkspaceReplaced { .. }
                     | InputOutcome::CommandProcessed { .. }
@@ -1308,6 +1311,21 @@ impl DockEngine {
                 *token,
                 *recovery,
             ),
+            EngineInput::CreateNativeSurface {
+                expected,
+                surface,
+                recovery_host,
+                placement,
+            } => self.reduce_native_surface_create(
+                input.sequence,
+                *expected,
+                *surface,
+                *recovery_host,
+                *placement,
+            ),
+            EngineInput::CancelNativeSurface { expected, binding } => {
+                self.reduce_native_surface_cancellation(input.sequence, *expected, *binding)
+            }
             EngineInput::PublishPlatformSnapshot {
                 provider,
                 expected_epoch,

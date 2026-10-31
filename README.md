@@ -48,7 +48,7 @@ from the 2026-10-27 audit are repaired and covered by fresh regressions. See
 [`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
 docking and multiview crate.
 
-Native creation now keeps source ownership through staging and prospective child
+Native drag-out creation keeps source ownership through staging and prospective child
 painting. Only an accepted exact first-live content output publishes topology,
 workspace revision and admission together. A dropped frame or output and a
 cancelled pending create preserve source ownership. Native enrollment now selects
@@ -58,6 +58,13 @@ owners. This strategy cutover passes the current core, adapter and reference
 window gates; broader native input and platform readiness remain open. See
 current evidence and remaining gates in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
+An existing complete logical surface can explicitly acquire native hosting
+through the public host frame. It shares readiness, exact first-live and cleanup
+ownership while retaining its topology and workspace version. Failed or cancelled
+initial attempts can retry with a fresh window incarnation; old acknowledgements
+and outputs remain tied to their original window. Automatic multi-surface native
+document recreation remains a separate unfinished integration step.
 
 Managed engine hosts can also capture native client coordinates from committed
 size and scale facts without desktop position or work areas. The joined recorder

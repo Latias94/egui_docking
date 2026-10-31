@@ -336,7 +336,8 @@ impl HostPresentationRoster {
                 NativeStagingOwner::NativeCreate { .. } => {
                     !surfaces.contains_key(&surface) && !suspended_surfaces.contains(&surface)
                 }
-                NativeStagingOwner::RecoveryReplacement { .. } => {
+                NativeStagingOwner::RecoveryReplacement { .. }
+                | NativeStagingOwner::InitialSurface { .. } => {
                     suspended_surfaces.contains(&surface) && !surfaces.contains_key(&surface)
                 }
             };

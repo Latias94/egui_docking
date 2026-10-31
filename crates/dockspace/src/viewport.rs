@@ -108,6 +108,21 @@ pub struct ViewportBinding {
     incarnation: WindowIncarnation,
 }
 
+/// Describes which lifecycle established the native surface currently being staged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum NativeSurfaceEstablishmentOrigin {
+    Destroyed { binding: ViewportBinding },
+    Initial { binding: ViewportBinding },
+}
+
+impl NativeSurfaceEstablishmentOrigin {
+    pub(crate) const fn binding(self) -> ViewportBinding {
+        match self {
+            Self::Destroyed { binding } | Self::Initial { binding } => binding,
+        }
+    }
+}
+
 impl ViewportBinding {
     pub(crate) const fn new(
         authority_domain: EngineAuthorityDomainId,

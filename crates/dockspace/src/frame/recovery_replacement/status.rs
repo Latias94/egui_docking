@@ -1,12 +1,15 @@
 //! Recovery replacement state and read-only public projection.
 
 use crate::effect::EffectId;
+use crate::presentation_observation::NativeStagingOwner;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
-use crate::viewport::{InventoryGeneration, ViewportBinding, ViewportRole};
+use crate::viewport::{
+    InventoryGeneration, NativeSurfaceEstablishmentOrigin, ViewportBinding, ViewportRole,
+};
 
 use super::super::native_bringup::{NativeBringupPhase, NativeReadyProof};
 
-/// Queryable recovery phase after a native surface was authoritatively destroyed.
+/// Queryable native establishment phase of an existing logical surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecoveryPendingStatus {
     AwaitingRecoveryHost,
@@ -24,6 +27,10 @@ pub enum RecoveryPendingStatus {
     ReplacementProviderLost {
         replacement: EffectId,
         last_effect: EffectId,
+    },
+    /// The owner explicitly cancelled native establishment without losing logical content.
+    ReplacementCancelled {
+        replacement: EffectId,
     },
     AwaitingPreShowPresentation {
         replacement: EffectId,
@@ -74,6 +81,10 @@ pub(super) enum RecoveryReplacementPhase {
         replacement_effect: EffectId,
         last_effect: EffectId,
     },
+    Cancelled {
+        binding: Option<ViewportBinding>,
+        replacement_effect: EffectId,
+    },
     AwaitingFirstLive {
         proof: NativeReadyProof,
     },
@@ -94,6 +105,7 @@ impl RecoveryReplacementPhase {
             Self::Failed { failed_effect, .. } => failed_effect == effect,
             Self::AwaitingRecoveryHost
             | Self::ProviderLost { .. }
+            | Self::Cancelled { .. }
             | Self::AwaitingFirstLive { .. }
             | Self::AwaitingCleanup { .. } => false,
         }
@@ -107,7 +119,9 @@ impl RecoveryReplacementPhase {
             | Self::BringingUp { binding, .. }
             | Self::AwaitingCleanup { binding, .. } => Some(binding),
             Self::AwaitingFirstLive { proof } => Some(proof.binding()),
-            Self::Failed { binding, .. } | Self::ProviderLost { binding, .. } => binding,
+            Self::Failed { binding, .. }
+            | Self::ProviderLost { binding, .. }
+            | Self::Cancelled { binding, .. } => binding,
         }
     }
 
@@ -121,6 +135,9 @@ impl RecoveryReplacementPhase {
                 replacement_effect, ..
             }
             | Self::ProviderLost {
+                replacement_effect, ..
+            }
+            | Self::Cancelled {
                 replacement_effect, ..
             }
             | Self::AwaitingCleanup {
@@ -197,6 +214,11 @@ impl RecoveryReplacementPhase {
                 replacement: replacement_effect,
                 last_effect,
             },
+            Self::Cancelled {
+                replacement_effect, ..
+            } => RecoveryPendingStatus::ReplacementCancelled {
+                replacement: replacement_effect,
+            },
             Self::AwaitingCleanup {
                 replacement_effect, ..
             } => RecoveryPendingStatus::AwaitingReplacementCleanup {
@@ -206,10 +228,10 @@ impl RecoveryReplacementPhase {
     }
 }
 
-/// Whole-root recovery retained while neither a contained host nor replacement is ready.
+/// Native establishment retained until a contained host or exact native output is ready.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecoveryPending {
-    pub(super) destroyed_binding: ViewportBinding,
+    pub(super) origin: NativeSurfaceEstablishmentOrigin,
     pub(super) role: ViewportRole,
     pub(super) recovery_obligation: SurfaceRecoveryObligationId,
     pub(super) phase: RecoveryReplacementPhase,
@@ -218,8 +240,12 @@ pub struct RecoveryPending {
 
 impl RecoveryPending {
     #[must_use]
-    pub const fn destroyed_binding(&self) -> ViewportBinding {
-        self.destroyed_binding
+    pub const fn source_binding(&self) -> ViewportBinding {
+        self.origin.binding()
+    }
+
+    pub(crate) const fn origin(&self) -> NativeSurfaceEstablishmentOrigin {
+        self.origin
     }
 
     #[must_use]
@@ -246,6 +272,60 @@ impl RecoveryPending {
         self.phase.status()
     }
 
+    pub(in crate::frame) const fn staging_owner(&self) -> NativeStagingOwner {
+        match self.origin {
+            NativeSurfaceEstablishmentOrigin::Destroyed { binding } => {
+                NativeStagingOwner::recovery_replacement(binding, self.recovery_obligation)
+            }
+            NativeSurfaceEstablishmentOrigin::Initial { binding } => {
+                NativeStagingOwner::InitialSurface {
+                    binding,
+                    recovery_obligation: self.recovery_obligation,
+                }
+            }
+        }
+    }
+
+    /// An explicit initial retry may replace only a detached terminal attempt.
+    pub(crate) const fn permits_initial_retry(&self) -> bool {
+        matches!(
+            (self.origin, self.phase),
+            (
+                NativeSurfaceEstablishmentOrigin::Initial { .. },
+                RecoveryReplacementPhase::AwaitingRecoveryHost
+                    | RecoveryReplacementPhase::Failed { binding: None, .. }
+                    | RecoveryReplacementPhase::ProviderLost { binding: None, .. }
+                    | RecoveryReplacementPhase::Cancelled { binding: None, .. }
+            )
+        )
+    }
+
+    pub(crate) const fn permits_recovery_retry(&self) -> bool {
+        match self.phase {
+            RecoveryReplacementPhase::AwaitingRecoveryHost
+            | RecoveryReplacementPhase::Failed { .. }
+            | RecoveryReplacementPhase::ProviderLost { .. }
+            | RecoveryReplacementPhase::Cancelled { .. } => true,
+            RecoveryReplacementPhase::ReplacementRequested { .. }
+            | RecoveryReplacementPhase::ReplacementIndeterminate { .. } => {
+                matches!(
+                    self.origin,
+                    NativeSurfaceEstablishmentOrigin::Destroyed { .. }
+                )
+            }
+            RecoveryReplacementPhase::BringingUp {
+                phase: NativeBringupPhase::AwaitingPrepared { .. },
+                ..
+            } => matches!(
+                self.origin,
+                NativeSurfaceEstablishmentOrigin::Destroyed { .. }
+            ),
+            RecoveryReplacementPhase::BringingUp { .. }
+            | RecoveryReplacementPhase::AwaitingFirstLive { .. }
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
+        }
+    }
+
     pub(in crate::frame) const fn bringup_phase(&self) -> Option<NativeBringupPhase> {
         match self.phase {
             RecoveryReplacementPhase::BringingUp { phase, .. } => Some(phase),
@@ -254,6 +334,7 @@ impl RecoveryPending {
             | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
+            | RecoveryReplacementPhase::Cancelled { .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
         }
@@ -268,6 +349,7 @@ impl RecoveryPending {
             | RecoveryReplacementPhase::BringingUp { .. }
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
+            | RecoveryReplacementPhase::Cancelled { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
         }
     }
@@ -281,6 +363,7 @@ impl RecoveryPending {
             | RecoveryReplacementPhase::BringingUp { .. }
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
+            | RecoveryReplacementPhase::Cancelled { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => true,
         }
     }

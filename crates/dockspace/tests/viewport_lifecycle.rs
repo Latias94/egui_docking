@@ -878,6 +878,7 @@ fn current_platform_snapshot(
                         RecoveryPendingStatus::AwaitingRecoveryHost
                         | RecoveryPendingStatus::ReplacementFailed { .. }
                         | RecoveryPendingStatus::ReplacementProviderLost { .. }
+                        | RecoveryPendingStatus::ReplacementCancelled { .. }
                         | RecoveryPendingStatus::AwaitingFirstLivePresentation
                         | RecoveryPendingStatus::AwaitingReplacementCleanup { .. } => None,
                     })
@@ -2178,7 +2179,7 @@ fn defer_admitted_native_recovery(
         .viewport()
         .recovery_pending(SURFACE_NATIVE)
         .expect("blocked target recovery must remain queryable");
-    assert_eq!(pending.destroyed_binding(), request.binding());
+    assert_eq!(pending.source_binding(), request.binding());
     assert_eq!(pending.replacement_binding(), Some(replacement_binding));
     assert_eq!(
         pending.status(),

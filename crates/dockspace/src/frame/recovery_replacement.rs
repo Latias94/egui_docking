@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::effect::EffectId;
 use crate::ids::SurfaceId;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
-use crate::viewport::{ViewportBinding, ViewportRole};
+use crate::viewport::{NativeSurfaceEstablishmentOrigin, ViewportBinding, ViewportRole};
 
 use super::native_bringup::{NativeBringupPhase, NativeReadyProof};
 
@@ -15,10 +15,10 @@ pub(super) use self::abandoned::{AbandonedReplacementCause, AbandonedReplacement
 use self::status::RecoveryReplacementPhase;
 pub use self::status::{RecoveryPending, RecoveryPendingStatus};
 
-/// Typed request which starts ownership of one destroyed surface recovery.
+/// Typed request which starts native establishment of an existing logical surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RecoveryPendingRequest {
-    pub(super) destroyed_binding: ViewportBinding,
+    pub(super) origin: NativeSurfaceEstablishmentOrigin,
     pub(super) role: ViewportRole,
     pub(super) recovery_obligation: SurfaceRecoveryObligationId,
     phase: RecoveryReplacementPhase,
@@ -31,7 +31,9 @@ impl RecoveryPendingRequest {
         recovery_obligation: SurfaceRecoveryObligationId,
     ) -> Self {
         Self {
-            destroyed_binding,
+            origin: NativeSurfaceEstablishmentOrigin::Destroyed {
+                binding: destroyed_binding,
+            },
             role,
             recovery_obligation,
             phase: RecoveryReplacementPhase::AwaitingRecoveryHost,
@@ -47,7 +49,9 @@ impl RecoveryPendingRequest {
         strategy: crate::platform::NativeCreateStrategy,
     ) -> Self {
         Self {
-            destroyed_binding,
+            origin: NativeSurfaceEstablishmentOrigin::Destroyed {
+                binding: destroyed_binding,
+            },
             role,
             recovery_obligation,
             phase: RecoveryReplacementPhase::ReplacementRequested {
@@ -57,12 +61,39 @@ impl RecoveryPendingRequest {
             },
         }
     }
+
+    pub(super) const fn initial(
+        binding: ViewportBinding,
+        role: ViewportRole,
+        recovery_obligation: SurfaceRecoveryObligationId,
+        create: EffectId,
+        strategy: crate::platform::NativeCreateStrategy,
+    ) -> Self {
+        Self {
+            origin: NativeSurfaceEstablishmentOrigin::Initial { binding },
+            role,
+            recovery_obligation,
+            phase: RecoveryReplacementPhase::ReplacementRequested {
+                binding,
+                create,
+                strategy,
+            },
+        }
+    }
+
+    pub(super) const fn source_binding(&self) -> ViewportBinding {
+        self.origin.binding()
+    }
+
+    pub(super) const fn origin(&self) -> NativeSurfaceEstablishmentOrigin {
+        self.origin
+    }
 }
 
 impl From<RecoveryPendingRequest> for RecoveryPending {
     fn from(request: RecoveryPendingRequest) -> Self {
         Self {
-            destroyed_binding: request.destroyed_binding,
+            origin: request.origin(),
             role: request.role,
             recovery_obligation: request.recovery_obligation,
             phase: request.phase,
@@ -130,6 +161,7 @@ impl RecoveryReplacementLifecycle {
                 RecoveryReplacementPhase::AwaitingRecoveryHost
                 | RecoveryReplacementPhase::ReplacementRequested { .. }
                 | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
+                | RecoveryReplacementPhase::Cancelled { .. }
                 | RecoveryReplacementPhase::AwaitingCleanup { .. } => {}
             }
         }
@@ -164,7 +196,7 @@ impl RecoveryReplacementLifecycle {
         &mut self,
         request: RecoveryPendingRequest,
     ) -> Result<(), RecoveryReplacementLifecycleError> {
-        let surface = request.destroyed_binding.surface();
+        let surface = request.source_binding().surface();
         if self.pending.contains_key(&surface) {
             return Err(RecoveryReplacementLifecycleError::AlreadyPending { surface });
         }
@@ -178,6 +210,36 @@ impl RecoveryReplacementLifecycle {
         if let Some(binding) = request.phase.replacement_binding() {
             self.reserve_replacement(surface, binding)?;
         }
+        self.pending.insert(surface, request.into());
+        Ok(())
+    }
+
+    pub(super) fn retry_initial(
+        &mut self,
+        binding: ViewportBinding,
+        recovery_obligation: SurfaceRecoveryObligationId,
+        create: EffectId,
+        strategy: crate::platform::NativeCreateStrategy,
+    ) -> Result<(), RecoveryReplacementLifecycleError> {
+        let surface = binding.surface();
+        let pending = self
+            .pending
+            .get(&surface)
+            .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
+        if pending.recovery_obligation() != recovery_obligation {
+            return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
+        }
+        if !pending.permits_initial_retry() || pending.source_binding() == binding {
+            return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
+        }
+        let request = RecoveryPendingRequest::initial(
+            binding,
+            pending.role(),
+            recovery_obligation,
+            create,
+            strategy,
+        );
+        self.reserve_replacement(surface, binding)?;
         self.pending.insert(surface, request.into());
         Ok(())
     }
@@ -210,6 +272,7 @@ impl RecoveryReplacementLifecycle {
             | RecoveryReplacementPhase::BringingUp { .. }
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
+            | RecoveryReplacementPhase::Cancelled { .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
         }
@@ -242,6 +305,7 @@ impl RecoveryReplacementLifecycle {
                 RecoveryReplacementPhase::AwaitingRecoveryHost
                 | RecoveryReplacementPhase::Failed { .. }
                 | RecoveryReplacementPhase::ProviderLost { .. }
+                | RecoveryReplacementPhase::Cancelled { .. }
                 | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
             })
             .collect()
@@ -276,6 +340,7 @@ impl RecoveryReplacementLifecycle {
             RecoveryReplacementPhase::AwaitingRecoveryHost
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
+            | RecoveryReplacementPhase::Cancelled { .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
         };
@@ -327,6 +392,7 @@ impl RecoveryReplacementLifecycle {
             RecoveryReplacementPhase::AwaitingRecoveryHost
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
+            | RecoveryReplacementPhase::Cancelled { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
         };
         if !phase_matches {
@@ -357,11 +423,43 @@ impl RecoveryReplacementLifecycle {
             .pending
             .get_mut(&surface)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
-        if !matches_preparation || proof.binding() != binding {
+        if !matches_preparation
+            || proof.binding() != binding
+            || proof.owner() != pending.staging_owner()
+        {
             return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
         }
         pending.phase = RecoveryReplacementPhase::AwaitingFirstLive { proof };
         Ok(pending.clone())
+    }
+
+    pub(super) fn mark_cancelled(
+        &mut self,
+        binding: ViewportBinding,
+        binding_was_discarded: bool,
+    ) -> Result<SurfaceId, RecoveryReplacementLifecycleError> {
+        let surface = self.replacement_owner(binding)?;
+        let pending = self
+            .pending
+            .get_mut(&surface)
+            .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
+        if pending.origin() != (NativeSurfaceEstablishmentOrigin::Initial { binding })
+            || pending.replacement_binding() != Some(binding)
+            || matches!(pending.phase, RecoveryReplacementPhase::Cancelled { .. })
+        {
+            return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
+        }
+        let replacement_effect = pending
+            .replacement_effect()
+            .ok_or(RecoveryReplacementLifecycleError::ReplacementEffectMissing { surface })?;
+        if binding_was_discarded {
+            self.by_replacement.remove(&binding);
+        }
+        pending.phase = RecoveryReplacementPhase::Cancelled {
+            binding: (!binding_was_discarded).then_some(binding),
+            replacement_effect,
+        };
+        Ok(surface)
     }
 
     pub(super) fn resume_preparation(
@@ -479,12 +577,21 @@ impl RecoveryReplacementLifecycle {
                 replacement_effect,
                 AbandonedReplacementCause::ProviderLost { last_effect },
             ),
+            RecoveryReplacementPhase::Cancelled {
+                binding: Some(owned),
+                replacement_effect,
+            } => (
+                owned,
+                replacement_effect,
+                AbandonedReplacementCause::Cancelled,
+            ),
             RecoveryReplacementPhase::AwaitingRecoveryHost
             | RecoveryReplacementPhase::ReplacementRequested { .. }
             | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
             | RecoveryReplacementPhase::BringingUp { .. }
             | RecoveryReplacementPhase::Failed { binding: None, .. }
             | RecoveryReplacementPhase::ProviderLost { binding: None, .. }
+            | RecoveryReplacementPhase::Cancelled { binding: None, .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => {
                 return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
@@ -509,6 +616,10 @@ impl RecoveryReplacementLifecycle {
                     last_effect,
                 }
             }
+            AbandonedReplacementCause::Cancelled => RecoveryReplacementPhase::Cancelled {
+                binding: None,
+                replacement_effect,
+            },
         };
         Ok(AbandonedReplacementDetach {
             replacement_effect,
@@ -647,17 +758,17 @@ impl RecoveryReplacementLifecycle {
 
     pub(super) fn complete_first_live(
         &mut self,
-        destroyed_binding: ViewportBinding,
-        replacement_binding: ViewportBinding,
+        origin: NativeSurfaceEstablishmentOrigin,
+        binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     ) -> Result<RecoveryPending, RecoveryReplacementLifecycleError> {
-        let surface = destroyed_binding.surface();
+        let surface = origin.binding().surface();
         let pending = self
             .pending
             .get(&surface)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
-        if pending.destroyed_binding != destroyed_binding
-            || pending.replacement_binding() != Some(replacement_binding)
+        if pending.origin != origin
+            || pending.replacement_binding() != Some(binding)
             || pending.recovery_obligation != recovery_obligation
             || !matches!(
                 pending.phase,
@@ -666,7 +777,7 @@ impl RecoveryReplacementLifecycle {
         {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
         }
-        self.ensure_replacement(surface, replacement_binding)?;
+        self.ensure_replacement(surface, binding)?;
         self.take(surface)
     }
 

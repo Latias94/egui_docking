@@ -262,7 +262,7 @@ impl DockEngine {
         let mut native_create_causal = None;
         for action in actions {
             match action {
-                crate::frame::ViewportLifecycleAction::RecoveryReplacementReady { .. } => {
+                crate::frame::ViewportLifecycleAction::NativeSurfaceReady { .. } => {
                     let generation = self.last_focus_reducer_generation.checked_next().ok_or(
                         EngineError::ViewportFocus {
                             input: self.last_input,
@@ -279,7 +279,7 @@ impl DockEngine {
                     native_create_causal.get_or_insert(prepared.focus_causal());
                 }
                 crate::frame::ViewportLifecycleAction::SurfaceDestroyed { .. }
-                | crate::frame::ViewportLifecycleAction::RecoveryReplacementLost { .. }
+                | crate::frame::ViewportLifecycleAction::NativeSurfaceLost { .. }
                 | crate::frame::ViewportLifecycleAction::RetryRecovery { .. } => {}
             }
         }
@@ -2400,6 +2400,7 @@ impl CoreHostFrame {
             &input,
             EngineInput::RegisterViewport { .. }
                 | EngineInput::BootstrapChildViewport { .. }
+                | EngineInput::CreateNativeSurface { .. }
                 | EngineInput::PublishPlatformSnapshot { .. }
                 | EngineInput::PublishNativeCloseObservation { .. }
                 | EngineInput::PublishGlobalFocusObservation { .. }

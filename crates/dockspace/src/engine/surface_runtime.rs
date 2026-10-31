@@ -3,6 +3,202 @@
 use super::*;
 
 impl DockEngine {
+    pub(super) fn reduce_native_surface_cancellation(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        binding: crate::viewport::ViewportBinding,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        let changed = self
+            .viewport
+            .cancel_initial_native_surface(binding)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        if changed {
+            self.discard_native_first_live_barrier(binding);
+            self.invalidate_surface_coordinate_scene(binding.surface())
+                .map_err(|source| Self::scene_revision_error(input, source))?;
+            self.rebuild_presentation_requirements(input)?;
+        }
+        Ok(InputOutcome::NativeSurfaceCreateCancelled { binding, changed })
+    }
+
+    pub(super) fn reduce_native_surface_create(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+        recovery_host: SurfaceId,
+        placement: crate::geometry::PhysicalRect,
+    ) -> Result<InputOutcome, EngineError> {
+        use crate::model::DockspaceActionRejection as Rejection;
+        use crate::policy::{
+            DockPayloadKind, DockPayloadPolicyFacts, DockPresentationPolicyRequest,
+            DockPresentationTarget,
+        };
+
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        let reject = |reason| InputOutcome::NativeSurfaceCreateRejected { surface, reason };
+        if self.policy.policy().arrangement_locked()
+            || self
+                .policy
+                .check_tear_off(TearOffPresentation::Native)
+                .is_err()
+        {
+            return Ok(reject(Rejection::PolicyDenied));
+        }
+        if placement.width() <= 0.0
+            || placement.height() <= 0.0
+            || !self
+                .viewport
+                .native_exact_placement_create_capability()
+                .is_supported()
+        {
+            return Ok(reject(Rejection::NativeUnavailable));
+        }
+        let Some(main_root) = self.workspace.surface(surface).map(|entry| entry.main_root) else {
+            return Ok(reject(Rejection::SurfaceUnavailable { surface }));
+        };
+        let Some(anchor) = self.root_recovery_anchors.get(&recovery_host).copied() else {
+            return Ok(reject(Rejection::SurfaceUnavailable {
+                surface: recovery_host,
+            }));
+        };
+        if surface == recovery_host
+            || self.viewport.viewport(surface).is_some()
+            || self.root_recovery_anchors.contains_key(&surface)
+            || !self.viewport.viewport(recovery_host).is_some_and(|record| {
+                record.role() == ViewportRole::Root
+                    && record.admission() == crate::viewport_registry::ViewportAdmission::Admitted
+            })
+            || self.workspace.surface(recovery_host).is_none()
+        {
+            return Ok(reject(Rejection::Conflict));
+        }
+        let retry = if let Some(pending) = self.viewport.recovery_pending(surface) {
+            let Some(bound) = self.bound_surface_recoveries.get(&surface) else {
+                return Ok(reject(Rejection::Conflict));
+            };
+            if !pending.permits_initial_retry()
+                || pending.role() != ViewportRole::Child
+                || bound.binding != pending.source_binding()
+                || bound.obligation.id() != pending.recovery_obligation()
+                || bound.obligation.authority_domain() != self.authority_domain
+                || bound.obligation.target().anchor() != anchor
+                || !self
+                    .surface_recovery
+                    .pending(surface)
+                    .is_some_and(|roster| roster.matches_workspace(&self.workspace))
+            {
+                return Ok(reject(Rejection::Conflict));
+            }
+            Some((bound.obligation.id(), bound.obligation.target()))
+        } else {
+            if self.bound_surface_recoveries.contains_key(&surface) {
+                return Ok(reject(Rejection::Conflict));
+            }
+            None
+        };
+        if !self.viewport.native_binding_allocation_available() {
+            return Ok(reject(Rejection::NativeUnavailable));
+        }
+
+        let mut candidate = self.candidate();
+        let (obligation_id, target) = if let Some(retry) = retry {
+            retry
+        } else {
+            let target = if let Some(root) = main_root {
+                SurfaceRecoveryTarget::with_converted_main(
+                    anchor,
+                    ConvertedMainRecovery::new(
+                        root,
+                        candidate.reserve_presentation_floating_identity()?,
+                        candidate.presentation_config().minimum_floating_size(),
+                    ),
+                )
+            } else {
+                SurfaceRecoveryTarget::forest_only(anchor)
+            };
+            (
+                candidate.next_surface_recovery_obligation_id(input)?,
+                target,
+            )
+        };
+        let obligation = match candidate.authorize_surface_recovery_obligation(
+            input,
+            obligation_id,
+            &candidate.workspace,
+            surface,
+            target,
+            &candidate.policy,
+        ) {
+            Ok(obligation) => obligation,
+            Err(_) => return Ok(reject(Rejection::PolicyDenied)),
+        };
+        for (root, facts) in obligation.request().roots() {
+            let source_mode = if Some(*root) == main_root {
+                DockPresentationMode::Tiled
+            } else {
+                facts.source_presentation()
+            };
+            // Native hosting authorizes every root while retaining its topology.
+            let payload = DockPayloadPolicyFacts::new(
+                DockPayloadKind::Root,
+                facts.items().iter().copied(),
+                *root,
+                surface,
+                source_mode,
+                false,
+            );
+            if let PolicyDecision::Reject(_) = candidate.policy.evaluate(
+                &DockPolicyRequest::Present(DockPresentationPolicyRequest::new(
+                    payload,
+                    DockPresentationTarget::Native(surface),
+                )),
+            ) {
+                return Ok(reject(Rejection::PolicyDenied));
+            }
+        }
+        let roster = if retry.is_none() {
+            Some(
+                candidate
+                    .capture_surface_roster(surface)
+                    .map_err(|source| EngineError::SurfaceRoster { input, source })?,
+            )
+        } else {
+            None
+        };
+        let binding = candidate
+            .viewport
+            .start_native_surface(surface, placement, obligation_id)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        if retry.is_none() {
+            candidate.last_surface_recovery_obligation = obligation_id;
+        }
+        candidate
+            .bound_surface_recoveries
+            .insert(surface, BoundSurfaceRecovery::new(binding, obligation));
+        if roster.is_some_and(|roster| !candidate.surface_recovery.defer(roster)) {
+            return Err(EngineError::ConflictingSurfaceRecovery { input, surface });
+        }
+        candidate
+            .invalidate_surface_coordinate_scene(surface)
+            .map_err(|source| Self::scene_revision_error(input, source))?;
+        candidate.rebuild_presentation_requirements(input)?;
+        *self = candidate;
+        Ok(InputOutcome::NativeSurfaceCreateRequested { binding })
+    }
+
     pub(super) fn reduce_child_viewport_bootstrap_registration(
         &mut self,
         input: InputSequence,
@@ -161,7 +357,7 @@ impl DockEngine {
                 };
                 if pending.replacement_binding().is_some()
                     || pending.role() != role
-                    || bound.binding != pending.destroyed_binding()
+                    || bound.binding != pending.source_binding()
                     || obligation.id() != id
                     || obligation.authority_domain() != self.authority_domain
                     || target != obligation.target()
@@ -1670,17 +1866,17 @@ impl DockEngine {
                     )?;
                     active_barrier.remove(&binding.surface());
                 }
-                crate::frame::ViewportLifecycleAction::RecoveryReplacementReady {
-                    destroyed_binding,
-                    replacement_binding,
+                crate::frame::ViewportLifecycleAction::NativeSurfaceReady {
+                    origin,
+                    binding: replacement_binding,
                     recovery_obligation,
                 } => {
-                    let surface = destroyed_binding.surface();
+                    let surface = origin.binding().surface();
                     if !self
                         .bound_surface_recoveries
                         .get(&surface)
                         .is_some_and(|bound| {
-                            bound.binding == *destroyed_binding
+                            bound.binding == origin.binding()
                                 && bound.obligation.id() == *recovery_obligation
                         })
                     {
@@ -1716,8 +1912,8 @@ impl DockEngine {
                         EngineError::ReductionCauseInvariant { detail: "replacement readiness action lost its current preparation proof" }
                     )?;
                     self.native_admission
-                        .register_recovery_replacement(
-                            *destroyed_binding,
+                        .register_native_surface(
+                            *origin,
                             *replacement_binding,
                             *recovery_obligation,
                             self.presentation_authority.last_presentation_output_serial,
@@ -1729,23 +1925,19 @@ impl DockEngine {
                         })?;
                     self.renew_recovery_first_live_scene(input, *replacement_binding)?;
                 }
-                crate::frame::ViewportLifecycleAction::RecoveryReplacementLost {
-                    destroyed_binding,
-                    replacement_binding,
+                crate::frame::ViewportLifecycleAction::NativeSurfaceLost {
+                    origin,
+                    binding: replacement_binding,
                     recovery_obligation,
                 } => {
                     self.native_admission
-                        .cancel_recovery_replacement(
-                            *destroyed_binding,
-                            *replacement_binding,
-                            *recovery_obligation,
-                        )
+                        .cancel_native_surface(*origin, *replacement_binding, *recovery_obligation)
                         .map_err(|source| EngineError::ReductionCauseInvariant {
                             detail: source.detail(),
                         })?;
                 }
                 crate::frame::ViewportLifecycleAction::RetryRecovery {
-                    destroyed_binding,
+                    source_binding: destroyed_binding,
                     recovery_obligation,
                 } => {
                     // The frame coordinator owns a replacement while its
@@ -1819,15 +2011,15 @@ impl DockEngine {
         for action in actions {
             let target_surface = match action {
                 crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { .. }
-                | crate::frame::ViewportLifecycleAction::RecoveryReplacementReady { .. }
-                | crate::frame::ViewportLifecycleAction::RecoveryReplacementLost { .. } => None,
+                | crate::frame::ViewportLifecycleAction::NativeSurfaceReady { .. }
+                | crate::frame::ViewportLifecycleAction::NativeSurfaceLost { .. } => None,
                 crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. } => self
                     .bound_surface_recoveries
                     .get(&observation.binding().surface())
                     .filter(|bound| bound.binding == observation.binding())
                     .map(|bound| bound.obligation.target().host_surface()),
                 crate::frame::ViewportLifecycleAction::RetryRecovery {
-                    destroyed_binding,
+                    source_binding: destroyed_binding,
                     recovery_obligation,
                 } => self
                     .bound_surface_recoveries

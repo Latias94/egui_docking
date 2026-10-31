@@ -314,6 +314,28 @@ pub enum HostInputOutcome {
         /// Stable logical surface rejected by the core.
         surface: SurfaceId,
     },
+    /// The shared native lifecycle accepted creation of an existing logical surface.
+    ///
+    /// Content already belongs to this logical surface. The binding remains
+    /// noninteractive until its exact first live output is presented.
+    NativeSurfaceCreateRequested {
+        /// Exact pending binding owned by the create effect and its observations.
+        binding: NativeSurfaceBinding,
+    },
+    /// Native hosting for an existing logical surface was rejected without mutation.
+    NativeSurfaceCreateRejected {
+        /// Logical surface whose hosting was requested.
+        surface: SurfaceId,
+        /// Stable policy, availability or conflict reason.
+        reason: DockspaceActionRejection,
+    },
+    /// An exact initial hosting attempt was cancelled; logical content is retained.
+    NativeSurfaceCreateCancelled {
+        /// Original exact binding, independent of any successor on this surface.
+        binding: NativeSurfaceBinding,
+        /// Whether this request changed an active creation owner.
+        changed: bool,
+    },
     /// One complete native platform snapshot was atomically applied.
     NativePlatformSnapshotApplied {
         /// Exact close edges newly observed in this same platform batch.

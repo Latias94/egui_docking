@@ -28,6 +28,9 @@ fn native_replacement_prefix_outcome(outcome: &HostInputOutcome) -> bool {
             | HostInputOutcome::NativeInputCancelledForOverload
             | HostInputOutcome::NativeSurfaceRegistered { .. }
             | HostInputOutcome::NativeSurfaceRegistrationRejected { .. }
+            | HostInputOutcome::NativeSurfaceCreateRequested { .. }
+            | HostInputOutcome::NativeSurfaceCreateRejected { .. }
+            | HostInputOutcome::NativeSurfaceCreateCancelled { .. }
             | HostInputOutcome::NativePlatformSnapshotApplied { .. }
             | HostInputOutcome::NativeCloseObservationApplied { .. }
             | HostInputOutcome::NativeFocusObservationApplied
@@ -87,6 +90,22 @@ impl HostFrameReport {
         });
         for reduced in transition.reduced_inputs() {
             let outcome = match reduced.outcome() {
+                InputOutcome::NativeSurfaceCreateRequested { binding } => {
+                    native_provider.map(|provider| HostInputOutcome::NativeSurfaceCreateRequested {
+                        binding: NativeSurfaceBinding::from_binding(provider, *binding),
+                    })
+                }
+                InputOutcome::NativeSurfaceCreateRejected { surface, reason } => {
+                    Some(HostInputOutcome::NativeSurfaceCreateRejected {
+                        surface: *surface,
+                        reason: *reason,
+                    })
+                }
+                InputOutcome::NativeSurfaceCreateCancelled { binding, changed } => native_provider
+                    .map(|provider| HostInputOutcome::NativeSurfaceCreateCancelled {
+                        binding: NativeSurfaceBinding::from_binding(provider, *binding),
+                        changed: *changed,
+                    }),
                 InputOutcome::NativeInputDeviceRemoval => {
                     Some(HostInputOutcome::NativeInputDeviceRemoval)
                 }

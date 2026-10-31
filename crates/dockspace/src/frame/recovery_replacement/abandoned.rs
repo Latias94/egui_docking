@@ -1,4 +1,4 @@
-//! Affine transfer from failed recovery bring-up into exact binding cleanup.
+//! Affine transfer from abandoned native bring-up into exact binding cleanup.
 
 use crate::effect::EffectId;
 
@@ -7,6 +7,7 @@ use crate::effect::EffectId;
 pub(in crate::frame) enum AbandonedReplacementCause {
     DispatchFailed { failed_effect: EffectId },
     ProviderLost { last_effect: EffectId },
+    Cancelled,
 }
 
 /// Abandoned replacement identity detached from the recovery owner.

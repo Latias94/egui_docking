@@ -474,7 +474,7 @@ impl BoundDocumentState {
                     engine
                         .viewport()
                         .recovery_pending(surface)
-                        .map(|pending| (pending.role(), pending.destroyed_binding()))
+                        .map(|pending| (pending.role(), pending.source_binding()))
                 });
             let Some((role, binding)) = identity else {
                 if engine.root_recovery_anchor(surface).is_some_and(|anchor| {

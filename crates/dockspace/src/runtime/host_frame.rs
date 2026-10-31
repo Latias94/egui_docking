@@ -39,6 +39,7 @@ fn has_ordinary_application_input(transition: &crate::transition::EngineTransiti
                 input.outcome(),
                 InputOutcome::NativeInputCancelledForOverload
                     | InputOutcome::NativeCreateCancelled { .. }
+                    | InputOutcome::NativeSurfaceCreateCancelled { .. }
             )
     })
 }
@@ -65,6 +66,40 @@ pub struct DockspaceHostFrame<'session> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Creates a managed child window for an existing complete logical surface.
+    ///
+    /// Its main root and entire contained forest stay in the one workspace.
+    /// Creation, renderer preparation and exact first-live presentation admit
+    /// the binding without repeating a topology transfer. A current application
+    /// root must own the recovery destination. Document preferences are optional
+    /// inputs to this explicit request and never create windows by themselves.
+    /// After a failed or cancelled initial attempt, the same request may create
+    /// a fresh binding while cleanup retains ownership of the old incarnation.
+    /// A healthy attempt or a destruction-driven recovery remains a conflict.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a nonmanaged host, unfinished native input or a closed
+    /// input phase. Policy, unavailable surfaces and conflicting native ownership
+    /// are typed outcomes of the exact submitted action in the committed report.
+    pub fn create_native_surface_current(
+        &mut self,
+        surface: SurfaceId,
+        recovery_host: SurfaceId,
+        placement: NativeWindowPlacement,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.session.ensure_managed_native_host_available()?;
+        let attempt = self.frame.presentation_attempt();
+        let sequence = self.append_identified(EngineInput::CreateNativeSurface {
+            expected: self.frame.view().version(),
+            surface,
+            recovery_host,
+            placement: placement.outer_rect(),
+        })?;
+        Ok(DockspaceSubmittedAction::new(attempt, sequence))
+    }
+
     /// Cancels managed pointer and scroll input without retiring its provider.
     ///
     /// Earlier native input must be fully reduced. This is the frame's final
@@ -115,12 +150,36 @@ impl DockspaceHostFrame<'_> {
             .native_create_sagas()
             .next()
             .map(|(id, _)| id);
-        let Some(saga) = saga else {
+        if let Some(saga) = saga {
+            self.append(EngineInput::CancelNativeCreate {
+                expected: self.frame.view().version(),
+                saga,
+            })?;
+            return Ok(true);
+        }
+        let initial = self
+            .frame
+            .view()
+            .viewport()
+            .pending_recoveries()
+            .find_map(|(_, pending)| {
+                (matches!(
+                    pending.origin(),
+                    crate::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. }
+                ) && !matches!(
+                    pending.status(),
+                    crate::frame::RecoveryPendingStatus::ReplacementCancelled { .. }
+                        | crate::frame::RecoveryPendingStatus::AwaitingReplacementCleanup { .. }
+                ))
+                .then(|| pending.replacement_binding())
+                .flatten()
+            });
+        let Some(binding) = initial else {
             return Ok(false);
         };
-        self.append(EngineInput::CancelNativeCreate {
+        self.append(EngineInput::CancelNativeSurface {
             expected: self.frame.view().version(),
-            saga,
+            binding,
         })?;
         Ok(true)
     }

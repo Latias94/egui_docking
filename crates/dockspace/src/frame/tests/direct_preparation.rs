@@ -114,14 +114,16 @@ fn staged_replacement_failed_before_first_live_revokes_readiness_and_closes_exac
         .expect("a renderer failure after post-show must publish");
 
     assert_eq!(coordinator.native_ready_basis(replacement), None);
-    assert!(!transition.actions().iter().any(|action| matches!(
-        action,
-        ViewportLifecycleAction::RecoveryReplacementReady { .. }
-    )));
+    assert!(
+        !transition
+            .actions()
+            .iter()
+            .any(|action| matches!(action, ViewportLifecycleAction::NativeSurfaceReady { .. }))
+    );
     let pending = coordinator
         .recovery_pending(destroyed.surface())
         .expect("renderer failure must preserve the original content recovery");
-    assert_eq!(pending.destroyed_binding(), destroyed);
+    assert_eq!(pending.source_binding(), destroyed);
     assert_eq!(pending.recovery_obligation(), obligation);
     assert_eq!(pending.replacement_binding(), None);
     assert_eq!(
@@ -133,7 +135,11 @@ fn staged_replacement_failed_before_first_live_revokes_readiness_and_closes_exac
     );
     assert!(coordinator.viewport(destroyed.surface()).is_none());
     assert_eq!(
-        coordinator.admit_recovery_replacement_first_live(destroyed, replacement, obligation),
+        coordinator.admit_native_surface_first_live(
+            NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed },
+            replacement,
+            obligation
+        ),
         Err(
             ViewportCoordinatorError::PendingRecoveryRegistrationMismatch {
                 surface: destroyed.surface(),
@@ -239,12 +245,12 @@ fn direct_replacement_provider_handoff_before_first_live_compensates_with_succes
         .expect("one visible snapshot may acknowledge create and prove preparation");
     assert!(matches!(
         transition.actions(),
-        [ViewportLifecycleAction::RecoveryReplacementReady {
-            destroyed_binding,
-            replacement_binding,
+        [ViewportLifecycleAction::NativeSurfaceReady {
+            origin,
+            binding,
             recovery_obligation,
-        }] if *destroyed_binding == destroyed
-            && *replacement_binding == replacement
+        }] if *origin == NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed }
+            && *binding == replacement
             && *recovery_obligation == obligation
     ));
     assert!(coordinator.native_ready_basis(replacement).is_some());
@@ -270,7 +276,7 @@ fn direct_replacement_provider_handoff_before_first_live_compensates_with_succes
         .recovery_pending(surface)
         .expect("provider handoff must preserve the original recovery");
     assert_eq!(pending.status(), provider_lost);
-    assert_eq!(pending.destroyed_binding(), destroyed);
+    assert_eq!(pending.source_binding(), destroyed);
     assert_eq!(pending.recovery_obligation(), obligation);
     assert_eq!(pending.replacement_binding(), None);
     assert_eq!(coordinator.native_ready_basis(replacement), None);
@@ -323,7 +329,11 @@ fn direct_replacement_provider_handoff_before_first_live_compensates_with_succes
     assert_eq!(coordinator.native_ready_basis(replacement), None);
     assert!(coordinator.native_staging_presentations().next().is_none());
     assert_eq!(
-        coordinator.admit_recovery_replacement_first_live(destroyed, replacement, obligation),
+        coordinator.admit_native_surface_first_live(
+            NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed },
+            replacement,
+            obligation
+        ),
         Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { surface })
     );
 
@@ -382,7 +392,11 @@ fn staged_replacement_first_live_survives_terminal_effect_compaction() {
     assert!(coordinator.native_staging_presentations().next().is_none());
     assert_eq!(coordinator.native_ready_basis(replacement), Some(basis));
     coordinator
-        .admit_recovery_replacement_first_live(destroyed, replacement, obligation)
+        .admit_native_surface_first_live(
+            NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed },
+            replacement,
+            obligation,
+        )
         .expect("effect compaction must not strand exact first-live admission");
     assert_eq!(
         coordinator

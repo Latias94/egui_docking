@@ -431,8 +431,8 @@ pub enum NativeStagingPresentationPhase {
 
 /// Core-private lifecycle owner of one native staging sequence.
 ///
-/// A recovery replacement stages an established logical surface using its
-/// destroyed binding and recovery obligation, without a retained create resource.
+/// Initial surfaces and recovery replacements stage an established logical
+/// surface without a retained create resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum NativeStagingOwner {
     NativeCreate {
@@ -440,6 +440,10 @@ pub(crate) enum NativeStagingOwner {
     },
     RecoveryReplacement {
         destroyed_binding: ViewportBinding,
+        recovery_obligation: SurfaceRecoveryObligationId,
+    },
+    InitialSurface {
+        binding: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     },
 }
@@ -471,20 +475,21 @@ impl NativeStagingOwner {
             Self::RecoveryReplacement {
                 destroyed_binding, ..
             } => destroyed_binding.authority_domain(),
+            Self::InitialSurface { binding, .. } => binding.authority_domain(),
         }
     }
 
     pub(crate) const fn retained_resource(self) -> Option<NativeStagingResourceId> {
         match self {
             Self::NativeCreate { resource, .. } => Some(resource),
-            Self::RecoveryReplacement { .. } => None,
+            Self::RecoveryReplacement { .. } | Self::InitialSurface { .. } => None,
         }
     }
 
     pub(crate) const fn native_create_saga(self) -> Option<NativeCreateSagaId> {
         match self {
             Self::NativeCreate { resource } => Some(resource.saga()),
-            Self::RecoveryReplacement { .. } => None,
+            Self::RecoveryReplacement { .. } | Self::InitialSurface { .. } => None,
         }
     }
 }

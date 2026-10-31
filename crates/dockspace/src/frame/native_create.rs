@@ -464,7 +464,7 @@ impl ViewportCoordinator {
         self.recovery_replacements
             .values()
             .filter(|pending| pending.suspends_live_presentation())
-            .map(|pending| pending.destroyed_binding().surface())
+            .map(|pending| pending.source_binding().surface())
     }
 
     /// Returns every retained source resource still owned by native lifecycle state.
@@ -488,14 +488,17 @@ impl ViewportCoordinator {
                 })
             }
             NativeStagingOwner::RecoveryReplacement {
-                destroyed_binding,
-                recovery_obligation,
+                destroyed_binding: source_binding,
+                ..
+            }
+            | NativeStagingOwner::InitialSurface {
+                binding: source_binding,
+                ..
             } => self
                 .recovery_replacements
-                .pending(destroyed_binding.surface())
+                .pending(source_binding.surface())
                 .is_some_and(|pending| {
-                    pending.destroyed_binding() == destroyed_binding
-                        && pending.recovery_obligation() == recovery_obligation
+                    pending.staging_owner() == presentation.owner()
                         && pending.replacement_binding() == Some(presentation.binding())
                         && pending
                             .bringup_phase()
@@ -643,7 +646,8 @@ impl ViewportCoordinator {
             NativeStagingOwner::NativeCreate { .. } => {
                 self.observe_native_create_staging_presentation(presented)
             }
-            NativeStagingOwner::RecoveryReplacement { .. } => {
+            NativeStagingOwner::RecoveryReplacement { .. }
+            | NativeStagingOwner::InitialSurface { .. } => {
                 self.observe_recovery_staging_presentation(presented)
             }
         }
@@ -693,20 +697,18 @@ impl ViewportCoordinator {
         if !self.native_staging_presentation_is_current(request) {
             return Ok(None);
         }
-        let NativeStagingOwner::RecoveryReplacement {
-            destroyed_binding,
-            recovery_obligation,
-        } = request.owner()
-        else {
-            return Ok(None);
-        };
-        let surface = destroyed_binding.surface();
+        let surface = request.binding().surface();
         let Some(pending) = self.recovery_replacements.pending(surface) else {
             return Ok(None);
         };
+        if pending.staging_owner() != request.owner() {
+            return Ok(None);
+        }
         let Some(phase) = pending.bringup_phase() else {
             return Ok(None);
         };
+        let origin = pending.origin();
+        let recovery_obligation = pending.recovery_obligation();
         let binding = request.binding();
         match self.observe_native_bringup_presentation(
             binding,
@@ -728,9 +730,9 @@ impl ViewportCoordinator {
                 self.recovery_replacements
                     .mark_awaiting_first_live(binding, phase, proof)
                     .map_err(super::recovery_replacement_error)?;
-                Ok(Some(ViewportLifecycleAction::RecoveryReplacementReady {
-                    destroyed_binding,
-                    replacement_binding: binding,
+                Ok(Some(ViewportLifecycleAction::NativeSurfaceReady {
+                    origin,
+                    binding,
                     recovery_obligation,
                 }))
             }

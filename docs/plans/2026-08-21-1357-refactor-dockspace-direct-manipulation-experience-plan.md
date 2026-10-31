@@ -40,7 +40,7 @@ The next completion work is concrete:
 
 | Remaining boundary | Next acceptance |
 | --- | --- |
-| U10 native layout management | Single-host default/preset reset and document restore, exact retained-root successors and missing-pane recovery pass 43 checks at `dbfae70`, including six/seven real X11 edits. Multi-surface window recreation and complete host removal/rebinding remain open. The next prerequisite adds explicit document-owned native hosting/recovery-host preferences and a public read-only projection before extending the shared creation owner. |
+| U10 native layout management | Single-host default/preset reset and document restore, exact retained-root successors and missing-pane recovery pass 43 checks at `dbfae70`, including six/seven real X11 edits. Document V2 hosting/recovery-host preferences and their read-only projection pass 18 checks at `349a513`. Existing logical surfaces now use the shared native creation/first-live owner with explicit Initial/Destroyed origins and failed/cancelled-attempt retry; 42 final checks pass for that slice. Automatic multi-surface window recreation and complete host removal/rebinding remain open. |
 | U10 native overflow | Qualify a finite real-input overflowed/clipped tab insertion, including preview, final order and cleanup; reuse the existing overflow owner. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
@@ -2223,6 +2223,58 @@ create preparation and first-live owner without repeating a topology transfer.
 No synthetic Destroyed, external-root registration or second host registry may
 stand in for that initial materialization. This does not complete multi-surface
 restoration or remove the remaining U10/U7/U8/U9/U11 gates.
+
+The initial-materialization slice now shares that owner with typed Initial and
+Destroyed origins. Explicit creation keeps an existing surface's complete
+topology and version, requires exact semantic first-live presentation, and
+supports a fresh-incarnation retry after failed or cancelled initial creation.
+Healthy attempts remain single-owned; failure without observed coordinates
+preserves the full frozen roster. Independent review exposed and repaired a
+fine-grained Native policy omission for initial creation and retry; the pure
+evaluator now checks the complete root/item set. All 42 final checks pass:
+workspace 1,927, public 147/164, product/official 114/15, native serde 558 including
+10,000 lifetimes, assertion-disabled serde 557 without repeating that soak, and
+Linux serde library 513 in each assertion mode. Both platforms' six pressure
+modes and default/bounded compatibility workflows pass, with six/seven real X11
+edits. The new Initial API itself has public recording/coordinator evidence;
+these platform compatibility runs do not claim an additional real Initial
+creation journey. Source and limitations remain in `docs/VALIDATION.md`.
+
+The next native document cutover uses one terminal replacement plus a core-owned
+initial-establishment continuation. Generate Child intents only after document
+surface/recovery-host rebasing, require explicit Child hosting and positive
+saved placement, and retain the real configured Root successor. Keep the
+pre-create wait phase inside the existing establishment lifecycle without a
+fabricated binding, Create effect or Destroyed observation. It freezes the full
+roster while waiting for a fresh post-replacement capability snapshot and exact
+quiescence of a conflicting old child. A subsequent budgeted native frame may
+start one eligible initial create before its application terminal input. The
+first dispatched attempt consumes that automatic intent; Failed or Cancelled
+requires explicit retry. Shutdown cancels an undispatched wait without emitting
+Close. The adapter validates declarations and advances this existing owner;
+scanning saved preferences for unbound surfaces must not create a perpetual
+reopen loop or a second pending-window registry.
+
+The unbound branch carries only the requested surface, recovery host, placement
+and its exact restore dependencies; no recovery obligation is issued before
+normal initial creation. Its frozen complete roster uses the existing recovery
+store. Waiting and stopped states both remain structurally occupied and
+suspended, while only Waiting counts as pending creation for shutdown. Explicit
+creation revalidates and consumes the same intent atomically. The fixed physical
+Root may omit a saved role declaration when its current external Root record and
+retained successor prove it; a saved Child role for that Root still rejects.
+Additional surfaces always require explicit Child declarations. Waiting for the
+restore's exact retained cleanup/terminal guards, including Root predecessors,
+is an acceptable conservative gate; surface-name equality cannot replace exact
+binding quiescence after rebasing.
+
+Acceptance covers rebase of both references, old-child delayed output/Destroyed
+and route retirement, missing/fresh capability snapshots, dropped/failed frames,
+finite capacity, explicit retry and shutdown quiescence. `DocumentRestored`
+means the document and intents committed atomically; each child still requires
+its own preparation and first-live admission. Additional roots or absent
+placement remain typed unsupported in the fixed-root reference facade until
+their separate hosting contract is implemented.
 
 ### U11. Certify Windows and macOS capability claims
 

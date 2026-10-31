@@ -20,6 +20,9 @@ pub enum BindingRetirementOrigin {
     NativeCreateAborted {
         create: EffectId,
     },
+    NativeSurfaceCancelled {
+        create: EffectId,
+    },
     RecoveryReplacementFailed {
         replacement: EffectId,
         failed: EffectId,
@@ -456,7 +459,9 @@ impl BindingCleanupLifecycle {
 
     pub(super) fn extend_referenced_effects(&self, effects: &mut BTreeSet<EffectId>) {
         for retirement in self.entries.values() {
-            if let BindingRetirementOrigin::NativeCreateAborted { create } = retirement.origin {
+            if let BindingRetirementOrigin::NativeCreateAborted { create }
+            | BindingRetirementOrigin::NativeSurfaceCancelled { create } = retirement.origin
+            {
                 effects.insert(create);
             }
             if let BindingRetirementOrigin::RecoveryReplacementFailed {

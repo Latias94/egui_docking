@@ -9,7 +9,7 @@ use crate::presentation_observation::{
 };
 use crate::scene::SurfaceCoordinateCapture;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
-use crate::viewport::ViewportBinding;
+use crate::viewport::{NativeSurfaceEstablishmentOrigin, ViewportBinding};
 use crate::viewport_focus::{FocusCausalStamp, PaneFocusDisposition};
 use crate::viewport_registry::ViewportAdmission;
 
@@ -45,8 +45,8 @@ struct FirstLiveBarrier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FirstLiveOwner {
     NativeCreate(NativeCreateSagaId),
-    RecoveryReplacement {
-        destroyed_binding: ViewportBinding,
+    NativeSurface {
+        origin: NativeSurfaceEstablishmentOrigin,
         recovery_obligation: SurfaceRecoveryObligationId,
     },
 }
@@ -81,7 +81,7 @@ impl NativeAdmissionState {
                 FirstLiveOwner::NativeCreate(saga) => viewport
                     .native_create_saga(saga)
                     .is_some_and(|create| create.binding() == *binding && matches!(create.phase(), crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. })),
-                FirstLiveOwner::RecoveryReplacement { .. } => true,
+                FirstLiveOwner::NativeSurface { .. } => true,
             });
     }
 
@@ -164,9 +164,9 @@ impl NativeAdmissionState {
         )
     }
 
-    pub(super) fn register_recovery_replacement(
+    pub(super) fn register_native_surface(
         &mut self,
-        destroyed_binding: ViewportBinding,
+        origin: NativeSurfaceEstablishmentOrigin,
         target: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
         output_floor: PresentationOutputSerial,
@@ -176,8 +176,8 @@ impl NativeAdmissionState {
         self.register_barrier(
             target,
             ready_basis,
-            FirstLiveOwner::RecoveryReplacement {
-                destroyed_binding,
+            FirstLiveOwner::NativeSurface {
+                origin,
                 recovery_obligation,
             },
             None,
@@ -222,9 +222,9 @@ impl NativeAdmissionState {
         self.barriers.remove(&target);
     }
 
-    pub(super) fn cancel_recovery_replacement(
+    pub(super) fn cancel_native_surface(
         &mut self,
-        destroyed_binding: ViewportBinding,
+        origin: NativeSurfaceEstablishmentOrigin,
         target: ViewportBinding,
         recovery_obligation: SurfaceRecoveryObligationId,
     ) -> Result<(), NativeAdmissionError> {
@@ -233,8 +233,8 @@ impl NativeAdmissionState {
         let Some(barrier) = self.barriers.get(&target).copied() else {
             return Ok(());
         };
-        let expected = FirstLiveOwner::RecoveryReplacement {
-            destroyed_binding,
+        let expected = FirstLiveOwner::NativeSurface {
+            origin,
             recovery_obligation,
         };
         if barrier.owner != expected {
@@ -391,15 +391,15 @@ impl DockEngine {
                     detail: "a native create can be admitted only by its exact first-live projection",
                 });
             }
-            FirstLiveOwner::RecoveryReplacement {
-                destroyed_binding,
+            FirstLiveOwner::NativeSurface {
+                origin,
                 recovery_obligation,
             } => {
                 if !self
                     .bound_surface_recoveries
                     .get(&surface)
                     .is_some_and(|bound| {
-                        bound.binding == destroyed_binding
+                        bound.binding == origin.binding()
                             && bound.obligation.id() == recovery_obligation
                     })
                 {
@@ -408,11 +408,7 @@ impl DockEngine {
                     });
                 }
                 self.viewport
-                    .admit_recovery_replacement_first_live(
-                        destroyed_binding,
-                        binding,
-                        recovery_obligation,
-                    )
+                    .admit_native_surface_first_live(origin, binding, recovery_obligation)
                     .map_err(|source| EngineError::Viewport {
                         input: self.last_input,
                         source,
@@ -420,8 +416,8 @@ impl DockEngine {
                 self.native_admission
                     .admit_first_live(
                         binding,
-                        FirstLiveOwner::RecoveryReplacement {
-                            destroyed_binding,
+                        FirstLiveOwner::NativeSurface {
+                            origin,
                             recovery_obligation,
                         },
                         None,

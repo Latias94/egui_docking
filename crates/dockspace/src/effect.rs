@@ -432,6 +432,8 @@ pub enum EffectInvalidation {
     WorkspaceReplaced { replacement_epoch: WorkspaceEpoch },
     /// The owning native-create transaction aborted before dispatch.
     NativeCreateAborted,
+    /// Initial hosting of existing logical content was explicitly cancelled.
+    NativeSurfaceCancelled,
     /// A pre-admission close was authoritatively cleared before its cleanup reached the adapter.
     PreAdmissionCloseCleared,
     /// A close plan withdrew a resolution before it reached the adapter.

@@ -572,6 +572,25 @@ After first-live admission, ordinary surface destruction uses the core's
 existing bound recovery obligation. There is no separate pre-first-live
 transferred-create recovery API.
 
+An existing logical surface can acquire a native window with
+`frame.create_native_surface_current(surface, recovery_host, placement)`.
+The recovery host must be a current application root. The request captures the
+surface's complete main root and contained forest in the existing recovery
+owner, emits `CreateWindow`, and uses the same strategy and first-live barrier.
+Admission preserves topology and workspace version. Logical content remains
+suspended while native preparation is incomplete; an output's `Presented`
+terminal must commit before the new binding gains input authority.
+
+Initial creation and destruction-driven replacement retain distinct origins.
+After an initial attempt fails or is cancelled, the same explicit request can
+retry with a fresh binding and the original recovery obligation. Old cleanup,
+create acknowledgements and outputs retain their predecessor identity. A healthy
+attempt or an existing destruction-driven recovery returns typed `Conflict`.
+If no source coordinates were ever observed, failure retains the full surface
+pending an explicit retry; requested placement is never treated as observed
+geometry for contained recovery. Reading saved hosting preferences remains
+inert. Automatic document-driven window recreation is separate adapter work.
+
 Pure lifecycle cleanup can commit while effect-report storage is occupied;
 compensating effects remain in the original ledger until delivery capacity
 returns. Ordinary application input mixed into that frame keeps its capacity

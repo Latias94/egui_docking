@@ -46,6 +46,16 @@ before visibility is known while preserving its hidden/output barriers. These
 are host-contract traces; actual platform creation and presentation remain host
 responsibilities and have separately labelled native reference qualification.
 
+`tests/native_surface_creation.rs` creates a native window for a complete
+logical surface that already owns its main root and contained forest. Direct
+and Staged journeys require exact semantic first-live presentation while
+preserving topology and workspace version. Failed and cancelled initial
+attempts retry through the same recovery owner with a fresh binding; old Create
+acknowledgements, outputs, Destroyed observations and producer quiescence cannot
+admit or retire the successor. Finite producer storage, same-frame cancellation
+and dropped/failed-frame replay exercise the public boundary. These recording
+traces do not qualify automatic native document recreation or OS creation.
+
 `tests/native_local_geometry.rs` measures and presents a native root with client
 size and independent scales, without a desktop origin or work-area facts. It
 checks stable selection, exact output, frame retry and atomic rejection of

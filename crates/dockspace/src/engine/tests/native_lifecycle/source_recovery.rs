@@ -421,7 +421,7 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
             .viewport()
             .recovery_pending(SOURCE_SURFACE)
             .expect("the original source destruction must retain a recovery owner")
-            .destroyed_binding(),
+            .source_binding(),
         source,
     );
     assert!(matches!(
