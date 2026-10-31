@@ -81,6 +81,14 @@ and unchanged official dependency bytes, finding no confirmed P1/P2. Earlier
 path-override qualifications retain their historical source revisions. Remote
 publication/reproduction, positive stationary input and full U9 remain open.
 
+A subsequent detached local clone of `8b95744` has no `repo-ref` checkout or
+path overrides and passes locked/offline metadata resolution. Its Git status
+is clean before and after, with the same exact egui/Winit/inspection Git
+sources. `/tmp/dockspace-native-clean-git-checkout.json` and
+`/tmp/dockspace-native-clean-git-metadata.json` record this finite checkout
+check. It uses the same locally seeded Cargo objects; compilation is not
+repeated in the clone, and remote availability/CI remain unqualified.
+
 ## 2026-11-01 X11 local mutation capture revocation
 
 Local Winit fork `3084fc09` moves the existing implicit capture state into one
