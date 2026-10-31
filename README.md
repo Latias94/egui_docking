@@ -311,8 +311,7 @@ cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml 
 cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --test-threads=1
 cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --features serde --test persistence --test-threads=1
 cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --all-features --test-threads=1
-cargo package --package dockspace --all-features --locked -j1
-cargo package --package egui_dockspace --all-features --locked --list
+cargo package --package dockspace --package egui_dockspace --all-features --locked -j1
 ```
 
 The fork-backed native workspace uses one thin Cargo launcher:
@@ -435,15 +434,20 @@ and terminal waits are excluded; these finite samples establish neither a hard
 
 `dockspace` must still be published before `egui_dockspace`, because the
 adapter's packaged manifest resolves its declared core dependency from the
-registry. Before that publication, a clean checkout cannot make Cargo verify the
-adapter tarball: package verification intentionally resolves the normalized
-manifest through the registry rather than through the workspace path dependency.
+registry. Cargo 1.95 can verify both packages before publication when they are
+selected in the same `cargo package` command. Its temporary local registry
+supplies the matching core package while it verifies the adapter's normalized
+manifest.
 
-The local and CI gate therefore verifies the `dockspace` tarball, checks the
-complete `egui_dockspace` package file list, and compiles the adapter through the
-independent product and official-egui harnesses. After the matching `dockspace`
-version is available in the registry, run `cargo package --package
-egui_dockspace --all-features --locked` as the release-side adapter verification.
+The 2026-11-01 local gate packages and verifies both crates, then builds independent
+consumers against extracted archives. The core consumer passes its default and
+serde suites and runs the self-drawn host example; the adapter consumer passes
+the official egui 0.37 suite. The only patched registry dependency is `dockspace`
+from the extracted core archive; the egui family remains on crates.io.
+This qualifies package contents and downstream use, not registry publication or
+the optional native workspace's unpublished fork dependencies. Exact evidence
+and the retained lockfile warning are recorded in
+[`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 ## License
 

@@ -2483,6 +2483,17 @@ not positive native stationary input or the complete Goal.
 - **Test scenarios:** Full local journey parity, assertion-disabled native operation, stable retained output, long-run lifecycle quiescence, public packaging, and stale-output rejection pass with the documented host capabilities.
 - **Verification:** No obsolete terminal owner, hidden required host API, ignored release blocker, or fork-only requirement is marketed as generic core support.
 
+The 2026-11-01 archive checkpoint at `7809e57` packages and verifies `dockspace`
+and `egui_dockspace` together with Cargo 1.95's temporary local registry. All
+274/36 Rust files and both READMEs match the source. Independent consumers of
+the extracted archives pass public default 148, public serde 176, official
+egui 15, the self-drawn engine example and dependency isolation. Official egui
+0.37 remains registry-sourced; only the extracted core patches the adapter's
+declared core dependency. Exact hashes and local evidence are recorded in
+`docs/VALIDATION.md`. Registry publication, optional-native fork reproducibility,
+the retained yanked `clipboard-win 5.4.1` lockfile warning and the remaining
+native/overall acceptance are separate work; this checkpoint does not close U9.
+
 The 2026-10-31 local dependency audit confirms a concrete reproducibility
 dependency: egui `92c921f7235c` still pins winit `f378b50f29ca` internally, despite
 using the pointer-observation APIs from local winit `6c10c87da2a0`. Close that

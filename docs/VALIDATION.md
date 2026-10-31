@@ -15,6 +15,45 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 core and official adapter archive consumers
+
+The local U9 package gate at `7809e57` verifies both publishable crates in one
+Cargo 1.95 invocation:
+
+```text
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo package -p dockspace -p egui_dockspace --all-features --locked --allow-dirty --offline
+```
+
+Cargo packages and verifies both normalized manifests through its temporary
+local registry. `--allow-dirty` permits the separately owned CI/review changes
+and the ongoing native-only fixture; none changes either packaged crate.
+The core archive contains 280 files, including 274 Rust files, and the adapter
+contains 42 files, including 36 Rust files. Every packaged Rust file and both
+READMEs match their source bytes. Archive SHA-256 values are:
+
+| Archive | SHA-256 |
+| --- | --- |
+| `dockspace-0.1.0.crate` | `c63bb4bfff67208334e6c8eb54aa68df30ed65e287eb4f6e4abc1ffbab0c8022` |
+| `egui_dockspace-0.1.0.crate` | `2c191bbd2cf48c366506d3bac02fb483acfa47d261c7cb73082355ead63db265` |
+
+Independent copies of the public host and official egui harnesses depend only
+on the extracted packages. The official harness patches the adapter's declared
+registry core dependency to the extracted core; dependency metadata confirms
+that the entire egui 0.37 family still comes from crates.io. Default public
+consumer 148/148, serde public consumer 176/176, official consumer 15/15, the
+`engine_host` example and the core dependency-boundary guard pass. Both Cargo
+package verifications pass. No additional full-workspace or native run is
+claimed for this documentation-only checkpoint.
+
+Evidence is `/tmp/dockspace-u9-package-source.json`,
+`/tmp/dockspace-u9-package-qualification.json`,
+`/tmp/dockspace-u9-core-adapter-packages.log` and the corresponding
+`/tmp/dockspace-u9-package-*.log` consumer logs. The package command retains a
+warning that lockfile dependency `clipboard-win 5.4.1` is yanked; it has not
+been silently updated or qualified on Windows. These local archive checks do
+not publish a crate, certify a clean remote checkout of optional native forks,
+or complete U9/the overall plan.
+
 ## 2026-11-01 cancelled create cleanup with an accepted release
 
 The next mixed-owner model exposed a real lifecycle gap. Once a create saga was
