@@ -15,6 +15,66 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 original Primary-press identity source
+
+Winit `cd1a739a231248a5bb567db65ca64dcf890a9ab5` adds a Clone-only opaque
+`PointerPressToken` to MouseInput, leaving PointerEventFacts Copy. One existing
+capture row owns pending validation or the active press sequence. Its connection
+domain remains alive with old tokens, so a recreated connection cannot match
+an old sequence/XID/device. A necessary GetWindowAttributes request supplies
+the complete 64-bit XCB sequence; only the still-current candidate on a live
+viewable source can complete after the unlocked reply. Modifiers/hover
+reentrancy is followed by exact identity validation before event delivery.
+
+Primary release revokes active use before callbacks, even when Secondary
+retains the implicit capture route. A later motion/enter Primary-up mask also
+revokes it; missing masks, mutation, unmap, destroyed/reused routes and device
+removal cannot restore it. Repeated press, non-Primary edges and failed
+validation cannot supplement or replace identity. A release may echo only the
+historical identity it ended. Other backends and model packets explicitly
+report absence. No query API, positive capture/delivery fact or second
+registry/clock is added.
+
+Winit passes 61 library tests normally and without its debug assertions, the
+real direct-root grab/unmap/remap fixture in both modes, all-target Clippy and
+strict rustdoc/formatting. The real fixture also holds Secondary, releases
+Primary with the original historical token and Window capture, then requires
+a different token on the next Primary press. Native macOS all-target gates
+pass 569 in both adapter assertion modes; Linux library passes 523. Their
+unchanged 10,000-lifetime case is skipped because both configurations passed
+earlier in this session; opt-in OS tests retain explicit ignored status.
+Native Clippy and formatting pass. Existing modeled MouseInput constructors
+only add `primary_press: None`, without changing production translation.
+
+Egui `6e601d79b88baee69148e9a15496d4c2e12d081e` adopts the Winit schema and
+passes its own 101 eframe library tests using the exact Git dependency and no
+path override. Outer patches, inspection and lockfile agree on the new pair;
+locked/offline Git metadata and all-target/all-feature compilation pass.
+Registry versions and the official egui workspace are unchanged. These remain
+unpublished local Git revisions, with no remote/CI qualification.
+
+The optimized X11 center, stationary-negative and active 1 kHz journeys pass
+after rebuilding this source. All 1,000 injected motions match native
+callbacks, release-to-model upper bound is 24.402834 ms, and exact Destroyed,
+retirement and quiescence follow. The selected active Root/Child/standalone
+service maxima are 0.677167/0.895709/1.709166 ms; this finite sample is not a
+hard latency guarantee. Stationary remains negative because identity does not
+prove capture, delivery, ancestry or protocol thaw.
+
+Source and results are in `/tmp/dockspace-original-primary-winit-source.json`,
+`/tmp/dockspace-original-primary-adapter-source.json`,
+`/tmp/dockspace-original-primary-egui-source.json`,
+`/tmp/dockspace-original-primary-focused-qualification.json`,
+`/tmp/dockspace-original-primary-qualification.json`,
+`/tmp/dockspace-original-primary-real-qualification.json` and
+`/tmp/dockspace-original-primary-git-qualification.json`. The first E0603
+private import failure is retained; the qualified production change fixes only
+that import relative to the independently reviewed implementation. Final Winit
+diff SHA-256 is `f00dff7e1d37b714aa374de3abf8d24cc397f17b814a4584bac10665ea573208`.
+Independent review finds no confirmed P1/P2 in issuance, revocation and schema
+migration. Expected-press query/adapter propagation is the next prerequisite;
+positive stationary input and the complete Goal remain open.
+
 ## 2026-11-01 archive refresh after cleanup and Git alignment
 
 Both publishable archives are refreshed after the `237934b` Root-close/Focus

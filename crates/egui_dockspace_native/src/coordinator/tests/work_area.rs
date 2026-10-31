@@ -74,6 +74,7 @@ fn outside_all_translation_uses_the_exact_committed_work_area() {
     );
 
     let event = WindowEvent::MouseInput {
+        primary_press: None,
         device_id: DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,

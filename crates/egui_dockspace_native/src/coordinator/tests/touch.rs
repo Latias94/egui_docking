@@ -311,6 +311,7 @@ fn mouse_and_touch_contacts_receive_distinct_adapter_pointer_identities() {
             None,
             Some(binding),
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: device,
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -538,6 +539,7 @@ fn uncorrelated_raw_removal_forgets_all_window_input_identity_shapes() {
         None,
         Some(first),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: device,
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -551,6 +553,7 @@ fn uncorrelated_raw_removal_forgets_all_window_input_identity_shapes() {
         None,
         Some(second),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: device,
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -583,6 +586,7 @@ fn uncorrelated_raw_removal_forgets_all_window_input_identity_shapes() {
         None,
         Some(first),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: device,
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -601,6 +605,7 @@ fn uncorrelated_raw_removal_forgets_all_window_input_identity_shapes() {
         None,
         Some(second),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: device,
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -664,6 +669,7 @@ fn removed_device_tail_cannot_reenroll_before_an_explicit_stream_start() {
         None,
         Some(binding),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: device,
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -694,6 +700,7 @@ fn removed_device_tail_cannot_reenroll_before_an_explicit_stream_start() {
         None,
         Some(binding),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: device,
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -742,6 +749,7 @@ fn assert_device_removal_commits(quarantined: bool) {
             None,
             Some(binding),
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: device,
                 state: ElementState::Pressed,
                 button: MouseButton::Left,

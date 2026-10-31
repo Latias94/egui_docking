@@ -159,6 +159,7 @@ fn capture(
             facts,
         },
         |state| WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state,
             button: MouseButton::Left,

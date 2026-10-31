@@ -1913,6 +1913,7 @@ fn pointer_routes_are_frozen_before_viewport_replacement() {
         .expect("child viewport binds");
 
     let event = WindowEvent::MouseInput {
+        primary_press: None,
         device_id: DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
@@ -1984,6 +1985,7 @@ fn pointer_translation_preserves_delivery_hover_and_capture() {
         .bind_viewport(child, second_window, second)
         .expect("child viewport binds");
     let event = WindowEvent::MouseInput {
+        primary_press: None,
         device_id: DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
@@ -2038,6 +2040,7 @@ fn pointer_reduction_acknowledges_only_after_core_acceptance() {
         .bind_viewport(ViewportId::ROOT, window, first)
         .expect("root viewport binds");
     let event = WindowEvent::MouseInput {
+        primary_press: None,
         device_id: DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,

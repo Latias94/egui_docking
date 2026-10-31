@@ -125,6 +125,7 @@ fn cross_window_capture_fixture() -> CrossWindowCaptureFixture {
                 source_window,
                 Some(ViewportId::ROOT),
                 WindowEvent::MouseInput {
+                    primary_press: None,
                     device_id,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
@@ -185,6 +186,7 @@ fn destroyed_binding_retires_pressed_pointer_before_successor_press() {
         Some(ViewportId::ROOT),
         Some(first),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -230,6 +232,7 @@ fn destroyed_binding_retires_pressed_pointer_before_successor_press() {
         Some(second_viewport),
         Some(second),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -253,6 +256,7 @@ fn destroyed_binding_retires_pressed_pointer_before_successor_press() {
         Some(second_viewport),
         Some(second),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -313,6 +317,7 @@ fn released_button_no_longer_keeps_its_press_binding_live() {
             Some(ViewportId::ROOT),
             Some(binding),
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
@@ -351,6 +356,7 @@ fn pressed_delivery_and_capture_bindings_remain_independent() {
             delivery_window,
             Some(ViewportId::ROOT),
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -410,6 +416,7 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
             unknown_window,
             None,
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -454,6 +461,7 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
         None,
         None,
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -603,6 +611,7 @@ fn pointer_button_record(
         None,
         Some(binding),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state,
             button: MouseButton::Left,
@@ -1102,6 +1111,7 @@ fn queued_pointer_routes_keep_every_referenced_binding_live() {
         .expect("captured viewport binds");
 
     let event = WindowEvent::MouseInput {
+        primary_press: None,
         device_id: DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,

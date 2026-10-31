@@ -359,6 +359,7 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
             mouse_window,
             Some(ViewportId::ROOT),
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
@@ -618,6 +619,7 @@ fn mouse_press_record(
         Some(ViewportId::ROOT),
         Some(binding),
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,

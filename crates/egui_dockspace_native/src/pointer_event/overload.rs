@@ -22,6 +22,7 @@ fn record(event: WindowEvent) -> NativeWindowEventRecord {
 
 fn mouse(state: ElementState) -> WindowEvent {
     WindowEvent::MouseInput {
+        primary_press: None,
         device_id: DeviceId::dummy(),
         state,
         button: MouseButton::Left,
@@ -150,6 +151,7 @@ fn binding_and_provider_terminals_reuse_all_button_contact_and_scroll_slots() {
         observe(
             &mut translator,
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Other(button),

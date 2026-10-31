@@ -1321,6 +1321,7 @@ fn assert_close_and_create_command_pressure(
             };
             let event = match state {
                 Some(state) => WindowEvent::MouseInput {
+                    primary_press: None,
                     device_id: DeviceId::dummy(),
                     state,
                     button: MouseButton::Left,

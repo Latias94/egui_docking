@@ -128,6 +128,7 @@ impl Fixture {
             &mut fixture.native,
             1,
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -576,6 +577,7 @@ fn model_stationary_release_revokes_token_and_late_sample_settles_once() {
         &mut fixture.native,
         3,
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,

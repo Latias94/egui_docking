@@ -194,8 +194,8 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.37.0`. The excluded
 native workspace pins egui/eframe fork
-`aa54db470bed739062e00d6b1514015bbdd9c686` and Winit
-`3084fc09a7dca269d41d7aaa955369e365db6a71`. The egui fork's own Winit dependency,
+`6e601d79b88baee69148e9a15496d4c2e12d081e` and Winit
+`cd1a739a231248a5bb567db65ca64dcf890a9ab5`. The egui fork's own Winit dependency,
 all integration patches, inspection dependency and lockfiles select that same
 pair. Local qualification resolves these Git revisions without path overrides,
 using Git objects seeded from the local forks. The commits remain unpublished;

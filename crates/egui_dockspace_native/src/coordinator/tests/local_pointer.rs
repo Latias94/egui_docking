@@ -295,6 +295,7 @@ fn raw_event(point: LogicalPoint, state: Option<ElementState>, event_scale: f64)
     };
     match state {
         Some(state) => WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state,
             button: MouseButton::Left,

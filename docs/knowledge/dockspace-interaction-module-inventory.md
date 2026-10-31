@@ -159,7 +159,7 @@ claims. Earlier authority/conformance plans, pointer-journal design documents
 and Open-GPUI catalogs remain historical design/reference material where their
 API names or ownership differ from this source. Open-GPUI cutover is deferred.
 
-Current tracked native Git pins select egui `aa54db470` and Winit `3084fc09`;
+Current tracked native Git pins select egui `6e601d79b` and Winit `cd1a739a`;
 the egui fork's internal dependency and both lockfiles agree. The aligned pair
 passes locked/offline qualification without path overrides using locally
 seeded Git objects. Both commits remain unpublished, so remote-only checkout

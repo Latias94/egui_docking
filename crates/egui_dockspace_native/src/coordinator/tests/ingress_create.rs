@@ -295,6 +295,7 @@ fn begin_outside_native_drag(
         native,
         1,
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -526,6 +527,7 @@ fn request_native_child(
         native,
         4,
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -1169,6 +1171,7 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
         &mut native,
         3,
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -1507,6 +1510,7 @@ fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
         &mut native,
         3,
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,

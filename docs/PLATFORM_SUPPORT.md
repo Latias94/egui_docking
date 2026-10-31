@@ -352,8 +352,8 @@ Current native Git pins are aligned with the qualified local sources:
 
 | Dependency | Locally qualified revision | Tracked Git revision |
 | --- | --- | --- |
-| egui/eframe fork | `aa54db470bed739062e00d6b1514015bbdd9c686` | `aa54db470bed739062e00d6b1514015bbdd9c686` |
-| Winit fork | `3084fc09a7dca269d41d7aaa955369e365db6a71` | `3084fc09a7dca269d41d7aaa955369e365db6a71` |
+| egui/eframe fork | `6e601d79b88baee69148e9a15496d4c2e12d081e` | `6e601d79b88baee69148e9a15496d4c2e12d081e` |
+| Winit fork | `cd1a739a231248a5bb567db65ca64dcf890a9ab5` | `cd1a739a231248a5bb567db65ca64dcf890a9ab5` |
 
 The tracked revisions are visible in the
 [native workspace manifest](../integration/egui-fork-workspace/Cargo.toml) and

@@ -331,7 +331,7 @@ The 2026-10-27 selection audit chose egui/eframe 0.37.0, released 2026-10-15,
 with Rust 1.95 still matching this workspace. The current workspace and official
 harness now pin the matched 0.37.0 family. The optional native adapter is locally
 qualified against the rebased, unpublished 0.37 fork. Its current Git pins and
-lockfiles align with local egui `aa54db470` and Winit `3084fc09`, with
+lockfiles align with local egui `6e601d79b` and Winit `cd1a739a`, with
 locked/offline qualification and no path overrides. The local Git objects are
 not evidence of remote clean-checkout reproducibility. Winit remains on the
 reviewed 0.30.13 fork; prerelease 0.31 work
@@ -1851,6 +1851,22 @@ the next boundaries; this prerequisite does not enable successful stationary
 input. Exact source, failed lock design and fixture limitations are retained in
 `docs/VALIDATION.md`.
 
+The original-press prerequisite is qualified in Winit `cd1a739a`. One opaque
+Clone token on the existing X11 capture row combines an Arc connection domain
+with the complete 64-bit sequence of a necessary window-validation request.
+It distinguishes connection recreation and XID/device reuse without a new clock
+or registry. Primary release and a later Primary-up mask revoke the identity
+even while Secondary retains capture. Other backends and model packets retain
+explicit absence. Winit61/61 normally/noassert, real multi-button issuance,
+native569/569, Linux523 and eframe101 pass, along with physical center,
+stationary-negative and 1 kHz input. Exact evidence is in `docs/VALIDATION.md`.
+Next carry the expected identity through the existing eframe observation
+command and adapter Primary-button row. Globally unique immutable command
+tokens already correlate results, callback keys and retirement: keep those Copy
+and do not create a second press-owned callback lifecycle. A mismatched sample
+must still settle its original terminal receipt. Identity alone grants no
+positive capture/delivery or ancestor/freeze proof.
+
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
 roster and 32 original property identities coexist while ordinary input reaches
@@ -2629,7 +2645,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `aa54db470bed739062e00d6b1514015bbdd9c686` and Winit fork `3084fc09a7dca269d41d7aaa955369e365db6a71`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `6e601d79b88baee69148e9a15496d4c2e12d081e` and Winit fork `cd1a739a231248a5bb567db65ca64dcf890a9ab5`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.

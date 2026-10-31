@@ -781,6 +781,7 @@ mod tests {
     fn unmapped_callback_window_is_not_promoted_to_foreign_delivery() {
         let window = WindowId::from(41);
         let event = WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -806,6 +807,7 @@ mod tests {
     fn unmapped_winit_route_is_not_promoted_to_foreign_hover_or_capture() {
         let window = WindowId::from(42);
         let event = WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -856,6 +858,7 @@ mod tests {
             (cursor(facts), NativePointerEvent::Moved),
             (
                 WindowEvent::MouseInput {
+                    primary_press: None,
                     device_id: DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
@@ -1207,12 +1210,14 @@ mod tests {
         };
         for event in [
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 facts,
             },
             WindowEvent::MouseInput {
+                primary_press: None,
                 device_id: DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,

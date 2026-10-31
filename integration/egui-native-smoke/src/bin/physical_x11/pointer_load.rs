@@ -627,6 +627,7 @@ mod tests {
 
     fn primary_event(source: PointerSource, state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: source.device,
             state,
             button: MouseButton::Left,

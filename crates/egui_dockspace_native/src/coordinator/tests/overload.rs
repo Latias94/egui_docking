@@ -32,6 +32,7 @@ fn pointer_record(
     };
     let event = if pressed {
         WindowEvent::MouseInput {
+            primary_press: None,
             device_id: DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
