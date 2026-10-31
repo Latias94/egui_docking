@@ -1125,6 +1125,11 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
 
     assert_dropped_redock_preserves_transition(&mut session, child_binding, child_root);
 
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(child_binding))
+        .expect("the still-live child can own actual OS focus before redock");
+    commit_managed_frame(&mut session);
+
     let mut redock = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the child redock frame begins");
@@ -1175,7 +1180,26 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         "actual presentation transitions: {:?}",
         settled.presentation_transitions()
     );
-    let release = take_only_native_effect(&mut settled);
+    let mut release = None;
+    let mut requested_root_focus = false;
+    for effect in settled.take_native_effects() {
+        match effect.operation() {
+            NativeEffectOperation::ReleaseChild { binding } if *binding == child_binding => {
+                assert!(release.replace(effect).is_none());
+            }
+            NativeEffectOperation::RequestFocus { binding } if *binding == root_binding => {
+                assert!(!requested_root_focus);
+                requested_root_focus = true;
+                assert!(effect.accepted().is_none());
+            }
+            operation => panic!("unexpected redock effect: {operation:?}"),
+        }
+    }
+    assert!(
+        requested_root_focus,
+        "the real focused Child requires focus recovery to Root"
+    );
+    let release = release.expect("the exact Child has one release owner");
     assert!(matches!(
         release.operation(),
         NativeEffectOperation::ReleaseChild { binding } if *binding == child_binding
@@ -1186,6 +1210,33 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
             panic!("release returned the wrong acknowledgement: {acknowledgement:?}")
         }
     };
+    // The physical window can remain visible until ReleaseChild finishes. Its
+    // old global focus must be withdrawn before this exact cleanup-only snapshot.
+    session
+        .report_managed_native_snapshot(
+            [
+                (root_binding, root_window_facts()),
+                (
+                    child_binding,
+                    NativeWindowFacts::live()
+                        .with_content_bounds(placement)
+                        .with_outer_bounds(placement)
+                        .with_native_scale_factor(native_scale())
+                        .with_presentation_scale_factor(native_scale())
+                        .with_presentation(NativeWindowPresentationState::Visible, None),
+                ),
+            ],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("a retiring visible child supplies cleanup facts without focus authority");
+    let mut cleanup_only = commit_managed_frame_report(&mut session);
+    assert!(cleanup_only.take_native_effects().is_empty());
+    assert!(cleanup_only.native_admissions().is_empty());
+    assert_eq!(
+        session.native.as_ref().unwrap().focus,
+        NativeGlobalFocus::Unknown
+    );
+    assert!(!session.native_binding_can_report_focus(child_binding));
     session
         .report_managed_native_snapshot(
             [

@@ -41,7 +41,7 @@ The next completion work is concrete:
 | Remaining boundary | Next acceptance |
 | --- | --- |
 | U10 native layout management | Single-host default/preset reset, exact retained-root successors and missing-pane recovery have qualified checkpoints. Document V2 hosting preferences pass 18 checks at `349a513`; existing-surface native creation passes 42 at `447b34b`. Atomic multi-surface restoration queues explicit rebased Child intents inside the existing establishment owner; all 43 final checks pass, including its eight-edit/six-Child X11 journey. Complete host removal/rebinding remains open. |
-| U10 native overflow | Qualify a finite real-input overflowed/clipped tab insertion, including preview, final order and cleanup; reuse the existing overflow owner. |
+| U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
@@ -2310,6 +2310,39 @@ outside controls, guides and edge-scroll bands. Require the exact insertion
 preview, `[Anchor, Child, Main]` final order with Child selected, exact old-child
 destruction and quiescence. This is a fixed geometry oracle, not a second target
 solver or a claim of successful stationary OS auto-scrolling.
+
+The focused X11 journey now passes that full sequence. Real input exposed a
+disabled overlay-control lane fallthrough, clipped-close chrome suppressing an
+otherwise operable tab, and stored OS focus surviving into a retiring child's
+cleanup snapshot. The fixes retain the same core geometry, hit authority and
+focus stream; exact retired queued focus becomes effectively Unknown only after
+raw generation/envelope comparison. Final compiler, native receiver, ordered
+focus and compatibility qualification now passes all 59 final checks: workspace
+1,936, public 147/173, product/official 114/15, native 564 with 10,000 lifetimes,
+noassert 563 without the duplicate soak, Linux library 517 in both modes, both
+platforms' six output-pressure modes, editor workflows and fifteen real X11
+physical journeys. The first workspace failure exposed a left-clipped tail
+contract mismatch, now fixed with 16/20/48-point coverage; disabled overlay
+controls retain both pointer lanes without keyboard focus or AccessKit actions.
+The 1 kHz journey matches all 1,000 callbacks with a 42.750 ms release-to-model
+upper bound; pressure service maxima still include values above 2 ms. Exact
+source and measurement limits remain in `docs/VALIDATION.md`. This checkpoint
+does not close the complete U10 or Goal.
+
+The next host-removal slice must permit an explicit external Root continuation
+from the current exact binding to a different incoming logical surface. Resolve
+the incoming surface through the existing layout/document rebase before preparing
+that pair; the old host surface may disappear from the replacement graph. Reuse
+the existing registry reconciliation and predecessor terminal guards, with no
+Root Create/Destroy or synthetic Destroyed fact. Native route, physical-window
+receipt and predecessor resource ownership must consume the exact pair rather
+than matching only surface names or window tokens. Publish the application
+`root_surface` alongside the successful core/bridge commit, before returning the
+report, so failed commits and replayed settlement cannot split those identities.
+Acceptance covers cross-surface reset, document Root/Child reference rebasing,
+resource-failure rollback, late predecessor output and bounded quiescence. This
+is continuation of one external physical Root; OS-window destruction remains
+with the existing application/close owner.
 
 ### U11. Certify Windows and macOS capability claims
 

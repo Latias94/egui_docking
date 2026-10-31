@@ -13,9 +13,10 @@ mod abandoned;
 mod initial;
 mod status;
 pub(super) use self::abandoned::{AbandonedReplacementCause, AbandonedReplacementDetach};
+#[cfg(feature = "serde")]
+pub(crate) use self::initial::NativeSurfaceInitialRequest;
 pub(crate) use self::initial::{
-    NativeSurfaceInitialRequest, NativeSurfaceRestorePlan, QueuedInitialSurface,
-    QueuedInitialSurfaceStatus,
+    NativeSurfaceRestorePlan, QueuedInitialSurface, QueuedInitialSurfaceStatus,
 };
 use self::status::RecoveryReplacementPhase;
 pub use self::status::{RecoveryPending, RecoveryPendingStatus};

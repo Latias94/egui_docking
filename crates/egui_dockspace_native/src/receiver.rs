@@ -895,6 +895,447 @@ mod tests {
     }
 
     #[test]
+    fn overflow_controls_block_disabled_click_and_drag_without_selecting_underlying_tabs() {
+        use dockspace::runtime::{DockPresentationConfig, TabStripControlKind};
+
+        let first = ItemId::new(1);
+        let second = ItemId::new(2);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([first, second])),
+        )])
+        .expect("overflow control layout validates");
+        let config = DockPresentationConfig::builder()
+            .tab_min_width(400.0)
+            .tab_max_width(400.0)
+            .build()
+            .expect("fixed-width overflow configuration validates");
+        let mut session = DockspaceSession::from_layout_with_presentation_config(
+            layout,
+            DockPolicy::default(),
+            config,
+        )
+        .expect("overflow control session initializes");
+        session
+            .enable_managed_native_host(
+                dockspace::runtime::NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
+            .expect("managed native host enrolls");
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .expect("managed native capabilities configure");
+        session
+            .register_native_root(SURFACE, HostWindowToken::new(103))
+            .expect("native root registration queues");
+        let mut registration = session
+            .begin_host_frame()
+            .expect("native registration frame begins");
+        registration
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("native registration frame settles");
+        let registration = registration.commit().expect("native registration commits");
+        let binding = registration
+            .inputs()
+            .iter()
+            .find_map(|outcome| match outcome {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .expect("native registration emits one binding");
+        let bounds =
+            PhysicalRect::new(0.0, 0.0, 640.0, 480.0).expect("native window bounds validate");
+        let scale = ScaleFactor::new(1.0).expect("native scale validates");
+        let facts = NativeWindowFacts::live()
+            .with_content_bounds(bounds)
+            .with_outer_bounds(bounds)
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_close(NativeCloseState::Clear, None);
+        session
+            .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
+            .expect("exact native root facts record");
+        let mut snapshot = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("native snapshot frame begins");
+        snapshot
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("native snapshot frame settles");
+        snapshot.commit().expect("native snapshot commits");
+
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let instance_id = Id::unique("native-overflow-control-blocker");
+        let screen_rect = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(640.0, 480.0));
+        let style = DockStyle {
+            tab_min_width: 400.0,
+            tab_max_width: 400.0,
+            ..DockStyle::default()
+        };
+        let mut panes = TestPanes;
+        let mut measured_output = context.run_ui(
+            RawInput {
+                screen_rect: Some(screen_rect),
+                ..RawInput::default()
+            },
+            |ui| {
+                let mut frame = session
+                    .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                    .expect("overflow measurement frame begins");
+                native_support::measure_surface(
+                    &mut frame,
+                    SURFACE,
+                    ui,
+                    ui.available_rect_before_wrap(),
+                    ui.max_rect(),
+                    &panes,
+                    &style,
+                )
+                .expect("overflow surface measures with overlay controls");
+                frame.commit().expect("overflow measurement commits");
+            },
+        );
+        measured_output.textures_delta.clear();
+
+        // Exercise the disabled boundary, scroll forward, return, and hit the boundary again.
+        for (step, kind) in [
+            TabStripControlKind::ScrollBackward,
+            TabStripControlKind::ScrollForward,
+            TabStripControlKind::ScrollBackward,
+            TabStripControlKind::ScrollBackward,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if step > 0 {
+                let mut measured = context.run_ui(
+                    RawInput {
+                        screen_rect: Some(screen_rect),
+                        ..RawInput::default()
+                    },
+                    |ui| {
+                        let mut frame = session
+                            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                            .expect("the next scroll geometry measurement begins");
+                        native_support::measure_surface(
+                            &mut frame,
+                            SURFACE,
+                            ui,
+                            ui.available_rect_before_wrap(),
+                            ui.max_rect(),
+                            &panes,
+                            &style,
+                        )
+                        .expect("the next output measures the changed strip offset");
+                        frame
+                            .commit()
+                            .expect("the changed strip measurement commits");
+                    },
+                );
+                measured.textures_delta.clear();
+            }
+            let enabled = step == 1 || step == 2;
+            let mut control_record = None;
+            let mut control_id = None;
+            let mut control_descriptor = None;
+            let mut strip_offsets = None;
+            let mut tab_bounds = Vec::new();
+            let mut painted = None;
+            let mut painted_output = None;
+            let mut full_output = context.run_ui(
+                RawInput {
+                    screen_rect: Some(screen_rect),
+                    ..RawInput::default()
+                },
+                |ui| {
+                    let mut frame = session
+                        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                        .expect("overflow control paint frame begins");
+                    let plan = frame
+                        .paint_plan(SURFACE)
+                        .expect("overflow control paint plan resolves")
+                        .unwrap_or_else(|| {
+                            panic!("overflow control paint plan is ready at step {step}")
+                        });
+                    plan.visit_surface_program(|step| {
+                        if let SurfacePaintProgramStep::Operation { operation, .. } = step {
+                            match operation {
+                                SurfacePaintProgramOperation::TabBar(bar) => {
+                                    assert_eq!(bar.members().len(), 2);
+                                    assert!(
+                                        strip_offsets
+                                            .replace((
+                                                bar.scroll_offset(),
+                                                bar.maximum_scroll_offset()
+                                            ))
+                                            .is_none()
+                                    );
+                                }
+                                SurfacePaintProgramOperation::Tab(tab) => {
+                                    assert_eq!(tab.full_bounds().width(), 400.0);
+                                    tab_bounds.push((
+                                        tab.item(),
+                                        ui.make_persistent_id((
+                                            instance_id,
+                                            "tab",
+                                            tab.visual_id(),
+                                        )),
+                                        tab.drag_bounds(),
+                                    ));
+                                }
+                                SurfacePaintProgramOperation::TabStripControl(control)
+                                    if control.kind() == kind =>
+                                {
+                                    assert!(control_record.replace(control).is_none());
+                                    control_id = Some(ui.make_persistent_id((
+                                        instance_id,
+                                        "tab-strip-control",
+                                        control.visual_id(),
+                                    )));
+                                    control_descriptor =
+                                        plan.receiver_for_tab_strip_control(control);
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok::<(), ()>(())
+                    })
+                    .expect("overflow control paint program resolves");
+                    if !enabled {
+                        ui.memory_mut(|memory| memory.request_focus(control_id.unwrap()));
+                    }
+                    let mut register_scroll_candidate = |ui: &Ui, rect: Rect, id: Id| {
+                        let identity = ui.register_scroll_hit_candidate(rect, id);
+                        (identity.id(), identity.layer_id())
+                    };
+                    let mut paint = native_support::paint_surface(
+                        &mut frame,
+                        instance_id,
+                        SURFACE,
+                        ui,
+                        &mut panes,
+                        &style,
+                        &mut register_scroll_candidate,
+                    )
+                    .expect("actual native overflow surface paints");
+                    let widget = ui
+                        .ctx()
+                        .viewport(|viewport| {
+                            viewport.this_pass.widgets.get(control_id.unwrap()).copied()
+                        })
+                        .expect("the actual control widget is registered");
+                    assert_eq!(widget.sense.is_focusable(), enabled);
+                    if !enabled {
+                        assert_ne!(ui.memory(|memory| memory.focused()), control_id);
+                    }
+                    assert!(
+                        paint
+                            .confirm_into(&mut frame)
+                            .expect("actual native overflow paint confirms")
+                    );
+                    assert!(paint.take_local_actions().is_empty());
+                    frame
+                        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                        .expect("overflow control paint frame settles");
+                    painted_output = frame
+                        .commit()
+                        .expect("overflow control paint frame commits")
+                        .take_painted_outputs()
+                        .pop();
+                    painted = Some(paint);
+                },
+            );
+            full_output.textures_delta.clear();
+
+            let (offset, maximum) = strip_offsets.expect("one overflowing strip is painted");
+            assert!(maximum > 0.0);
+            if step == 2 {
+                assert_eq!(
+                    offset, maximum,
+                    "forward activation scrolls the next output"
+                );
+            } else {
+                assert_eq!(
+                    offset, 0.0,
+                    "disabled clicks and backward activation retain the boundary"
+                );
+            }
+            let control = control_record.expect("overflow publishes the requested control");
+            assert_eq!(control.enabled(), enabled);
+            let hit_bounds = control.hit_bounds();
+            let point = if enabled {
+                LogicalPoint::new(
+                    hit_bounds.x() + hit_bounds.width() * 0.5,
+                    hit_bounds.y() + hit_bounds.height() * 0.5,
+                )
+                .expect("control center validates")
+            } else {
+                assert_eq!((hit_bounds.x(), hit_bounds.max().x()), (28.0, 56.0));
+                LogicalPoint::new(35.0, 14.0).expect("disabled overlay regression point validates")
+            };
+            assert!(hit_bounds.contains(point));
+            let (underlying_item, underlying_id, _) = tab_bounds
+                .into_iter()
+                .find(|(_, _, bounds)| bounds.contains(point))
+                .expect("the overlay control must cover a tab body at the query point");
+            assert_eq!(underlying_item, if step == 1 { second } else { first });
+
+            let paint = painted.expect("actual native paint metadata is retained");
+            let output = painted_output.expect("confirmed paint emits one output");
+            assert!(output.matches_semantic_output(paint.semantic_output().unwrap()));
+            let artifact = output.presentation_artifact();
+            let hit_authority = context
+                .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+                .expect("the completed paint publishes immutable hit authority");
+            assert_eq!(
+                hit_authority.cumulative_pass_nr(),
+                paint.cumulative_pass_nr()
+            );
+            let hit = hit_authority
+                .hit_test(logical_pos(point).expect("control point projects into egui space"))
+                .expect("the completed pass answers the control hit test");
+            let click = hit.click().expect("the control blocks the click lane");
+            let drag = hit.drag().expect("the control blocks the drag lane");
+            let control_id = control_id.expect("the paint program determines the control id");
+            let accessibility = full_output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .expect("the actual paint emits accessibility nodes")
+                .nodes
+                .iter()
+                .find_map(|(id, node)| (*id == control_id.accesskit_id()).then_some(node))
+                .expect("the actual control has an accessibility node");
+            assert_eq!(
+                accessibility.supports_action(egui::accesskit::Action::Click),
+                enabled
+            );
+            if !enabled {
+                assert!(accessibility.is_disabled());
+                assert!(!accessibility.supports_action(egui::accesskit::Action::Focus));
+            }
+            assert_eq!(click.id(), control_id);
+            assert_ne!(click.id(), underlying_id);
+            assert_eq!(
+                drag, click,
+                "both lanes must hit the exact same control identity"
+            );
+            let control_descriptor = control_descriptor
+                .expect("core retains the exact control receiver at either boundary");
+            let receivers = paint.receivers().collect::<Vec<_>>();
+            let expected = receivers
+                .iter()
+                .copied()
+                .find(|receiver| receiver.visual_id() == control_descriptor.visual_id());
+            assert_eq!(expected.is_some(), enabled);
+            if let Some(receiver) = expected {
+                assert_eq!(receiver.role(), DockspaceReceiverRole::TabStripControl);
+                assert_eq!(receiver.widget_id(), click.id());
+                assert_eq!(receiver.layer_id(), click.layer_id());
+            } else {
+                assert!(
+                    receivers.iter().all(|receiver| {
+                        receiver.widget_id() != click.id()
+                            || receiver.layer_id() != click.layer_id()
+                    }),
+                    "a disabled control is a geometric blocker without a core receiver"
+                );
+            }
+            session
+                .report_surface_presentation(output, SurfacePresentationResult::Presented)
+                .expect("actual native overflow presentation records");
+            let mut presented = session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .expect("native overflow presentation frame begins");
+            presented
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .expect("native overflow presentation frame settles");
+            presented
+                .commit()
+                .expect("native overflow presentation commits");
+            let mut store = NativeReceiverStore::default();
+            store.presented.insert(
+                SURFACE,
+                vec![PresentedReceiverSet {
+                    binding,
+                    viewport: egui::ViewportId::ROOT,
+                    hit_authority,
+                    artifact,
+                    receivers,
+                    scroll_receivers: Vec::new(),
+                }],
+            );
+
+            let mut click_resolved = false;
+            let mut drag_resolved = false;
+            for event in [
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            ] {
+                session
+                    .record_native_pointer(NativePointerInput::new(
+                        NativePointerId::new(1),
+                        event,
+                        NativeDesktopPointerLocation::new(
+                            NativeDesktopPosition::Exact(
+                                PhysicalPoint::new(point.x(), point.y())
+                                    .expect("control desktop point validates"),
+                            ),
+                            NativePointerHover::Dock(binding),
+                            None,
+                        ),
+                        NativePointerOwner::Native(binding),
+                        NativePointerOwner::Native(binding),
+                    ))
+                    .expect("native overflow pointer edge records");
+                let mut input = session
+                    .begin_native_host_frame(|query| {
+                        let answer = store.resolve(query);
+                        if matches!(
+                            query.purpose(),
+                            NativeReceiverPurpose::ClickDelivery
+                                | NativeReceiverPurpose::DragDelivery
+                        ) {
+                            assert_eq!(query.point(), Some(point));
+                            let expected_answer = expected.map_or_else(
+                                || NativeReceiverAnswer::Blocked(query.presented_surface()),
+                                |receiver| {
+                                    NativeReceiverAnswer::Dock(
+                                        receiver.bind_for_query(query).expect(
+                                            "the enabled control binds to either delivery lane",
+                                        ),
+                                    )
+                                },
+                            );
+                            assert_eq!(answer, expected_answer);
+                            match query.purpose() {
+                                NativeReceiverPurpose::ClickDelivery => click_resolved = true,
+                                NativeReceiverPurpose::DragDelivery => drag_resolved = true,
+                                _ => unreachable!(),
+                            }
+                        }
+                        answer
+                    })
+                    .expect(
+                        "both native delivery lanes agree with core without ReceiverWinnerMismatch",
+                    );
+                input
+                    .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                    .expect("native overflow input frame settles");
+                input.commit().expect("native overflow input frame commits");
+                assert!(session.view().item(first).unwrap().is_selected());
+                assert!(!session.view().item(second).unwrap().is_selected());
+            }
+            assert!(click_resolved, "native input must query click delivery");
+            assert!(drag_resolved, "native input must query drag delivery");
+        }
+    }
+
+    #[test]
     fn committed_host_frame_promotes_receivers_without_follow_up_input() {
         use std::sync::Arc;
 

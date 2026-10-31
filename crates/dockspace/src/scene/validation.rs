@@ -1324,6 +1324,9 @@ fn validate_pane_and_tab_records(
                 (true, Some(close)) => {
                     rect_has_area(close) && rect_contains(record.visible_bounds(), close)
                 }
+                // A clipped right edge may hide close chrome while leaving
+                // enough visible tab body for selection and dragging.
+                (true, None) => record.visible_bounds().max().x() < record.full_bounds().max().x(),
                 _ => false,
             };
             let interaction_geometry_matches = match bar.interaction() {

@@ -15,6 +15,80 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 physical overflow insertion and retained focus
+
+The slice following `dead258` adds one finite `overflow-tab-before` X11 target.
+Its fixed three-tab fixture keeps two 400-point tabs after Child tears off, so
+the target still overflows. Real selection/backward-scroll clicks leave selected
+Main partially clipped. Passive diagnostics expose full/visible member bounds,
+viewport and maximum scroll offset from the existing public paint records.
+One checked interior point excludes close/scroll controls, actual guides and
+edge-scroll bands. Two increasing output steps must agree on the exact insertion
+preview; the final model must be `[Anchor, Child, Main]` with Child selected,
+followed by exact OS destruction, viewport retirement and quiescence. This does
+not claim positive stationary OS auto-scroll or physical scanout.
+
+The real journey exposed three existing defects. Disabled overlay controls used
+hover-only egui sense, allowing click/drag to claim the underlying tab against
+core's control winner. They now reserve both lanes while disabled controls keep
+no executable receiver or accessibility action. A clipped close button also
+suppressed its entire visible tab; compilation and validation now preserve an
+operable clipped body while omitting unavailable close chrome. Finally, a
+still-visible retired child could carry stored OS focus into a cleanup snapshot.
+Snapshot focus eligibility now requires a current Pending/Admitted binding and
+explicit current visibility.
+
+The first final workspace run passed 1,934/1,935 tests and exposed a left-clipped
+tail inconsistency during manual scrolling: compilation emitted a tab without
+close chrome, but validation permits that omission only at a clipped right edge.
+Left-clipped tails now require complete close chrome and an operable body;
+16/20/48-point cases exercise this boundary. Disabled overlay controls also keep
+both pointer lanes without joining keyboard focus, and their disabled AccessKit
+nodes clear inherited actions. A completed-pass regression checks lane blocking,
+focus withdrawal, accessibility, scrolling and unchanged selection together.
+
+The core's consumption boundary additionally handles an already-queued focus
+fact whose exact binding retired earlier in the same prefix. Only recognized
+Retiring/cleanup/terminal identities become effectively Unknown; unknown
+incarnations and foreign providers remain rejected. Raw generation/envelope
+history is compared before this authority withdrawal, so duplicate retirement
+does not invent a same-generation conflict and stale input cannot revoke newer
+focus. True conflicts, gaps and tombstone requirements remain unchanged.
+
+All 59 final checks pass against 476 frozen source, manifest, script and lockfile
+paths. The final real overflow run passes exact preview, `[Anchor, Child, Main]`
+order, selection, DestroyNotify and quiescence after the complete repairs.
+
+| Final gate | Result and scope |
+| --- | --- |
+| Workspace | 1,936/1,936; default-feature check, Clippy correctness/suspicious, strict docs, 10 doctests and formatting pass. |
+| Independent consumers | Public default 147/147 and persistence 173/173; product 114/114 and official egui 15/15. |
+| Native models | 564/564 including the same-coordinator 10,000-lifetime soak; assertion-disabled 563/563 excludes that duplicate soak. The separate opt-in real renderer test is not counted as a model pass. |
+| Linux library | 517/517 in both assertion modes, excluding the repeated soak; the separate real old-output renderer regression passes. |
+| Native lifecycle | macOS and X11 default/bounded create, first-live, redock, retirement and quiescence pass. Bounded root-boundary reserved peaks are 3,488,528 / 3,489,688 bytes under 4,194,304 bytes. |
+| Output pressure | Both platforms pass combined, ordered, duplicate, reordered, late-staging and late-first-live release modes. |
+| X11 editor | Basic six-edit/two-Child and persistence eight-edit/six-Child workflows pass, including actual replacement-window edits and cleanup. |
+| X11 physical matrix | Fifteen journeys pass: guide control; three pane centers; four edges; both tab halves; nested center/edge; clipped overflow insertion; stationary-negative; 1 kHz load. |
+
+Pressure root-service maxima in the six listed mode order are macOS
+11.607/4.480/4.718/4.512/4.636/4.620 ms and X11
+2.655/3.615/3.374/2.155/1.804/1.180 ms. These include initialization and draining;
+they are measurements, not a hard 2 ms service guarantee. The 1 kHz XTest journey
+injects all 1,000 moves at 995.8 Hz and matches all 1,000 native callbacks at
+976.9 Hz, with a 42.750 ms release-to-model upper bound and 1.059 ms maximum
+sampled root UI update. Its root-boundary owned/reserved peaks are
+2,336,033 / 3,489,824 bytes under 4 MiB. Positive stationary OS selection or
+scrolling and physical scanout are not claimed.
+
+Evidence: `/tmp/dockspace-overflow-insertion-source.json`,
+`/tmp/dockspace-overflow-insertion-qualification.json` and the corresponding
+`/tmp/dockspace-overflow-insertion-final-*.log` files. The first workspace failure
+is preserved in `first-workspace.log` with its original frozen source, rather
+than overwritten as a successful attempt. The native scope uses explicit local
+egui `92c921f7235c` / winit `6c10c87da2a0` overrides; tracked remote pins still do
+not qualify a clean checkout. The complete Goal and remaining host rebinding,
+native stationary, capacity/platform and U9 delivery boundaries remain open.
+
 ## 2026-10-31 atomic native multi-surface document restoration
 
 The slice following `447b34b` adds the opt-in

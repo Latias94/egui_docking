@@ -7,6 +7,7 @@ use crate::interaction::{DragGeneration, DragSessionId};
 use crate::policy::{DockPolicy, TabBarInteraction, TabBarPolicy, TabBarVisibility};
 use crate::presentation_hit::{
     PopupHitRole, PresentationHitManifest, PresentationHitRegionKind, PresentationPlane,
+    PresentationPointerLane,
 };
 use crate::presentation_observation::{PresentationOutputSerial, SurfacePresentationOutputTicket};
 use crate::scene::{
@@ -1509,6 +1510,234 @@ fn stale_manifest_index_cannot_compile_a_changed_topology_revision() {
     ));
 }
 
+fn fixed_width_overflow_fixture(
+    visible_second_width: f64,
+) -> (PresentationPlan, PresentationHitManifest) {
+    let surface = SurfaceId::new(881);
+    let root = RootId::new(882);
+    let items = [ItemId::new(883), ItemId::new(884), ItemId::new(885)];
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs_with_selection(items, Some(items[0])));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder
+        .build()
+        .expect("fixed-width workspace should validate");
+    let policy = policy_snapshot();
+    assert!(policy.pane_close_capability(items[1]).allows_close());
+    let config = DockPresentationConfig::builder()
+        .tab_min_width(400.0)
+        .tab_max_width(400.0)
+        .build()
+        .expect("fixed tab widths should be valid");
+    // The measurement helper reserves one bar-height extent for each menu.
+    let chrome_width = config.tab_group_grip_extent() + 2.0 * config.tab_bar_height();
+    let bounds = LogicalRect::new(
+        20.0,
+        30.0,
+        chrome_width + 400.0 + visible_second_width,
+        180.0,
+    )
+    .expect("fixed-width bounds should be valid");
+    let plan = compile_ready_plan_with_config(&workspace, surface, bounds, true, &policy, &config)
+        .expect("fixed-width measurements should compile");
+    let plan = PresentationPlanValidator::new(&workspace, &policy)
+        .expect("validator should initialize")
+        .validate_and_canonicalize(plan)
+        .expect("clipped tab chrome should remain a valid presentation plan");
+    assert_eq!(plan.tab_bar_records().len(), 1);
+    assert_eq!(
+        plan.tab_bar_records()[0].viewport().width(),
+        400.0 + visible_second_width,
+        "the fixture must expose exactly the requested portion of the second tab"
+    );
+    let ticket = plan
+        .measurement_ticket()
+        .expect("compiled plan should retain its measurement ticket");
+    let output = SurfacePresentationOutputTicket::mint(
+        ticket.authority_domain(),
+        PresentationOutputSerial::new_for_test(1),
+        SurfaceSceneStamp::new(ticket, SurfaceSceneRevision::new(1)),
+    );
+    let hit = PresentationHitManifest::compile(output, &plan)
+        .expect("fixed-width hit geometry should resolve through the surface program");
+    (plan, hit)
+}
+
+#[test]
+fn partially_visible_tabs_keep_body_paint_and_hits_when_the_close_button_is_clipped() {
+    // Cover both a fully offscreen close button and a partially clipped one.
+    for visible_width in [200.0, 380.0] {
+        let (plan, hit) = fixed_width_overflow_fixture(visible_width);
+        let bar = &plan.tab_bar_records()[0];
+        let viewport = bar.viewport();
+        let [first, partial, hidden] = bar.members() else {
+            panic!("the strip should retain all three members")
+        };
+        assert_eq!(bar.scroll_offset(), 0.0);
+        assert_eq!(first.visibility(), TabStripMemberVisibility::Visible);
+        assert_eq!(
+            partial.visibility(),
+            TabStripMemberVisibility::PartiallyVisible
+        );
+        assert_eq!(hidden.visibility(), TabStripMemberVisibility::Hidden);
+        for (ordinal, member) in bar.members().iter().enumerate() {
+            assert_eq!(member.ordinal(), ordinal);
+            assert_eq!(member.full_bounds().width(), 400.0);
+        }
+        assert!(rect_contains(viewport, first.full_bounds()));
+        assert_eq!(partial.full_bounds().x(), first.full_bounds().max().x());
+        assert_eq!(hidden.full_bounds().x(), partial.full_bounds().max().x());
+        assert!(!positive_rect_overlap(hidden.full_bounds(), viewport));
+
+        let first_record = plan
+            .tab_records()
+            .iter()
+            .find(|tab| *tab.id() == first.tab())
+            .expect("the complete selected tab should be emitted");
+        assert!(first_record.selected());
+        assert_eq!(first_record.visible_bounds(), first.full_bounds());
+        assert!(first_record.close_visual_bounds().is_some());
+        assert!(first_record.close_bounds().is_some());
+        assert_eq!(plan.pane_records()[0].selected(), Some(first.tab().item));
+
+        let tab = plan
+            .tab_records()
+            .iter()
+            .find(|tab| *tab.id() == partial.tab())
+            .expect("an offscreen close button must not suppress the visible tab body");
+        let visible = LogicalRect::new(
+            partial.full_bounds().x(),
+            viewport.y(),
+            visible_width,
+            viewport.height(),
+        )
+        .expect("the visible tab body should be valid");
+        assert_eq!(tab.full_bounds(), partial.full_bounds());
+        assert_eq!(tab.visible_bounds(), visible);
+        assert_eq!(visible.max().x(), viewport.max().x());
+        assert_eq!(tab.drag_hit().rect(), visible);
+        assert!(rect_contains(visible, tab.text_bounds()));
+        assert!(!tab.selected());
+        assert_eq!(tab.close_visual_bounds(), None);
+        assert_eq!(tab.close_bounds(), None);
+        assert_eq!(bar.hidden_items(), &[hidden.tab().item]);
+        assert_eq!(plan.tab_records().len(), 2);
+        let painted_tabs = plan
+            .surface_program()
+            .blocks()
+            .iter()
+            .filter_map(|block| match block {
+                crate::scene::SurfaceProgramBlock::RootOperation(
+                    SurfaceProgramRootOperation::Tab(id),
+                ) => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(painted_tabs, [first.tab(), partial.tab()]);
+
+        let body = hit
+            .region_for_kind(PresentationHitRegionKind::TabBody(partial.tab()))
+            .expect("the painted partial tab must retain its select and drag receiver");
+        assert_eq!(body.hit(), tab.drag_hit());
+        assert!(body.lanes().contains(PresentationPointerLane::Click));
+        assert!(body.lanes().contains(PresentationPointerLane::Drag));
+        assert!(
+            hit.region_for_kind(PresentationHitRegionKind::TabClose(partial.tab()))
+                .is_none()
+        );
+        let inside = LogicalPoint::new(
+            visible.x() + visible.width() * 0.5,
+            visible.y() + visible.height() * 0.5,
+        )
+        .expect("the visible body center should be finite");
+        assert_eq!(
+            hit.resolve_exclusive(PresentationPointerLane::Click, inside)
+                .expect("the visible body should have one click receiver")
+                .map(|region| region.id().kind()),
+            Some(PresentationHitRegionKind::TabBody(partial.tab()))
+        );
+        for x in [viewport.max().x(), partial.full_bounds().max().x() - 1.0] {
+            let outside =
+                LogicalPoint::new(x, inside.y()).expect("the clipped body point should be finite");
+            assert!(partial.full_bounds().contains(outside));
+            assert!(!body.hit().contains(outside));
+            assert_ne!(
+                hit.resolve_exclusive(PresentationPointerLane::Click, outside)
+                    .expect("clipped body hit lookup should resolve")
+                    .map(|region| region.id().kind()),
+                Some(PresentationHitRegionKind::TabBody(partial.tab()))
+            );
+        }
+    }
+}
+
+#[test]
+fn partially_visible_tab_fragments_require_the_minimum_operable_width() {
+    let minimum = DockPresentationConfig::default().tab_close_extent();
+    for visible_width in [minimum - 1.0, minimum] {
+        let (plan, hit) = fixed_width_overflow_fixture(visible_width);
+        let bar = &plan.tab_bar_records()[0];
+        let partial = bar.members()[1];
+        assert_eq!(
+            partial.visibility(),
+            TabStripMemberVisibility::PartiallyVisible
+        );
+        assert_eq!(partial.full_bounds().width(), 400.0);
+        assert_eq!(
+            bar.viewport().max().x() - partial.full_bounds().x(),
+            visible_width
+        );
+        let tab = plan
+            .tab_records()
+            .iter()
+            .find(|tab| *tab.id() == partial.tab());
+        let body = hit.region_for_kind(PresentationHitRegionKind::TabBody(partial.tab()));
+        let painted = plan.surface_program().blocks().iter().any(|block| {
+            matches!(
+                block,
+                crate::scene::SurfaceProgramBlock::RootOperation(
+                    SurfaceProgramRootOperation::Tab(id)
+                ) if *id == partial.tab()
+            )
+        });
+        assert!(
+            hit.region_for_kind(PresentationHitRegionKind::TabClose(partial.tab()))
+                .is_none()
+        );
+        if visible_width < minimum {
+            assert!(
+                tab.is_none(),
+                "an inoperable fragment must not emit a tab record"
+            );
+            assert!(
+                body.is_none(),
+                "an inoperable fragment must not expose a receiver"
+            );
+            assert!(!painted);
+            let inside = LogicalPoint::new(
+                partial.full_bounds().x() + visible_width * 0.5,
+                bar.viewport().y() + bar.viewport().height() * 0.5,
+            )
+            .expect("the narrow fragment center should be finite");
+            assert_ne!(
+                hit.resolve_exclusive(PresentationPointerLane::Click, inside)
+                    .expect("the narrow fragment lookup should resolve")
+                    .map(|region| region.id().kind()),
+                Some(PresentationHitRegionKind::TabBody(partial.tab()))
+            );
+        } else {
+            let tab = tab.expect("the exact operable minimum must retain a tab record");
+            let body = body.expect("the exact operable minimum must retain a body receiver");
+            assert_eq!(tab.visible_bounds().width(), minimum);
+            assert_eq!(body.hit().rect(), tab.visible_bounds());
+            assert_eq!(tab.close_visual_bounds(), None);
+            assert_eq!(tab.close_bounds(), None);
+            assert!(painted);
+        }
+    }
+}
+
 type OverflowingTabStripFixture = (
     Workspace,
     SceneRequirementManifest,
@@ -1518,6 +1747,76 @@ type OverflowingTabStripFixture = (
     TabBarSceneId,
     [ItemId; 4],
 );
+
+#[test]
+fn left_clipped_tab_tails_require_complete_close_chrome_before_exposing_body_input() {
+    for visible_width in [16.0, 20.0, 48.0] {
+        let policy = policy_snapshot();
+        let bounds = LogicalRect::new(0.0, 0.0, 720.0, 180.0).unwrap();
+        let (workspace, manifest, measurements, mut states, surface, bar, items) =
+            overflowing_tab_strip_fixture_with_geometry(
+                &policy,
+                None,
+                false,
+                TabStripControlMetrics::new(0.0).unwrap(),
+                bounds,
+                bounds,
+            );
+        let config = DockPresentationConfig::builder()
+            .tab_min_width(400.0)
+            .tab_max_width(400.0)
+            .build()
+            .expect("fixed tab widths should be valid");
+        states
+            .adopt_resolved_scroll_offsets(surface, [(bar, 400.0 - visible_width, Some(items[3]))])
+            .expect("the left-clipped scroll offset should be valid");
+        let plan = compile_surface_measurements(
+            &workspace,
+            version(),
+            &policy,
+            &config,
+            &manifest,
+            &measurements,
+            &states,
+            &[],
+            None,
+        )
+        .expect("left-clipped tab measurements should compile");
+        let plan = PresentationPlanValidator::new(&workspace, &policy)
+            .expect("validator should initialize")
+            .validate_and_canonicalize(plan)
+            .expect("left-clipped close chrome must agree with the validator");
+        let bar = &plan.tab_bar_records()[0];
+        let tail = bar.members()[0];
+        assert_eq!(bar.scroll_offset(), 400.0 - visible_width);
+        assert_eq!(tail.tab().item, items[0]);
+        assert_eq!(
+            tail.visibility(),
+            TabStripMemberVisibility::PartiallyVisible
+        );
+        assert_eq!(
+            tail.full_bounds().max().x() - bar.viewport().x(),
+            visible_width
+        );
+        let tab = plan
+            .tab_records()
+            .iter()
+            .find(|tab| tab.id() == &tail.tab());
+        if visible_width <= 20.0 {
+            assert!(
+                tab.is_none(),
+                "a clipped close must not become tab body input"
+            );
+        } else {
+            let tab = tab.expect("a tail with full close and operable body should remain visible");
+            assert!(tab.close_visual_bounds().is_some());
+            assert!(rect_contains(
+                tab.visible_bounds(),
+                tab.close_bounds().unwrap()
+            ));
+        }
+    }
+}
 
 fn overflowing_tab_strip_fixture() -> OverflowingTabStripFixture {
     overflowing_tab_strip_fixture_with(

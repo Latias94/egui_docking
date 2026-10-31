@@ -1714,10 +1714,15 @@ fn operable_tab_chrome(
             size,
             size,
         )?;
-        if !rect_contains(visible, close) {
+        if rect_contains(visible, close) {
+            Some(close)
+        } else if visible.max().x() < full.max().x() {
+            None
+        } else {
+            // A left-clipped tail must retain complete close chrome before
+            // it can expose selection or drag input beneath that control.
             return Ok(None);
         }
-        Some(close)
     } else {
         None
     };

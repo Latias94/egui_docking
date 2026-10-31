@@ -66,6 +66,7 @@ pub(super) enum RedockLayout {
     Center,
     StationaryCenter,
     TabBefore,
+    OverflowBefore,
     Edge(PaneEdgeCase),
     Nested(NestedPaneCase),
 }
@@ -130,6 +131,22 @@ fn observed_stationary_redock_layout(view: DockspaceView<'_>) -> Option<RedockLa
         && tabs.items() == [ANCHOR_ITEM, MAIN_ITEM, CHILD_ITEM]
         && tabs.selected() == Some(CHILD_ITEM))
     .then_some(RedockLayout::StationaryCenter)
+}
+
+fn observed_overflow_redock_layout(view: DockspaceView<'_>) -> Option<RedockLayout> {
+    let root = view.surface(ROOT_SURFACE)?.main_root()?;
+    let tabs = root.content()?.tabs()?;
+    (view.surfaces().count() == 1
+        && view.surface(ROOT_SURFACE)?.contained_count() == 0
+        && root.id() == MAIN_ROOT
+        && tabs.is_central()
+        && tabs.items() == [ANCHOR_ITEM, CHILD_ITEM, MAIN_ITEM]
+        && tabs.selected() == Some(CHILD_ITEM)
+        && [ANCHOR_ITEM, CHILD_ITEM, MAIN_ITEM].iter().all(|item| {
+            view.item(*item)
+                .is_some_and(|item| item.root() == MAIN_ROOT && item.contained().is_none())
+        }))
+    .then_some(RedockLayout::OverflowBefore)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -284,6 +301,8 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let nested_target = std::env::var(PHYSICAL_TARGET_ENV)
         .ok()
         .and_then(|value| NestedPaneCase::parse(&value));
+    let overflow_target =
+        std::env::var(PHYSICAL_TARGET_ENV).as_deref() == Ok("overflow-tab-before");
     if measure_pointer_load && nested_target.is_some() {
         return Err(io::Error::other(
             "the 1 kHz physical load requires an original pane-center target",
@@ -294,12 +313,26 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     policy.set_allow_native_surfaces(true);
     let layout = if nested_target.is_some() {
         nested::smoke_layout()
-    } else if stationary_negative {
+    } else if stationary_negative || overflow_target {
         stationary_smoke_layout()
     } else {
         smoke_layout()
     };
-    let session = DockspaceSession::from_layout(layout, policy)?;
+    let mut style = DockStyle::default();
+    if overflow_target {
+        style.tab_min_width = 400.0;
+        style.tab_max_width = 400.0;
+    }
+    let presentation = if overflow_target {
+        dockspace::runtime::DockPresentationConfig::builder()
+            .tab_min_width(400.0)
+            .tab_max_width(400.0)
+            .build()?
+    } else {
+        dockspace::runtime::DockPresentationConfig::default()
+    };
+    let session =
+        DockspaceSession::from_layout_with_presentation_config(layout, policy, presentation)?;
     let id = egui::Id::unique("egui-native-physical-smoke");
     let dockspace = if measure_pointer_load {
         NativeDockspaceApp::new_with_storage_limit(
@@ -307,18 +340,12 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
             session,
             ROOT_SURFACE,
             SmokePanes::new(),
-            DockStyle::default(),
+            style,
             Default::default(),
             load_storage_limit()?,
         )?
     } else {
-        NativeDockspaceApp::new(
-            id,
-            session,
-            ROOT_SURFACE,
-            SmokePanes::new(),
-            DockStyle::default(),
-        )?
+        NativeDockspaceApp::new(id, session, ROOT_SURFACE, SmokePanes::new(), style)?
     };
     let shared = Arc::new((
         Mutex::new(SharedState {
@@ -374,6 +401,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 measure_pointer_load,
                 nested_target: nested_target.is_some(),
                 stationary_negative,
+                overflow_target,
             }))
         }),
     )?;
@@ -807,6 +835,7 @@ struct PhysicalSmokeApp {
     measure_pointer_load: bool,
     nested_target: bool,
     stationary_negative: bool,
+    overflow_target: bool,
 }
 
 impl eframe::App for PhysicalSmokeApp {
@@ -905,6 +934,8 @@ impl PhysicalSmokeApp {
                             nested::observed_redock_layout(view)
                         } else if self.stationary_negative {
                             observed_stationary_redock_layout(view)
+                        } else if self.overflow_target {
+                            observed_overflow_redock_layout(view)
                         } else {
                             observed_redock_layout(view)
                         }
@@ -936,10 +967,11 @@ impl PhysicalSmokeApp {
             center_merge_verified,
             redock_layout,
         };
-        let fatal_error = self
-            .dockspace
-            .error_kind()
-            .map(|kind| format!("native runtime entered fatal state: {kind:?}"));
+        let fatal_error = self.dockspace.with_errors(|primary, cleanup| {
+            primary.map(|error| {
+                format!("native runtime entered fatal state: {error:?}; cleanup={cleanup:?}")
+            })
+        });
         let load_active = self.measure_pointer_load
             && self
                 .shared

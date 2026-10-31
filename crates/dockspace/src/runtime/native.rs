@@ -1367,8 +1367,18 @@ impl RuntimeNativeState {
             .map_err(NativePlatformError::from_ingress)?;
         let (focus, focus_update) =
             self.focus_observation_for_bindings(supplied.iter().filter_map(|entry| {
-                matches!(entry.facts.lifecycle, NativeWindowLifecycleFact::Live)
-                    .then_some(entry.binding)
+                (matches!(entry.facts.lifecycle, NativeWindowLifecycleFact::Live)
+                    && self.producer.binding(entry.binding).is_some_and(|state| {
+                        matches!(
+                            state.admission,
+                            Some(ViewportAdmission::Admitted | ViewportAdmission::Pending)
+                        )
+                    })
+                    && entry
+                        .facts
+                        .presentation
+                        .is_some_and(|fact| fact.state == NativeWindowPresentationState::Visible))
+                .then_some(entry.binding)
             }))?;
         let snapshot = compile_platform_snapshot(
             self.profile,

@@ -20,17 +20,18 @@ use super::super::app::{
     SourceSelection,
 };
 use super::super::assertions::{
-    ActualGuideHit, DockPreviewEmission, LogicalBounds, NestedPaneCase, PHYSICAL_TARGET_ENV,
-    PaneCenterCase, PaneCenterError, PaneCenterGeometry, PaneEdgeCase, PhysicalBounds,
-    PhysicalPoint, SemanticLookupError, SemanticSelector, SemanticStabilitySample, SemanticText,
-    TabHalfCase, TabHalfGeometry, actual_guide_hits, choose_outside_points,
+    ActualGuideHit, DockPreviewEmission, LogicalBounds, NestedPaneCase, OverflowTabGeometry,
+    PHYSICAL_TARGET_ENV, PaneCenterCase, PaneCenterError, PaneCenterGeometry, PaneEdgeCase,
+    PhysicalBounds, PhysicalPoint, SemanticLookupError, SemanticSelector, SemanticStabilitySample,
+    SemanticText, TabHalfCase, TabHalfGeometry, actual_guide_hits, choose_outside_points,
     desktop_to_viewport_logical, dock_preview_emission, native_drag_preview_observation,
-    nested_pane_bounds, nested_pane_point, pane_center_geometry, pane_center_point,
-    pane_edge_point, point_towards, pointer_barrier_is_satisfied, pointer_observation_for_barrier,
-    semantic_baseline_after_missing, semantic_bounds, semantic_node, semantic_snapshot_is_stable,
-    semantic_tree_summary, tab_drag_point, tab_half_geometry, tab_half_point,
-    two_stage_ingress_points, verify_center_preview, verify_edge_preview,
-    verify_nested_pane_preview, verify_tab_half_preview, viewport_logical_to_desktop,
+    nested_pane_bounds, nested_pane_point, overflow_tab_geometry, overflow_tab_point,
+    pane_center_geometry, pane_center_point, pane_edge_point, point_towards,
+    pointer_barrier_is_satisfied, pointer_observation_for_barrier, semantic_baseline_after_missing,
+    semantic_bounds, semantic_node, semantic_snapshot_is_stable, semantic_tree_summary,
+    tab_drag_point, tab_half_geometry, tab_half_point, two_stage_ingress_points,
+    verify_center_preview, verify_edge_preview, verify_nested_pane_preview,
+    verify_overflow_tab_preview, verify_tab_half_preview, viewport_logical_to_desktop,
 };
 use super::super::pointer_load::{
     POINTER_LOAD_ENV, POINTER_LOAD_MOVES, begin_pointer_load, finish_pointer_load,
@@ -47,6 +48,7 @@ enum RedockTarget {
     PaneCenter(PaneCenterCase),
     PaneEdge(PaneEdgeCase),
     TabHalf(TabHalfCase),
+    OverflowBefore,
     NestedPane(NestedPaneCase),
 }
 
@@ -70,6 +72,7 @@ impl RedockTarget {
             "pane-edge-west" => Ok(Self::PaneEdge(PaneEdgeCase::West)),
             "tab-half-before" => Ok(Self::TabHalf(TabHalfCase::Before)),
             "tab-half-after" => Ok(Self::TabHalf(TabHalfCase::After)),
+            "overflow-tab-before" => Ok(Self::OverflowBefore),
             _ => NestedPaneCase::parse(value).map(Self::NestedPane).ok_or_else(|| format!(
                 "invalid {TARGET_ENV}={value:?}; unset for guide-control or choose pane-center-a, pane-center-b, pane-center-c, pane-edge-north, pane-edge-south, pane-edge-east, pane-edge-west, tab-half-before, tab-half-after, nested-pane-center, nested-pane-edge"
             )),
@@ -82,6 +85,7 @@ impl RedockTarget {
             Self::PaneCenter(case) => case.name(),
             Self::PaneEdge(case) => case.name(),
             Self::TabHalf(case) => case.name(),
+            Self::OverflowBefore => "overflow-tab-before",
             Self::NestedPane(case) => case.name(),
         }
     }
@@ -92,6 +96,7 @@ impl RedockTarget {
             Self::PaneEdge(case) => RedockLayout::Edge(case),
             Self::TabHalf(TabHalfCase::Before) => RedockLayout::TabBefore,
             Self::TabHalf(TabHalfCase::After) => RedockLayout::Center,
+            Self::OverflowBefore => RedockLayout::OverflowBefore,
             Self::NestedPane(case) => RedockLayout::Nested(case),
         }
     }
@@ -405,6 +410,105 @@ pub(crate) fn run(shared: Shared, inspection_endpoint: SocketAddr) -> Result<(),
 }
 
 impl PhysicalDriver {
+    fn click_root_control(
+        &mut self,
+        role: egui::accesskit::Role,
+        label: &'static str,
+    ) -> Result<(), String> {
+        eprintln!("physical-smoke: overflow preparation click={label}");
+        let (snapshot, bounds) = wait_for_stable_selector_bounds(
+            &self.shared,
+            &mut self.inspection,
+            ViewportId::ROOT,
+            SemanticSelector {
+                role,
+                text: SemanticText::Label(label),
+            },
+            bounded_stage_deadline(self.deadline, Duration::from_secs(3)),
+            label,
+        )?;
+        let close = if role == egui::accesskit::Role::Tab {
+            optional_selector_bounds(
+                &snapshot,
+                SemanticSelector {
+                    role: egui::accesskit::Role::Button,
+                    text: SemanticText::Label("Close Main"),
+                },
+            )?
+        } else {
+            None
+        };
+        let logical = tab_drag_point(bounds, close)
+            .ok_or_else(|| format!("{label} has no safe visible click point"))?;
+        let window = self.desktop.window_for_title(ROOT_WINDOW_TITLE)?;
+        let point = viewport_logical_to_desktop(window.bounds, snapshot.pixels_per_point, logical)
+            .map_err(|error| format!("{label} click coordinates: {error:?}"))?;
+        self.desktop.move_pointer(point)?;
+        self.desktop.assert_pointer(point, Some(false))?;
+        let hovered = input_barrier(
+            &self.shared,
+            &mut self.inspection,
+            ViewportId::ROOT,
+            snapshot.step,
+            window.bounds,
+            snapshot.pixels_per_point,
+            point,
+            false,
+            self.deadline,
+            label,
+        )?;
+        press_primary_with_cleanup(&self.desktop, label)?;
+        let pressed = input_barrier(
+            &self.shared,
+            &mut self.inspection,
+            ViewportId::ROOT,
+            hovered.step,
+            window.bounds,
+            snapshot.pixels_per_point,
+            point,
+            true,
+            self.deadline,
+            label,
+        );
+        let release = self.desktop.set_primary_button(false);
+        let pressed = pressed?;
+        release?;
+        input_barrier(
+            &self.shared,
+            &mut self.inspection,
+            ViewportId::ROOT,
+            pressed.step,
+            window.bounds,
+            snapshot.pixels_per_point,
+            point,
+            false,
+            self.deadline,
+            label,
+        )?;
+        Ok(())
+    }
+
+    fn prepare_overflow_target(&mut self) -> Result<(), String> {
+        // Real clicks establish manual scrolling before the source gesture starts.
+        // Selection reveals Main once; a backward step then leaves its right side clipped.
+        self.click_root_control(egui::accesskit::Role::Button, "Scroll tabs backward")?;
+        self.click_root_control(egui::accesskit::Role::Tab, "Main")?;
+        self.click_root_control(egui::accesskit::Role::Button, "Scroll tabs backward")?;
+        let (snapshot, geometry, _, _) = wait_for_overflow_scene(
+            &self.shared,
+            &mut self.inspection,
+            ViewportId::ROOT,
+            0,
+            None,
+            self.deadline,
+        )?;
+        eprintln!(
+            "physical-smoke: overflow prepared by actual selection/backward clicks step={} geometry={geometry:?}",
+            snapshot.step
+        );
+        Ok(())
+    }
+
     fn new(
         shared: Shared,
         inspection_endpoint: SocketAddr,
@@ -645,6 +749,9 @@ impl PhysicalDriver {
 
     fn perform_drag_back(&mut self) -> Result<(RetirementTarget, DragResult), String> {
         self.set_stage(ScenarioStage::DiscoverChildRedockCoordinates);
+        if self.target == RedockTarget::OverflowBefore {
+            self.prepare_overflow_target()?;
+        }
         let semantic_deadline = self.deadline.min(Instant::now() + Duration::from_secs(5));
         let viewports = self.inspection.viewports(semantic_deadline)?;
         let (child, child_tree, child_tab) = child_viewport(
@@ -686,6 +793,7 @@ impl PhysicalDriver {
             RedockTarget::PaneCenter(_)
             | RedockTarget::PaneEdge(_)
             | RedockTarget::TabHalf(_)
+            | RedockTarget::OverflowBefore
             | RedockTarget::NestedPane(_) => Some(
                 pane_center_geometry(&root_tree.tree)
                     .map_err(|error| format!("{} before press: {error:?}", self.target.name()))?,
@@ -1485,6 +1593,14 @@ fn inject_redock_drag(
                 source_ingress_step,
                 &ingress_tree,
             ),
+            RedockTarget::OverflowBefore => move_to_overflow_target_while_pressed(
+                shared,
+                inspection,
+                desktop,
+                request,
+                source_ingress_step,
+                &ingress_tree,
+            ),
             RedockTarget::NestedPane(case) => move_to_pane_target_while_pressed(
                 shared,
                 inspection,
@@ -1657,6 +1773,187 @@ struct PaneCenterScene {
     tab: TabHalfGeometry,
     guides: Vec<ActualGuideHit>,
     preview: Option<DockPreviewEmission>,
+}
+
+fn wait_for_overflow_scene(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    viewport: ViewportId,
+    after_step: u64,
+    expected: Option<OverflowTabGeometry>,
+    overall: Instant,
+) -> Result<
+    (
+        ViewportTreeSnapshot,
+        OverflowTabGeometry,
+        Vec<ActualGuideHit>,
+        Option<DockPreviewEmission>,
+    ),
+    String,
+> {
+    let deadline = bounded_stage_deadline(overall, Duration::from_secs(3));
+    let mut previous = None;
+    let mut last = "no current overflow scene".to_owned();
+    while Instant::now() < deadline {
+        if let Some(error) = shared_fatal_error(shared) {
+            return Err(error);
+        }
+        let snapshot = inspection.tree(viewport, deadline)?;
+        if snapshot.step <= after_step {
+            continue;
+        }
+        let geometry = match overflow_tab_geometry(&snapshot.tree) {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                last = format!("step {}: {error:?}", snapshot.step);
+                previous = None;
+                continue;
+            }
+        };
+        let guides = match actual_guide_hits(&snapshot.tree) {
+            Ok(guides) => guides,
+            Err(PaneCenterError::MissingGuide { .. }) if expected.is_none() => Vec::new(),
+            Err(error) => {
+                last = format!("step {}: {error:?}", snapshot.step);
+                previous = None;
+                continue;
+            }
+        };
+        let preview = dock_preview_emission(&snapshot.tree)
+            .map_err(|error| format!("overflow Dock emission: {error:?}"))?;
+        if let Some(expected) = expected {
+            if geometry != expected {
+                return Err(format!(
+                    "overflow target moved: {expected:?} -> {geometry:?}"
+                ));
+            }
+            let Some(preview) = preview else {
+                previous = None;
+                last = "no Dock preview".to_owned();
+                continue;
+            };
+            if let Err(error) =
+                verify_overflow_tab_preview(geometry, preview, snapshot.pixels_per_point)
+            {
+                last = format!(
+                    "step {} transitional preview {preview:?}: {error:?}",
+                    snapshot.step
+                );
+                previous = None;
+                continue;
+            }
+        }
+        let epoch = shared
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .roster_epoch;
+        let sample = (
+            epoch,
+            snapshot.pixels_per_point,
+            geometry,
+            guides.clone(),
+            preview,
+        );
+        if previous
+            .as_ref()
+            .is_some_and(|(step, prior)| snapshot.step > *step && prior == &sample)
+        {
+            return Ok((snapshot, geometry, guides, preview));
+        }
+        previous = Some((snapshot.step, sample));
+    }
+    Err(format!(
+        "overflow scene did not stabilize after step={after_step}: {last}"
+    ))
+}
+
+fn move_to_overflow_target_while_pressed(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    desktop: &X11Desktop,
+    request: GuideDragRequest<'_>,
+    source_step: u64,
+    ingress: &ViewportTreeSnapshot,
+) -> Result<(ViewportTreeSnapshot, PhysicalPoint), String> {
+    let (before, geometry, guides, _) = wait_for_overflow_scene(
+        shared,
+        inspection,
+        request.target_viewport,
+        ingress.step,
+        None,
+        request.deadline,
+    )?;
+    if guides.is_empty() {
+        return Err("overflow target lacks current actual guide facts".to_owned());
+    }
+    let window = desktop.window_for_title(request.target_window_title)?;
+    let (point, logical) =
+        overflow_tab_point(geometry, window.bounds, before.pixels_per_point, &guides)
+            .map_err(|error| format!("overflow clipped input point: {error:?}"))?;
+    desktop.move_pointer(point)?;
+    desktop.assert_pointer(point, Some(true))?;
+    let source = input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source_step,
+        request.source_client,
+        request.source_pixels_per_point,
+        point,
+        true,
+        request.deadline,
+        "overflow real motion into clipped Main",
+    )?;
+    let target = viewport_barrier(
+        inspection,
+        request.target_viewport,
+        before.step,
+        request.deadline,
+        "overflow target after real motion",
+    )?;
+    let (preview, final_geometry, guides, emission) = wait_for_overflow_scene(
+        shared,
+        inspection,
+        request.target_viewport,
+        target.step,
+        Some(geometry),
+        request.deadline,
+    )?;
+    let final_window = desktop.window_for_title(request.target_window_title)?;
+    let (final_point, _) = overflow_tab_point(
+        final_geometry,
+        final_window.bounds,
+        preview.pixels_per_point,
+        &guides,
+    )
+    .map_err(|error| format!("overflow before release: {error:?}"))?;
+    if point != final_point
+        || final_window.bounds != window.bounds
+        || before.pixels_per_point != preview.pixels_per_point
+    {
+        return Err("overflow physical target changed before release".to_owned());
+    }
+    input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source.step,
+        request.source_client,
+        request.source_pixels_per_point,
+        point,
+        true,
+        request.deadline,
+        "overflow held source before release",
+    )?;
+    desktop.assert_pointer(point, Some(true))?;
+    eprintln!(
+        "physical-smoke: overflow clipped-Main input={logical:?}/{point:?} geometry={geometry:?} Dock program emitted={emission:?} step={} after-motion-step={} excluded-guides={} (not a GPU presentation receipt)",
+        preview.step,
+        target.step,
+        guides.len()
+    );
+    Ok((preview, point))
 }
 
 fn wait_for_pane_center_scene(

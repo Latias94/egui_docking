@@ -1345,6 +1345,267 @@ fn losing_inventory_revokes_dock_focus_without_guessing_a_successor() {
 }
 
 #[test]
+fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_generation() {
+    use crate::backend_ingress::BackendIngressPayload;
+    use crate::viewport_focus::{FocusObservationGeneration, GlobalFocusedWindow};
+
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                NativeWindowFacts::live()
+                    .with_presentation(NativeWindowPresentationState::Visible, None),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the visible root snapshot records");
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect("the visible root focus records");
+    commit_managed_frame(&mut session);
+    let focus_before = session.engine.viewport_focus().clone();
+    let baseline = focus_before
+        .focus_observation()
+        .expect("the visible root owns authoritative focus");
+    assert_eq!(baseline.generation(), FocusObservationGeneration::new(1));
+    assert_eq!(
+        baseline.focused(),
+        &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+    );
+    let workspace_before = session.workspace().clone();
+    let version_before = session.version();
+    let backend_before = session.engine.backend_ingress_committed_through();
+    let input_before = session.engine.last_input_sequence();
+    let source_before = session.committed_source_sequence;
+    let semantic_before = session.engine.semantic_input_watermark();
+
+    session
+        .report_managed_native_snapshot(
+            [(binding, NativeWindowFacts::destroyed())],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the exact destroyed root snapshot records");
+    assert!(session.is_current_native_binding(binding));
+    // Recording destruction does not retire producer admission before commit.
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect("a late focus callback can still queue behind destruction");
+    let native = session.native.as_ref().expect("the native host exists");
+    let recorded = native.recorder.recorded_through();
+    let pointer = native.recorder.pointer_through();
+    let producer_before = native.producer.bindings.clone();
+    let snapshot_generation = native.snapshot_generation;
+    let unsettled = native.binding_roster_unsettled_through;
+    let retained = native
+        .recorder
+        .batch_after(backend_before)
+        .expect("the destroyed snapshot and late focus share one retryable prefix");
+    let [destroyed, old_focus] = retained.records() else {
+        panic!("the prefix must contain exactly destruction followed by old dock focus");
+    };
+    let BackendIngressPayload::PlatformSnapshot { snapshot, .. } = destroyed.payload() else {
+        panic!("destruction must be recorded before the late focus callback");
+    };
+    assert_eq!(
+        snapshot.focus().generation(),
+        FocusObservationGeneration::new(2)
+    );
+    assert!(matches!(snapshot.focus().focused(), Authority::Unknown(_)));
+    assert!(matches!(
+        snapshot.close_observations(),
+        [observation]
+            if observation.binding() == binding.binding
+                && observation.known_state() == Some(WindowCloseState::Destroyed)
+    ));
+    let BackendIngressPayload::GlobalFocusObservation { observation, .. } = old_focus.payload()
+    else {
+        panic!("the second record must retain the raw old dock focus");
+    };
+    assert_eq!(observation.generation(), FocusObservationGeneration::new(3));
+    assert_eq!(
+        observation.focused(),
+        &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+    );
+    assert_eq!(recorded.get(), backend_before.get() + 2);
+
+    for fail_commit in [false, true] {
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("destruction followed by exact retired focus can begin");
+        assert_eq!(
+            frame.frame.view().viewport_focus().focus_observation(),
+            None
+        );
+        assert_eq!(frame.frame.backend_ingress_through(), recorded);
+        assert_eq!(frame.session.engine.viewport_focus(), &focus_before);
+        assert_eq!(frame.session.workspace(), &workspace_before);
+        assert_eq!(
+            frame.session.native.as_ref().unwrap().producer.bindings,
+            producer_before
+        );
+        assert_eq!(
+            frame.session.engine.backend_ingress_committed_through(),
+            backend_before
+        );
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the destroyed root candidate settles its surface");
+        if fail_commit {
+            frame
+                .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                .expect_err("answering the same surface twice poisons this candidate");
+            frame
+                .commit()
+                .expect_err("a poisoned candidate cannot publish the native prefix");
+        } else {
+            drop(frame);
+        }
+
+        assert_eq!(session.workspace(), &workspace_before);
+        assert_eq!(session.version(), version_before);
+        assert_eq!(session.engine.viewport_focus(), &focus_before);
+        assert_eq!(
+            session.engine.backend_ingress_committed_through(),
+            backend_before
+        );
+        assert_eq!(session.engine.last_input_sequence(), input_before);
+        assert_eq!(session.committed_source_sequence, source_before);
+        assert_eq!(session.engine.semantic_input_watermark(), semantic_before);
+        assert!(session.is_current_native_binding(binding));
+        let native = session.native.as_ref().expect("the native host exists");
+        assert_eq!(native.producer.bindings, producer_before);
+        assert_eq!(native.snapshot_generation, snapshot_generation);
+        assert_eq!(native.binding_roster_unsettled_through, unsettled);
+        assert_eq!(native.focus_generation, 3);
+        assert_eq!(native.focus, NativeGlobalFocus::Dock(binding));
+        assert_eq!(native.recorder.recorded_through(), recorded);
+        assert_eq!(native.recorder.pointer_through(), pointer);
+        assert_eq!(
+            native.recorder.batch_after(backend_before).unwrap(),
+            retained
+        );
+    }
+
+    let mut retry = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the exact native prefix remains retryable");
+    retry
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the retry settles the destroyed root surface");
+    let report = retry
+        .commit()
+        .expect("destruction and old dock focus commit together");
+    assert!(matches!(
+        report.inputs(),
+        [
+            super::super::HostInputOutcome::NativePlatformSnapshotApplied { .. },
+            super::super::HostInputOutcome::NativeFocusObservationApplied,
+        ]
+    ));
+    assert_eq!(session.workspace(), &workspace_before);
+    assert_eq!(session.engine.backend_ingress_committed_through(), recorded);
+    assert_eq!(session.engine.viewport_focus().focus_observation(), None);
+    assert!(session.recognizes_native_binding(binding));
+    assert!(!session.is_current_native_binding(binding));
+    let native = session.native.as_ref().expect("the native host exists");
+    assert_eq!(
+        native.producer.binding(binding.binding).unwrap().admission,
+        None
+    );
+    assert_eq!(native.focus_generation, 3);
+    assert_eq!(native.focus, NativeGlobalFocus::Dock(binding));
+
+    // A retired Dock fact consumes its raw generation without requiring another tombstone.
+    session
+        .report_native_global_focus(NativeGlobalFocus::Foreign)
+        .expect("the next actual focus fact records without another root");
+    commit_managed_frame(&mut session);
+    let foreign = session
+        .engine
+        .viewport_focus()
+        .focus_observation()
+        .expect("the next generation restores authority without a false conflict or tombstone");
+    assert_eq!(foreign.generation(), FocusObservationGeneration::new(4));
+    assert_eq!(
+        foreign.focused(),
+        &Authority::Known(GlobalFocusedWindow::Foreign)
+    );
+}
+
+#[test]
+fn nonvisible_snapshots_revoke_dock_focus_once_and_visibility_needs_a_new_focus_fact() {
+    use crate::viewport_focus::{FocusObservationGeneration, GlobalFocusedWindow};
+
+    for presentation in [
+        Some(NativeWindowPresentationState::Hidden),
+        Some(NativeWindowPresentationState::Minimized),
+        None,
+    ] {
+        let (mut session, binding) =
+            native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+        let visible = NativeWindowFacts::live()
+            .with_presentation(NativeWindowPresentationState::Visible, None);
+        session
+            .report_managed_native_snapshot([(binding, visible)], NativeWorkAreaRoster::Unknown)
+            .expect("the visible root snapshot records");
+        session
+            .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+            .expect("the actual visible root focus records");
+        commit_managed_frame(&mut session);
+        let baseline = session.engine.viewport_focus().focus_observation().unwrap();
+        assert_eq!(baseline.generation(), FocusObservationGeneration::new(1));
+        assert_eq!(
+            baseline.focused(),
+            &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+        );
+
+        let unavailable = presentation.map_or_else(NativeWindowFacts::live, |state| {
+            NativeWindowFacts::live().with_presentation(state, None)
+        });
+        // Repeating the same presentation must not fabricate another focus edge.
+        for _ in 0..2 {
+            session
+                .report_managed_native_snapshot(
+                    [(binding, unavailable)],
+                    NativeWorkAreaRoster::Unknown,
+                )
+                .expect("the hidden, minimized, or unknown presentation snapshot records");
+            commit_managed_frame(&mut session);
+            let native = session.native.as_ref().expect("the native host exists");
+            assert_eq!(native.focus_generation, 2, "presentation: {presentation:?}");
+            assert_eq!(native.focus, NativeGlobalFocus::Unknown);
+            assert_eq!(session.engine.viewport_focus().focus_observation(), None);
+        }
+
+        session
+            .report_managed_native_snapshot([(binding, visible)], NativeWorkAreaRoster::Unknown)
+            .expect("the root becomes visible again");
+        commit_managed_frame(&mut session);
+        let native = session.native.as_ref().expect("the native host exists");
+        assert_eq!(native.focus_generation, 2);
+        assert_eq!(native.focus, NativeGlobalFocus::Unknown);
+        assert_eq!(session.engine.viewport_focus().focus_observation(), None);
+
+        session
+            .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+            .expect("a new actual focus callback records after visibility returns");
+        commit_managed_frame(&mut session);
+        let restored = session
+            .engine
+            .viewport_focus()
+            .focus_observation()
+            .expect("only the new focus fact restores dock focus");
+        assert_eq!(restored.generation(), FocusObservationGeneration::new(3));
+        assert_eq!(
+            restored.focused(),
+            &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+        );
+    }
+}
+
+#[test]
 fn focus_before_the_initial_managed_snapshot_is_rejected_atomically() {
     let (mut session, binding) =
         native_root_session_with_profile(NativeHostProfile::ManagedDesktop);

@@ -153,6 +153,60 @@ pub(crate) fn paint_tab_bar(
         .flatten();
     context.register_scroll_receiver(id, receiver);
     paint_group_drag_regions(context, bar, paint);
+    #[cfg(feature = "native-render-support")]
+    publish_native_tab_strip_diagnostics(context, bar);
+}
+
+#[cfg(feature = "native-render-support")]
+fn publish_native_tab_strip_diagnostics(
+    context: &RenderContext<'_, '_, '_>,
+    bar: dockspace::runtime::TabBarPaintRecord<'_>,
+) {
+    use dockspace::runtime::TabStripMemberVisibility;
+
+    if !super::native_drag_preview_diagnostic_enabled(context.ui.ctx()) {
+        return;
+    }
+    let Some(viewport) = egui_rect(bar.viewport()) else {
+        return;
+    };
+    for member in bar.members() {
+        let visibility = match member.visibility() {
+            TabStripMemberVisibility::Visible => "fully-visible",
+            TabStripMemberVisibility::PartiallyVisible => "partially-visible",
+            TabStripMemberVisibility::Hidden => continue,
+        };
+        let Some(resource) = context.resources.tab(member.visual_id()) else {
+            continue;
+        };
+        let Some(full) = egui_rect(member.full_bounds()) else {
+            continue;
+        };
+        let title = resource.title.as_str();
+        let id = tab_id_for_visual(context.ui, context.instance_id, member.visual_id());
+        context
+            .ui
+            .ctx()
+            .accesskit_node_builder(id.with("native-tab-full-bounds"), |node| {
+                node.set_role(Role::Label);
+                node.set_label(format!("Dockspace tab full bounds {title}"));
+                node.set_value(visibility);
+                node.set_bounds(accesskit_bounds(full));
+            });
+        context
+            .ui
+            .ctx()
+            .accesskit_node_builder(id.with("native-tab-strip-viewport"), |node| {
+                node.set_role(Role::Label);
+                node.set_label(format!("Dockspace tab strip viewport {title}"));
+                node.set_value(format!(
+                    "offset={};maximum={}",
+                    bar.scroll_offset(),
+                    bar.maximum_scroll_offset(),
+                ));
+                node.set_bounds(accesskit_bounds(viewport));
+            });
+    }
 }
 
 fn paint_group_drag_regions(

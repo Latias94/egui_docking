@@ -665,6 +665,16 @@ impl ViewportCoordinator {
         self.binding_cleanup.contains_key(&binding)
     }
 
+    pub(crate) fn recognizes_retired_native_binding(&self, binding: ViewportBinding) -> bool {
+        self.registry
+            .record(binding.surface())
+            .is_some_and(|record| {
+                record.binding() == binding && record.admission() == ViewportAdmission::Retiring
+            })
+            || self.binding_cleanup.contains_key(&binding)
+            || self.binding_cleanup.is_terminal(binding)
+    }
+
     #[cfg(test)]
     pub(crate) fn record_terminal_binding_guard_for_test(
         &mut self,

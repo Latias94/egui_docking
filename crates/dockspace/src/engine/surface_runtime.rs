@@ -909,14 +909,19 @@ impl DockEngine {
             record.admission() == crate::viewport_registry::ViewportAdmission::Pending
                 || self.native_source_surface_is_held(record.binding().surface())
         });
+        let mut retired_binding = false;
         if let Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(binding)) =
             observation.focused()
             && !reportable.contains(binding)
         {
-            return Err(EngineError::GlobalFocusBindingUnavailable {
-                input,
-                binding: *binding,
-            });
+            if self.viewport.recognizes_retired_native_binding(*binding) {
+                retired_binding = true;
+            } else {
+                return Err(EngineError::GlobalFocusBindingUnavailable {
+                    input,
+                    binding: *binding,
+                });
+            }
         }
         let acknowledged_effect = match *observation.acknowledged_effect() {
             Authority::Known(Some(effect))
@@ -935,10 +940,11 @@ impl DockEngine {
         let items = self.focus_item_snapshot();
         let mut transition = self
             .viewport_focus
-            .publish_platform_focus_observation(
+            .publish_platform_focus_observation_with_retired_binding(
                 observation,
                 focus_causal,
                 restore_gate,
+                retired_binding,
                 |binding| observed.contains(&binding),
                 |binding| activatable.contains(&binding),
                 |binding| isolated.contains(&binding),

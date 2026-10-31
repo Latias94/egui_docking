@@ -2759,6 +2759,7 @@ impl ViewportFocusCoordinator {
             observation,
             causal,
             PlatformFocusRestoreGate::KnownAllReleased,
+            false,
             is_current_binding,
             is_current_binding,
             |_| false,
@@ -2768,6 +2769,7 @@ impl ViewportFocusCoordinator {
         Ok(transition)
     }
 
+    #[cfg(test)]
     pub(crate) fn publish_platform_focus_observation(
         &mut self,
         observation: FocusObservationEnvelope,
@@ -2778,11 +2780,35 @@ impl ViewportFocusCoordinator {
         is_isolated_binding: impl Fn(ViewportBinding) -> bool + Copy,
         item_is_on_surface: impl Fn(SurfaceId, ItemId) -> bool + Copy,
     ) -> Result<FocusObservationTransition, ViewportFocusError> {
+        self.publish_platform_focus_observation_with_retired_binding(
+            observation,
+            causal,
+            restore_gate,
+            false,
+            can_observe_binding,
+            can_accept_activation,
+            is_isolated_binding,
+            item_is_on_surface,
+        )
+    }
+
+    pub(crate) fn publish_platform_focus_observation_with_retired_binding(
+        &mut self,
+        observation: FocusObservationEnvelope,
+        causal: FocusCausalStamp,
+        restore_gate: PlatformFocusRestoreGate,
+        retired_binding: bool,
+        can_observe_binding: impl Fn(ViewportBinding) -> bool + Copy,
+        can_accept_activation: impl Fn(ViewportBinding) -> bool + Copy,
+        is_isolated_binding: impl Fn(ViewportBinding) -> bool + Copy,
+        item_is_on_surface: impl Fn(SurfaceId, ItemId) -> bool + Copy,
+    ) -> Result<FocusObservationTransition, ViewportFocusError> {
         let mut candidate = self.clone();
         let transition = candidate.publish_focus_observation_in_place(
             observation,
             causal,
             restore_gate,
+            retired_binding,
             can_observe_binding,
             can_accept_activation,
             is_isolated_binding,
@@ -2979,16 +3005,39 @@ impl ViewportFocusCoordinator {
 
     fn publish_focus_observation_in_place(
         &mut self,
-        observation: FocusObservationEnvelope,
+        mut observation: FocusObservationEnvelope,
         causal: FocusCausalStamp,
         restore_gate: PlatformFocusRestoreGate,
+        retired_binding: bool,
         can_observe_binding: impl Fn(ViewportBinding) -> bool + Copy,
         can_accept_activation: impl Fn(ViewportBinding) -> bool + Copy,
         is_isolated_binding: impl Fn(ViewportBinding) -> bool + Copy,
         item_is_on_surface: impl Fn(SurfaceId, ItemId) -> bool + Copy,
     ) -> Result<FocusObservationTransition, ViewportFocusError> {
         let previous = self.focus_observations.current();
-        match self.focus_observations.observe(Some(observation)) {
+        let raw_transition = self.focus_observations.observe(Some(observation));
+        let transition = if retired_binding
+            && matches!(
+                raw_transition,
+                FocusObservationStreamTransition::Current
+                    | FocusObservationStreamTransition::Duplicate
+            ) {
+            // Retirement revokes effective authority without rewriting provider history.
+            self.focus_observations.current = None;
+            let reason = AuthorityUnavailableReason::NotReported;
+            observation = FocusObservationEnvelope::new(
+                observation.generation(),
+                Authority::Unknown(reason),
+                *observation.acknowledged_effect(),
+            );
+            FocusObservationStreamTransition::AuthorityRevoked {
+                generation: Some(observation.generation()),
+                reason: FocusAuthorityRevocation::Unknown(reason),
+            }
+        } else {
+            raw_transition
+        };
+        match transition {
             FocusObservationStreamTransition::Current => {}
             FocusObservationStreamTransition::Duplicate => {
                 return Ok(FocusObservationTransition::Duplicate);
@@ -4711,6 +4760,198 @@ mod tests {
             None,
             "unknown focus must not be synthesized into GlobalFocusedWindow::None"
         );
+    }
+
+    #[test]
+    fn retired_duplicate_preserves_raw_focus_and_accepts_the_next_known_focus() {
+        for successor in [
+            GlobalFocusedWindow::Dock(second_binding()),
+            GlobalFocusedWindow::Foreign,
+        ] {
+            let mut coordinator = ViewportFocusCoordinator::default();
+            let raw = focus_observation(10, GlobalFocusedWindow::Dock(binding()));
+            assert!(matches!(
+                publish_platform_focus(
+                    &mut coordinator,
+                    raw,
+                    1,
+                    PlatformFocusRestoreGate::KnownAllReleased,
+                ),
+                FocusObservationTransition::Applied(_)
+            ));
+
+            for (causal, had_authority) in [(2, true), (3, false)] {
+                let transition = coordinator
+                    .publish_platform_focus_observation_with_retired_binding(
+                        raw,
+                        focus_stamp(causal),
+                        PlatformFocusRestoreGate::KnownAllReleased,
+                        true,
+                        |candidate| candidate == second_binding(),
+                        |candidate| candidate == second_binding(),
+                        |_| false,
+                        |_, _| false,
+                    )
+                    .expect("retirement must revoke only effective focus authority");
+                assert!(matches!(
+                    transition,
+                    FocusObservationTransition::AuthorityRevoked {
+                        generation: Some(generation),
+                        reason: FocusAuthorityRevocation::Unknown(
+                            AuthorityUnavailableReason::NotReported
+                        ),
+                        cleanup,
+                        ..
+                    } if generation == raw.generation()
+                        && cleanup.global_authority_removed() == had_authority
+                ));
+                assert_eq!(coordinator.focus_observation(), None);
+                assert_eq!(coordinator.focus_observations.last_envelope, Some(raw));
+                assert_eq!(
+                    coordinator.focus_observations.generation_watermark(),
+                    Some(raw.generation())
+                );
+                assert!(!coordinator.focus_observations.requires_tombstone);
+            }
+
+            let restored = focus_observation(11, successor);
+            assert!(matches!(
+                publish_platform_focus(
+                    &mut coordinator,
+                    restored,
+                    4,
+                    PlatformFocusRestoreGate::KnownAllReleased,
+                ),
+                FocusObservationTransition::Applied(_)
+            ));
+            assert_eq!(coordinator.focus_observation(), Some(restored));
+        }
+    }
+
+    #[test]
+    fn stale_retired_focus_does_not_revoke_a_newer_root_observation() {
+        let mut coordinator = ViewportFocusCoordinator::default();
+        let retired = focus_observation(10, GlobalFocusedWindow::Dock(binding()));
+        let current = focus_observation(11, GlobalFocusedWindow::Dock(second_binding()));
+        for (causal, observation) in [(1, retired), (2, current)] {
+            assert!(matches!(
+                publish_platform_focus(
+                    &mut coordinator,
+                    observation,
+                    causal,
+                    PlatformFocusRestoreGate::KnownAllReleased,
+                ),
+                FocusObservationTransition::Applied(_)
+            ));
+        }
+
+        let transition = coordinator
+            .publish_platform_focus_observation_with_retired_binding(
+                retired,
+                focus_stamp(3),
+                PlatformFocusRestoreGate::KnownAllReleased,
+                true,
+                |candidate| candidate == second_binding(),
+                |candidate| candidate == second_binding(),
+                |_| false,
+                |_, _| false,
+            )
+            .expect("stale retirement observations must remain inert");
+        assert!(matches!(
+            transition,
+            FocusObservationTransition::Stale { current: generation }
+                if generation == current.generation()
+        ));
+        assert_eq!(coordinator.focus_observation(), Some(current));
+        assert_eq!(coordinator.focus_observations.last_envelope, Some(current));
+        assert_eq!(
+            coordinator.focus_observations.generation_watermark(),
+            Some(current.generation())
+        );
+        assert!(!coordinator.focus_observations.requires_tombstone);
+    }
+
+    #[test]
+    fn retired_focus_conflicts_and_gaps_still_require_a_provider_tombstone() {
+        for generation in [10, 12] {
+            let mut coordinator = ViewportFocusCoordinator::default();
+            let initial = focus_observation(10, GlobalFocusedWindow::Dock(binding()));
+            let _ = publish_platform_focus(
+                &mut coordinator,
+                initial,
+                1,
+                PlatformFocusRestoreGate::KnownAllReleased,
+            );
+            let raw = focus_observation(generation, GlobalFocusedWindow::Dock(third_binding()));
+            let transition = coordinator
+                .publish_platform_focus_observation_with_retired_binding(
+                    raw,
+                    focus_stamp(2),
+                    PlatformFocusRestoreGate::KnownAllReleased,
+                    true,
+                    |candidate| candidate == second_binding(),
+                    |candidate| candidate == second_binding(),
+                    |_| false,
+                    |_, _| false,
+                )
+                .expect("retirement must preserve raw provider stream faults");
+            let expected_reason = if generation == 10 {
+                FocusAuthorityRevocation::EqualGenerationConflict
+            } else {
+                FocusAuthorityRevocation::GenerationGap {
+                    previous: initial.generation(),
+                }
+            };
+            assert!(matches!(
+                transition,
+                FocusObservationTransition::AuthorityRevoked { reason, .. }
+                    if reason == expected_reason
+            ));
+            assert_eq!(coordinator.focus_observation(), None);
+            assert_eq!(
+                coordinator.focus_observations.last_envelope,
+                Some(if generation == 10 { initial } else { raw })
+            );
+            assert!(coordinator.focus_observations.requires_tombstone);
+
+            let blocked =
+                focus_observation(generation + 1, GlobalFocusedWindow::Dock(third_binding()));
+            assert!(matches!(
+                coordinator
+                    .publish_platform_focus_observation_with_retired_binding(
+                        blocked,
+                        focus_stamp(3),
+                        PlatformFocusRestoreGate::KnownAllReleased,
+                        true,
+                        |candidate| candidate == second_binding(),
+                        |candidate| candidate == second_binding(),
+                        |_| false,
+                        |_, _| false,
+                    )
+                    .expect("retirement cannot substitute for a provider tombstone"),
+                FocusObservationTransition::TombstoneRequired { .. }
+            ));
+            assert!(coordinator.focus_observations.requires_tombstone);
+
+            let _ = publish_platform_focus(
+                &mut coordinator,
+                focus_tombstone(generation + 2),
+                4,
+                PlatformFocusRestoreGate::KnownAllReleased,
+            );
+            assert!(!coordinator.focus_observations.requires_tombstone);
+            let restored = focus_observation(generation + 3, GlobalFocusedWindow::Foreign);
+            assert!(matches!(
+                publish_platform_focus(
+                    &mut coordinator,
+                    restored,
+                    5,
+                    PlatformFocusRestoreGate::KnownAllReleased,
+                ),
+                FocusObservationTransition::Applied(_)
+            ));
+            assert_eq!(coordinator.focus_observation(), Some(restored));
+        }
     }
 
     #[test]

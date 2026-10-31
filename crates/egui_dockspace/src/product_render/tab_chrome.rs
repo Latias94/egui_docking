@@ -41,10 +41,11 @@ fn paint_control_records(
         let response = context.interact_receiver(
             hit,
             id,
+            // Overlay controls own both input lanes above underlying tab bodies.
             if enabled {
-                Sense::click()
+                Sense::click_and_drag()
             } else {
-                Sense::hover()
+                Sense::CLICK | Sense::DRAG
             },
             enabled
                 .then(|| context.plan.receiver_for_tab_strip_control(control))
@@ -147,6 +148,7 @@ fn configure_control_accessibility(
             node.add_action(Action::Click);
         } else {
             node.set_disabled();
+            node.clear_actions();
         }
     });
 }
