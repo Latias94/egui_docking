@@ -11,14 +11,94 @@ use crate::document::{
     RuntimeDocumentRestoreError,
 };
 use crate::external_item_key::{ExternalItemKeyMapError, ExternalItemKeyRestoreError};
-use crate::model::{DockspaceLayout, DockspaceView, ItemId};
+use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
+use crate::model::{DockspaceLayout, DockspaceView, ItemId, SurfaceId};
 use crate::persistence::SnapshotRestoreError;
 use crate::policy::DockPolicy;
 use crate::presentation_config::DockPresentationConfig;
-use crate::viewport_persistence::ViewportPlacementRestoreError;
+use crate::viewport_persistence::{
+    NativeSurfaceHostPreference, ViewportPlacementPreferences, ViewportPlacementRestoreError,
+};
 use crate::{document, engine::DockEngine};
 
 pub use crate::document::DockspaceDocumentId;
+pub use crate::viewport_persistence::{
+    NativeSurfaceHostPreference as DockspaceNativeSurfaceHosting,
+    WindowPresentationPreference as DockspaceWindowPresentationPreference,
+};
+
+/// Durable surface hosting and window-placement preferences from one document.
+///
+/// The workspace view remains the sole content graph. These declarations are
+/// restoration inputs for an application host; they do not create native windows
+/// or grant binding, coordinate, recovery or presentation authority. Missing
+/// placement remains explicit, and geometry is measured in desktop physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DockspaceSurfacePresentationPreference {
+    surface: SurfaceId,
+    native_hosting: Option<NativeSurfaceHostPreference>,
+    outer_rect: Option<PhysicalRect>,
+    inner_size: Option<PhysicalSize>,
+    scale_factor: Option<ScaleFactor>,
+    presentation: Option<DockspaceWindowPresentationPreference>,
+}
+
+impl DockspaceSurfacePresentationPreference {
+    /// Returns the logical surface described by this declaration.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns explicit native hosting intent, independently of placement.
+    #[must_use]
+    pub const fn native_hosting(self) -> Option<DockspaceNativeSurfaceHosting> {
+        self.native_hosting
+    }
+
+    /// Returns the last-confirmed desktop-physical outer bounds, when saved.
+    #[must_use]
+    pub const fn outer_rect(self) -> Option<PhysicalRect> {
+        self.outer_rect
+    }
+
+    /// Returns a native physical client-size hint from the confirming observation.
+    #[must_use]
+    pub const fn inner_size_hint(self) -> Option<PhysicalSize> {
+        self.inner_size
+    }
+
+    /// Returns the saved native scale hint, without granting current DPI authority.
+    #[must_use]
+    pub const fn scale_factor_hint(self) -> Option<ScaleFactor> {
+        self.scale_factor
+    }
+
+    /// Returns an optional durable presentation preference.
+    #[must_use]
+    pub const fn window_presentation(self) -> Option<DockspaceWindowPresentationPreference> {
+        self.presentation
+    }
+}
+
+fn surface_presentation_preferences(
+    preferences: Option<&ViewportPlacementPreferences>,
+) -> impl Iterator<Item = DockspaceSurfacePresentationPreference> + '_ {
+    preferences.into_iter().flat_map(|preferences| {
+        preferences
+            .entries()
+            .map(
+                |(surface, native_hosting, placement)| DockspaceSurfacePresentationPreference {
+                    surface,
+                    native_hosting,
+                    outer_rect: placement.map(|placement| placement.outer_rect()),
+                    inner_size: placement.and_then(|placement| placement.inner_size()),
+                    scale_factor: placement.and_then(|placement| placement.scale_factor()),
+                    presentation: placement.and_then(|placement| placement.presentation()),
+                },
+            )
+    })
+}
 
 /// One-time allocator for stable application pane identities.
 ///
@@ -107,6 +187,17 @@ impl PreparedDockspaceDocumentRestore {
     pub fn view(&self) -> DockspaceView<'_> {
         DockspaceView::new(self.inner.workspace())
     }
+
+    /// Returns declared surface preferences before presentation identity rebasing.
+    ///
+    /// Inspect the candidate frame again after submission: surface and recovery
+    /// host references may be rebased together at that boundary. These preferences
+    /// grant no native window, coordinate or presentation authority.
+    pub fn surface_presentation_preferences(
+        &self,
+    ) -> impl Iterator<Item = DockspaceSurfacePresentationPreference> + '_ {
+        surface_presentation_preferences(Some(self.inner.viewport_placements()))
+    }
 }
 
 impl fmt::Debug for PreparedDockspaceDocumentRestore {
@@ -118,6 +209,21 @@ impl fmt::Debug for PreparedDockspaceDocumentRestore {
 }
 
 impl DockspaceSession {
+    /// Returns saved surface preferences from the committed document binding.
+    ///
+    /// Reading this projection neither captures new OS facts nor advances the
+    /// save generation. An unbound session yields no preferences. Save a native
+    /// snapshot to capture its currently established hosting and placement facts.
+    pub fn surface_presentation_preferences(
+        &self,
+    ) -> impl Iterator<Item = DockspaceSurfacePresentationPreference> + '_ {
+        surface_presentation_preferences(
+            self.document
+                .as_ref()
+                .map(BoundDocumentState::viewport_placements),
+        )
+    }
+
     /// Creates one session and atomically binds its initial layout to a document lineage.
     ///
     /// # Errors
@@ -416,6 +522,27 @@ impl DockspaceSession {
 }
 
 impl super::DockspaceHostFrame<'_> {
+    /// Returns the candidate document's preferences with rebased surface references.
+    ///
+    /// A submitted document restore uses its pending atomic binding. Ordinary
+    /// frames read the committed binding. Declared preferences grant no authority
+    /// and publish only with this frame's successful document replacement.
+    pub fn surface_presentation_preferences(
+        &self,
+    ) -> impl Iterator<Item = DockspaceSurfacePresentationPreference> + '_ {
+        let preferences = self
+            .document_restore
+            .as_ref()
+            .map(|restore| restore.viewport_placements())
+            .or_else(|| {
+                self.session
+                    .document
+                    .as_ref()
+                    .map(BoundDocumentState::viewport_placements)
+            });
+        surface_presentation_preferences(preferences)
+    }
+
     /// Restores a prepared document after this frame's complete ordered input.
     ///
     /// A buffered native host can finish its existing budgeted poll and submit

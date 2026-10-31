@@ -15,6 +15,78 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 explicit document surface hosting
+
+The multi-surface restore follow-up starts from `dbfae70` by replacing an
+ambiguous placement-only document contract. Document and surface-preference
+schemas are V2; the workspace/key component versions stay unchanged. Explicit
+native Root/Child hosting and each child's recovery-host surface share the
+existing per-surface preference map with optional physical placement. There is
+no content-tree copy or second lifecycle registry. Binding hashes cover the
+declarations; provider, window token, work-area token, recovery anchor and runtime
+obligation identities stay out of the wire document. V1 is explicitly unsupported
+before payload decoding or application identity lookup.
+
+Save captures exact registered roles and current child recovery ownership,
+including verified replacement ownership. Unbound surfaces retain previously
+saved declarations, while removed surfaces are pruned. Metadata-only rows can
+express a native host without a rectangle. Placement-dependent hints without
+outer bounds, unknown/self/declared-child recovery hosts and unknown surfaces
+reject. Native role is never inferred from placement or main-root shape.
+
+The new `surface_presentation_preferences()` projection is available on session,
+prepared restore and candidate frame. It reads committed/pending document data
+without saving observations or advancing generation. Terminal document restore
+remaps both the surface and its child recovery-host reference together with graph
+identity rebase; drop and failure publish neither. The graph view continues to
+own each surface's entire main root and contained forest. Reading preferences
+does not create native windows or grant binding/coordinate/presentation authority.
+
+Independent review identified a first-save omission for a child retained in
+`AwaitingRecoveryHost` without a current registry record or any previous saved
+metadata. The public regression first failed because only the root row was
+captured. Save now uses the exact retained pending binding/role together with
+its bound recovery obligation, without deriving ownership from geometry. The
+repaired public test passes. A companion first-save test also observed a
+missing root declaration after both root and child were destroyed. Capture now
+uses the same-domain root recovery anchor retained for that application-owned
+logical surface, while the child still requires its exact pending obligation.
+All five public-only preference tests pass. Their fixture includes a child main
+root and two ordered contained roots, stable keys and historical closed items,
+incoming/candidate/committed projections, drop/retry rebase, native geometry,
+metadata without geometry and the two first-save retirement boundaries above.
+
+All 18 final compatibility checks pass against 473 frozen source, manifest,
+script and lockfile paths:
+
+| Final gate | Result and scope |
+| --- | --- |
+| Workspace | 1,915/1,915 with all features and targets |
+| Public engine host | default 137/137; serde 154/154 |
+| egui product / official consumers | 114/114 and 15/15 |
+| Native serde | 557/557 normally and with native debug assertions disabled; long soak intentionally excluded from these repeats, opt-in wall-time remains skipped |
+| Linux library | 513/513 with serde; long soak excluded and wall-time/renderer-specific tests retain their explicit ignore status |
+| Real V2 workflow | X11 named preset capture/restore, drawn missing-pane placeholder, reload, actual recovered focus, seven real edits, two destroyed children and final quiescence |
+| Quality | Core/native correctness/suspicious Clippy, strict rustdoc, ten doctests and workspace/public/native formatting |
+
+Current evidence is `/tmp/dockspace-surface-preferences-source.json` and
+`/tmp/dockspace-surface-preferences-qualification.json`. The original failed
+first-save models and successful focused repairs have separate logs. Freeze
+verification rejected earlier in-flight qualification when the new regression
+changed; those partial results are retained separately and are not final-source
+qualification. Native runs still use clean local fork overrides at the revisions
+recorded for `dbfae70`. No fork, input, pressure or lifecycle implementation
+changed; the earlier complete physical, pressure and 10,000-lifetime evidence
+retains its `dbfae70` source scope rather than being claimed anew here.
+
+Final bounded reviews find no confirmed remaining P1/P2. The root-anchor fallback
+relies on the existing replacement clear/reissue, logical-vacancy cleanup and
+Root/Child exclusion contracts; the anchor itself is not an epoch-bearing
+presentation proof. It captures document intent only. Managed creation of an
+already restored logical surface remains the next implementation step. The
+native facade still accepts a single incoming host surface; native multi-surface
+restoration and the complete U7/U8/U9/U10/U11 Goal remain open.
+
 ## 2026-10-31 native defaults and document restore
 
 The slice following `6effe1c` adds `request_layout_reset` and optional native

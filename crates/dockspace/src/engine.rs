@@ -3131,6 +3131,37 @@ impl DockEngine {
         (live || retained).then(|| bound.obligation.target())
     }
 
+    /// Returns a hosting preference only for an exact child recovery owner.
+    #[cfg(feature = "serde")]
+    pub(crate) fn native_child_recovery_host(
+        &self,
+        binding: crate::viewport::ViewportBinding,
+    ) -> Option<crate::ids::SurfaceId> {
+        let bound = self.bound_surface_recoveries.get(&binding.surface())?;
+        if bound.obligation.authority_domain() != self.authority_domain {
+            return None;
+        }
+        let pending = self
+            .viewport
+            .recovery_pending(binding.surface())
+            .filter(|pending| {
+                pending.role() == ViewportRole::Child
+                    && pending.destroyed_binding() == bound.binding
+                    && pending.recovery_obligation() == bound.obligation.id()
+            });
+        let exact = match self.viewport.viewport(binding.surface()) {
+            Some(record) => {
+                record.binding() == binding
+                    && record.role() == ViewportRole::Child
+                    && (bound.binding == binding
+                        || pending
+                            .is_some_and(|pending| pending.replacement_binding() == Some(binding)))
+            }
+            None => pending.is_some_and(|pending| pending.destroyed_binding() == binding),
+        };
+        exact.then(|| bound.obligation.target().host_surface())
+    }
+
     /// Returns the complete roster retained for one unresolved destroyed surface.
     #[must_use]
     pub fn pending_surface_recovery(

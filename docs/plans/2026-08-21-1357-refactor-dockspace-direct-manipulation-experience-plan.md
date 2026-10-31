@@ -40,7 +40,7 @@ The next completion work is concrete:
 
 | Remaining boundary | Next acceptance |
 | --- | --- |
-| U10 native layout management | Close/decision, reopen and arrangement lock share the existing bounded application action owner, qualified by 40 final checks and five real X11 edits. The core terminal replacement boundary is qualified by 22 checks. Next expose default/preset reset and document restore through the native action owner, including host replacement/rebinding after a complete host-root removal and restore-time focus/missing-pane recovery. |
+| U10 native layout management | Single-host default/preset reset and document restore, exact retained-root successors and missing-pane recovery pass 43 checks at `dbfae70`, including six/seven real X11 edits. Multi-surface window recreation and complete host removal/rebinding remain open. The next prerequisite adds explicit document-owned native hosting/recovery-host preferences and a public read-only projection before extending the shared creation owner. |
 | U10 native overflow | Qualify a finite real-input overflowed/clipped tab insertion, including preview, final order and cleanup; reuse the existing overflow owner. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
@@ -2204,6 +2204,25 @@ journeys, an explicit real-renderer old-output test and both platforms' six
 pressure modes pass. Real over-2-ms timing remains recorded without a hard
 real-time claim. Full native multi-surface restore, overflow insertion and
 the remaining U7/U8/U9/U10/U11 criteria remain open.
+
+The native multi-surface follow-up first closes a missing document contract.
+Document V2 and its existing per-surface preference component bind explicit
+Root/Child hosting and child recovery-host references, separately from optional
+physical placement. The content graph stays unchanged. Capture uses exact
+runtime roles and recovery ownership; restore validates cross-surface references
+and rebases both ends with the graph. Public session/prepared/frame projections
+grant no window or presentation authority. V1 is rejected before payload/key
+inspection because its rectangles cannot establish these declarations. Initial
+internal and five public-host tests pass, including first save after current
+child/root records retire. Eighteen final compatibility checks pass: workspace
+1,915, public 137/154, product/official 114/15, native serde/noassert 557 each,
+Linux serde library 513 and a seven-real-edit V2 X11 preset workflow. Detailed
+source scope and deliberate V1 rejection are recorded in `docs/VALIDATION.md`.
+After this prerequisite, an existing logical surface must enter the shared
+create preparation and first-live owner without repeating a topology transfer.
+No synthetic Destroyed, external-root registration or second host registry may
+stand in for that initial materialization. This does not complete multi-surface
+restoration or remove the remaining U10/U7/U8/U9/U11 gates.
 
 ### U11. Certify Windows and macOS capability claims
 

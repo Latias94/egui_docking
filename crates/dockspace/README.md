@@ -734,6 +734,35 @@ For native replacement, consume the complete `native_bindings()` successor
 roster; old binding and output authority cannot revive interaction. Logical
 surfaces without a binding do not automatically become new OS windows.
 
+Document V2 preserves explicit native hosting intent independently of window
+placement. The same document-owned per-surface record can describe a native
+application root or a Dockspace child with its recovery-host surface, even when
+no exact physical outer rectangle has been observed. Purely logical surfaces do
+not acquire a native role from their main-root shape or an old placement hint.
+Saving captures current exact roles and child recovery ownership, retains
+declared preferences for unbound surfaces, and removes rows whose logical surface
+no longer exists. Placement hints capture confirmed physical outer bounds,
+client size and native scale; they grant no current coordinate authority.
+
+Use `surface_presentation_preferences()` on `DockspaceSession`,
+`PreparedDockspaceDocumentRestore` or `DockspaceHostFrame` to inspect the same
+read-only product values. Prepared values use incoming identities. A submitted
+restore exposes candidate identities with both its source surface and child
+recovery-host references rebased together. Dropping the frame publishes none of
+those changes; successful commit publishes preferences, graph, keys and
+generation atomically. This projection does not save new observations or
+advance a generation. The workspace `view()` remains the content authority,
+including each surface's complete main root and contained forest.
+
+The outer document schema and its surface-preference component are version 2.
+V1 is rejected through `DockspacePersistenceErrorKind::UnsupportedVersion` before
+payload decoding or application-key recognition; role or recovery host cannot be
+reconstructed from its optional rectangles. Workspace and external-key component
+versions remain independent. Native binding, provider, window token, recovery
+anchor and work-area token are never persisted. The declarations are inputs to
+an explicit host restoration policy, and do not create windows or bypass exact
+preparation and first-live presentation.
+
 ## Manipulation feedback and focus
 
 `HostFrameReport::manipulation_feedback()` exposes committed pending and terminal

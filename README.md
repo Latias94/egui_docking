@@ -160,6 +160,15 @@ persistent session, and save or restore one versioned JSON document. The
 document atomically binds topology, append-only external pane keys, allocator
 frontiers, lineage and generation, and viewport placement.
 
+Document V2 also binds explicit native root/child hosting preferences and each
+child's recovery-host surface. `surface_presentation_preferences()` on a session,
+prepared restore or candidate frame returns these declarations and optional
+physical placement hints. The content graph remains in `view()`. Submission
+rebases surface and recovery-host references together; reading a declaration
+does not create an OS window or grant native authority. V1 documents are rejected
+as unsupported because their placement records cannot prove native ownership.
+Native multi-surface window recreation is still under implementation.
+
 Raw workspace snapshots, independently replaceable key maps, and mutable
 restore candidates are not product interfaces.
 

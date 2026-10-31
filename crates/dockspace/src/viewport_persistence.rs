@@ -23,7 +23,23 @@ use crate::ids::SurfaceId;
 use crate::viewport::WorkAreaToken;
 
 /// The viewport-placement sidecar schema emitted and accepted by this release.
-pub(crate) const VIEWPORT_PLACEMENT_SNAPSHOT_VERSION: u32 = 1;
+pub(crate) const VIEWPORT_PLACEMENT_SNAPSHOT_VERSION: u32 = 2;
+
+/// Application-declared native hosting preference for one logical surface.
+///
+/// This value describes a document's intended host. It grants no native binding,
+/// recovery anchor, coordinate authority or permission to create an OS window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeSurfaceHostPreference {
+    /// The application owns this native root window.
+    Root,
+    /// Dockspace owns a child window and recovers its content to this host.
+    Child {
+        /// Logical application-root surface which receives recovered content.
+        recovery_host: SurfaceId,
+    },
+}
 
 /// A durable window presentation preference.
 ///
@@ -155,7 +171,13 @@ impl ViewportPlacementPreference {
 /// Validated viewport placement preferences indexed by stable surface identity.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ViewportPlacementPreferences {
-    placements: BTreeMap<SurfaceId, ViewportPlacementPreference>,
+    surfaces: BTreeMap<SurfaceId, SurfacePresentationPreference>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SurfacePresentationPreference {
+    native_host: Option<NativeSurfaceHostPreference>,
+    placement: Option<ViewportPlacementPreference>,
 }
 
 impl ViewportPlacementPreferences {
@@ -163,7 +185,7 @@ impl ViewportPlacementPreferences {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            placements: BTreeMap::new(),
+            surfaces: BTreeMap::new(),
         }
     }
 
@@ -172,51 +194,93 @@ impl ViewportPlacementPreferences {
         &mut self,
         preference: ViewportPlacementPreference,
     ) -> Option<ViewportPlacementPreference> {
-        self.placements.insert(preference.surface(), preference)
+        self.surfaces
+            .entry(preference.surface())
+            .or_default()
+            .placement
+            .replace(preference)
     }
 
     /// Removes and returns the preference for one stable surface.
     pub fn remove(&mut self, surface: SurfaceId) -> Option<ViewportPlacementPreference> {
-        self.placements.remove(&surface)
+        self.surfaces.remove(&surface)?.placement
     }
 
     /// Returns one placement preference.
     #[must_use]
     pub fn get(&self, surface: SurfaceId) -> Option<&ViewportPlacementPreference> {
-        self.placements.get(&surface)
+        self.surfaces.get(&surface)?.placement.as_ref()
     }
 
     /// Returns the preferences in stable surface order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &ViewportPlacementPreference> {
-        self.placements.values()
+    pub fn iter(&self) -> impl Iterator<Item = &ViewportPlacementPreference> {
+        self.surfaces
+            .values()
+            .filter_map(|entry| entry.placement.as_ref())
+    }
+
+    pub(crate) fn set_native_host(
+        &mut self,
+        surface: SurfaceId,
+        hosting: NativeSurfaceHostPreference,
+    ) {
+        self.surfaces.entry(surface).or_default().native_host = Some(hosting);
+    }
+
+    pub(crate) fn native_host(&self, surface: SurfaceId) -> Option<NativeSurfaceHostPreference> {
+        self.surfaces.get(&surface)?.native_host
+    }
+
+    pub(crate) fn surface_ids(&self) -> impl ExactSizeIterator<Item = SurfaceId> + '_ {
+        self.surfaces.keys().copied()
+    }
+
+    pub(crate) fn entries(
+        &self,
+    ) -> impl ExactSizeIterator<
+        Item = (
+            SurfaceId,
+            Option<NativeSurfaceHostPreference>,
+            Option<ViewportPlacementPreference>,
+        ),
+    > + '_ {
+        self.surfaces
+            .iter()
+            .map(|(&surface, entry)| (surface, entry.native_host, entry.placement))
     }
 
     /// Returns the number of stored surface preferences.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.placements.len()
+        self.surfaces.len()
     }
 
     /// Returns whether no surface preferences are stored.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.placements.is_empty()
+        self.surfaces.is_empty()
     }
 
     pub(crate) fn retain_surfaces(&mut self, surfaces: &BTreeSet<SurfaceId>) {
-        self.placements
+        self.surfaces
             .retain(|surface, _| surfaces.contains(surface));
     }
 
     pub(crate) fn remap_surfaces(&mut self, remap: &BTreeMap<SurfaceId, SurfaceId>) {
-        let placements = std::mem::take(&mut self.placements);
-        self.placements = placements
-            .into_values()
-            .map(|mut preference| {
-                if let Some(surface) = remap.get(&preference.surface) {
-                    preference.surface = *surface;
+        let surfaces = std::mem::take(&mut self.surfaces);
+        self.surfaces = surfaces
+            .into_iter()
+            .map(|(surface, mut entry)| {
+                let surface = remap.get(&surface).copied().unwrap_or(surface);
+                if let Some(placement) = &mut entry.placement {
+                    placement.surface = surface;
                 }
-                (preference.surface, preference)
+                if let Some(NativeSurfaceHostPreference::Child { recovery_host }) =
+                    &mut entry.native_host
+                {
+                    *recovery_host = remap.get(recovery_host).copied().unwrap_or(*recovery_host);
+                }
+                (surface, entry)
             })
             .collect();
     }
@@ -265,9 +329,10 @@ impl ViewportPlacementSnapshot {
     pub(crate) fn capture(preferences: &ViewportPlacementPreferences) -> Self {
         Self {
             placements: preferences
-                .iter()
-                .copied()
-                .map(SnapshotViewportPlacementRecord::from)
+                .entries()
+                .map(|(surface, native_host, placement)| {
+                    SnapshotViewportPlacementRecord::capture(surface, native_host, placement)
+                })
                 .collect(),
         }
     }
@@ -293,8 +358,17 @@ impl ViewportPlacementSnapshot {
 
         let mut restored = ViewportPlacementPreferences::new();
         for record in &self.placements {
-            let preference = record.restore()?;
-            restored.set(preference);
+            if let Some(preference) = record.restore()? {
+                restored.set(preference);
+            }
+            if let Some(hosting) = record.native_host {
+                restored.set_native_host(record.surface, hosting);
+            }
+            if record.outer_rect.is_none() && record.native_host.is_none() {
+                return Err(ViewportPlacementRestoreError::EmptyPreference {
+                    surface: record.surface,
+                });
+            }
         }
         Ok(restored)
     }
@@ -306,8 +380,10 @@ impl ViewportPlacementSnapshot {
 pub(crate) struct SnapshotViewportPlacementRecord {
     /// Stable logical surface identity.
     pub(crate) surface: SurfaceId,
+    /// Explicit hosting intent; a missing value keeps the surface renderer-local.
+    pub(crate) native_host: Option<NativeSurfaceHostPreference>,
     /// Last-confirmed native outer rectangle in desktop physical pixels.
-    pub(crate) outer_rect: SnapshotPhysicalRect,
+    pub(crate) outer_rect: Option<SnapshotPhysicalRect>,
     /// Optional native inner size captured with the outer rectangle.
     #[serde(default)]
     pub(crate) inner_size: Option<SnapshotPhysicalSize>,
@@ -318,13 +394,27 @@ pub(crate) struct SnapshotViewportPlacementRecord {
 }
 
 impl SnapshotViewportPlacementRecord {
-    fn restore(self) -> Result<ViewportPlacementPreference, ViewportPlacementRestoreError> {
-        let outer_rect = self.outer_rect.restore().map_err(|source| {
-            ViewportPlacementRestoreError::InvalidOuterRect {
-                surface: self.surface,
-                source,
+    fn restore(self) -> Result<Option<ViewportPlacementPreference>, ViewportPlacementRestoreError> {
+        let Some(outer) = self.outer_rect else {
+            if self.inner_size.is_some()
+                || self.scale_factor.is_some()
+                || self.presentation.is_some()
+            {
+                return Err(
+                    ViewportPlacementRestoreError::PlacementHintWithoutOuterRect {
+                        surface: self.surface,
+                    },
+                );
             }
-        })?;
+            return Ok(None);
+        };
+        let outer_rect =
+            outer
+                .restore()
+                .map_err(|source| ViewportPlacementRestoreError::InvalidOuterRect {
+                    surface: self.surface,
+                    source,
+                })?;
         let mut preference = ViewportPlacementPreference::new(self.surface, outer_rect)?;
         if let Some(value) = self.inner_size {
             let inner_size = value.restore().map_err(|source| {
@@ -347,19 +437,33 @@ impl SnapshotViewportPlacementRecord {
         if let Some(presentation) = self.presentation {
             preference = preference.with_presentation(presentation);
         }
-        Ok(preference)
+        Ok(Some(preference))
+    }
+
+    fn capture(
+        surface: SurfaceId,
+        native_host: Option<NativeSurfaceHostPreference>,
+        placement: Option<ViewportPlacementPreference>,
+    ) -> Self {
+        Self {
+            surface,
+            native_host,
+            outer_rect: placement
+                .map(|preference| SnapshotPhysicalRect::from(preference.outer_rect())),
+            inner_size: placement
+                .and_then(ViewportPlacementPreference::inner_size)
+                .map(SnapshotPhysicalSize::from),
+            scale_factor: placement
+                .and_then(ViewportPlacementPreference::scale_factor)
+                .map(ScaleFactor::get),
+            presentation: placement.and_then(ViewportPlacementPreference::presentation),
+        }
     }
 }
 
 impl From<ViewportPlacementPreference> for SnapshotViewportPlacementRecord {
     fn from(preference: ViewportPlacementPreference) -> Self {
-        Self {
-            surface: preference.surface(),
-            outer_rect: SnapshotPhysicalRect::from(preference.outer_rect()),
-            inner_size: preference.inner_size().map(SnapshotPhysicalSize::from),
-            scale_factor: preference.scale_factor().map(ScaleFactor::get),
-            presentation: preference.presentation(),
-        }
+        Self::capture(preference.surface(), None, Some(preference))
     }
 }
 
@@ -419,11 +523,11 @@ impl From<PhysicalRect> for SnapshotPhysicalRect {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ViewportPlacementSnapshotV1 {
+struct ViewportPlacementSnapshotV2 {
     placements: Vec<SnapshotViewportPlacementRecord>,
 }
 
-impl ViewportPlacementSnapshotV1 {
+impl ViewportPlacementSnapshotV2 {
     fn into_snapshot(self) -> ViewportPlacementSnapshot {
         ViewportPlacementSnapshot {
             placements: self.placements,
@@ -507,7 +611,7 @@ impl<'de> Visitor<'de> for ViewportPlacementSnapshotEnvelopeVisitor {
             .ok_or_else(|| A::Error::invalid_length(0, &self))?;
         let snapshot = if version == VIEWPORT_PLACEMENT_SNAPSHOT_VERSION {
             let payload = sequence
-                .next_element::<ViewportPlacementSnapshotV1>()?
+                .next_element::<ViewportPlacementSnapshotV2>()?
                 .ok_or_else(|| A::Error::invalid_length(1, &self))?;
             Some(payload.into_snapshot())
         } else {
@@ -526,6 +630,18 @@ impl<'de> Visitor<'de> for ViewportPlacementSnapshotEnvelopeVisitor {
 /// Failure to restore a viewport placement sidecar.
 #[derive(Clone, Debug, PartialEq, Error)]
 pub enum ViewportPlacementRestoreError {
+    /// A row carries neither a native host declaration nor a placement.
+    #[error("surface {surface} has no presentation preference")]
+    EmptyPreference {
+        /// Stable logical surface owning the empty row.
+        surface: SurfaceId,
+    },
+    /// Geometry-dependent hints cannot stand alone without an outer rectangle.
+    #[error("surface {surface} has placement hints without outer bounds")]
+    PlacementHintWithoutOuterRect {
+        /// Stable logical surface owning the hints.
+        surface: SurfaceId,
+    },
     /// The snapshot version is not implemented by this crate release.
     #[error(
         "unsupported viewport placement snapshot version {found}; supported version is {supported}"
@@ -589,12 +705,13 @@ mod tests {
     fn record() -> SnapshotViewportPlacementRecord {
         SnapshotViewportPlacementRecord {
             surface: FIRST,
-            outer_rect: SnapshotPhysicalRect {
+            native_host: Some(NativeSurfaceHostPreference::Root),
+            outer_rect: Some(SnapshotPhysicalRect {
                 x: 100.0,
                 y: -40.0,
                 width: 900.0,
                 height: 700.0,
-            },
+            }),
             inner_size: Some(SnapshotPhysicalSize {
                 width: 880.0,
                 height: 660.0,
@@ -611,6 +728,7 @@ mod tests {
             record()
                 .restore()
                 .expect("fixture placement must validate")
+                .expect("fixture placement has outer bounds")
                 .with_work_area(WorkAreaToken::new(31)),
         );
         let snapshot = ViewportPlacementSnapshot::capture(&preferences);
@@ -664,7 +782,7 @@ mod tests {
         );
 
         let mut invalid = record();
-        invalid.outer_rect.width = 0.0;
+        invalid.outer_rect.as_mut().unwrap().width = 0.0;
         assert_eq!(
             ViewportPlacementSnapshot {
                 placements: vec![invalid]
@@ -715,5 +833,80 @@ mod tests {
         let mut value = serde_json::to_value(snapshot).expect("component must encode");
         value[1]["placements"][0]["window_token"] = serde_json::json!(99);
         assert!(serde_json::from_value::<ViewportPlacementSnapshotEnvelope>(value).is_err());
+    }
+
+    #[test]
+    fn native_hosting_without_placement_survives_round_trip_and_reference_remapping() {
+        let child = SurfaceId::new(8);
+        let root = SurfaceId::new(70);
+        let next_child = SurfaceId::new(80);
+        let mut preferences = ViewportPlacementPreferences::new();
+        preferences.set_native_host(FIRST, NativeSurfaceHostPreference::Root);
+        preferences.set_native_host(
+            child,
+            NativeSurfaceHostPreference::Child {
+                recovery_host: FIRST,
+            },
+        );
+        let json = serde_json::to_vec(&ViewportPlacementSnapshot::capture(&preferences)).unwrap();
+        let mut restored = serde_json::from_slice::<ViewportPlacementSnapshotEnvelope>(&json)
+            .unwrap()
+            .into_preferences()
+            .unwrap();
+        assert_eq!(restored, preferences);
+        assert!(restored.iter().next().is_none());
+        restored.remap_surfaces(&BTreeMap::from([(FIRST, root), (child, next_child)]));
+        assert_eq!(
+            restored.surface_ids().collect::<Vec<_>>(),
+            [root, next_child]
+        );
+        assert_eq!(
+            restored.native_host(root),
+            Some(NativeSurfaceHostPreference::Root)
+        );
+        assert_eq!(
+            restored.native_host(next_child),
+            Some(NativeSurfaceHostPreference::Child {
+                recovery_host: root
+            })
+        );
+        restored.retain_surfaces(&BTreeSet::from([root]));
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored.remove(root), None);
+        assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn incomplete_rows_and_hints_without_outer_bounds_are_rejected() {
+        let mut invalid = record();
+        invalid.outer_rect = None;
+        assert_eq!(
+            ViewportPlacementSnapshot {
+                placements: vec![invalid]
+            }
+            .restore(),
+            Err(ViewportPlacementRestoreError::PlacementHintWithoutOuterRect { surface: FIRST })
+        );
+        invalid.inner_size = None;
+        invalid.scale_factor = None;
+        invalid.presentation = None;
+        invalid.native_host = None;
+        assert_eq!(
+            ViewportPlacementSnapshot {
+                placements: vec![invalid]
+            }
+            .restore(),
+            Err(ViewportPlacementRestoreError::EmptyPreference { surface: FIRST })
+        );
+        let old =
+            serde_json::from_str::<ViewportPlacementSnapshotEnvelope>(r#"[1,{"legacy":true}]"#)
+                .unwrap();
+        assert_eq!(
+            old.into_preferences(),
+            Err(ViewportPlacementRestoreError::UnsupportedVersion {
+                found: 1,
+                supported: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
+            })
+        );
     }
 }

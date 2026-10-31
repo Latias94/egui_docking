@@ -130,8 +130,10 @@ pub use paint::{
 };
 #[cfg(feature = "serde")]
 pub use persistence::{
-    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
-    DockspacePersistenceErrorKind, PreparedDockspaceDocumentRestore,
+    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceNativeSurfaceHosting,
+    DockspacePersistenceError, DockspacePersistenceErrorKind,
+    DockspaceSurfacePresentationPreference, DockspaceWindowPresentationPreference,
+    PreparedDockspaceDocumentRestore,
 };
 use presentation::PresentationObservationError;
 pub use presentation::{

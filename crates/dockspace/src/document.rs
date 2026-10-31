@@ -32,15 +32,15 @@ use crate::persistence::{
 use crate::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 use crate::viewport::ViewportRole;
 use crate::viewport_persistence::{
-    ViewportPlacementPreference, ViewportPlacementPreferences, ViewportPlacementRestoreError,
-    ViewportPlacementSnapshot, ViewportPlacementSnapshotEnvelope,
+    NativeSurfaceHostPreference, ViewportPlacementPreference, ViewportPlacementPreferences,
+    ViewportPlacementRestoreError, ViewportPlacementSnapshot, ViewportPlacementSnapshotEnvelope,
 };
 use crate::viewport_registry::ViewportAdmission;
 
 /// The document schema version emitted and accepted by this crate release.
-pub const DOCKSPACE_DOCUMENT_VERSION: u32 = 1;
+pub const DOCKSPACE_DOCUMENT_VERSION: u32 = 2;
 
-const BINDING_HASH_DOMAIN: &[u8] = b"dockspace-document/v1\0";
+const BINDING_HASH_DOMAIN: &[u8] = b"dockspace-document/v2\0";
 
 /// Stable identity of one persisted document lineage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -94,6 +94,7 @@ impl DockspaceDocument {
             .map_err(DockspaceDocumentCaptureError::MissingExternalItemKey)?;
         validate_viewport_placement_surfaces(&workspace, viewport_placements)
             .map_err(DockspaceDocumentCaptureError::UnknownPlacementSurface)?;
+        validate_native_host_preferences(&workspace, viewport_placements)?;
         let external_item_keys = ExternalItemKeySnapshot::capture(external_item_keys);
         let viewport_placements = ViewportPlacementSnapshot::capture(viewport_placements);
         let binding_hash = binding_hash(
@@ -151,6 +152,7 @@ impl DockspaceDocument {
         )?;
         validate_viewport_placement_surfaces(&self.workspace, &viewport_placements)
             .map_err(DockspaceDocumentRestoreError::UnknownPlacementSurface)?;
+        validate_native_host_preferences(&self.workspace, &viewport_placements)?;
 
         Ok(RestoredDockspaceDocument {
             document_id: self.document_id,
@@ -195,7 +197,7 @@ impl Serialize for DockspaceDocument {
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DockspaceDocumentV1 {
+struct DockspaceDocumentV2 {
     document_id: DockspaceDocumentId,
     generation: u64,
     presentation_identity_frontier: PresentationIdentityFrontierWire,
@@ -205,7 +207,7 @@ struct DockspaceDocumentV1 {
     binding_hash: [u8; 32],
 }
 
-impl DockspaceDocumentV1 {
+impl DockspaceDocumentV2 {
     fn into_document(self) -> Result<DockspaceDocument, DockspaceDocumentDecodeError> {
         Ok(DockspaceDocument {
             document_id: self.document_id,
@@ -223,7 +225,7 @@ impl DockspaceDocumentV1 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DockspaceDocumentEnvelope {
     version: u32,
-    payload: Option<DockspaceDocumentV1>,
+    payload: Option<DockspaceDocumentV2>,
 }
 
 impl DockspaceDocumentEnvelope {
@@ -241,7 +243,7 @@ impl DockspaceDocumentEnvelope {
                     supported: DOCKSPACE_DOCUMENT_VERSION,
                 })
             },
-            DockspaceDocumentV1::into_document,
+            DockspaceDocumentV2::into_document,
         )
     }
 }
@@ -273,7 +275,7 @@ impl<'de> Visitor<'de> for DockspaceDocumentEnvelopeVisitor {
             .ok_or_else(|| A::Error::invalid_length(0, &self))?;
         let payload = if version == DOCKSPACE_DOCUMENT_VERSION {
             let payload = sequence
-                .next_element::<DockspaceDocumentV1>()?
+                .next_element::<DockspaceDocumentV2>()?
                 .ok_or_else(|| A::Error::invalid_length(1, &self))?;
             Some(payload)
         } else {
@@ -349,6 +351,10 @@ impl BoundDocumentState {
         self.next_generation
     }
 
+    pub(crate) fn viewport_placements(&self) -> &ViewportPlacementPreferences {
+        &self.viewport_placements
+    }
+
     pub(crate) fn item_id(&self, external_key: &str) -> Option<ItemId> {
         self.external_item_keys.item_id(external_key)
     }
@@ -391,7 +397,7 @@ impl BoundDocumentState {
         &self,
         engine: &DockEngine,
     ) -> Result<PreparedDockspaceDocumentCapture, DockspaceDocumentCaptureError> {
-        let viewport_placements = self.reconciled_viewport_placements(engine);
+        let viewport_placements = self.reconciled_viewport_placements(engine)?;
         let generation = self
             .next_generation
             .ok_or(DockspaceDocumentCaptureError::GenerationExhausted)?;
@@ -453,20 +459,47 @@ impl BoundDocumentState {
         document
     }
 
-    fn reconciled_viewport_placements(&self, engine: &DockEngine) -> ViewportPlacementPreferences {
+    fn reconciled_viewport_placements(
+        &self,
+        engine: &DockEngine,
+    ) -> Result<ViewportPlacementPreferences, DockspaceDocumentCaptureError> {
         let mut placements = self.viewport_placements.clone();
-        let mut child_surfaces = BTreeSet::new();
+        let mut surfaces = BTreeSet::new();
         for (surface, _) in engine.workspace().surfaces() {
+            surfaces.insert(surface);
             let record = engine.viewport().viewport(surface);
-            if record.is_some_and(|record| record.role() == ViewportRole::Root) {
+            let identity = record
+                .map(|record| (record.role(), record.binding()))
+                .or_else(|| {
+                    engine
+                        .viewport()
+                        .recovery_pending(surface)
+                        .map(|pending| (pending.role(), pending.destroyed_binding()))
+                });
+            let Some((role, binding)) = identity else {
+                if engine.root_recovery_anchor(surface).is_some_and(|anchor| {
+                    anchor.authority_domain() == engine.authority_domain()
+                        && anchor.surface() == surface
+                }) {
+                    // Root anchors survive physical destruction while their
+                    // application-owned logical surface remains in the graph.
+                    placements.set_native_host(surface, NativeSurfaceHostPreference::Root);
+                }
                 continue;
-            }
-            child_surfaces.insert(surface);
+            };
+            let native_host = match role {
+                ViewportRole::Root => NativeSurfaceHostPreference::Root,
+                ViewportRole::Child => NativeSurfaceHostPreference::Child {
+                    recovery_host: engine.native_child_recovery_host(binding).ok_or(
+                        DockspaceDocumentCaptureError::MissingChildRecoveryHost { surface },
+                    )?,
+                },
+            };
+            placements.set_native_host(surface, native_host);
             let Some(record) = record else {
                 continue;
             };
-            if record.role() != ViewportRole::Child
-                || record.admission() != ViewportAdmission::Admitted
+            if record.admission() != ViewportAdmission::Admitted
                 || !record.has_coordinate_authority()
             {
                 continue;
@@ -493,8 +526,8 @@ impl BoundDocumentState {
             }
             placements.set(preference);
         }
-        placements.retain_surfaces(&child_surfaces);
-        placements
+        placements.retain_surfaces(&surfaces);
+        Ok(placements)
     }
 }
 
@@ -528,6 +561,10 @@ pub(crate) struct PendingRuntimeDocumentRestore {
 impl PreparedRuntimeDocumentRestore {
     pub(crate) fn workspace(&self) -> &Workspace {
         self.restored.restore.workspace()
+    }
+
+    pub(crate) fn viewport_placements(&self) -> &ViewportPlacementPreferences {
+        &self.restored.viewport_placements
     }
 
     pub(crate) fn item_identity_scope(&self) -> Arc<BTreeSet<ItemId>> {
@@ -586,6 +623,10 @@ impl PreparedRuntimeDocumentRestore {
 }
 
 impl PendingRuntimeDocumentRestore {
+    pub(crate) fn viewport_placements(&self) -> &ViewportPlacementPreferences {
+        self.binding.viewport_placements()
+    }
+
     pub(crate) fn external_item_key(&self, item: ItemId) -> Option<&str> {
         self.binding.external_item_key(item)
     }
@@ -818,9 +859,18 @@ pub enum DockspaceDocumentCaptureError {
     /// A workspace-referenced item has no stable external key assignment.
     #[error("workspace item {0} has no external key assignment")]
     MissingExternalItemKey(ItemId),
-    /// A placement preference names a surface outside the captured workspace.
-    #[error("viewport placement names unknown workspace surface {0}")]
+    /// A viewport preference row names a surface outside the captured workspace.
+    #[error("viewport preference names unknown workspace surface {0}")]
     UnknownPlacementSurface(crate::ids::SurfaceId),
+    /// A native hosting preference has an invalid recovery-host reference.
+    #[error("native hosting preference is invalid: {0}")]
+    NativeHostPreference(#[from] NativeSurfaceHostPreferenceError),
+    /// A current child binding has no exact core-owned recovery destination.
+    #[error("native child surface {surface} has no exact recovery host")]
+    MissingChildRecoveryHost {
+        /// Current child surface whose recovery ownership could not be verified.
+        surface: crate::ids::SurfaceId,
+    },
     /// The document generation cannot advance further.
     #[error("dockspace document generation is exhausted")]
     GenerationExhausted,
@@ -913,9 +963,12 @@ pub enum DockspaceDocumentRestoreError {
     /// A workspace-referenced item has no stable external key assignment.
     #[error("workspace item {0} has no external key assignment")]
     MissingExternalItemKey(ItemId),
-    /// A placement preference names a surface outside the restored workspace.
-    #[error("viewport placement names unknown workspace surface {0}")]
+    /// A viewport preference row names a surface outside the restored workspace.
+    #[error("viewport preference names unknown workspace surface {0}")]
     UnknownPlacementSurface(crate::ids::SurfaceId),
+    /// A native hosting preference has an invalid recovery-host reference.
+    #[error("native hosting preference is invalid: {0}")]
+    NativeHostPreference(#[from] NativeSurfaceHostPreferenceError),
     /// The application rejected one or more persisted item/key associations.
     #[error("the application registry rejected {rejected_count} external item association(s)", rejected_count = .rejected.len())]
     ExternalItemAssociationsRejected {
@@ -1159,10 +1212,75 @@ fn validate_viewport_placement_surfaces(
         .map(|surface| crate::ids::SurfaceId::new(surface.id))
         .collect::<BTreeSet<_>>();
     viewport_placements
-        .iter()
-        .map(|placement| placement.surface())
+        .surface_ids()
         .find(|surface| !surfaces.contains(surface))
         .map_or(Ok(()), Err)
+}
+
+/// Invalid cross-surface reference in a document-owned native hosting preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum NativeSurfaceHostPreferenceError {
+    /// A child's recovery host is absent from the document's workspace.
+    #[error("native child surface {surface} names unknown recovery host {recovery_host}")]
+    UnknownRecoveryHost {
+        /// Child surface whose recovery reference is invalid.
+        surface: crate::ids::SurfaceId,
+        /// Recovery destination absent from the workspace.
+        recovery_host: crate::ids::SurfaceId,
+    },
+    /// A child cannot recover into itself.
+    #[error("native child surface {surface} names itself as its recovery host")]
+    SelfRecoveryHost {
+        /// Child surface incorrectly used as its own recovery destination.
+        surface: crate::ids::SurfaceId,
+    },
+    /// A child cannot recover into another declared child surface.
+    #[error(
+        "native child surface {surface} names child surface {recovery_host} as its recovery host"
+    )]
+    ChildRecoveryHost {
+        /// Child surface whose recovery reference is invalid.
+        surface: crate::ids::SurfaceId,
+        /// Recovery destination declared as another child.
+        recovery_host: crate::ids::SurfaceId,
+    },
+}
+
+fn validate_native_host_preferences(
+    snapshot: &WorkspaceSnapshot,
+    viewport_placements: &ViewportPlacementPreferences,
+) -> Result<(), NativeSurfaceHostPreferenceError> {
+    let surfaces = snapshot
+        .surfaces
+        .iter()
+        .map(|surface| crate::ids::SurfaceId::new(surface.id))
+        .collect::<BTreeSet<_>>();
+    for surface in viewport_placements.surface_ids() {
+        let Some(NativeSurfaceHostPreference::Child { recovery_host }) =
+            viewport_placements.native_host(surface)
+        else {
+            continue;
+        };
+        if !surfaces.contains(&recovery_host) {
+            return Err(NativeSurfaceHostPreferenceError::UnknownRecoveryHost {
+                surface,
+                recovery_host,
+            });
+        }
+        if recovery_host == surface {
+            return Err(NativeSurfaceHostPreferenceError::SelfRecoveryHost { surface });
+        }
+        if matches!(
+            viewport_placements.native_host(recovery_host),
+            Some(NativeSurfaceHostPreference::Child { .. })
+        ) {
+            return Err(NativeSurfaceHostPreferenceError::ChildRecoveryHost {
+                surface,
+                recovery_host,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_external_item_associations(
@@ -1188,17 +1306,41 @@ fn validate_external_item_associations(
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::DockEngine;
+    use crate::behavior_tests::support::{self, TestPresentationHost};
+    use crate::engine::{DockEngine, EngineInput};
     use crate::external_item_key::{
         ExternalItemKeyMap, ExternalItemKeyRestoreError, SnapshotExternalItemKeyEntry,
     };
+    use crate::geometry::{PhysicalRect, ScaleFactor};
     use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use crate::ids::{ItemId, PresentationIdentityFrontier, RootId, SurfaceId};
+    use crate::ids::{
+        ItemId, PresentationIdentityFrontier, RootId, StableInputSourceId, SurfaceId,
+    };
+    use crate::intent::{Authority, AuthorityUnavailableReason};
+    use crate::model::DockspaceView;
+    use crate::platform::{
+        ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
+        PresentationEffectAcknowledgement, WindowCoordinateObservation,
+        WindowPresentationObservation, WindowPresentationState,
+    };
     use crate::policy::DockPolicy;
-    use crate::viewport_persistence::ViewportPlacementPreferences;
+    use crate::surface_recovery::SurfaceRecoveryBootstrap;
+    use crate::transition::InputOutcome;
+    use crate::viewport::{
+        CoordinateObservationGeneration, PlatformSnapshotGeneration,
+        PresentationObservationGeneration, ViewportRole, WindowToken,
+    };
+    use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
+    use crate::viewport_persistence::{
+        NativeSurfaceHostPreference, ViewportPlacementPreference, ViewportPlacementPreferences,
+        ViewportPlacementSnapshot,
+    };
 
     use super::{
-        DockspaceDocument, DockspaceDocumentId, DockspaceDocumentRestoreError, binding_hash,
+        BoundDocumentState, DOCKSPACE_DOCUMENT_VERSION, DockspaceDocument,
+        DockspaceDocumentCaptureError, DockspaceDocumentDecodeError, DockspaceDocumentEnvelope,
+        DockspaceDocumentId, DockspaceDocumentRestoreError, NativeSurfaceHostPreferenceError,
+        binding_hash,
     };
 
     const DOCUMENT_ID: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"malformed-map-id");
@@ -1224,6 +1366,443 @@ mod tests {
     fn engine() -> DockEngine {
         DockEngine::new(workspace(), DockPolicy::default())
             .expect("fixture workspace must initialize an engine")
+    }
+
+    fn profile_engine(surfaces: &[u64]) -> DockEngine {
+        let mut builder = Workspace::builder();
+        for (index, &surface) in surfaces.iter().enumerate() {
+            let tabs = builder.insert_node(Node::tabs([ItemId::new(index as u64 + 1)]));
+            builder.set_root(RootId::new(surface), RootRecord::new(tabs));
+            builder.set_surface(
+                SurfaceId::new(surface),
+                SurfacePresentation::with_main(RootId::new(surface)),
+            );
+        }
+        DockEngine::new(
+            builder.build().expect("profile workspace must be valid"),
+            DockPolicy::default(),
+        )
+        .expect("profile engine must initialize")
+    }
+
+    fn profile_item_keys() -> ExternalItemKeyMap {
+        let mut keys = ExternalItemKeyMap::new();
+        keys.ensure_all(["pane/one", "pane/two", "pane/three"])
+            .expect("profile item keys must allocate");
+        keys
+    }
+
+    fn profile_preferences() -> ViewportPlacementPreferences {
+        let mut preferences = ViewportPlacementPreferences::new();
+        preferences.set_native_host(SurfaceId::new(1), NativeSurfaceHostPreference::Root);
+        preferences.set_native_host(
+            SurfaceId::new(2),
+            NativeSurfaceHostPreference::Child {
+                recovery_host: SurfaceId::new(1),
+            },
+        );
+        preferences.set_native_host(SurfaceId::new(3), NativeSurfaceHostPreference::Root);
+        preferences
+    }
+
+    fn profile_document(preferences: &ViewportPlacementPreferences) -> DockspaceDocument {
+        DockspaceDocument::capture_state(
+            DOCUMENT_ID,
+            1,
+            &profile_engine(&[1, 2, 3]),
+            &profile_item_keys(),
+            preferences,
+        )
+        .expect("profile document must capture")
+    }
+
+    fn rebind_hash(document: &mut DockspaceDocument) {
+        document.binding_hash = binding_hash(
+            document.document_id,
+            document.generation,
+            document.presentation_identity_frontier,
+            &document.workspace,
+            &document.external_item_keys,
+            &document.viewport_placements,
+        )
+        .expect("mutated profile must remain canonically encodable");
+    }
+
+    #[test]
+    fn v2_round_trip_preserves_hosting_without_placement_and_rejects_v1() {
+        let preferences = profile_preferences();
+        let document = profile_document(&preferences);
+        let bytes = serde_json::to_vec(&document).expect("V2 document must encode");
+        let decoded = serde_json::from_slice::<DockspaceDocumentEnvelope>(&bytes)
+            .expect("V2 envelope must decode")
+            .into_document()
+            .expect("V2 document must be supported");
+        let restored = decoded
+            .restore(|_, _| true)
+            .expect("V2 profile must restore");
+        assert_eq!(restored.viewport_placements, preferences);
+        assert_eq!(restored.viewport_placements.len(), 3);
+        assert_eq!(restored.viewport_placements.iter().count(), 0);
+        assert_eq!(
+            crate::persistence::WorkspaceSnapshot::capture(restored.restore.workspace())
+                .expect("restored graph must capture"),
+            document.workspace
+        );
+        let legacy = serde_json::from_str::<DockspaceDocumentEnvelope>("[1, {}]")
+            .expect("unsupported outer payload must be skipped");
+        assert!(matches!(
+            legacy.into_document(),
+            Err(DockspaceDocumentDecodeError::UnsupportedVersion {
+                found: 1,
+                supported: DOCKSPACE_DOCUMENT_VERSION,
+            })
+        ));
+    }
+
+    #[test]
+    fn metadata_only_rows_must_name_existing_workspace_surfaces() {
+        let mut preferences = profile_preferences();
+        preferences.set_native_host(SurfaceId::new(99), NativeSurfaceHostPreference::Root);
+        assert!(matches!(
+            DockspaceDocument::capture_state(
+                DOCUMENT_ID,
+                1,
+                &profile_engine(&[1, 2, 3]),
+                &profile_item_keys(),
+                &preferences,
+            ),
+            Err(DockspaceDocumentCaptureError::UnknownPlacementSurface(surface))
+                if surface == SurfaceId::new(99)
+        ));
+        let mut document = profile_document(&profile_preferences());
+        document.viewport_placements = ViewportPlacementSnapshot::capture(&preferences);
+        rebind_hash(&mut document);
+        assert!(matches!(
+            document.restore(|_, _| true),
+            Err(DockspaceDocumentRestoreError::UnknownPlacementSurface(surface))
+                if surface == SurfaceId::new(99)
+        ));
+    }
+
+    #[test]
+    fn child_host_references_are_validated_during_capture_and_restore() {
+        let child = SurfaceId::new(2);
+        let cases = [
+            (
+                SurfaceId::new(99),
+                false,
+                NativeSurfaceHostPreferenceError::UnknownRecoveryHost {
+                    surface: child,
+                    recovery_host: SurfaceId::new(99),
+                },
+            ),
+            (
+                child,
+                false,
+                NativeSurfaceHostPreferenceError::SelfRecoveryHost { surface: child },
+            ),
+            (
+                SurfaceId::new(1),
+                true,
+                NativeSurfaceHostPreferenceError::ChildRecoveryHost {
+                    surface: child,
+                    recovery_host: SurfaceId::new(1),
+                },
+            ),
+        ];
+        for (recovery_host, host_is_child, expected) in cases {
+            let mut preferences = profile_preferences();
+            preferences
+                .set_native_host(child, NativeSurfaceHostPreference::Child { recovery_host });
+            if host_is_child {
+                preferences.set_native_host(
+                    recovery_host,
+                    NativeSurfaceHostPreference::Child {
+                        recovery_host: SurfaceId::new(3),
+                    },
+                );
+            }
+            assert!(matches!(
+                DockspaceDocument::capture_state(
+                    DOCUMENT_ID,
+                    1,
+                    &profile_engine(&[1, 2, 3]),
+                    &profile_item_keys(),
+                    &preferences,
+                ),
+                Err(DockspaceDocumentCaptureError::NativeHostPreference(actual))
+                    if actual == expected
+            ));
+            let mut document = profile_document(&profile_preferences());
+            document.viewport_placements = ViewportPlacementSnapshot::capture(&preferences);
+            rebind_hash(&mut document);
+            assert!(matches!(
+                document.restore(|_, _| true),
+                Err(DockspaceDocumentRestoreError::NativeHostPreference(actual))
+                    if actual == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn binding_hash_rejects_a_valid_native_host_profile_splice() {
+        let mut document = profile_document(&profile_preferences());
+        let mut other_preferences = profile_preferences();
+        other_preferences.set_native_host(
+            SurfaceId::new(2),
+            NativeSurfaceHostPreference::Child {
+                recovery_host: SurfaceId::new(3),
+            },
+        );
+        let other = profile_document(&other_preferences);
+        assert_ne!(document.binding_hash, other.binding_hash);
+        document.viewport_placements = other.viewport_placements;
+        assert!(matches!(
+            document
+                .restore(|_, _| panic!("spliced profile must reject before application lookup")),
+            Err(DockspaceDocumentRestoreError::BindingHashMismatch)
+        ));
+    }
+
+    #[test]
+    fn prepared_restore_rebases_profile_surface_and_recovery_host_together() {
+        let mut preferences = profile_preferences();
+        let rect = PhysicalRect::new(-40.0, 30.0, 800.0, 600.0).expect("placement must validate");
+        preferences.set(
+            ViewportPlacementPreference::new(SurfaceId::new(2), rect)
+                .expect("nonempty child placement must validate"),
+        );
+        let mut active = profile_engine(&[10]);
+        let bound = BoundDocumentState::from_parts(
+            DOCUMENT_ID,
+            Some(0),
+            profile_item_keys(),
+            ViewportPlacementPreferences::new(),
+        );
+        let prepared = bound
+            .prepare_runtime_restore(&active, profile_document(&preferences), |_, _| true)
+            .expect("same-lineage restore must prepare");
+        assert_eq!(prepared.viewport_placements(), &preferences);
+        let mut host = TestPresentationHost::new(&mut active);
+        let frame = host.begin(&active);
+        let (input, pending) = prepared
+            .clone()
+            .into_engine_input(frame.view())
+            .expect("retired profile references must rebase atomically");
+        let EngineInput::RestoreWorkspace(restore) = input else {
+            panic!("prepared restore must produce one workspace replacement");
+        };
+        let view = DockspaceView::new(restore.workspace());
+        let child = view
+            .item(ItemId::new(2))
+            .expect("child item must survive")
+            .surface();
+        let root = view
+            .item(ItemId::new(1))
+            .expect("host item must survive")
+            .surface();
+        assert!(child.get() > 10 && root.get() > 10);
+        assert_eq!(
+            pending.viewport_placements().native_host(child),
+            Some(NativeSurfaceHostPreference::Child {
+                recovery_host: root
+            })
+        );
+        assert_eq!(
+            pending.viewport_placements().native_host(root),
+            Some(NativeSurfaceHostPreference::Root)
+        );
+        let placement = pending
+            .viewport_placements()
+            .get(child)
+            .expect("placement must follow source");
+        assert_eq!(placement.surface(), child);
+        assert_eq!(placement.outer_rect(), rect);
+        assert!(
+            pending
+                .viewport_placements()
+                .surface_ids()
+                .all(|surface| surface.get() > 10)
+        );
+        assert_eq!(prepared.viewport_placements(), &preferences);
+        assert!(bound.viewport_placements().is_empty());
+        assert!(active.workspace().surface(SurfaceId::new(10)).is_some());
+    }
+
+    #[test]
+    fn capture_uses_explicit_roles_retains_unbound_rows_and_prunes_removed_surfaces() {
+        let mut engine = profile_engine(&[1, 2, 3]);
+        let mut host = TestPresentationHost::new(&mut engine);
+        let provider = host.platform_provider();
+        let source = StableInputSourceId::new(0xd0c5_0000_0000_0301);
+        let expected = engine.version();
+        let root = support::submit_input(
+            &mut engine,
+            &mut host,
+            source,
+            EngineInput::RegisterViewport {
+                provider,
+                expected,
+                surface: SurfaceId::new(1),
+                token: WindowToken::new(41),
+                role: ViewportRole::Root,
+                recovery_target: None,
+            },
+        )
+        .expect("native root registration must reduce");
+        assert!(matches!(
+            root.reduced_inputs()[0].outcome(),
+            InputOutcome::ViewportRegistered { .. }
+        ));
+        let expected = engine.version();
+        let child = support::submit_input(
+            &mut engine,
+            &mut host,
+            source,
+            EngineInput::BootstrapChildViewport {
+                provider,
+                expected,
+                surface: SurfaceId::new(2),
+                token: WindowToken::new(42),
+                recovery: SurfaceRecoveryBootstrap::new(SurfaceId::new(1)),
+            },
+        )
+        .expect("native child bootstrap must reduce");
+        assert!(matches!(
+            child.reduced_inputs()[0].outcome(),
+            InputOutcome::ViewportRegistered { .. }
+        ));
+        let mut previous = profile_preferences();
+        previous.set_native_host(
+            SurfaceId::new(1),
+            NativeSurfaceHostPreference::Child {
+                recovery_host: SurfaceId::new(3),
+            },
+        );
+        previous.set_native_host(
+            SurfaceId::new(2),
+            NativeSurfaceHostPreference::Child {
+                recovery_host: SurfaceId::new(3),
+            },
+        );
+        previous.set_native_host(SurfaceId::new(99), NativeSurfaceHostPreference::Root);
+        let unbound_placement = ViewportPlacementPreference::new(
+            SurfaceId::new(3),
+            PhysicalRect::new(-900.0, 60.0, 640.0, 480.0).expect("unbound placement must validate"),
+        )
+        .expect("nonempty unbound placement must validate");
+        previous.set(unbound_placement);
+        let bound =
+            BoundDocumentState::from_parts(DOCUMENT_ID, Some(0), profile_item_keys(), previous);
+        let captured = bound
+            .prepare_capture(&engine)
+            .expect("explicit roles must capture");
+        let restored = captured
+            .document
+            .restore(|_, _| true)
+            .expect("captured profile must restore");
+        let mut expected_preferences = profile_preferences();
+        expected_preferences.set(unbound_placement);
+        assert_eq!(restored.viewport_placements, expected_preferences);
+        assert!(
+            restored
+                .viewport_placements
+                .get(SurfaceId::new(1))
+                .is_none()
+        );
+        assert!(
+            restored
+                .viewport_placements
+                .get(SurfaceId::new(2))
+                .is_none()
+        );
+        assert!(engine.viewport().viewport(SurfaceId::new(3)).is_none());
+
+        let InputOutcome::ViewportRegistered { binding: root } = root.reduced_inputs()[0].outcome()
+        else {
+            unreachable!("root registration was checked above");
+        };
+        let InputOutcome::ViewportRegistered { binding: child } =
+            child.reduced_inputs()[0].outcome()
+        else {
+            unreachable!("child registration was checked above");
+        };
+        let outer =
+            PhysicalRect::new(80.0, 60.0, 960.0, 720.0).expect("root placement must validate");
+        let content =
+            PhysicalRect::new(88.0, 90.0, 944.0, 682.0).expect("content bounds must validate");
+        let scale = ScaleFactor::new(1.5).expect("native scale must validate");
+        let windows = vec![
+            ObservedWindow::new(*root)
+                .with_coordinate_observation(WindowCoordinateObservation::new(
+                    *root,
+                    CoordinateObservationGeneration::new(1),
+                    Authority::Known(content),
+                    Authority::Known(outer),
+                    Authority::Known(scale),
+                    Authority::Known(scale),
+                ))
+                .with_presentation_observation(WindowPresentationObservation::new(
+                    *root,
+                    PresentationObservationGeneration::new(1),
+                    Authority::Known(WindowPresentationState::Visible),
+                    PresentationEffectAcknowledgement::known(None),
+                )),
+            ObservedWindow::new(*child),
+        ];
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_global_window_placement(PlatformCapability::Supported);
+        let snapshot = PlatformSnapshot::new(
+            PlatformSnapshotGeneration::new(1),
+            support::known_capability_observation(1, capabilities),
+            unknown_focus_observation(
+                FocusObservationGeneration::new(1),
+                AuthorityUnavailableReason::NotReported,
+            ),
+            support::known_inventory_observation(1, &windows),
+            windows,
+            Vec::new(),
+            support::unknown_work_area_observation(1),
+        )
+        .expect("root observation must validate");
+        let expected_epoch = engine.version().epoch();
+        support::submit_input(
+            &mut engine,
+            &mut host,
+            source,
+            EngineInput::PublishPlatformSnapshot {
+                provider,
+                expected_epoch,
+                snapshot,
+            },
+        )
+        .expect("root geometry must publish");
+        let captured = bound
+            .prepare_capture(&engine)
+            .expect("observed root placement must capture");
+        let restored = captured
+            .document
+            .restore(|_, _| true)
+            .expect("root placement must restore");
+        let placement = restored
+            .viewport_placements
+            .get(SurfaceId::new(1))
+            .expect("root placement must persist");
+        assert_eq!(placement.outer_rect(), outer);
+        assert_eq!(placement.inner_size(), Some(content.size()));
+        assert_eq!(placement.scale_factor(), Some(scale));
+        assert_eq!(
+            restored.viewport_placements.get(SurfaceId::new(3)),
+            Some(&unbound_placement)
+        );
+        assert_eq!(
+            restored.viewport_placements.native_host(SurfaceId::new(2)),
+            Some(NativeSurfaceHostPreference::Child {
+                recovery_host: SurfaceId::new(1)
+            })
+        );
     }
 
     #[test]
