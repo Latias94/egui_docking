@@ -31,7 +31,11 @@ capacity/service-time and platform matrices, the native showcase, and U9
 dependency/package/documentation closure. The new continuous-X11-input and
 pending-presentation-wake slice and finite four-direction non-guide edge smoke
 are locally qualified; they do not replace
-those remaining acceptance gates. Open-GPUI and the user's actual engine remain
+those remaining acceptance gates. The finite nested center/west physical
+journeys now expose and cover fractional native-create requests; complete
+synchronous output-host timing is measured separately from reducer timing.
+Neither establishes mixed-DPI, automatic native stationary input or hard
+real-time qualification. Open-GPUI and the user's actual engine remain
 outside the completion dependencies. Exact current results and failed attempts
 are recorded in `docs/VALIDATION.md`.
 
@@ -1840,6 +1844,38 @@ on macOS and Linux under 4 MiB. Both platforms' six pressure journeys, macOS
 default/bounded redock and ten X11 physical journeys pass. Exact evidence and
 local fork limitations are in `docs/VALIDATION.md`; full host-service, broader
 capacity combinations and native readiness remain open.
+
+The next finite native qualification adds a complete synchronous output-host
+measurement: admission entry through the last inner pass finalizer's return,
+including commit/effect scheduling, shared-budget retries, lock release and
+fixture bookkeeping. A real repeated root output retains its original start;
+root/child/Draining/Defer observations and over-2-ms counts remain separate.
+Renderer/GPU and terminal delay, actual OS-loop yield and sustained active
+input are outside this interval, so no hard service upper bound follows.
+
+The pressure run exposed a queued child callback whose surface was absent
+from the current frame roster. The driver now retains its previous output,
+commits only actual roster contributions, preserves the existing child wake
+and attaches the next root cycle to the exact terminal owner. It does not
+manufacture a measurement or expand the roster.
+
+The fixed nested physical center/west journeys preserve an empty central
+source, both ancestor weights and the unaffected sibling. They exposed an
+adapter-only integer-request restriction: a legitimate 179.75-pixel source
+created a core request that the native host rejected. The platform request
+conversion now rounds positions and expands positive extents to whole pixels;
+the core retains its desired request, while readiness and first-live consume
+actual observed geometry. This does not add integer-platform assumptions to
+renderer-neutral layout or fabricate observation authority. Exact source and
+qualification are recorded in `docs/VALIDATION.md`.
+
+The remaining automatic native stationary slice must reuse the existing core
+continuation, coordinator, shared clock/budget and prepaid command terminal
+receipts. It needs one in-flight observation, deadline-only wake scheduling,
+ordered result reduction and exact target-output rearming. The current X11
+query still has Unknown fresh capture/delivery, so successful OS stationary
+execution remains unavailable until those facts can be proved. No fallback
+from the expected source identity or cached implicit capture is permitted.
 
 ### U8. Consolidate optional viewport hosting and certify native readiness
 

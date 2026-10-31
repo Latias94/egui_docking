@@ -305,19 +305,23 @@ creation, staging, first-live admission, redock, and retirement through product
 commands. The X11/XTest smoke locates only read-only semantic receivers, injects
 real OS pointer events through Winit, and proves drag-out, first-live, the exact
 Center-guide control, three non-guide pane-center points and four non-guide
-pane-edge points, both tab-half insertion sides, real merge/split topology, OS-window destruction, and
+pane-edge points, both tab-half insertion sides, two nested-leaf targets, real
+merge/split topology, OS-window destruction, and
 retirement quiescence. The center cases use
 `EGUI_DOCKSPACE_PHYSICAL_TARGET=pane-center-a`, `pane-center-b` or
 `pane-center-c`; the edge cases use `pane-edge-north`, `pane-edge-south`,
 `pane-edge-east` or `pane-edge-west`; tab insertion uses `tab-half-before` or
-`tab-half-after`. Leaving it unset runs the guide control.
+`tab-half-after`; the fixed two-axis nested layout uses `nested-pane-center` or
+`nested-pane-edge` (west). Leaving it unset runs the guide control.
 Each pane case excludes all actual guide hit bounds and the outer-root band
 after physical rounding and again before release. Edge cases require the
 matching exact half-root preview and ordered, equal-weight split in the original root.
 Tab halves exclude Close Main and actual guides, require the narrow insertion
-marker and verify the precise resulting tab order. These finite native smokes
-do not certify overflowed/clipped tab insertion, nested targets, mixed
-DPI or the complete local journey matrix. They do not expose core
+marker and verify the precise resulting tab order. Nested cases preserve the
+empty central source, ancestor weights and unaffected sibling; west insertion
+must split the target leaf, retaining the three alternating split axes.
+These finite native smokes do not certify overflowed/clipped tab insertion,
+arbitrary nested targets, mixed DPI or the complete local journey matrix. They do not expose core
 geometry or provide a reusable GUI test engine.
 
 The optional high-rate extension sets `EGUI_DOCKSPACE_PHYSICAL_LOAD=1khz`
@@ -331,6 +335,13 @@ profile is an optimized build with 2 CPU and `LP_NUM_THREADS=1` for software GL;
 unoptimized and renderer-oversubscribed attempts remain recorded failures.
 This is finite XTest/event-loop evidence, not a hardware polling-rate claim or
 the separate 2 ms reducer-service qualification. See `docs/VALIDATION.md`.
+
+The real output-pressure fixture also measures the synchronous host interval
+from output admission through the last pass finalizer's return, including
+commit, effect scheduling and fixture overhead. It reports repeated passes,
+child/root samples, deferred admission and observed overruns separately. GPU
+and terminal waits are excluded; these finite samples establish neither a hard
+2 ms limit nor return to the OS event loop.
 
 ## Packaging and release order
 

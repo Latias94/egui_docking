@@ -7,6 +7,7 @@ pub(super) const NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL: &str =
     "Dockspace native drag preview painted";
 pub(super) const ROOT_PANE_CONTENT_LABEL: &str = "Root pane content";
 pub(super) const DOCK_PREVIEW_EMITTED_LABEL: &str = "Dockspace dock preview emitted";
+pub(super) const PHYSICAL_TARGET_ENV: &str = "EGUI_DOCKSPACE_PHYSICAL_TARGET";
 const ACTUAL_GUIDE_LABELS: [&str; 5] = [
     "Dockspace center drop guide",
     "Dockspace left drop guide",
@@ -14,6 +15,29 @@ const ACTUAL_GUIDE_LABELS: [&str; 5] = [
     "Dockspace top drop guide",
     "Dockspace bottom drop guide",
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NestedPaneCase {
+    Center,
+    West,
+}
+
+impl NestedPaneCase {
+    pub(super) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "nested-pane-center" => Some(Self::Center),
+            "nested-pane-edge" => Some(Self::West),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::Center => "nested-pane-center",
+            Self::West => "nested-pane-edge",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PaneCenterCase {
@@ -131,6 +155,7 @@ pub(super) enum PaneCenterError {
     },
     Coordinates(CoordinateError),
     TargetMoved,
+    InvalidNestedLeaf,
     PreviewBoundsMismatch,
     FinalLayoutMismatch,
 }
@@ -488,6 +513,81 @@ pub(super) fn tab_half_geometry(tree: &TreeUpdate) -> Result<TabHalfGeometry, Pa
     })
 }
 
+pub(super) fn nested_pane_bounds(
+    geometry: PaneCenterGeometry,
+    tab: TabHalfGeometry,
+    pixels_per_point: f32,
+) -> Result<LogicalBounds, PaneCenterError> {
+    if !pixels_per_point.is_finite() || pixels_per_point <= 0.0 {
+        return Err(PaneCenterError::Coordinates(CoordinateError::InvalidScale));
+    }
+    // Main is the bottom-right leaf of this fixed two-axis fixture. Its painted tab supplies
+    // the pane's top edge; its painted content supplies the remaining three edges.
+    let content = geometry.content;
+    let workspace = geometry.workspace;
+    let tolerance = 1.5 / f64::from(pixels_per_point);
+    if content.min_x <= workspace.min_x + tolerance
+        || tab.tab.min_y <= workspace.min_y + tolerance
+        || content.max_x > workspace.max_x + tolerance
+        || content.max_y > workspace.max_y + tolerance
+        || tab.tab.min_x < content.min_x - tolerance
+        || tab.tab.max_x > content.max_x + tolerance
+        || tab.tab.min_y >= content.min_y - tolerance
+        || (tab.tab.max_y - content.min_y).abs() > tolerance
+    {
+        return Err(PaneCenterError::InvalidNestedLeaf);
+    }
+    Ok(LogicalBounds {
+        min_y: tab.tab.min_y,
+        ..content
+    })
+}
+
+pub(super) fn nested_pane_point(
+    case: NestedPaneCase,
+    geometry: PaneCenterGeometry,
+    tab: TabHalfGeometry,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    guides: &[ActualGuideHit],
+) -> Result<(PhysicalPoint, LogicalPoint), PaneCenterError> {
+    nested_pane_bounds(geometry, tab, pixels_per_point)?;
+    match case {
+        NestedPaneCase::Center => pane_center_point(
+            PaneCenterCase::A,
+            geometry,
+            client,
+            pixels_per_point,
+            guides,
+        ),
+        NestedPaneCase::West => pane_edge_point(
+            PaneEdgeCase::West,
+            geometry,
+            client,
+            pixels_per_point,
+            guides,
+        ),
+    }
+}
+
+pub(super) fn verify_nested_pane_preview(
+    case: NestedPaneCase,
+    geometry: PaneCenterGeometry,
+    tab: TabHalfGeometry,
+    preview: DockPreviewEmission,
+    pixels_per_point: f32,
+) -> Result<(), PaneCenterError> {
+    let leaf = nested_pane_bounds(geometry, tab, pixels_per_point)?;
+    match case {
+        NestedPaneCase::Center => verify_center_preview(geometry, preview, pixels_per_point),
+        NestedPaneCase::West => verify_preview_bounds(
+            edge_preview_bounds(PaneEdgeCase::West, leaf),
+            preview,
+            pixels_per_point,
+        ),
+    }
+}
+
 pub(super) fn tab_half_point(
     case: TabHalfCase,
     geometry: TabHalfGeometry,
@@ -768,7 +868,14 @@ pub(super) fn verify_edge_preview(
     pixels_per_point: f32,
 ) -> Result<(), PaneCenterError> {
     // This finite fixture starts with one pane covering the original main root.
-    let mut expected = geometry.workspace;
+    verify_preview_bounds(
+        edge_preview_bounds(case, geometry.workspace),
+        preview,
+        pixels_per_point,
+    )
+}
+
+fn edge_preview_bounds(case: PaneEdgeCase, mut expected: LogicalBounds) -> LogicalBounds {
     let config = dockspace::runtime::DockPresentationConfig::default();
     let width =
         (expected.max_x - expected.min_x - config.splitter_thickness()) * config.dock_fraction();
@@ -780,7 +887,7 @@ pub(super) fn verify_edge_preview(
         PaneEdgeCase::East => expected.min_x = expected.max_x - width,
         PaneEdgeCase::West => expected.max_x = expected.min_x + width,
     }
-    verify_preview_bounds(expected, preview, pixels_per_point)
+    expected
 }
 
 fn verify_preview_bounds(
@@ -1026,6 +1133,270 @@ mod tests {
     use eframe::egui::accesskit::{Node, NodeId, Rect, TreeId, TreeInfo};
 
     use super::*;
+
+    fn nested_geometry() -> (PaneCenterGeometry, TabHalfGeometry) {
+        (
+            PaneCenterGeometry {
+                content: LogicalBounds {
+                    min_x: 180.75,
+                    min_y: 223.625,
+                    max_x: 720.0,
+                    max_y: 520.0,
+                },
+                workspace: LogicalBounds {
+                    min_x: 0.0,
+                    min_y: 0.0,
+                    max_x: 720.0,
+                    max_y: 520.0,
+                },
+            },
+            TabHalfGeometry {
+                tab: LogicalBounds {
+                    min_x: 208.75,
+                    min_y: 195.625,
+                    max_x: 280.75,
+                    max_y: 223.625,
+                },
+                close: LogicalBounds {
+                    min_x: 262.75,
+                    min_y: 201.625,
+                    max_x: 278.75,
+                    max_y: 217.625,
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn nested_geometry_reads_the_painted_main_leaf_and_rejects_mismatched_tab_bounds() {
+        let (expected, expected_tab) = nested_geometry();
+        let rect = |bounds: LogicalBounds| {
+            Rect::new(bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y)
+        };
+        let update = tree([
+            (
+                NodeId::from(1_u64),
+                node(
+                    Role::Pane,
+                    Some("Dockspace workspace"),
+                    None,
+                    rect(expected.workspace),
+                ),
+            ),
+            (
+                NodeId::from(2_u64),
+                node(
+                    Role::Label,
+                    None,
+                    Some(ROOT_PANE_CONTENT_LABEL),
+                    rect(expected.content),
+                ),
+            ),
+            (
+                NodeId::from(3_u64),
+                node(
+                    Role::Label,
+                    Some("Dockspace tab bounds Main"),
+                    None,
+                    rect(expected_tab.tab),
+                ),
+            ),
+            (
+                NodeId::from(4_u64),
+                node(
+                    Role::Button,
+                    Some("Close Main"),
+                    None,
+                    rect(expected_tab.close),
+                ),
+            ),
+            (
+                NodeId::from(5_u64),
+                node(
+                    Role::Label,
+                    Some("Dockspace tab bounds Sibling"),
+                    None,
+                    Rect::new(208.75, 0.0, 300.75, 28.0),
+                ),
+            ),
+        ]);
+        let geometry = pane_center_geometry(&update).unwrap();
+        let tab = tab_half_geometry(&update).unwrap();
+        assert_eq!(geometry, expected);
+        assert_eq!(tab, expected_tab);
+        assert_eq!(
+            nested_pane_bounds(geometry, tab, 1.5),
+            Ok(LogicalBounds {
+                min_y: 195.625,
+                ..expected.content
+            })
+        );
+        let mismatched_tab = TabHalfGeometry {
+            tab: LogicalBounds {
+                max_y: tab.tab.max_y + 4.0,
+                ..tab.tab
+            },
+            ..tab
+        };
+        assert_eq!(
+            nested_pane_bounds(geometry, mismatched_tab, 1.5),
+            Err(PaneCenterError::InvalidNestedLeaf)
+        );
+        assert_eq!(
+            nested_pane_bounds(
+                PaneCenterGeometry {
+                    content: geometry.workspace,
+                    ..geometry
+                },
+                tab,
+                1.5
+            ),
+            Err(PaneCenterError::InvalidNestedLeaf)
+        );
+    }
+
+    #[test]
+    fn nested_points_exclude_guides_and_outer_root_band_after_physical_rounding() {
+        let (geometry, tab) = nested_geometry();
+        for (scale, width, height) in [(1.0, 720, 520), (1.5, 1080, 780), (2.0, 1440, 1040)] {
+            let client = PhysicalBounds {
+                min_x: -200,
+                min_y: 80,
+                max_x: -200 + width,
+                max_y: 80 + height,
+            };
+            for case in [NestedPaneCase::Center, NestedPaneCase::West] {
+                let (physical, logical) =
+                    nested_pane_point(case, geometry, tab, client, scale, &[]).unwrap();
+                assert_eq!(
+                    desktop_to_viewport_logical(client, scale, physical),
+                    Ok(logical)
+                );
+                let guide = ActualGuideHit {
+                    label: ACTUAL_GUIDE_LABELS[1],
+                    bounds: LogicalBounds {
+                        min_x: logical.x,
+                        min_y: logical.y,
+                        max_x: logical.x + 1.0,
+                        max_y: logical.y + 1.0,
+                    },
+                };
+                assert_eq!(
+                    nested_pane_point(case, geometry, tab, client, scale, &[guide]),
+                    Err(PaneCenterError::GuideCovered { label: guide.label })
+                );
+            }
+        }
+        let near_root_edge = PaneCenterGeometry {
+            content: LogicalBounds {
+                min_x: 4.0,
+                min_y: 100.0,
+                max_x: 164.0,
+                max_y: 520.0,
+            },
+            ..geometry
+        };
+        let near_root_tab = TabHalfGeometry {
+            tab: LogicalBounds {
+                min_x: 32.0,
+                min_y: 72.0,
+                max_x: 104.0,
+                max_y: 100.0,
+            },
+            close: LogicalBounds {
+                min_x: 84.0,
+                min_y: 76.0,
+                max_x: 100.0,
+                max_y: 96.0,
+            },
+        };
+        let client = PhysicalBounds {
+            min_x: 0,
+            min_y: 0,
+            max_x: 720,
+            max_y: 520,
+        };
+        for case in [NestedPaneCase::Center, NestedPaneCase::West] {
+            assert_eq!(
+                nested_pane_point(case, near_root_edge, near_root_tab, client, 1.0, &[]),
+                Err(PaneCenterError::InsideRootEdgeBand)
+            );
+        }
+    }
+
+    #[test]
+    fn nested_preview_requires_leaf_content_or_inner_payload_instead_of_root_half() {
+        let (geometry, tab) = nested_geometry();
+        let west_payload = LogicalBounds {
+            min_x: 180.75,
+            min_y: 195.625,
+            max_x: 449.875,
+            max_y: 520.0,
+        };
+        for (case, expected) in [
+            (NestedPaneCase::Center, geometry.content),
+            (NestedPaneCase::West, west_payload),
+        ] {
+            assert_eq!(
+                verify_nested_pane_preview(
+                    case,
+                    geometry,
+                    tab,
+                    DockPreviewEmission { bounds: expected },
+                    1.5
+                ),
+                Ok(())
+            );
+            for wrong in [
+                geometry.workspace,
+                LogicalBounds {
+                    min_y: 28.0,
+                    ..geometry.workspace
+                },
+                LogicalBounds {
+                    max_x: 359.5,
+                    ..geometry.workspace
+                },
+            ] {
+                assert_eq!(
+                    verify_nested_pane_preview(
+                        case,
+                        geometry,
+                        tab,
+                        DockPreviewEmission { bounds: wrong },
+                        1.5
+                    ),
+                    Err(PaneCenterError::PreviewBoundsMismatch)
+                );
+            }
+        }
+        for wrong in [
+            LogicalBounds {
+                min_y: 0.0,
+                ..west_payload
+            },
+            LogicalBounds {
+                min_y: geometry.content.min_y,
+                ..west_payload
+            },
+            LogicalBounds {
+                min_x: 450.875,
+                max_x: 720.0,
+                ..west_payload
+            },
+        ] {
+            assert_eq!(
+                verify_nested_pane_preview(
+                    NestedPaneCase::West,
+                    geometry,
+                    tab,
+                    DockPreviewEmission { bounds: wrong },
+                    1.5
+                ),
+                Err(PaneCenterError::PreviewBoundsMismatch)
+            );
+        }
+    }
 
     #[test]
     fn tab_half_points_use_full_tab_bounds_and_exclude_close_after_rounding() {

@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Scoped evidence; native qualification incomplete"
 reviewed: "2026-10-31"
-source_revision: "13dd12747b600d7c92921effa8cf521bfd120359"
+source_revision: "5d42e1e6527c68672c99ffc01644db62af68ec70"
 ---
 
 # Dockspace Platform Support
@@ -16,8 +16,9 @@ input on that backend.
 
 This snapshot follows the [canonical engine-host plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md)
 and the dated [validation record](VALIDATION.md). The production/physical
-baseline is `13dd127`; the separately identified W16 model result below is
-committed as `9140b18` on 2026-10-31. Overall U9 and the complete plan remain open.
+baseline is now `5d42e1e`, including the current-roster callback correction
+and fractional create-request conversion. Dated records below identify their
+own source and scope. Overall U9 and the complete plan remain open.
 Earlier dated qualifications
 retain their historical scope; the 2026-10-31 entries supersede earlier
 physical-smoke coverage limits.
@@ -107,8 +108,8 @@ These bits must be read separately from the evidence:
 
 | Platform | Recorded finite qualification | Remaining platform limit |
 | --- | --- | --- |
-| X11 | Ten finite XTest tear-off/first-live/redock/retirement journeys; three center-only high-rate cases; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
-| macOS | Real-window default/bounded programmatic tear-off, first-live, redock and retirement; five output-pressure cases. Same-window event-time facts have Winit test coverage, and local mouse geometry has deterministic producer/adapter coverage. | Programmatic and same-window fact evidence does not certify a physical cross-window release. `AuthoritativeButtonState` remains absent; cross-surface physical promotion stays fail-closed. Retina/mixed-DPI and the complete physical matrix remain unqualified. |
+| X11 | Twelve finite XTest tear-off/first-live/redock/retirement journeys; three center-only high-rate cases; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
+| macOS | Real-window default/bounded programmatic tear-off, first-live, redock and retirement; six output-pressure cases. Same-window event-time facts have Winit test coverage, and local mouse geometry has deterministic producer/adapter coverage. | Programmatic and same-window fact evidence does not certify a physical cross-window release. `AuthoritativeButtonState` remains absent; cross-surface physical promotion stays fail-closed. Retina/mixed-DPI and the complete physical matrix remain unqualified. |
 | Windows | Conservative capability mapping and shared host/adapter contracts. | No current Windows real-input/platform certification is established by the cited records. Hovered-window, desktop-pointer and authoritative-button bits remain absent; placement/lifecycle bits alone do not qualify cross-window docking. |
 | Wayland | Limited observation/control mapping; deterministic event-time local mouse geometry and Touch position/geometry-pair contracts. | No compositor/physical-input qualification. Managed native lifecycle, global placement, work area and desktop pointer/hover authority remain unavailable in this mapping. Proven local operations need no global desktop lane. |
 | Other/fallback | The four common capability bits only. | No native lifecycle or physical multiview claim. |
@@ -132,7 +133,9 @@ document's Work-area roster entry and consumed by
 The [2026-10-31 edge qualification](VALIDATION.md#2026-10-31-x11-non-guide-pane-edge-docking)
 records eight physical journeys at `13dd127`. The subsequent
 [tab-half qualification](VALIDATION.md#2026-10-31-x11-physical-tab-half-insertion)
-adds two and reruns all ten:
+adds two and reruns all ten. The subsequent
+[nested qualification](VALIDATION.md#2026-10-31-synchronous-native-host-service-and-nested-physical-targets)
+adds the fixed center/west leaf cases and reruns all twelve:
 
 | `EGUI_DOCKSPACE_PHYSICAL_TARGET` | Target | Required final layout |
 | --- | --- | --- |
@@ -146,6 +149,8 @@ adds two and reruns all ten:
 | `pane-edge-west` | Content point `(0.16, 0.25)` | Two singleton tabs leaves, expected horizontal order and equal weights. |
 | `tab-half-before` | Physical point inside the full Main tab's left half, excluding close/guides | Exact insertion marker and ordered `[Child,Main]` tabs. |
 | `tab-half-after` | Physical point inside its available right half before Close Main | Exact insertion marker and ordered `[Main,Child]` tabs. |
+| `nested-pane-center` | Non-guide Main content in the fixed two-axis layout | Center merge in the target leaf; empty central, ancestor weights and Sibling remain exact. |
+| `nested-pane-edge` | Non-guide west basin of that Main leaf | Inner `[Child,Main]` split; ancestor weights, empty central and Sibling remain exact. |
 
 Pane points are normalized to current content. Physical rounding must stay in
 the named inner-pane basin, outside the outer-root band and every actual guide
@@ -160,16 +165,24 @@ Tab-half selection uses an opt-in passive diagnostic copied from the painted
 tab's complete visible bounds; the Tab accessibility receiver still excludes
 its close button. These diagnostics confer no input or presentation authority.
 The finite single fully visible target has no overflow chrome; clipped and
-overflowed tab-half insertion remain unqualified.
+overflowed tab-half insertion remain unqualified. The nested fixture preserves
+Horizontal→Vertical ancestry and requires the additional Horizontal split only
+inside the target leaf for west docking. Painted content/tab diagnostics confer
+no target authority. The fractional source width (179.75 pixels) also exercises
+platform request quantization without replacing observed geometry.
 
 The recorded environment is Linux/arm64, Rust 1.95, Xvfb/Openbox, one X screen,
 scale 1, a 2-CPU/4-GiB container and software GL with one renderer thread.
 [`physical_x11/driver/scenario.rs`](../integration/egui-native-smoke/src/bin/physical_x11/driver/scenario.rs),
 [`driver/x11.rs`](../integration/egui-native-smoke/src/bin/physical_x11/driver/x11.rs)
 and [`assertions.rs`](../integration/egui-native-smoke/src/bin/physical_x11/assertions.rs)
-own the finite scenario, OS evidence and semantic checks. The latest slice also
-records 42 runner tests, 70 adapter units, 114 product and 15 official tests
-passing. Core/fork production gates retain their previous scope.
+own the finite scenario, OS evidence and semantic checks. The latest slice
+passes 50 Linux runner tests. The macOS native all-targets gates each pass 507
+tests normally and with adapter assertions disabled, including two separate
+10,000-lifetime runs. Linux additionally passes the focused request regression
+in both assertion configurations and the three request-conversion tests.
+Core, product and official-egui results retain the `7003b13` qualification;
+this adapter-only slice does not claim they were rerun.
 
 The [continuous-input qualification](VALIDATION.md#2026-10-31-continuous-x11-input-and-pending-release-wake)
 adds `EGUI_DOCKSPACE_PHYSICAL_LOAD=1khz` for explicit `pane-center-a/b/c` only.
@@ -178,7 +191,8 @@ inspection/idle drain. Guide and edge targets are rejected before the gesture.
 The release-to-model measurement is a conservative upper bound beginning at
 the native release callback. This finite profile does not certify hardware
 1 kHz or the 2 ms reducer service boundary, maximum-roster/O256 cross-saturation,
-nested targets, mixed DPI or high-rate edge docking.
+arbitrary nested targets, mixed DPI or high-rate edge docking. The two fixed
+nested targets reject the high-rate combination before starting a gesture.
 
 ### Configured-capacity model evidence
 
@@ -238,6 +252,16 @@ evidence does not certify a strict 2 ms upper bound or the complete host-service
 envelope. The ignored test is explicitly selected for release qualification;
 ordinary CI keeps deterministic budget/continuation checks.
 
+The [synchronous output-host measurement](VALIDATION.md#2026-10-31-synchronous-native-host-service-and-nested-physical-targets)
+additionally spans admission entry through return from the last real pass
+finalizer, including commit, effect scheduling, repeated passes, lock release
+and fixture bookkeeping. Fixed sample storage is separate from native input
+capacity. Both optimized platform runs cover all six pressure cases and one
+real repeated output in Combined. Observed Combined root maxima are 8.920083 ms
+on macOS and 2.097750 ms on Linux, with over-2-ms counts kept in the results.
+Renderer/GPU/terminal waits and actual OS-loop yield are excluded; no hard
+real-time or sustained active-input claim follows.
+
 ### Native stationary observations
 
 The public [`NativePointerContinuation`](../crates/dockspace/src/runtime/native/continuation.rs)
@@ -275,12 +299,15 @@ cannot reproduce this native qualification.
 Validation references such as `/tmp/dockspace-physical-edge-qualification.json`
 and `/tmp/dockspace-physical-load-final-qualification.json` identify local
 artifacts recorded in `VALIDATION.md`; they are not portable checkout assets.
-No runtime or platform qualification was rerun for this documentation snapshot.
+The current dated snapshot records fresh native gates, programmatic windows,
+release pressure and the twelve-target X11 physical refresh; earlier dated
+results retain their separate source scope.
 
 Still open are remaining close/create owner
-capacity and native service-time qualification; overflowed/clipped tab insertion, nested and
-mixed-DPI physical coverage; fresh stationary capture, automatic scheduling and
+capacity and sustained active host-service qualification; overflowed/clipped
+tab insertion, arbitrary nested and mixed-DPI physical coverage; fresh
+stationary capture, automatic scheduling and
 native-local/Touch OS evidence; Windows/macOS platform certification; the native
 showcase; and U9 dependency publication, clean-checkout reproduction, package
-and remaining evidence/deletion closure. The ten-journey and
+and remaining evidence/deletion closure. The twelve-journey and
 center-load results retain their finite scope.

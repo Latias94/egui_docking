@@ -15,6 +15,156 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 queued native callbacks and fractional create requests
+
+Real release output pressure exposed a child callback which was still valid at
+the native layer but absent from the current core presentation roster. Ordered
+O256/control2/protected-staging1 runs failed with
+`SurfaceOutsideRoster { surface: SurfaceId(2) }`.
+An error-only probe confirmed both initial and current frame rosters were `[1]`,
+with no pending native input, output prefix, reduced callback or control output.
+The old driver painted an empty background and then attempted to measure the
+ineligible child. Continuous successful reruns with probes had initially hidden
+the timing; a clean build reproduced the error again on run seven, and the
+error-only probe reproduced it on run five. Those failures remain recorded.
+
+The driver now uses this frame's actual roster to retain the previous native
+output. It completes and commits only actual roster contributions, retains the
+existing child's semantic wake, and attaches the next root cycle to the current
+exact output terminal. It neither creates a contribution for the absent child
+nor changes core eligibility. The qualified path does not carry discarded
+local actions; their separate finalizer checks are unchanged. In a temporary
+instrumented green run, two of 24 real Ordered journeys reached this same absent
+roster state, for three callbacks total. Every journey then completed first-live,
+redock, destruction, retirement and final zero output owners. All probes were
+removed before final qualification.
+
+The new nested physical fixture exposed a second production boundary. Its
+source pane is 179.75 physical pixels wide. Core correctly requested a native
+child, but the adapter's integer-only conversion rejected that desired rectangle
+before reserving or creating a window. The source remained recoverable and
+returned to quiescence, while the runner timed out awaiting first-live. The
+focused real-event coordinator regression first failed at zero retained
+deferred specs instead of one.
+
+The adapter's platform-request conversion now rounds positions and expands
+positive extents with `ceil`; zero dimensions and values outside the native
+integer range still reject. Both Create and Replacement use this boundary.
+The original desired placement remains in the core proposal and retained spec.
+No requested rectangle supplies content bounds, coordinates or readiness:
+subsequent native snapshots and exact first-live output remain authoritative.
+This follows the public `NativeWindowPlacement` contract, which permits a host
+to adjust a request and requires reporting actual resulting facts. Negative
+positions, subpixel positive extents, integer overflow and empty dimensions are
+covered. The real-event regression also checks unchanged durable version/source
+ownership, pending create, absent durable child and absent child coordinates.
+
+Focused request tests pass 4/4. Independent review of the roster fix and request
+conversion found no remaining confirmed P1/P2. Final frozen-source macOS
+normal and assertion-disabled native gates each pass 507 tests, including their own
+same-coordinator 10,000-lifetime soak. One explicitly opt-in wall-time test remains
+skipped in ordinary runs and retains its separate release qualification. The
+core is unchanged from `7003b13`; its 1,897 workspace, public 130/serde137,
+product114, official15 and ten-doctest results retain that earlier scope.
+
+Final cross-platform refresh is recorded in
+`/tmp/dockspace-service-roster-geometry-final-qualification.json` against
+`/tmp/dockspace-service-roster-geometry-final-snapshot.json`. The exact ingress
+red and green controls are `/tmp/dockspace-fractional-create-red-exact.json`
+and `/tmp/dockspace-fractional-create-green.json`; the earlier invalid test
+setup is explicitly superseded. The root-roster red/green logs retain their
+`dockspace-native-service-error-probe` and `dockspace-native-roster-retain-green`
+prefixes. The production corrections are committed as `f4575cc` (current frame
+roster) and `5d42e1e` (platform request quantization).
+
+The final macOS and Linux request regression passes normally and without
+adapter debug assertions. Native correctness/suspicious Clippy, strict rustdoc,
+both workspaces' formatting and patch integrity pass. MacOS and X11 each pass
+default/bounded programmatic redock and all six release output-pressure cases.
+X11 passes all 12 physical targets and refreshes its separate optimized
+1 kHz center-load entry. Source hashes were rechecked against both the working
+tree and native qualification snapshot. Native builds still require the
+unpublished local fork overrides in `PLATFORM_SUPPORT.md`; this does not
+establish clean-checkout reproduction from the tracked remote revisions.
+
+## 2026-10-31 synchronous native host service and nested physical targets
+
+The real output-pressure proxy measures from entry to its `on_output_begin`
+through the last inner `on_output_pass_finalized` return. The inner callback
+includes the actual driver, shared dispatch budget, core commit, effect
+scheduling, pass settlement, native finalizer and lock release. The interval
+also contains fixture application bookkeeping, repeated-pass work and
+measurement overhead, so it is a conservative synchronous host envelope.
+Renderer/GPU work and terminal-delivery delay occur after this boundary and
+are excluded. It does not measure actual return to the OS loop or certify
+hard 2 ms service, hardware polling or sustained active-input throughput.
+
+A fixed 258-entry pending sample buffer uses exact real output identities.
+Repeated passes retain the original admission start and close once at the real
+terminal. Root, child, Draining and Defer totals report count, passes, repeat,
+minimum, maximum, sum and observed over-2-ms samples without retaining unbounded
+history. A terminal without finalization increments `not_finalized` instead of
+inventing a zero sample. The sample buffer's 26,832 bytes are reported separately
+from the native 4 MiB allowance. A forced real discard in Combined requires at
+least one actual token with multiple finalized passes. Review corrected the
+ordinary Defer boundary to include its synchronous terminal flush before timing
+stops; early-return Defer paths still close exactly once.
+
+The final optimized Combined samples are:
+
+| Platform / segment | Samples | Finalized passes | Maximum | Samples at least 2 ms |
+| --- | --- | --- | --- | --- |
+| macOS root | 936 | 937 (one repeated output) | 8.920083 ms, Bootstrap | 4 |
+| macOS child | 282 | 282 | 0.399458 ms, RetireSatellites | 0 |
+| macOS Draining subset | 56 | 56 | 2.260917 ms | 1 |
+| macOS Defer | 5,905 | 0 | 0.077375 ms | 0 |
+| Linux root | 860 | 861 (one repeated output) | 2.097750 ms, Draining | 2 |
+| Linux child | 609 | 609 | 0.497584 ms, RetireSatellites | 0 |
+| Linux Draining subset | 97 | 97 | 2.097750 ms | 1 |
+| Linux Defer | 32 | 0 | 0.052542 ms | 0 |
+
+Draining is a subset of root/child observations, not extra independent samples.
+Both runs report `not_finalized=0`. Counts and outliers depend on actual
+event-loop scheduling and the finite workload; they are not percentiles or
+portable upper bounds. Combined keeps all 16 real window identities and
+O256/control2/protected-staging1 simultaneously, then returns every child and
+all 258 original terminals to quiescence. Owned/reserved native data samples
+are 2,350,249/3,455,424 bytes on macOS and 2,350,409/3,455,800 bytes on Linux,
+under 4 MiB and excluding the separately reported fixture allocations.
+
+The fixed X11 runner adds `nested-pane-center` and `nested-pane-edge` (west) to
+`EGUI_DOCKSPACE_PHYSICAL_TARGET`. Its initial layout is
+`Horizontal[central Child, Vertical[Sibling, Main]]` with ancestor weights
+`[0.25,0.75]` and `[0.375,0.625]`. After physical tear-off, the protected central
+source remains empty. Actual painted Main content and full-tab diagnostics
+identify the target leaf; points exclude every actual guide hit and the outer
+root band after physical rounding and again before release. Center requires
+Main's content preview. West requires the target leaf's left payload, including
+its tab strip and excluding the splitter, rather than a half-root rectangle.
+The final model preserves both ancestors, their weights and Sibling order;
+west insertion adds a third, different-axis split with exact `[Child,Main]`
+payload and equal weights. Both journeys require exact native destruction,
+semantic retirement and quiescence. No internal target or authority is
+constructed by the diagnostic.
+
+The runner has 50 Linux tests, including eight new geometry/model/target cases;
+macOS compiles and runs the applicable 25 geometry cases. Both nested physical
+journeys pass after the fractional-request correction. The finite nested
+targets deliberately reject the 1 kHz combination; the existing center-load
+profile retains its separate scope. Arbitrary nested configurations, clipped
+or overflowed tab insertion, mixed DPI and high-rate edge docking remain open.
+Measurement results and final cross-platform qualification use the exact
+snapshot and qualification record above. Overall U7/U8, U9 and the complete
+Goal remain open.
+
+The rebuilt 1 kHz center-load run injects all 1,000 checked distinct points at
+999.6 Hz without catch-up, matches all 1,000 callbacks at 991.0 Hz, and reports
+45.310875 ms release-to-model upper bound with maximum sampled root UI update
+0.788958 ms. The single root-UI duration is narrower than the synchronous
+admission-to-finalizer measurement and does not replace it. The environment
+remains Rust 1.95, Linux/arm64, Xvfb/Openbox, one X screen at scale 1,
+2 CPU/4 GiB and software GL with `LP_NUM_THREADS=1`.
+
 ## 2026-10-31 terminal guards for never-created native bindings
 
 The finite close/create capacity model exposed a production reclamation fault:

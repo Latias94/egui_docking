@@ -18,16 +18,17 @@ use super::super::app::{
     ProductObservation, ProductPhase, ROOT_TARGET_LABEL, ROOT_WINDOW_TITLE, RedockLayout, Shared,
 };
 use super::super::assertions::{
-    ActualGuideHit, DockPreviewEmission, LogicalBounds, PaneCenterCase, PaneCenterError,
-    PaneCenterGeometry, PaneEdgeCase, PhysicalBounds, PhysicalPoint, SemanticLookupError,
-    SemanticSelector, SemanticStabilitySample, SemanticText, TabHalfCase, TabHalfGeometry,
-    actual_guide_hits, choose_outside_points, desktop_to_viewport_logical, dock_preview_emission,
-    native_drag_preview_observation, pane_center_geometry, pane_center_point, pane_edge_point,
-    point_towards, pointer_barrier_is_satisfied, pointer_observation_for_barrier,
+    ActualGuideHit, DockPreviewEmission, LogicalBounds, NestedPaneCase, PHYSICAL_TARGET_ENV,
+    PaneCenterCase, PaneCenterError, PaneCenterGeometry, PaneEdgeCase, PhysicalBounds,
+    PhysicalPoint, SemanticLookupError, SemanticSelector, SemanticStabilitySample, SemanticText,
+    TabHalfCase, TabHalfGeometry, actual_guide_hits, choose_outside_points,
+    desktop_to_viewport_logical, dock_preview_emission, native_drag_preview_observation,
+    nested_pane_bounds, nested_pane_point, pane_center_geometry, pane_center_point,
+    pane_edge_point, point_towards, pointer_barrier_is_satisfied, pointer_observation_for_barrier,
     semantic_baseline_after_missing, semantic_bounds, semantic_node, semantic_snapshot_is_stable,
     semantic_tree_summary, tab_drag_point, tab_half_geometry, tab_half_point,
-    two_stage_ingress_points, verify_center_preview, verify_edge_preview, verify_tab_half_preview,
-    viewport_logical_to_desktop,
+    two_stage_ingress_points, verify_center_preview, verify_edge_preview,
+    verify_nested_pane_preview, verify_tab_half_preview, viewport_logical_to_desktop,
 };
 use super::super::pointer_load::{
     POINTER_LOAD_ENV, POINTER_LOAD_MOVES, begin_pointer_load, finish_pointer_load,
@@ -36,7 +37,7 @@ use super::super::pointer_load::{
 use super::inspection::{InspectionClient, ViewportTreeSnapshot, viewport_retirement_is_observed};
 use super::x11::{DestroyWatcher, WindowRecord, X11Desktop, x11_window_is_retired};
 
-const TARGET_ENV: &str = "EGUI_DOCKSPACE_PHYSICAL_TARGET";
+const TARGET_ENV: &str = PHYSICAL_TARGET_ENV;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RedockTarget {
@@ -44,6 +45,7 @@ enum RedockTarget {
     PaneCenter(PaneCenterCase),
     PaneEdge(PaneEdgeCase),
     TabHalf(TabHalfCase),
+    NestedPane(NestedPaneCase),
 }
 
 impl RedockTarget {
@@ -66,8 +68,8 @@ impl RedockTarget {
             "pane-edge-west" => Ok(Self::PaneEdge(PaneEdgeCase::West)),
             "tab-half-before" => Ok(Self::TabHalf(TabHalfCase::Before)),
             "tab-half-after" => Ok(Self::TabHalf(TabHalfCase::After)),
-            _ => Err(format!(
-                "invalid {TARGET_ENV}={value:?}; unset for guide-control or choose pane-center-a, pane-center-b, pane-center-c, pane-edge-north, pane-edge-south, pane-edge-east, pane-edge-west, tab-half-before, tab-half-after"
+            _ => NestedPaneCase::parse(value).map(Self::NestedPane).ok_or_else(|| format!(
+                "invalid {TARGET_ENV}={value:?}; unset for guide-control or choose pane-center-a, pane-center-b, pane-center-c, pane-edge-north, pane-edge-south, pane-edge-east, pane-edge-west, tab-half-before, tab-half-after, nested-pane-center, nested-pane-edge"
             )),
         }
     }
@@ -78,6 +80,7 @@ impl RedockTarget {
             Self::PaneCenter(case) => case.name(),
             Self::PaneEdge(case) => case.name(),
             Self::TabHalf(case) => case.name(),
+            Self::NestedPane(case) => case.name(),
         }
     }
 
@@ -87,7 +90,12 @@ impl RedockTarget {
             Self::PaneEdge(case) => RedockLayout::Edge(case),
             Self::TabHalf(TabHalfCase::Before) => RedockLayout::TabBefore,
             Self::TabHalf(TabHalfCase::After) => RedockLayout::Center,
+            Self::NestedPane(case) => RedockLayout::Nested(case),
         }
+    }
+
+    const fn supports_pointer_load(self) -> bool {
+        matches!(self, Self::PaneCenter(_))
     }
 }
 
@@ -96,6 +104,7 @@ enum PaneDockTarget {
     Center(PaneCenterCase),
     Edge(PaneEdgeCase),
     TabHalf(TabHalfCase),
+    NestedPane(NestedPaneCase),
 }
 
 impl PaneDockTarget {
@@ -104,6 +113,7 @@ impl PaneDockTarget {
             Self::Center(case) => case.name(),
             Self::Edge(case) => case.name(),
             Self::TabHalf(case) => case.name(),
+            Self::NestedPane(case) => case.name(),
         }
     }
 
@@ -118,6 +128,9 @@ impl PaneDockTarget {
             Self::Center(_) => verify_center_preview(geometry, preview, pixels_per_point),
             Self::Edge(case) => verify_edge_preview(case, geometry, preview, pixels_per_point),
             Self::TabHalf(case) => verify_tab_half_preview(case, tab, preview, pixels_per_point),
+            Self::NestedPane(case) => {
+                verify_nested_pane_preview(case, geometry, tab, preview, pixels_per_point)
+            }
         }
     }
 }
@@ -396,7 +409,7 @@ impl PhysicalDriver {
         deadline: Instant,
     ) -> Result<Self, String> {
         let target = RedockTarget::from_env()?;
-        if pointer_load_enabled()? && !matches!(target, RedockTarget::PaneCenter(_)) {
+        if pointer_load_enabled()? && !target.supports_pointer_load() {
             return Err(format!(
                 "{POINTER_LOAD_ENV}=1khz requires an explicit {TARGET_ENV}=pane-center-a, pane-center-b, or pane-center-c"
             ));
@@ -641,13 +654,13 @@ impl PhysicalDriver {
         )?;
         let frozen_pane = match self.target {
             RedockTarget::GuideControl => None,
-            RedockTarget::PaneCenter(_) | RedockTarget::PaneEdge(_) | RedockTarget::TabHalf(_) => {
-                Some(
-                    pane_center_geometry(&root_tree.tree).map_err(|error| {
-                        format!("{} before press: {error:?}", self.target.name())
-                    })?,
-                )
-            }
+            RedockTarget::PaneCenter(_)
+            | RedockTarget::PaneEdge(_)
+            | RedockTarget::TabHalf(_)
+            | RedockTarget::NestedPane(_) => Some(
+                pane_center_geometry(&root_tree.tree)
+                    .map_err(|error| format!("{} before press: {error:?}", self.target.name()))?,
+            ),
         };
         let refreshed_root_window = self.desktop.window_for_title(ROOT_WINDOW_TITLE)?;
         let (ingress_logical, routed_ingress_logical) = two_stage_ingress_points(root_target);
@@ -1049,6 +1062,18 @@ fn inject_redock_drag(
                 desktop,
                 request,
                 PaneDockTarget::TabHalf(case),
+                frozen_pane.ok_or_else(|| {
+                    format!("{}: {:?}", case.name(), PaneCenterError::BoundsTooSmall)
+                })?,
+                source_ingress_step,
+                &ingress_tree,
+            ),
+            RedockTarget::NestedPane(case) => move_to_pane_target_while_pressed(
+                shared,
+                inspection,
+                desktop,
+                request,
+                PaneDockTarget::NestedPane(case),
                 frozen_pane.ok_or_else(|| {
                     format!("{}: {:?}", case.name(), PaneCenterError::BoundsTooSmall)
                 })?,
@@ -1526,6 +1551,14 @@ fn move_to_pane_target_while_pressed(
             target_tree.pixels_per_point,
             &target_scene.guides,
         ),
+        PaneDockTarget::NestedPane(case) => nested_pane_point(
+            case,
+            geometry,
+            target_scene.tab,
+            window.bounds,
+            target_tree.pixels_per_point,
+            &target_scene.guides,
+        ),
     }
     .map_err(|error| format!("{} before motion: {error:?}", target.name()))?;
     if selected == request.routed_ingress {
@@ -1541,6 +1574,15 @@ fn move_to_pane_target_while_pressed(
         geometry.content,
         target_scene.guides.len()
     );
+    if matches!(target, PaneDockTarget::NestedPane(_)) {
+        let leaf = nested_pane_bounds(geometry, target_scene.tab, target_tree.pixels_per_point)
+            .map_err(|error| format!("{} leaf bounds: {error:?}", target.name()))?;
+        eprintln!(
+            "physical-smoke: nested-target case={} painted-leaf={leaf:?} root-workspace={:?}",
+            target.name(),
+            geometry.workspace,
+        );
+    }
     let load_enabled = pointer_load_enabled()?;
     desktop.move_pointer(selected)?;
     desktop.assert_pointer(selected, Some(true))?;
@@ -1596,6 +1638,14 @@ fn move_to_pane_target_while_pressed(
         ),
         PaneDockTarget::TabHalf(case) => tab_half_point(
             case,
+            final_scene.tab,
+            final_window.bounds,
+            preview.pixels_per_point,
+            &final_scene.guides,
+        ),
+        PaneDockTarget::NestedPane(case) => nested_pane_point(
+            case,
+            geometry,
             final_scene.tab,
             final_window.bounds,
             preview.pixels_per_point,
@@ -1994,6 +2044,25 @@ fn center_guide_bounds(snapshot: &ViewportTreeSnapshot) -> Result<LogicalBounds,
         ));
     }
     selector_bounds(snapshot, selector)
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    #[test]
+    fn nested_targets_require_distinct_layouts_and_reject_pointer_load() {
+        for case in [NestedPaneCase::Center, NestedPaneCase::West] {
+            let target = RedockTarget::parse(case.name()).unwrap();
+            assert_eq!(target, RedockTarget::NestedPane(case));
+            assert_eq!(target.expected_layout(), RedockLayout::Nested(case));
+            assert!(!target.supports_pointer_load());
+        }
+        for case in [PaneCenterCase::A, PaneCenterCase::B, PaneCenterCase::C] {
+            assert!(RedockTarget::PaneCenter(case).supports_pointer_load());
+        }
+        assert!(RedockTarget::parse("nested-pane-edge-east").is_err());
+    }
 }
 
 #[cfg(test)]

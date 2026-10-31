@@ -30,6 +30,8 @@ use egui_dockspace_native::{
 mod combined;
 #[path = "output_pressure/host.rs"]
 mod host;
+#[path = "output_pressure/service.rs"]
+mod service;
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
@@ -150,6 +152,8 @@ struct PressureState {
     previous_terminal: Option<eframe::NativeOutputResult>,
     outcome: Option<Result<(), String>>,
     combined: Option<combined::CombinedPressure>,
+    service: service::ServiceMeasurements,
+    service_repeat_requested: bool,
 }
 
 impl PressureState {
@@ -183,6 +187,8 @@ impl PressureState {
             previous_terminal: None,
             outcome: None,
             combined: (scenario == Scenario::Combined).then(combined::CombinedPressure::new),
+            service: service::ServiceMeasurements::new(),
+            service_repeat_requested: false,
         }
     }
 
@@ -317,6 +323,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         Box::new(move |creation| {
             let context = creation.egui_ctx.clone();
+            if scenario == Scenario::Combined {
+                context.options_mut(|options| options.max_passes = 4.try_into().unwrap());
+            }
             if scenario == Scenario::LateFirstLive {
                 context.on_begin_pass(
                     "output-pressure child content",
@@ -376,6 +385,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         assert!(shared.full_root_defer_seen && shared.protected_child_seen);
     }
     assert!(shared.final_terminal_checked);
+    shared.service.report();
+    if scenario == Scenario::Combined {
+        assert!(
+            shared.service.has_repeated_output(),
+            "combined service measurement must cover a real repeated output pass"
+        );
+    }
     if scenario == Scenario::LateStaging {
         assert!(shared.late_terminal_after_fatal);
         assert_eq!(shared.forwarded, BUFFERED_TERMINALS);
@@ -435,6 +451,14 @@ struct PressureApp {
 impl eframe::App for PressureApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut runtime = lock(&self.runtime);
+        {
+            let mut state = lock(&self.shared);
+            if state.scenario == Scenario::Combined && !state.service_repeat_requested {
+                state.service_repeat_requested = true;
+                ui.ctx()
+                    .request_discard("native service measurement repeats one real output");
+            }
+        }
         <NativeDockspaceApp<Panes> as eframe::App>::ui(&mut runtime, ui, frame);
         let mut state = lock(&self.shared);
         if state.phase == Phase::Done {
@@ -500,7 +524,9 @@ impl PressureApp {
                 || !order_error
                 || !cleanup_empty
             {
-                return Err(format!("unexpected runtime error {error:?}"));
+                return Err(runtime.with_errors(|primary, cleanup| {
+                    format!("unexpected runtime error {error:?}: primary={primary:?}, cleanup={cleanup:?}")
+                }));
             }
             if runtime.output_backlog().ordinary() == 0 && runtime.is_shutdown_drained() {
                 if matches!(

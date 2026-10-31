@@ -18,10 +18,14 @@ use egui_dockspace::{DockStyle, PaneView};
 use egui_dockspace_native::NativeDockspaceApp;
 
 use super::assertions::{
-    POINTER_DIAGNOSTIC_LABEL, PaneEdgeCase, PhysicalBounds, ROOT_PANE_CONTENT_LABEL,
+    NestedPaneCase, PHYSICAL_TARGET_ENV, POINTER_DIAGNOSTIC_LABEL, PaneEdgeCase, PhysicalBounds,
+    ROOT_PANE_CONTENT_LABEL,
 };
 use super::driver;
 use super::pointer_load::{PointerLoad, PointerSource, load_storage_limit, pointer_load_enabled};
+
+#[path = "nested.rs"]
+mod nested;
 
 pub(super) const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
@@ -58,6 +62,7 @@ pub(super) enum RedockLayout {
     Center,
     TabBefore,
     Edge(PaneEdgeCase),
+    Nested(NestedPaneCase),
 }
 
 fn observed_redock_layout(view: DockspaceView<'_>) -> Option<RedockLayout> {
@@ -155,9 +160,23 @@ pub(super) struct SharedState {
 pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let inspection_endpoint = inspection_endpoint_from_env()?;
     let measure_pointer_load = pointer_load_enabled()?;
+    let nested_target = std::env::var(PHYSICAL_TARGET_ENV)
+        .ok()
+        .and_then(|value| NestedPaneCase::parse(&value));
+    if measure_pointer_load && nested_target.is_some() {
+        return Err(io::Error::other(
+            "the 1 kHz physical load requires an original pane-center target",
+        )
+        .into());
+    }
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
-    let session = DockspaceSession::from_layout(smoke_layout(), policy)?;
+    let layout = if nested_target.is_some() {
+        nested::smoke_layout()
+    } else {
+        smoke_layout()
+    };
+    let session = DockspaceSession::from_layout(layout, policy)?;
     let id = egui::Id::unique("egui-native-physical-smoke");
     let dockspace = if measure_pointer_load {
         NativeDockspaceApp::new_with_storage_limit(
@@ -223,6 +242,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 child_surface: None,
                 shared: Arc::clone(&app_shared),
                 measure_pointer_load,
+                nested_target: nested_target.is_some(),
             }))
         }),
     )?;
@@ -549,6 +569,7 @@ struct PhysicalSmokeApp {
     child_surface: Option<SurfaceId>,
     shared: Shared,
     measure_pointer_load: bool,
+    nested_target: bool,
 }
 
 impl eframe::App for PhysicalSmokeApp {
@@ -603,7 +624,17 @@ impl PhysicalSmokeApp {
         });
         let redocked = self.child_surface.is_some() && child_location == Some(ROOT_SURFACE);
         let redock_layout = redocked
-            .then(|| self.dockspace.with_view(observed_redock_layout).flatten())
+            .then(|| {
+                self.dockspace
+                    .with_view(|view| {
+                        if self.nested_target {
+                            nested::observed_redock_layout(view)
+                        } else {
+                            observed_redock_layout(view)
+                        }
+                    })
+                    .flatten()
+            })
             .flatten();
         let center_merge_verified = redock_layout == Some(RedockLayout::Center);
         let retired = self
@@ -704,6 +735,13 @@ impl SmokePanes {
                     SmokePane {
                         title: "Child",
                         body: "Physical drag payload",
+                    },
+                ),
+                (
+                    nested::SIBLING_ITEM,
+                    SmokePane {
+                        title: "Sibling",
+                        body: "Unchanged nested sibling",
                     },
                 ),
             ]),

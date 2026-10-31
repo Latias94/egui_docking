@@ -218,6 +218,7 @@ impl NativeHostHandler for PressureHost {
         window: eframe::NativeWindowSnapshot,
         root_roster: Option<eframe::NativeViewportRoster<'_>>,
     ) -> NativeOutputAdmission {
+        let service_started = Instant::now();
         let before = self
             .runtime
             .try_lock()
@@ -240,11 +241,22 @@ impl NativeHostHandler for PressureHost {
                         Phase::AwaitChild | Phase::AwaitStaging | Phase::Filling
                     )
                 {
+                    let phase = state.phase;
+                    state.service.admitted(
+                        token,
+                        service_started,
+                        phase,
+                        NativeOutputAdmission::Defer,
+                    );
                     return NativeOutputAdmission::Defer;
                 }
             }
             if token.viewport_id() != ViewportId::ROOT && state.phase == Phase::AwaitStaging {
                 state.child_paused = true;
+                let phase = state.phase;
+                state
+                    .service
+                    .admitted(token, service_started, phase, NativeOutputAdmission::Defer);
                 return NativeOutputAdmission::Defer;
             }
             if token.viewport_id() != ViewportId::ROOT
@@ -253,6 +265,10 @@ impl NativeHostHandler for PressureHost {
             {
                 // Keep the admitted create/staging obligation while root output
                 // owners fill. The framework retains this candidate's input.
+                let phase = state.phase;
+                state
+                    .service
+                    .admitted(token, service_started, phase, NativeOutputAdmission::Defer);
                 return NativeOutputAdmission::Defer;
             }
         }
@@ -273,7 +289,7 @@ impl NativeHostHandler for PressureHost {
             .try_lock()
             .expect("native admission must precede the application borrow")
             .output_backlog();
-        let should_flush = {
+        let (should_flush, service_phase) = {
             let mut state = lock(&self.shared);
             state.peak_ordinary = state.peak_ordinary.max(after.ordinary());
             state.peak_control = state.peak_control.max(after.control());
@@ -301,13 +317,16 @@ impl NativeHostHandler for PressureHost {
             if flush && let Some(combined) = &mut state.combined {
                 combined.check_full_roster(token, root_roster);
             }
-            flush
+            (flush, state.phase)
         };
         if should_flush {
             // Calling the inner handler only returns already owned terminal
             // facts. It does not re-enter eframe or run another viewport pass.
             self.flush();
         }
+        lock(&self.shared)
+            .service
+            .admitted(token, service_started, service_phase, admission);
         admission
     }
 
@@ -315,10 +334,16 @@ impl NativeHostHandler for PressureHost {
         &self,
         finalization: eframe::NativeOutputPassFinalization<'_>,
     ) -> NativeHostWake {
-        self.inner.on_output_pass_finalized(finalization)
+        let token =
+            eframe::current_native_output_token().expect("finalization has an active real output");
+        let wake = self.inner.on_output_pass_finalized(finalization);
+        let ended = Instant::now();
+        lock(&self.shared).service.finalized(token, ended);
+        wake
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
+        lock(&self.shared).service.terminal(result.token());
         self.flush_late_output_after_fatal();
         let first_live_pending = {
             let state = lock(&self.shared);
@@ -460,7 +485,10 @@ impl NativeHostHandler for PressureHost {
             runtime.with_errors(|primary, cleanup| {
                 assert!(cleanup.is_empty());
                 if state.scenario.expects_success() {
-                    assert!(primary.is_none());
+                    assert!(
+                        primary.is_none(),
+                        "unexpected native primary error: {primary:?}"
+                    );
                 } else {
                     assert!(primary.is_some_and(|error| error.is_output_order_violation()));
                 }
