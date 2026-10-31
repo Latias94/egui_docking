@@ -443,6 +443,7 @@ impl DockEngine {
         input: InputSequence,
         effects: &[PlatformEffectEmission],
     ) -> Result<(), EngineError> {
+        let mut coordinate_authority_revoked = false;
         for effect in effects {
             let PlatformEffect::ResolveNativeClose {
                 request,
@@ -518,7 +519,15 @@ impl DockEngine {
                 self.viewport
                     .mark_native_close_awaiting_destroyed(edge.binding())
                     .map_err(|source| EngineError::Viewport { input, source })?;
+                coordinate_authority_revoked = true;
             }
+        }
+        if coordinate_authority_revoked {
+            // Accept delivery revokes geometry after ordinary input/snapshot
+            // reconciliation. Publish that revocation in the same commit so
+            // a later frame cannot paint the old Ready coordinate capture.
+            let invalidated = self.invalidate_changed_surface_scene_authority();
+            self.demote_invalidated_surface_scenes(input, &invalidated)?;
         }
         Ok(())
     }

@@ -209,7 +209,7 @@ impl ReadySurfaceScene {
         )
     }
 
-    fn has_confirmed_paint_fallback(&self) -> bool {
+    pub(crate) fn has_confirmed_paint_fallback(&self) -> bool {
         self.confirmed_paint_fallback.is_some_and(|ticket| {
             self.paint_fallback()
                 .is_some_and(|fallback| fallback.output_ticket() == ticket)

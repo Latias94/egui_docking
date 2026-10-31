@@ -8,6 +8,202 @@ use crate::runtime::{HostInputOutcome, NativeCloseDisposition};
 use crate::viewport_focus::ViewportActivationRequest;
 
 #[test]
+fn emitted_close_accept_revokes_the_ready_scene_before_a_later_paint_can_use_old_coordinates() {
+    let (mut session, binding) = managed_tear_off_session();
+    session
+        .publish_native_close(binding, NativeCloseState::Requested, None)
+        .unwrap();
+    let observed = commit_managed_frame_report(&mut session);
+    let close = match observed.inputs() {
+        [HostInputOutcome::NativeCloseObservationApplied { close_requests }] => close_requests[0],
+        inputs => panic!("expected one native close edge, got {inputs:?}"),
+    };
+    session
+        .request_native_surface_close(close, NativeSurfaceCloseAction::RetainLayout)
+        .unwrap();
+    let requested = commit_managed_frame_report(&mut session);
+    let plan = match requested.inputs() {
+        [HostInputOutcome::NativeSurfaceCloseRequested { plan, .. }] => plan.clone(),
+        inputs => panic!("expected one retained-layout close plan, got {inputs:?}"),
+    };
+    let version = session.version();
+    let mut approval = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    for item in plan.items() {
+        approval
+            .resolve_close(plan.request(), item.token(), CloseDecision::Allow)
+            .unwrap();
+    }
+    approval
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut approved = approval.commit().unwrap();
+    let accept = take_only_native_effect(&mut approved);
+    assert!(matches!(
+        accept.operation(),
+        NativeEffectOperation::ResolveNativeClose { .. }
+    ));
+    assert_eq!(
+        session.version(),
+        version,
+        "close emission preserves layout"
+    );
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .viewport(SURFACE)
+            .unwrap()
+            .lifecycle(),
+        crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+    );
+    assert!(!session.native_binding_can_report_focus(binding));
+
+    let mut next = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(
+        next.paint_plan(SURFACE).unwrap().is_none(),
+        "a close-accepted scene cannot mint a paint with revoked native coordinates"
+    );
+    next.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert!(next.commit().unwrap().take_painted_outputs().is_empty());
+    drop(accept);
+}
+
+#[test]
+fn emitted_close_accept_discards_an_unconfirmed_paint_fallback_and_bootstraps_the_scene() {
+    use crate::scene::{BootstrapSurfaceSceneReason, SurfaceScene};
+
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    session
+        .report_managed_native_snapshot(
+            [(binding, root_window_facts())],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("the unpresented root snapshot records");
+    commit_managed_frame_report(&mut session);
+    measure_all_surfaces(&mut session);
+    let (first_output, requirement) = {
+        let ready = session
+            .engine
+            .scene()
+            .surface(SURFACE)
+            .and_then(SurfaceScene::ready)
+            .expect("the first measurement installs an unpresented candidate");
+        assert!(ready.paint_fallback().is_none());
+        (ready.output_ticket(), ready.stamp().requirement())
+    };
+
+    let metrics = UniformSurfaceMetrics::new(
+        LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+        LogicalSize::new(32.0, 24.0).unwrap(),
+        120.0,
+    )
+    .unwrap();
+    let mut measured = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the replacement measurement frame begins");
+    measured
+        .measure_surface(SURFACE, metrics)
+        .expect("different metrics replace the candidate under the same requirements");
+    assert!(
+        measured
+            .commit()
+            .expect("the unpresented replacement commits")
+            .take_painted_outputs()
+            .is_empty()
+    );
+    let ready = session
+        .engine
+        .scene()
+        .surface(SURFACE)
+        .and_then(SurfaceScene::ready)
+        .expect("the replacement candidate remains Ready before close acceptance");
+    assert_eq!(ready.stamp().requirement(), requirement);
+    assert_ne!(ready.output_ticket(), first_output);
+    assert_eq!(
+        ready
+            .paint_fallback()
+            .map(|fallback| fallback.output_ticket()),
+        Some(first_output),
+        "the old unpresented candidate is retained without a Presented observation"
+    );
+    assert!(session.engine.scene().ready_surface(SURFACE).is_none());
+
+    session
+        .publish_native_close(binding, NativeCloseState::Requested, None)
+        .expect("the unpresented root close observation records");
+    let observed = commit_managed_frame_report(&mut session);
+    let close = match observed.inputs() {
+        [HostInputOutcome::NativeCloseObservationApplied { close_requests }] => {
+            let [close] = close_requests.as_slice() else {
+                panic!("the root must publish one exact close edge");
+            };
+            *close
+        }
+        inputs => panic!("expected one native close edge, got {inputs:?}"),
+    };
+    session
+        .request_native_surface_close(close, NativeSurfaceCloseAction::RetainLayout)
+        .expect("the unpresented root enters the retained-layout close protocol");
+    let requested = commit_managed_frame_report(&mut session);
+    let plan = match requested.inputs() {
+        [HostInputOutcome::NativeSurfaceCloseRequested { plan, .. }] => plan.clone(),
+        inputs => panic!("expected one retained-layout close plan, got {inputs:?}"),
+    };
+    assert_eq!(plan.items().len(), 1);
+    let mut approval = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the unpresented root approval frame begins");
+    for item in plan.items() {
+        approval
+            .resolve_close(plan.request(), item.token(), CloseDecision::Allow)
+            .expect("the exact root close decision is allowed");
+    }
+    approval
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the pending candidate settles before Accept delivery");
+    let mut approved = approval
+        .commit()
+        .expect("emitting Accept must discard an unconfirmed fallback instead of demoting it");
+    let accept = take_only_native_effect(&mut approved);
+    assert!(matches!(
+        accept.operation(),
+        NativeEffectOperation::ResolveNativeClose {
+            close: accepted_close,
+            resolution: NativeCloseDisposition::Accept,
+        } if *accepted_close == close
+    ));
+    assert_eq!(
+        session
+            .engine
+            .viewport()
+            .viewport(SURFACE)
+            .unwrap()
+            .lifecycle(),
+        crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+    );
+    assert!(matches!(
+        session.engine.scene().surface(SURFACE),
+        Some(SurfaceScene::Bootstrap(scene))
+            if scene.reason() == BootstrapSurfaceSceneReason::CoordinateAuthorityChanged
+    ));
+
+    let mut next = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the next frame begins without a new native snapshot");
+    assert!(next.paint_plan(SURFACE).unwrap().is_none());
+    next.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert!(next.commit().unwrap().take_painted_outputs().is_empty());
+    drop(accept);
+}
+
+#[test]
 fn cancelling_a_deferred_root_close_emits_only_cancel_once_after_report_capacity_returns() {
     let (mut session, binding) = managed_tear_off_session();
     assert!(session.abandoned_native_effects.is_quiescent());

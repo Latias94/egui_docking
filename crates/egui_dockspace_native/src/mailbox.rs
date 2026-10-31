@@ -246,6 +246,10 @@ impl OutputReservation {
         self.binding
     }
 
+    pub(crate) const fn is_abandoned(self) -> bool {
+        self.abandoned
+    }
+
     pub(crate) const fn window(self) -> Option<NativeWindowSnapshot> {
         self.window
     }
@@ -1604,6 +1608,7 @@ mod tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputRecordDisposition {
     Recorded,
+    RecordedService,
     RecordedAfterCurrent,
     Ignored,
     IgnoredAndWake,
@@ -2263,6 +2268,7 @@ impl NativeHostState {
             .output_resources
             .get_mut(&result.token())
             .expect("validated output reservation remains present");
+        let requires_service = reservation.terminal_requires_repaint(result.status());
         reservation.record_terminal(result);
         let metadata = reservation.reservation;
         if metadata.abandoned {
@@ -2287,6 +2293,11 @@ impl NativeHostState {
         );
         if wake_after_current {
             OutputRecordDisposition::RecordedAfterCurrent
+        } else if !requires_service {
+            // Ordinary successful paint settles in a host-service event.
+            // It must not schedule another application paint or leave its
+            // original terminal envelope parked until future user input.
+            OutputRecordDisposition::RecordedService
         } else {
             OutputRecordDisposition::Recorded
         }
@@ -3486,6 +3497,10 @@ impl NativeHostBridge {
             token,
             budget: Some(budget),
         })
+    }
+
+    pub(crate) fn service_budget(&self) -> NativeInputBudget {
+        NativeInputBudget::new(&self.clock)
     }
 
     /// The borrow cannot escape this closure. Callers release the mailbox lock
@@ -4823,6 +4838,21 @@ impl NativeHostBridge {
             })
     }
 
+    pub(crate) fn output_has_staging_request(&self, token: NativeOutputToken) -> bool {
+        let records = self.lock();
+        records
+            .window_resources
+            .staging(token.viewport_id())
+            .is_some_and(|request| {
+                records
+                    .output_resources
+                    .get(&token)
+                    .is_some_and(|resource| {
+                        resource.reservation.binding() == Some(request.binding())
+                    })
+            })
+    }
+
     pub(crate) fn output_backlog(&self) -> NativeOutputBacklog {
         let records = self.lock();
         records
@@ -4934,6 +4964,24 @@ impl NativeHostBridge {
 
     pub(crate) fn abandon_output(&self, token: NativeOutputToken) -> bool {
         self.lock().abandon_output(token)
+    }
+
+    pub(crate) fn defer_output_input(&self, token: NativeOutputToken) -> bool {
+        let mut records = self.lock();
+        let Some(resource) = records.output_resources.get_mut(&token) else {
+            return false;
+        };
+        if !resource.defer_before_input() {
+            return false;
+        }
+        let binding = resource.reservation.binding();
+        if token.viewport_id() != ViewportId::ROOT
+            && binding.is_some()
+            && records.viewports.binding(token.viewport_id()) == binding
+        {
+            records.block_semantic_viewport(token.viewport_id());
+        }
+        true
     }
 
     pub(crate) fn settle_output_abandonment(
@@ -5445,6 +5493,27 @@ impl NativeHostBridge {
 }
 
 impl NativeHostHandler for NativeHostBridge {
+    fn on_service(&self, context: &eframe::egui::Context) -> NativeHostWake {
+        self.output_pass_finalizer
+            .get()
+            .map_or(NativeHostWake::Wait, |finalizer| {
+                finalizer.on_service(context)
+            })
+    }
+
+    fn before_output_input(
+        &self,
+        context: &eframe::egui::Context,
+        token: NativeOutputToken,
+        has_input: bool,
+    ) -> eframe::NativeOutputInputAdmission {
+        self.output_pass_finalizer
+            .get()
+            .map_or(eframe::NativeOutputInputAdmission::Proceed, |finalizer| {
+                finalizer.before_output_input(context, token, has_input)
+            })
+    }
+
     fn on_viewport_pointer_observation(
         &self,
         result: eframe::NativeViewportPointerObservationResult,
@@ -5625,6 +5694,7 @@ impl NativeHostHandler for NativeHostBridge {
             | OutputRecordDisposition::IgnoredAndWakeAfterCurrent
             | OutputRecordDisposition::ProtocolViolation => NativeHostWake::RepaintRootAfterCurrent,
             OutputRecordDisposition::IgnoredAndWake => NativeHostWake::RepaintRoot,
+            OutputRecordDisposition::RecordedService => NativeHostWake::ServiceAfterCurrent,
             OutputRecordDisposition::Ignored | OutputRecordDisposition::Inactive => {
                 NativeHostWake::Wait
             }

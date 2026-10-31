@@ -1918,7 +1918,7 @@ impl DockEngine {
         surface: crate::ids::SurfaceId,
     ) -> Result<SurfaceSceneStamp, SceneBuildError> {
         let has_paint_fallback = match self.presentation_authority.scene.surface(surface) {
-            Some(SurfaceScene::Ready(ready)) => ready.paint_fallback().is_some(),
+            Some(SurfaceScene::Ready(ready)) => ready.has_confirmed_paint_fallback(),
             Some(SurfaceScene::Stale(_)) => true,
             Some(SurfaceScene::Bootstrap(_)) => false,
             None => return Err(SceneBuildError::SurfaceOutsideRoster { surface }),

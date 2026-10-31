@@ -95,6 +95,26 @@ impl DockspaceSession {
             .is_some_and(|native| native.contains_binding(binding))
     }
 
+    /// Returns whether this exact binding may currently report a global focus fact.
+    ///
+    /// Visible staging children may report focus before first-live admission.
+    /// A callback captured before hiding, closing or retirement must revalidate
+    /// this query before recording its formerly known docking focus.
+    #[must_use]
+    pub fn native_binding_can_report_focus(&self, binding: NativeSurfaceBinding) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|native| native.recognizes_binding(binding))
+            && self
+                .engine
+                .viewport()
+                .registry()
+                .record(binding.surface())
+                .is_some_and(|record| {
+                    record.binding() == binding.binding && record.can_report_focus_fact()
+                })
+    }
+
     /// Returns native client-coordinate authority from the committed engine state.
     ///
     /// The exact native binding must be admitted and routable through this joined

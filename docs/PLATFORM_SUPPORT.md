@@ -302,13 +302,38 @@ normal/noassert runs each retain their separate 10,000-lifetime soak. Public
 default/serde132/139, workspace1,897, product114 and official15 are freshly rerun
 for the core missing-fact semantic correction.
 
+### Native content input and editor workflow
+
+The eight-pane native `basic` example uses actual editable text, scrolling and
+drawn content, with refreshed widget declarations and stable focus IDs. The
+bounded X11 OS-input workflow checks four exact focused edits through native
+first-live, Dock Back, a second child lifetime and system-close recovery,
+including stable item identities, exact application text, destruction and
+quiescence. Its initial content click follows 400 ms without input. These
+results are separate from physical docking and do not certify macOS, Windows
+or Wayland content input.
+
+The [dated content-input record](VALIDATION.md#2026-10-31-native-content-input-and-bounded-editor-showcase)
+records 61 final checks for a pre-input host admission hook and a coalesced
+standalone native service event. This service settles original terminal
+resources without running application logic/UI, consuming buffered input or
+creating another semantic output. Captured callback age and ordering remain
+unchanged. First-live and required lifecycle paints retain explicit wakes.
+Physical targets use registered TextEdit content; completed-pass tests cover
+Button/canvas mapping and overlay blocking separately. Final refreshed gate
+results and source hashes are recorded in that entry.
+
+Native layout-management facade work, complete overflow/stationary acceptance
+and the remaining U7/U8/U10 criteria are still open. This bounded example does
+not certify the entire native editor surface.
+
 ## Dependency reproducibility and open scope
 
 Current native results depend on unpublished local overrides:
 
 | Dependency | Locally qualified revision | Tracked remote revision |
 | --- | --- | --- |
-| egui/eframe fork | `70f7b51712284561d3408950273f128ff556a81b` | `0716beee5b7284389f2e80ffb6b24b5af6ae2910` |
+| egui/eframe fork | `92c921f7235c87ae28ea09ae522ef55fd8333b41` | `0716beee5b7284389f2e80ffb6b24b5af6ae2910` |
 | Winit fork | `6c10c87da2a06871371de7d30fedc656cf7c3681` | `f378b50f29cafafec31cd8675c17646b4ef57d70` |
 
 The tracked revisions are visible in the
@@ -331,7 +356,7 @@ Still open are remaining close/create owner
 capacity and sustained active host-service qualification; overflowed/clipped
 tab insertion, arbitrary nested and mixed-DPI physical coverage; fresh
 stationary capture and successful automatic execution, and
-native-local/Touch OS evidence; Windows/macOS platform certification; the native
-showcase; and U9 dependency publication, clean-checkout reproduction, package
+native-local/Touch OS evidence; Windows/macOS platform certification; the complete
+native layout-management showcase; and U9 dependency publication, clean-checkout reproduction, package
 and remaining evidence/deletion closure. The twelve-journey and
 center-load results retain their finite scope.

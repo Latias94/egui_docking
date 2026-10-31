@@ -152,6 +152,152 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
 }
 
 #[test]
+fn captured_dock_focus_is_unknown_after_hiding_and_preserves_the_foreign_successor() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    let now = Arc::new(AtomicU64::new(0));
+    let clock = Arc::clone(&now);
+    let mut native =
+        coordinator_with_clock(dockspace::runtime::NativeMonotonicClock::new(move || {
+            Duration::from_millis(clock.load(Ordering::SeqCst))
+        }));
+    let (root, binding) = register_roots(&mut native);
+    let context = egui::Context::default();
+    let child = ViewportId::from_hash_of("hidden-focus-child");
+    let window = WindowId::from(22);
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), root)
+        .unwrap();
+    native.bind_viewport(child, window, binding).unwrap();
+
+    let visible = |binding| {
+        crate::window_snapshot::CompiledWindowObservation::new(
+            binding,
+            NativeWindowFacts::live()
+                .with_presentation(NativeWindowPresentationState::Visible, None),
+        )
+        .with_focus_reportable_for_test()
+    };
+    native
+        .bridge
+        .push_viewport_roster(NativeViewportRosterRecord::for_test(
+            [visible(root), visible(binding)],
+            true,
+        ));
+    assert!(
+        native
+            .reduce_callback_prefix(&context, &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert!(native.settle_host_frame_report(&report).unwrap());
+    assert!(native.session.native_binding_can_report_focus(binding));
+
+    let captured = native.bridge.with_viewports(|routes| {
+        NativeGlobalFocusRecord::capture_for_test(
+            41,
+            EframeGlobalFocus::Viewport {
+                viewport_id: child,
+                window_id: window,
+            },
+            routes,
+        )
+    });
+    assert_eq!(captured.focus(), NativeGlobalFocus::Dock(binding));
+
+    native
+        .report_snapshot(
+            [
+                (
+                    root,
+                    NativeWindowFacts::live()
+                        .with_presentation(NativeWindowPresentationState::Visible, None),
+                ),
+                (
+                    binding,
+                    NativeWindowFacts::live()
+                        .with_presentation(NativeWindowPresentationState::Hidden, None),
+                ),
+            ],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .unwrap();
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    assert!(native.session.is_current_native_binding(binding));
+    assert!(!native.session.native_binding_can_report_focus(binding));
+
+    let successor = NativeGlobalFocusRecord::for_test(42, NativeGlobalFocus::Foreign);
+    native.bridge.push_record(HostRecord::GlobalFocus(captured));
+    native
+        .bridge
+        .push_record(HostRecord::GlobalFocus(successor));
+    let captured_through = native.bridge.captured_through_for_test();
+    let recorded_before = native.session.native_input_recorded_count();
+    now.store(17, Ordering::SeqCst);
+    for (record, retained) in [(captured, 2), (successor, 1)] {
+        assert_eq!(native.bridge.front_global_focus(), Some(record));
+        assert_eq!(
+            native
+                .reduce_callback_prefix(&context, &mut test_budget())
+                .unwrap()
+                .unwrap()
+                .get(),
+            1
+        );
+        assert!(!native.bridge.acknowledge_global_focus(record));
+        assert!(
+            native
+                .reduce_callback_prefix(&context, &mut test_budget())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(native.bridge.captured_through_for_test(), captured_through);
+        assert_eq!(
+            native.bridge.input_backlog_for_test(),
+            (retained, Some(Duration::from_millis(17))),
+            "normalization and transfer preserve the original callback age"
+        );
+        let mut budget = test_budget();
+        let mut frame = native
+            .poll_resolved_host_frame(&context, &mut budget)
+            .unwrap()
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame
+            .commit()
+            .expect("revoked Dock focus must commit as Unknown without retargeting");
+        assert!(matches!(
+            report.inputs(),
+            [HostInputOutcome::NativeFocusObservationApplied]
+        ));
+        assert!(native.take_callback_error().is_none());
+    }
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        recorded_before + 2
+    );
+    assert!(!native.bridge.has_pending_callback_records());
+    assert!(!native.reduce_next_global_focus().unwrap());
+}
+
+#[test]
 fn unrelated_viewport_focus_result_is_acknowledged_without_inventing_focus() {
     let mut native = coordinator();
     let context = egui::Context::default();

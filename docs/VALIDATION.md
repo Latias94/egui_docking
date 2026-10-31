@@ -15,6 +15,119 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 native content input and bounded editor showcase
+
+This slice is qualified by 61 passing final checks against 444 frozen Rust and
+script paths following `233657c`. The locally committed egui/eframe fork is
+`92c921f7235c87ae28ea09ae522ef55fd8333b41`; Winit remains
+`6c10c87da2a06871371de7d30fedc656cf7c3681`. Earlier stationary
+results retain their historical source scope; they do not qualify this change.
+
+The 2026-10-31 dependency recheck confirms upstream's
+[egui/eframe release list](https://github.com/emilk/egui/releases) still marks
+0.37.0 as its latest stable release. The
+[Winit release list](https://github.com/rust-windowing/winit/releases) includes
+0.31.0-beta.4 as a prerelease and 0.30.13 as the stable line used here. No new
+stable-version migration is required for this slice. The crates.io API could
+not be reached directly or through the configured local proxy; the check uses
+the upstream release pages rather than claiming a successful registry query.
+
+The native `basic` example now provides eight stable application panes with
+editable text, scroll and drawn content. Widget declarations refresh from the
+actual responses on every paint; editable panes use stable content focus IDs.
+The separate X11 driver supplies real click/keyboard input and a real window
+manager close. It checks four exact edits through native first-live, Dock Back,
+a second child and OS-close recovery, stable item identity, destruction and
+quiescence. Its initial click waits 400 ms after pointer placement, beyond the
+250 ms ingress-age limit. Diagnostics locate content without granting authority.
+
+Real content exposed an input-loss defect: the native driver consumed egui
+input in an empty retained pass, removing missing controls from focus and hit
+participation. A generic eframe pre-input hook now lets the host settle ordered
+prefixes with the exact output budget before extracting native input. A deferred
+pass keeps the original backend buffers and its original exact NotPresented
+terminal. Child retries retain the existing exact-route semantic wake.
+
+Ordinary successful surface terminals request a coalesced native host-service
+event, which runs no application logic/UI, extracts no input and creates no
+output scope. Service uses the existing clock and bounded input profile;
+ordered capture identities, age, resource counts and full-commit ownership are
+unchanged. Budget exhaustion retries in a later native event. First-live,
+required geometry, stationary and durable lifecycle work keep explicit repaint
+wakes. The same reducer handles pre-input and standalone service; overload
+cancellation is work even when the raw prefix is empty. No speculative
+post-UI framebuffer-retention flag or input replay remains.
+
+The close workflow also exposed a global-focus callback whose binding had lost
+focus eligibility since capture. The adapter revalidates the exact committed
+core binding before recording Dock focus, downgrades obsolete proof to Unknown
+and acknowledges the original callback once. It cannot retarget a successor or
+settle an outstanding focus request with that stale proof. Visible staging
+children remain reportable before first-live admission.
+
+A later full refresh caught a separate core close-emission invariant:
+delivering Accept moved the binding to AwaitingDestroyed and advanced coordinate
+authority after ordinary snapshot reconciliation, while leaving its old Ready
+scene paintable. A subsequent paint combined a current NativeUnavailable token
+with the old NativeReady scene and correctly failed the exact-coordinate gate.
+The shared close-emission boundary now demotes invalidated scene authority in
+the same commit that delivers Accept. It preserves layout and confirmed visual
+fallback, while withholding new paint and interaction until legitimate readiness
+returns. A focused managed-close test was observed red before this repair and
+green afterward; the authority comparison itself remains unchanged.
+An adjacent fixture was also observed red when the old measurement was only a
+pending retained candidate. Coordinate invalidation now tests for a confirmed
+fallback before choosing Stale; otherwise it enters Bootstrap. Accept delivery
+therefore remains valid without inventing a previously presented framebuffer.
+
+Completed-pass content regressions cover TextEdit, Button and canvas receiver
+mapping, undeclared controls and frontmost overlay blocking. The physical X11
+fixture now uses registered editable TextEdit content for actual docking
+preview/commit targets; these physical results are qualified separately from
+receiver mapping. The pressure fixture records standalone host-service duration
+in addition to admission-through-finalization duration, and checks final owners
+reach zero before the application closes.
+
+Failed diagnostic evidence is retained: the original missing content input,
+root staging-capability misclassification, non-idempotent close deferral,
+parked-terminal final-boundary timeout, stale global-focus rejection and the
+close-emission coordinate mismatch are not passing gates. The pre-close-repair
+qualification is retained separately in
+`/tmp/dockspace-native-editor-pre-close-revocation-qualification.json`; its
+available logs are archived under the matching `-logs` directory. Final evidence
+is `/tmp/dockspace-native-editor-final-qualification.json` and
+`/tmp/dockspace-native-editor-final-snapshot.json`. These local artifacts are
+not portable checkout assets.
+
+| Final gate | Result and scope |
+| --- | --- |
+| Workspace | 1,899/1,899 with all features and all targets |
+| Public engine consumer | default 132/132; serde 139/139 |
+| Product / official egui consumers | 114/114 and 15/15 |
+| Native normal / assertion-disabled | 534/534 each, including the same-coordinator 10,000-lifetime soak; the opt-in wall-time case remains skipped |
+| eframe Glow / WGPU / assertion-disabled | 101/101, 95/95 and 101/101; feature-disabled compile also passes |
+| Linux native library | 489/489 normally and with adapter assertions disabled; long soak excluded here and covered by the full native runs above |
+| Real macOS / X11 lifecycle | default and bounded redock flows; six optimized output-pressure scenarios per platform, including W16/O256 and final owner-zero checks |
+| Physical X11 content | all twelve center/edge/tab-half/nested targets over registered TextEdit content; separate 1 kHz journey and truthful stationary-negative journey |
+| Real X11 editor | four exact focused edits, 400 ms initial idle, two child lifetimes, Dock Back, OS-close recovery, Destroyed and quiescence |
+| Quality | ten doctests; core/native/fork and Linux correctness/suspicious Clippy; strict core/native/fork docs; workspace/native/public/fork formatting |
+
+The final 1 kHz entry observes 1,000/1,000 matching motions, 997.5 Hz injection
+and 998.3 Hz callbacks, with release-to-model observation upper bound 2.176875 ms.
+These are finite XTest observations, not hardware polling or latency guarantees.
+Combined standalone service maxima are 541.416 microseconds on macOS and 754.292
+microseconds on X11; full output-callback maxima remain 11.103958 ms and
+3.055958 ms, including their over-2-ms samples. No hard wall-time claim follows.
+
+Final independent static reviews confirm no remaining P1/P2 in the reviewed
+input/service, focus normalization and close-emission changes. Dynamic coverage
+is limited to the listed models and real-window journeys. Tracked manifests
+still pin older fork revisions; the new local revisions remain unpublished.
+Explicit local overrides and their lockfile source adjustment were used for
+qualification. The task's temporary
+egui lockfile adjustment was restored after testing. No clean-checkout native
+reproducibility, complete U8/U10/U11/U9 or broader platform claim follows.
+
 ## 2026-10-31 finite native stationary scheduling
 
 The reference adapter now connects the existing core continuation to eframe's

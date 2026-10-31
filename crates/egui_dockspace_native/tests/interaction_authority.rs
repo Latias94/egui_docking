@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
@@ -10,8 +12,8 @@ use dockspace::runtime::{
 };
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{
-    Context, CursorIcon, Event, Id, InputState, Modifiers, PointerButton, Pos2, RawInput, Rect,
-    Sense, Ui, vec2,
+    Area, Button, Color32, Context, CursorIcon, Event, Id, InputState, Modifiers, Order,
+    PointerButton, Pos2, RawInput, Rect, Response, Sense, TextEdit, Ui, vec2,
 };
 use eframe::egui::{
     WidgetHitIdentity, WidgetScrollDelta, WidgetScrollHit, WidgetScrollHitChallenge,
@@ -40,8 +42,70 @@ impl PaneView for Panes {
     }
 }
 
+#[derive(Default)]
+struct ContentPane {
+    text: String,
+    widgets: Vec<Response>,
+    declared_widgets: Vec<Id>,
+}
+
+struct ContentPanes {
+    panes: BTreeMap<ItemId, ContentPane>,
+    declare_widgets: bool,
+}
+
+impl ContentPanes {
+    fn new(declare_widgets: bool) -> Self {
+        Self {
+            panes: [FIRST, SECOND]
+                .into_iter()
+                .map(|item| (item, ContentPane::default()))
+                .collect(),
+            declare_widgets,
+        }
+    }
+}
+
+impl PaneView for ContentPanes {
+    fn title(&self, item: ItemId) -> Option<eframe::egui::WidgetText> {
+        self.panes
+            .contains_key(&item)
+            .then(|| format!("Content {}", item.get()).into())
+    }
+
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        let pane = self.panes.get_mut(&item).expect("the rendered pane exists");
+        pane.widgets.clear();
+        pane.declared_widgets.clear();
+
+        let text = ui.add_sized(
+            vec2(240.0, 28.0),
+            TextEdit::singleline(&mut pane.text).id(ui.make_persistent_id((item, "text"))),
+        );
+        let button = ui.add_sized(vec2(240.0, 28.0), Button::new("Content action"));
+        let (canvas_rect, canvas) = ui.allocate_exact_size(vec2(240.0, 80.0), Sense::click());
+        ui.painter()
+            .rect_filled(canvas_rect, 0.0, Color32::DARK_BLUE);
+        ui.painter()
+            .circle_filled(canvas_rect.center(), 8.0, Color32::LIGHT_BLUE);
+        pane.widgets.extend([text, button, canvas]);
+
+        if self.declare_widgets {
+            pane.declared_widgets
+                .extend(pane.widgets.iter().map(|response| response.id));
+        }
+    }
+
+    fn docking_content_widgets(&self, item: ItemId) -> &[Id] {
+        self.panes
+            .get(&item)
+            .map_or(&[], |pane| pane.declared_widgets.as_slice())
+    }
+}
+
 struct SurfaceFrameResult {
     pane_center: Option<Pos2>,
+    pane_receiver: Option<DockspaceVisualId>,
     second_tab_center: Option<Pos2>,
     second_tab_receiver: Option<DockspaceVisualId>,
     group_grip_center: Option<Pos2>,
@@ -107,13 +171,24 @@ fn input(events: Vec<Event>) -> RawInput {
     }
 }
 
-fn run_surface_frame(
+fn run_surface_frame<P: PaneView>(
     context: &Context,
     session: &mut DockspaceSession,
-    panes: &mut Panes,
+    panes: &mut P,
     events: Vec<Event>,
 ) -> SurfaceFrameResult {
+    run_surface_frame_with_overlay(context, session, panes, events, |_, _| {})
+}
+
+fn run_surface_frame_with_overlay<P: PaneView>(
+    context: &Context,
+    session: &mut DockspaceSession,
+    panes: &mut P,
+    events: Vec<Event>,
+    mut paint_overlay: impl FnMut(&Ui, &P),
+) -> SurfaceFrameResult {
     let mut pane_center = None;
+    let mut pane_receiver = None;
     let mut second_tab_center = None;
     let mut second_tab_receiver = None;
     let mut group_grip_center = None;
@@ -155,6 +230,9 @@ fn run_surface_frame(
             })
             .expect("interaction authority paint program resolves");
             pane_center = pane.map(|pane| logical_center(pane.content_bounds()));
+            pane_receiver = pane
+                .and_then(|pane| plan.receiver_for_pane(pane))
+                .map(|receiver| receiver.visual_id());
             if let Some(tab) = second_tab {
                 second_tab_center = Some(logical_center(tab.drag_bounds()));
                 second_tab_receiver = plan
@@ -206,11 +284,13 @@ fn run_surface_frame(
             .expect("native surface measures");
         }
         frame.commit().expect("host frame commits");
+        paint_overlay(ui, panes);
     });
     let cursor_icon = output.platform_output.cursor_icon;
     output.textures_delta.clear();
     SurfaceFrameResult {
         pane_center,
+        pane_receiver,
         second_tab_center,
         second_tab_receiver,
         group_grip_center,
@@ -223,10 +303,10 @@ fn run_surface_frame(
     }
 }
 
-fn run_ready_surface_frame(
+fn run_ready_surface_frame<P: PaneView>(
     context: &Context,
     session: &mut DockspaceSession,
-    panes: &mut Panes,
+    panes: &mut P,
 ) -> SurfaceFrameResult {
     for _ in 0..3 {
         let painted = run_surface_frame(context, session, panes, Vec::new());
@@ -235,6 +315,26 @@ fn run_ready_surface_frame(
         }
     }
     panic!("surface did not return to a ready paint plan");
+}
+
+fn matching_receivers(
+    painted: &SurfaceFrameResult,
+    identity: WidgetHitIdentity,
+) -> Vec<native_support::NativePaintReceiver> {
+    let (viewport, pass) = painted
+        .receiver_generation
+        .expect("the ready paint reports its exact generation");
+    painted
+        .receivers
+        .iter()
+        .copied()
+        .filter(|receiver| {
+            receiver.viewport_id() == viewport
+                && receiver.cumulative_pass_nr() == pass
+                && receiver.widget_id() == identity.id()
+                && receiver.layer_id() == identity.layer_id()
+        })
+        .collect()
 }
 
 #[allow(
@@ -536,4 +636,216 @@ fn empty_central_leaf_registers_its_pane_receiver() {
         })
         .expect("the empty pane hit has an exact dockspace binding");
     assert_eq!(receiver.role(), DockspaceReceiverRole::PaneBody);
+}
+
+#[test]
+fn declared_content_widgets_map_completed_pass_hits_to_the_exact_pane_receiver() {
+    let context = Context::default();
+    let mut session = session();
+    let mut panes = ContentPanes::new(true);
+    install_ready_candidate(&mut session);
+
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let (viewport, expected_pass) = painted
+        .receiver_generation
+        .expect("the ready paint reports its exact generation");
+    let expected_pane = painted
+        .pane_receiver
+        .expect("the paint plan contains the selected pane receiver");
+    let pane = panes.panes.get(&FIRST).expect("the selected pane exists");
+    assert_eq!(pane.widgets.len(), 3);
+    assert_eq!(
+        pane.declared_widgets,
+        pane.widgets
+            .iter()
+            .map(|response| response.id)
+            .collect::<Vec<_>>(),
+        "the declaration is refreshed from this pane's actual responses"
+    );
+
+    for (control, response) in ["TextEdit", "Button", "canvas"]
+        .into_iter()
+        .zip(&pane.widgets)
+    {
+        assert!(response.enabled(), "{control} remains an enabled control");
+        assert!(response.interact_rect.is_positive());
+        let hit = context
+            .hit_test_last_pass(viewport, response.interact_rect.center())
+            .expect("the viewport completed the content pass");
+        assert_eq!(hit.cumulative_pass_nr(), expected_pass);
+        let actual = hit
+            .contains_pointer()
+            .expect("the actual control owns the completed-pass hover hit");
+        assert_eq!(actual.id(), response.id, "{control} owns its actual hit");
+        assert_eq!(actual.layer_id(), response.layer_id);
+        assert_eq!(
+            hit.click(),
+            Some(actual),
+            "{control} retains its click lane"
+        );
+
+        let matches = matching_receivers(&painted, actual);
+        let [receiver] = matches.as_slice() else {
+            panic!("{control} must have one exact content binding, got {matches:?}");
+        };
+        assert_eq!(receiver.role(), DockspaceReceiverRole::PaneBody);
+        assert_eq!(receiver.visual_id(), expected_pane);
+    }
+}
+
+#[test]
+fn undeclared_content_widgets_do_not_inherit_previous_pass_pane_receivers() {
+    let context = Context::default();
+    let mut session = session();
+    let mut panes = ContentPanes::new(true);
+    install_ready_candidate(&mut session);
+
+    let declared = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let (viewport, declared_pass) = declared
+        .receiver_generation
+        .expect("the declared content reports its exact generation");
+    for response in &panes.panes.get(&FIRST).expect("the pane exists").widgets {
+        let identity = context
+            .hit_test_last_pass(viewport, response.interact_rect.center())
+            .and_then(|hit| hit.contains_pointer())
+            .expect("the declared control owns an actual completed-pass hit");
+        assert_eq!(identity.id(), response.id);
+        assert_eq!(identity.layer_id(), response.layer_id);
+        assert_eq!(matching_receivers(&declared, identity).len(), 1);
+    }
+
+    panes.declare_widgets = false;
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let (current_viewport, expected_pass) = painted
+        .receiver_generation
+        .expect("the undeclared content reports its exact generation");
+    assert_eq!(current_viewport, viewport);
+    assert!(expected_pass > declared_pass);
+    let pane = panes.panes.get(&FIRST).expect("the selected pane exists");
+    assert_eq!(pane.widgets.len(), 3);
+    assert!(pane.declared_widgets.is_empty());
+    assert!(painted.receivers.iter().any(|receiver| {
+        receiver.role() == DockspaceReceiverRole::PaneBody
+            && Some(receiver.visual_id()) == painted.pane_receiver
+    }));
+
+    for (control, response) in ["TextEdit", "Button", "canvas"]
+        .into_iter()
+        .zip(&pane.widgets)
+    {
+        let hit = context
+            .hit_test_last_pass(viewport, response.interact_rect.center())
+            .expect("the viewport completed the undeclared content pass");
+        assert_eq!(hit.cumulative_pass_nr(), expected_pass);
+        let actual = hit
+            .contains_pointer()
+            .expect("the undeclared control remains a visible hit blocker");
+        assert_eq!(actual.id(), response.id, "{control} owns its actual hit");
+        assert_eq!(actual.layer_id(), response.layer_id);
+        assert_eq!(hit.click(), Some(actual));
+        assert!(
+            matching_receivers(&painted, actual).is_empty(),
+            "{control} cannot borrow the surrounding pane or an earlier pass's receiver"
+        );
+    }
+}
+
+#[test]
+fn visible_overlay_blocks_declared_content_without_inheriting_pane_receivers() {
+    let context = Context::default();
+    let mut session = session();
+    let mut panes = ContentPanes::new(true);
+    install_ready_candidate(&mut session);
+    let _ = run_ready_surface_frame(&context, &mut session, &mut panes);
+
+    let mut overlay_response = None;
+    let mut overlay_visible = false;
+    let mut painted = None;
+    // Area's initial sizing pass is invisible; inspect the following visible pass.
+    for _ in 0..2 {
+        painted = Some(run_surface_frame_with_overlay(
+            &context,
+            &mut session,
+            &mut panes,
+            Vec::new(),
+            |ui, panes| {
+                let pane = panes.panes.get(&FIRST).expect("the selected pane exists");
+                let overlay_rect = pane
+                    .widgets
+                    .iter()
+                    .fold(Rect::NOTHING, |rect, response| {
+                        rect.union(response.interact_rect)
+                    })
+                    .expand(4.0);
+                overlay_response = Some(
+                    Area::new(Id::unique("native-content-blocking-overlay"))
+                        .order(Order::Foreground)
+                        .movable(false)
+                        .fixed_pos(overlay_rect.min)
+                        .fade_in(false)
+                        .show(ui.ctx(), |ui| {
+                            overlay_visible = ui.is_visible();
+                            ui.put(overlay_rect, Button::new("Blocking overlay"))
+                        })
+                        .inner,
+                );
+            },
+        ));
+    }
+    let painted = painted.expect("the visible overlay frame paints");
+    let overlay = overlay_response.expect("the overlay registers a real button response");
+    assert!(overlay_visible, "the sizing pass is not blocking evidence");
+    assert!(overlay.enabled());
+    assert_eq!(overlay.layer_id.order, Order::Foreground);
+    let (viewport, expected_pass) = painted
+        .receiver_generation
+        .expect("the content beneath the overlay reports its exact generation");
+    let expected_pane = painted
+        .pane_receiver
+        .expect("the paint plan still contains the selected pane receiver");
+    assert!(painted.receivers.iter().all(|receiver| {
+        receiver.widget_id() != overlay.id || receiver.layer_id() != overlay.layer_id
+    }));
+
+    let pane = panes.panes.get(&FIRST).expect("the selected pane exists");
+    assert_eq!(pane.widgets.len(), 3);
+    assert_eq!(pane.declared_widgets.len(), 3);
+    for (control, response) in ["TextEdit", "Button", "canvas"]
+        .into_iter()
+        .zip(&pane.widgets)
+    {
+        let underlying = painted
+            .receivers
+            .iter()
+            .filter(|receiver| {
+                receiver.viewport_id() == viewport
+                    && receiver.cumulative_pass_nr() == expected_pass
+                    && receiver.widget_id() == response.id
+                    && receiver.layer_id() == response.layer_id
+            })
+            .collect::<Vec<_>>();
+        let [receiver] = underlying.as_slice() else {
+            panic!("the covered {control} keeps one exact content binding, got {underlying:?}");
+        };
+        assert_eq!(receiver.role(), DockspaceReceiverRole::PaneBody);
+        assert_eq!(receiver.visual_id(), expected_pane);
+        assert_ne!(response.layer_id, overlay.layer_id);
+
+        let point = response.interact_rect.center();
+        assert!(overlay.interact_rect.contains(point));
+        let hit = context
+            .hit_test_last_pass(viewport, point)
+            .expect("the viewport completed the visible overlay pass");
+        assert_eq!(hit.cumulative_pass_nr(), expected_pass);
+        let actual = hit
+            .contains_pointer()
+            .expect("the overlay owns the visible completed-pass hover hit");
+        assert_eq!(actual.id(), overlay.id, "the overlay covers {control}");
+        assert_eq!(actual.layer_id(), overlay.layer_id);
+        assert_eq!(hit.click(), Some(actual));
+        assert!(
+            matching_receivers(&painted, actual).is_empty(),
+            "the overlay cannot borrow the covered {control}'s pane binding"
+        );
+    }
 }

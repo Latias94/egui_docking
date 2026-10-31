@@ -150,6 +150,39 @@ impl PressureHost {
 }
 
 impl NativeHostHandler for PressureHost {
+    fn on_service(&self, context: &egui::Context) -> NativeHostWake {
+        let started = Instant::now();
+        let wake = self.inner.on_service(context);
+        let elapsed = started.elapsed();
+        let runtime = lock(&self.runtime);
+        let mut state = lock(&self.shared);
+        let phase = state.phase;
+        state.service.host_event(phase, elapsed);
+        if state.phase == Phase::AwaitFinalBoundary
+            && runtime.is_quiescent()
+            && runtime.output_backlog().ordinary() == 0
+            && runtime.output_backlog().control() == 0
+            && state
+                .combined
+                .as_ref()
+                .is_none_or(|combined| combined.final_roster_checked)
+        {
+            state.finish(context, Ok(()));
+            NativeHostWake::RepaintRootAfterCurrent
+        } else {
+            wake
+        }
+    }
+
+    fn before_output_input(
+        &self,
+        context: &egui::Context,
+        token: eframe::NativeOutputToken,
+        has_input: bool,
+    ) -> eframe::NativeOutputInputAdmission {
+        self.inner.before_output_input(context, token, has_input)
+    }
+
     fn install_output_pass_finalizer(
         &self,
         finalizer: Arc<dyn eframe::NativeOutputPassFinalizer>,

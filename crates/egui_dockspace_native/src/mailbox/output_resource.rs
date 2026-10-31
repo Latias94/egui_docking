@@ -314,6 +314,23 @@ impl NativeOutputResource {
         self.budget.take()
     }
 
+    pub(super) fn defer_before_input(&mut self) -> bool {
+        if self.submitted || self.paint.is_some() || self.reservation.terminal_recorded {
+            return false;
+        }
+        // The original scope still supplies its terminal without invalidating
+        // the retained framebuffer. Lifecycle settlement may already have
+        // abandoned this owner; preserve its existing durable wake in that case.
+        self.reservation.abandon_silently();
+        true
+    }
+
+    pub(super) fn terminal_requires_repaint(&self, status: eframe::NativeOutputStatus) -> bool {
+        self.reservation.wakes_after_current()
+            || status != eframe::NativeOutputStatus::Presented
+            || !matches!(self.paint, Some(PendingNativeOutput::Surface(_)))
+    }
+
     pub(super) fn return_budget(&mut self, budget: NativeInputBudget) {
         // A late lease return must not reopen an output after its renderer terminal.
         if !self.reservation.terminal_recorded {
@@ -548,5 +565,60 @@ mod tests {
         );
         drop(rejected);
         drop(resource);
+    }
+
+    #[test]
+    fn input_deferral_after_lifecycle_abandonment_preserves_the_original_owner_and_budget() {
+        let mut resource =
+            NativeOutputResource::new(OutputReservation::unbound_for_test(), budget());
+        let mut borrowed = resource.take_budget().unwrap();
+        borrowed.complete_unsequenced_records(7);
+        assert!(resource.reservation.require_wake_after_current());
+        assert!(resource.reservation.abandon());
+
+        assert!(resource.defer_before_input());
+        assert!(resource.defer_before_input());
+        assert!(resource.reservation.wakes_on_terminal());
+        assert!(resource.reservation.wakes_after_current());
+        assert!(!resource.submitted);
+        assert!(!resource.reservation.terminal_recorded);
+        resource.return_budget(borrowed);
+        assert_eq!(resource.take_budget().unwrap().remaining_records(), 249);
+
+        resource.reservation.terminal_recorded = true;
+        assert!(!resource.defer_before_input());
+    }
+
+    #[test]
+    fn input_deferral_rejects_an_attached_affine_paint_without_losing_it() {
+        let (_, binding, output) = painted_output();
+        let mut reservation = OutputReservation::unbound_for_test();
+        assert!(reservation.attach(binding));
+        let mut resource = NativeOutputResource::new(reservation, budget());
+        resource
+            .bind_paint(PendingNativeOutput::Surface(output))
+            .unwrap();
+        assert!(!resource.defer_before_input());
+        assert!(!resource.reservation.abandoned);
+        assert!(resource.paint.as_ref().unwrap().matches_binding(binding));
+    }
+
+    #[test]
+    fn ordinary_presentation_uses_host_service_but_first_live_and_dropped_outputs_require_repaint()
+    {
+        use eframe::NativeOutputStatus::{NotPresented, Presented};
+
+        let (_, binding, output) = painted_output();
+        let mut reservation = OutputReservation::unbound_for_test();
+        assert!(reservation.attach(binding));
+        let mut resource = NativeOutputResource::new(reservation, budget());
+        assert!(resource.terminal_requires_repaint(Presented));
+        resource
+            .bind_paint(PendingNativeOutput::Surface(output))
+            .unwrap();
+        assert!(!resource.terminal_requires_repaint(Presented));
+        assert!(resource.terminal_requires_repaint(NotPresented));
+        assert!(resource.reservation.require_wake_after_current());
+        assert!(resource.terminal_requires_repaint(Presented));
     }
 }

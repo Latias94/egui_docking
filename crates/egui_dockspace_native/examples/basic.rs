@@ -22,6 +22,13 @@ const OUTLINE: ItemId = ItemId::new(1);
 const EDITOR: ItemId = ItemId::new(2);
 const PREVIEW: ItemId = ItemId::new(3);
 const INSPECTOR: ItemId = ItemId::new(4);
+const CONSOLE: ItemId = ItemId::new(5);
+const HISTORY: ItemId = ItemId::new(6);
+const PROFILER: ItemId = ItemId::new(7);
+const ASSETS: ItemId = ItemId::new(8);
+
+#[path = "basic/smoke.rs"]
+mod smoke;
 
 fn main() -> eframe::Result {
     let mut policy = DockPolicy::default();
@@ -41,14 +48,17 @@ fn main() -> eframe::Result {
         dockspace,
         action: InspectorActionState::Idle,
         status: None,
+        smoke: std::env::args()
+            .any(|argument| argument == "--smoke")
+            .then(smoke::EditorSmoke::new),
     };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 720.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]),
         native_host: Some(native_host),
         ..Default::default()
     };
     eframe::run_native(
-        "egui_dockspace native",
+        "Dockspace native editor",
         options,
         Box::new(move |_| Ok(Box::new(app))),
     )
@@ -58,6 +68,7 @@ struct NativeExampleApp {
     dockspace: NativeDockspaceApp<ExamplePanes>,
     action: InspectorActionState,
     status: Option<String>,
+    smoke: Option<smoke::EditorSmoke>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -90,6 +101,10 @@ impl eframe::App for NativeExampleApp {
         egui::CentralPanel::default().show(ui, |ui| {
             <NativeDockspaceApp<ExamplePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
         });
+        if let Some(mut smoke) = self.smoke.take() {
+            smoke.advance(self, ui.ctx());
+            self.smoke = Some(smoke);
+        }
     }
 }
 
@@ -107,17 +122,14 @@ impl NativeExampleApp {
         let root_presented = self.dockspace.is_surface_presented(SURFACE);
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Dockspace U1 interaction baseline");
+            ui.strong("Dockspace native editor");
             ui.separator();
             let contained_root = inspector.filter(|location| location.is_contained());
             let enabled = root_presented && contained_root.is_some();
             if ui
-                .add_enabled(
-                    enabled,
-                    egui::Button::new("Fallback: Move Inspector Group to Native Window ↗"),
-                )
+                .add_enabled(enabled, egui::Button::new("Open Inspector Window ↗"))
                 .on_disabled_hover_text(
-                    "This fallback is available while the Inspector group is a live contained window.",
+                    "Move the live contained Inspector and Preview group into an OS window.",
                 )
                 .clicked()
                 && let Some(location) = contained_root
@@ -125,7 +137,7 @@ impl NativeExampleApp {
                 self.request_inspector_window(location.root);
             }
             if let Some(location) = inspector.filter(|location| location.is_native_child()) {
-                if ui.button("Fallback: Dock Inspector Root Back").clicked() {
+                if ui.button("Dock Inspector Back").clicked() {
                     self.request_inspector_dock_back(location.root);
                 }
             } else if !root_presented {
@@ -136,13 +148,13 @@ impl NativeExampleApp {
         self.show_presentation_state(ui, inspector, root_presented);
         self.show_walkthrough(ui);
         if let Some(status) = &self.status {
-            ui.small(format!("Last fallback action: {status}"));
+            ui.small(format!("Last presentation action: {status}"));
         }
     }
 
     fn show_pending_controls(&self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Dockspace U1 interaction baseline");
+            ui.strong("Dockspace native editor");
             ui.separator();
             ui.spinner();
             match self.action {
@@ -155,7 +167,7 @@ impl NativeExampleApp {
             }
         });
         if let Some(status) = &self.status {
-            ui.small(format!("Last fallback action: {status}"));
+            ui.small(format!("Last presentation action: {status}"));
         }
     }
 
@@ -178,10 +190,10 @@ impl NativeExampleApp {
         let native = if self.dockspace.error_kind().is_some() {
             "unavailable (runtime stopped)"
         } else {
-            "host-qualified; missing facts fail closed"
+            "programmatic window hosting ready; physical input requires backend facts"
         };
         ui.small(format!(
-            "Capability status — local select/reorder/close: {local}; contained move/resize: {contained}; native promotion: {native}."
+            "Capability status — local select/reorder: {local}; contained move/resize: {contained}; native promotion: {native}."
         ));
     }
 
@@ -213,26 +225,29 @@ impl NativeExampleApp {
     }
 
     fn show_walkthrough(&self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("How to try the baseline interactions")
-            .default_open(true)
+        egui::CollapsingHeader::new("Editor workflow and platform support")
+            .default_open(false)
             .show(ui, |ui| {
                 ui.label(
-                    "1. Select and reorder: click a tab body to select it, then drag the tab across the tab strip. \
-                     Close one pane with its own close control. \
-                     2. Contained floating: the Inspector group starts as an egui-styled window. \
+                    "1. Edit the document or Inspector notes, scroll Console, and pan or zoom Preview. \
+                     Pane data belongs to this application and survives presentation changes. \
+                     2. The Inspector group starts as a contained window. \
                      Drag its title bar to move it, drag an edge to resize it, or open its ⋮ menu and choose Dock Back.",
                 );
                 ui.label(
                     "3. Explicit native child: open the Inspector title bar's ⋮ menu and choose Move to New Window. \
-                     The toolbar button performs the same programmatic action only as a fallback.",
+                     The toolbar buttons use the same typed presentation commands.",
                 );
                 ui.label(
                     "4. Physical multiview: on a capability-qualified backend, drag a tab or the contained title bar outside an OS window and release. \
-                     Drag a tab from the child into a center or edge docking basin; guides are visual hints, and releasing away from a basin creates a contained window.",
+                     Drag a tab from the child over document content into a center or edge docking basin; guides are visual hints. \
+                     Closing an OS child restores its recovery target and keeps pane data.",
                 );
                 ui.small(
                     "Physical promotion is intentionally fail-closed when the host cannot provide exact cross-window pointer facts. \
-                     In that case, use the ⋮ presentation menu or the explicit fallback controls above.",
+                     X11 is the physical reference; macOS has programmatic hosting evidence. \
+                     Other platforms and mixed DPI require their own qualification. Use the presentation commands when physical facts are unavailable. \
+                     Layout presets and closed-pane inventory are demonstrated separately by the official workspace_persistence example.",
                 );
             });
     }
@@ -360,11 +375,22 @@ impl From<dockspace::model::DockspaceItemView<'_>> for InspectorLocation {
 }
 
 fn example_layout() -> DockspaceLayout {
+    let center = DockspaceNode::split(
+        DockspaceAxis::Vertical,
+        [
+            (
+                DockspaceNode::central_tabs([EDITOR, HISTORY, PROFILER]),
+                0.74,
+            ),
+            (DockspaceNode::tabs([CONSOLE]), 0.26),
+        ],
+    )
+    .expect("the editor and console split is valid");
     let root = DockspaceNode::split(
         DockspaceAxis::Horizontal,
         [
-            (DockspaceNode::tabs([OUTLINE]), 0.24),
-            (DockspaceNode::central_tabs([EDITOR]), 0.76),
+            (DockspaceNode::tabs([OUTLINE, ASSETS]), 0.20),
+            (center, 0.80),
         ],
     )
     .expect("the static split is valid");
@@ -372,9 +398,10 @@ fn example_layout() -> DockspaceLayout {
         INSPECTOR_FLOATING,
         DockspaceRootLayout::new(
             INSPECTOR_ROOT,
-            DockspaceNode::central_tabs([PREVIEW, INSPECTOR]),
+            DockspaceNode::central_tabs_with_selection([PREVIEW, INSPECTOR], Some(INSPECTOR))
+                .expect("the Inspector starts selected"),
         ),
-        LogicalRect::new(690.0, 90.0, 330.0, 310.0).expect("the static contained rect is valid"),
+        LogicalRect::new(850.0, 80.0, 360.0, 410.0).expect("the static contained rect is valid"),
     );
     DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
@@ -387,6 +414,10 @@ fn example_layout() -> DockspaceLayout {
 struct ExamplePane {
     title: &'static str,
     text: String,
+    widgets: Vec<egui::Id>,
+    zoom: f32,
+    pan: egui::Vec2,
+    input: Option<(egui::ViewportId, egui::Rect, bool, f32)>,
 }
 
 struct ExamplePanes {
@@ -396,40 +427,81 @@ struct ExamplePanes {
 impl ExamplePanes {
     fn new() -> Self {
         Self {
-            panes: BTreeMap::from([
-                (
-                    OUTLINE,
-                    ExamplePane {
-                        title: "Outline",
-                        text: "src\n  main.rs\n  docking.rs".to_owned(),
-                    },
-                ),
-                (
-                    EDITOR,
-                    ExamplePane {
-                        title: "Editor",
-                        text: "fn main() {\n    println!(\"dockspace\");\n}".to_owned(),
-                    },
-                ),
-                (
-                    PREVIEW,
-                    ExamplePane {
-                        title: "Preview",
-                        text: "This tab shares the initial contained Inspector group. Use the title bar's ⋮ menu for explicit presentation commands, or drag a tab to exercise the physical path."
-                            .to_owned(),
-                    },
-                ),
-                (
-                    INSPECTOR,
-                    ExamplePane {
-                        title: "Inspector",
-                        text: "Start here: move or resize this contained window, choose Move to New Window from the ⋮ menu, then drag a child tab back onto a docking guide. The toolbar action is only a programmatic fallback."
-                            .to_owned(),
-                    },
-                ),
-            ]),
+            panes: [
+                (OUTLINE, "Outline", "Scene\n  Camera\n  Directional light\n  Player\n    Mesh\n    Controller"),
+                (EDITOR, "Document", "// Application-owned document\nfn update(scene: &mut Scene) {\n    scene.player.translate([1.0, 0.0, 0.0]);\n}\n\nEdit this document, then move or dock its tab.\n"),
+                (PREVIEW, "Preview", "Application-drawn scene"),
+                (INSPECTOR, "Inspector", "Object: Player\nPosition: [0, 0, 0]\nMesh: player.mesh\n\nThese editable notes survive moving this group into a native window and docking it back.\n"),
+                (CONSOLE, "Console", "Ready. Application log; scroll to inspect older messages."),
+                (HISTORY, "History", "Selected Player\nMoved Player\nChanged light intensity\nSaved scene"),
+                (PROFILER, "Profiler", "Illustrative frame samples — no live engine attached"),
+                (ASSETS, "Assets", "scenes/main.scene\nmeshes/player.mesh\nmaterials/default.mat\ntextures/grid.png"),
+            ]
+            .into_iter()
+            .map(|(item, title, text)| (item, ExamplePane {
+                title,
+                text: text.to_owned(),
+                widgets: Vec::with_capacity(3),
+                zoom: 1.0,
+                pan: egui::Vec2::ZERO,
+                input: None,
+            }))
+            .collect(),
         }
     }
+}
+
+fn pane_focus_id(item: ItemId) -> egui::Id {
+    egui::Id::unique(("native-editor-content", item.get()))
+}
+
+fn paint_canvas(pane: &mut ExamplePane, ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        let reset = ui.button("Reset view");
+        pane.widgets.push(reset.id);
+        if reset.clicked() {
+            pane.pan = egui::Vec2::ZERO;
+            pane.zoom = 1.0;
+        }
+        let zoom = ui.add(egui::Slider::new(&mut pane.zoom, 0.5..=2.0).text("Zoom"));
+        pane.widgets.push(zoom.id);
+    });
+    let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    let response = ui.interact(rect, pane_focus_id(PREVIEW), egui::Sense::click_and_drag());
+    pane.widgets.push(response.id);
+    if response.dragged() {
+        pane.pan += response.drag_delta();
+    }
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+    let spacing = 32.0 * pane.zoom;
+    let origin = rect.center() + pane.pan;
+    let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    for index in -32..=32 {
+        let offset = index as f32 * spacing;
+        painter.line_segment(
+            [
+                egui::pos2(origin.x + offset, rect.top()),
+                egui::pos2(origin.x + offset, rect.bottom()),
+            ],
+            stroke,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(rect.left(), origin.y + offset),
+                egui::pos2(rect.right(), origin.y + offset),
+            ],
+            stroke,
+        );
+    }
+    painter.circle_filled(origin, 30.0 * pane.zoom, ui.visuals().selection.bg_fill);
+    painter.text(
+        rect.center_bottom() - egui::vec2(0.0, 20.0),
+        egui::Align2::CENTER_BOTTOM,
+        "Application canvas · drag to pan",
+        egui::FontId::proportional(14.0),
+        ui.visuals().text_color(),
+    );
 }
 
 impl PaneView for ExamplePanes {
@@ -442,11 +514,64 @@ impl PaneView for ExamplePanes {
             ui.label("Missing pane");
             return;
         };
+        // Only widgets actually registered in this content callback qualify.
+        pane.widgets.clear();
+        pane.input = None;
         ui.heading(pane.title);
-        ui.add(
-            egui::TextEdit::multiline(&mut pane.text)
-                .desired_width(f32::INFINITY)
-                .desired_rows(16),
-        );
+        if item == PREVIEW {
+            paint_canvas(pane, ui);
+        } else if item == CONSOLE {
+            ui.label(&pane.text);
+            egui::ScrollArea::vertical()
+                .id_salt(("native-editor-log", item.get()))
+                .show(ui, |ui| {
+                    for line in 0..128 {
+                        ui.monospace(format!("[{line:03}] Scene update completed"));
+                    }
+                });
+        } else if item == PROFILER {
+            ui.label(&pane.text);
+            for (stage, milliseconds) in [("Simulation", 2.6), ("Rendering", 5.4), ("UI", 0.8)] {
+                ui.label(format!("{stage}: {milliseconds:.1} ms"));
+                ui.add(egui::ProgressBar::new(milliseconds / 16.67).desired_width(f32::INFINITY));
+            }
+        } else {
+            let response = ui.add_sized(
+                ui.available_size(),
+                egui::TextEdit::multiline(&mut pane.text)
+                    .id(pane_focus_id(item))
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+            pane.widgets.push(response.id);
+            pane.input = Some((
+                ui.ctx().viewport_id(),
+                response.rect,
+                response.has_focus(),
+                ui.ctx().pixels_per_point(),
+            ));
+        }
+    }
+
+    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
+        self.panes
+            .get(&item)
+            .map_or(&[], |pane| pane.widgets.as_slice())
+    }
+
+    fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
+        self.panes
+            .contains_key(&item)
+            .then_some(item)
+            .filter(|item| ![PREVIEW, CONSOLE, PROFILER].contains(item))
+            .map(pane_focus_id)
+    }
+
+    fn minimum_size(&self, item: ItemId) -> egui::Vec2 {
+        if item == PREVIEW {
+            egui::vec2(220.0, 160.0)
+        } else {
+            egui::vec2(120.0, 72.0)
+        }
     }
 }

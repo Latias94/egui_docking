@@ -60,6 +60,7 @@ pub(super) struct ServiceMeasurements {
     child: ServiceTotals,
     draining: ServiceTotals,
     deferred: ServiceTotals,
+    host_events: ServiceTotals,
     not_finalized: usize,
 }
 
@@ -71,6 +72,7 @@ impl ServiceMeasurements {
             child: ServiceTotals::default(),
             draining: ServiceTotals::default(),
             deferred: ServiceTotals::default(),
+            host_events: ServiceTotals::default(),
             not_finalized: 0,
         }
     }
@@ -145,6 +147,11 @@ impl ServiceMeasurements {
         self.child.report("child");
         self.draining.report("draining");
         self.deferred.report("deferred-admission");
+        self.host_events.report("standalone-host-event");
+    }
+
+    pub(super) fn host_event(&mut self, phase: Phase, elapsed: Duration) {
+        self.host_events.observe(phase, elapsed, 0);
     }
 
     pub(super) fn has_repeated_output(&self) -> bool {

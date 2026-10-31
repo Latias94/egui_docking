@@ -7,6 +7,7 @@ use dockspace::runtime::DockspaceSession;
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputPassFinalization, NativeOutputPassFinalizer,
+    NativeOutputToken,
 };
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 
@@ -509,6 +510,39 @@ struct NativePassFinalizer<P> {
 }
 
 impl<P: PaneView + Send + 'static> NativeOutputPassFinalizer for NativePassFinalizer<P> {
+    fn on_service(&self, context: &egui::Context) -> NativeHostWake {
+        let Some(state) = self.state.upgrade() else {
+            return NativeHostWake::Wait;
+        };
+        let mut state = lock_state(&state);
+        match state.service_native_events(context) {
+            Ok(wake) => wake,
+            Err(error) => {
+                state.stop_current_output(error);
+                NativeHostWake::RepaintRootAfterCurrent
+            }
+        }
+    }
+
+    fn before_output_input(
+        &self,
+        context: &egui::Context,
+        token: NativeOutputToken,
+        _has_input: bool,
+    ) -> eframe::NativeOutputInputAdmission {
+        let Some(state) = self.state.upgrade() else {
+            return eframe::NativeOutputInputAdmission::Defer(NativeHostWake::Wait);
+        };
+        let mut state = lock_state(&state);
+        match state.prepare_output_input(context, token) {
+            Ok(admission) => admission,
+            Err(error) => {
+                state.stop_current_output(error);
+                eframe::NativeOutputInputAdmission::Proceed
+            }
+        }
+    }
+
     fn finalize(&self, finalization: NativeOutputPassFinalization<'_>) -> NativeHostWake {
         let Some(state) = self.state.upgrade() else {
             return NativeHostWake::Wait;

@@ -1900,11 +1900,20 @@ impl NativeCoordinator {
             return Ok(false);
         };
         debug_assert_ne!(record.event(), 0, "native event ordinals are non-zero");
-        self.session.report_native_global_focus(record.focus())?;
+        // Lifecycle commits may revoke the proof captured by this callback.
+        let focus = match record.focus() {
+            NativeGlobalFocus::Dock(binding)
+                if !self.session.native_binding_can_report_focus(binding) =>
+            {
+                NativeGlobalFocus::Unknown
+            }
+            focus => focus,
+        };
+        self.session.report_native_global_focus(focus)?;
         if !self.bridge.acknowledge_global_focus(record) {
             return Err(NativeHostProtocolError::GlobalFocusAcknowledgementMismatch.into());
         }
-        if let NativeGlobalFocus::Dock(binding) = record.focus()
+        if let NativeGlobalFocus::Dock(binding) = focus
             && let Some(request) = self.focus_control.take_observed(binding)
             && request.accepted().is_some()
         {

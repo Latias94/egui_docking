@@ -26,7 +26,7 @@ The earlier product-boundary plan supplies the persistence and ownership context
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Caller-owned official-egui runs support tab select/close/reorder, magnetic center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | An unmodified `eframe::App::ui` callback cannot prove terminal presentation; preview-qualified drag and pane-focus settlement are typed unavailable there |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example, a bounded programmatic real-window smoke, and an X11/XTest physical drag smoke | Native consolidation and broader platform qualification remain open. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
+| `egui_dockspace_native` | Unpublished fork-backed coordinator with an eight-pane editor example, a bounded real-input workflow, a programmatic window smoke, and an X11/XTest physical drag smoke | Native consolidation and broader platform qualification remain open. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
 Caller-owned official-egui runs also retain explicit local touch identities:
@@ -95,7 +95,13 @@ native binding lifetimes, including pending retirement; a route/create pair
 shares one commitment. More than 64 work-area records revoke work-area authority
 to `Unknown` while preserving the complete window inventory. Snapshot storage
 pressure freezes ordinary admission through the existing overload boundary.
-The full 4 MiB transfer budget and input-load qualification remain unfinished.
+Selected 4 MiB profiles have finite qualification: W16 roster/property/Destroyed
+models, real I64/W16/R258 with O256/control2/protected-staging1, and the separate
+1 kHz XTest center-load journey. Their configured owner counts and excluded data
+are recorded in `docs/PLATFORM_SUPPORT.md`. Combined close/create maxima and
+sustained active-service acceptance remain open; 2 ms is a cooperative yield
+threshold, with overruns retained in measurement, rather than a hard real-time
+guarantee.
 `NativeDockspaceApp::input_storage_capacity_bytes()` measures the current raw,
 shared-roster, core transport/report, window/output/close/retirement, callback and
 pointer/work-area data at a locked host boundary. It counts actual vector
@@ -275,9 +281,10 @@ cargo run --manifest-path crates/egui_dockspace/Cargo.toml --features example-ap
 
 To exercise draggable tabs, magnetic docking, contained movement, and the
 fork-backed exact-output path, run the separate native example. It starts with
-the Inspector group as
-an egui-styled contained window in the root surface; it does not open a child
-OS window automatically:
+eight stable panes for documents, scene hierarchy, assets, console, history,
+profiling, a drawn preview and editable Inspector notes. The Inspector group
+starts as an egui-styled contained window in the root surface; it does not open
+a child OS window automatically:
 
 ```text
 cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --locked -j1
@@ -298,6 +305,15 @@ not advertise cross-surface physical promotion until an OS-input lane proves
 the complete button/capture contract. Windows likewise keeps hover and desktop
 pointer authority unavailable until equivalent platform-fact tests land. X11
 is the current certified physical reference backend.
+
+The finite `--smoke` mode locates real editable content and checks application
+text through native first-live, Dock Back and OS-close recovery. In an isolated
+Linux X11 display with a window manager and `xdotool`, run
+`python3 integration/egui-native-smoke/editor_x11.py /path/to/examples/basic`
+after building the example. The external driver supplies actual pointer,
+keyboard and window-close input; diagnostics locate the controls without
+granting docking or presentation authority. This editor workflow does not
+certify physical drag or other operating systems.
 
 The [platform support matrix](docs/PLATFORM_SUPPORT.md) separates the public
 engine-host contract, official-egui output limits, backend capability bits and
@@ -342,7 +358,9 @@ the separate 2 ms reducer-service qualification. See `docs/VALIDATION.md`.
 The real output-pressure fixture also measures the synchronous host interval
 from output admission through the last pass finalizer's return, including
 commit, effect scheduling and fixture overhead. It reports repeated passes,
-child/root samples, deferred admission and observed overruns separately. GPU
+child/root samples, deferred admission and observed overruns separately.
+Standalone native host-service events now report their own elapsed samples,
+so moving terminal settlement outside UI does not hide that work. GPU
 and terminal waits are excluded; these finite samples establish neither a hard
 2 ms limit nor return to the OS event loop.
 

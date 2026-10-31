@@ -472,6 +472,19 @@ struct DiagnosticNativeHost {
 }
 
 impl eframe::NativeHostHandler for DiagnosticNativeHost {
+    fn on_service(&self, context: &egui::Context) -> eframe::NativeHostWake {
+        self.inner.on_service(context)
+    }
+
+    fn before_output_input(
+        &self,
+        context: &egui::Context,
+        token: eframe::NativeOutputToken,
+        has_input: bool,
+    ) -> eframe::NativeOutputInputAdmission {
+        self.inner.before_output_input(context, token, has_input)
+    }
+
     fn install_output_pass_finalizer(
         &self,
         finalizer: Arc<dyn eframe::NativeOutputPassFinalizer>,
@@ -1031,7 +1044,8 @@ fn stationary_smoke_layout() -> DockspaceLayout {
 
 struct SmokePane {
     title: &'static str,
-    body: &'static str,
+    text: String,
+    widgets: Vec<egui::Id>,
 }
 
 struct SmokePanes {
@@ -1041,36 +1055,28 @@ struct SmokePanes {
 impl SmokePanes {
     fn new() -> Self {
         Self {
-            panes: BTreeMap::from([
-                (
-                    MAIN_ITEM,
-                    SmokePane {
-                        title: "Main",
-                        body: "Root docking surface",
-                    },
-                ),
-                (
-                    CHILD_ITEM,
-                    SmokePane {
-                        title: "Child",
-                        body: "Physical drag payload",
-                    },
-                ),
+            panes: [
+                (MAIN_ITEM, "Main", "Root docking surface"),
+                (CHILD_ITEM, "Child", "Physical drag payload"),
                 (
                     ANCHOR_ITEM,
-                    SmokePane {
-                        title: "Anchor",
-                        body: "Keep Main inactive after native tear-off",
-                    },
+                    "Anchor",
+                    "Keep Main inactive after native tear-off",
                 ),
+                (nested::SIBLING_ITEM, "Sibling", "Unchanged nested sibling"),
+            ]
+            .into_iter()
+            .map(|(item, title, text)| {
                 (
-                    nested::SIBLING_ITEM,
+                    item,
                     SmokePane {
-                        title: "Sibling",
-                        body: "Unchanged nested sibling",
+                        title,
+                        text: text.to_owned(),
+                        widgets: Vec::with_capacity(1),
                     },
-                ),
-            ]),
+                )
+            })
+            .collect(),
         }
     }
 }
@@ -1081,18 +1087,30 @@ impl PaneView for SmokePanes {
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
-        let Some(pane) = self.panes.get(&item) else {
+        let Some(pane) = self.panes.get_mut(&item) else {
             ui.label("Missing smoke pane");
             return;
         };
         if item == MAIN_ITEM || item == ANCHOR_ITEM {
             publish_root_pane_content_diagnostic(ui);
             publish_root_target_diagnostic(ui);
-            ui.label(pane.body);
         } else {
             ui.heading(pane.title);
-            ui.label(pane.body);
         }
+        let response = ui.add_sized(
+            ui.available_size(),
+            egui::TextEdit::multiline(&mut pane.text)
+                .id(egui::Id::unique(("physical-smoke-content", item.get())))
+                .desired_width(f32::INFINITY),
+        );
+        pane.widgets.clear();
+        pane.widgets.push(response.id);
+    }
+
+    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
+        self.panes
+            .get(&item)
+            .map_or(&[], |pane| pane.widgets.as_slice())
     }
 }
 

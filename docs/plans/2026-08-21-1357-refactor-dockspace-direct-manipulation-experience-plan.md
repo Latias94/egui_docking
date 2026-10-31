@@ -26,20 +26,28 @@ review_status: independent-coherence-and-feasibility-reviewed
 
 Current readiness (2026-10-31): the complete plan remains in progress. The
 renderer-neutral public host, local/contained egui behavior, and U3c complete
-single-batch Burst matrix have qualified checkpoints. Optional native completion still requires the remaining
-capacity/service-time and platform matrices, the native showcase, and U9
-dependency/package/documentation closure. The new continuous-X11-input and
-pending-presentation-wake slice and finite four-direction non-guide edge smoke
-are locally qualified; they do not replace
-those remaining acceptance gates. The finite nested center/west physical
-journeys now expose and cover fractional native-create requests; complete
-synchronous output-host timing is measured separately from reducer timing.
-Neither establishes mixed-DPI, successful OS stationary execution or hard
-real-time qualification. Finite native stationary scheduling is now qualified
-with truthful X11 missing-fact rejection and same-gesture recovery.
-Open-GPUI and the user's actual engine remain
-outside the completion dependencies. Exact current results and failed attempts
-are recorded in `docs/VALIDATION.md`.
+single-batch Burst matrix have qualified checkpoints, including U12's public
+host/package acceptance. No new core blocker was confirmed in the current
+bounded review. Continuous X11 input, finite center/edge/nested physical targets,
+fractional create placement, selected-capacity models and W16/O256 real windows
+have scoped qualifications. Finite native stationary scheduling is qualified
+with truthful missing-fact rejection and same-gesture recovery. The content-input
+and eight-pane editor slice has 61 passing final checks in `docs/VALIDATION.md`.
+
+The next completion work is concrete:
+
+| Remaining boundary | Next acceptance |
+| --- | --- |
+| U10 native layout management | Expose core close/decision, reopen, arrangement lock and reset/restore through the existing bounded application action owner; exercise application presets and focus recovery in the native showcase. |
+| U10 native overflow | Qualify a finite real-input overflowed/clipped tab insertion, including preview, final order and cleanup; reuse the existing overflow owner. |
+| U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
+| U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
+| U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
+| U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
+
+Open-GPUI and the user's actual engine remain outside the completion dependencies.
+Exact results, limitations and failed attempts live in `docs/VALIDATION.md`;
+historical checkpoints below retain their original source scope.
 
 ---
 
@@ -169,7 +177,7 @@ Use one injected monotonic time source for age and latency; deterministic tests 
 | Resource | Budget | Measurement boundary |
 | --- | --- | --- |
 | Active ingress journal | 4,096 records, 4 MiB resident owned data, 250 ms oldest-record age | Fixed envelope plus owned payload capacity; shared sidecars charged once by their owner. |
-| One reduction batch | 256 records or 2 ms, whichever comes first | From immutable prefix claim to reducer yield; barriers terminate a batch and the next claim resumes at its exact ordinal. |
+| One reduction batch | 256 records or a 2 ms cooperative yield threshold, whichever is reached first | From immutable prefix claim to reducer yield; checks occur between atomic operations, and elapsed overruns remain measured. Barriers terminate a batch and the next claim resumes at its exact ordinal. This is not a hard OS scheduling or indivisible-operation wall-time cap. |
 | Release latency | 100 ms under a 1,000 Hz active-input profile | Accepted release edge to typed terminal outcome, excluding an explicitly pending OS create or unavailable renderer. Those outcomes remain visible and cancellable. |
 | Retained lifecycle detail | 64 recent terminal summaries per binding and 1,024 monotonic IDs per session watermark | No authority-bearing geometry or receipts in terminal summaries. |
 | Lifecycle soak | 10,000 cycles, zero active obligations after quiescence | Bound output, receiver, route, reservation, effect, timer, and retirement state. |
@@ -2111,19 +2119,34 @@ scroll, menu selection and selection reveal, with independent public-host
 stationary, retry, terminal-order and receiver-proof checks. Deferred renderer
 results wake an idle official-egui host once for acceptance. The finite Desktop
 Mouse native scheduler is qualified, while successful OS stationary execution
-and the native editor showcase remain open; full U10 readiness still
+and the complete native layout-management showcase remain open; full U10 readiness still
 requires their stated qualification. See `docs/VALIDATION.md` for current gates.
 
-The next bounded native-showcase slice should extend the existing native
-`basic` example with eight representative panes, using the official
-`workspace_persistence` example's text, scroll and canvas patterns. Reuse the
-current `PaneView` content-widget declarations, stable focus IDs and native
-presentation commands. Qualify docking over actual registered child controls,
-overlay blocking, retained application content through first-live/Dock Back/OS
-close recovery, and input returning to the intended content focus. Keep the
-unexposed native close/reopen/reset/persistence facade work in its own later
-slice. This preparation does not waive U8's prerequisite for full native
-showcase qualification or expand any platform claim.
+The bounded native `basic` showcase now contains eight representative panes,
+with text, scroll and canvas content, refreshed `PaneView` content-widget IDs,
+stable focus IDs and the existing native presentation commands. Its external
+X11 input owner checks four real focused edits through first-live, Dock Back,
+a second child lifetime and OS-close recovery, preserving every stable item
+and exact application text. Native physical pane targets now cover registered
+TextEdit content; completed-pass receiver tests also cover Button/canvas and
+frontmost overlay blocking. See the dated validation record for the exact
+qualified source and remaining gates.
+
+This slice exposed native content input being consumed by an empty retained
+pass. The adapter now settles ordered prefixes before input extraction and
+defers without consuming backend input when the shared budget cannot finish.
+Child retries reuse the existing semantic wake. Ordinary successful surface
+outputs settle in a coalesced native host-service event instead of scheduling
+another paint or waiting for user input; their original age, ordinal and
+resource reservation remain intact. Exact first-live, required geometry,
+stationary and lifecycle wakes remain explicit.
+Application UI runs normally after admission, without speculative post-UI
+framebuffer retention. Each standalone event uses the existing shared clock and
+bounded input profile; output admission continues to use its exact token's
+existing budget. No new graph, registry or input replay was introduced. The
+unexposed native close/reopen/reset/persistence facade and
+U8's full acceptance criteria remain separate work; this slice does not close
+U10 or expand any platform claim.
 
 ### U11. Certify Windows and macOS capability claims
 
@@ -2196,7 +2219,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `70f7b51712284561d3408950273f128ff556a81b` and Winit fork `6c10c87da2a06871371de7d30fedc656cf7c3681`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `92c921f7235c87ae28ea09ae522ef55fd8333b41` and Winit fork `6c10c87da2a06871371de7d30fedc656cf7c3681`. That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.
