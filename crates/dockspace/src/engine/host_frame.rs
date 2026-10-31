@@ -1440,6 +1440,25 @@ impl CoreHostFrame {
         self.input_prefix_error.as_ref()
     }
 
+    pub(crate) fn proposed_workspace_root_rebounds(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            crate::viewport::ViewportBinding,
+            crate::viewport::ViewportBinding,
+        ),
+    > + '_ {
+        self.reduced_inputs
+            .iter()
+            .filter_map(|reduced| match reduced.outcome() {
+                crate::transition::InputOutcome::WorkspaceReplaced { reconciliation, .. } => {
+                    Some(reconciliation.rebound())
+                }
+                _ => None,
+            })
+            .flat_map(|pairs| pairs.iter().copied())
+    }
+
     pub(crate) fn take_input_prefix_error(&mut self) -> Option<EngineError> {
         self.input_prefix_error.take()
     }
@@ -2408,6 +2427,7 @@ impl CoreHostFrame {
                 | EngineInput::ObserveNativeInputDeviceRemoval { .. }
                 | EngineInput::ObserveNativeInputBindingRetired { .. }
                 | EngineInput::ReplaceWorkspace(_)
+                | EngineInput::ReplaceWorkspaceContinuingRoot { .. }
                 | EngineInput::RestoreWorkspace(_)
         );
         let input = SequencedInput::new(stamp, sequence, source, source_sequence, input);
@@ -2474,7 +2494,8 @@ impl CoreHostFrame {
     fn first_unadmitted_item(&self, input: &EngineInput) -> Option<ItemId> {
         let scope = self.item_identity_scope.as_ref()?;
         match input {
-            EngineInput::ReplaceWorkspace(workspace) => workspace
+            EngineInput::ReplaceWorkspace(workspace)
+            | EngineInput::ReplaceWorkspaceContinuingRoot { workspace, .. } => workspace
                 .item_multiset()
                 .into_keys()
                 .find(|item| !scope.contains(item)),

@@ -5,11 +5,11 @@ use std::fmt;
 use crate::engine::{EngineInput, HostFrameView, rebase_workspace_presentation_identities};
 use crate::graph::Workspace;
 use crate::ids::EngineAuthorityDomainId;
-use crate::model::{DockspaceLayout, DockspaceView, WorkspaceVersion};
+use crate::model::{DockspaceLayout, DockspaceView, SurfaceId, WorkspaceVersion};
 
 use super::{
     DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession, NativeReceiverAnswer,
-    NativeReceiverQuery,
+    NativeReceiverQuery, NativeSurfaceBinding,
 };
 
 /// Opaque session-bound layout reset, borrowed by one rollbackable host frame.
@@ -138,6 +138,74 @@ impl DockspaceSession {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Replaces the layout and continues one external Root window on an incoming surface.
+    ///
+    /// `incoming_root` names a surface in the prepared layout before rebasing.
+    /// The exact current `existing_root` must be admitted and available for
+    /// continuation. Its old logical surface may disappear from the new layout.
+    /// The committed report carries the exact predecessor/successor pair; hosts
+    /// must prepay and atomically publish their physical-window route with it.
+    /// Fresh observations and output are required before successor interaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns ordinary reset errors, a missing incoming surface, a stale or
+    /// unavailable external Root, or a conflicting target window. Dropping a
+    /// failed frame preserves the graph, bindings and prepared reset.
+    pub fn submit_native_layout_reset(
+        &mut self,
+        reset: &PreparedDockspaceLayoutReset,
+        existing_root: NativeSurfaceBinding,
+        incoming_root: SurfaceId,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.session.ensure_managed_native_host_available()?;
+        self.session.ensure_prepared_layout_reset_current(reset)?;
+        self.complete_pointer_input()?;
+        let rebased = reset.rebased_workspace(self.frame.view())?;
+        let target = rebased
+            .surfaces
+            .get(&incoming_root)
+            .copied()
+            .ok_or_else(|| DockspaceRuntimeError::native_root_surface_missing(incoming_root))?;
+        let continuation =
+            self.prepare_native_root_continuation(existing_root, target, &rebased.workspace)?;
+        self.append(EngineInput::ReplaceWorkspaceContinuingRoot {
+            workspace: rebased.workspace,
+            continuation,
+        })?;
+        self.replacement_submitted = true;
+        Ok(())
+    }
+
+    pub(super) fn prepare_native_root_continuation(
+        &self,
+        existing: NativeSurfaceBinding,
+        target: SurfaceId,
+        workspace: &Workspace,
+    ) -> Result<crate::frame::PreparedNativeRootContinuation, DockspaceRuntimeError> {
+        if !self
+            .session
+            .native
+            .as_ref()
+            .is_some_and(|native| native.recognizes_binding(existing))
+        {
+            return Err(DockspaceRuntimeError::native_root_unavailable(
+                existing.surface(),
+            ));
+        }
+        let viewport = self.frame.view().viewport();
+        let predecessor = viewport
+            .viewport(existing.surface())
+            .map(|record| record.binding())
+            .filter(|binding| existing.matches_viewport_binding(*binding))
+            .ok_or_else(|| DockspaceRuntimeError::native_root_unavailable(existing.surface()))?;
+        let surfaces = workspace.surfaces().map(|(surface, _)| surface).collect();
+        viewport
+            .prepare_native_root_continuation(predecessor, target, &surfaces)
+            .map_err(DockspaceRuntimeError::native_root_continuation)
+    }
+
     /// Resets the layout after this frame's complete ordered input prefix.
     ///
     /// Buffered native hosts may first finish [`DockspaceSession::poll_native_host_frame`]
@@ -186,16 +254,23 @@ impl PreparedDockspaceLayoutReset {
         &self,
         frame: HostFrameView<'_>,
     ) -> Result<EngineInput, DockspaceRuntimeError> {
+        let rebased = self.rebased_workspace(frame)?;
+        Ok(EngineInput::ReplaceWorkspace(rebased.workspace))
+    }
+
+    fn rebased_workspace(
+        &self,
+        frame: HostFrameView<'_>,
+    ) -> Result<crate::engine::RebasedWorkspace, DockspaceRuntimeError> {
         if self.authority != frame.authority_domain() {
             return Err(DockspaceRuntimeError::prepared_layout_reset_mismatch());
         }
-        let rebased = rebase_workspace_presentation_identities(
+        rebase_workspace_presentation_identities(
             self.workspace.clone(),
             frame.workspace(),
             frame.presentation_identity_frontier(),
             None,
         )
-        .map_err(DockspaceRuntimeError::layout_reset_rebase)?;
-        Ok(EngineInput::ReplaceWorkspace(rebased.workspace))
+        .map_err(DockspaceRuntimeError::layout_reset_rebase)
     }
 }

@@ -3878,7 +3878,7 @@ fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_resto
     fixture
         .engine
         .viewport
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new())
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), None)
         .expect("workspace restore must preserve terminal create compensation ownership");
     let restored = fixture
         .engine

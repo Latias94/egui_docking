@@ -24,7 +24,7 @@ use crate::external_item_key::{
     ExternalItemKeyRestoreError, ExternalItemKeySnapshot, ExternalItemKeySnapshotEnvelope,
 };
 use crate::graph::Workspace;
-use crate::ids::{EngineAuthorityDomainId, ItemId, PresentationIdentityFrontier};
+use crate::ids::{EngineAuthorityDomainId, ItemId, PresentationIdentityFrontier, SurfaceId};
 use crate::persistence::{
     SnapshotCaptureError, SnapshotEntityKind, SnapshotNode, SnapshotRestoreError,
     WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
@@ -581,17 +581,35 @@ impl PreparedRuntimeDocumentRestore {
             && self.source_document == *document
     }
 
+    #[cfg(test)]
     pub(crate) fn into_engine_input(
-        mut self,
+        self,
         frame: HostFrameView<'_>,
     ) -> Result<(EngineInput, PendingRuntimeDocumentRestore), RuntimeDocumentRestoreError> {
+        self.into_engine_input_tracking_surface(frame, None)
+            .map(|(input, pending, _)| (input, pending))
+    }
+
+    pub(crate) fn into_engine_input_tracking_surface(
+        mut self,
+        frame: HostFrameView<'_>,
+        tracked_surface: Option<SurfaceId>,
+    ) -> Result<
+        (
+            EngineInput,
+            PendingRuntimeDocumentRestore,
+            Option<SurfaceId>,
+        ),
+        RuntimeDocumentRestoreError,
+    > {
         if frame.authority_domain() != self.source_authority_domain {
             return Err(RuntimeDocumentRestoreError::EnginePublicationMismatch);
         }
-        rebase_restored_presentation_identities(
+        let mapped_surface = rebase_restored_presentation_identities(
             &mut self.restored,
             frame.workspace(),
             frame.presentation_identity_frontier(),
+            tracked_surface,
         )?;
         let expected_workspace = WorkspaceSnapshot::capture(self.restored.restore.workspace())?;
         let mut expected_frontier = frame.presentation_identity_frontier();
@@ -618,7 +636,11 @@ impl PreparedRuntimeDocumentRestore {
             replacement_base_version,
             source_authority_domain: self.source_authority_domain,
         };
-        Ok((EngineInput::RestoreWorkspace(restore), pending))
+        Ok((
+            EngineInput::RestoreWorkspace(restore),
+            pending,
+            mapped_surface,
+        ))
     }
 }
 
@@ -789,7 +811,8 @@ fn rebase_restored_presentation_identities(
     restored: &mut RestoredDockspaceDocument,
     active_workspace: &Workspace,
     active_frontier: PresentationIdentityFrontier,
-) -> Result<(), DockspaceDocumentRestoreError> {
+    tracked_surface: Option<SurfaceId>,
+) -> Result<Option<SurfaceId>, DockspaceDocumentRestoreError> {
     let rebased = crate::engine::rebase_workspace_presentation_identities(
         restored.restore.workspace().clone(),
         active_workspace,
@@ -797,11 +820,21 @@ fn rebase_restored_presentation_identities(
         Some(restored.restore.presentation_identity_frontier()),
     )
     .map_err(document_rebase_error)?;
+    let mapped_surface = tracked_surface
+        .map(|surface| {
+            rebased.surfaces.get(&surface).copied().ok_or(
+                DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
+                    kind: SnapshotEntityKind::Surface,
+                    id: surface.get(),
+                },
+            )
+        })
+        .transpose()?;
     restored
         .viewport_placements
         .remap_surfaces(&rebased.surfaces);
     restored.restore = ValidatedWorkspaceRestore::new(rebased.workspace, rebased.frontier);
-    Ok(())
+    Ok(mapped_surface)
 }
 
 fn document_rebase_error(

@@ -31,6 +31,80 @@ fn managed_root() -> (DockspaceSession, NativeSurfaceBinding) {
     )
 }
 
+#[test]
+fn external_root_layout_continuation_needs_no_persistence_and_rebases_retired_targets() {
+    let (mut session, mut binding) = managed_root();
+    let foreign = managed_root().1;
+    for incoming in [SurfaceId::new(2), SURFACE] {
+        let previous = binding;
+        let before = session.version();
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            incoming,
+            DockspaceRootLayout::new(
+                ROOT,
+                DockspaceNode::central_tabs_with_selection([FIRST, SECOND], Some(SECOND)).unwrap(),
+            ),
+        )])
+        .unwrap();
+        let reset = session.prepare_layout_reset(layout).unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .submit_native_layout_reset(&reset, foreign, incoming)
+            .expect_err("a foreign exact handle cannot retain this Root");
+        assert!(frame.proposed_native_root_continuations().next().is_none());
+        finish(frame);
+        assert_eq!(session.version(), before);
+        let mut exact = None;
+        for commit in [false, true] {
+            let mut frame = session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            frame
+                .submit_native_layout_reset(&reset, previous, incoming)
+                .unwrap();
+            let pairs = frame
+                .proposed_native_root_continuations()
+                .collect::<Vec<_>>();
+            assert_eq!(pairs.len(), 1);
+            assert_eq!(*exact.get_or_insert(pairs[0]), pairs[0]);
+            assert_eq!(pairs[0].predecessor(), previous);
+            let successor = pairs[0].successor();
+            assert_eq!(successor.window_token(), previous.window_token());
+            assert_ne!(successor.surface(), previous.surface());
+            if incoming == SURFACE {
+                assert_ne!(successor.surface(), incoming);
+            }
+            assert!(frame.view().surface(previous.surface()).is_none());
+            assert_eq!(
+                frame.view().item(SECOND).unwrap().surface(),
+                successor.surface()
+            );
+            assert!(frame.view().item(SECOND).unwrap().is_selected());
+            if commit {
+                let mut report = finish(frame);
+                assert_eq!(report.native_root_continuations(), pairs);
+                assert_eq!(report.native_bindings(), &[successor]);
+                assert!(report.take_native_effects().is_empty());
+                assert!(session.native_local_coordinates(successor).is_none());
+                assert!(session.presented_surface(successor.surface()).is_none());
+                assert!(!session.is_current_native_binding(previous));
+                assert!(session.recognizes_native_binding(previous));
+                binding = successor;
+            } else {
+                drop(frame);
+                assert_eq!(session.version(), before);
+                assert!(session.is_current_native_binding(previous));
+                assert!(!session.recognizes_native_binding(successor));
+            }
+        }
+        session.report_native_binding_quiescence(previous).unwrap();
+        idle(&mut session);
+        assert!(!session.recognizes_native_binding(previous));
+    }
+}
+
 fn managed_root_with_capabilities(
     capabilities: NativeHostCapabilities,
 ) -> (DockspaceSession, NativeSurfaceBinding) {

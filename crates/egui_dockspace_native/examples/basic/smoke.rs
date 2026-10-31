@@ -3,6 +3,7 @@
 //! Close, reopen, locking, default reset and JSON restore use public application APIs.
 //! Diagnostic content rectangles locate input only; presented surfaces and native
 //! quiescence remain the product readiness checks.
+//! `EGUI_DOCKSPACE_EDITOR_ROOT_REBIND=1` appends one Root edit, or two with serde.
 
 use std::time::{Duration, Instant};
 
@@ -12,10 +13,12 @@ use dockspace::runtime::{DockspaceCloseOutcome, DockspaceCloseResolution};
 
 use super::*;
 
+#[path = "root_rebinding.rs"]
+mod root_rebinding;
+
 #[cfg(feature = "serde")]
 const NATIVE_RESTORE_ITEMS: [ItemId; 2] = [INSPECTOR, ASSETS];
 
-#[cfg(feature = "serde")]
 #[derive(PartialEq, Eq)]
 struct SavedTabs {
     item: ItemId,
@@ -72,6 +75,8 @@ enum Stage {
     NativeRestoredInput,
     #[cfg(feature = "serde")]
     NativeRestoredDockBack(usize),
+    RootRebinding,
+    RootRebindObserved,
     FinalQuiescence,
     Complete,
 }
@@ -83,16 +88,19 @@ pub(super) struct EditorSmoke {
     restore_after_close: bool,
     announced: bool,
     focus_announced: bool,
+    root_rebinding_enabled: bool,
+    root_rebinding: Option<root_rebinding::RootRebinding>,
     #[cfg(feature = "serde")]
     saved_tabs: Vec<SavedTabs>,
     #[cfg(feature = "serde")]
     old_windows: [u64; 2],
-    #[cfg(feature = "serde")]
-    children_observed: std::sync::mpsc::Receiver<bool>,
+    observations: Option<std::sync::mpsc::Receiver<bool>>,
 }
 
 impl EditorSmoke {
     pub(super) fn new() -> Self {
+        let root_rebinding_enabled =
+            std::env::var("EGUI_DOCKSPACE_EDITOR_ROOT_REBIND").as_deref() == Ok("1");
         eprintln!(
             "editor-smoke: profile={} edits={}",
             if cfg!(feature = "serde") {
@@ -100,23 +108,32 @@ impl EditorSmoke {
             } else {
                 "basic"
             },
-            if cfg!(feature = "serde") { 8 } else { 6 },
+            Self::edit_count(root_rebinding_enabled),
         );
-        #[cfg(feature = "serde")]
-        let children_observed = {
+        let observations = (cfg!(feature = "serde") || root_rebinding_enabled).then(|| {
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            // One finite barrier lets the X11 owner verify both predecessors
-            // still exist before the application submits their replacement.
+            // One reader handles the finite predecessor and optional final Root barriers.
             std::thread::spawn(move || {
                 use std::io::Read as _;
 
-                let mut acknowledgement = [0; b"multi-children-observed\n".len()];
-                let observed = std::io::stdin().read_exact(&mut acknowledgement).is_ok()
-                    && acknowledgement == *b"multi-children-observed\n";
-                let _ = sender.send(observed);
+                let mut acknowledgements: Vec<&[u8]> = Vec::with_capacity(2);
+                if cfg!(feature = "serde") {
+                    acknowledgements.push(b"multi-children-observed\n");
+                }
+                if root_rebinding_enabled {
+                    acknowledgements.push(b"root-rebind-observed\n");
+                }
+                for expected in acknowledgements {
+                    let mut acknowledgement = vec![0; expected.len()];
+                    let observed = std::io::stdin().read_exact(&mut acknowledgement).is_ok()
+                        && acknowledgement.as_slice() == expected;
+                    if sender.send(observed).is_err() || !observed {
+                        break;
+                    }
+                }
             });
             receiver
-        };
+        });
         let panes = ExamplePanes::new();
         Self {
             stage: Stage::RootInput,
@@ -129,12 +146,22 @@ impl EditorSmoke {
             restore_after_close: false,
             announced: false,
             focus_announced: false,
+            root_rebinding_enabled,
+            root_rebinding: None,
             #[cfg(feature = "serde")]
             saved_tabs: Vec::new(),
             #[cfg(feature = "serde")]
             old_windows: [0; 2],
-            #[cfg(feature = "serde")]
-            children_observed,
+            observations,
+        }
+    }
+
+    fn edit_count(root_rebinding_enabled: bool) -> usize {
+        let base = if cfg!(feature = "serde") { 8 } else { 6 };
+        base + if root_rebinding_enabled {
+            if cfg!(feature = "serde") { 2 } else { 1 }
+        } else {
+            0
         }
     }
 
@@ -148,11 +175,16 @@ impl EditorSmoke {
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
         } else if matches!(self.stage, Stage::Complete) {
             eprintln!(
-                "editor-smoke: complete; eight stable panes, {} real edits, {} child lifetimes, first-live, Dock Back, OS-close recovery, programmatic close/Allow/reopen, lock/rejected move/select/unlock and Default reset{}, fresh presentation and final quiescence verified",
-                if cfg!(feature = "serde") { 8 } else { 6 },
+                "editor-smoke: complete; eight stable panes, {} real edits, {} child lifetimes, first-live, Dock Back, OS-close recovery, programmatic close/Allow/reopen, lock/rejected move/select/unlock and Default reset{}{}, fresh presentation and final quiescence verified",
+                Self::edit_count(self.root_rebinding_enabled),
                 if cfg!(feature = "serde") { 6 } else { 2 },
                 if cfg!(feature = "serde") {
                     ", named JSON restore with a drawn missing placeholder and explicit reload/select, two live Child replacements with preserved tabs/selection and an eighth edit in a fresh OS child"
+                } else {
+                    ""
+                },
+                if self.root_rebinding_enabled {
+                    ", opt-in cross-surface Root rebinding with fresh Root editing and X11-owner acknowledgement"
                 } else {
                     ""
                 },
@@ -171,9 +203,9 @@ impl EditorSmoke {
     }
 
     fn advance_inner(&mut self, app: &mut NativeExampleApp) -> Result<(), String> {
-        if self.started.elapsed()
-            > Duration::from_secs(if cfg!(feature = "serde") { 90 } else { 60 })
-        {
+        let timeout = if cfg!(feature = "serde") { 90 } else { 60 }
+            + if self.root_rebinding_enabled { 30 } else { 0 };
+        if self.started.elapsed() > Duration::from_secs(timeout) {
             return Err("the bounded editor workflow timed out".to_owned());
         }
         if let Some(kind) = app.dockspace.error_kind() {
@@ -200,6 +232,7 @@ impl EditorSmoke {
         );
         #[cfg(feature = "serde")]
         let may_be_closed = may_be_closed || matches!(self.stage, Stage::DocumentRestore);
+        let root_surface = app.dockspace.root_surface();
         let location = app
             .dockspace
             .with_view(|view| {
@@ -210,7 +243,9 @@ impl EditorSmoke {
                         return Err(format!("open pane {} unexpectedly disappeared", item.get()));
                     }
                 }
-                Ok(view.item(INSPECTOR).map(InspectorLocation::from))
+                Ok(view
+                    .item(INSPECTOR)
+                    .map(|item| InspectorLocation::new(item, root_surface)))
             })
             .ok_or("the current product view is unavailable")??;
         match self.stage {
@@ -872,7 +907,12 @@ impl EditorSmoke {
             }
             #[cfg(feature = "serde")]
             Stage::NativeRestoreObserved if self.settled(app) => {
-                match self.children_observed.try_recv() {
+                match self
+                    .observations
+                    .as_ref()
+                    .expect("serde observation reader")
+                    .try_recv()
+                {
                     Ok(true) => {}
                     Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
                     _ => {
@@ -977,9 +1017,48 @@ impl EditorSmoke {
                     self.set_stage(Stage::FinalQuiescence);
                 }
             }
+            Stage::RootRebinding => {
+                let mut rebinding = self.root_rebinding.take().expect("active Root rebinding");
+                let complete = rebinding.advance(self, app)?;
+                self.root_rebinding = Some(rebinding);
+                if complete {
+                    self.set_stage(Stage::FinalQuiescence);
+                }
+            }
+            Stage::RootRebindObserved if self.settled(app) => {
+                match self
+                    .observations
+                    .as_ref()
+                    .expect("Root observation reader")
+                    .try_recv()
+                {
+                    Ok(true) => {
+                        self.check_text(app)?;
+                        self.root_rebinding
+                            .as_ref()
+                            .expect("completed Root rebinding")
+                            .check_layout(self, app)?;
+                        self.set_stage(Stage::Complete);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    _ => {
+                        return Err(
+                            "the X11 owner did not confirm the original Root survived".to_owned()
+                        );
+                    }
+                }
+            }
             Stage::FinalQuiescence if self.settled(app) => {
                 self.check_text(app)?;
-                if !app.all_root_profile()
+                let all_root = app.dockspace.with_view(|view| {
+                    view.surfaces().count() == 1
+                        && view.surface(root_surface).is_some()
+                        && self.expected.keys().all(|item| {
+                            view.item(*item)
+                                .is_some_and(|pane| pane.surface() == root_surface)
+                        })
+                }) == Some(true);
+                if !all_root
                     || app.dockspace.arrangement_locked()
                     || !app.dockspace.pending_content_close_plans().is_empty()
                     || !app
@@ -991,10 +1070,27 @@ impl EditorSmoke {
                             .to_owned(),
                     );
                 }
+                if self.root_rebinding_enabled && self.root_rebinding.is_none() {
+                    self.root_rebinding = Some(root_rebinding::RootRebinding::start(self, app)?);
+                    self.set_stage(Stage::RootRebinding);
+                    return Ok(());
+                }
+                if let Some(rebinding) = &self.root_rebinding {
+                    rebinding.check_layout(self, app)?;
+                }
                 eprintln!(
-                    "editor-smoke: programmatic=final-quiescence registry=8 text=preserved fresh-presented=true"
+                    "editor-smoke: programmatic=final-quiescence registry=8 text=preserved fresh-presented=true{}",
+                    if self.root_rebinding_enabled {
+                        " quiescent=true tabs=preserved selected=preserved"
+                    } else {
+                        ""
+                    }
                 );
-                self.set_stage(Stage::Complete);
+                self.set_stage(if self.root_rebinding_enabled {
+                    Stage::RootRebindObserved
+                } else {
+                    Stage::Complete
+                });
             }
             _ => {}
         }
@@ -1010,6 +1106,7 @@ impl EditorSmoke {
         &self,
         app: &NativeExampleApp,
     ) -> Result<[InspectorLocation; 2], String> {
+        let root_surface = app.dockspace.root_surface();
         app.dockspace
             .with_view(|view| {
                 let inspector = view.item(INSPECTOR).ok_or("Inspector disappeared")?;
@@ -1018,15 +1115,14 @@ impl EditorSmoke {
                     return Err("Inspector and Assets no longer have independent roots");
                 }
                 Ok([
-                    InspectorLocation::from(inspector),
-                    InspectorLocation::from(assets),
+                    InspectorLocation::new(inspector, root_surface),
+                    InspectorLocation::new(assets, root_surface),
                 ])
             })
             .ok_or("the multi-surface layout is unavailable")?
             .map_err(str::to_owned)
     }
 
-    #[cfg(feature = "serde")]
     fn capture_tabs(&self, app: &NativeExampleApp) -> Result<Vec<SavedTabs>, String> {
         app.dockspace
             .with_view(|view| {
@@ -1063,7 +1159,7 @@ impl EditorSmoke {
                             == match *item {
                                 INSPECTOR | PREVIEW => locations[0].surface,
                                 ASSETS => locations[1].surface,
-                                _ => SURFACE,
+                                _ => locations[0].host_surface,
                             }
                     })
                 })

@@ -15,6 +15,75 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 external Root continuation across logical surfaces
+
+The slice following `ba10cb6` adds explicit native layout/document replacement
+which continues one exact external Root on another incoming logical surface.
+The source surface may disappear. Rebase resolves the incoming Root and saved
+Child recovery/placement references before preparation. Existing registry
+reconciliation mints the successor and keeps exact predecessor terminal guards;
+it creates no Root window, Destroy effect or synthetic Destroyed observation.
+
+Core proposed/committed continuation pairs feed the native bridge's existing
+resource preparation. It validates the actual physical window and awaiting
+receipt before commit, installs its exact successor route, and publishes the
+application's root-surface field under the same bridge lock. Predecessor
+resources match complete successor identities, not surface/token heuristics.
+Their late output, property callbacks and producer quiescence stay isolated.
+
+Focused core and public document paths pass. The first independent review found
+an unconditional rebase-map field with a serde-only import; default compilation
+is repaired and passes. Adapter review also found an occupied target could turn
+ordinary command rejection into runtime shutdown; prequeue conflict checks and
+a typed RootContinuationRejected terminal now preserve normal operation. New native model
+fixtures were corrected to supply configured capabilities, measure/present source
+authority and use the ordered managed reset boundary. Those failures are retained
+in `/tmp/dockspace-root-continuation-focused-*.log`. Prequeue occupancy checks now
+apply only to a still-active logical target: an old route for a removed surface
+cannot block its fresh rebased identity. The conflict regression covers this
+case, a later CloseRequested rejection and a subsequent successful command.
+
+Final X11 basic and persistence extensions pass seven/ten real edits while an
+independent connection watches the original Root for DestroyNotify. Persistence
+performs layout A-to-B followed by JSON B-to-rebased-A, preserving one physical
+window and all eight pane records, tabs, selection and text through quiescence.
+The first persistence attempt clicked a content center and timed out; that point
+does not prove absence of a restored floating-panel blocker. The corrected script
+uses actual TextEdit focus before real typing, as the existing reopen/reset focus
+journeys do. The original focused failures remain separate from the final record.
+
+All 61 final checks pass against 477 frozen source, manifest, script and lockfile
+paths:
+
+| Final gate | Result and scope |
+| --- | --- |
+| Workspace | 1,940/1,940; no-default-feature check, Clippy correctness/suspicious, strict docs, 10 doctests and formatting pass. |
+| Independent consumers | Public 148/148 normally and 176/176 with persistence; product 114/114 and official egui 15/15. |
+| Native models | 571/571 including the same-coordinator 10,000-lifetime soak; assertion-disabled 570/570 excludes that duplicate soak. |
+| Linux library | 524/524 in each assertion mode, plus the separate real old-output renderer regression. |
+| Native compatibility | macOS and X11 default/bounded lifecycle and six optimized output-pressure modes per platform pass. |
+| Editor X11 | Original basic/persistence six/eight-edit workflows pass; opt-in Root continuation extensions pass seven/ten edits with the same physical Root, exact old-Child destruction and final quiescence. |
+| Physical X11 | All fifteen guide, center/edge/tab/nested/overflow, stationary-negative and 1 kHz journeys pass. Positive stationary OS input and scanout remain unqualified. |
+
+Bounded root-boundary reserved peaks are 3,491,216 bytes on macOS and
+3,492,376 bytes on X11 under 4,194,304 bytes. Pressure root-service maxima for
+combined/ordered/duplicate/reordered/late-staging/late-first-live are macOS
+9.575/4.191/4.117/4.333/4.238/4.479 ms and X11
+3.667/1.951/1.988/1.894/1.667/1.334 ms. Initialization and atomic work can exceed
+the 2 ms cooperative threshold; these observations are not a hard service cap.
+The 1 kHz run matches all 1,000 native callbacks at 981.9 Hz after 999.9 Hz
+injection, with a 28.339 ms release-to-model upper bound and 0.978 ms maximum
+sampled root UI update. Its sampled owned/reserved data peaks are
+2,338,721/3,492,512 bytes under 4 MiB. Allocator metadata, graph/renderer state
+and separately reported fixture allocations are outside that input-data measure.
+
+Evidence is `/tmp/dockspace-root-continuation-source.json`,
+`/tmp/dockspace-root-continuation-qualification.json` and corresponding
+`/tmp/dockspace-root-continuation-final-*.log`. This still uses explicit clean
+local egui `92c921f7235c` and winit `6c10c87da2a0` overrides. Tracked remote pins,
+positive stationary facts, remaining combined capacity/service cases and final
+U9 delivery remain open; the complete Goal is not finished.
+
 ## 2026-10-31 physical overflow insertion and retained focus
 
 The slice following `dead258` adds one finite `overflow-tab-before` X11 target.

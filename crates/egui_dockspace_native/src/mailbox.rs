@@ -10,11 +10,12 @@ use crate::coordinator::{
     PreparedNoFrameInvalidations, no_frame_invalidation_readiness,
     output_terminal_requires_adapter_abandonment,
 };
+use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeCleanupObservation,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
     NativeInputBudget, NativeMonotonicClock, NativePresentationEffectAcknowledgement,
-    NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowFacts,
+    NativeRootContinuation, NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowFacts,
 };
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
@@ -841,6 +842,316 @@ mod tests {
             found.next().expect("first binding exists"),
             found.next().expect("second binding exists"),
         )
+    }
+
+    fn workspace_root_layout(surface: SurfaceId) -> DockspaceLayout {
+        DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            surface,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .unwrap()
+    }
+
+    fn workspace_root_fixture() -> (DockspaceSession, NativeHostBridge, NativeSurfaceBinding) {
+        use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
+        use dockspace::runtime::{
+            HostInputOutcome, HostWindowToken, NativeCloseState, NativeCreateStrategy,
+            NativePointerRoster, NativeReceiverAnswer, NativeWindowInputState,
+            NativeWindowPresentationState, NativeWorkAreaRoster, SurfacePresentationResult,
+            SurfaceUnavailableReason, UniformSurfaceMetrics,
+        };
+
+        let mut session = DockspaceSession::from_layout(
+            workspace_root_layout(SurfaceId::new(1)),
+            DockPolicy::default(),
+        )
+        .unwrap();
+        session
+            .enable_managed_native_host(
+                NativeCreateStrategy::Staged,
+                NativePointerRoster::Exact(Vec::new()),
+            )
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .unwrap();
+        session
+            .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let registration = frame.commit().unwrap();
+        let predecessor = registration
+            .inputs()
+            .iter()
+            .find_map(|input| match input {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .unwrap();
+        let bounds = PhysicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap();
+        let scale = ScaleFactor::new(1.0).unwrap();
+        let facts = NativeWindowFacts::live()
+            .with_content_bounds(bounds)
+            .with_outer_bounds(bounds)
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_close(NativeCloseState::Clear, None);
+        session
+            .report_managed_native_snapshot([(predecessor, facts)], NativeWorkAreaRoster::Unknown)
+            .unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .measure_surface(
+                predecessor.surface(),
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap();
+
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let receipt = frame
+            .paint_plan(predecessor.surface())
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        frame.confirm_surface_painted(receipt).unwrap();
+        let output = frame
+            .commit()
+            .unwrap()
+            .take_painted_outputs()
+            .pop()
+            .unwrap();
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap();
+
+        let bridge = NativeHostBridge::new(NativeViewportMap::default());
+        bridge
+            .bind_viewport_route(ViewportId::ROOT, WindowId::from(91), predecessor)
+            .unwrap();
+        bridge.with_viewports_mut(|routes| {
+            routes.refresh_local_coordinates(&session);
+            routes.set_focus_reportable([predecessor]);
+            assert!(routes.block_semantic_viewport(ViewportId::ROOT));
+            assert!(
+                routes
+                    .local_coordinates_for_event(WindowId::from(91), None)
+                    .is_some()
+            );
+        });
+        (session, bridge, predecessor)
+    }
+
+    #[test]
+    fn workspace_root_continuation_moves_the_route_and_preserves_only_physical_authority() {
+        use dockspace::runtime::{NativeEffectOperation, SurfaceUnavailableReason};
+
+        let (mut session, bridge, predecessor) = workspace_root_fixture();
+        let reset = session
+            .prepare_layout_reset(workspace_root_layout(SurfaceId::new(2)))
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .submit_native_layout_reset(&reset, predecessor, SurfaceId::new(2))
+            .unwrap();
+        let continuation = frame.proposed_native_root_continuations().next().unwrap();
+        let successor = continuation.successor();
+        assert_eq!(continuation.predecessor(), predecessor);
+        assert_ne!(predecessor.surface(), successor.surface());
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut root_surface = predecessor.surface();
+        let (mut report, _) = bridge
+            .commit_host_frame_with_staging(frame, true, Some(&mut root_surface))
+            .unwrap();
+
+        assert_eq!(report.native_root_continuations(), &[continuation]);
+        assert_eq!(root_surface, successor.surface());
+        assert_eq!(session.native_local_coordinates(successor), None);
+        bridge.with_viewports(|routes| {
+            assert_eq!(routes.viewport(predecessor.surface()), None);
+            assert_eq!(routes.viewport(successor.surface()), Some(ViewportId::ROOT));
+            assert_eq!(routes.window(ViewportId::ROOT), Some(WindowId::from(91)));
+            assert_eq!(
+                routes.route_for_event(WindowId::from(91), None),
+                Some((ViewportId::ROOT, successor))
+            );
+            assert!(routes.has_window_receipt(ViewportId::ROOT, successor));
+            assert!(!routes.has_window_receipt(ViewportId::ROOT, predecessor));
+            assert_eq!(
+                routes.local_coordinates_for_event(WindowId::from(91), None),
+                None
+            );
+            assert_eq!(
+                routes.focus_binding_for_event(WindowId::from(91), None),
+                None
+            );
+            assert!(routes.semantic_viewport_blocked(ViewportId::ROOT));
+        });
+        assert_eq!(
+            bridge.workspace_replacement_predecessor(successor),
+            Some((ViewportId::ROOT, predecessor))
+        );
+        assert!(bridge.retirement_is_quiescence_candidate(predecessor));
+        assert!(
+            !bridge
+                .lock()
+                .retirements
+                .has_window(ViewportId::ROOT, predecessor)
+        );
+        assert!(bridge.retirement_destroyed_observations().is_empty());
+        assert!(bridge.front_event().is_none());
+        assert!(report.take_native_effects().iter().all(|effect| {
+            !matches!(
+                effect.operation(),
+                NativeEffectOperation::CreateWindow { .. }
+                    | NativeEffectOperation::CompensatingClose { .. }
+                    | NativeEffectOperation::RequestRootClose { .. }
+                    | NativeEffectOperation::RequestReplacement { .. }
+            )
+        }));
+
+        bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            1,
+            WindowId::from(91),
+            Some(ViewportId::ROOT),
+            None,
+            WindowEvent::Destroyed,
+        )));
+        assert_eq!(bridge.front_event().unwrap().binding(), Some(successor));
+        assert!(bridge.with_viewports(|routes| {
+            routes.has_received_destroyed(ViewportId::ROOT, successor, WindowId::from(91), 1)
+        }));
+    }
+
+    #[test]
+    fn workspace_root_continuation_preserves_legacy_commits_and_rejects_invalid_publication() {
+        use dockspace::runtime::{NativeReceiverAnswer, SurfaceUnavailableReason};
+
+        for target_conflict in [true, false] {
+            let (mut session, bridge, predecessor) = workspace_root_fixture();
+            let before = session.version();
+            let reset = session
+                .prepare_layout_reset(workspace_root_layout(SurfaceId::new(2)))
+                .unwrap();
+            let mut frame = session.begin_host_frame().unwrap();
+            frame
+                .submit_native_layout_reset(&reset, predecessor, SurfaceId::new(2))
+                .unwrap();
+            let continuation = frame.proposed_native_root_continuations().next().unwrap();
+            let successor = continuation.successor();
+            let peer = ViewportId::from_hash_of("root-continuation-target-conflict");
+            let peer_binding = bindings().1;
+            let mut root_surface = if target_conflict {
+                bridge
+                    .bind_viewport_route(peer, WindowId::from(92), peer_binding)
+                    .unwrap();
+                assert_eq!(peer_binding.surface(), successor.surface());
+                predecessor.surface()
+            } else {
+                SurfaceId::new(99)
+            };
+            let previous_root = root_surface;
+            let resource_count = bridge.lock().window_resources.bindings().count();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            assert!(
+                bridge
+                    .commit_host_frame_with_staging(frame, true, Some(&mut root_surface))
+                    .is_err()
+            );
+
+            assert_eq!(session.version(), before);
+            assert_eq!(root_surface, previous_root);
+            assert_eq!(bridge.workspace_replacement_predecessor(successor), None);
+            assert_eq!(
+                bridge.lock().window_resources.bindings().count(),
+                resource_count
+            );
+            assert!(!bridge.lock().retirements.has_pending_work());
+            bridge.with_viewports(|routes| {
+                assert_eq!(routes.binding(ViewportId::ROOT), Some(predecessor));
+                assert_eq!(routes.window(ViewportId::ROOT), Some(WindowId::from(91)));
+                assert!(routes.has_window_receipt(ViewportId::ROOT, predecessor));
+                assert!(!routes.has_window_receipt(ViewportId::ROOT, successor));
+                assert!(
+                    routes
+                        .local_coordinates_for_event(WindowId::from(91), None)
+                        .is_some()
+                );
+                assert_eq!(
+                    routes.focus_binding_for_event(WindowId::from(91), None),
+                    Some(predecessor)
+                );
+                if target_conflict {
+                    assert_eq!(routes.binding(peer), Some(peer_binding));
+                    assert_eq!(routes.window(peer), Some(WindowId::from(92)));
+                }
+            });
+        }
+
+        // Initial registration may replace a same-surface Root before its first
+        // physical route is attached. Both commit entry points keep that path.
+        for publish_root in [false, true] {
+            let (mut session, _, predecessor) = workspace_root_fixture();
+            let bridge = NativeHostBridge::new(NativeViewportMap::default());
+            let reset = session
+                .prepare_layout_reset(workspace_root_layout(predecessor.surface()))
+                .unwrap();
+            let mut frame = session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            frame.submit_layout_reset(&reset).unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            let mut root_surface = predecessor.surface();
+            let (report, _) = bridge
+                .commit_host_frame_with_staging(
+                    frame,
+                    true,
+                    publish_root.then_some(&mut root_surface),
+                )
+                .unwrap();
+            assert_eq!(report.native_root_continuations().len(), 1);
+            assert_eq!(root_surface, predecessor.surface());
+            assert_eq!(
+                bridge.with_viewports(|routes| routes.binding(ViewportId::ROOT)),
+                None
+            );
+        }
     }
 
     #[test]
@@ -1769,35 +2080,45 @@ impl CursorPrefixClaim<'_> {
 impl NativeHostState {
     fn workspace_replacement_route(
         &self,
-        successor: NativeSurfaceBinding,
-    ) -> Option<(ViewportId, NativeSurfaceBinding)> {
-        let viewport = self.viewports.viewport(successor.surface())?;
-        let predecessor = self.viewports.binding(viewport)?;
-        (predecessor != successor && predecessor.window_token() == successor.window_token())
-            .then_some((viewport, predecessor))
+        continuation: NativeRootContinuation,
+    ) -> Result<Option<ViewportId>, NativeHostProtocolError> {
+        let predecessor = continuation.predecessor();
+        match self.viewports.viewport(predecessor.surface()) {
+            Some(viewport) if self.viewports.binding(viewport) == Some(predecessor) => {
+                Ok(Some(viewport))
+            }
+            // A same-surface reset can precede the first physical attachment.
+            None if predecessor.surface() == continuation.successor().surface() => Ok(None),
+            _ => Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                predecessor.surface(),
+            )),
+        }
     }
 
     /// The speculative rows carry backing promises, never callback authority.
     /// Holding this lock through publication prevents another owner spending them.
     fn prepare_workspace_replacement(
         &mut self,
-        bindings: impl Iterator<Item = NativeSurfaceBinding>,
+        continuations: impl Iterator<Item = NativeRootContinuation>,
     ) -> Result<(), NativeRuntimeError> {
         self.refresh_window_resource_references();
-        for successor in bindings {
-            let Some((viewport, predecessor)) = self.workspace_replacement_route(successor) else {
+        for continuation in continuations {
+            let predecessor = continuation.predecessor();
+            let successor = continuation.successor();
+            let Some(viewport) = self.workspace_replacement_route(continuation)? else {
                 continue;
             };
             self.viewports
-                .validate_same_window_replacement(viewport, predecessor, successor)
+                .validate_workspace_root_continuation(viewport, continuation)
                 .map_err(|_| {
-                    NativeHostProtocolError::NativeAdmissionRouteChanged(successor.surface())
+                    NativeHostProtocolError::NativeAdmissionRouteChanged(predecessor.surface())
                 })?;
             let window = self
                 .viewports
                 .window(viewport)
                 .expect("validated same-window replacement retains its physical window");
-            if self.retirements.has_quiescence_owner(successor)
+            if self.retirements.has_quiescence_owner(predecessor)
+                || self.retirements.has_quiescence_owner(successor)
                 || self.retirements.owns_window(window, None)
             {
                 return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
@@ -1816,31 +2137,23 @@ impl NativeHostState {
 
     /// Every fallible capacity and receipt check ran under this same lock.
     fn commit_workspace_replacement(&mut self, report: &HostFrameReport) {
-        if !report.inputs().iter().any(|input| {
-            matches!(
-                input,
-                dockspace::runtime::HostInputOutcome::LayoutReset { .. }
-                    | dockspace::runtime::HostInputOutcome::DocumentRestored { .. }
-            )
-        }) {
+        if report.native_root_continuations().is_empty() {
             self.window_resources.abort_workspace_replacement();
             return;
         }
-        for &successor in report.native_bindings() {
-            let Some((viewport, predecessor)) = self.workspace_replacement_route(successor) else {
+        for &continuation in report.native_root_continuations() {
+            let predecessor = continuation.predecessor();
+            let successor = continuation.successor();
+            let Some(viewport) = self
+                .workspace_replacement_route(continuation)
+                .expect("the prepaid exact predecessor retains its viewport")
+            else {
                 continue;
             };
-            let window = self
-                .viewports
-                .window(viewport)
-                .expect("prepaid replacement retains its current window");
-            let displaced = self
-                .viewports
-                .replace(viewport, predecessor, window, successor)
-                .expect("same-lock replacement was validated before core publication");
-            debug_assert!(displaced.is_none());
+            self.viewports
+                .commit_workspace_root_continuation(viewport, continuation);
             self.window_resources
-                .retain_workspace_predecessor(viewport, predecessor);
+                .retain_workspace_predecessor(viewport, predecessor, successor);
             self.window_resources.retire(viewport, predecessor);
             self.window_resources
                 .commit_host_reference(viewport, successor);
@@ -3854,9 +4167,25 @@ impl NativeHostBridge {
         &self,
         frame: DockspaceHostFrame<'_>,
         include_staging: bool,
+        root_surface: Option<&mut SurfaceId>,
     ) -> Result<(HostFrameReport, Vec<ViewportId>), NativeRuntimeError> {
         let mut records = self.lock();
-        if let Err(error) = records.prepare_workspace_replacement(frame.proposed_native_bindings())
+        let root_continuation = frame
+            .proposed_native_root_continuations()
+            .find(|continuation| {
+                records.viewports.binding(ViewportId::ROOT) == Some(continuation.predecessor())
+            });
+        if let (Some(root_surface), Some(continuation)) =
+            (root_surface.as_deref(), root_continuation)
+            && *root_surface != continuation.predecessor().surface()
+        {
+            return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                continuation.predecessor().surface(),
+            )
+            .into());
+        }
+        if let Err(error) =
+            records.prepare_workspace_replacement(frame.proposed_native_root_continuations())
         {
             records.window_resources.abort_workspace_replacement();
             return Err(error);
@@ -3898,6 +4227,14 @@ impl NativeHostBridge {
         match committed {
             Ok((report, wake)) => {
                 records.commit_workspace_replacement(&report);
+                if let Some(root_surface) = root_surface
+                    && let Some(continuation) = report
+                        .native_root_continuations()
+                        .iter()
+                        .find(|&&continuation| Some(continuation) == root_continuation)
+                {
+                    *root_surface = continuation.successor().surface();
+                }
                 Ok((report, wake))
             }
             Err(error) => {

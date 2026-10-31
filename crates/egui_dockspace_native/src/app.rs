@@ -492,6 +492,31 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).request_layout_reset(layout)
     }
 
+    /// Queues a layout reset that continues the external Root on an incoming surface.
+    ///
+    /// The layout must contain only `incoming_root`. Its old logical host surface
+    /// may disappear; the same OS window continues under a fresh binding. The
+    /// logical host field and native route change with the core commit. Wait for
+    /// fresh presentation before interacting with the replacement layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns queue/preparation errors, a missing incoming surface, an
+    /// unavailable external Root or a conflicting window target.
+    pub fn request_layout_reset_rebinding_root(
+        &self,
+        layout: DockspaceLayout,
+        incoming_root: SurfaceId,
+    ) -> Result<(), NativeLayoutRequestError> {
+        lock_state(&self.state).request_layout_reset_rebinding_root(layout, incoming_root)
+    }
+
+    /// Returns the logical surface currently bound to the application's Root window.
+    #[must_use]
+    pub fn root_surface(&self) -> SurfaceId {
+        lock_state(&self.state).root_surface()
+    }
+
     /// Captures JSON for the current committed document without taking pane data.
     ///
     /// The application owns storage and preset names. Accepted but unpublished
@@ -530,6 +555,30 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         recognize: impl Fn(dockspace::runtime::DockspaceDocumentId, &str) -> bool,
     ) -> Result<(), NativeLayoutRequestError> {
         lock_state(&self.state).request_document_restore_json(bytes, recognize)
+    }
+
+    /// Restores a document and continues the external Root on its declared incoming surface.
+    ///
+    /// Core rebases Root/Child references and placement together. Explicit Child
+    /// declarations resume through normal budgeted creation after predecessor
+    /// quiescence. The physical Root window survives the logical replacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns ordinary restore errors, invalid native hosting declarations or
+    /// an unavailable exact external Root window.
+    #[cfg(feature = "serde")]
+    pub fn request_document_restore_json_rebinding_root(
+        &self,
+        bytes: &[u8],
+        incoming_root: SurfaceId,
+        recognize: impl Fn(dockspace::runtime::DockspaceDocumentId, &str) -> bool,
+    ) -> Result<(), NativeLayoutRequestError> {
+        lock_state(&self.state).request_document_restore_json_rebinding_root(
+            bytes,
+            incoming_root,
+            recognize,
+        )
     }
 
     /// Takes the exact terminal status of the last queued application action.

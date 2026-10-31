@@ -11,9 +11,9 @@ use dockspace::runtime::{
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspaceHostFrame,
     DockspacePresentationTransition, DockspacePresentationTransitionId,
-    DockspacePresentationTransitionResult, DockspaceRuntimeError, DockspaceSubmittedAction,
-    HostFrameReport, HostInputOutcome, PreparedCloseRequest, PreparedDockAction,
-    PreparedDockspaceLayoutReset,
+    DockspacePresentationTransitionResult, DockspaceRuntimeError, DockspaceRuntimeErrorKind,
+    DockspaceSubmittedAction, HostFrameReport, HostInputOutcome, NativeSurfaceBinding,
+    PreparedCloseRequest, PreparedDockAction, PreparedDockspaceLayoutReset,
 };
 use egui_dockspace::DockspaceActionStatus;
 
@@ -126,6 +126,18 @@ impl std::error::Error for NativeActionFailure {}
 /// behalf. Consume this result before submitting a decision or another command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeActionStatus {
+    /// Current native state rejected one Root continuation before replacement.
+    ///
+    /// The frame may still commit its earlier ordered input. The command slot
+    /// reaches this terminal result without stopping the native runtime.
+    RootContinuationRejected {
+        /// Exact Root binding frozen when this command was queued.
+        predecessor: NativeSurfaceBinding,
+        /// Incoming logical Root before presentation identity rebasing.
+        incoming_root: SurfaceId,
+        /// Stable core category of the preparation rejection.
+        kind: DockspaceRuntimeErrorKind,
+    },
     /// A docking, selection, or reopening command reached its terminal status.
     Dock(DockspaceActionStatus),
     /// A content-close request opened or reused one core-owned plan.
@@ -208,10 +220,16 @@ pub(crate) enum NativeApplicationCommand {
     },
     ArrangementLock(Box<DockPolicy>),
     LayoutReset(Box<PreparedDockspaceLayoutReset>),
+    LayoutResetRebindingRoot {
+        reset: Box<PreparedDockspaceLayoutReset>,
+        existing_root: NativeSurfaceBinding,
+        incoming_root: SurfaceId,
+    },
     #[cfg(feature = "serde")]
     DocumentRestore {
         restore: Box<PreparedDockspaceDocumentRestore>,
         root_surface: SurfaceId,
+        existing_root: Option<NativeSurfaceBinding>,
     },
 }
 
@@ -278,15 +296,30 @@ impl NativeApplicationAction {
                     NativeWorkspaceReplacement::Layout(reset),
                 ));
             }
+            NativeApplicationCommand::LayoutResetRebindingRoot {
+                reset,
+                existing_root,
+                incoming_root,
+            } => {
+                return Ok(NativeApplicationSubmission::Replacement(
+                    NativeWorkspaceReplacement::LayoutRebindingRoot {
+                        reset,
+                        existing_root,
+                        incoming_root,
+                    },
+                ));
+            }
             #[cfg(feature = "serde")]
             NativeApplicationCommand::DocumentRestore {
                 restore,
                 root_surface,
+                existing_root,
             } => {
                 return Ok(NativeApplicationSubmission::Replacement(
                     NativeWorkspaceReplacement::Document {
                         restore,
                         root_surface,
+                        existing_root,
                     },
                 ));
             }
@@ -305,7 +338,10 @@ impl NativeApplicationAction {
             NativeApplicationCommand::ArrangementLock(policy) => {
                 NativeActionExpectation::ArrangementLock(policy.arrangement_locked())
             }
-            NativeApplicationCommand::LayoutReset(_) => NativeActionExpectation::LayoutReset,
+            NativeApplicationCommand::LayoutReset(_)
+            | NativeApplicationCommand::LayoutResetRebindingRoot { .. } => {
+                NativeActionExpectation::LayoutReset
+            }
             #[cfg(feature = "serde")]
             NativeApplicationCommand::DocumentRestore { .. } => {
                 NativeActionExpectation::DocumentRestore
@@ -315,7 +351,8 @@ impl NativeApplicationAction {
 
     const fn is_replacement(&self) -> bool {
         match self.command {
-            NativeApplicationCommand::LayoutReset(_) => true,
+            NativeApplicationCommand::LayoutReset(_)
+            | NativeApplicationCommand::LayoutResetRebindingRoot { .. } => true,
             #[cfg(feature = "serde")]
             NativeApplicationCommand::DocumentRestore { .. } => true,
             _ => false,
@@ -333,10 +370,16 @@ pub(crate) enum NativeApplicationSubmission {
 
 pub(crate) enum NativeWorkspaceReplacement {
     Layout(Box<PreparedDockspaceLayoutReset>),
+    LayoutRebindingRoot {
+        reset: Box<PreparedDockspaceLayoutReset>,
+        existing_root: NativeSurfaceBinding,
+        incoming_root: SurfaceId,
+    },
     #[cfg(feature = "serde")]
     Document {
         restore: Box<PreparedDockspaceDocumentRestore>,
         root_surface: SurfaceId,
+        existing_root: Option<NativeSurfaceBinding>,
     },
 }
 
@@ -364,16 +407,63 @@ impl NativeApplicationSubmission {
                 frame.submit_layout_reset(&reset)?;
                 Ok(NativeSubmittedApplicationAction::LayoutReset)
             }
+            Self::Replacement(NativeWorkspaceReplacement::LayoutRebindingRoot {
+                reset,
+                existing_root,
+                incoming_root,
+            }) => {
+                if let Err(error) =
+                    frame.submit_native_layout_reset(&reset, existing_root, incoming_root)
+                {
+                    return root_continuation_rejection(error, existing_root, incoming_root);
+                }
+                Ok(NativeSubmittedApplicationAction::LayoutReset)
+            }
             #[cfg(feature = "serde")]
             Self::Replacement(NativeWorkspaceReplacement::Document {
                 restore,
                 root_surface,
+                existing_root,
             }) => {
-                frame.submit_native_document_restore(&restore, root_surface)?;
+                if let Some(existing_root) = existing_root {
+                    if let Err(error) = frame.submit_native_document_restore_rebinding_root(
+                        &restore,
+                        existing_root,
+                        root_surface,
+                    ) {
+                        return root_continuation_rejection(error, existing_root, root_surface);
+                    }
+                } else {
+                    frame.submit_native_document_restore(&restore, root_surface)?;
+                }
                 Ok(NativeSubmittedApplicationAction::DocumentRestore)
             }
             Self::Terminal(status) => Ok(NativeSubmittedApplicationAction::Terminal(status)),
         }
+    }
+}
+
+fn root_continuation_rejection(
+    error: DockspaceRuntimeError,
+    predecessor: NativeSurfaceBinding,
+    incoming_root: SurfaceId,
+) -> Result<NativeSubmittedApplicationAction, DockspaceRuntimeError> {
+    // Preparation rejects before append. Protocol and publication failures still
+    // propagate so a poisoned candidate can never be committed as a rejection.
+    if matches!(
+        error.kind(),
+        DockspaceRuntimeErrorKind::OperationConflict
+            | DockspaceRuntimeErrorKind::InvalidConfiguration
+    ) {
+        Ok(NativeSubmittedApplicationAction::Terminal(
+            NativeActionStatus::RootContinuationRejected {
+                predecessor,
+                incoming_root,
+                kind: error.kind(),
+            },
+        ))
+    } else {
+        Err(error)
     }
 }
 
@@ -483,13 +573,14 @@ impl NativeApplicationActions {
                 else {
                     return Err(());
                 };
-                let NativeActionStatus::Stale {
-                    expected: stale, ..
-                } = status
-                else {
-                    return Err(());
+                let valid = match status {
+                    NativeActionStatus::Stale {
+                        expected: stale, ..
+                    } => expected == stale,
+                    NativeActionStatus::RootContinuationRejected { .. } => true,
+                    _ => false,
                 };
-                if expected != stale || !kind.is_replacement() {
+                if !valid || !kind.is_replacement() {
                     return Err(());
                 }
                 self.state = NativeApplicationActionState::Terminal(Ok(status));

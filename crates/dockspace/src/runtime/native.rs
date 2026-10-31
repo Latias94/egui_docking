@@ -91,6 +91,43 @@ pub struct NativeSurfaceBinding {
     binding: ViewportBinding,
 }
 
+/// Exact external-Root binding continuation from one workspace replacement.
+///
+/// This pair retains one physical window while its logical surface or epoch
+/// changes. It grants no successor coordinates, focus or presentation authority.
+/// Hosts prepare resources from a frame's proposed pair and install routes only
+/// after the committed report confirms that same pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeRootContinuation {
+    predecessor: NativeSurfaceBinding,
+    successor: NativeSurfaceBinding,
+}
+
+impl NativeRootContinuation {
+    pub(super) const fn from_pair(
+        provider: PlatformObservationLease,
+        predecessor: ViewportBinding,
+        successor: ViewportBinding,
+    ) -> Self {
+        Self {
+            predecessor: NativeSurfaceBinding::from_binding(provider, predecessor),
+            successor: NativeSurfaceBinding::from_binding(provider, successor),
+        }
+    }
+
+    /// Returns the exact binding whose physical window continues.
+    #[must_use]
+    pub const fn predecessor(self) -> NativeSurfaceBinding {
+        self.predecessor
+    }
+
+    /// Returns its new logical binding, which still needs fresh host facts.
+    #[must_use]
+    pub const fn successor(self) -> NativeSurfaceBinding {
+        self.successor
+    }
+}
+
 /// Adapter-owned identity for one platform work area.
 ///
 /// The token is not a geometry proof by itself. Hosts must obtain the binding

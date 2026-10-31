@@ -9,10 +9,15 @@ Close/Allow/reopen, lock/rejected move/select/unlock, Default, JSON capture and
 restore, content unload/reload and explicit selection are programmatic. Serde
 also replaces two simultaneously live children, verifies their old X11 IDs
 are destroyed, edits a fresh child, then docks both replacement children back.
+EGUI_DOCKSPACE_EDITOR_ROOT_REBIND=1 appends a cross-surface layout reset and
+Root edit, then a saved JSON Root rebind/edit with serde. The original Root's
+X11 connection observes StructureNotify throughout, before releasing exit.
 """
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import os
 from pathlib import Path
 import queue
@@ -65,10 +70,54 @@ def assert_destroyed(window_id: str) -> None:
         raise RuntimeError(f"could not verify destruction of {window_id}: {result.stderr.strip()}")
 
 
+class RootWindow:
+    """Observe the original X11 resource without another process or reader thread."""
+
+    class Event(ctypes.Union):
+        _fields_ = [("type", ctypes.c_int), ("pad", ctypes.c_long * 24)]
+
+    def __init__(self, window_id: str) -> None:
+        library = ctypes.util.find_library("X11")
+        if library is None:
+            raise RuntimeError("the opt-in Root continuity check requires libX11")
+        self.x11 = ctypes.CDLL(library)
+        for name, arguments, result in [
+            ("XOpenDisplay", [ctypes.c_char_p], ctypes.c_void_p),
+            ("XSelectInput", [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_long], ctypes.c_int),
+            ("XSync", [ctypes.c_void_p, ctypes.c_int], ctypes.c_int),
+            ("XPending", [ctypes.c_void_p], ctypes.c_int),
+            ("XNextEvent", [ctypes.c_void_p, ctypes.POINTER(self.Event)], ctypes.c_int),
+            ("XCloseDisplay", [ctypes.c_void_p], ctypes.c_int),
+        ]:
+            function = getattr(self.x11, name)
+            function.argtypes = arguments
+            function.restype = result
+        self.display = self.x11.XOpenDisplay(None)
+        if not self.display:
+            raise RuntimeError("could not open the Root continuity X11 connection")
+        self.window_id = window_id
+        self.x11.XSelectInput(self.display, int(window_id), 1 << 17)  # StructureNotifyMask
+        self.check()
+
+    def check(self) -> None:
+        self.x11.XSync(self.display, 0)
+        event = self.Event()
+        while self.x11.XPending(self.display):
+            self.x11.XNextEvent(self.display, ctypes.byref(event))
+            if event.type == 17:  # DestroyNotify for the selected original Root
+                raise RuntimeError(f"the original Root {self.window_id} emitted DestroyNotify")
+
+    def close(self) -> None:
+        if self.display:
+            self.x11.XCloseDisplay(self.display)
+            self.display = None
+
+
 def run(binary: Path) -> None:
     if not os.environ.get("DISPLAY"):
         raise RuntimeError("this finite physical-input workflow requires DISPLAY")
     xdotool("getdisplaygeometry")
+    root_rebinding = os.environ.get("EGUI_DOCKSPACE_EDITOR_ROOT_REBIND") == "1"
     process = subprocess.Popen(
         [str(binary), "--smoke"],
         stdin=subprocess.PIPE,
@@ -96,6 +145,8 @@ def run(binary: Path) -> None:
         "RESET_EDIT": "2",
         "RESTORED_EDIT": "4",
         "NATIVE_RESTORED_EDIT": "4",
+        "ROOT_REBIND_LAYOUT_EDIT": "2",
+        "ROOT_REBIND_DOCUMENT_EDIT": "2",
     }
     edits: list[str] = []
     profile: str | None = None
@@ -112,18 +163,40 @@ def run(binary: Path) -> None:
     input_target: str | None = None
     os_close_sent = False
     complete = False
-    deadline = time.monotonic() + 105
+    original_root: str | None = None
+    root_observer: RootWindow | None = None
+    root_verified = False
+    rebind_request: tuple[str, str] | None = None
+    rebind_presented: str | None = None
+    deadline = time.monotonic() + 105 + (30 if root_rebinding else 0)
+
+    def root_checkpoint() -> None:
+        if root_observer is None or original_root is None:
+            raise RuntimeError("Root rebinding preceded observation of the original Root")
+        root_observer.check()
+        if windows(process.pid, "root") != {original_root}:
+            raise RuntimeError("Root rebinding replaced or lost the original visible X11 window")
+        xdotool("getwindowgeometry", original_root)
+        for retired in children:
+            assert_destroyed(retired)
+        if windows(process.pid, "child"):
+            raise RuntimeError("Root rebinding retained a real OS child")
+
     try:
         while time.monotonic() < deadline:
             try:
                 line = lines.get(timeout=min(1, max(0, deadline - time.monotonic())))
             except queue.Empty:
+                if root_observer is not None and not root_verified:
+                    root_observer.check()
                 if process.poll() is not None:
                     break
                 continue
             if line is None:
                 break
             print(line, end="", flush=True)
+            if root_observer is not None and not root_verified:
+                root_observer.check()
             if "editor-smoke: FAIL" in line:
                 raise RuntimeError(line.strip())
             if "editor-smoke: profile=" in line:
@@ -151,6 +224,20 @@ def run(binary: Path) -> None:
                         "multi-document-restored", "multi-children-presented",
                         "multi-inspector-docked-back", "multi-assets-docked-back",
                     ])
+                if root_rebinding:
+                    edits.append("ROOT_REBIND_LAYOUT_EDIT")
+                    if profile == "serde":
+                        operations.append("root-rebind-capture")
+                    operations.extend([
+                        "root-rebind-layout-requested", "root-rebind-layout-committed",
+                        "root-rebind-layout-presented",
+                    ])
+                    if profile == "serde":
+                        edits.append("ROOT_REBIND_DOCUMENT_EDIT")
+                        operations.extend([
+                            "root-rebind-document-requested", "root-rebind-document-committed",
+                            "root-rebind-document-presented",
+                        ])
                 operations.append("final-quiescence")
                 if int(count) != len(edits):
                     raise RuntimeError("the workflow profile declared the wrong OS edit count")
@@ -181,7 +268,9 @@ def run(binary: Path) -> None:
                         "the fifth OS edit was requested before close/Allow/reopen"
                     )
                 if marker == "RESET_EDIT" and expected_programmatic != (
-                    "capture-preset" if profile == "serde" else "final-quiescence"
+                    "capture-preset" if profile == "serde" else (
+                        "root-rebind-layout-requested" if root_rebinding else "final-quiescence"
+                    )
                 ):
                     raise RuntimeError("RESET_EDIT preceded fresh Default presentation/select")
                 if marker == "RESTORED_EDIT" and expected_programmatic != "multi-layout":
@@ -193,7 +282,28 @@ def run(binary: Path) -> None:
                         raise RuntimeError("the eighth edit did not target the fresh Inspector child")
                     if restore_destroyed != set(old_children):
                         raise RuntimeError("the eighth edit preceded destruction of both old children")
+                if marker.startswith("ROOT_REBIND_"):
+                    after_input = (
+                        "root-rebind-document-requested"
+                        if marker == "ROOT_REBIND_LAYOUT_EDIT" and profile == "serde"
+                        else "final-quiescence"
+                    )
+                    if expected_programmatic != after_input or target != original_root:
+                        raise RuntimeError("Root input preceded fresh presentation in the original OS window")
+                    root_checkpoint()
                 if kind == "root":
+                    if root_rebinding:
+                        if original_root is None:
+                            if marker != "ROOT_EDIT":
+                                raise RuntimeError("the first Root observation missed the initial edit")
+                            original_root = target
+                            root_observer = RootWindow(target)
+                            print(
+                                f"editor-x11: observing original Root window_id={target} StructureNotify=true",
+                                flush=True,
+                            )
+                        if target != original_root:
+                            raise RuntimeError("a Root edit changed the original X11 window ID")
                     for retired in children:
                         assert_destroyed(retired)
                 if target not in windows(process.pid, kind):
@@ -209,7 +319,10 @@ def run(binary: Path) -> None:
                     raise RuntimeError(f"{marker} input point lies outside the actual widget bounds")
                 input_target = target
                 xdotool("windowactivate", "--sync", target)
-                if marker in {"REOPENED_EDIT", "RESET_EDIT", "RESTORED_EDIT"}:
+                if marker in {
+                    "REOPENED_EDIT", "RESET_EDIT", "RESTORED_EDIT",
+                    "ROOT_REBIND_LAYOUT_EDIT", "ROOT_REBIND_DOCUMENT_EDIT",
+                }:
                     # Wait for focused=<marker> from the actual TextEdit. A click
                     # here would replace the focus transfer being verified; its
                     # center may also lie behind the surviving floating Preview.
@@ -295,10 +408,13 @@ def run(binary: Path) -> None:
                     "quiescent", "default-reset", "default-presented", "default-select",
                 }:
                     expected_edits = edits[:5]
-                elif operation in {
-                    "final-quiescence", "multi-inspector-docked-back", "multi-assets-docked-back"
-                }:
+                elif operation == "final-quiescence":
                     expected_edits = edits
+                elif operation in {"multi-inspector-docked-back", "multi-assets-docked-back"}:
+                    expected_edits = edits[:8]
+                elif operation.startswith("root-rebind-"):
+                    base_edits = 8 if profile == "serde" else 6
+                    expected_edits = edits[:base_edits + int(operation.startswith("root-rebind-document-"))]
                 elif operation.startswith("multi-") or operation == "capture-multi-preset":
                     expected_edits = edits[:7]
                 else:
@@ -307,7 +423,38 @@ def run(binary: Path) -> None:
                     raise RuntimeError(
                         f"programmatic {operation} preceded its required OS edits"
                     )
-                if operation == "multi-inspector-presented":
+                if operation.startswith("root-rebind-"):
+                    root_checkpoint()
+                    if operation == "root-rebind-capture":
+                        match = re.search(r"incoming_surface=(\d+) window_id=(\d+)", line)
+                        if match is None or match[2] != original_root:
+                            raise RuntimeError("Root JSON capture lost the original OS window")
+                    else:
+                        match = re.search(
+                            r"old_surface=(\d+) incoming_surface=(\d+) "
+                            r"(?:new_surface=(\d+) )?window_id=(\d+)", line,
+                        )
+                        if match is None or match[4] != original_root:
+                            raise RuntimeError("Root rebinding omitted the original OS window ID")
+                        old, incoming, current, _ = match.groups()
+                        if operation.endswith("-requested"):
+                            if old == incoming:
+                                raise RuntimeError("the opt-in Root request did not cross surfaces")
+                            rebind_request = (old, incoming)
+                            rebind_presented = None
+                        elif rebind_request != (old, incoming) or current in {None, old}:
+                            raise RuntimeError("Root commit/presentation did not follow its cross-surface request")
+                        elif operation.endswith("-committed"):
+                            if "logically-committed=true old-absent=true" not in line:
+                                raise RuntimeError("Root commit omitted the published host/old graph check")
+                            rebind_presented = current
+                        elif (
+                            current != rebind_presented
+                            or "fresh-presented=true quiescent=true" not in line
+                            or "old-absent=true" not in line
+                        ):
+                            raise RuntimeError("Root input readiness omitted fresh Presented/quiescence")
+                elif operation == "multi-inspector-presented":
                     match = re.search(r"window_id=(\d+) first-live=true quiescent=true", line)
                     if match is None or match[1] not in windows(process.pid, "child"):
                         raise RuntimeError("Inspector first-live lacked its real OS child")
@@ -380,6 +527,21 @@ def run(binary: Path) -> None:
                         raise RuntimeError("final quiescence preceded real replacement and Dock Back destruction")
                     if windows(process.pid, "child"):
                         raise RuntimeError("final quiescence retained a real OS child")
+                if operation == "final-quiescence" and root_rebinding:
+                    root_checkpoint()
+                    if (
+                        "registry=8 text=preserved fresh-presented=true quiescent=true "
+                        "tabs=preserved selected=preserved"
+                    ) not in line:
+                        raise RuntimeError("Root rebinding omitted final stable pane verification")
+                    root_verified = True
+                    print(
+                        f"editor-x11: original Root window_id={original_root} unchanged=true "
+                        "DestroyNotify=false all-children-destroyed=true final-quiescence=true",
+                        flush=True,
+                    )
+                    process.stdin.write("root-rebind-observed\n")
+                    process.stdin.flush()
                 expected_programmatic = next(programmatic, "COMPLETE")
             elif "editor-smoke: complete;" in line:
                 if expected != "COMPLETE" or accepted != edits:
@@ -388,6 +550,8 @@ def run(binary: Path) -> None:
                     raise RuntimeError(
                         "the application completed before Default/restore quiescence"
                     )
+                if root_rebinding and not root_verified:
+                    raise RuntimeError("the application completed before the independent Root continuity proof")
                 lifetimes = 6 if profile == "serde" else 2
                 if not os_close_sent or len(children) != lifetimes or len(set(children)) != lifetimes:
                     raise RuntimeError(f"the workflow did not exercise {lifetimes} distinct child lifetimes")
@@ -403,8 +567,11 @@ def run(binary: Path) -> None:
             f"editor-x11: {len(edits)} real focused edits with exact Inspector/Document items, "
             f"{len(children)} destroyed child windows, programmatic close/Allow/reopen and "
             f"lock/rejected move/select/unlock, Default and {profile} profile with final quiescence verified"
+            + ("; original Root survived cross-surface rebinding and fresh Root editing" if root_rebinding else "")
         )
     finally:
+        if root_observer is not None:
+            root_observer.close()
         if process.poll() is None:
             process.terminate()
             try:

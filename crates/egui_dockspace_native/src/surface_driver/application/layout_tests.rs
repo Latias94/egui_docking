@@ -102,7 +102,9 @@ fn commit_queued(
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
-    let report = frame.commit().unwrap();
+    let report = frame
+        .commit_publishing_root(&mut state.root_surface)
+        .unwrap();
     assert!(
         state
             .application_actions
@@ -508,6 +510,249 @@ mod persistence {
                 crate::capabilities::capabilities_for_backend(NativeWindowingBackend::Windows),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn root_rebinding_publishes_the_host_field_and_same_window_route_before_report_settlement() {
+        let mut state = persistent_state();
+        let registration = commit_native_prefix(&mut state);
+        let original = registration.native_bindings()[0];
+        state
+            .coordinator
+            .bind_viewport(egui::ViewportId::ROOT, WindowId::from(11), original)
+            .unwrap();
+        record_fresh_root_facts(&mut state);
+        commit_native_prefix(&mut state);
+        let panes = state.panes.0.clone();
+
+        for incoming in [OTHER_SURFACE, SURFACE] {
+            let predecessor = state
+                .coordinator
+                .viewport_binding(egui::ViewportId::ROOT)
+                .unwrap();
+            let before_surface = state.root_surface;
+            let candidate =
+                DockspaceLayout::new([surface(incoming, PRESET_ROOT, &[FIRST, SECOND], SECOND)])
+                    .unwrap();
+            state
+                .request_layout_reset_rebinding_root(candidate, incoming)
+                .unwrap();
+            let action = state.application_actions.take().unwrap();
+            let published = state.coordinator.session().version();
+            let mut frame = state
+                .coordinator
+                .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            let submission = action.submit(&mut frame.frame, published).unwrap();
+            let submitted = submission.finish(&mut frame.frame).unwrap();
+            let proposals = frame
+                .frame
+                .proposed_native_root_continuations()
+                .collect::<Vec<_>>();
+            assert_eq!(proposals.len(), 1);
+            assert_eq!(proposals[0].predecessor(), predecessor);
+            let successor = proposals[0].successor();
+            assert_ne!(successor.surface(), before_surface);
+            if incoming == SURFACE {
+                assert_ne!(
+                    successor.surface(),
+                    incoming,
+                    "retired incoming IDs must rebase before continuation"
+                );
+            }
+            assert_eq!(state.root_surface, before_surface);
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            let mut report = frame
+                .commit_publishing_root(&mut state.root_surface)
+                .unwrap();
+
+            // No report settlement has run: all three published identities already agree.
+            assert_eq!(state.root_surface, successor.surface());
+            assert_eq!(report.native_root_continuations(), proposals);
+            assert_eq!(
+                state.coordinator.viewport_binding(egui::ViewportId::ROOT),
+                Some(successor)
+            );
+            assert!(
+                state
+                    .coordinator
+                    .session()
+                    .view()
+                    .surface(before_surface)
+                    .is_none()
+            );
+            assert!(
+                state
+                    .coordinator
+                    .session()
+                    .view()
+                    .item(SECOND)
+                    .unwrap()
+                    .is_selected()
+            );
+            assert!(
+                state
+                    .coordinator
+                    .session()
+                    .native_local_coordinates(successor)
+                    .is_none()
+            );
+            assert!(
+                state
+                    .coordinator
+                    .session()
+                    .presented_surface(successor.surface())
+                    .is_none()
+            );
+            assert!(report.take_native_effects().is_empty());
+            state
+                .coordinator
+                .dispatch_bridge()
+                .with_viewports(|routes| {
+                    assert_eq!(
+                        routes.window(egui::ViewportId::ROOT),
+                        Some(WindowId::from(11))
+                    );
+                    assert!(routes.has_window_receipt(egui::ViewportId::ROOT, successor));
+                    assert!(!routes.has_window_receipt(egui::ViewportId::ROOT, predecessor));
+                });
+            assert!(
+                state
+                    .application_actions
+                    .settle_submission(Some(submitted), &report)
+                    .unwrap()
+            );
+            assert!(matches!(
+                take(&mut state),
+                NativeActionStatus::LayoutReset { .. }
+            ));
+            state.coordinator.settle_host_frame_report(&report).unwrap();
+            state.coordinator.settle_host_frame_report(&report).unwrap();
+            assert_eq!(state.root_surface, successor.surface());
+            assert_eq!(state.panes.0, panes);
+            record_fresh_root_facts(&mut state);
+            commit_native_prefix(&mut state);
+        }
+    }
+
+    #[test]
+    fn root_rebinding_conflicts_leave_the_host_running_and_release_the_command_slot() {
+        let mut state =
+            state_from_session(persistent_session(child_layout(), DockPolicy::default()));
+        let registration = commit_native_prefix(&mut state);
+        let root = registration.native_bindings()[0];
+        state
+            .coordinator
+            .bind_viewport(egui::ViewportId::ROOT, WindowId::from(11), root)
+            .unwrap();
+        state
+            .coordinator
+            .register_native_root(OTHER_SURFACE, HostWindowToken::new(22))
+            .unwrap();
+        let registration = commit_native_prefix(&mut state);
+        let peer = *registration
+            .native_bindings()
+            .iter()
+            .find(|binding| binding.surface() == OTHER_SURFACE)
+            .unwrap();
+        state
+            .coordinator
+            .bind_viewport(
+                egui::ViewportId::from_hash_of("occupied-continuation-target"),
+                WindowId::from(22),
+                peer,
+            )
+            .unwrap();
+        let candidate = || {
+            DockspaceLayout::new([surface(
+                OTHER_SURFACE,
+                PRESET_ROOT,
+                &[FIRST, SECOND],
+                SECOND,
+            )])
+            .unwrap()
+        };
+        let before = state.coordinator.session().version();
+        assert_eq!(
+            state
+                .request_layout_reset_rebinding_root(candidate(), OTHER_SURFACE)
+                .unwrap_err()
+                .kind(),
+            NativeRuntimeErrorKind::OperationConflict
+        );
+        assert!(!state.application_actions.is_occupied());
+        assert!(state.shutdown.is_none());
+        assert_eq!(state.coordinator.session().version(), before);
+
+        // Removing the peer from the graph leaves its old physical route owned
+        // by retirement. Its numeric surface must rebase, not block a fresh Root.
+        state
+            .request_layout_reset(layout(PRESET_ROOT, &[FIRST, SECOND], SECOND))
+            .unwrap();
+        commit_queued(&mut state, None);
+        take(&mut state);
+        assert!(
+            state
+                .coordinator
+                .session()
+                .view()
+                .surface(OTHER_SURFACE)
+                .is_none()
+        );
+        assert!(state.coordinator.surface_viewport(OTHER_SURFACE).is_some());
+        state
+            .request_layout_reset_rebinding_root(candidate(), OTHER_SURFACE)
+            .unwrap();
+        let report = commit_queued(&mut state, None);
+        take(&mut state);
+        let root = report.native_root_continuations()[0].successor();
+        assert_ne!(root.surface(), OTHER_SURFACE);
+        assert_eq!(state.root_surface, root.surface());
+        let before = state.coordinator.session().version();
+
+        // A preparation may lose eligibility after enqueue without changing the
+        // durable workspace version. Settle only this command as rejected.
+        let fresh = SurfaceId::new(9);
+        let candidate =
+            DockspaceLayout::new([surface(fresh, PRESET_ROOT, &[FIRST, SECOND], SECOND)]).unwrap();
+        state
+            .request_layout_reset_rebinding_root(candidate, fresh)
+            .unwrap();
+        state
+            .coordinator
+            .report_snapshot(
+                [(
+                    root,
+                    ready_window_facts(0.0).with_close(NativeCloseState::Requested, None),
+                )],
+                NativeWorkAreaRoster::Unknown,
+                crate::capabilities::capabilities_for_backend(NativeWindowingBackend::Windows),
+            )
+            .unwrap();
+        commit_native_prefix(&mut state);
+        assert_eq!(state.coordinator.session().version(), before);
+        let report = commit_queued(&mut state, None);
+        assert!(report.native_root_continuations().is_empty());
+        assert_eq!(
+            take(&mut state),
+            NativeActionStatus::RootContinuationRejected {
+                predecessor: root,
+                incoming_root: fresh,
+                kind: dockspace::runtime::DockspaceRuntimeErrorKind::OperationConflict,
+            }
+        );
+        assert_eq!(state.root_surface, root.surface());
+        assert_eq!(
+            state.coordinator.viewport_binding(egui::ViewportId::ROOT),
+            Some(root)
+        );
+        assert!(state.shutdown.is_none());
+        state.request_select_item(SECOND).unwrap();
+        commit_queued(&mut state, None);
+        assert!(matches!(take(&mut state), NativeActionStatus::Dock(_)));
+        assert!(state.shutdown.is_none());
     }
 
     #[test]

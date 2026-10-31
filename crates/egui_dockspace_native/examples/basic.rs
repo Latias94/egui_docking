@@ -148,11 +148,15 @@ impl eframe::App for NativeExampleApp {
 impl NativeExampleApp {
     fn show_controls(&mut self, ui: &mut egui::Ui) {
         self.finish_presentation_wait();
+        let root_surface = self.dockspace.root_surface();
         let inspector = self
             .dockspace
-            .with_view(|view| view.item(INSPECTOR).map(InspectorLocation::from))
+            .with_view(|view| {
+                view.item(INSPECTOR)
+                    .map(|item| InspectorLocation::new(item, root_surface))
+            })
             .flatten();
-        let root_presented = self.dockspace.is_surface_presented(SURFACE);
+        let root_presented = self.dockspace.is_surface_presented(root_surface);
 
         ui.horizontal_wrapped(|ui| {
             ui.strong("Dockspace native editor");
@@ -438,26 +442,26 @@ impl NativeExampleApp {
 struct InspectorLocation {
     root: RootId,
     surface: SurfaceId,
+    host_surface: SurfaceId,
     contained: bool,
 }
 
 impl InspectorLocation {
-    fn is_contained(self) -> bool {
-        self.surface == SURFACE && self.contained
-    }
-
-    fn is_native_child(self) -> bool {
-        self.surface != SURFACE
-    }
-}
-
-impl From<dockspace::model::DockspaceItemView<'_>> for InspectorLocation {
-    fn from(item: dockspace::model::DockspaceItemView<'_>) -> Self {
+    fn new(item: dockspace::model::DockspaceItemView<'_>, host_surface: SurfaceId) -> Self {
         Self {
             root: item.root(),
             surface: item.surface(),
+            host_surface,
             contained: item.contained().is_some(),
         }
+    }
+
+    fn is_contained(self) -> bool {
+        self.surface == self.host_surface && self.contained
+    }
+
+    fn is_native_child(self) -> bool {
+        self.surface != self.host_surface
     }
 }
 
@@ -466,6 +470,10 @@ fn example_layout() -> DockspaceLayout {
 }
 
 fn editor_layout(separate_assets: bool) -> DockspaceLayout {
+    editor_layout_on_surface(separate_assets, SURFACE)
+}
+
+fn editor_layout_on_surface(separate_assets: bool, host_surface: SurfaceId) -> DockspaceLayout {
     let center = DockspaceNode::split(
         DockspaceAxis::Vertical,
         [
@@ -502,7 +510,7 @@ fn editor_layout(separate_assets: bool) -> DockspaceLayout {
         LogicalRect::new(850.0, 80.0, 360.0, 410.0).expect("the static contained rect is valid"),
     );
     let mut surface =
-        DockspaceSurfaceLayout::new(SURFACE, DockspaceRootLayout::new(MAIN_ROOT, root))
+        DockspaceSurfaceLayout::new(host_surface, DockspaceRootLayout::new(MAIN_ROOT, root))
             .with_contained(inspector);
     if separate_assets {
         surface = surface.with_contained(DockspaceContainedLayout::new(

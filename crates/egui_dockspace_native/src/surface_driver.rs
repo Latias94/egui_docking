@@ -1253,7 +1253,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     .map(|submission| submission.finish(&mut host_frame.frame))
                     .transpose()?;
                 host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                Ok((host_frame.commit()?, submitted))
+                Ok((
+                    host_frame.commit_publishing_root(&mut self.root_surface)?,
+                    submitted,
+                ))
             })();
             let (report, submitted_application_action) = match local_action_attempt
                 .settle(core_result)
@@ -1278,7 +1281,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .map(|submission| submission.finish(&mut host_frame.frame))
             .transpose()?;
         host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-        let report = host_frame.commit()?;
+        let report = host_frame.commit_publishing_root(&mut self.root_surface)?;
         self.settle_terminal_action_report(
             context,
             Some(token),

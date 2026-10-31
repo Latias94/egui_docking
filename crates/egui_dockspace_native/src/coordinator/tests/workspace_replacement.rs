@@ -348,6 +348,202 @@ fn bounded(resources: usize, window: Option<WindowId>) -> NativeCoordinator {
     native
 }
 
+fn continuation_layout(surface: SurfaceId) -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        surface,
+        DockspaceRootLayout::new(
+            RootId::new(1),
+            DockspaceNode::central_tabs([ItemId::new(1)]),
+        ),
+    )])
+    .unwrap()
+}
+
+#[test]
+fn root_rebinding_failure_keeps_the_application_field_route_and_workspace_atomic() {
+    for destroyed in [false, true] {
+        let mut native = bounded(if destroyed { 2 } else { 1 }, Some(WindowId::from(11)));
+        let predecessor = native.viewport_binding(ViewportId::ROOT).unwrap();
+        let before = native.session.version();
+        let incoming = SurfaceId::new(8);
+        let reset = native
+            .session
+            .prepare_layout_reset(continuation_layout(incoming))
+            .unwrap();
+        let bridge = native.bridge.clone();
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .frame
+            .submit_native_layout_reset(&reset, predecessor, incoming)
+            .unwrap();
+        let successor = frame
+            .frame
+            .proposed_native_root_continuations()
+            .next()
+            .unwrap()
+            .successor();
+        if destroyed {
+            bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+                3,
+                WindowId::from(11),
+                Some(ViewportId::ROOT),
+                Some(predecessor),
+                WindowEvent::Destroyed,
+            )));
+        }
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut root_surface = predecessor.surface();
+        let error = frame.commit_publishing_root(&mut root_surface).unwrap_err();
+        if !destroyed {
+            assert!(error.is_input_capacity());
+        }
+        assert_eq!(root_surface, predecessor.surface());
+        assert_eq!(native.session.version(), before);
+        assert!(native.session.view().surface(incoming).is_none());
+        assert!(native.session.is_current_native_binding(predecessor));
+        assert!(!native.session.recognizes_native_binding(successor));
+        assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(predecessor));
+        assert!(
+            bridge
+                .with_viewports(|routes| routes.has_window_receipt(ViewportId::ROOT, predecessor))
+        );
+        assert_eq!(bridge.workspace_replacement_predecessor(successor), None);
+    }
+}
+
+#[test]
+fn bounded_root_rebinding_waits_for_late_output_then_reclaims_exact_predecessors() {
+    let mut native = bounded(2, Some(WindowId::from(11)));
+    let mut root_surface = FIRST_SURFACE;
+    for index in 0..8 {
+        let predecessor = native.viewport_binding(ViewportId::ROOT).unwrap();
+        // Ready and paint the current Root through ordinary core host records.
+        native
+            .report_snapshot(
+                [(predecessor, ready_window_facts(0.0))],
+                NativeWorkAreaRoster::Unknown,
+                crate::capabilities::capabilities_for_backend(
+                    eframe::NativeWindowingBackend::Windows,
+                ),
+            )
+            .unwrap();
+        commit(&mut native);
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .frame
+            .measure_surface(
+                root_surface,
+                dockspace::runtime::UniformSurfaceMetrics::new(
+                    dockspace::geometry::LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    dockspace::geometry::LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        native.settle_host_frame_report(&report).unwrap();
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let receipt = frame
+            .frame
+            .paint_plan(root_surface)
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        frame.frame.confirm_surface_painted(receipt).unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let output = frame
+            .commit()
+            .unwrap()
+            .take_painted_outputs()
+            .pop()
+            .unwrap();
+        assert!(output.matches_native_binding(predecessor));
+        let focus = eframe::prepare_native_viewport_focus(ViewportId::ROOT);
+        assert!(native.bridge.reserve_focus_callback(
+            ViewportId::ROOT,
+            predecessor,
+            WindowId::from(11),
+            focus.token(),
+        ));
+        let incoming = SurfaceId::new(if index % 2 == 0 { 8 } else { 1 });
+        let reset = native
+            .session
+            .prepare_layout_reset(continuation_layout(incoming))
+            .unwrap();
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .frame
+            .submit_native_layout_reset(&reset, predecessor, incoming)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = frame.commit_publishing_root(&mut root_surface).unwrap();
+        let [pair] = report.native_root_continuations() else {
+            panic!("one exact Root continues");
+        };
+        let successor = pair.successor();
+        assert_eq!(pair.predecessor(), predecessor);
+        assert_eq!(root_surface, successor.surface());
+        assert_ne!(root_surface, predecessor.surface());
+        assert!(report.take_native_effects().is_empty());
+        native.settle_host_frame_report(&report).unwrap();
+        assert!(!native.try_report_retirement_quiescence().unwrap());
+        native
+            .session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        commit(&mut native);
+        assert!(native.session.presented_surface(root_surface).is_none());
+        assert!(!native.try_report_retirement_quiescence().unwrap());
+        native.bridge.push_record(HostRecord::ViewportFocus(
+            NativeViewportFocusRecord::for_test(
+                focus.token(),
+                ViewportId::ROOT,
+                WindowId::from(11),
+                Some(successor),
+                eframe::NativeViewportFocusStatus::Requested,
+            ),
+        ));
+        assert!(
+            native
+                .bridge
+                .front_viewport_focus()
+                .unwrap()
+                .references_binding(predecessor)
+        );
+        assert!(native.reduce_next_viewport_focus().unwrap());
+        commit(&mut native);
+        assert!(native.try_report_retirement_quiescence().unwrap());
+        commit(&mut native);
+        assert!(!native.session.recognizes_native_binding(predecessor));
+        assert!(!native.bridge.references_binding(predecessor));
+        assert!(!native.bridge.retirement_has_pending_work());
+        assert!(native.bridge.retirement_destroyed_observations().is_empty());
+        native.bridge.with_viewports(|routes| {
+            assert_eq!(routes.window(ViewportId::ROOT), Some(WindowId::from(11)));
+            assert!(routes.has_window_receipt(ViewportId::ROOT, successor));
+        });
+    }
+}
+
 #[test]
 fn successor_resource_capacity_is_checked_before_the_root_route_changes() {
     let mut native = bounded(1, Some(WindowId::from(11)));

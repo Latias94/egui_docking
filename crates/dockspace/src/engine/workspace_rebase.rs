@@ -3,9 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::graph::Workspace;
-use crate::ids::PresentationIdentityFrontier;
-#[cfg(feature = "serde")]
-use crate::ids::SurfaceId;
+use crate::ids::{PresentationIdentityFrontier, SurfaceId};
 use crate::validation::WorkspaceValidationErrors;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +30,6 @@ pub(crate) struct RebasedWorkspace {
     pub(crate) workspace: Workspace,
     #[cfg(feature = "serde")]
     pub(crate) frontier: PresentationIdentityFrontier,
-    #[cfg(feature = "serde")]
     pub(crate) surfaces: BTreeMap<SurfaceId, SurfaceId>,
 }
 
@@ -169,7 +166,6 @@ pub(crate) fn rebase_workspace_presentation_identities(
         workspace,
         #[cfg(feature = "serde")]
         frontier,
-        #[cfg(feature = "serde")]
         surfaces,
     })
 }

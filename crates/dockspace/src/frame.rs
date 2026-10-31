@@ -96,6 +96,16 @@ pub enum PanelFocus {
     None,
 }
 
+/// Opaque preparation to retain one exact external root window on a restored surface.
+///
+/// Only the coordinator can prepare this value. Workspace reconciliation revalidates its
+/// predecessor and target against current facts before publishing any changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreparedNativeRootContinuation {
+    predecessor: ViewportBinding,
+    target: SurfaceId,
+}
+
 /// Summary of the exact native bindings reconciled by a successful workspace restore.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ViewportReconciliation {
@@ -332,7 +342,7 @@ struct RestoreStagingBinding {
 struct RestoreAnalysis {
     staging_by_binding: BTreeMap<ViewportBinding, RestoreStagingBinding>,
     cleanup_by_binding: BTreeMap<ViewportBinding, EffectId>,
-    retained_bindings: BTreeSet<ViewportBinding>,
+    retained_bindings: BTreeMap<ViewportBinding, SurfaceId>,
     passthrough_recoveries: BTreeMap<ViewportBinding, PointerPassthroughRecovery>,
 }
 
@@ -762,14 +772,36 @@ impl ViewportCoordinator {
         Ok(binding)
     }
 
+    /// Prepares retention of an exact admitted external root on a replacement surface.
+    ///
+    /// The source surface may be absent from the replacement workspace. The target must
+    /// belong to that workspace and cannot already belong to another native window.
+    pub(crate) fn prepare_native_root_continuation(
+        &self,
+        predecessor: ViewportBinding,
+        target: SurfaceId,
+        desired_surfaces: &BTreeSet<SurfaceId>,
+    ) -> Result<PreparedNativeRootContinuation, ViewportCoordinatorError> {
+        let continuation = PreparedNativeRootContinuation {
+            predecessor,
+            target,
+        };
+        self.analyze_restore(desired_surfaces, Some(continuation))?;
+        Ok(continuation)
+    }
+
     /// Atomically invalidates old-epoch platform state and reconciles safe current bindings.
+    ///
+    /// An explicit continuation overrides only its predecessor's default same-surface target.
+    /// Its current eligibility is revalidated before any candidate state can publish.
     pub(crate) fn reconcile_workspace_epoch(
         &mut self,
         new_epoch: WorkspaceEpoch,
         desired_surfaces: &BTreeSet<SurfaceId>,
+        continuation: Option<PreparedNativeRootContinuation>,
     ) -> Result<ViewportReconciliation, ViewportCoordinatorError> {
         let mut candidate = self.clone();
-        let analysis = candidate.analyze_restore(desired_surfaces)?;
+        let analysis = candidate.analyze_restore(desired_surfaces, continuation)?;
         let registry = candidate
             .registry
             .reconcile_restore(new_epoch, &analysis.retained_bindings)
@@ -818,8 +850,9 @@ impl ViewportCoordinator {
     }
 
     fn analyze_restore(
-        &mut self,
+        &self,
         desired_surfaces: &BTreeSet<SurfaceId>,
+        continuation: Option<PreparedNativeRootContinuation>,
     ) -> Result<RestoreAnalysis, ViewportCoordinatorError> {
         let create_by_binding = self.native_create_snapshot_by_binding();
         let mut staging_by_binding: BTreeMap<_, _> = create_by_binding
@@ -915,18 +948,71 @@ impl ViewportCoordinator {
             .values()
             .filter_map(RecoveryPending::replacement_binding)
             .collect();
-        let retained_bindings = self
-            .registry
-            .records()
-            .filter_map(|(surface, record)| {
-                Self::restore_binding_is_safe(
-                    surface,
+        if let Some(PreparedNativeRootContinuation {
+            predecessor,
+            target,
+        }) = continuation
+        {
+            if !desired_surfaces.contains(&target) {
+                return Err(
+                    ViewportCoordinatorError::NativeRootContinuationTargetMissing { target },
+                );
+            }
+            let record = self
+                .registry
+                .record(predecessor.surface())
+                .filter(|record| record.binding() == predecessor)
+                .ok_or(
+                    ViewportCoordinatorError::NativeRootContinuationPredecessorUnavailable {
+                        predecessor,
+                    },
+                )?;
+            if record.role() != ViewportRole::Root
+                || record.ownership() != ViewportOwnership::External
+                || self.binding_cleanup.contains_key(&predecessor)
+                || self.binding_cleanup.is_terminal(predecessor)
+                || cleanup_by_binding.contains_key(&predecessor)
+                || !Self::restore_binding_is_safe(
+                    target,
                     record,
                     desired_surfaces,
                     &create_by_binding,
                     &replacement_bindings,
                 )
-                .then_some(record.binding())
+            {
+                return Err(
+                    ViewportCoordinatorError::NativeRootContinuationPredecessorUnavailable {
+                        predecessor,
+                    },
+                );
+            }
+            if let Some(occupied) = self.registry.record(target)
+                && occupied.binding() != predecessor
+            {
+                return Err(
+                    ViewportCoordinatorError::NativeRootContinuationTargetOccupied {
+                        target,
+                        binding: occupied.binding(),
+                    },
+                );
+            }
+        }
+        let retained_bindings = self
+            .registry
+            .records()
+            .filter_map(|(surface, record)| {
+                let target = match continuation {
+                    Some(prepared) if prepared.predecessor == record.binding() => prepared.target,
+                    _ => surface,
+                };
+                Self::restore_binding_is_safe(
+                    target,
+                    record,
+                    desired_surfaces,
+                    &create_by_binding,
+                    &replacement_bindings,
+                )
+                .then_some((record.binding(), target))
             })
             .collect();
         Ok(RestoreAnalysis {
@@ -938,7 +1024,7 @@ impl ViewportCoordinator {
     }
 
     fn restore_binding_is_safe(
-        surface: SurfaceId,
+        target: SurfaceId,
         record: &ViewportRecord,
         desired_surfaces: &BTreeSet<SurfaceId>,
         creates: &BTreeMap<ViewportBinding, NativeCreateSaga>,
@@ -949,7 +1035,7 @@ impl ViewportCoordinator {
         // child's exact root, recovery host, floating identities, ownership, and geometry
         // contract. Until restore publishes that semantic manifest, child bindings fail closed
         // and require a new explicit registration carrying a freshly validated recovery plan.
-        desired_surfaces.contains(&surface)
+        desired_surfaces.contains(&target)
             && record.role() != ViewportRole::Child
             && record.admission() == ViewportAdmission::Admitted
             && !creates.contains_key(&binding)
@@ -4243,6 +4329,18 @@ pub enum ViewportCoordinatorError {
     PointerInputObservationMissing { binding: ViewportBinding },
     #[error("workspace does not contain logical surface {surface:?}")]
     MissingWorkspaceSurface { surface: SurfaceId },
+    /// The predecessor is not an exact current, safe, admitted external root binding.
+    #[error("native root continuation predecessor is unavailable: {predecessor:?}")]
+    NativeRootContinuationPredecessorUnavailable { predecessor: ViewportBinding },
+    /// The replacement workspace does not contain the requested continuation target.
+    #[error("native root continuation target is absent from the workspace: {target:?}")]
+    NativeRootContinuationTargetMissing { target: SurfaceId },
+    /// Another native window already owns the requested continuation target.
+    #[error("native root continuation target {target:?} is already bound to {binding:?}")]
+    NativeRootContinuationTargetOccupied {
+        target: SurfaceId,
+        binding: ViewportBinding,
+    },
     #[error("docking-owned child surface {surface:?} requires an explicit whole-root recovery")]
     ChildRecoveryRequired { surface: SurfaceId },
     #[error(

@@ -42,7 +42,9 @@ mod workspace_rebase;
 pub(crate) use native_projection::NativeFirstLiveProjectionStamp;
 #[cfg(feature = "serde")]
 pub(crate) use workspace_rebase::WorkspaceRebaseEntity;
-pub(crate) use workspace_rebase::{WorkspaceRebaseError, rebase_workspace_presentation_identities};
+pub(crate) use workspace_rebase::{
+    RebasedWorkspace, WorkspaceRebaseError, rebase_workspace_presentation_identities,
+};
 
 #[cfg(test)]
 use crate::behavior_tests::support as test_support;
@@ -3763,6 +3765,7 @@ impl DockEngine {
         workspace: &Workspace,
         restored_identity_frontier: Option<PresentationIdentityFrontier>,
         native_surfaces: Option<&crate::frame::NativeSurfaceRestorePlan>,
+        root_continuation: Option<crate::frame::PreparedNativeRootContinuation>,
         application_base: &mut WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -3801,7 +3804,7 @@ impl DockEngine {
             .collect::<std::collections::BTreeSet<_>>();
         let reconciliation = self
             .viewport
-            .reconcile_workspace_epoch(epoch, &desired_surfaces)
+            .reconcile_workspace_epoch(epoch, &desired_surfaces, root_continuation)
             .map_err(|source| EngineError::Viewport { input, source })?;
         let rebound_root_surfaces = reconciliation
             .rebound()

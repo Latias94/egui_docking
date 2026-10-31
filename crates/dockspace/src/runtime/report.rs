@@ -66,6 +66,22 @@ impl HostFrameReport {
                 },
             );
         let mut ordered_inputs = Vec::new();
+        let native_root_continuations = transition
+            .reduced_inputs()
+            .iter()
+            .filter_map(|reduced| match reduced.outcome() {
+                InputOutcome::WorkspaceReplaced { reconciliation, .. } => {
+                    Some(reconciliation.rebound())
+                }
+                _ => None,
+            })
+            .flat_map(|pairs| pairs.iter().copied())
+            .filter_map(|(before, after)| {
+                native_provider.map(|provider| {
+                    super::NativeRootContinuation::from_pair(provider, before, after)
+                })
+            })
+            .collect();
         let replacement = transition.reduced_inputs().iter().find_map(|reduced| {
             let InputOutcome::WorkspaceReplaced {
                 before,
@@ -365,6 +381,7 @@ impl HostFrameReport {
             surface_presentation_commits,
             native_admissions,
             native_bindings,
+            native_root_continuations,
             native_input_pending,
             native_effects,
             repaint_surfaces,

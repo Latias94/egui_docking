@@ -2,7 +2,7 @@
 title: Dockspace engine host architecture and direct manipulation - Plan
 type: refactor
 date: 2026-08-21
-revised: 2026-10-31
+revised: 2026-11-01
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -24,7 +24,7 @@ review_status: independent-coherence-and-feasibility-reviewed
 | Stop conditions | Reject duplicate topology owners, renderer-selected targets, traversal receipts presented as GPU proof, lost input boundaries, stale output authority, and capabilities inferred from missing facts. |
 | Completion owner | Each implementation unit owns its replacement behavior, meaningful verification, obsolete-path deletion, and documentation. No compatibility layer is required. |
 
-Current readiness (2026-10-31): the complete plan remains in progress. The
+Current readiness (2026-11-01): the complete plan remains in progress. The
 renderer-neutral public host, local/contained egui behavior, and U3c complete
 single-batch Burst matrix have qualified checkpoints, including U12's public
 host/package acceptance. No new core blocker was confirmed in the current
@@ -40,7 +40,7 @@ The next completion work is concrete:
 
 | Remaining boundary | Next acceptance |
 | --- | --- |
-| U10 native layout management | Single-host default/preset reset, exact retained-root successors and missing-pane recovery have qualified checkpoints. Document V2 hosting preferences pass 18 checks at `349a513`; existing-surface native creation passes 42 at `447b34b`. Atomic multi-surface restoration queues explicit rebased Child intents inside the existing establishment owner; all 43 final checks pass, including its eight-edit/six-Child X11 journey. Complete host removal/rebinding remains open. |
+| U10 native layout management | Explicit external Root continuation now passes all 61 final checks, including atomic app-field/route publication, ordinary conflict rejection and real X11 seven/ten-edit workflows. Default/preset application call sites still need to choose the incoming host explicitly after that host changes; final layout-shell closure remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
 | U7/U8 capacity and service | Keep the actual qualified profiles explicit; finish the remaining combined close/create owner and sustained active-service acceptance rather than repeating already qualified W16/O256 work. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
@@ -1793,6 +1793,23 @@ stationary input, maximum-roster/O256 and reducer-service qualification remain
 open. Native reproducibility still requires unpublished local fork overrides;
 U7/U8/U9 and the full Goal are not complete.
 
+The next positive stationary slice must first prove the X11 platform contract,
+then extend the existing observation owner with an exact original Primary-press
+identity and fresh button, capture and delivery evidence. Current query success
+does not provide these facts. An explicit device grab with source-directed
+delivery is a candidate only after docking owns the press; capture interruption
+must invalidate that original press rather than become a successful re-grab.
+The [X.Org XIGrabDevice contract](https://xorg.freedesktop.org/archive/X11R7.5/doc/man/man3/XIGrabDevice.3.html)
+defines device ownership, owner-events routing, asynchronous operation and
+automatic loss when the grab window ceases to be viewable. The
+[Xlib crossing-event contract](https://xorg.freedesktop.org/archive/X11R7.6/doc/libX11/specs/libX11/libX11.html)
+also defines grab/ungrab notifications, but these alone do not establish the
+required uninterrupted same-device Primary press. Validate window/ancestor
+unmap-remap, local ungrab/freeze and queued release/repress before minting a
+held receipt. Keep absent evidence Unknown. Acceptance needs one real XTest
+move followed by no injected motion until dwell commits exactly once through
+the matching output; ordinary pane input must remain unchanged.
+
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
 roster and 32 original property identities coexist while ordinary input reaches
@@ -2329,7 +2346,7 @@ upper bound; pressure service maxima still include values above 2 ms. Exact
 source and measurement limits remain in `docs/VALIDATION.md`. This checkpoint
 does not close the complete U10 or Goal.
 
-The next host-removal slice must permit an explicit external Root continuation
+The host-removal slice now permits an explicit external Root continuation
 from the current exact binding to a different incoming logical surface. Resolve
 the incoming surface through the existing layout/document rebase before preparing
 that pair; the old host surface may disappear from the replacement graph. Reuse
@@ -2343,6 +2360,18 @@ Acceptance covers cross-surface reset, document Root/Child reference rebasing,
 resource-failure rollback, late predecessor output and bounded quiescence. This
 is continuation of one external physical Root; OS-window destruction remains
 with the existing application/close owner.
+
+The 2026-11-01 continuation checkpoint passes 61 final checks: workspace 1,940,
+public 148/176, product/official 114/15, native 571 with the same-coordinator
+10,000-lifetime soak, noassert 570 without repeating it, and Linux library 524 in
+both assertion modes. Both platforms' lifecycle and six pressure modes pass,
+alongside all fifteen physical X11 journeys. The real Root-continuation extensions
+complete seven/ten edits without destroying the original Root; persistence
+forces the saved Root through rebasing. Exact measurements and initial failed
+fixtures live in `docs/VALIDATION.md`. An occupancy precheck now distinguishes an
+active target from a retired route whose surface will rebase, and later ordinary
+continuation rejection settles only its command. This checkpoint does not close
+the complete U10 or Goal.
 
 ### U11. Certify Windows and macOS capability claims
 

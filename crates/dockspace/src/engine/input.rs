@@ -12,6 +12,7 @@ pub struct ValidatedWorkspaceRestore {
     workspace: Workspace,
     presentation_identity_frontier: PresentationIdentityFrontier,
     native_surfaces: Option<crate::frame::NativeSurfaceRestorePlan>,
+    root_continuation: Option<crate::frame::PreparedNativeRootContinuation>,
 }
 
 impl ValidatedWorkspaceRestore {
@@ -24,6 +25,7 @@ impl ValidatedWorkspaceRestore {
             workspace,
             presentation_identity_frontier,
             native_surfaces: None,
+            root_continuation: None,
         }
     }
 
@@ -48,6 +50,21 @@ impl ValidatedWorkspaceRestore {
 
     pub(crate) fn native_surfaces(&self) -> Option<&crate::frame::NativeSurfaceRestorePlan> {
         self.native_surfaces.as_ref()
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn with_root_continuation(
+        mut self,
+        continuation: crate::frame::PreparedNativeRootContinuation,
+    ) -> Self {
+        self.root_continuation = Some(continuation);
+        self
+    }
+
+    pub(crate) const fn root_continuation(
+        &self,
+    ) -> Option<crate::frame::PreparedNativeRootContinuation> {
+        self.root_continuation
     }
 
     pub(super) fn into_parts(self) -> (Workspace, PresentationIdentityFrontier) {
@@ -463,6 +480,14 @@ pub enum EngineInput {
     },
     /// Authoritatively replace the complete workspace.
     ReplaceWorkspace(Workspace),
+    /// Replaces the workspace while retaining one exact external Root window
+    /// on its explicitly prepared incoming logical surface.
+    ReplaceWorkspaceContinuingRoot {
+        /// Validated replacement graph with final presentation identities.
+        workspace: Workspace,
+        /// Current coordinator preparation for the exact predecessor and target.
+        continuation: crate::frame::PreparedNativeRootContinuation,
+    },
     /// Restore one complete workspace and allocator lineage validated as one document.
     RestoreWorkspace(ValidatedWorkspaceRestore),
     /// Apply one checked command derived from an exact engine version.
@@ -799,6 +824,7 @@ impl EngineInput {
             | Self::CancelNativeCreate { .. }
             | Self::RetryViewportCleanup { .. }
             | Self::ReplaceWorkspace(_)
+            | Self::ReplaceWorkspaceContinuingRoot { .. }
             | Self::RestoreWorkspace(_) => InputPriority::LifecycleControl,
             Self::PublishPlatformSnapshot { .. }
             | Self::PublishNativeCloseObservation { .. }

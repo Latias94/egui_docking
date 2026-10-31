@@ -3,7 +3,9 @@
 use std::mem::size_of;
 
 use dockspace::model::SurfaceId;
-use dockspace::runtime::{DockspaceSession, NativeLocalCoordinates, NativeSurfaceBinding};
+use dockspace::runtime::{
+    DockspaceSession, NativeLocalCoordinates, NativeRootContinuation, NativeSurfaceBinding,
+};
 use eframe::{NativeViewportCreateAttempt, egui::ViewportId};
 use winit::window::WindowId;
 
@@ -416,15 +418,7 @@ impl NativeViewportMap {
         self.validate_window_unclaimed(viewport, successor_window)?;
         self.prepare_route_slot(viewport)?;
         if current.window == Some(successor_window) {
-            let route = self
-                .route_mut(viewport)
-                .expect("validated replacement retains its route");
-            route.binding = successor;
-            route.local_coordinates = None;
-            if let Some(receipt) = route.terminal.as_mut() {
-                receipt.rebind(successor);
-            }
-            route.focus_reportable = false;
+            self.rebind_same_window(viewport, successor);
             return Ok(None);
         }
         if expected == successor {
@@ -464,6 +458,67 @@ impl NativeViewportMap {
             });
         }
         self.validate_window_unclaimed(viewport, route.window.expect("the window was checked"))
+    }
+
+    /// Only a core-minted exact pair permits moving a Root to another surface.
+    pub(crate) fn validate_workspace_root_continuation(
+        &self,
+        viewport: ViewportId,
+        continuation: NativeRootContinuation,
+    ) -> Result<(), NativeViewportBindingError> {
+        let predecessor = continuation.predecessor();
+        let successor = continuation.successor();
+        let route = self
+            .route(viewport)
+            .ok_or(NativeViewportBindingError::ViewportUnbound { viewport })?;
+        Self::validate_binding(viewport, predecessor, route.snapshot())?;
+        self.validate_create_settled(viewport, predecessor)?;
+        if predecessor.surface() == successor.surface() {
+            self.validate_same_window_replacement(viewport, predecessor, successor)?;
+        }
+        let terminal_matches = route.window.is_some_and(|window| {
+            route.terminal.as_ref().is_some_and(|receipt| {
+                receipt.binding() == predecessor
+                    && receipt.matches_window(window, Some(viewport))
+                    && receipt.is_awaiting()
+            })
+        });
+        if predecessor == successor
+            || self.prepared_retirements.contains(&predecessor)
+            || self.prepared_retirements.contains(&successor)
+            || !terminal_matches
+        {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: predecessor.surface(),
+            });
+        }
+        self.validate_window_unclaimed(viewport, route.window.expect("the receipt has a window"))?;
+        self.validate_surface_unclaimed(viewport, successor)
+    }
+
+    /// The caller holds the preparation lock through core publication and install.
+    /// The physical receipt and pending repaint stay in their existing route slot.
+    pub(crate) fn commit_workspace_root_continuation(
+        &mut self,
+        viewport: ViewportId,
+        continuation: NativeRootContinuation,
+    ) {
+        self.validate_workspace_root_continuation(viewport, continuation)
+            .expect("same-lock Root continuation was validated before core publication");
+        self.rebind_same_window(viewport, continuation.successor());
+    }
+
+    fn rebind_same_window(&mut self, viewport: ViewportId, successor: NativeSurfaceBinding) {
+        let route = self
+            .route_mut(viewport)
+            .expect("validated replacement retains its route");
+        route.binding = successor;
+        route.local_coordinates = None;
+        if let Some(receipt) = route.terminal.as_mut() {
+            receipt.rebind(successor);
+        }
+        route.focus_reportable = false;
     }
 
     pub(crate) fn remove_viewport(

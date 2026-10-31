@@ -88,7 +88,7 @@ struct NativeWindowResource {
 enum WorkspaceReplacementResource {
     None,
     Prepared,
-    Predecessor,
+    Predecessor { successor: NativeSurfaceBinding },
 }
 
 impl NativeWindowResource {
@@ -264,10 +264,11 @@ impl NativeWindowResources {
         &mut self,
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
     ) {
         self.resource_mut(viewport, binding)
             .expect("the attached predecessor retains its host resource")
-            .workspace_replacement = WorkspaceReplacementResource::Predecessor;
+            .workspace_replacement = WorkspaceReplacementResource::Predecessor { successor };
     }
 
     pub(super) fn workspace_predecessor(
@@ -275,9 +276,8 @@ impl NativeWindowResources {
         successor: NativeSurfaceBinding,
     ) -> Option<(ViewportId, NativeSurfaceBinding)> {
         self.entries.iter().find_map(|resource| {
-            (resource.workspace_replacement == WorkspaceReplacementResource::Predecessor
-                && resource.binding.surface() == successor.surface()
-                && resource.binding.window_token() == successor.window_token())
+            (resource.workspace_replacement
+                == WorkspaceReplacementResource::Predecessor { successor })
             .then_some((resource.viewport, resource.binding))
         })
     }
@@ -290,10 +290,10 @@ impl NativeWindowResources {
         let resource = self
             .resource_mut(viewport, binding)
             .expect("settlement retains its exact predecessor resource");
-        debug_assert_eq!(
+        debug_assert!(matches!(
             resource.workspace_replacement,
-            WorkspaceReplacementResource::Predecessor
-        );
+            WorkspaceReplacementResource::Predecessor { .. }
+        ));
         resource.workspace_replacement = WorkspaceReplacementResource::None;
         self.prune(viewport, binding);
     }
@@ -1550,6 +1550,58 @@ mod tests {
             _ => None,
         });
         (bindings.next().unwrap(), bindings.next().unwrap())
+    }
+
+    #[test]
+    fn workspace_predecessors_match_exact_successors_and_settle_independently() {
+        let (first, _) = bindings();
+        let (second, third) = bindings();
+        let (foreign, _) = bindings();
+        assert_eq!(first.surface(), second.surface());
+        assert_eq!(first.window_token(), second.window_token());
+        assert_eq!(second.surface(), foreign.surface());
+        assert_eq!(second.window_token(), foreign.window_token());
+        assert_ne!(second, foreign);
+        let viewport = ViewportId::ROOT;
+        let mut resources = NativeWindowResources::with_capacity_limit(3).unwrap();
+        let bytes = resources.owned_data_capacity_bytes();
+        resources.prepare_host_reference(viewport, first).unwrap();
+        resources.commit_host_reference(viewport, first);
+        for (predecessor, successor) in [(first, second), (second, third)] {
+            resources
+                .prepare_workspace_replacement(viewport, successor)
+                .unwrap();
+            resources.retain_workspace_predecessor(viewport, predecessor, successor);
+            resources.retire(viewport, predecessor);
+            resources.commit_host_reference(viewport, successor);
+        }
+        resources.refresh_host_references(|_, binding| binding == third || binding == first);
+
+        assert_eq!(
+            resources.workspace_predecessor(second),
+            Some((viewport, first))
+        );
+        assert_eq!(
+            resources.workspace_predecessor(third),
+            Some((viewport, second))
+        );
+        assert_eq!(resources.workspace_predecessor(foreign), None);
+        assert!(resources.resource(viewport, first).unwrap().retired);
+        assert!(resources.resource(viewport, second).unwrap().retired);
+        assert!(!resources.resource(viewport, third).unwrap().retired);
+        resources.finish_workspace_predecessor(viewport, first);
+        assert_eq!(resources.workspace_predecessor(second), None);
+        assert_eq!(
+            resources.workspace_predecessor(third),
+            Some((viewport, second))
+        );
+        assert!(resources.resource(viewport, first).is_some());
+        resources.finish_workspace_predecessor(viewport, second);
+        assert!(resources.resource(viewport, second).is_none());
+        resources.refresh_host_references(|_, binding| binding == third);
+        assert!(resources.resource(viewport, first).is_none());
+        assert!(!resources.resource(viewport, third).unwrap().retired);
+        assert_eq!(resources.owned_data_capacity_bytes(), bytes);
     }
 
     #[test]

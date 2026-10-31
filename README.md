@@ -68,8 +68,13 @@ restore now atomically queues explicit Child declarations with their rebased
 surface IDs and saved placement. Budgeted frames wait for fresh Root facts and
 exact predecessor quiescence before creating each child once. The X11 reference
 workflow verifies two live predecessors, two restored children and real content
-editing. Complete host removal/rebinding and the remaining native completion
-gates are still open.
+editing. Explicit Root continuation can also remove the old logical host and
+retain the same external OS window on another surface. Candidate and committed
+exact binding pairs let hosts prepay resources and atomically publish the native
+route and their root-surface field. The reference X11 workflow verifies layout
+and JSON Root rebinding, fresh content editing and unchanged physical window
+identity. Positive stationary OS facts, remaining native completion gates and
+reproducible fork delivery are still open.
 
 Managed engine hosts can also capture native client coordinates from committed
 size and scale facts without desktop position or work areas. The joined recorder

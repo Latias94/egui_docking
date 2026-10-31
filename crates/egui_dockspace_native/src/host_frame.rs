@@ -210,6 +210,21 @@ impl<'session> NativeHostFrame<'session> {
     /// Returns an error without releasing the callback-order barrier when the
     /// core rejects the candidate frame.
     pub fn commit(self) -> Result<HostFrameReport, NativeRuntimeError> {
+        self.commit_inner(None)
+    }
+
+    /// Publishes the external Root surface under the same lock as its exact route.
+    pub(crate) fn commit_publishing_root(
+        self,
+        root_surface: &mut SurfaceId,
+    ) -> Result<HostFrameReport, NativeRuntimeError> {
+        self.commit_inner(Some(root_surface))
+    }
+
+    fn commit_inner(
+        self,
+        root_surface: Option<&mut SurfaceId>,
+    ) -> Result<HostFrameReport, NativeRuntimeError> {
         let Self {
             frame,
             bridge,
@@ -218,7 +233,7 @@ impl<'session> NativeHostFrame<'session> {
             overload,
         } = self;
         let (report, staging_viewports) =
-            bridge.commit_host_frame_with_staging(frame, overload.is_none())?;
+            bridge.commit_host_frame_with_staging(frame, overload.is_none(), root_surface)?;
         if let Some(cancellation) = overload {
             if !matches!(
                 report.submitted_action_outcome(cancellation.submitted),

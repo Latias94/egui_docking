@@ -29,6 +29,12 @@ enum NativeLayoutRequestErrorSource {
     HostSurfaceMissing {
         surface: SurfaceId,
     },
+    RootWindowUnavailable {
+        surface: SurfaceId,
+    },
+    RootTargetOccupied {
+        surface: SurfaceId,
+    },
     UnhostedSurface {
         surface: SurfaceId,
     },
@@ -53,6 +59,10 @@ impl NativeLayoutRequestError {
             NativeLayoutRequestErrorSource::UnhostedSurface { .. } => {
                 NativeRuntimeErrorKind::Unsupported
             }
+            NativeLayoutRequestErrorSource::RootWindowUnavailable { .. }
+            | NativeLayoutRequestErrorSource::RootTargetOccupied { .. } => {
+                NativeRuntimeErrorKind::OperationConflict
+            }
         }
     }
 
@@ -72,6 +82,18 @@ impl NativeLayoutRequestError {
     pub(crate) const fn new_unhosted_surface(surface: SurfaceId) -> Self {
         Self {
             source: NativeLayoutRequestErrorSource::UnhostedSurface { surface },
+        }
+    }
+
+    pub(crate) const fn new_root_window_unavailable(surface: SurfaceId) -> Self {
+        Self {
+            source: NativeLayoutRequestErrorSource::RootWindowUnavailable { surface },
+        }
+    }
+
+    pub(crate) const fn new_root_target_occupied(surface: SurfaceId) -> Self {
+        Self {
+            source: NativeLayoutRequestErrorSource::RootTargetOccupied { surface },
         }
     }
 }
@@ -112,6 +134,14 @@ impl fmt::Display for NativeLayoutRequestError {
                 formatter,
                 "the replacement surface {surface} requires explicit native window recreation"
             ),
+            NativeLayoutRequestErrorSource::RootWindowUnavailable { surface } => write!(
+                formatter,
+                "native Root surface {surface} has no current external window to continue"
+            ),
+            NativeLayoutRequestErrorSource::RootTargetOccupied { surface } => write!(
+                formatter,
+                "incoming Root surface {surface} is already owned by another native window"
+            ),
         }
     }
 }
@@ -126,6 +156,8 @@ impl Error for NativeLayoutRequestError {
             #[cfg(feature = "serde")]
             NativeLayoutRequestErrorSource::ArrangementLocked => None,
             NativeLayoutRequestErrorSource::HostSurfaceMissing { .. }
+            | NativeLayoutRequestErrorSource::RootWindowUnavailable { .. }
+            | NativeLayoutRequestErrorSource::RootTargetOccupied { .. }
             | NativeLayoutRequestErrorSource::UnhostedSurface { .. } => None,
         }
     }

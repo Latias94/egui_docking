@@ -575,7 +575,7 @@ fn failed_cleanup_observation() -> (
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let destructive_epoch = WorkspaceEpoch::new(1);
     coordinator
-        .reconcile_workspace_epoch(destructive_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(destructive_epoch, &BTreeSet::new(), None)
         .expect("first restore must retire the binding");
     let destructive = coordinator
         .take_new_effects()
@@ -590,7 +590,7 @@ fn failed_cleanup_observation() -> (
         .expect("first restore must emit destructive cleanup");
     let observation_epoch = WorkspaceEpoch::new(2);
     coordinator
-        .reconcile_workspace_epoch(observation_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(observation_epoch, &BTreeSet::new(), None)
         .expect("second restore must continue cleanup observation");
     let continuation = coordinator
         .take_new_effects()
@@ -867,7 +867,7 @@ fn workspace_replacement_quarantines_recovery_binding_until_exact_destruction() 
     let (mut coordinator, _destroyed, replacement, _obligation) = ready_recovery_replacement();
 
     coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new())
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), None)
         .expect("workspace replacement must retire the runtime recovery binding");
 
     let retirement = coordinator
@@ -1595,7 +1595,7 @@ fn restore_skips_only_a_focus_predecessor_the_provider_never_received() {
 
         let desired = BTreeSet::from([old_binding.surface()]);
         coordinator
-            .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired)
+            .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired, None)
             .expect("restore must reconcile focus history");
         let existing_binding = coordinator
             .registry()
@@ -3966,12 +3966,381 @@ fn window_unavailable_waits_for_explicit_destruction_without_retrying() {
 }
 
 #[test]
+fn native_root_continuation_moves_the_exact_window_and_its_input_restore() {
+    let (mut coordinator, predecessor, enable, restore) = released_unobserved_enable();
+    let target = SurfaceId::new(842);
+    let previous_target = coordinator
+        .registry
+        .register_existing(
+            predecessor.epoch(),
+            target,
+            WindowToken::new(900),
+            ViewportRole::Root,
+        )
+        .expect("target history must register");
+    coordinator
+        .registry
+        .discard_unobserved(previous_target)
+        .expect("an unobserved target reservation must be discardable");
+    let source_authority = coordinator.surface_coordinate_authority(predecessor.surface());
+    let target_authority = coordinator.surface_coordinate_authority(target);
+    let desired = BTreeSet::from([target]);
+    let before_prepare = coordinator.clone();
+    let prepared = coordinator
+        .prepare_native_root_continuation(predecessor, target, &desired)
+        .expect("the external root must be eligible for continuation");
+    assert_eq!(coordinator, before_prepare);
+
+    let epoch = WorkspaceEpoch::new(1);
+    let reconciliation = coordinator
+        .reconcile_workspace_epoch(epoch, &desired, Some(prepared))
+        .expect("continuation must retain the root after its source surface disappears");
+    let &[(before, after)] = reconciliation.rebound() else {
+        panic!("one exact continuation must be returned: {reconciliation:?}");
+    };
+    assert_eq!(before, predecessor);
+    assert_eq!(after.authority_domain(), predecessor.authority_domain());
+    assert_eq!(after.surface(), target);
+    assert_eq!(after.epoch(), epoch);
+    assert_eq!(after.token(), predecessor.token());
+    assert_ne!(after.incarnation(), predecessor.incarnation());
+    assert!(reconciliation.retired().is_empty());
+    assert!(reconciliation.unbound_surfaces().is_empty());
+    assert!(coordinator.viewport(predecessor.surface()).is_none());
+    assert!(coordinator.surface_coordinate_authority(predecessor.surface()) > source_authority);
+    assert!(coordinator.surface_coordinate_authority(target) > target_authority);
+    let record = coordinator
+        .viewport(target)
+        .expect("target must own the window");
+    assert_eq!(record.binding(), after);
+    assert_eq!(record.role(), ViewportRole::Root);
+    assert_eq!(record.ownership(), ViewportOwnership::External);
+    assert_eq!(record.admission(), ViewportAdmission::Admitted);
+    assert_eq!(record.lifecycle(), ViewportLifecycle::AwaitingObservation);
+    assert!(record.coordinates().is_none());
+    assert!(record.recovery_coordinates().is_none());
+    assert_eq!(record.coordinate_observation_generation_watermark(), None);
+    assert_eq!(record.input_observation_generation_watermark(), None);
+    assert!(record.input_observation().is_none());
+    assert!(record.presentation_observation().is_none());
+    assert!(record.create_preparation().is_none());
+    assert!(record.close_observations().current().is_none());
+    assert!(!record.ever_observed());
+    assert!(!coordinator.retains_window_cleanup(predecessor));
+    assert!(coordinator.binding_cleanup.is_terminal(predecessor));
+    let rebound_restore = take_single_pointer_restore(&mut coordinator, after, Some(restore));
+    assert_eq!(reconciliation.cleanup_effects(), &[rebound_restore]);
+
+    let transition = coordinator
+        .publish_snapshot(&snapshot_with_close_at(
+            2,
+            vec![observed_window(after)],
+            vec![close_observation(
+                predecessor,
+                1,
+                WindowCloseState::Destroyed,
+            )],
+        ))
+        .expect("a delayed predecessor tombstone must leave the continued window intact");
+    assert!(
+        transition
+            .registry_events()
+            .iter()
+            .all(|event| { !matches!(event, RegistryEvent::Destroyed { .. }) })
+    );
+    assert!(transition.actions().is_empty());
+    assert_eq!(
+        coordinator.viewport(target).map(ViewportRecord::binding),
+        Some(after)
+    );
+    for effect in [enable, restore, rebound_restore] {
+        assert!(!matches!(
+            coordinator
+                .effects()
+                .record(effect)
+                .expect("effect history must remain")
+                .phase(),
+            EffectPhase::Destroyed { .. }
+        ));
+    }
+    assert!(coordinator.binding_cleanup.is_terminal(predecessor));
+    assert!(coordinator.take_new_effects().is_empty());
+}
+
+#[test]
+fn native_root_continuation_rejects_invalid_and_stale_preparation_atomically() {
+    #[derive(Debug, Clone, Copy)]
+    enum Rejection {
+        WrongRoot,
+        Child,
+        Foreign,
+        CloseRequested,
+        AwaitingDestroyed,
+        Missing,
+        Destroyed,
+        Retired,
+        Rebound,
+        TargetMissing,
+        TargetOccupied,
+    }
+
+    for rejection in [
+        Rejection::WrongRoot,
+        Rejection::Child,
+        Rejection::Foreign,
+        Rejection::CloseRequested,
+        Rejection::AwaitingDestroyed,
+        Rejection::Missing,
+        Rejection::Destroyed,
+        Rejection::Retired,
+        Rejection::Rebound,
+        Rejection::TargetMissing,
+        Rejection::TargetOccupied,
+    ] {
+        let (mut coordinator, binding) = external_routing_coordinator();
+        let target = SurfaceId::new(842);
+        let mut desired = BTreeSet::from([target]);
+        let prepared = coordinator
+            .prepare_native_root_continuation(binding, target, &desired)
+            .expect("the original exact root must prepare");
+        let mut submitted = binding;
+        match rejection {
+            Rejection::WrongRoot => {
+                submitted = ViewportBinding::new(
+                    binding.authority_domain(),
+                    binding.epoch(),
+                    binding.surface(),
+                    WindowToken::new(999),
+                    binding.incarnation(),
+                );
+            }
+            Rejection::Child => {
+                submitted = coordinator
+                    .register_existing(
+                        binding.epoch(),
+                        SurfaceId::new(143),
+                        WindowToken::new(144),
+                        ViewportRole::Child,
+                        Some(recovery(143)),
+                    )
+                    .expect("an external child must register");
+            }
+            Rejection::Foreign => {
+                submitted = ViewportBinding::new(
+                    EngineAuthorityDomainId::new_for_test(999),
+                    binding.epoch(),
+                    binding.surface(),
+                    binding.token(),
+                    binding.incarnation(),
+                );
+            }
+            Rejection::CloseRequested => {
+                coordinator
+                    .publish_snapshot(&snapshot_with_close_at(
+                        2,
+                        vec![observed_window(binding)],
+                        vec![close_observation(
+                            binding,
+                            1,
+                            WindowCloseState::LiveRequested,
+                        )],
+                    ))
+                    .expect("a native close edge must publish");
+            }
+            Rejection::AwaitingDestroyed => {
+                coordinator
+                    .registry
+                    .mark_awaiting_destroyed(binding)
+                    .expect("accepted closure must retire admission");
+            }
+            Rejection::Missing => {
+                coordinator
+                    .publish_snapshot(&snapshot_at(2, Vec::new()))
+                    .expect("inventory absence must publish");
+            }
+            Rejection::Destroyed => {
+                coordinator
+                    .publish_snapshot(&snapshot_with_close_at(
+                        2,
+                        Vec::new(),
+                        vec![close_observation(binding, 1, WindowCloseState::Destroyed)],
+                    ))
+                    .expect("exact destruction must publish");
+            }
+            Rejection::Retired => {
+                let authority = coordinator.capture_surface_vacancy_authority(binding.surface());
+                coordinator
+                    .settle_surface_vacancies(&[authority], &BTreeSet::new())
+                    .expect("external vacancy must transfer cleanup ownership");
+            }
+            Rejection::Rebound => {
+                coordinator
+                    .reconcile_workspace_epoch(
+                        WorkspaceEpoch::new(1),
+                        &BTreeSet::from([binding.surface()]),
+                        None,
+                    )
+                    .expect("a prior replacement must invalidate the prepared predecessor");
+            }
+            Rejection::TargetMissing => {
+                desired.clear();
+            }
+            Rejection::TargetOccupied => {
+                coordinator
+                    .register_existing(
+                        binding.epoch(),
+                        target,
+                        WindowToken::new(900),
+                        ViewportRole::Root,
+                        None,
+                    )
+                    .expect("another physical root must occupy the target");
+            }
+        }
+        let expected = match rejection {
+            Rejection::TargetMissing => {
+                ViewportCoordinatorError::NativeRootContinuationTargetMissing { target }
+            }
+            Rejection::TargetOccupied => {
+                ViewportCoordinatorError::NativeRootContinuationTargetOccupied {
+                    target,
+                    binding: coordinator
+                        .viewport(target)
+                        .expect("occupied target must exist")
+                        .binding(),
+                }
+            }
+            _ => ViewportCoordinatorError::NativeRootContinuationPredecessorUnavailable {
+                predecessor: submitted,
+            },
+        };
+        let unchanged = coordinator.clone();
+        assert_eq!(
+            coordinator.prepare_native_root_continuation(submitted, target, &desired),
+            Err(expected.clone()),
+            "preparation must reject {rejection:?}",
+        );
+        assert_eq!(coordinator, unchanged, "preparation mutated {rejection:?}");
+        if !matches!(
+            rejection,
+            Rejection::WrongRoot | Rejection::Child | Rejection::Foreign
+        ) {
+            assert_eq!(
+                coordinator.reconcile_workspace_epoch(
+                    WorkspaceEpoch::new(2),
+                    &desired,
+                    Some(prepared)
+                ),
+                Err(expected),
+                "consumption must revalidate {rejection:?}",
+            );
+            assert_eq!(coordinator, unchanged, "rejection mutated {rejection:?}");
+        }
+    }
+}
+
+#[test]
+fn native_root_continuation_preserves_other_roots_and_exact_quiescence_guards() {
+    let mut coordinator = ViewportCoordinator::default();
+    let predecessor = register(&mut coordinator, 1, 10, ViewportRole::Root);
+    let peer = register(&mut coordinator, 2, 20, ViewportRole::Root);
+    let provider = coordinator
+        .platform_provider()
+        .expect("provider must exist");
+    coordinator
+        .publish_snapshot(&snapshot(vec![
+            observed_window(predecessor),
+            observed_window(peer),
+        ]))
+        .expect("both roots must become ready");
+    let target = SurfaceId::new(3);
+    let desired = BTreeSet::from([predecessor.surface(), peer.surface(), target]);
+    let prepared = coordinator
+        .prepare_native_root_continuation(predecessor, target, &desired)
+        .expect("continuation must override the predecessor's default destination");
+    let reconciliation = coordinator
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired, Some(prepared))
+        .expect("both roots must retain their physical windows");
+    let rebound = reconciliation
+        .rebound()
+        .iter()
+        .copied()
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(rebound.len(), 2);
+    let continued = rebound[&predecessor];
+    let retained_peer = rebound[&peer];
+    assert_eq!(continued.surface(), target);
+    assert_eq!(continued.token(), predecessor.token());
+    assert_eq!(retained_peer.surface(), peer.surface());
+    assert_eq!(retained_peer.token(), peer.token());
+    assert_ne!(retained_peer.incarnation(), peer.incarnation());
+    assert!(coordinator.viewport(predecessor.surface()).is_none());
+    assert_eq!(reconciliation.unbound_surfaces(), &[predecessor.surface()]);
+    assert!(reconciliation.retired().is_empty());
+    assert!(reconciliation.cleanup_effects().is_empty());
+    assert!(coordinator.take_new_effects().is_empty());
+    let transition = coordinator
+        .publish_snapshot(&snapshot_at(
+            2,
+            vec![observed_window(continued), observed_window(retained_peer)],
+        ))
+        .expect("fresh roots must become observable without destroying their predecessors");
+    assert!(
+        transition
+            .registry_events()
+            .iter()
+            .all(|event| !matches!(event, RegistryEvent::Destroyed { .. }))
+    );
+    assert!(transition.actions().is_empty());
+    for binding in [predecessor, peer] {
+        assert!(coordinator.recognizes_input_binding(binding));
+        assert!(coordinator.binding_cleanup.is_terminal(binding));
+        assert!(!coordinator.retains_window_cleanup(binding));
+    }
+
+    let ticket = coordinator
+        .begin_platform_provider_replacement(provider)
+        .expect("provider authority must revoke without releasing exact guards");
+    let successor = coordinator
+        .finish_platform_provider_replacement(ticket)
+        .expect("successor provider must activate");
+    let unchanged = coordinator.clone();
+    assert_eq!(
+        coordinator.compact_quiesced_terminal_binding_guard(predecessor, successor),
+        Err(
+            ViewportCoordinatorError::TerminalBindingGuardProviderMismatch {
+                binding: predecessor,
+                expected: provider,
+                submitted: successor,
+            }
+        ),
+    );
+    assert_eq!(
+        coordinator.compact_quiesced_terminal_binding_guard(continued, provider),
+        Err(ViewportCoordinatorError::TerminalBindingGuardMissing { binding: continued }),
+    );
+    assert_eq!(coordinator, unchanged);
+    coordinator
+        .compact_quiesced_terminal_binding_guard(predecessor, provider)
+        .expect("only exact predecessor quiescence may release its guard");
+    assert!(!coordinator.recognizes_input_binding(predecessor));
+    assert!(coordinator.binding_cleanup.is_terminal(peer));
+    assert!(coordinator.recognizes_input_binding(continued));
+    assert!(coordinator.recognizes_input_binding(retained_peer));
+    coordinator
+        .compact_quiesced_terminal_binding_guard(peer, provider)
+        .expect("the other root owns an independent producer guard");
+    assert!(!coordinator.recognizes_input_binding(peer));
+    assert!(coordinator.take_new_effects().is_empty());
+}
+
+#[test]
 fn workspace_rebound_requires_a_fresh_restore_ack_and_ignores_old_effects() {
     let (mut coordinator, old_binding, old_enable, old_restore) = released_unobserved_enable();
 
     let new_epoch = WorkspaceEpoch::new(1);
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(new_epoch, &BTreeSet::from([old_binding.surface()]))
+        .reconcile_workspace_epoch(new_epoch, &BTreeSet::from([old_binding.surface()]), None)
         .expect("workspace replacement must reconcile the binding");
     let &[(actual_old, new_binding)] = reconciliation.rebound() else {
         panic!("one binding must rebound: {reconciliation:?}");
@@ -4332,7 +4701,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
     let (mut coordinator, binding, enable, old_restore) =
         released_unobserved_runtime_child_enable();
     coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new())
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), None)
         .expect("first restore must retire the source binding");
     assert!(coordinator.take_new_effects().is_empty());
     assert_eq!(
@@ -4341,7 +4710,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
     );
 
     coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &BTreeSet::new())
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &BTreeSet::new(), None)
         .expect("second restore must preserve the pointer obligation");
     let second = coordinator.take_new_effects();
     let emitted_restore = second
@@ -4357,7 +4726,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
         .expect("second restore must serialize behind the emitted predecessor");
 
     let third = coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(3), &BTreeSet::new())
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(3), &BTreeSet::new(), None)
         .expect("third restore must queue another pointer successor");
     let unemitted_restore = third
         .cleanup_effects()
@@ -4380,7 +4749,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
 
     let fourth_epoch = WorkspaceEpoch::new(4);
     coordinator
-        .reconcile_workspace_epoch(fourth_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(fourth_epoch, &BTreeSet::new(), None)
         .expect("fourth restore must replace the unemitted successor");
     assert_eq!(
         coordinator
@@ -4464,7 +4833,7 @@ fn old_cleanup_result_requires_a_current_exact_binding_continuation() {
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let first_epoch = WorkspaceEpoch::new(1);
     coordinator
-        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), None)
         .expect("first restore must retire the binding");
     let destructive = coordinator
         .take_new_effects()
@@ -4479,7 +4848,7 @@ fn old_cleanup_result_requires_a_current_exact_binding_continuation() {
         .expect("first restore must emit destructive cleanup");
     let current_epoch = WorkspaceEpoch::new(2);
     coordinator
-        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new(), None)
         .expect("second restore must create a cleanup continuation");
     let _ = coordinator.take_new_effects();
 
@@ -4523,7 +4892,7 @@ fn old_cleanup_result_is_stale_while_same_boundary_continuation_is_unemitted() {
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let first_epoch = WorkspaceEpoch::new(1);
     coordinator
-        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), None)
         .expect("first restore must retire the binding");
     let destructive = coordinator
         .take_new_effects()
@@ -4539,7 +4908,7 @@ fn old_cleanup_result_is_stale_while_same_boundary_continuation_is_unemitted() {
 
     let current_epoch = WorkspaceEpoch::new(2);
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new(), None)
         .expect("same boundary restore must queue a continuation");
     let continuation = reconciliation
         .cleanup_effects()
@@ -4692,7 +5061,7 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
 
         let first_epoch = WorkspaceEpoch::new(1);
         coordinator
-            .reconcile_workspace_epoch(first_epoch, &BTreeSet::new())
+            .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), None)
             .expect("first workspace replacement must retire the binding");
         assert!(coordinator.take_new_effects().is_empty());
 
@@ -4720,7 +5089,7 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
 
         let second_epoch = WorkspaceEpoch::new(2);
         coordinator
-            .reconcile_workspace_epoch(second_epoch, &BTreeSet::new())
+            .reconcile_workspace_epoch(second_epoch, &BTreeSet::new(), None)
             .expect("second workspace replacement must migrate cleanup observation");
         let migrated = coordinator
             .try_take_new_effects()
@@ -4883,7 +5252,7 @@ fn retired_observed_window_restores_input_before_cleanup_can_fail() {
 
     let new_epoch = WorkspaceEpoch::new(1);
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(new_epoch, &BTreeSet::new())
+        .reconcile_workspace_epoch(new_epoch, &BTreeSet::new(), None)
         .expect("workspace replacement must retire the old binding");
     assert_eq!(reconciliation.retired(), &[binding]);
     assert!(coordinator.take_new_effects().is_empty());

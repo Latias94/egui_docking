@@ -66,6 +66,14 @@ until explicit retry; invalid declarations and retained Root/Child conflicts
 publish nothing. Recording results remain distinct from the native example's
 separate real-window restoration journey.
 
+The explicit Root-rebinding journeys remove the old logical host while preserving
+its external window token under a new exact binding. They force a retired incoming
+Root through rebasing, check Child recovery/placement references, failed/dropped
+frame retries and old-output isolation, and keep the existing first-live gates.
+`native_local_geometry.rs` also exercises layout-only Root continuation without
+enabling persistence. These recording tests prove host semantics rather than an
+OS window's survival; the optional native reference supplies that separate proof.
+
 `tests/native_local_geometry.rs` measures and presents a native root with client
 size and independent scales, without a desktop origin or work-area facts. It
 checks stable selection, exact output, frame retry and atomic rejection of

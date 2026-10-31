@@ -4,8 +4,11 @@ use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanTarget, CloseRequestId,
     DeferredCloseDecision, DeferredCloseToken,
 };
-use dockspace::model::{DockPlacement, DockspaceLayout, ItemId, NativeWindowPlacement, RootId};
-use dockspace::runtime::DockspaceClosePlan;
+use dockspace::model::{
+    DockPlacement, DockspaceLayout, ItemId, NativeWindowPlacement, RootId, SurfaceId,
+};
+use dockspace::runtime::{DockspaceClosePlan, NativeSurfaceBinding};
+use eframe::egui;
 use egui_dockspace::PaneView;
 
 use crate::application_action::{
@@ -20,6 +23,92 @@ use crate::NativeLayoutRequestError;
 mod tests;
 
 impl<P: PaneView> NativeRuntimeState<P> {
+    pub(crate) fn request_layout_reset_rebinding_root(
+        &mut self,
+        layout: DockspaceLayout,
+        incoming_root: SurfaceId,
+    ) -> Result<(), NativeLayoutRequestError> {
+        self.ensure_application_slot_available()?;
+        self.validate_replacement_host_at(layout.view(), incoming_root)?;
+        let existing_root = self.existing_root_for_continuation()?;
+        self.validate_root_continuation_target(existing_root, incoming_root)?;
+        let reset = self.coordinator.session().prepare_layout_reset(layout)?;
+        let action = NativeApplicationAction::new(
+            self.coordinator.session().version(),
+            NativeApplicationCommand::LayoutResetRebindingRoot {
+                reset: Box::new(reset),
+                existing_root,
+                incoming_root,
+            },
+        );
+        self.enqueue_application_action(action)?;
+        Ok(())
+    }
+
+    fn existing_root_for_continuation(
+        &self,
+    ) -> Result<NativeSurfaceBinding, NativeLayoutRequestError> {
+        self.coordinator
+            .viewport_binding(egui::ViewportId::ROOT)
+            .filter(|binding| binding.surface() == self.root_surface)
+            .filter(|binding| {
+                self.coordinator.dispatch_bridge().with_viewports(|routes| {
+                    routes.window(egui::ViewportId::ROOT).is_some()
+                        && routes.has_window_receipt(egui::ViewportId::ROOT, *binding)
+                })
+            })
+            .ok_or_else(|| NativeLayoutRequestError::new_root_window_unavailable(self.root_surface))
+    }
+
+    fn validate_root_continuation_target(
+        &self,
+        existing: NativeSurfaceBinding,
+        incoming: SurfaceId,
+    ) -> Result<(), NativeLayoutRequestError> {
+        if incoming != existing.surface()
+            && self
+                .coordinator
+                .session()
+                .view()
+                .surface(incoming)
+                .is_some()
+            && self.coordinator.surface_viewport(incoming).is_some()
+        {
+            return Err(NativeLayoutRequestError::new_root_target_occupied(incoming));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn request_document_restore_json_rebinding_root(
+        &mut self,
+        bytes: &[u8],
+        incoming_root: SurfaceId,
+        recognize: impl Fn(dockspace::runtime::DockspaceDocumentId, &str) -> bool,
+    ) -> Result<(), NativeLayoutRequestError> {
+        self.ensure_application_slot_available()?;
+        if self.arrangement_locked() {
+            return Err(NativeLayoutRequestError::new_arrangement_locked());
+        }
+        let existing_root = self.existing_root_for_continuation()?;
+        self.validate_root_continuation_target(existing_root, incoming_root)?;
+        let restore = self
+            .coordinator
+            .session()
+            .prepare_document_restore_json(bytes, recognize)?;
+        restore.validate_native_surface_hosting(incoming_root)?;
+        let action = NativeApplicationAction::new(
+            self.coordinator.session().version(),
+            NativeApplicationCommand::DocumentRestore {
+                restore: Box::new(restore),
+                root_surface: incoming_root,
+                existing_root: Some(existing_root),
+            },
+        );
+        self.enqueue_application_action(action)?;
+        Ok(())
+    }
+
     pub(crate) fn request_layout_reset(
         &mut self,
         layout: DockspaceLayout,
@@ -55,6 +144,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             NativeApplicationCommand::DocumentRestore {
                 restore: Box::new(restore),
                 root_surface: self.root_surface,
+                existing_root: None,
             },
         );
         self.enqueue_application_action(action)?;
@@ -81,15 +171,20 @@ impl<P: PaneView> NativeRuntimeState<P> {
         &self,
         view: dockspace::model::DockspaceView<'_>,
     ) -> Result<(), NativeLayoutRequestError> {
-        if view.surface(self.root_surface).is_none() {
+        self.validate_replacement_host_at(view, self.root_surface)
+    }
+
+    fn validate_replacement_host_at(
+        &self,
+        view: dockspace::model::DockspaceView<'_>,
+        root_surface: SurfaceId,
+    ) -> Result<(), NativeLayoutRequestError> {
+        if view.surface(root_surface).is_none() {
             return Err(NativeLayoutRequestError::new_host_surface_missing(
-                self.root_surface,
+                root_surface,
             ));
         }
-        if let Some(unhosted) = view
-            .surfaces()
-            .find(|surface| surface.id() != self.root_surface)
-        {
+        if let Some(unhosted) = view.surfaces().find(|surface| surface.id() != root_surface) {
             return Err(NativeLayoutRequestError::new_unhosted_surface(
                 unhosted.id(),
             ));

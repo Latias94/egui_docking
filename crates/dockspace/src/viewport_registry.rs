@@ -1258,10 +1258,11 @@ impl ViewportRegistry {
         Ok(())
     }
 
+    /// Rebinds exact retained windows to unique targets without replacing physical windows.
     pub(crate) fn reconcile_restore(
         &mut self,
         new_epoch: WorkspaceEpoch,
-        retained_bindings: &BTreeSet<ViewportBinding>,
+        retained_bindings: &BTreeMap<ViewportBinding, SurfaceId>,
     ) -> Result<RestoreRegistryReconciliation, ViewportRegistryError> {
         let mut candidate = self.clone();
         let reconciliation = candidate.reconcile_restore_in_place(new_epoch, retained_bindings)?;
@@ -1272,10 +1273,19 @@ impl ViewportRegistry {
     fn reconcile_restore_in_place(
         &mut self,
         new_epoch: WorkspaceEpoch,
-        retained_bindings: &BTreeSet<ViewportBinding>,
+        retained_bindings: &BTreeMap<ViewportBinding, SurfaceId>,
     ) -> Result<RestoreRegistryReconciliation, ViewportRegistryError> {
-        for binding in retained_bindings {
+        let mut targets = BTreeSet::new();
+        for (binding, target) in retained_bindings {
             self.current_record(*binding)?;
+            if !targets.insert(*target)
+                || self
+                    .records
+                    .get(target)
+                    .is_some_and(|record| record.binding != *binding)
+            {
+                return Err(ViewportRegistryError::SurfaceAlreadyRegistered { surface: *target });
+            }
         }
 
         let surfaces: Vec<SurfaceId> = self.records.keys().copied().collect();
@@ -1287,20 +1297,23 @@ impl ViewportRegistry {
                 .get(&surface)
                 .ok_or(ViewportRegistryError::MissingSurface { surface })?
                 .binding;
-            if !retained_bindings.contains(&before) {
+            let Some(&target) = retained_bindings.get(&before) else {
                 retired.push(self.detach(before)?);
                 continue;
-            }
+            };
             let incarnation = self.next_incarnation()?;
-            let generation = self.next_surface_authority(surface)?;
-            let record = self
+            if target != surface {
+                self.next_surface_authority(surface)?;
+            }
+            let generation = self.next_surface_authority(target)?;
+            let mut record = self
                 .records
-                .get_mut(&surface)
+                .remove(&surface)
                 .ok_or(ViewportRegistryError::MissingSurface { surface })?;
             let after = ViewportBinding::new(
                 self.authority_domain,
                 new_epoch,
-                surface,
+                target,
                 before.token(),
                 incarnation,
             );
@@ -1317,6 +1330,8 @@ impl ViewportRegistry {
             record.close_observations = WindowCloseObservationStream::default();
             record.ever_observed = false;
             record.pending_close_request = None;
+            self.token_to_surface.insert(before.token(), target);
+            self.records.insert(target, record);
             retained.push((before, after));
         }
         Ok(RestoreRegistryReconciliation { retained, retired })
@@ -1943,7 +1958,10 @@ mod tests {
             .expect("old presentation must become authoritative");
 
         let reconciliation = registry
-            .reconcile_restore(WorkspaceEpoch::new(1), &BTreeSet::from([before]))
+            .reconcile_restore(
+                WorkspaceEpoch::new(1),
+                &BTreeMap::from([(before, before.surface())]),
+            )
             .expect("retained binding must rebind");
         let [(_, after)] = reconciliation.retained() else {
             panic!("exactly one retained binding must be returned");
@@ -2127,7 +2145,10 @@ mod tests {
             )
             .expect("binding must register");
         let reconciliation = registry
-            .reconcile_restore(WorkspaceEpoch::new(1), &BTreeSet::from([before]))
+            .reconcile_restore(
+                WorkspaceEpoch::new(1),
+                &BTreeMap::from([(before, before.surface())]),
+            )
             .expect("retained binding must rebind");
         let [(_, after)] = reconciliation.retained() else {
             panic!("one retained binding must be rebound");
@@ -2910,7 +2931,7 @@ mod tests {
             .apply_snapshot_for_test(&snapshot(1, vec![ready_window(before, 99)]))
             .expect("high provider generation must apply to the original incarnation");
 
-        let retained = BTreeSet::from([before]);
+        let retained = BTreeMap::from([(before, before.surface())]);
         let reconciliation = registry
             .reconcile_restore(WorkspaceEpoch::new(1), &retained)
             .expect("retained binding must rebind");
@@ -2968,6 +2989,102 @@ mod tests {
     }
 
     #[test]
+    fn restore_continuation_validates_exact_sources_and_unique_unoccupied_targets_atomically() {
+        let mut registry = ViewportRegistry::default();
+        let first = registry
+            .register_existing(
+                WorkspaceEpoch::new(0),
+                SurfaceId::new(1),
+                WindowToken::new(10),
+                ViewportRole::Root,
+            )
+            .expect("first root must register");
+        let peer = registry
+            .register_existing(
+                WorkspaceEpoch::new(0),
+                SurfaceId::new(2),
+                WindowToken::new(20),
+                ViewportRole::Root,
+            )
+            .expect("peer root must register");
+        registry
+            .apply_snapshot_for_test(&snapshot(
+                1,
+                vec![ready_window(first, 9), ready_window(peer, 9)],
+            ))
+            .expect("both roots must become observable");
+        let target = SurfaceId::new(3);
+        let stale = ViewportBinding::new(
+            first.authority_domain(),
+            first.epoch(),
+            first.surface(),
+            first.token(),
+            first
+                .incarnation()
+                .checked_next()
+                .expect("test incarnation must advance"),
+        );
+        let foreign = ViewportBinding::new(
+            EngineAuthorityDomainId::new_for_test(999),
+            first.epoch(),
+            first.surface(),
+            first.token(),
+            first.incarnation(),
+        );
+        let unchanged = registry.clone();
+        for (retained, expected) in [
+            (
+                BTreeMap::from([(first, target), (peer, target)]),
+                ViewportRegistryError::SurfaceAlreadyRegistered { surface: target },
+            ),
+            (
+                BTreeMap::from([(first, peer.surface())]),
+                ViewportRegistryError::SurfaceAlreadyRegistered {
+                    surface: peer.surface(),
+                },
+            ),
+            (
+                BTreeMap::from([(stale, target)]),
+                ViewportRegistryError::StaleBinding { binding: stale },
+            ),
+            (
+                BTreeMap::from([(foreign, target)]),
+                ViewportRegistryError::StaleBinding { binding: foreign },
+            ),
+        ] {
+            assert_eq!(
+                registry.reconcile_restore(WorkspaceEpoch::new(1), &retained),
+                Err(expected)
+            );
+            assert_eq!(registry, unchanged);
+        }
+
+        let reconciliation = registry
+            .reconcile_restore(
+                WorkspaceEpoch::new(1),
+                &BTreeMap::from([(first, target), (peer, peer.surface())]),
+            )
+            .expect("unique unoccupied targets must retain exact windows");
+        assert!(reconciliation.retired().is_empty());
+        assert!(registry.record(first.surface()).is_none());
+        assert_eq!(registry.token_to_surface.get(&first.token()), Some(&target));
+        assert_eq!(
+            registry.token_to_surface.get(&peer.token()),
+            Some(&peer.surface())
+        );
+        let continued = registry
+            .record(target)
+            .expect("continued root must move to its target");
+        assert_eq!(reconciliation.retained()[0], (first, continued.binding()));
+        assert_live_provider_streams_are_revoked(continued);
+        assert!(continued.recovery_coordinates.is_none());
+        assert_eq!(
+            continued.create_preparation_observations,
+            WindowCreatePreparationObservationStream::default()
+        );
+    }
+
+    #[test]
     fn restore_reconciliation_incarnation_exhaustion_is_atomic() {
         let mut registry = ViewportRegistry::default();
         let first_surface = SurfaceId::new(1);
@@ -2989,7 +3106,8 @@ mod tests {
             )
             .expect("second binding must register");
         registry.last_incarnation = WindowIncarnation::new(u64::MAX - 1);
-        let retained_bindings = BTreeSet::from([first, second]);
+        let retained_bindings =
+            BTreeMap::from([(first, SurfaceId::new(3)), (second, second.surface())]);
         let before = registry.clone();
 
         assert_eq!(
@@ -3020,7 +3138,10 @@ mod tests {
             .expect("close-request snapshot must apply");
 
         let reconciliation = registry
-            .reconcile_restore(WorkspaceEpoch::new(1), &BTreeSet::from([before]))
+            .reconcile_restore(
+                WorkspaceEpoch::new(1),
+                &BTreeMap::from([(before, before.surface())]),
+            )
             .expect("retained binding must reconcile");
         let [(retained_before, retained_after)] = reconciliation.retained() else {
             panic!("exactly one retained binding must be returned");
@@ -3097,7 +3218,7 @@ mod tests {
             .mark_awaiting_destroyed(binding)
             .expect("binding must enter its terminal close state");
         let reconciliation = registry
-            .reconcile_restore(WorkspaceEpoch::new(1), &BTreeSet::new())
+            .reconcile_restore(WorkspaceEpoch::new(1), &BTreeMap::new())
             .expect("unretained binding must retire");
 
         assert!(reconciliation.retained().is_empty());

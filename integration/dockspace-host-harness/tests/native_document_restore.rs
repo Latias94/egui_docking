@@ -394,6 +394,10 @@ impl ContentIds {
 }
 
 fn assert_content(view: DockspaceView<'_>) -> ContentIds {
+    assert_content_on_root(view, HOST)
+}
+
+fn assert_content_on_root(view: DockspaceView<'_>, root_surface: SurfaceId) -> ContentIds {
     assert_eq!(view.surfaces().count(), 3);
     let host = view.item(HOST_ITEM).unwrap();
     let main = view.item(MAIN[0]).unwrap();
@@ -417,9 +421,9 @@ fn assert_content(view: DockspaceView<'_>) -> ContentIds {
             other_float.contained().unwrap(),
         ],
     };
-    assert_eq!(ids.surfaces[0], HOST);
-    assert_ne!(ids.surfaces[1], HOST);
-    assert_ne!(ids.surfaces[2], HOST);
+    assert_eq!(ids.surfaces[0], root_surface);
+    assert_ne!(ids.surfaces[1], root_surface);
+    assert_ne!(ids.surfaces[2], root_surface);
     assert_ne!(ids.surfaces[1], ids.surfaces[2]);
     for (index, root_index, contained_indices) in [(0, 0, 0..0), (1, 1, 0..2), (2, 4, 2..3)] {
         let surface = view.surface(ids.surfaces[index]).unwrap();
@@ -439,7 +443,7 @@ fn assert_content(view: DockspaceView<'_>) -> ContentIds {
         (
             &[HOST_ITEM, HOST_DETAIL][..],
             HOST_ITEM,
-            HOST,
+            root_surface,
             ids.roots[0],
             None,
             true,
@@ -558,6 +562,54 @@ impl NativeDocumentHost {
             NativeCreateStrategy::DirectPrepared,
             None,
         )
+    }
+
+    fn with_retired_saved_root() -> Self {
+        // Moving the external Root retires the incoming document's saved Root ID.
+        let mut host = Self::new(2, true);
+        let predecessor = host.root;
+        let external_root = SurfaceId::new(100);
+        let reset = host
+            .session
+            .prepare_layout_reset(
+                DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                    external_root,
+                    DockspaceRootLayout::new(
+                        RootId::new(901),
+                        DockspaceNode::central_tabs_with_selection(
+                            [HOST_ITEM, HOST_DETAIL],
+                            Some(HOST_ITEM),
+                        )
+                        .unwrap(),
+                    ),
+                )])
+                .unwrap(),
+            )
+            .unwrap();
+        let mut frame = native_frame(&mut host.session);
+        frame
+            .submit_native_layout_reset(&reset, predecessor, external_root)
+            .unwrap();
+        let proposed = frame
+            .proposed_native_root_continuations()
+            .collect::<Vec<_>>();
+        assert_eq!(proposed.len(), 1);
+        let continuation = proposed[0];
+        assert_eq!(continuation.predecessor(), predecessor);
+        assert_eq!(continuation.successor().surface(), external_root);
+        assert_eq!(
+            continuation.successor().window_token(),
+            predecessor.window_token()
+        );
+        assert!(frame.view().surface(HOST).is_none());
+        let mut report = finish(frame);
+        assert_eq!(report.native_root_continuations(), &[continuation]);
+        assert_eq!(report.native_bindings(), &[continuation.successor()]);
+        assert_no_effects(&mut report);
+        host.root = continuation.successor();
+        host.quiesce(predecessor);
+        host.ready_root();
+        host
     }
 
     fn with_host_storage(
@@ -786,7 +838,10 @@ impl NativeDocumentHost {
                 .matches_presentation_artifact(artifact)
         );
         assert!(self.session.native_local_coordinates(binding).is_some());
-        assert_eq!(assert_content(self.session.view()), ids);
+        assert_eq!(
+            assert_content_on_root(self.session.view(), self.root.surface()),
+            ids
+        );
     }
 }
 
@@ -822,6 +877,391 @@ fn take_create(
         panic!("the exact Create must own its renderer readiness acknowledgement");
     };
     (binding, acknowledgement)
+}
+
+#[test]
+fn rebinding_root_restore_rebases_retired_document_root_and_children_keep_first_live_gate() {
+    let bytes = saved_document(SavedHosting::Children);
+    let mut host = NativeDocumentHost::with_retired_saved_root();
+    let external_root = host.root;
+    assert_ne!(external_root.surface(), HOST);
+    assert!(host.session.is_current_native_binding(external_root));
+    assert!(host.session.view().surface(HOST).is_none());
+    let before = host.session.version();
+    let restore = host
+        .session
+        .prepare_document_restore_json(&bytes, recognize)
+        .unwrap();
+    let original = assert_content(restore.view());
+    let incoming_root = original.surfaces[0];
+    assert_eq!(incoming_root, HOST);
+    restore
+        .validate_native_surface_hosting(incoming_root)
+        .unwrap();
+    let saved_preferences = restore
+        .surface_presentation_preferences()
+        .collect::<Vec<_>>();
+    for (index, surface) in CHILDREN.into_iter().enumerate() {
+        let child = saved_preferences
+            .iter()
+            .find(|preference| preference.surface() == surface)
+            .unwrap();
+        assert_eq!(
+            child.native_hosting(),
+            Some(DockspaceNativeSurfaceHosting::Child {
+                recovery_host: incoming_root
+            })
+        );
+        assert_eq!(child.outer_rect(), Some(placement(index)));
+    }
+
+    let mut frame = native_frame(&mut host.session);
+    frame
+        .submit_native_document_restore_rebinding_root(&restore, external_root, incoming_root)
+        .unwrap();
+    let proposed = frame
+        .proposed_native_root_continuations()
+        .collect::<Vec<_>>();
+    assert_eq!(proposed.len(), 1);
+    let continuation = proposed[0];
+    let successor = continuation.successor();
+    assert_eq!(continuation.predecessor(), external_root);
+    assert_eq!(successor.window_token(), external_root.window_token());
+    assert_ne!(successor.surface(), incoming_root);
+    assert_ne!(successor.surface(), external_root.surface());
+    assert!(frame.view().surface(external_root.surface()).is_none());
+    assert!(frame.view().surface(incoming_root).is_none());
+    let ids = assert_content_on_root(frame.view(), successor.surface());
+    assert_eq!(
+        frame.proposed_native_bindings().collect::<Vec<_>>(),
+        [successor]
+    );
+    for (saved, rebased) in original.surfaces.into_iter().zip(ids.surfaces) {
+        assert_ne!(saved, rebased);
+        let saved = saved_preferences
+            .iter()
+            .find(|preference| preference.surface() == saved)
+            .unwrap();
+        let current = frame
+            .surface_presentation_preferences()
+            .find(|preference| preference.surface() == rebased)
+            .unwrap();
+        let hosting = if rebased == successor.surface() {
+            DockspaceNativeSurfaceHosting::Root
+        } else {
+            DockspaceNativeSurfaceHosting::Child {
+                recovery_host: successor.surface(),
+            }
+        };
+        assert_eq!(current.native_hosting(), Some(hosting));
+        assert_eq!(current.outer_rect(), saved.outer_rect());
+        assert_eq!(current.inner_size_hint(), saved.inner_size_hint());
+        assert_eq!(current.scale_factor_hint(), saved.scale_factor_hint());
+        assert_eq!(current.window_presentation(), saved.window_presentation());
+    }
+    let proposed_preferences = frame.surface_presentation_preferences().collect::<Vec<_>>();
+    let mut report = finish(frame);
+    assert!(matches!(
+        report.inputs(),
+        [HostInputOutcome::DocumentRestored { previous, current }]
+            if *previous == before && *current == report.after()
+    ));
+    assert_eq!(report.native_root_continuations(), &[continuation]);
+    assert_eq!(report.native_bindings(), &[successor]);
+    assert!(report.native_admissions().is_empty());
+    assert_no_effects(&mut report);
+    assert!(report.take_painted_outputs().is_empty());
+    host.root = successor;
+    assert_eq!(
+        host.session
+            .surface_presentation_preferences()
+            .collect::<Vec<_>>(),
+        proposed_preferences
+    );
+    assert!(!host.session.is_current_native_binding(external_root));
+    assert!(host.session.recognizes_native_binding(external_root));
+    assert!(host.session.native_local_coordinates(successor).is_none());
+    assert_suspended(&mut host.session, &ids.children());
+    host.assert_waiting();
+    host.ready_root();
+    host.assert_waiting();
+    host.quiesce(external_root);
+
+    let mut frame = native_frame(&mut host.session);
+    assert!(frame.advance_next_native_surface_create().unwrap());
+    assert!(!frame.advance_next_native_surface_create().unwrap());
+    let mut report = finish(frame);
+    assert!(report.native_root_continuations().is_empty());
+    let (child, acknowledgement) = take_create(&mut report, ids.children()[0], 0);
+    assert_eq!(report.native_bindings(), &[child, successor]);
+    assert_suspended(&mut host.session, &ids.children());
+    // RecordingRenderer proves the model's semantic first-live barrier.
+    host.admit(child, acknowledgement, ids, 0, &[]);
+    assert!(host.session.has_pending_native_create());
+    assert_suspended(&mut host.session, &[ids.children()[1]]);
+    host.assert_waiting();
+    assert_eq!(
+        assert_content_on_root(host.session.view(), successor.surface()),
+        ids
+    );
+}
+
+#[test]
+fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_late_facts() {
+    let bytes = saved_document(SavedHosting::Children);
+    let mut host = NativeDocumentHost::with_retired_saved_root();
+    let external_root = host.root;
+    let (old_output, _) = paint(&mut host.session, external_root);
+    let old_artifact = old_output.presentation_artifact();
+    let coordinates = host
+        .session
+        .native_local_coordinates(external_root)
+        .unwrap();
+    let before = host.session.version();
+    let graph = format!("{:?}", host.session.view());
+    let generation = host.session.next_document_generation();
+    let document = host.session.document_id();
+    let preferences = host
+        .session
+        .surface_presentation_preferences()
+        .collect::<Vec<_>>();
+    let recorded = host.session.native_input_recorded_count();
+    let restore = host
+        .session
+        .prepare_document_restore_json(&bytes, recognize)
+        .unwrap();
+    let incoming_root = assert_content(restore.view()).surfaces[0];
+    restore
+        .validate_native_surface_hosting(incoming_root)
+        .unwrap();
+    let saved_preferences = restore
+        .surface_presentation_preferences()
+        .collect::<Vec<_>>();
+    let mut exact_pair = None;
+    let mut candidate_ids = None;
+    let mut candidate_version = None;
+    let mut candidate_preferences = None;
+    for attempt in 0..3 {
+        let mut frame = native_frame(&mut host.session);
+        frame
+            .submit_native_document_restore_rebinding_root(&restore, external_root, incoming_root)
+            .unwrap();
+        let proposed = frame
+            .proposed_native_root_continuations()
+            .collect::<Vec<_>>();
+        assert_eq!(proposed.len(), 1);
+        let continuation = proposed[0];
+        assert_eq!(*exact_pair.get_or_insert(continuation), continuation);
+        assert_eq!(continuation.predecessor(), external_root);
+        let successor = continuation.successor();
+        assert_eq!(successor.window_token(), external_root.window_token());
+        assert_ne!(successor.surface(), incoming_root);
+        assert!(frame.view().surface(external_root.surface()).is_none());
+        assert!(frame.view().surface(incoming_root).is_none());
+        let ids = assert_content_on_root(frame.view(), successor.surface());
+        assert_eq!(*candidate_ids.get_or_insert(ids), ids);
+        assert_eq!(
+            *candidate_version.get_or_insert(frame.version()),
+            frame.version()
+        );
+        assert_eq!(
+            frame.proposed_native_bindings().collect::<Vec<_>>(),
+            [successor]
+        );
+        let proposed_preferences = frame.surface_presentation_preferences().collect::<Vec<_>>();
+        assert_eq!(
+            candidate_preferences.get_or_insert_with(|| proposed_preferences.clone()),
+            &proposed_preferences
+        );
+        for (index, surface) in ids.children().into_iter().enumerate() {
+            let child = proposed_preferences
+                .iter()
+                .find(|preference| preference.surface() == surface)
+                .unwrap();
+            assert_eq!(
+                child.native_hosting(),
+                Some(DockspaceNativeSurfaceHosting::Child {
+                    recovery_host: successor.surface()
+                })
+            );
+            assert_eq!(child.outer_rect(), Some(placement(index)));
+        }
+        assert_eq!(frame.external_key_for_item(HISTORICAL), Some(KEYS[12]));
+        match attempt {
+            0 => drop(frame),
+            1 => {
+                frame.commit().expect_err(
+                    "an incomplete restore frame must publish neither continuation nor sidecars",
+                );
+            }
+            _ => {
+                let mut report = finish(frame);
+                assert!(matches!(
+                    report.inputs(),
+                    [HostInputOutcome::DocumentRestored { previous, current }]
+                        if *previous == before && *current == report.after()
+                ));
+                assert_eq!(report.native_root_continuations(), &[continuation]);
+                assert_eq!(report.native_bindings(), &[successor]);
+                assert_no_effects(&mut report);
+                assert!(report.take_painted_outputs().is_empty());
+            }
+        }
+        assert_eq!(host.session.native_input_recorded_count(), recorded);
+        assert_eq!(
+            restore
+                .surface_presentation_preferences()
+                .collect::<Vec<_>>(),
+            saved_preferences
+        );
+        assert_eq!(assert_content(restore.view()).surfaces[0], incoming_root);
+        if attempt < 2 {
+            assert_eq!(host.session.version(), before);
+            assert_eq!(format!("{:?}", host.session.view()), graph);
+            assert_eq!(host.session.document_id(), document);
+            assert_eq!(host.session.next_document_generation(), generation);
+            assert_eq!(host.session.external_key_for_item(HISTORICAL), None);
+            assert_eq!(host.session.item_id_for_external_key(KEYS[12]), None);
+            assert_eq!(
+                host.session
+                    .surface_presentation_preferences()
+                    .collect::<Vec<_>>(),
+                preferences
+            );
+            assert!(host.session.is_current_native_binding(external_root));
+            assert!(!host.session.recognizes_native_binding(successor));
+            assert_eq!(
+                host.session.native_local_coordinates(external_root),
+                Some(coordinates)
+            );
+            assert!(!host.session.has_pending_native_create());
+            assert!(!host.session.has_pending_native_input());
+        }
+    }
+
+    let continuation = exact_pair.unwrap();
+    host.root = continuation.successor();
+    let ids = candidate_ids.unwrap();
+    let candidate_preferences = candidate_preferences.unwrap();
+    assert_eq!(host.session.version(), candidate_version.unwrap());
+    assert_ne!(host.session.version(), before);
+    assert_eq!(host.session.document_id(), Some(DOCUMENT));
+    assert_eq!(host.session.next_document_generation(), Some(2));
+    for (index, key) in KEYS.into_iter().enumerate() {
+        let item = ItemId::new(index as u64 + 1);
+        assert_eq!(host.session.external_key_for_item(item), Some(key));
+        assert_eq!(host.session.item_id_for_external_key(key), Some(item));
+    }
+    assert_eq!(
+        host.session
+            .surface_presentation_preferences()
+            .collect::<Vec<_>>(),
+        candidate_preferences
+    );
+    assert!(!host.session.is_current_native_binding(external_root));
+    assert!(host.session.recognizes_native_binding(external_root));
+    assert!(host.session.is_current_native_binding(host.root));
+    assert!(
+        host.session
+            .native_local_coordinates(external_root)
+            .is_none()
+    );
+    assert!(host.session.native_local_coordinates(host.root).is_none());
+    assert!(
+        host.session
+            .presented_surface(host.root.surface())
+            .is_none()
+    );
+    let recorded = host.session.native_input_recorded_count();
+    host.session
+        .report_managed_native_snapshot([(external_root, root_facts())], work_areas())
+        .expect_err("late predecessor facts cannot supply rebased Root coordinates");
+    assert_eq!(host.session.native_input_recorded_count(), recorded);
+    host.session
+        .report_surface_presentation(old_output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let report = idle(&mut host.session);
+    assert!(report.native_root_continuations().is_empty());
+    assert!(
+        report
+            .surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.retires(old_artifact))
+    );
+    assert!(
+        host.session
+            .presented_surface(external_root.surface())
+            .is_none()
+    );
+    assert!(
+        host.session
+            .presented_surface(host.root.surface())
+            .is_none()
+    );
+    assert!(host.session.native_local_coordinates(host.root).is_none());
+    host.assert_waiting();
+    host.quiesce(external_root);
+    host.assert_waiting();
+    host.session
+        .report_managed_native_snapshot([(host.root, NativeWindowFacts::live())], work_areas())
+        .unwrap();
+    idle(&mut host.session);
+    assert!(host.session.native_local_coordinates(host.root).is_none());
+    host.assert_waiting();
+    host.session
+        .report_managed_native_snapshot([(host.root, root_facts())], work_areas())
+        .unwrap();
+    idle(&mut host.session);
+    assert!(host.session.native_local_coordinates(host.root).is_none());
+    assert!(
+        host.session
+            .presented_surface(host.root.surface())
+            .is_none()
+    );
+    let (output, _) = paint(&mut host.session, host.root);
+    assert!(!output.matches_native_binding(external_root));
+    let fresh_coordinates = host.session.native_local_coordinates(host.root).unwrap();
+    assert_ne!(fresh_coordinates, coordinates);
+    assert!(
+        host.session
+            .presented_surface(host.root.surface())
+            .is_none()
+    );
+    let artifact = output.presentation_artifact();
+    host.session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let report = idle(&mut host.session);
+    assert!(report.native_root_continuations().is_empty());
+    assert!(
+        report
+            .surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.presents(artifact))
+    );
+    assert!(host.session.native_local_coordinates(host.root).is_some());
+    assert_eq!(
+        assert_content_on_root(host.session.view(), host.root.surface()),
+        ids
+    );
+    let mut frame = native_frame(&mut host.session);
+    frame
+        .submit_native_document_restore_rebinding_root(&restore, host.root, incoming_root)
+        .expect_err("a committed replacement must invalidate this prepared restore");
+    assert!(frame.proposed_native_root_continuations().next().is_none());
+    let mut report = finish(frame);
+    assert!(report.inputs().is_empty());
+    assert!(report.native_root_continuations().is_empty());
+    assert_eq!(report.native_bindings(), &[host.root]);
+    assert_no_effects(&mut report);
+    assert_eq!(host.session.version(), candidate_version.unwrap());
+    assert_eq!(host.session.next_document_generation(), Some(2));
+    assert_eq!(
+        host.session
+            .surface_presentation_preferences()
+            .collect::<Vec<_>>(),
+        candidate_preferences
+    );
 }
 
 #[test]

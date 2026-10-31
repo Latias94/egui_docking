@@ -97,9 +97,9 @@ pub use native::{
     NativePointerId, NativePointerInput, NativePointerLocation, NativePointerOwner,
     NativePointerRoster, NativePointerState, NativeProducerStorageLimit,
     NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
-    NativeReportStorageLimit, NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId,
-    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
-    NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
+    NativeReportStorageLimit, NativeRootContinuation, NativeScrollCancelReason, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
     NativeSurfaceCloseAction, NativeSurfaceCloseRejection, NativeSurfaceCloseRequest,
     NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
     NativeWorkAreaBinding, NativeWorkAreaFacts, NativeWorkAreaRoster,
@@ -578,6 +578,7 @@ pub struct HostFrameReport {
     surface_presentation_commits: Vec<SurfacePresentationCommit>,
     native_admissions: Vec<NativeSurfaceBinding>,
     native_bindings: Vec<NativeSurfaceBinding>,
+    native_root_continuations: Vec<NativeRootContinuation>,
     native_input_pending: bool,
     native_effects: Vec<NativeEffectRequest>,
     repaint_surfaces: Vec<SurfaceId>,
@@ -715,6 +716,16 @@ impl HostFrameReport {
         &self.native_bindings
     }
 
+    /// Returns the exact Root pairs confirmed by this workspace replacement.
+    ///
+    /// The predecessor's OS window continues under the successor binding. Late
+    /// predecessor outputs and callbacks retain their original identity and
+    /// cannot authorize the successor.
+    #[must_use]
+    pub fn native_root_continuations(&self) -> &[NativeRootContinuation] {
+        &self.native_root_continuations
+    }
+
     /// Takes the exact provider-bound native effects emitted by this frame.
     ///
     /// The vector preserves core order. Each request is affine and must be
@@ -805,6 +816,13 @@ impl DockspaceRuntimeError {
             }
             DockspaceRuntimeErrorSource::LayoutResetRebase(_) => {
                 DockspaceRuntimeErrorKind::Internal
+            }
+            DockspaceRuntimeErrorSource::NativeRootSurfaceMissing { .. } => {
+                DockspaceRuntimeErrorKind::InvalidConfiguration
+            }
+            DockspaceRuntimeErrorSource::NativeRootUnavailable { .. }
+            | DockspaceRuntimeErrorSource::NativeRootContinuation(_) => {
+                DockspaceRuntimeErrorKind::OperationConflict
             }
             #[cfg(feature = "serde")]
             DockspaceRuntimeErrorSource::PreparedDocumentRestoreMismatch => {
@@ -909,6 +927,24 @@ impl DockspaceRuntimeError {
     fn layout_reset_rebase(error: crate::engine::WorkspaceRebaseError) -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::LayoutResetRebase(Box::new(error)),
+        }
+    }
+
+    const fn native_root_surface_missing(surface: SurfaceId) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::NativeRootSurfaceMissing { surface },
+        }
+    }
+
+    const fn native_root_unavailable(surface: SurfaceId) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::NativeRootUnavailable { surface },
+        }
+    }
+
+    fn native_root_continuation(error: crate::frame::ViewportCoordinatorError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::NativeRootContinuation(Box::new(error)),
         }
     }
 
@@ -1019,6 +1055,12 @@ enum DockspaceRuntimeErrorSource {
     LayoutResetItemUnknown { item: crate::ids::ItemId },
     #[error(transparent)]
     LayoutResetRebase(Box<crate::engine::WorkspaceRebaseError>),
+    #[error("incoming native Root surface {surface} is absent from the replacement layout")]
+    NativeRootSurfaceMissing { surface: SurfaceId },
+    #[error("native Root surface {surface} has no current external window to continue")]
+    NativeRootUnavailable { surface: SurfaceId },
+    #[error(transparent)]
+    NativeRootContinuation(Box<crate::frame::ViewportCoordinatorError>),
     #[cfg(feature = "serde")]
     #[error("prepared document restore belongs to an older or different session state")]
     PreparedDocumentRestoreMismatch,

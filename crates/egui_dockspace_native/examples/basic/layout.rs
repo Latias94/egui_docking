@@ -55,28 +55,30 @@ impl NativeExampleApp {
     }
 
     pub(super) fn all_root_profile(&self) -> bool {
+        let root_surface = self.dockspace.root_surface();
         let items = self
             .dockspace
             .with_panes(|panes| panes.panes.keys().copied().collect::<Vec<_>>());
         self.dockspace.with_view(|view| {
             items.len() == 8
                 && view.surfaces().count() == 1
-                && view.surface(SURFACE).is_some()
+                && view.surface(root_surface).is_some()
                 && items.iter().all(|item| {
                     view.item(*item)
-                        .is_some_and(|pane| pane.surface() == SURFACE)
+                        .is_some_and(|pane| pane.surface() == root_surface)
                 })
         }) == Some(true)
     }
 
     pub(super) fn all_surfaces_presented(&self) -> bool {
+        let root_surface = self.dockspace.root_surface();
         let surfaces = self.dockspace.with_view(|view| {
             view.surfaces()
                 .map(|surface| surface.id())
                 .collect::<Vec<_>>()
         });
         surfaces.is_some_and(|surfaces| {
-            surfaces.contains(&SURFACE)
+            surfaces.contains(&root_surface)
                 && surfaces
                     .into_iter()
                     .all(|surface| self.dockspace.is_surface_presented(surface))
@@ -443,6 +445,11 @@ impl NativeExampleApp {
 
 pub(super) fn describe_status(status: &NativeActionStatus) -> String {
     match status {
+        NativeActionStatus::RootContinuationRejected { kind, .. } => {
+            format!(
+                "The main-window layout could not be replaced: {kind:?}. The current layout remains available."
+            )
+        }
         NativeActionStatus::Dock(DockspaceActionStatus::Applied(outcome)) => match outcome {
             DockspaceActionOutcome::Selected { item, changed } => {
                 format!("Selected pane {} (changed: {changed}).", item.get())

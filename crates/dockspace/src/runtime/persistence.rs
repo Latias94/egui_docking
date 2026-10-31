@@ -665,7 +665,7 @@ impl super::DockspaceHostFrame<'_> {
         &mut self,
         restore: &PreparedDockspaceDocumentRestore,
     ) -> Result<(), super::DockspaceRuntimeError> {
-        self.submit_document_restore_with_native_root(restore, None)
+        self.submit_document_restore_with_native_root(restore, None, None)
     }
 
     /// Atomically restores a document and queues its explicit native Child surfaces.
@@ -687,13 +687,42 @@ impl super::DockspaceHostFrame<'_> {
     ) -> Result<(), super::DockspaceRuntimeError> {
         self.session.ensure_managed_native_host_available()?;
         restore.validate_native_surface_hosting(root_surface)?;
-        self.submit_document_restore_with_native_root(restore, Some(root_surface))
+        self.submit_document_restore_with_native_root(restore, Some(root_surface), None)
+    }
+
+    /// Restores native surfaces while continuing the external Root on a new surface.
+    ///
+    /// `incoming_root` names the prepared document's surface before rebasing.
+    /// The selected Root, Child recovery references and saved placement are
+    /// resolved through the same identity remap. The old logical Root surface
+    /// may disappear. A committed exact continuation preserves its OS window,
+    /// while fresh observations and output establish successor interaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns ordinary native document restore errors, an unavailable exact
+    /// external Root or a conflicting target window. Graph, document sidecars
+    /// and binding continuation publish at the same rollbackable boundary.
+    pub fn submit_native_document_restore_rebinding_root(
+        &mut self,
+        restore: &PreparedDockspaceDocumentRestore,
+        existing_root: super::NativeSurfaceBinding,
+        incoming_root: SurfaceId,
+    ) -> Result<(), super::DockspaceRuntimeError> {
+        self.session.ensure_managed_native_host_available()?;
+        restore.validate_native_surface_hosting(incoming_root)?;
+        self.submit_document_restore_with_native_root(
+            restore,
+            Some(incoming_root),
+            Some(existing_root),
+        )
     }
 
     fn submit_document_restore_with_native_root(
         &mut self,
         restore: &PreparedDockspaceDocumentRestore,
         native_root: Option<SurfaceId>,
+        existing_root: Option<super::NativeSurfaceBinding>,
     ) -> Result<(), super::DockspaceRuntimeError> {
         self.ensure_semantic_input_allowed()?;
         self.session
@@ -706,12 +735,12 @@ impl super::DockspaceHostFrame<'_> {
             .ok_or_else(DockspacePersistenceError::not_configured)?
             .item_identity_scope();
         let target_scope = restore.inner.item_identity_scope();
-        let (mut input, pending) = restore
+        let (mut input, pending, mapped_root) = restore
             .inner
             .clone()
-            .into_engine_input(self.frame.view())
+            .into_engine_input_tracking_surface(self.frame.view(), native_root)
             .map_err(DockspacePersistenceError::session)?;
-        if let Some(root) = native_root {
+        if let Some(root) = mapped_root {
             let crate::engine::EngineInput::RestoreWorkspace(restored) = input else {
                 unreachable!("validated document preparation produces a restore input");
             };
@@ -720,19 +749,28 @@ impl super::DockspaceHostFrame<'_> {
                 surface_presentation_preferences(Some(pending.viewport_placements())),
                 root,
             )?;
+            let continuing = existing_root
+                .map(|existing| {
+                    self.prepare_native_root_continuation(existing, root, restored.workspace())
+                })
+                .transpose()?;
             let viewport = self.frame.view().viewport();
-            if !viewport.viewport(root).is_some_and(|record| {
-                record.role() == crate::viewport::ViewportRole::Root
-                    && record.ownership() == crate::viewport_registry::ViewportOwnership::External
-                    && record.admission() == crate::viewport_registry::ViewportAdmission::Admitted
-                    && !matches!(
-                        record.lifecycle(),
-                        crate::viewport_registry::ViewportLifecycle::CloseRequested
-                            | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
-                            | crate::viewport_registry::ViewportLifecycle::Missing
-                            | crate::viewport_registry::ViewportLifecycle::Destroyed
-                    )
-            }) {
+            if continuing.is_none()
+                && !viewport.viewport(root).is_some_and(|record| {
+                    record.role() == crate::viewport::ViewportRole::Root
+                        && record.ownership()
+                            == crate::viewport_registry::ViewportOwnership::External
+                        && record.admission()
+                            == crate::viewport_registry::ViewportAdmission::Admitted
+                        && !matches!(
+                            record.lifecycle(),
+                            crate::viewport_registry::ViewportLifecycle::CloseRequested
+                                | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+                                | crate::viewport_registry::ViewportLifecycle::Missing
+                                | crate::viewport_registry::ViewportLifecycle::Destroyed
+                        )
+                })
+            {
                 return Err(DockspaceNativeDocumentHostingError::RootWindowUnavailable {
                     surface: root,
                 }
@@ -749,8 +787,13 @@ impl super::DockspaceHostFrame<'_> {
                     .into());
                 }
             }
-            input =
-                crate::engine::EngineInput::RestoreWorkspace(restored.with_native_surfaces(plan));
+            let restored = restored.with_native_surfaces(plan);
+            let restored = if let Some(continuation) = continuing {
+                restored.with_root_continuation(continuation)
+            } else {
+                restored
+            };
+            input = crate::engine::EngineInput::RestoreWorkspace(restored);
         }
         let sequence = self.next_application_source_sequence()?;
         self.frame.append_document_replacement(

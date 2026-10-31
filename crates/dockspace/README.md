@@ -599,6 +599,23 @@ hosting to that Root and a positive saved outer placement. Another retained
 external Root cannot silently become a Child. Ordinary `submit_document_restore`
 keeps native declarations inert.
 
+To replace the logical host itself while retaining an external Root window, use
+`frame.submit_native_layout_reset(&reset, existing_root, incoming_root)` or the
+persistence-enabled `submit_native_document_restore_rebinding_root`. The incoming
+surface names the prepared layout/document before rebasing; core resolves its
+final identity alongside Child recovery references and saved placement. The old
+host surface may disappear entirely. These explicit operations reject an occupied
+target rather than claiming another window.
+
+Before committing, prepay native route/resources from
+`frame.proposed_native_root_continuations()`. After the complete commit succeeds,
+install only the matching `report.native_root_continuations()` exact pairs on the
+same OS windows. An application-owned root-surface field must publish in that same
+host commit boundary. Late predecessor outputs/callbacks keep their original
+identity until quiescence; they do not supply successor coordinates or interaction
+authority. Fresh OS geometry plus measurement can establish coordinates before
+the successor output is Presented; only its exact presentation authorizes input.
+
 After committing, a managed host may call
 `frame.advance_next_native_surface_create()` once per available lifecycle work
 unit, before measurement or application terminal replacement. A temporary wait

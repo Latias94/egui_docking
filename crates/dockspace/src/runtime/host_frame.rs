@@ -68,6 +68,25 @@ pub struct DockspaceHostFrame<'session> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Returns exact Root binding pairs proposed by this terminal replacement.
+    ///
+    /// Prepay route/resource changes from these opaque pairs before committing
+    /// the frame. They grant no current authority. A failed or dropped frame
+    /// leaves the predecessor live; only the matching committed report permits
+    /// installing the successor on that same physical window.
+    pub fn proposed_native_root_continuations(
+        &self,
+    ) -> impl Iterator<Item = super::NativeRootContinuation> + '_ {
+        let provider = self.session.native.as_ref().map(|native| native.provider());
+        self.frame
+            .proposed_workspace_root_rebounds()
+            .filter_map(move |(before, after)| {
+                provider.map(|provider| {
+                    super::NativeRootContinuation::from_pair(provider, before, after)
+                })
+            })
+    }
+
     /// Advances at most one committed native document creation intent.
     ///
     /// Fresh root coordinates, current platform capabilities, exact predecessor
