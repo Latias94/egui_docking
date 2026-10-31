@@ -2235,9 +2235,8 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
             ),
         ])
         .expect("the exact cross-surface drag prefix records atomically");
-    let mut routed_source_tab = None;
-    let mut routed_target_drop = None;
-    let mut route = host.run_native(
+    let mut previewed = false;
+    let mut preview = host.run_native(
         |query| {
             let descriptor = match query.surface() {
                 SURFACE => &source_tab_descriptor,
@@ -2252,99 +2251,35 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
             for surface in frame.surfaces() {
                 if let Some(plan) = frame
                     .paint_plan(surface)
-                    .expect("the route-request plan resolves")
+                    .expect("the exact cross-surface drag plan resolves")
                 {
-                    assert!(
-                        program_drag_preview(plan).is_none(),
-                        "an unconfirmed physical route cannot publish a preview",
-                    );
-                    if surface == SURFACE {
-                        routed_source_tab = plan.tab_receiver(A);
-                    } else if surface == SECOND_SURFACE {
-                        routed_target_drop = plan.center_drop_receiver_for_item(C);
+                    if surface == SECOND_SURFACE {
+                        let target_preview = program_drag_preview(plan).expect(
+                            "exact capture and delivery resolve the target preview while the External Root receives input",
+                        );
+                        assert!(matches!(
+                            target_preview.visual(),
+                            DockspacePreviewVisual::Dock {
+                                surface: SECOND_SURFACE,
+                                ..
+                            }
+                        ));
+                        previewed = true;
                     }
                     frame
                         .confirm_surface_program(surface)
-                        .expect("the route-request output is painted");
-                }
-            }
-        },
-    );
-    let enable = take_only_effect(&mut route);
-    assert!(matches!(
-        enable.operation(),
-        NativeEffectOperation::SetPointerPassthrough {
-            binding,
-            enabled: true,
-        } if *binding == source_binding
-    ));
-    let enable_acknowledgement = match enable.accepted() {
-        Some(NativeEffectAcknowledgement::Input(acknowledgement)) => acknowledgement,
-        acknowledgement => panic!("pointer pass-through returned {acknowledgement:?}"),
-    };
-    for output in route.take_painted_outputs() {
-        host.session
-            .report_surface_presentation(output, SurfacePresentationResult::Presented)
-            .expect("the route-request output terminal records");
-    }
-    let routed_source_tab = routed_source_tab.expect("the routed source tab is painted");
-    let routed_target_drop = routed_target_drop.expect("the routed target drop is painted");
-    host.report_managed_native_snapshot(
-        [
-            (
-                source_binding,
-                ready_window_facts(source_bounds, scale).with_input(
-                    NativeWindowInputState::PassThrough,
-                    Some(enable_acknowledgement),
-                ),
-            ),
-            (target_binding, ready_window_facts(target_bounds, scale)),
-        ],
-        work_areas.clone(),
-    );
-
-    host.session
-        .record_native_pointer(NativePointerInput::new(
-            pointer,
-            NativePointerEvent::Moved,
-            NativeDesktopPointerLocation::new(
-                NativeDesktopPosition::Exact(target_desktop),
-                NativePointerHover::Dock(target_binding),
-                None,
-            ),
-            NativePointerOwner::Native(source_binding),
-            NativePointerOwner::Native(source_binding),
-        ))
-        .expect("the confirmed cross-surface move records");
-    let mut previewed = false;
-    let mut preview = host.run_native(
-        |query| {
-            let descriptor = match query.surface() {
-                SURFACE => &routed_source_tab,
-                SECOND_SURFACE => &routed_target_drop,
-                _ => return NativeReceiverAnswer::Unknown,
-            };
-            query
-                .bind_receiver(descriptor)
-                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
-        },
-        |frame| {
-            for surface in frame.surfaces() {
-                if let Some(plan) = frame
-                    .paint_plan(surface)
-                    .expect("the confirmed drag plan resolves")
-                {
-                    previewed |= program_drag_preview(plan).is_some();
-                    frame
-                        .confirm_surface_program(surface)
-                        .expect("the confirmed preview output is painted");
+                        .expect("the exact cross-surface preview output is painted");
                 }
             }
         },
     );
     assert!(
         previewed,
-        "the target surface must publish a real drag preview"
+        "the target surface must immediately publish a resolved Dock preview"
+    );
+    assert!(
+        preview.take_native_effects().is_empty(),
+        "an External Root content drag must preserve native input without pass-through effects",
     );
     for output in preview.take_painted_outputs() {
         host.session
@@ -2353,16 +2288,16 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
     }
     host.run_native(|_| NativeReceiverAnswer::Unknown, |_| {});
 
-    host.report_managed_native_snapshot(
+    let mut destroyed = host.report_managed_native_snapshot(
         [
-            (
-                source_binding,
-                ready_window_facts(source_bounds, scale)
-                    .with_input(NativeWindowInputState::PassThrough, None),
-            ),
+            (source_binding, ready_window_facts(source_bounds, scale)),
             (target_binding, NativeWindowFacts::destroyed()),
         ],
         work_areas,
+    );
+    assert!(
+        destroyed.take_native_effects().is_empty(),
+        "destroying only the target must not change the External Root input state",
     );
     assert!(
         !host.session.is_current_native_binding(target_binding),
@@ -2374,6 +2309,10 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
             .is_none(),
         "the closed target window cannot regain receiver authority",
     );
+    assert!(
+        host.session.has_active_gesture(),
+        "destroying only the target must not cancel the source-owned gesture",
+    );
 
     host.run_native(
         |_| NativeReceiverAnswer::Unknown,
@@ -2383,7 +2322,8 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                 .expect("the surviving source surface is remeasured");
         },
     );
-    host.run_native(
+    let mut fresh_target = None;
+    let mut surviving = host.run_native(
         |_| NativeReceiverAnswer::Unknown,
         |frame| {
             let plan = frame
@@ -2398,7 +2338,102 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                 .expect("the source-owned drag must survive target-window close");
             assert_eq!(decoration.source_surface(), SURFACE);
             assert_eq!(decoration.item(), Some(A));
+            fresh_target = plan.center_drop_receiver_for_item(B);
+            frame
+                .confirm_surface_program(SURFACE)
+                .expect("the surviving source publishes a fresh target output");
         },
+    );
+    for output in surviving.take_painted_outputs() {
+        host.session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the fresh surviving target output terminal records");
+    }
+    host.run_native(|_| NativeReceiverAnswer::Unknown, |_| {});
+    let fresh_target = fresh_target.expect("the surviving source exposes a fresh target for B");
+    let target = host
+        .session
+        .bind_presented_receiver(&fresh_target)
+        .expect("the fresh target belongs to the surviving presented output");
+    let target_point = target.center();
+    let target_desktop = PhysicalPoint::new(
+        source_bounds.x() + target_point.x(),
+        source_bounds.y() + target_point.y(),
+    )
+    .expect("the surviving target desktop point is valid");
+    host.session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(target_desktop),
+                NativePointerHover::Dock(source_binding),
+                None,
+            ),
+            NativePointerOwner::Native(source_binding),
+            NativePointerOwner::None,
+        ))
+        .expect("the surviving source gesture releases over the fresh target");
+    let mut released = host.run_native(
+        |query| {
+            query
+                .bind_receiver(&fresh_target)
+                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+        },
+        |frame| {
+            frame
+                .confirm_surface_program(SURFACE)
+                .expect("the fresh release preview output is painted");
+        },
+    );
+    assert!(
+        released.take_native_effects().is_empty(),
+        "releasing an External Root content drag needs no pass-through restore",
+    );
+    let released_outputs = released.take_painted_outputs();
+    assert_eq!(
+        released_outputs.len(),
+        1,
+        "the fresh target release must paint its exact preview output",
+    );
+    for output in released_outputs {
+        host.session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the fresh release preview terminal records");
+    }
+    host.run_native(|_| NativeReceiverAnswer::Unknown, |_| {});
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the settled source layout is remeasured");
+        },
+    );
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the settled source plan resolves")
+                .expect("the settled source remains paintable");
+            assert!(program_drag_preview(plan).is_none());
+            assert!(program_drag_decoration(plan).is_none());
+        },
+    );
+    assert!(
+        !host.session.has_active_gesture(),
+        "the fresh target release must reset the surviving source gesture",
+    );
+    assert!(
+        !host.session.has_pending_presentation(),
+        "the fresh target release must settle its exact presentation obligation",
+    );
+    assert_eq!(
+        tabs_containing(host.view(), B)
+            .expect("the fresh target retains the released source item")
+            .items(),
+        &[B, A],
     );
 }
 

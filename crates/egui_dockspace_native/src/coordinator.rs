@@ -1224,7 +1224,9 @@ impl NativeCoordinator {
         let mut after = None;
         while let Some(binding) = self.bridge.next_retirement_quiescence_candidate(after) {
             after = Some(binding);
-            if self.binding_has_retained_host_references(binding) {
+            if self.session.is_current_native_binding(binding)
+                || self.binding_has_retained_host_references(binding)
+            {
                 continue;
             }
             if self.session.recognizes_native_binding(binding)
@@ -2912,6 +2914,12 @@ impl NativeCoordinator {
             let Some(plan) = plan else {
                 break;
             };
+            if !self
+                .bridge
+                .retire_unstarted_viewport(plan.viewport(), plan.binding())
+            {
+                break;
+            }
             let Some(request) = self.effects.remove_unstarted(plan) else {
                 unreachable!("the selected unadmitted request remains owned");
             };
@@ -2919,14 +2927,12 @@ impl NativeCoordinator {
                 .retire_deferred_binding_paints(plan.viewport(), plan.binding());
             self.deferred_viewports.remove(plan.binding());
             self.receivers.retire_binding(plan.binding());
-            let removed = self.bridge.with_viewports_mut(|viewports| {
-                viewports.remove_viewport(plan.viewport(), plan.binding())
-            });
-            debug_assert!(
-                removed.is_ok(),
-                "unadmitted viewport effect retains one exact route"
+            // The original negative result must precede exact quiescence in
+            // the existing ordered ingress, including after a workspace reset.
+            self.queue_pending_effect_result(
+                request.dispatch_failed(NativeDispatchFailure::ProviderStopped),
+                None,
             );
-            drop(request);
         }
     }
 

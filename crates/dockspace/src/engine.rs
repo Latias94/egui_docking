@@ -4168,6 +4168,36 @@ impl DockEngine {
         })
     }
 
+    fn native_drag_input_mode(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+    ) -> crate::frame::PointerDragInputMode {
+        use crate::frame::PointerDragInputMode;
+        let Some(record) = self.viewport.viewport(drag.source_surface) else {
+            return PointerDragInputMode::Preserve;
+        };
+        if record.ownership() != crate::viewport_registry::ViewportOwnership::RuntimeOwned
+            || record.role() != crate::viewport::ViewportRole::Child
+        {
+            // An external window may contain application UI outside this dockspace.
+            return PointerDragInputMode::Preserve;
+        }
+        let Some(source) = drag.complete_root.as_ref() else {
+            return PointerDragInputMode::Preserve;
+        };
+        if self
+            .workspace
+            .surface(drag.source_surface)
+            .is_some_and(|surface| {
+                surface.main_root == Some(source.root()) && surface.contained.is_empty()
+            })
+        {
+            PointerDragInputMode::PassThrough
+        } else {
+            PointerDragInputMode::Preserve
+        }
+    }
+
     fn native_create_reserves_root(&self, root: crate::ids::RootId) -> bool {
         self.viewport.native_create_sagas().any(|(_, saga)| {
             let prepared = saga.prepared();

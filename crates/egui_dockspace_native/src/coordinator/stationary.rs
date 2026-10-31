@@ -1,6 +1,7 @@
 //! One deadline-driven sampler for the existing committed native gesture.
 
 use dockspace::runtime::{NativePointerContinuation, PointerContinuationToken};
+use winit::event::PointerPressToken;
 
 use super::*;
 use crate::pointer_observation::NativePointerObservationKey;
@@ -10,11 +11,14 @@ pub(super) struct NativeStationaryState {
     prepared: Option<(NativeOutputToken, NativeStationaryPreparation)>,
     attempt: Option<StationaryAttempt>,
     blocked: Option<PointerContinuationToken>,
+    #[cfg(all(test, target_os = "linux"))]
+    recorded_samples: usize,
 }
 
 pub(super) struct NativeStationaryPreparation {
     request: NativePointerContinuation,
     key: NativePointerObservationKey,
+    expected_press: Option<PointerPressToken>,
     command:
         eframe::PreparedNativeViewportCommand<eframe::NativeViewportPointerObservationCommandToken>,
 }
@@ -29,10 +33,15 @@ impl std::fmt::Debug for NativeStationaryPreparation {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct StationaryAttempt {
     request: NativePointerContinuation,
     key: NativePointerObservationKey,
+    expected_press: Option<PointerPressToken>,
+}
+
+fn same_active_press<I: Eq>(expected: Option<&I>, current: Option<&I>) -> bool {
+    matches!((expected, current), (Some(expected), Some(current)) if expected == current)
 }
 
 impl NativeStationaryState {
@@ -79,7 +88,7 @@ impl NativeCoordinator {
         {
             self.stationary.prepared = None;
         }
-        let Some(attempt) = self.stationary.attempt else {
+        let Some(attempt) = self.stationary.attempt.as_ref() else {
             return;
         };
         if !self.bridge.pointer_observation_pending(attempt.key) {
@@ -122,7 +131,7 @@ impl NativeCoordinator {
             && request.local_coordinates().is_none()
             && self
                 .pointer_translator
-                .mouse_device_for_pointer(request.pointer())
+                .mouse_press_for_pointer(request.pointer())
                 .is_some()
         {
             let now = self.bridge.observation_time();
@@ -155,9 +164,10 @@ impl NativeCoordinator {
         {
             return None;
         }
-        let device = self
+        let (device, expected_press) = self
             .pointer_translator
-            .mouse_device_for_pointer(request.pointer())?;
+            .mouse_press_for_pointer(request.pointer())?;
+        let expected_press = expected_press.cloned();
         let (viewport, window) = self.exact_window_route_for_binding(request.source_binding())?;
         let now = self.bridge.observation_time();
         if now < request.deadline() {
@@ -166,7 +176,12 @@ impl NativeCoordinator {
         }
         // Pay before application painting can exhaust the dispatch budget.
         // This unqueued command owns no callback or presentation authority.
-        let command = eframe::prepare_native_viewport_pointer_observation(viewport, window, device);
+        let command = eframe::prepare_native_viewport_pointer_observation(
+            viewport,
+            window,
+            device,
+            expected_press.clone(),
+        );
         let key = NativePointerObservationKey {
             token: command.token(),
             viewport,
@@ -177,6 +192,7 @@ impl NativeCoordinator {
         Some(NativeStationaryPreparation {
             request,
             key,
+            expected_press,
             command,
         })
     }
@@ -190,6 +206,7 @@ impl NativeCoordinator {
         let NativeStationaryPreparation {
             request,
             key,
+            expected_press,
             command,
         } = prepared;
         if self.stationary.attempt.is_some()
@@ -200,8 +217,8 @@ impl NativeCoordinator {
             || self.stationary.blocked == Some(request.token())
             || self
                 .pointer_translator
-                .mouse_device_for_pointer(request.pointer())
-                != Some(key.device)
+                .mouse_press_for_pointer(request.pointer())
+                != Some((key.device, expected_press.as_ref()))
             || self.exact_window_route_for_binding(request.source_binding())
                 != Some((key.viewport, key.window))
             || self.bridge.observation_time() < request.deadline()
@@ -211,41 +228,86 @@ impl NativeCoordinator {
         {
             return None;
         }
-        self.stationary.attempt = Some(StationaryAttempt { request, key });
+        self.stationary.attempt = Some(StationaryAttempt {
+            request,
+            key,
+            expected_press,
+        });
         Some(command)
     }
 
     #[cfg(test)]
     pub(super) fn pending_stationary_key(&self) -> Option<NativePointerObservationKey> {
-        self.stationary.attempt.map(|attempt| attempt.key)
+        self.stationary.attempt.as_ref().map(|attempt| attempt.key)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn stationary_observation_for_test(
+        &self,
+    ) -> Option<(
+        NativePointerContinuation,
+        NativePointerObservationKey,
+        Option<PointerPressToken>,
+    )> {
+        self.stationary
+            .attempt
+            .as_ref()
+            .map(|attempt| (attempt.request, attempt.key, attempt.expected_press.clone()))
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn stationary_recorded_sample_count_for_test(&self) -> usize {
+        self.stationary.recorded_samples
     }
 
     pub(super) fn reduce_next_pointer_observation(&mut self) -> Result<bool, NativeRuntimeError> {
         let Some((record, captured_at)) = self.bridge.front_pointer_observation() else {
             return Ok(false);
         };
-        if let Some(attempt) = self.stationary.attempt
+        let input = if let Some(attempt) = self.stationary.attempt.as_ref()
             && self.bridge.accepts_new_work()
             && attempt.key == record.key()
             && self.session.native_pointer_continuation() == Some(attempt.request)
-            && self
+            && let Some((device, current_press)) = self
                 .pointer_translator
-                .mouse_device_for_pointer(attempt.request.pointer())
-                == Some(attempt.key.device)
+                .mouse_press_for_pointer(attempt.request.pointer())
+            && device == attempt.key.device
+            && same_active_press(attempt.expected_press.as_ref(), current_press)
             && self.exact_window_route_for_binding(attempt.request.source_binding())
                 == Some((attempt.key.viewport, attempt.key.window))
             && captured_at >= attempt.request.deadline()
         {
             let work_areas = &self.work_areas;
-            if let Some(input) = record.into_input(attempt.request, captured_at, |point| {
+            record.into_input(attempt.request, captured_at, |point| {
                 work_areas.binding_at(point)
-            }) {
-                self.record_pointer(input)?;
+            })
+        } else {
+            None
+        };
+        if let Some(input) = input {
+            self.record_pointer(input)?;
+            #[cfg(all(test, target_os = "linux"))]
+            {
+                self.stationary.recorded_samples += 1;
             }
         }
         if !self.bridge.acknowledge_pointer_observation(record.key()) {
             return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_active_press;
+
+    #[test]
+    fn press_identity_requires_two_present_equal_values() {
+        assert!(same_active_press(Some(&1), Some(&1)));
+        assert!(!same_active_press(Some(&1), Some(&2)));
+        assert!(!same_active_press(Some(&1), None));
+        assert!(!same_active_press(None, Some(&1)));
+        assert!(!same_active_press::<u64>(None, None));
     }
 }

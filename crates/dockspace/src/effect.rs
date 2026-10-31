@@ -1294,8 +1294,9 @@ impl EffectLedger {
 
     /// Applies a result against its exact immutable request epoch.
     ///
-    /// Cross-epoch cleanup results must use [`Self::report_cleanup_observation`]; this path only
-    /// accepts the provider which received the effect itself.
+    /// Cross-epoch cleanup results use [`Self::report_cleanup_observation`]. The coordinator
+    /// may also validate a definitive failure of an original unobserved create still retained
+    /// for compensation. This path only accepts the provider which received the effect itself.
     pub(crate) fn report_exact(
         &mut self,
         provider: PlatformObservationLease,

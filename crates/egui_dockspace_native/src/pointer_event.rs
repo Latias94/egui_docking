@@ -13,7 +13,8 @@ use dockspace::runtime::{
     NativeWorkAreaBinding, PointerDeviceKind, PointerEventMetadata,
 };
 use winit::event::{
-    DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    DeviceId, ElementState, MouseButton, MouseScrollDelta, PointerPressToken, TouchPhase,
+    WindowEvent,
 };
 
 use crate::event::{
@@ -68,10 +69,11 @@ struct NativeMouseState {
     capture: Option<NativeSurfaceBinding>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum NativeMouseButtonState {
     Active {
         origin: Option<NativeSurfaceBinding>,
+        primary_press: Option<PointerPressToken>,
     },
     Cancelled,
 }
@@ -139,11 +141,14 @@ impl NativePointerTranslator {
         })
     }
 
-    /// Finds an existing winit mouse device while Primary remains active.
+    /// Finds an existing winit mouse device and its original Primary identity, if supplied.
     ///
     /// Native stationary continuations require an ongoing Primary press. This lookup
     /// never enrolls a device or revives a retired identity.
-    pub(crate) fn mouse_device_for_pointer(&self, pointer: NativePointerId) -> Option<DeviceId> {
+    pub(crate) fn mouse_press_for_pointer(
+        &self,
+        pointer: NativePointerId,
+    ) -> Option<(DeviceId, Option<&PointerPressToken>)> {
         self.devices.iter().find_map(|(key, entry)| {
             let (
                 NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Winit(device)),
@@ -152,13 +157,22 @@ impl NativePointerTranslator {
             else {
                 return None;
             };
-            (state.pointer == pointer
-                && matches!(
-                    state.mouse.buttons.get(&NativePointerButton::Primary),
-                    Some(NativeMouseButtonState::Active { .. })
-                ))
-            .then_some(*device)
+            if state.pointer != pointer {
+                return None;
+            }
+            let NativeMouseButtonState::Active { primary_press, .. } =
+                state.mouse.buttons.get(&NativePointerButton::Primary)?
+            else {
+                return None;
+            };
+            Some((*device, primary_press.as_ref()))
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mouse_device_for_pointer(&self, pointer: NativePointerId) -> Option<DeviceId> {
+        self.mouse_press_for_pointer(pointer)
+            .map(|(device, _)| device)
     }
 
     /// Forgets adapter state after core overload cancellation commits.
@@ -404,8 +418,27 @@ impl NativePointerTranslator {
         let Some(device) = self.device_mut(device) else {
             return NativePointerTranslation::Ignored;
         };
+        let original_primary_press = matches!(
+            event,
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary)
+        ) && !matches!(
+            device.mouse.buttons.get(&NativePointerButton::Primary),
+            Some(NativeMouseButtonState::Active { .. })
+        );
         if !device.mouse.observe(event, routes) {
             return NativePointerTranslation::Ignored;
+        }
+        if original_primary_press
+            && let WindowEvent::MouseInput {
+                primary_press: source,
+                ..
+            } = record.event()
+            && let Some(NativeMouseButtonState::Active { primary_press, .. }) =
+                device.mouse.buttons.get_mut(&NativePointerButton::Primary)
+        {
+            // Only the original accepted Primary edge may bind this identity. Repeated edges,
+            // motion and observation results cannot supplement an absent or revoked token.
+            *primary_press = source.clone();
         }
         NativePointerTranslation::Input(native_input(
             device.pointer,
@@ -703,17 +736,23 @@ impl NativeMouseState {
                 let delivery = exact_delivery_binding(routes.delivery());
                 match self.buttons.entry(button) {
                     Entry::Occupied(mut entry) => match entry.get_mut() {
-                        NativeMouseButtonState::Active { origin } => {
+                        NativeMouseButtonState::Active { origin, .. } => {
                             if origin.is_none() {
                                 *origin = delivery;
                             }
                         }
                         state @ NativeMouseButtonState::Cancelled => {
-                            *state = NativeMouseButtonState::Active { origin: delivery };
+                            *state = NativeMouseButtonState::Active {
+                                origin: delivery,
+                                primary_press: None,
+                            };
                         }
                     },
                     Entry::Vacant(entry) => {
-                        entry.insert(NativeMouseButtonState::Active { origin: delivery });
+                        entry.insert(NativeMouseButtonState::Active {
+                            origin: delivery,
+                            primary_press: None,
+                        });
                     }
                 }
             }
@@ -725,9 +764,15 @@ impl NativeMouseState {
                 self.buttons.clear();
                 self.capture = None;
             }
+            NativePointerEvent::CaptureChanged => {
+                if let Some(NativeMouseButtonState::Active { primary_press, .. }) =
+                    self.buttons.get_mut(&NativePointerButton::Primary)
+                {
+                    *primary_press = None;
+                }
+            }
             NativePointerEvent::Moved
             | NativePointerEvent::Continuation(_)
-            | NativePointerEvent::CaptureChanged
             | NativePointerEvent::Scrolled(_) => {}
         }
         true
@@ -754,7 +799,7 @@ impl NativeMouseState {
         self.buttons
             .get(&NativePointerButton::Primary)
             .is_some_and(|state| {
-                matches!(state, NativeMouseButtonState::Active { origin: Some(origin) }
+                matches!(state, NativeMouseButtonState::Active { origin: Some(origin), .. }
                     if exact_delivery_binding(routes.delivery()) != Some(*origin))
             })
     }
@@ -778,7 +823,7 @@ impl NativeMouseState {
         self.buttons
             .values()
             .any(|state| {
-                matches!(state, NativeMouseButtonState::Active { origin: Some(origin) } if *origin == binding)
+                matches!(state, NativeMouseButtonState::Active { origin: Some(origin), .. } if *origin == binding)
             })
             || self.capture == Some(binding)
     }
@@ -1033,7 +1078,10 @@ mod tests {
             // An active button cannot grant a different device lane mouse access.
             state.mouse.buttons.insert(
                 NativePointerButton::Primary,
-                NativeMouseButtonState::Active { origin: None },
+                NativeMouseButtonState::Active {
+                    origin: None,
+                    primary_press: None,
+                },
             );
             other_pointers.push(state.pointer);
         }
@@ -1046,7 +1094,10 @@ mod tests {
             .expect("mouse enrolls separately");
         mouse.mouse.buttons.insert(
             NativePointerButton::Primary,
-            NativeMouseButtonState::Active { origin: None },
+            NativeMouseButtonState::Active {
+                origin: None,
+                primary_press: None,
+            },
         );
         let pointer = mouse.pointer;
         assert_read_only_mouse_device_lookup(&translator, pointer, Some(device));
@@ -1105,6 +1156,7 @@ mod tests {
             NativePointerButton::Primary,
             NativeMouseButtonState::Active {
                 origin: Some(binding),
+                primary_press: None,
             },
         );
         let retired_pointer = mouse.pointer;
@@ -1131,7 +1183,10 @@ mod tests {
         let mouse = translator.device_mut(key).expect("fresh mouse enrolls");
         mouse.mouse.buttons.insert(
             NativePointerButton::Primary,
-            NativeMouseButtonState::Active { origin: None },
+            NativeMouseButtonState::Active {
+                origin: None,
+                primary_press: None,
+            },
         );
         let overloaded_pointer = mouse.pointer;
         assert_ne!(overloaded_pointer, retired_pointer);
@@ -1146,7 +1201,10 @@ mod tests {
             .expect("post-overload mouse enrolls");
         mouse.mouse.buttons.insert(
             NativePointerButton::Primary,
-            NativeMouseButtonState::Active { origin: None },
+            NativeMouseButtonState::Active {
+                origin: None,
+                primary_press: None,
+            },
         );
         let fresh_pointer = mouse.pointer;
         assert_ne!(fresh_pointer, overloaded_pointer);

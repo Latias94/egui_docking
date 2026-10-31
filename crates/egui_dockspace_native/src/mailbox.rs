@@ -2156,7 +2156,7 @@ impl NativeHostState {
             self.window_resources.retire(viewport, predecessor);
             self.window_resources
                 .commit_host_reference(viewport, successor);
-            self.retirements.commit_workspace_replacement(predecessor);
+            self.retirements.commit_detachment(predecessor);
         }
         self.refresh_window_resource_references();
         self.invalidate_viewport_roster();
@@ -4157,6 +4157,34 @@ impl NativeHostBridge {
         let result = action(&mut records.viewports);
         records.refresh_window_resource_references();
         result
+    }
+
+    /// Transfers an exact never-admitted route into its prepaid retirement row.
+    /// Receipt admission and route removal share this lock, so a concurrent
+    /// physical create cannot disappear between the ownership check and transfer.
+    pub(crate) fn retire_unstarted_viewport(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let mut records = self.lock();
+        if records.retirements.has_quiescence_owner(binding)
+            || records
+                .viewports
+                .has_create_lifetime_owner(viewport, binding)
+        {
+            return false;
+        }
+        let Ok((_, receipt)) = records.viewports.remove_viewport(viewport, binding) else {
+            return false;
+        };
+        debug_assert!(
+            receipt.is_none(),
+            "an unstarted route owns no physical receipt"
+        );
+        records.retirements.commit_detachment(binding);
+        records.refresh_window_resource_references();
+        true
     }
 
     /// Core commit does not call eframe or the bridge. Holding the existing host

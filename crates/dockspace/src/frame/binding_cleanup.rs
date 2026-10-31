@@ -903,6 +903,20 @@ impl BindingCleanupLifecycle {
         Ok(request)
     }
 
+    /// Finds only the original unobserved create whose appearance is still awaited.
+    pub(super) fn unobserved_create_failure_target(
+        &self,
+        effect: EffectId,
+    ) -> Option<ViewportBinding> {
+        self.entries.values().find_map(|retirement| {
+            (matches!(retirement.cleanup, BindingCleanupAction::CompensateCreate { create } if create == effect)
+                && !retirement.observed
+                && retirement.status.cleanup_effect().is_none()
+                && retirement.cleanup_predecessor.is_none())
+            .then_some(retirement.binding)
+        })
+    }
+
     /// Reduces an exact cleanup effect or the original create retained for compensation.
     pub(super) fn reduce_effect(
         &mut self,
@@ -910,13 +924,11 @@ impl BindingCleanupLifecycle {
         phase: EffectPhase,
     ) -> Result<Option<ViewportBinding>, BindingCleanupError> {
         let Some(binding) = self.by_cleanup_effect.get(&effect).copied() else {
-            if matches!(phase, EffectPhase::DispatchFailed(_) | EffectPhase::Unsupported(_))
-                && let Some(retirement) = self.entries.values_mut().find(|retirement| {
-                    matches!(retirement.cleanup, BindingCleanupAction::CompensateCreate { create } if create == effect)
-                        && !retirement.observed
-                        && retirement.status.cleanup_effect().is_none()
-                        && retirement.cleanup_predecessor.is_none()
-                })
+            if matches!(
+                phase,
+                EffectPhase::DispatchFailed(_) | EffectPhase::Unsupported(_)
+            ) && let Some(binding) = self.unobserved_create_failure_target(effect)
+                && let Some(retirement) = self.entries.get_mut(&binding)
             {
                 // A cancelled saga can outlive its original dispatch. A proven
                 // failure ends only this unobserved appearance wait; the normal

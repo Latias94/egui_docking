@@ -18,10 +18,12 @@ use std::num::NonZeroUsize;
 
 const SURFACE: SurfaceId = SurfaceId::new(41);
 const ITEM: ItemId = ItemId::new(61);
+const RECOVERY_SURFACE: SurfaceId = SurfaceId::new(42);
 
 struct InputFixture {
     session: DockspaceSession,
     binding: NativeSurfaceBinding,
+    recovery: NativeSurfaceBinding,
     request: NativeEffectRequest,
 }
 
@@ -49,9 +51,18 @@ fn commit(session: &mut DockspaceSession) -> HostFrameReport {
 }
 
 fn registered_session(effect_slots: usize) -> (DockspaceSession, NativeSurfaceBinding) {
+    let mut session = native_session(layout(), effect_slots);
+    session
+        .register_native_root(SURFACE, HostWindowToken::new(71))
+        .unwrap();
+    let binding = commit(&mut session).native_bindings()[0];
+    (session, binding)
+}
+
+fn native_session(layout: DockspaceLayout, effect_slots: usize) -> DockspaceSession {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
-    let mut session = DockspaceSession::from_layout(layout(), policy).unwrap();
+    let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
     session
         .enable_managed_native_host_with_input_storage_limit(
             dockspace::runtime::NativeCreateStrategy::Staged,
@@ -70,10 +81,6 @@ fn registered_session(effect_slots: usize) -> (DockspaceSession, NativeSurfaceBi
         ))
         .unwrap();
     session
-        .register_native_root(SURFACE, HostWindowToken::new(71))
-        .unwrap();
-    let binding = commit(&mut session).native_bindings()[0];
-    (session, binding)
 }
 
 fn window_facts(
@@ -105,13 +112,45 @@ fn only_input_request(report: &mut HostFrameReport, enabled: bool) -> NativeEffe
 /// Requests and their report leases come from a presented core drag. Command
 /// identities below come from eframe's preparation API, without enqueueing work.
 fn input_fixture(effect_slots: usize) -> InputFixture {
-    let (mut session, binding) = registered_session(effect_slots);
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(RootId::new(51), DockspaceNode::tabs([ITEM])),
+        ),
+        DockspaceSurfaceLayout::new(
+            RECOVERY_SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(52),
+                DockspaceNode::central_tabs([ItemId::new(62)]),
+            ),
+        ),
+    ])
+    .unwrap();
+    let mut session = native_session(layout, effect_slots);
+    session
+        .register_native_root(RECOVERY_SURFACE, HostWindowToken::new(72))
+        .unwrap();
+    let recovery = commit(&mut session).native_bindings()[0];
+    session
+        .register_owned_native_child(SURFACE, HostWindowToken::new(71), RECOVERY_SURFACE)
+        .unwrap();
+    let binding = *commit(&mut session)
+        .native_bindings()
+        .iter()
+        .find(|binding| binding.surface() == SURFACE)
+        .unwrap();
     session
         .report_managed_native_snapshot(
-            [(
-                binding,
-                window_facts(NativeWindowInputState::ReceivesInput, None),
-            )],
+            [
+                (
+                    binding,
+                    window_facts(NativeWindowInputState::ReceivesInput, None),
+                ),
+                (
+                    recovery,
+                    window_facts(NativeWindowInputState::ReceivesInput, None),
+                ),
+            ],
             NativeWorkAreaRoster::Exact(vec![NativeWorkAreaFacts::new(
                 HostWorkAreaToken::new(1),
                 PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0).unwrap(),
@@ -190,6 +229,7 @@ fn input_fixture(effect_slots: usize) -> InputFixture {
     InputFixture {
         session,
         binding,
+        recovery,
         request,
     }
 }
@@ -248,6 +288,7 @@ fn one_effect_lease_allows_one_accepted_head_and_one_successor_without_growth() 
     let InputFixture {
         mut session,
         binding,
+        recovery,
         request,
     } = input_fixture(1);
     let mut control = NativeInputControl::with_storage_limits(Some(1), Some(1)).unwrap();
@@ -280,7 +321,13 @@ fn one_effect_lease_allows_one_accepted_head_and_one_successor_without_growth() 
 
     session
         .report_managed_native_snapshot(
-            [(binding, window_facts(state, Some(acknowledgement)))],
+            [
+                (binding, window_facts(state, Some(acknowledgement))),
+                (
+                    recovery,
+                    window_facts(NativeWindowInputState::ReceivesInput, None),
+                ),
+            ],
             NativeWorkAreaRoster::Unknown,
         )
         .unwrap();
@@ -308,6 +355,7 @@ fn full_pending_backing_returns_the_original_affine_request_for_retry() {
         mut session,
         binding,
         request,
+        ..
     } = input_fixture(1);
     let third = input_fixture(1);
     let mut control = NativeInputControl::with_storage_limits(Some(2), Some(1)).unwrap();
@@ -488,6 +536,7 @@ fn retirement_rotates_original_backing_preserves_survivors_and_emits_each_result
         mut session,
         binding,
         request,
+        ..
     } = input_fixture(2);
     let first_survivor = input_fixture(1);
     let second_survivor = input_fixture(1);

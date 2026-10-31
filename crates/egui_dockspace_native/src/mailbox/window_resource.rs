@@ -1880,6 +1880,7 @@ mod tests {
                     viewport,
                     window,
                     winit::event::DeviceId::dummy(),
+                    None,
                 )
                 .token(),
                 expected_window_id: window,

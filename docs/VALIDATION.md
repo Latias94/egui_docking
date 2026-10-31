@@ -15,6 +15,142 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 expected-press queries and source-window input preservation
+
+The source, native and real-window gates below pass. Winit
+`8334294b2a8b21cf68269d1af931a17e68d21559` optionally validates the original
+Primary press before and after a query. Eframe
+`687558fd469dc4849783c5ae3b9fd7244a0f92c5` freezes that identity in its existing
+prepared/queued command. Results, callback keys and retirement remain Copy and
+retain only their existing command identity. The adapter's existing Primary
+row and Preparation/Attempt preserve the same optional identity. Admission
+rechecks the frozen value; continuation conversion requires two present equal
+identities. Ordinary queries without identity still settle their original
+receipt, and cannot produce continuation input. Identity does not grant fresh
+capture, delivery, ancestry or freedom from protocol freeze.
+
+The real retained-result fixture exposed a separate core defect: dragging a
+partial External Root payload enabled whole-window pass-through, so its next
+real motion lost hover and revoked the newer continuation. The sole existing
+route owner now distinguishes preserving native input from pass-through.
+External Root, partial Child payloads, complete main roots with contained
+siblings and complete contained roots preserve input. Only a runtime-owned
+Child's complete sole main root without contained siblings enables
+pass-through. A preserving route requires the exact current routeable binding,
+receiving-input facts and no unsettled pass-through saga; cross-window/tear-off
+use additionally requires independent source delivery and capture. Release
+retains only its already validated pre-edge capture. Complete Child drags keep
+the exact enable/restore acknowledgement lifecycle.
+
+That correction also exposed missing quiescence ownership for a Create which
+was cancelled before native admission. Its exact route now transfers under
+the existing host lock to the same prepaid retirement store used for detached
+workspace incarnations. Physical admission wins the same lock and prevents
+this path from discarding an admitted/captured create. A dropped cancellation
+candidate retains the original binding and retirement owner. No Destroyed
+observation or create receipt is synthesized for a window that never existed.
+
+A subsequent layout-reset regression exercises cancellation after the original
+binding became noncurrent. Its first runnable failure is a source presentation
+stream retained by core authority; `TerminalBindingGuardMissing` was the review
+hypothesis, not the observed first failure. The original negative result now
+enters the existing pending-result owner before exact quiescence enters the
+same ordered ingress. Core accepts a cross-epoch definitive failure only for
+the exact original unobserved Create/Replacement still awaiting appearance,
+with no destructive cleanup successor. The immutable request epoch and
+delivered provider remain ledger-validated. Foreign provider, wrong request
+epoch, indeterminate result, observed window and existing destructive lineage
+all fail without changing state. Normal and cross-reset shutdown regressions
+and the direct core fence regression pass. The final full gates retain the
+same source in `/tmp/dockspace-press-route-qualified-source.json`.
+
+The actual X11 journey now retains real T1/C1 for original P1, commits a new
+same-press motion C2, rejects late T1, and permits T2 through the Some-identity
+gate while its Unknown capture/delivery cannot select a tab. Escape/all-up
+returns to presented Root quiescence. The original delayed close/create/age
+suffix still reaches exact A/B Destroyed, unchanged source and <=4 MiB storage.
+The fixture never invents press identities, renderer terminals or native
+callbacks. Its earlier C2 timeout and native PassThrough snapshot remain in
+`/tmp/dockspace-expected-press-lineage-diagnostic.log`.
+
+The optimized physical matrix passes all fifteen entries, including all
+center/edge/tab/nested/overflow targets, stationary-negative and 1 kHz. Every
+entry now rejects any Root enable across tear-off, redock and retirement;
+complete Child still requires Applied enable and post-release Applied restore.
+The final refresh matches all 1,000 native callbacks at 1,011.7 Hz after
+999.8 Hz injection; release-to-model upper bound is 22.563041 ms. Selected
+Root/Child/standalone service maxima are 0.273333/0.476875/1.242208 ms. These finite observations do
+not establish a hard latency bound or positive stationary OS execution.
+
+The final source passes core1,948, public default/serde148/176, doctests10,
+native normal572 and noassert571, Linux library525, both workspaces'
+correctness/suspicious Clippy and strict rustdoc. Native normal includes a fresh
+10,000-lifetime case in 173.650 seconds; noassert skips that just-run case.
+Linux explicitly retains three opt-in ignored OS tests and filters the soak;
+the actual lineage OS test runs separately and passes. Earlier full
+runs retain 45 and then two failures from superseded Root enable/ACK fixtures.
+Their replacements assert input preservation while retaining first-live,
+destruction, incarnation, release-output and bounded-capacity contracts. The
+public handoff case changes insertion side after the first presented preview,
+so the terminal mutation still waits for the new exact output. The final
+checkpoint includes the never-admitted retirement and cross-epoch cleanup
+corrections. A later full run's one old fixture failure is retained: a
+late-appearance control had supplied a definitive dispatch failure, which now
+correctly ends its appearance wait. It now supplies Indeterminate instead and
+keeps exact late-appearance compensation assertions. The initial final refresh
+also records an out-of-disk compiler failure, followed by removal of obsolete
+project codegen caches and a successful rerun.
+
+Final real-window gates include default and bounded macOS redock, all six
+output-pressure cases on each of macOS and X11, the complete fifteen-entry X11
+physical matrix and the retained-query/close/create/age journey. The bounded
+macOS redock peaks at resident/reserved 2,334,809/3,488,912 bytes under 4 MiB.
+The X11 Combined case retains O256/control2 plus W16 roster, forwards all 258
+terminals and finishes at resident/reserved 2,375,289/3,490,072 bytes. No extra
+platform, mixed-DPI or positive stationary claim follows.
+
+Winit's unchanged query slice retains its 61 library tests, real expected-press
+and ordinary-observation checks, assertion-disabled real query, Clippy and
+format gates. Eframe passes 100 selected-feature library tests against exact
+Winit Git source, Clippy, strict docs and formatting. Its first strict-doc
+attempt with inspection/storage features disabled retained existing optional
+link failures; enabling those documented features passes. Current outer
+locked/offline metadata resolves one exact instance of every fork package
+without path overrides, using locally seeded Git objects. Both commits remain
+unpublished; remote-only reproduction and CI are not qualified.
+
+Evidence is `/tmp/dockspace-expected-press-final-gate-source.json`,
+`/tmp/dockspace-expected-press-core-complete-qualification.json`,
+`/tmp/dockspace-expected-press-fork-query-qualification.json`,
+`/tmp/dockspace-expected-press-native-completed.json`,
+`/tmp/dockspace-preserve-route-lineage-real.json` and
+`/tmp/dockspace-preserve-route-physical-qualification.json`. Those earlier physical
+results precede the retirement/epoch corrections and retain that source scope.
+The actual lineage fixture gains an explicit ReceivesInput assertion, removes
+per-motion diagnostic logging and passes again in
+`/tmp/dockspace-expected-press-final-lineage-real.json`. Final refresh source and
+gates are `/tmp/dockspace-press-route-qualified-source.json`,
+`/tmp/dockspace-press-route-qualified.json`,
+`/tmp/dockspace-press-route-window-build.json`,
+`/tmp/dockspace-press-route-real-qualification.json` and
+`/tmp/dockspace-press-route-review.json`. Package consumers are recorded in
+`/tmp/dockspace-press-route-package-qualification.json`. The complete Goal
+remains open.
+
+Both refreshed packages pass Cargo's all-feature locked/offline packaging and
+verification. Extracted-package consumers pass public148/176, the self-drawn
+engine example, official-egui15 and core dependency isolation. Official
+consumer metadata retains registry egui/eframe/epaint/emath/ecolor; optional
+native Git forks do not enter those packages. All 274/36 archived Rust paths
+and both crate READMEs match the frozen source. The archive verification keeps
+the existing yanked Windows transitive warning without changing that lock or
+claiming Windows qualification. Archive hashes for this slice are:
+
+| Package | SHA-256 |
+| --- | --- |
+| `dockspace-0.1.0.crate` | `fa8c5faf3078a5b71283a8e13176111cdf8eb0094eb5c4399e02b39e653197e9` |
+| `egui_dockspace-0.1.0.crate` | `3f83da711e6d1fb5520fe6590372b34221ac22670af33c64f7e341c48b8161fb` |
+
 ## 2026-11-01 original Primary-press identity source
 
 Winit `cd1a739a231248a5bb567db65ca64dcf890a9ab5` adds a Clone-only opaque

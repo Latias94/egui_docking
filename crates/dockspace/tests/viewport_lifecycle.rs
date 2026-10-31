@@ -32,7 +32,7 @@ use dockspace::ids::{
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::interaction::{
     DragSessionId, InteractionDelivery, InteractionOutcome, InteractionRejection,
-    InteractionStatus, PreviewResolutionStatus,
+    InteractionStatus, PreviewResolutionStatus, PreviewVisual,
 };
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
@@ -431,15 +431,6 @@ fn source_window(fixture: &Fixture) -> ObservedWindow {
         known_source_binding(fixture),
         CoordinateObservationGeneration::new(1),
         0.0,
-        WindowInputState::PassThrough,
-    )
-}
-
-fn source_receives_input_window(fixture: &Fixture) -> ObservedWindow {
-    observed_window(
-        known_source_binding(fixture),
-        CoordinateObservationGeneration::new(1),
-        0.0,
         WindowInputState::ReceivesInput,
     )
 }
@@ -485,7 +476,7 @@ fn resized_source_window(fixture: &Fixture) -> ObservedWindow {
             Authority::Known(ScaleFactor::new(1.25).expect("test scale factor must be valid")),
             Authority::Known(ScaleFactor::new(1.25).expect("test scale factor must be valid")),
         ))
-        .with_input_state(Authority::Known(WindowInputState::PassThrough))
+        .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
 }
 
 fn unavailable_host_window(fixture: &Fixture) -> ObservedWindow {
@@ -1255,10 +1246,7 @@ struct ActiveJournalDrag {
 }
 
 fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJournalDrag {
-    publish_windows!(
-        fixture,
-        vec![source_receives_input_window(fixture), host_window(fixture)],
-    );
+    publish_windows!(fixture, vec![source_window(fixture), host_window(fixture)],);
     publish_scene(fixture);
     let source_binding = known_source_binding(fixture);
     let source_projection = fixture
@@ -1388,13 +1376,22 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
         [
             InteractionOutcome::DragBegan { .. },
             InteractionOutcome::PreviewUpdated {
-                status: PreviewResolutionStatus::Rejected,
-                preview: None,
+                status: PreviewResolutionStatus::Resolved,
+                preview: Some(preview),
                 ..
             }
-        ]
+        ] if matches!(preview.visual(), PreviewVisual::Native { .. })
     ));
-    confirm_journal_drag_route(fixture, drag);
+    assert_source_preserves_input(fixture, source_binding);
+    assert_eq!(
+        fixture.engine.viewport().drag_source(POINTER),
+        Some(source_binding)
+    );
+    assert_eq!(
+        fixture.engine.viewport().confirmed_drag_source(POINTER),
+        Some(source_binding)
+    );
+    assert_eq!(fixture.engine.viewport().drag_route_effect(POINTER), None);
     drag
 }
 
@@ -1444,82 +1441,27 @@ fn move_journal_drag_outside(fixture: &mut Fixture, drag: ActiveJournalDrag) -> 
     transition
 }
 
-fn confirm_journal_drag_route(fixture: &mut Fixture, drag: ActiveJournalDrag) {
-    let enable_effect = pointer_passthrough_effect(fixture, drag.source_binding, true);
-    publish_pointer_input_confirmation(
-        fixture,
-        drag.source_binding,
-        WindowInputState::PassThrough,
-        enable_effect,
-    );
-}
-
-fn settle_journal_drag_route_restore(fixture: &mut Fixture, source_binding: ViewportBinding) {
-    let restore_effect = pointer_passthrough_effect(fixture, source_binding, false);
-    publish_pointer_input_confirmation(
-        fixture,
-        source_binding,
-        WindowInputState::ReceivesInput,
-        restore_effect,
-    );
-}
-
-fn pointer_passthrough_effect(
-    fixture: &Fixture,
-    binding: ViewportBinding,
-    enabled: bool,
-) -> EffectId {
-    fixture
+fn assert_source_preserves_input(fixture: &Fixture, source_binding: ViewportBinding) {
+    let source = fixture
         .engine
         .viewport()
-        .effects()
-        .records()
-        .filter_map(|(effect, record)| {
-            matches!(
-                record.request().effect(),
-                PlatformEffect::SetPointerPassthrough {
-                    binding: actual_binding,
-                    enabled: actual_enabled,
-                    ..
-                } if *actual_binding == binding && *actual_enabled == enabled
-            )
-            .then_some(effect)
-        })
-        .max()
-        .unwrap_or_else(|| {
-            panic!("pointer pass-through effect for {binding:?} enabled={enabled} must exist")
-        })
-}
-
-fn publish_pointer_input_confirmation(
-    fixture: &mut Fixture,
-    source_binding: ViewportBinding,
-    state: WindowInputState,
-    effect: EffectId,
-) {
-    let generation = fixture.input_generation + 1;
-    let source = observed_window(
-        source_binding,
-        CoordinateObservationGeneration::new(1),
-        0.0,
-        state,
-    )
-    .with_input_observation(WindowInputObservation::new(
-        source_binding,
-        InputObservationGeneration::new(generation),
-        Authority::Known(state),
-        InputEffectAcknowledgement::known(Some(effect)),
-    ));
-    publish_windows!(fixture, vec![source, host_window(fixture)]);
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .effects()
-            .record(effect)
-            .map(|record| record.phase()),
-        Some(EffectPhase::ObservedApplied { .. })
-    ));
+        .viewport(SURFACE_SOURCE)
+        .expect("the external drag source must retain its exact native binding");
+    assert_eq!(source.binding(), source_binding);
+    assert_eq!(source.ownership(), ViewportOwnership::External);
+    assert!(source.is_routeable());
+    assert_eq!(
+        source
+            .input_observation()
+            .and_then(WindowInputObservation::known_state),
+        Some(WindowInputState::ReceivesInput)
+    );
+    assert!(fixture.engine.viewport().effects().records().all(|(_, record)| {
+        !matches!(
+            record.request().effect(),
+            PlatformEffect::SetPointerPassthrough { binding, .. } if *binding == source_binding
+        )
+    }), "an external drag source must preserve input without enable or restore effects");
 }
 
 fn move_journal_drag_to_surface(
@@ -1768,7 +1710,8 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
             .retire_pointer_provider(drag.provider)
             .expect("an idle pointer provider must retire after native release");
     }
-    settle_journal_drag_route_restore(fixture, drag.source_binding);
+    assert_source_preserves_input(fixture, drag.source_binding);
+    assert_eq!(fixture.engine.viewport().drag_source(POINTER), None);
     assert!(
         fixture
             .engine
@@ -2283,7 +2226,9 @@ fn assert_old_platform_inputs_are_stale(
                 result: EffectResult::new(
                     request.effect(),
                     old_epoch,
-                    EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+                    EffectDispatchResult::Indeterminate(
+                        dockspace::effect::EffectIndeterminateReason::AcknowledgementLost,
+                    ),
                 ),
             },
         ],

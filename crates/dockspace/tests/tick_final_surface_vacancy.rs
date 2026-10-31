@@ -5,7 +5,7 @@ use dockspace::close::CloseDecision;
 use dockspace::command::{
     ContainedPosition, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
-use dockspace::effect::{EffectPhase, PlatformEffect};
+use dockspace::effect::PlatformEffect;
 use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
 use dockspace::frame::{BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest};
 use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
@@ -16,7 +16,9 @@ use dockspace::ids::{
 use dockspace::intent::{
     Authority, AuthorityUnavailableReason, CloseSceneTarget, PointerButton, PointerId,
 };
-use dockspace::interaction::{InteractionDelivery, InteractionOutcome, PreviewResolutionStatus};
+use dockspace::interaction::{
+    InteractionDelivery, InteractionOutcome, PreviewResolutionStatus, PreviewVisual,
+};
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
     PlatformCapabilities, PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
@@ -149,19 +151,6 @@ impl NativeVacancyFixture {
         &mut self,
         native: Option<(NativeCreateRequest, WindowPresentationState)>,
     ) -> PlatformSnapshot {
-        self.snapshot_with_source_input(
-            native,
-            WindowInputState::ReceivesInput,
-            InputEffectAcknowledgement::known(None),
-        )
-    }
-
-    fn snapshot_with_source_input(
-        &mut self,
-        native: Option<(NativeCreateRequest, WindowPresentationState)>,
-        source_state: WindowInputState,
-        acknowledged_effect: InputEffectAcknowledgement,
-    ) -> PlatformSnapshot {
         self.observation_generation += 1;
         let generation = self.observation_generation;
         let source_binding = self
@@ -174,8 +163,8 @@ impl NativeVacancyFixture {
             .with_input_observation(WindowInputObservation::new(
                 source_binding,
                 InputObservationGeneration::new(generation),
-                Authority::Known(source_state),
-                acknowledged_effect,
+                Authority::Known(WindowInputState::ReceivesInput),
+                InputEffectAcknowledgement::known(None),
             ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 source_binding,
@@ -311,7 +300,7 @@ fn observed_source_window(
             Authority::Known(ScaleFactor::new(1.0).expect("fixture scale factor is valid")),
             Authority::Known(ScaleFactor::new(1.0).expect("fixture scale factor is valid")),
         ))
-        .with_input_state(Authority::Known(WindowInputState::PassThrough))
+        .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
 }
 
 fn observed_target_window(
@@ -654,86 +643,24 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
         [
             InteractionOutcome::DragBegan { .. },
             InteractionOutcome::PreviewUpdated {
-                status: PreviewResolutionStatus::Rejected,
-                preview: None,
+                status: PreviewResolutionStatus::Resolved,
+                preview: Some(preview),
                 ..
             }
-        ]
+        ] if matches!(preview.visual(), PreviewVisual::Native { .. })
     ));
     fixture.pointer_sequence += 1;
-
-    let enable_effect = fixture
-        .engine
-        .viewport()
-        .effects()
-        .records()
-        .filter_map(|(effect, record)| {
-            matches!(
-                record.request().effect(),
-                PlatformEffect::SetPointerPassthrough {
-                    binding,
-                    enabled: true,
-                    ..
-                } if *binding == source_binding
-            )
-            .then_some(effect)
-        })
-        .max()
-        .expect("physical drag requests source pointer pass-through");
-    let snapshot = fixture.snapshot_with_source_input(
-        None,
-        WindowInputState::PassThrough,
-        InputEffectAcknowledgement::known(Some(enable_effect)),
-    );
-    let expected_epoch = fixture.engine.version().epoch();
-    let platform_provider = fixture.presentation_host.platform_provider();
-    let mut confirmation_frame = fixture.presentation_host.begin(&fixture.engine);
-    let mut input_stream =
-        support::TestInputStream::resume(&fixture.engine, NATIVE_PLATFORM_SOURCE);
-    input_stream
-        .append(
-            &mut confirmation_frame,
-            EngineInput::PublishPlatformSnapshot {
-                provider: platform_provider,
-                expected_epoch,
-                snapshot,
-            },
-        )
-        .expect("pointer pass-through confirmation stages");
-    let pointer_sequence = PointerEdgeSequence::new(fixture.pointer_sequence);
-    confirmation_frame
-        .submit_pointer_journal(
-            pointer_provider,
-            PointerEdgeJournal::new(pointer_sequence, pointer_sequence, Vec::new())
-                .expect("confirmation preserves the pointer watermark"),
-        )
-        .expect("confirmation pointer checkpoint stages");
-    confirmation_frame
-        .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new(Vec::new())
-                .expect("confirmation has no pointer receiver receipts"),
-        )
-        .expect("confirmation receipt checkpoint stages");
-    support::complete_host_frame_with_retained_or_unavailable(
-        &fixture.engine,
-        &mut confirmation_frame,
-    );
-    let confirmed = fixture
-        .presentation_host
-        .finish(confirmation_frame, &mut fixture.engine);
-    assert!(matches!(
-        confirmed.reduced_inputs()[0].outcome(),
-        InputOutcome::PlatformSnapshotPublished { .. }
-    ));
-    assert!(matches!(
+    assert_eq!(
         fixture
             .engine
             .viewport()
-            .effects()
-            .record(enable_effect)
-            .map(|record| record.phase()),
-        Some(EffectPhase::ObservedApplied { .. })
-    ));
+            .confirmed_drag_source(NATIVE_POINTER),
+        Some(source_binding)
+    );
+    assert!(fixture.engine.viewport().effects().records().all(|(_, record)| {
+        !matches!(record.request().effect(), PlatformEffect::SetPointerPassthrough { binding, .. }
+            if *binding == source_binding)
+    }), "the External Root content drag must preserve input without enable or restore effects");
 
     let mut routed_move_frame = fixture.presentation_host.begin(&fixture.engine);
     routed_move_frame

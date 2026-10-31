@@ -164,6 +164,18 @@ exact child X11 `DestroyNotify`, semantic viewport retirement and quiescence.
 A viewport step is a progress barrier and a painted marker proves emission;
 neither is a native release receipt or GPU presentation proof.
 
+The 2026-11-01 source-input correction refreshes these fifteen journeys.
+External Root content drags retain the window's native hit regions, including
+complete-root payloads: application UI outside dockspace remains host-owned.
+Partial Child payloads and roots with other main or contained presentations
+also preserve input. Only a runtime-owned Child's complete sole main root,
+without contained siblings, enables whole-window pass-through and retains its
+exact enable/restore acknowledgement requirements. A preserving route still
+requires current receiving-input facts and independent edge delivery/capture;
+it cannot bypass an unsettled pass-through restoration. The physical runner
+checks that no Root enable occurs throughout drag-out, redock and retirement,
+while the complete Child still enables and restores input.
+
 Tab-half selection uses an opt-in passive diagnostic copied from the painted
 tab's complete visible bounds; the Tab accessibility receiver still excludes
 its close button. These diagnostics confer no input or presentation authority.
@@ -291,7 +303,11 @@ correlation. **Fresh native stationary capture and delivery remain `Unknown`.**
 capture cannot repair that gap. The seam reports observations without
 synthesizing motion. The adapter uses that result seam for finite Desktop Mouse
 scheduling: deadlines request wakes, only final passes dispatch, and one query
-keeps its existing command receipt until full ordered commit. Unknown or
+keeps its existing command receipt until full ordered commit. Queries can
+freeze the original Primary-press identity; admission rechecks it and sample
+conversion requires two present equal identities. None/None cannot authorize
+a sample. Identity-free observations still settle their original receipts,
+and result/retirement keys retain the existing command identity. Unknown or
 Unavailable results cannot continuously reschedule the same core token. The
 [finite scheduling qualification](VALIDATION.md#2026-10-31-finite-native-stationary-scheduling)
 passes native526/526 and the full bounded X11 negative journey. Successful OS
@@ -352,8 +368,8 @@ Current native Git pins are aligned with the qualified local sources:
 
 | Dependency | Locally qualified revision | Tracked Git revision |
 | --- | --- | --- |
-| egui/eframe fork | `6e601d79b88baee69148e9a15496d4c2e12d081e` | `6e601d79b88baee69148e9a15496d4c2e12d081e` |
-| Winit fork | `cd1a739a231248a5bb567db65ca64dcf890a9ab5` | `cd1a739a231248a5bb567db65ca64dcf890a9ab5` |
+| egui/eframe fork | `687558fd469dc4849783c5ae3b9fd7244a0f92c5` | `687558fd469dc4849783c5ae3b9fd7244a0f92c5` |
+| Winit fork | `8334294b2a8b21cf68269d1af931a17e68d21559` | `8334294b2a8b21cf68269d1af931a17e68d21559` |
 
 The tracked revisions are visible in the
 [native workspace manifest](../integration/egui-fork-workspace/Cargo.toml) and

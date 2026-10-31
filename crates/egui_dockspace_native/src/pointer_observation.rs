@@ -240,7 +240,7 @@ mod tests {
         let window = WindowId::from(70);
         let device = DeviceId::dummy();
         let prepared =
-            eframe::prepare_native_viewport_pointer_observation(viewport, window, device);
+            eframe::prepare_native_viewport_pointer_observation(viewport, window, device, None);
         NativePointerObservationKey {
             token: prepared.token(),
             viewport,

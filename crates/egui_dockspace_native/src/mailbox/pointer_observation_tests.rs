@@ -72,7 +72,8 @@ fn bridge_with_clock() -> (NativeHostBridge, Arc<AtomicU64>) {
 
 fn key(viewport: ViewportId, window: WindowId) -> NativePointerObservationKey {
     let device = DeviceId::dummy();
-    let prepared = eframe::prepare_native_viewport_pointer_observation(viewport, window, device);
+    let prepared =
+        eframe::prepare_native_viewport_pointer_observation(viewport, window, device, None);
     NativePointerObservationKey {
         token: prepared.token(),
         viewport,

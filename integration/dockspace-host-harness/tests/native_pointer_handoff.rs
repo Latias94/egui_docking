@@ -16,16 +16,16 @@ use dockspace::runtime::{
     DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceSession, HostFrameReport, HostWindowToken,
     NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
-    NativeHostCapability, NativeHostErrorKind, NativeLocalCoordinates, NativeLocalGeometry,
-    NativeLocalPointerFact, NativeLocalPointerLocation, NativeLocalPointerSample,
-    NativeLocalToDesktopHandoff, NativePointerButton as Button, NativePointerEvent as Event,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, PointerDeviceKind, PointerEventMetadata,
-    SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
-    SurfacePresentationResult as Disposition, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativeLocalCoordinates,
+    NativeLocalGeometry, NativeLocalPointerFact, NativeLocalPointerLocation,
+    NativeLocalPointerSample, NativeLocalToDesktopHandoff, NativePointerButton as Button,
+    NativePointerEvent as Event, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
+    NativeReceiverQuery, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaRoster, PaintedSurfaceOutput, PointerDeviceKind,
+    PointerEventMetadata, SurfacePaintProgramOperation as Operation,
+    SurfacePaintProgramStep as Step, SurfacePresentationResult as Disposition,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -1259,8 +1259,8 @@ fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_
             .is_empty()
     );
 
-    // This host intentionally has no physical routing capability and reports
-    // no pass-through confirmation. Handoff is not a substitute for either.
+    // This host intentionally lacks the complete physical routing capability.
+    // Handoff cannot supply a missing host capability.
     session
         .record_native_pointer(NativePointerInput::new(
             POINTER,
@@ -1288,12 +1288,12 @@ fn handoff_queries_b_at_its_desktop_hover_point_without_authorizing_unconfirmed_
 }
 
 #[test]
-fn cross_window_handoff_requires_applied_routing_then_exact_presented_target_output() {
+fn cross_window_handoff_preserves_root_input_and_waits_for_exact_presented_target_output() {
     let (mut session, bindings, [source_scene, target_scene]) = fixture_with_routing(true, true);
     let [source, destination] = bindings;
     start_local_drag(&mut session, source, &source_scene);
     let version = session.version();
-    let point = target_scene.insertion(OTHER, false);
+    let point = target_scene.insertion(OTHER, true);
     let desktop_point = desktop_point(B, point);
     let source_client = PhysicalPoint::new(
         desktop_point.x() - bounds(A).x(),
@@ -1324,42 +1324,25 @@ fn cross_window_handoff_requires_applied_routing_then_exact_presented_target_out
         })
         .unwrap();
     let target = render(&mut frame, B);
-    target.assert_preview(false);
+    target.assert_preview(true);
     let mut report = finish(frame);
     assert_no_delivery(&report);
-    let [enable] = report.take_native_effects().try_into().unwrap();
-    assert!(matches!(
-        enable.operation(),
-        NativeEffectOperation::SetPointerPassthrough { binding, enabled: true }
-            if *binding == source
-    ));
+    assert!(report.take_native_effects().is_empty());
     let target_output = take_output(&mut report, &target, destination);
     present(&mut session, target_output);
     assert_eq!(session.version(), version);
-    let Some(NativeEffectAcknowledgement::Input(enable_ack)) = enable.accepted() else {
-        panic!("routing must settle through an exact input observation");
-    };
-    session
-        .report_managed_native_snapshot(
-            [
-                (
-                    source,
-                    facts(Some(bounds(A)))
-                        .with_input(NativeWindowInputState::PassThrough, Some(enable_ack)),
-                ),
-                (destination, facts(Some(bounds(B)))),
-            ],
-            NativeWorkAreaRoster::Unknown,
-        )
-        .unwrap();
-    assert_no_delivery(&idle(&mut session));
+    // Change the insertion side after presenting the first preview, so release
+    // still waits for the newly compiled target output rather than reusing it.
+    let release_point = target.insertion(OTHER, false);
+    let release_desktop = self::desktop_point(B, release_point);
+    assert_ne!(release_point, point);
     session
         .record_native_pointer_batch([Event::Moved, Event::ButtonReleased(Button::Primary)].map(
             |event| {
                 NativePointerInput::new(
                     POINTER,
                     event,
-                    desktop_location(destination, desktop_point),
+                    desktop_location(destination, release_desktop),
                     NativePointerOwner::Native(source),
                     capture_for(source, event),
                 )
@@ -1369,7 +1352,7 @@ fn cross_window_handoff_requires_applied_routing_then_exact_presented_target_out
     let mut frame = session
         .begin_native_host_frame(|query| {
             assert_eq!(query.surface(), B);
-            assert_eq!(query.point(), Some(point));
+            assert_eq!(query.point(), Some(release_point));
             assert_ne!(query.point(), Some(local.surface_position()));
             target.answer(query)
         })
@@ -1378,29 +1361,8 @@ fn cross_window_handoff_requires_applied_routing_then_exact_presented_target_out
     preview.assert_preview(true);
     let mut report = finish(frame);
     let pending = assert_pending(&report);
-    let [restore] = report.take_native_effects().try_into().unwrap();
-    assert!(matches!(
-        restore.operation(),
-        NativeEffectOperation::SetPointerPassthrough { binding, enabled: false }
-            if *binding == source
-    ));
-    let Some(NativeEffectAcknowledgement::Input(restore_ack)) = restore.accepted() else {
-        panic!("routing restoration must retain its exact observation");
-    };
+    assert!(report.take_native_effects().is_empty());
     let exact = take_output(&mut report, &preview, destination);
-    session
-        .report_managed_native_snapshot(
-            [
-                (
-                    source,
-                    facts(Some(bounds(A)))
-                        .with_input(NativeWindowInputState::ReceivesInput, Some(restore_ack)),
-                ),
-                (destination, facts(Some(bounds(B)))),
-            ],
-            NativeWorkAreaRoster::Unknown,
-        )
-        .unwrap();
     assert_no_delivery(&idle(&mut session));
     assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
     assert_eq!(session.version(), version);
@@ -1467,32 +1429,15 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
                 .unwrap(),
         );
         assert!(!report.workspace_changed());
-        assert!(session.native_pointer_continuation().is_none());
-        let effects = report.take_native_effects();
+        let initial_request = session.native_pointer_continuation();
+        assert!(report.take_native_effects().is_empty());
         if routing {
-            let [enable] = effects.try_into().unwrap();
-            assert!(
-                matches!(enable.operation(), NativeEffectOperation::SetPointerPassthrough { binding, enabled: true } if *binding == source)
-            );
-            let Some(NativeEffectAcknowledgement::Input(ack)) = enable.accepted() else {
-                panic!("exact routing observation required");
-            };
-            session
-                .report_managed_native_snapshot(
-                    [
-                        (
-                            source,
-                            facts(Some(bounds(A)))
-                                .with_input(NativeWindowInputState::PassThrough, Some(ack)),
-                        ),
-                        (destination, facts(Some(bounds(B)))),
-                    ],
-                    NativeWorkAreaRoster::Unknown,
-                )
-                .unwrap();
-            idle(&mut session);
+            let initial_request = initial_request.expect("the preserving source route is current");
+            assert_eq!(initial_request.source_binding(), source);
+            assert_eq!(initial_request.surface(), B);
+            assert_eq!(initial_request.deadline(), Duration::from_millis(160));
         } else {
-            assert!(effects.is_empty());
+            assert!(initial_request.is_none());
         }
         let observed = |event, millis| {
             NativePointerInput::new(
@@ -1550,9 +1495,10 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
         assert_eq!(request.surface(), B);
         assert_eq!(request.position(), hover);
         assert!(request.local_coordinates().is_none());
-        assert_eq!(request.deadline(), Duration::from_millis(170));
+        assert_eq!(request.deadline(), initial_request.unwrap().deadline());
+        assert_ne!(request.token(), initial_request.unwrap().token());
         session
-            .record_native_pointer(observed(request.event(), 170))
+            .record_native_pointer(observed(request.event(), 160))
             .unwrap();
         let mut frame = session
             .begin_native_host_frame(|query| {
@@ -1598,26 +1544,7 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
         );
         assert!(!report.workspace_changed());
         assert!(!session.has_active_gesture());
-        let [restore] = report.take_native_effects().try_into().unwrap();
-        assert!(
-            matches!(restore.operation(), NativeEffectOperation::SetPointerPassthrough { binding, enabled: false } if *binding == source)
-        );
-        let Some(NativeEffectAcknowledgement::Input(ack)) = restore.accepted() else {
-            panic!("exact restoration observation required");
-        };
-        session
-            .report_managed_native_snapshot(
-                [
-                    (
-                        source,
-                        facts(Some(bounds(A)))
-                            .with_input(NativeWindowInputState::ReceivesInput, Some(ack)),
-                    ),
-                    (destination, facts(Some(bounds(B)))),
-                ],
-                NativeWorkAreaRoster::Unknown,
-            )
-            .unwrap();
+        assert!(report.take_native_effects().is_empty());
         idle(&mut session);
         assert_eq!(fresh.surface, B);
         assert_clean_idle(&mut session);

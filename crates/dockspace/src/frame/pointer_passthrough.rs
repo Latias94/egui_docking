@@ -12,8 +12,22 @@ use crate::viewport::{InputObservationGeneration, ViewportBinding};
 /// Sole owner of pointer routes, holders, and pass-through recovery sagas.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct PointerPassthroughLifecycle {
-    drag_sources: BTreeMap<PointerId, ViewportBinding>,
+    drag_sources: BTreeMap<PointerId, PointerDragRoute>,
     sagas: BTreeMap<ViewportBinding, PointerPassthroughSaga>,
+}
+
+/// Content drags retain the host window's hit regions. Only a complete owned
+/// presentation may exclude its entire native window from hit testing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerDragInputMode {
+    Preserve,
+    PassThrough,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerDragRoute {
+    binding: ViewportBinding,
+    input: PointerDragInputMode,
 }
 
 /// Immutable recovery state captured before a workspace or binding migration.
@@ -179,7 +193,11 @@ impl PointerPassthroughLifecycle {
     }
 
     pub(super) fn drag_source(&self, pointer: PointerId) -> Option<ViewportBinding> {
-        self.drag_sources.get(&pointer).copied()
+        self.drag_sources.get(&pointer).map(|route| route.binding)
+    }
+
+    pub(super) fn drag_input_mode(&self, pointer: PointerId) -> Option<PointerDragInputMode> {
+        self.drag_sources.get(&pointer).map(|route| route.input)
     }
 
     pub(super) fn active_pointers(&self) -> Vec<PointerId> {
@@ -195,13 +213,16 @@ impl PointerPassthroughLifecycle {
         &mut self,
         pointer: PointerId,
         binding: ViewportBinding,
+        input: PointerDragInputMode,
     ) -> Result<Option<PointerRouteChange>, PointerPassthroughLifecycleError> {
+        let route = PointerDragRoute { binding, input };
         let previous = self.drag_sources.get(&pointer).copied();
-        if previous == Some(binding) {
-            if !self
-                .sagas
-                .get(&binding)
-                .is_some_and(|saga| saga.holders.contains(&pointer))
+        if previous == Some(route) {
+            if input == PointerDragInputMode::PassThrough
+                && !self
+                    .sagas
+                    .get(&binding)
+                    .is_some_and(|saga| saga.holders.contains(&pointer))
             {
                 return Err(PointerPassthroughLifecycleError::SagaMissing { binding });
             }
@@ -211,14 +232,16 @@ impl PointerPassthroughLifecycle {
         if let Some(previous) = previous {
             self.release_holder(pointer, previous)?;
         }
-        self.sagas
-            .entry(binding)
-            .or_insert_with(|| PointerPassthroughSaga::new(pointer))
-            .holders
-            .insert(pointer);
-        self.drag_sources.insert(pointer, binding);
+        if input == PointerDragInputMode::PassThrough {
+            self.sagas
+                .entry(binding)
+                .or_insert_with(|| PointerPassthroughSaga::new(pointer))
+                .holders
+                .insert(pointer);
+        }
+        self.drag_sources.insert(pointer, route);
         Ok(Some(PointerRouteChange {
-            previous,
+            previous: previous.map(|route| route.binding),
             current: binding,
         }))
     }
@@ -227,18 +250,23 @@ impl PointerPassthroughLifecycle {
         &mut self,
         pointer: PointerId,
     ) -> Result<Option<ViewportBinding>, PointerPassthroughLifecycleError> {
-        let Some(binding) = self.drag_sources.get(&pointer).copied() else {
+        let Some(route) = self.drag_sources.get(&pointer).copied() else {
             return Ok(None);
         };
-        self.release_holder(pointer, binding)?;
-        Ok(Some(binding))
+        self.release_holder(pointer, route)?;
+        Ok(Some(route.binding))
     }
 
     fn release_holder(
         &mut self,
         pointer: PointerId,
-        binding: ViewportBinding,
+        route: PointerDragRoute,
     ) -> Result<(), PointerPassthroughLifecycleError> {
+        if route.input == PointerDragInputMode::Preserve {
+            self.drag_sources.remove(&pointer);
+            return Ok(());
+        }
+        let binding = route.binding;
         let saga = self
             .sagas
             .get_mut(&binding)
@@ -252,7 +280,8 @@ impl PointerPassthroughLifecycle {
 
     /// Clears all active holders for a binding while retaining any recovery obligation.
     pub(super) fn prepare_binding_for_vacancy(&mut self, binding: ViewportBinding) {
-        self.drag_sources.retain(|_, source| *source != binding);
+        self.drag_sources
+            .retain(|_, source| source.binding != binding);
         if let Some(saga) = self.sagas.get_mut(&binding) {
             saga.holders.clear();
         }
@@ -261,7 +290,8 @@ impl PointerPassthroughLifecycle {
     /// Forgets an exact terminal binding and every route that names it.
     pub(super) fn terminate_binding(&mut self, binding: ViewportBinding) {
         self.sagas.remove(&binding);
-        self.drag_sources.retain(|_, source| *source != binding);
+        self.drag_sources
+            .retain(|_, source| source.binding != binding);
     }
 
     pub(super) fn clear(&mut self) {
@@ -939,10 +969,10 @@ mod tests {
         let mut lifecycle = PointerPassthroughLifecycle::default();
 
         lifecycle
-            .begin_routing(pointer, first)
+            .begin_routing(pointer, first, PointerDragInputMode::PassThrough)
             .expect("first route must be accepted");
         let change = lifecycle
-            .begin_routing(pointer, successor)
+            .begin_routing(pointer, successor, PointerDragInputMode::PassThrough)
             .expect("route reassignment must be accepted")
             .expect("a different binding must produce a route change");
 

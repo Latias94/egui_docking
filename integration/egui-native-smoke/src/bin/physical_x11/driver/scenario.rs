@@ -188,6 +188,31 @@ fn pointer_passthrough_checkpoint(shared: &Shared) -> u64 {
         .pointer_passthrough_sequence
 }
 
+fn assert_root_pointer_passthrough_preserved(
+    shared: &Shared,
+    after_sequence: u64,
+    stage: &str,
+) -> Result<(), String> {
+    let (lock, _) = &**shared;
+    let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(error) = &guard.fatal_error {
+        return Err(format!("{stage}: {error}"));
+    }
+    if let Some(observation) = guard.pointer_passthrough.iter().find(|observation| {
+        observation.sequence > after_sequence
+            && observation.viewport == ViewportId::ROOT
+            && observation.enabled
+    }) {
+        return Err(format!(
+            "{stage}: External Root must preserve native hit regions; unexpected pointer pass-through enable: {observation:?}"
+        ));
+    }
+    eprintln!(
+        "physical-smoke: {stage}: no Root pointer pass-through enable after sequence={after_sequence}"
+    );
+    Ok(())
+}
+
 fn wait_for_pointer_passthrough(
     shared: &Shared,
     after_sequence: u64,
@@ -613,6 +638,11 @@ impl PhysicalDriver {
             ));
         }
         self.verify_retired_viewport(retirement)?;
+        assert_root_pointer_passthrough_preserved(
+            &self.shared,
+            0,
+            "Root preserved through physical tear-off, redock, and retirement",
+        )?;
         if pointer_load_enabled()? {
             verify_pointer_load(&self.shared)?;
         }
@@ -990,6 +1020,7 @@ fn inject_drag(
         request.deadline,
         &format!("{} source hover", request.label),
     )?;
+    let route_checkpoint = pointer_passthrough_checkpoint(shared);
     press_primary_with_cleanup(desktop, request.label)?;
     let pressed = (|| {
         let source_at_press = input_barrier(
@@ -1004,7 +1035,6 @@ fn inject_drag(
             request.deadline,
             &format!("{} source press", request.label),
         )?;
-        let route_checkpoint = pointer_passthrough_checkpoint(shared);
         desktop.move_pointer(request.threshold)?;
         desktop.assert_pointer(request.threshold, Some(true))?;
         let source_at_threshold = input_barrier(
@@ -1033,20 +1063,21 @@ fn inject_drag(
             request.deadline,
             &format!("{} first target ingress", request.label),
         )?;
-        wait_for_pointer_passthrough(
-            shared,
-            route_checkpoint,
-            request.source_viewport,
-            true,
-            request.deadline,
-            &format!("{} drag-route enable", request.label),
-        )?;
         let route_confirmed = viewport_barrier(
             inspection,
             ViewportId::ROOT,
             source_at_first_target.step,
             request.deadline,
             &format!("{} drag-route confirmation", request.label),
+        )?;
+        // This fixture tears content out of an External Root, preserving its hit regions.
+        assert_root_pointer_passthrough_preserved(
+            shared,
+            route_checkpoint,
+            &format!(
+                "{} Root preserved after first target ingress",
+                request.label
+            ),
         )?;
         desktop.move_pointer(request.routed_target)?;
         desktop.assert_pointer(request.routed_target, Some(true))?;
@@ -1100,6 +1131,11 @@ fn inject_drag(
         preview.step,
         request.deadline,
         &format!("{} physical release", request.label),
+    )?;
+    assert_root_pointer_passthrough_preserved(
+        shared,
+        route_checkpoint,
+        &format!("{} Root preserved through physical release", request.label),
     )?;
     Ok(DragResult { preview, released })
 }
@@ -1615,6 +1651,7 @@ fn inject_redock_drag(
             ),
         }
     })();
+    let restore_checkpoint = pointer_passthrough_checkpoint(shared);
     let release = desktop.set_primary_button(false);
     let (preview, final_point) = match (pressed, release) {
         (Ok(preview), Ok(())) => preview,
@@ -1631,6 +1668,16 @@ fn inject_redock_drag(
         request.deadline,
         &format!("{} physical release", request.label),
     )?;
+    if request.source_viewport != ViewportId::ROOT {
+        wait_for_pointer_passthrough(
+            shared,
+            restore_checkpoint,
+            request.source_viewport,
+            false,
+            request.deadline,
+            &format!("{} drag-route restore", request.label),
+        )?;
+    }
     Ok(DragResult { preview, released })
 }
 
@@ -1695,14 +1742,18 @@ fn reach_target_surface_while_pressed(
         request.deadline,
         &format!("{} first target-surface ingress", request.label),
     )?;
-    wait_for_pointer_passthrough(
-        shared,
-        route_checkpoint,
-        request.source_viewport,
-        true,
-        request.deadline,
-        &format!("{} drag-route enable", request.label),
-    )?;
+    if request.source_viewport != ViewportId::ROOT {
+        // The torn-off owned Child contains only the dragged tab in its sole main root,
+        // with no contained siblings, so this fixture still requires enable and its ACK.
+        wait_for_pointer_passthrough(
+            shared,
+            route_checkpoint,
+            request.source_viewport,
+            true,
+            request.deadline,
+            &format!("{} drag-route enable", request.label),
+        )?;
+    }
     let root_barrier_step = if request.source_viewport == ViewportId::ROOT {
         source_at_first_ingress.step
     } else {
@@ -1714,6 +1765,14 @@ fn reach_target_surface_while_pressed(
         root_barrier_step,
         request.deadline,
         &format!("{} drag-route confirmation", request.label),
+    )?;
+    assert_root_pointer_passthrough_preserved(
+        shared,
+        route_checkpoint,
+        &format!(
+            "{} Root preserved after target-surface ingress",
+            request.label
+        ),
     )?;
 
     desktop.move_pointer(request.routed_ingress)?;
@@ -2792,7 +2851,7 @@ mod pointer_passthrough_tests {
             PointerPassthroughObservation {
                 sequence: 1,
                 viewport: ViewportId::ROOT,
-                enabled: true,
+                enabled: false,
                 status: eframe::NativeViewportPointerPassthroughStatus::Applied,
             },
             PointerPassthroughObservation {
@@ -2805,6 +2864,7 @@ mod pointer_passthrough_tests {
         let shared = Arc::new((Mutex::new(state), Condvar::new()));
 
         assert_eq!(pointer_passthrough_checkpoint(&shared), 2);
+        assert_root_pointer_passthrough_preserved(&shared, 0, "test Root preserve").unwrap();
         assert_eq!(
             wait_for_pointer_passthrough(
                 &shared,
@@ -2825,11 +2885,12 @@ mod pointer_passthrough_tests {
 
     #[test]
     fn barrier_rejects_a_failed_platform_result() {
+        let child = ViewportId::from_hash_of("physical-smoke-child");
         let mut state = SharedState::default();
         state.pointer_passthrough_sequence = 1;
         state.pointer_passthrough = vec![PointerPassthroughObservation {
             sequence: 1,
-            viewport: ViewportId::ROOT,
+            viewport: child,
             enabled: true,
             status: eframe::NativeViewportPointerPassthroughStatus::Failed,
         }];
@@ -2838,13 +2899,45 @@ mod pointer_passthrough_tests {
         let error = wait_for_pointer_passthrough(
             &shared,
             0,
-            ViewportId::ROOT,
+            child,
             true,
             Instant::now() + Duration::from_secs(1),
             "test barrier",
         )
         .expect_err("a failed platform callback must fail the drag route");
         assert!(error.contains("was not applied"));
+    }
+
+    #[test]
+    fn root_preserve_rejects_any_enable_even_after_restore() {
+        for status in [
+            eframe::NativeViewportPointerPassthroughStatus::Applied,
+            eframe::NativeViewportPointerPassthroughStatus::Unsupported,
+            eframe::NativeViewportPointerPassthroughStatus::Failed,
+            eframe::NativeViewportPointerPassthroughStatus::Retired,
+        ] {
+            let mut state = SharedState::default();
+            state.pointer_passthrough_sequence = 2;
+            state.pointer_passthrough = vec![
+                PointerPassthroughObservation {
+                    sequence: 1,
+                    viewport: ViewportId::ROOT,
+                    enabled: true,
+                    status,
+                },
+                PointerPassthroughObservation {
+                    sequence: 2,
+                    viewport: ViewportId::ROOT,
+                    enabled: false,
+                    status: eframe::NativeViewportPointerPassthroughStatus::Applied,
+                },
+            ];
+            let shared = Arc::new((Mutex::new(state), Condvar::new()));
+
+            let error = assert_root_pointer_passthrough_preserved(&shared, 0, "test Root preserve")
+                .expect_err("a later restore must not hide a forbidden Root enable");
+            assert!(error.contains("External Root must preserve"));
+        }
     }
 }
 

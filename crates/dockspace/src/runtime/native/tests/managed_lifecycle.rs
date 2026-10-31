@@ -885,7 +885,6 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         child_binding,
         placement,
         request: create,
-        restore_acknowledgement,
     } = request_native_create();
     let retained_streams_before = session
         .engine
@@ -906,13 +905,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
     session
         .report_managed_native_snapshot(
             [
-                (
-                    root_binding,
-                    root_window_facts().with_input(
-                        NativeWindowInputState::ReceivesInput,
-                        Some(restore_acknowledgement),
-                    ),
-                ),
+                (root_binding, root_window_facts()),
                 (
                     child_binding,
                     NativeWindowFacts::live()
@@ -1285,7 +1278,6 @@ fn managed_native_create_dispatch_failure_preserves_source_ownership() {
         root_binding,
         child_binding,
         request,
-        restore_acknowledgement,
         ..
     } = request_native_create();
     let failed = request.dispatch_failed(NativeDispatchFailure::WindowUnavailable);
@@ -1306,16 +1298,10 @@ fn managed_native_create_dispatch_failure_preserves_source_ownership() {
 
     session
         .report_managed_native_snapshot(
-            [(
-                root_binding,
-                root_window_facts().with_input(
-                    NativeWindowInputState::ReceivesInput,
-                    Some(restore_acknowledgement),
-                ),
-            )],
+            [(root_binding, root_window_facts())],
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),
         )
-        .expect("the exact root input restoration records after create failure");
+        .expect("the unchanged root input facts record after create failure");
     let mut report = commit_managed_frame_report(&mut session);
 
     assert!(report.take_native_effects().is_empty());
@@ -1359,7 +1345,6 @@ struct PendingNativeCreate {
     child_binding: NativeSurfaceBinding,
     placement: PhysicalRect,
     request: crate::runtime::NativeEffectRequest,
-    restore_acknowledgement: crate::runtime::NativeInputEffectAcknowledgement,
 }
 
 #[test]
@@ -1522,45 +1507,21 @@ pub(super) fn prepare_native_tear_off_release(
         .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
         .expect("the native drag frame begins");
     assert!(
-        !program_has_drag_preview(
+        program_has_drag_preview(
             route
                 .paint_plan(SURFACE)
                 .expect("the source plan resolves")
                 .expect("the source remains paintable")
         ),
-        "an unconfirmed pointer route must not expose a native preview"
+        "the exact source delivery and capture permit a preview while Root retains input"
     );
     let receipt = execute_surface_program(&mut route, SURFACE);
     route
         .confirm_surface_painted(receipt)
-        .expect("the route-request frame is painted");
-    let mut route_report = route.commit().expect("the route-request frame commits");
-    let enable = take_only_native_effect(&mut route_report);
-    assert!(matches!(
-        enable.operation(),
-        NativeEffectOperation::SetPointerPassthrough {
-            binding,
-            enabled: true,
-        } if *binding == root_binding
-    ));
-    let enable_acknowledgement = match enable.accepted() {
-        Some(NativeEffectAcknowledgement::Input(acknowledgement)) => acknowledgement,
-        acknowledgement => panic!("pointer enable returned {acknowledgement:?}"),
-    };
+        .expect("the source-input-preserving frame is painted");
+    let mut route_report = route.commit().expect("the preserving route frame commits");
+    assert!(route_report.take_native_effects().is_empty());
     present_surface_outputs(&mut session, &mut route_report);
-    session
-        .report_managed_native_snapshot(
-            [(
-                root_binding,
-                root_window_facts().with_input(
-                    NativeWindowInputState::PassThrough,
-                    Some(enable_acknowledgement),
-                ),
-            )],
-            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
-        )
-        .expect("the exact enabled input observation records");
-    commit_managed_frame(&mut session);
 
     session
         .record_native_pointer(NativePointerInput::new(
@@ -1620,31 +1581,7 @@ fn request_native_create() -> PendingNativeCreate {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the release frame retains current surface authority");
     let mut release_report = release.commit().expect("the native release commits");
-    let mut create = None;
-    let mut restore_acknowledgement = None;
-    let effects = release_report.take_native_effects();
-    for request in effects {
-        match request.operation() {
-            NativeEffectOperation::CreateWindow { .. } => create = Some(request),
-            NativeEffectOperation::SetPointerPassthrough {
-                binding,
-                enabled: false,
-            } if *binding == root_binding => {
-                restore_acknowledgement = match request.accepted() {
-                    Some(NativeEffectAcknowledgement::Input(acknowledgement)) => {
-                        Some(acknowledgement)
-                    }
-                    acknowledgement => {
-                        panic!("pointer restore returned {acknowledgement:?}")
-                    }
-                };
-            }
-            operation => panic!("outside-all release emitted unexpected {operation:?}"),
-        }
-    }
-    let request = create.expect("outside-all release emits one CreateWindow");
-    let restore_acknowledgement =
-        restore_acknowledgement.expect("outside-all release restores pointer input");
+    let request = take_only_native_effect(&mut release_report);
     let (child_binding, placement) = match request.operation() {
         NativeEffectOperation::CreateWindow {
             binding, placement, ..
@@ -1663,7 +1600,6 @@ fn request_native_create() -> PendingNativeCreate {
         child_binding,
         placement,
         request,
-        restore_acknowledgement,
     }
 }
 

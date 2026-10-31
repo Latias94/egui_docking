@@ -28,6 +28,7 @@ use self::native_staging_resource::{
     NativeStagingResourceConservationError, NativeStagingResourceLedger,
     NativeStagingResourceLedgerError, NativeStagingResourceOwner,
 };
+pub(crate) use self::pointer_passthrough::PointerDragInputMode;
 use self::pointer_passthrough::{
     PointerPassthroughEffectRequest, PointerPassthroughEvidence, PointerPassthroughLifecycle,
     PointerPassthroughLifecycleError, PointerPassthroughRecovery,
@@ -2957,6 +2958,32 @@ impl ViewportCoordinator {
         Ok(Some(retry))
     }
 
+    /// Only a definitive result of the original unobserved create can end an
+    /// appearance wait after a workspace reset. Its immutable request epoch and
+    /// delivered provider are still validated by the effect ledger.
+    pub(crate) fn accepts_retired_create_failure(&self, result: EffectResult) -> bool {
+        if result.is_cleanup_observation()
+            || !matches!(
+                result.result(),
+                EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_)
+            )
+        {
+            return false;
+        }
+        let Some(binding) = self
+            .binding_cleanup
+            .unobserved_create_failure_target(result.effect())
+        else {
+            return false;
+        };
+        self.effects.record(result.effect()).is_some_and(|record| {
+            matches!(record.request().effect(),
+                PlatformEffect::CreateWindow { binding: target, .. }
+                    | PlatformEffect::RequestReplacement { binding: target, .. }
+                    if *target == binding)
+        })
+    }
+
     pub(crate) fn report_effect_from(
         &mut self,
         provider: PlatformObservationLease,
@@ -3004,7 +3031,12 @@ impl ViewportCoordinator {
             *self = candidate;
             return Ok(transition);
         }
-        let transition = self.effects.report(provider, current_epoch, result);
+        let transition =
+            if result.epoch() != current_epoch && self.accepts_retired_create_failure(result) {
+                self.effects.report_exact(provider, result)
+            } else {
+                self.effects.report(provider, current_epoch, result)
+            };
         if transition != EffectTransition::Applied {
             return Ok(transition);
         }
@@ -3630,6 +3662,7 @@ impl ViewportCoordinator {
         &mut self,
         pointer: PointerId,
         surface: SurfaceId,
+        input: PointerDragInputMode,
     ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
         let Some(record) = self.registry.record(surface) else {
             return Ok(None);
@@ -3638,7 +3671,7 @@ impl ViewportCoordinator {
         let mut candidate = self.clone();
         let Some(change) = candidate
             .pointer_passthrough
-            .begin_routing(pointer, binding)
+            .begin_routing(pointer, binding, input)
             .map_err(pointer_passthrough_error)?
         else {
             return Ok(None);
@@ -3662,6 +3695,16 @@ impl ViewportCoordinator {
     pub(crate) fn confirmed_drag_source(&self, pointer: PointerId) -> Option<ViewportBinding> {
         let binding = self.pointer_passthrough.drag_source(pointer)?;
         let evidence = self.pointer_passthrough_evidence(binding);
+        if self.pointer_passthrough.drag_input_mode(pointer) == Some(PointerDragInputMode::Preserve)
+        {
+            return (!self.pointer_passthrough.contains_binding(binding)
+                && self
+                    .registry
+                    .record(binding.surface())
+                    .is_some_and(|record| record.binding() == binding && record.is_routeable())
+                && evidence.authoritative_state() == Some(WindowInputState::ReceivesInput))
+            .then_some(binding);
+        }
         if evidence.authoritative_state() != Some(WindowInputState::PassThrough) {
             return None;
         }
@@ -3681,8 +3724,17 @@ impl ViewportCoordinator {
 
     #[must_use]
     pub(crate) fn drag_route_effect(&self, pointer: PointerId) -> Option<EffectId> {
+        if self.pointer_passthrough.drag_input_mode(pointer)
+            != Some(PointerDragInputMode::PassThrough)
+        {
+            return None;
+        }
         let binding = self.pointer_passthrough.drag_source(pointer)?;
         self.pointer_passthrough.effect_attempts(binding).enable()
+    }
+
+    pub(crate) fn drag_input_mode(&self, pointer: PointerId) -> Option<PointerDragInputMode> {
+        self.pointer_passthrough.drag_input_mode(pointer)
     }
 
     pub(crate) fn end_drag_routing(

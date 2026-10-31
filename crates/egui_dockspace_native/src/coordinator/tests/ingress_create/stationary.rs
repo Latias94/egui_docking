@@ -1,8 +1,10 @@
-//! Stationary observation models using real core gestures and presentation receipts.
+//! Unproven-press observation models using real core gestures and presentation receipts.
 //!
 //! Winit ingress exercises the production translator. Observation facts enter
 //! the receipt reserved by production preparation, without enqueueing an OS
-//! command. These tests do not qualify native drivers, OS sampling, or rendering.
+//! command. Model button events have no OS press identity, so even supplied
+//! routes cannot authorize a continuation. These tests qualify receipt, budget
+//! and retry behavior, not positive driver sampling or renderer authority.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -10,7 +12,7 @@ use std::time::Duration;
 use dockspace::model::DockspaceActionOutcome;
 use dockspace::runtime::{
     DockspaceReceiverDescriptor, NativeMonotonicClock, NativePointerContinuation,
-    NativeReceiverPurpose, NativeReceiverQuery, PointerDeviceKind,
+    NativeReceiverPurpose, NativeReceiverQuery,
 };
 use eframe::NativeViewportPointerObservation;
 
@@ -317,7 +319,7 @@ fn selected_items(report: &HostFrameReport) -> Vec<(ItemId, bool)> {
 }
 
 #[test]
-fn model_stationary_deadline_sample_survives_frame_drop_and_selects_once() {
+fn model_stationary_unproven_press_rejects_sample_and_retries_its_exact_terminal() {
     let mut fixture = Fixture::new();
     let request = fixture.request();
     let version = fixture.native.session.version();
@@ -361,7 +363,7 @@ fn model_stationary_deadline_sample_survives_frame_drop_and_selects_once() {
     assert_eq!(fixture.reduce(&mut budget), Some(1));
     assert_eq!(
         fixture.native.session.native_input_recorded_count(),
-        recorded + 1
+        recorded
     );
     assert!(fixture.native.bridge.pointer_observation_pending(key));
 
@@ -379,16 +381,15 @@ fn model_stationary_deadline_sample_survives_frame_drop_and_selects_once() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     drop(frame);
-    assert!(!first_queries.is_empty());
-    assert!(first_queries.iter().all(|query| {
-        query.metadata().device() == PointerDeviceKind::Mouse
-            && query.metadata().observed_at() == Some(captured_at)
-    }));
+    assert!(
+        first_queries.is_empty(),
+        "absence cannot become a receiver query"
+    );
     fixture.at(captured_at + Duration::from_millis(5));
     assert_eq!(fixture.native.session.version(), version);
     assert_eq!(
         fixture.native.session.native_input_recorded_count(),
-        recorded + 1
+        recorded
     );
     assert_eq!(fixture.native.bridge.captured_through_for_test(), sequence);
     assert_eq!(
@@ -425,20 +426,20 @@ fn model_stationary_deadline_sample_survives_frame_drop_and_selects_once() {
         .accept_native_effects(&fixture.context, report.take_native_effects())
         .unwrap();
     assert_eq!(retry_queries, first_queries);
-    assert_eq!(selected_items(&report), [(TARGET_ITEM, true)]);
-    assert!(report.workspace_changed());
+    assert!(selected_items(&report).is_empty());
+    assert!(!report.workspace_changed());
     assert!(
         fixture
             .native
             .session
             .view()
-            .item(TARGET_ITEM)
+            .item(SOURCE_ITEM)
             .unwrap()
             .is_selected()
     );
     assert_eq!(
         fixture.native.session.native_input_recorded_count(),
-        recorded + 1
+        recorded
     );
     assert_eq!(fixture.native.bridge.captured_through_for_test(), sequence);
     assert!(!fixture.native.bridge.pointer_observation_pending(key));
@@ -451,12 +452,12 @@ fn model_stationary_deadline_sample_survives_frame_drop_and_selects_once() {
     assert_eq!(fixture.native.session.version(), committed_version);
     assert_eq!(
         fixture.native.session.native_input_recorded_count(),
-        recorded + 1
+        recorded
     );
 }
 
 #[test]
-fn model_stationary_unavailable_or_unknown_routes_do_not_select_or_reschedule() {
+fn model_stationary_unproven_press_queries_settle_without_selecting_or_rescheduling() {
     for (name, routes) in [
         ("unavailable", None),
         (
@@ -473,12 +474,18 @@ fn model_stationary_unavailable_or_unknown_routes_do_not_select_or_reschedule() 
                 PointerWindowRoute::Unknown,
             )),
         ),
+        (
+            "supplied capture and delivery cannot replace a press identity",
+            Some((
+                PointerWindowRoute::Window(source_window()),
+                PointerWindowRoute::Window(source_window()),
+            )),
+        ),
     ] {
         let mut fixture = Fixture::new();
         let original = fixture.request();
         let version = fixture.native.session.version();
         let (_prepared, key) = fixture.prepare_due();
-        let unavailable = routes.is_none();
         let observation = routes.map_or(
             NativeViewportPointerObservation::Unavailable,
             |(capture, delivery)| fixture.observed(capture, delivery),
@@ -542,9 +549,7 @@ fn model_stationary_unavailable_or_unknown_routes_do_not_select_or_reschedule() 
             let current = fixture.request();
             assert_ne!(current.token(), original.token());
             assert_eq!(current.position(), original.position());
-            if unavailable {
-                assert_eq!(current.deadline(), original.deadline());
-            }
+            assert_eq!(current.deadline(), original.deadline());
             let (prepared, next_key) = fixture.prepare_due();
             assert_eq!(fixture.key(&prepared), next_key);
             assert_ne!(next_key.token, key.token);
@@ -558,7 +563,8 @@ fn model_stationary_unavailable_or_unknown_routes_do_not_select_or_reschedule() 
             let mut budget = fixture.budget();
             assert_eq!(fixture.reduce(&mut budget), Some(1));
             let report = fixture.commit(&mut budget);
-            assert_eq!(selected_items(&report), [(TARGET_ITEM, true)]);
+            assert!(selected_items(&report).is_empty());
+            assert!(!report.workspace_changed());
             assert!(!fixture.native.bridge.pointer_observation_pending(next_key));
             assert!(fixture.prepare(&mut fixture.budget()).is_none());
         }
@@ -779,18 +785,13 @@ fn model_stationary_budget_and_raw_input_precede_dispatch_until_receipt_commits(
 }
 
 #[test]
-fn model_stationary_sample_cannot_borrow_authority_from_a_replaced_artifact() {
+fn model_stationary_unproven_press_terminal_retries_after_artifact_replacement() {
     let mut fixture = Fixture::new();
     let request = fixture.request();
     let old_presented = fixture
         .native
         .session
         .presented_surface(SOURCE_SURFACE)
-        .unwrap();
-    let old_receiver = fixture
-        .native
-        .session
-        .bind_presented_receiver(&fixture.receivers.source)
         .unwrap();
     let (_prepared, key) = fixture.prepare_due();
     let source = measure_and_present_source(&mut fixture.native);
@@ -819,20 +820,12 @@ fn model_stationary_sample_cannot_borrow_authority_from_a_replaced_artifact() {
     assert_eq!(fixture.reduce(&mut budget), Some(1));
     let version = fixture.native.session.version();
     let captured = fixture.native.bridge.captured_through_for_test();
-    let stale_answer = |query: NativeReceiverQuery| {
-        if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
-            NativeReceiverAnswer::ClearHoverLane(old_presented)
-        } else {
-            NativeReceiverAnswer::Dock(old_receiver)
-        }
-    };
     let mut first_queries = Vec::new();
     let mut first = fixture
         .native
         .poll_host_frame(&mut budget, |query| {
             first_queries.push(query);
-            assert_eq!(query.presented_surface(), current_presented);
-            stale_answer(query)
+            NativeReceiverAnswer::Unknown
         })
         .unwrap()
         .unwrap();
@@ -840,7 +833,7 @@ fn model_stationary_sample_cannot_borrow_authority_from_a_replaced_artifact() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     drop(first);
-    assert!(!first_queries.is_empty());
+    assert!(first_queries.is_empty());
     assert!(fixture.native.bridge.pointer_observation_pending(key));
     assert_eq!(fixture.native.session.version(), version);
     assert!(fixture.prepare(&mut fixture.budget()).is_none());
@@ -850,7 +843,7 @@ fn model_stationary_sample_cannot_borrow_authority_from_a_replaced_artifact() {
         .native
         .poll_host_frame(&mut fixture.budget(), |query| {
             retry_queries.push(query);
-            stale_answer(query)
+            NativeReceiverAnswer::Unknown
         })
         .unwrap()
         .unwrap();
@@ -864,12 +857,9 @@ fn model_stationary_sample_cannot_borrow_authority_from_a_replaced_artifact() {
     assert_eq!(fixture.native.session.version(), version);
     assert_eq!(fixture.native.bridge.captured_through_for_test(), captured);
     assert!(!fixture.native.bridge.pointer_observation_pending(key));
-    assert!(
-        fixture
-            .native
-            .session
-            .native_pointer_continuation()
-            .is_none()
+    assert_eq!(
+        fixture.native.session.native_pointer_continuation(),
+        Some(request)
     );
     assert!(fixture.prepare(&mut fixture.budget()).is_none());
     assert!(

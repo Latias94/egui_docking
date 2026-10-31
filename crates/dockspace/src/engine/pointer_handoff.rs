@@ -207,9 +207,15 @@ impl DockEngine {
             .physical_cross_surface_drag_capability()
             .is_supported()
         {
+            let drag = self.interaction.active_drag(session).map_err(|_| {
+                EngineError::ReductionCauseInvariant {
+                    detail: "native handoff lost its active payload",
+                }
+            })?;
+            let input = self.native_drag_input_mode(drag);
             let _ = self
                 .viewport
-                .begin_drag_routing(owner.pointer(), source)
+                .begin_drag_routing(owner.pointer(), source, input)
                 .map_err(|source| EngineError::Viewport {
                     input: self.last_input,
                     source,

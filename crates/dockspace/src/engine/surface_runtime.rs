@@ -1679,9 +1679,13 @@ impl DockEngine {
             | InteractionStatus::Resizing { .. }
             | InteractionStatus::ContainedTransforming { .. } => false,
         };
-        let transition = if expected_epoch == self.version.epoch() {
+        let current_epoch = self.version.epoch();
+        let transition = if expected_epoch == current_epoch
+            || expected_epoch == result.receipt_epoch()
+                && self.viewport.accepts_retired_create_failure(result)
+        {
             self.viewport
-                .report_effect_from(provider, expected_epoch, result)
+                .report_effect_from(provider, current_epoch, result)
                 .map_err(|source| EngineError::Viewport { input, source })?
         } else {
             EffectTransition::StaleEpoch

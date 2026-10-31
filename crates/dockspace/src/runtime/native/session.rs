@@ -742,6 +742,11 @@ impl DockspaceSession {
 
     /// Records one negative or indeterminate result for an emitted native effect.
     ///
+    /// A definitive failure of the original create may finish its exact unobserved
+    /// appearance wait after a layout reset. The delivered provider and immutable
+    /// request epoch remain checked; observed windows and later cleanup lineages
+    /// cannot use this exception.
+    ///
     /// # Errors
     ///
     /// Returns a recoverable error containing the original affine result when
@@ -770,7 +775,13 @@ impl DockspaceSession {
                 result,
             ));
         }
-        if !native.binding_is_live(result.binding()) && result.receipt_epoch() != current_epoch {
+        if !native.binding_is_live(result.binding())
+            && result.receipt_epoch() != current_epoch
+            && !self
+                .engine
+                .viewport()
+                .accepts_retired_create_failure(result.result)
+        {
             return Err(NativeEffectSubmissionError::new(
                 NativePlatformError::StaleSurface { surface },
                 result,

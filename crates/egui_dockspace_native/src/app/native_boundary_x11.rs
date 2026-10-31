@@ -1,7 +1,7 @@
 //! Real close/create/age boundary, using the application's production UI and finalizer.
 //!
 //! Run alone under an X11 WM with XTest, `xdotool`, and Alt-F4 -> WM_DELETE_WINDOW.
-//! This slice does not exercise drag/release or claim exact release-output delivery.
+//! The initial real tab drag is cancelled; accepted release-output delivery is not claimed.
 //! The test thread runs eframe; one driver thread supplies physical input. No fork
 //! tokens, platform snapshots, close callbacks, or renderer terminals are invented.
 
@@ -18,21 +18,25 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    NativeInputStorageLimit, NativeProducerStorageLimit, NativeReceiverAnswer,
-    NativeReportStorageLimit, SurfaceUnavailableReason,
+    NativeInputStorageLimit, NativePointerContinuation, NativeProducerStorageLimit,
+    NativeReceiverAnswer, NativeReportStorageLimit, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, SurfaceUnavailableReason,
 };
 use eframe::{
     NativeOutputAdmission, NativeOutputResult, NativeOutputStatus, NativeViewportCloseRequest,
     NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeWindowEventDisposition,
     NativeWindowSnapshot,
 };
-use winit::event::WindowEvent;
+use winit::event::{
+    DeviceId, ElementState, MouseButton, PointerPressToken, PointerWindowRoute, WindowEvent,
+};
 use winit::platform::x11::EventLoopBuilderExtX11 as _;
 use winit::window::WindowId;
 
 use super::*;
 use crate::NativeStorageLimit;
 use crate::mailbox::{HostRecord, NativeDispatch};
+use crate::pointer_observation::NativePointerObservationKey;
 
 const ROOT: SurfaceId = SurfaceId::new(1);
 const A: RootId = RootId::new(2);
@@ -57,11 +61,30 @@ impl PaneView for Panes {
 type State = Arc<Mutex<NativeRuntimeState<Panes>>>;
 type Shared = Arc<Mutex<Facts>>;
 
+#[derive(Debug, Default, PartialEq, Eq)]
+enum PointerPhase {
+    #[default]
+    Off,
+    First,
+    Retained,
+    DeliverFirst,
+    Second,
+    ObservedSecond,
+}
+
 #[derive(Default)]
 struct Facts {
     root: Option<(NativeOutputToken, NativeWindowSnapshot)>,
     root_presentations: u64,
     root_motion: u64,
+    root_motion_callbacks: u64,
+    pointer_phase: PointerPhase,
+    pointer_press: Option<(WindowId, DeviceId, PointerPressToken)>,
+    pointer_first: Option<(NativePointerContinuation, NativePointerObservationKey)>,
+    pointer_next_request: Option<NativePointerContinuation>,
+    pointer_result: Option<eframe::NativeViewportPointerObservationResult>,
+    pointer_second: Option<NativePointerObservationKey>,
+    pointer_samples_before: usize,
     a: Option<ViewportId>,
     q1: Option<NativeViewportCloseRequest>,
     q2: Option<NativeViewportCloseRequest>,
@@ -113,14 +136,25 @@ impl BoundaryHost {
     }
 
     fn deliver_retained(&self) {
-        let (terminal, cancellation) = {
+        let (terminal, cancellation, pointer) = {
             let mut facts = lock_state(&self.facts);
-            if !facts.deliver_pending {
+            if !facts.deliver_pending && facts.pointer_phase != PointerPhase::DeliverFirst {
                 return;
             }
+            let pointer = facts.pointer_result.take();
+            if facts.pointer_phase == PointerPhase::DeliverFirst {
+                assert!(
+                    pointer.is_some(),
+                    "return only the original real query result"
+                );
+                facts.pointer_phase = PointerPhase::Second;
+            }
             facts.deliver_pending = false;
-            (facts.terminal.take(), facts.cancellation.take())
+            (facts.terminal.take(), facts.cancellation.take(), pointer)
         };
+        if let Some(pointer) = pointer {
+            self.inner.on_viewport_pointer_observation(pointer);
+        }
         if let Some(terminal) = terminal {
             self.forward_output(terminal);
             lock_state(&self.facts).terminal_deliveries += 1;
@@ -219,10 +253,34 @@ impl NativeHostHandler for BoundaryHost {
             && matches!(event.event(), WindowEvent::CursorMoved { .. }))
         .then(|| event.ordinal().get());
         let destroyed = matches!(event.event(), WindowEvent::Destroyed);
+        let press = match event.event() {
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                primary_press,
+                ..
+            } if viewport == Some(ViewportId::ROOT) => Some((*device_id, primary_press.clone())),
+            _ => None,
+        };
         let disposition = self.inner.on_window_event(event);
         let mut facts = lock_state(&self.facts);
+        if facts.pointer_phase == PointerPhase::First
+            && let Some((device, press)) = press
+        {
+            assert!(
+                facts.pointer_press.is_none(),
+                "one original physical Primary press"
+            );
+            facts.pointer_press = Some((
+                window,
+                device,
+                press.expect("X11 issues a real press identity"),
+            ));
+        }
         if let Some(ordinal) = motion {
             facts.root_motion = ordinal;
+            facts.root_motion_callbacks += 1;
         }
         if viewport == facts.a
             && let Some(close) = close
@@ -281,6 +339,62 @@ impl NativeHostHandler for BoundaryHost {
         &self,
         result: eframe::NativeViewportPointerObservationResult,
     ) -> NativeHostWake {
+        {
+            let mut state = lock_state(&self.state);
+            let native = state.boundary_coordinator();
+            let mut facts = lock_state(&self.facts);
+            if matches!(
+                facts.pointer_phase,
+                PointerPhase::First | PointerPhase::Second
+            ) {
+                let (request, key, expected) = native
+                    .stationary_observation_for_test()
+                    .expect("the actual query retains its native attempt");
+                let (window, device, press) = facts.pointer_press.as_ref().unwrap();
+                assert_eq!(expected.as_ref(), Some(press));
+                assert_eq!(key, NativePointerObservationKey::from_result(result));
+                assert_eq!(
+                    (key.viewport, key.window, key.device),
+                    (ViewportId::ROOT, *window, *device)
+                );
+                assert_eq!(
+                    Some(request.source_binding()),
+                    native.viewport_binding(ViewportId::ROOT)
+                );
+                let eframe::NativeViewportPointerObservation::Observed {
+                    facts: sample,
+                    delivery,
+                } = result.observation()
+                else {
+                    panic!("the real expected-press query must produce Observed");
+                };
+                assert_eq!(sample.capture, PointerWindowRoute::Unknown);
+                assert_eq!(delivery, PointerWindowRoute::Unknown);
+                assert_eq!(
+                    native.stationary_recorded_sample_count_for_test(),
+                    facts.pointer_samples_before
+                );
+                if facts.pointer_phase == PointerPhase::First {
+                    facts.pointer_first = Some((request, key));
+                    facts.pointer_result = Some(result);
+                    facts.pointer_phase = PointerPhase::Retained;
+                    return NativeHostWake::Wait;
+                }
+                let (first, first_key) = facts.pointer_first.unwrap();
+                assert_ne!(key.token, first_key.token);
+                assert_ne!(request.token(), first.token());
+                assert_eq!(request.pointer(), first.pointer());
+                assert_eq!(Some(request), facts.pointer_next_request);
+                assert!(
+                    !native
+                        .dispatch_bridge()
+                        .pointer_observation_pending(first_key),
+                    "T1 must fully commit before T2"
+                );
+                facts.pointer_second = Some(key);
+                facts.pointer_phase = PointerPhase::ObservedSecond;
+            }
+        }
         self.inner.on_viewport_pointer_observation(result)
     }
 
@@ -571,13 +685,239 @@ fn parked(state: &State, request: NativeViewportCloseRequest) -> Option<(u64, Du
         })
 }
 
+fn root_tab_point(
+    state: &State,
+    facts: &Shared,
+    item: ItemId,
+    fraction: f64,
+) -> (WindowId, [i32; 2]) {
+    let mut state = lock_state(state);
+    let native = state.boundary_coordinator();
+    let (receiver, bounds) = {
+        // Read only the current presented scene; dropping this candidate publishes nothing.
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let plan = frame.frame.paint_plan(ROOT).unwrap().unwrap();
+        let mut bounds = None;
+        plan.visit_surface_program(|step| {
+            if let SurfacePaintProgramStep::Operation {
+                operation: SurfacePaintProgramOperation::Tab(tab),
+                ..
+            } = step
+                && tab.item() == item
+            {
+                assert!(tab.operable());
+                assert_eq!(tab.full_bounds(), tab.visible_bounds());
+                bounds = Some(tab.visible_bounds());
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        (plan.tab_receiver(item).unwrap(), bounds.unwrap())
+    };
+    assert!(
+        native
+            .session()
+            .bind_presented_receiver(&receiver)
+            .is_some()
+    );
+    let (token, window) = lock_state(facts).root.unwrap();
+    let rect = window.inner_rect().expect("actual X11 content origin");
+    let scale = window.presentation_scale_factor();
+    let x = f64::from(rect.x()) + (bounds.x() + bounds.width() * fraction) * scale;
+    let y = f64::from(rect.y()) + (bounds.y() + bounds.height() * 0.5) * scale;
+    (token.window_id(), [x.round() as i32, y.round() as i32])
+}
+
+fn drive_pointer_lineage(
+    state: &State,
+    context: &egui::Context,
+    host: &BoundaryHost,
+    deadline: Instant,
+) -> Result<(), String> {
+    let (window, press) = root_tab_point(state, &host.facts, TABS[0], 0.5);
+    let (_, hover) = root_tab_point(state, &host.facts, TABS[1], 0.5);
+    {
+        let mut state = lock_state(state);
+        let mut facts = lock_state(&host.facts);
+        facts.pointer_samples_before = state
+            .boundary_coordinator()
+            .stationary_recorded_sample_count_for_test();
+        facts.pointer_phase = PointerPhase::First;
+    }
+    xdotool(&[
+        "windowactivate",
+        "--sync",
+        &u64::from(window).to_string(),
+        "mousemove",
+        &press[0].to_string(),
+        &press[1].to_string(),
+        "mousedown",
+        "1",
+        "mousemove",
+        &hover[0].to_string(),
+        &hover[1].to_string(),
+    ])?;
+    wait_until(
+        deadline,
+        "the real P1 query T1 retained on the GUI thread",
+        || lock_state(&host.facts).pointer_phase == PointerPhase::Retained,
+    )?;
+    let (first, first_key) = lock_state(&host.facts).pointer_first.unwrap();
+    let (_, moved) = root_tab_point(state, &host.facts, TABS[1], 0.65);
+    assert_ne!(
+        moved, hover,
+        "a distinct physical motion updates the challenge"
+    );
+    let motion_before = {
+        let facts = lock_state(&host.facts);
+        (facts.root_motion, facts.root_motion_callbacks)
+    };
+    xdotool(&["mousemove", &moved[0].to_string(), &moved[1].to_string()])?;
+    let updated = wait_until(
+        deadline,
+        "C2 committed while original T1 remains retained",
+        || {
+            let mut state = lock_state(state);
+            let native = state.boundary_coordinator();
+            if let Some(current) = native.session().native_pointer_continuation()
+                && current.token() != first.token()
+                && current.pointer() == first.pointer()
+                && current.source_binding() == first.source_binding()
+                && native
+                    .dispatch_bridge()
+                    .pointer_observation_pending(first_key)
+            {
+                let mut facts = lock_state(&host.facts);
+                assert!(facts.root_motion > motion_before.0);
+                assert!(facts.root_motion_callbacks > motion_before.1);
+                assert_eq!(
+                    facts.root.unwrap().1.input_state(),
+                    eframe::NativeWindowInputState::ReceivesInput,
+                    "dragging partial Root content must preserve the window's hit regions"
+                );
+                facts.pointer_next_request = Some(current);
+                true
+            } else {
+                false
+            }
+        },
+    );
+    if updated.is_err() {
+        let mut state = lock_state(state);
+        let root_presented = state.is_surface_presented(ROOT);
+        let native = state.boundary_coordinator();
+        let current = native.session().native_pointer_continuation();
+        let bridge = native.dispatch_bridge();
+        let facts = lock_state(&host.facts);
+        eprintln!(
+            "native-lineage C2 timeout: motion_before={motion_before:?}, motion_after={:?}, phase={:?}, current={current:?}, eq_first={}, token_eq_first={}, active_gesture={}, T1_pending={}, attempt={:?}, captured_through={}, backlog={:?}, callback_boundary_pending={}, recorded_samples={}, root_presented={root_presented}, root_scene={:?}, actual_root={:?}",
+            (facts.root_motion, facts.root_motion_callbacks),
+            facts.pointer_phase,
+            current == Some(first),
+            current.is_some_and(|current| current.token() == first.token()),
+            native.session().has_active_gesture(),
+            bridge.pointer_observation_pending(first_key),
+            native.stationary_observation_for_test(),
+            bridge.captured_through_for_test(),
+            bridge.input_backlog_for_test(),
+            bridge.callback_boundary_pending(),
+            native.stationary_recorded_sample_count_for_test(),
+            native.session().presented_surface(ROOT),
+            facts.root,
+        );
+    }
+    updated?;
+    lock_state(&host.facts).pointer_phase = PointerPhase::DeliverFirst;
+    context.request_repaint_of(ViewportId::ROOT);
+    wait_until(
+        deadline,
+        "T1 full commit then the real T2 passing the Some identity gate",
+        || {
+            let mut state = lock_state(state);
+            let native = state.boundary_coordinator();
+            let facts = lock_state(&host.facts);
+            facts.pointer_second.is_some_and(|key| {
+                facts.pointer_phase == PointerPhase::ObservedSecond
+                    && native.stationary_recorded_sample_count_for_test()
+                        == facts.pointer_samples_before + 1
+                    && !native.dispatch_bridge().pointer_observation_pending(key)
+            })
+        },
+    )?;
+    {
+        let mut state = lock_state(state);
+        let native = state.boundary_coordinator();
+        assert!(native.session().has_active_gesture());
+        assert!(!native.session().has_pending_native_create());
+        assert!(native.session().view().item(TABS[0]).unwrap().is_selected());
+        assert!(!native.session().view().item(TABS[1]).unwrap().is_selected());
+    }
+    xdotool(&["key", "Escape"])?;
+    context.request_repaint_of(ViewportId::ROOT);
+    wait_until(
+        deadline,
+        "Escape committed before physical Primary release",
+        || {
+            !lock_state(state)
+                .boundary_coordinator()
+                .session()
+                .has_active_gesture()
+        },
+    )?;
+    xdotool(&["mouseup", "1"])?;
+    context.request_repaint_of(ViewportId::ROOT);
+    wait_until(
+        deadline,
+        "cancelled P1 back at presented Root quiescence",
+        || {
+            let mut state = lock_state(state);
+            state.is_quiescent()
+                && state.is_surface_presented(ROOT)
+                && !state.boundary_coordinator().session().has_active_gesture()
+        },
+    )?;
+    {
+        let mut state = lock_state(state);
+        let native = state.boundary_coordinator();
+        let mut facts = lock_state(&host.facts);
+        assert_eq!(
+            native.stationary_recorded_sample_count_for_test(),
+            facts.pointer_samples_before + 1
+        );
+        assert_eq!(
+            native
+                .session()
+                .view()
+                .item(TABS[0])
+                .unwrap()
+                .tabs()
+                .items(),
+            TABS
+        );
+        assert!(native.session().view().item(TABS[0]).unwrap().is_selected());
+        facts.pointer_phase = PointerPhase::Off;
+    }
+    assert_capacity(state);
+    eprintln!(
+        "native-boundary: real P1 retained T1/C1, same-press C2 rejected T1, T2 sampled Unknown routes without selection, Esc/all-up restored Root"
+    );
+    Ok(())
+}
+
 fn drive(state: &State, context: &egui::Context, host: &BoundaryHost) -> Result<(), String> {
     let deadline = Instant::now() + TIMEOUT;
     wait_until(deadline, "presented, quiescent Root", || {
-        lock_state(state).is_quiescent()
+        let state = lock_state(state);
+        state.is_quiescent()
+            && state.is_surface_presented(ROOT)
+            && lock_state(&host.facts).root.is_some()
     })?;
     assert_capacity(state);
     let initial_source = source(state);
+    drive_pointer_lineage(state, context, host, deadline)?;
+    assert_eq!(source(state), initial_source);
     move_root(state, context, A, 100.0);
     let mut a_status = None;
     wait_until(deadline, "A's exact first-live admission", || {
@@ -927,7 +1267,9 @@ fn real_native_close_create_age_boundary() {
                             facts.stop_outputs = false;
                             facts.pause_at_root_terminal = false;
                             facts.release_b = true;
+                            facts.pointer_phase = PointerPhase::Off;
                         }
+                        let _ = xdotool(&["key", "Escape", "mouseup", "1"]);
                         *lock_state(&driver_state).boundary_close_policy() =
                             NativeWindowClosePolicy::RetainLayout;
                         context.request_repaint_of(ViewportId::ROOT);

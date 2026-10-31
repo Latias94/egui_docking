@@ -504,7 +504,11 @@ fn released_unobserved_enable_for(
     (mut coordinator, binding): (ViewportCoordinator, ViewportBinding),
 ) -> (ViewportCoordinator, ViewportBinding, EffectId, EffectId) {
     let enable = coordinator
-        .begin_drag_routing(PointerId::new(1), binding.surface())
+        .begin_drag_routing(
+            PointerId::new(1),
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("enable effect must exist");
     let _ = coordinator.take_new_effects();
@@ -1844,7 +1848,11 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
     let (mut coordinator, binding) = external_routing_coordinator();
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("external drag route must begin")
         .expect("receiving input must request pass-through");
     let _ = coordinator.take_new_effects();
@@ -1926,7 +1934,11 @@ fn runtime_vacancy_detaches_only_after_exact_input_restore() {
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("runtime child drag route must begin")
         .expect("receiving input must request pass-through");
     let _ = coordinator.take_new_effects();
@@ -2582,6 +2594,113 @@ fn surface_aba_keeps_old_retirement_isolated_from_the_new_binding() {
 }
 
 #[test]
+fn preserving_drag_route_uses_current_input_facts_without_a_passthrough_saga() {
+    let (mut coordinator, binding) = external_routing_coordinator();
+    let pointer = PointerId::new(1);
+
+    for _ in 0..2 {
+        assert_eq!(
+            coordinator
+                .begin_drag_routing(pointer, binding.surface(), PointerDragInputMode::Preserve)
+                .expect("content routing must retain the exact source"),
+            None
+        );
+        assert_eq!(coordinator.drag_source(pointer), Some(binding));
+        assert_eq!(coordinator.confirmed_drag_source(pointer), Some(binding));
+        assert_eq!(coordinator.drag_route_effect(pointer), None);
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(!coordinator.pointer_passthrough.contains_binding(binding));
+    }
+
+    coordinator
+        .publish_snapshot(&routing_snapshot_with_generations(
+            binding,
+            2,
+            2,
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(None),
+        ))
+        .expect("missing input facts must revoke route confirmation");
+    assert_eq!(coordinator.confirmed_drag_source(pointer), None);
+
+    coordinator
+        .publish_snapshot(&routing_snapshot(
+            binding,
+            3,
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(None),
+        ))
+        .expect("fresh receiving facts must restore route confirmation");
+    assert_eq!(coordinator.confirmed_drag_source(pointer), Some(binding));
+    assert_eq!(
+        coordinator
+            .end_drag_routing(pointer)
+            .expect("content route termination needs no platform restoration"),
+        None
+    );
+    assert_eq!(coordinator.drag_source(pointer), None);
+    assert!(coordinator.take_new_effects().is_empty());
+}
+
+#[test]
+fn preserving_drag_route_cannot_bypass_an_unsettled_passthrough_restore() {
+    let (mut coordinator, binding) = runtime_child_routing_coordinator();
+    let pointer = PointerId::new(1);
+    let enable = coordinator
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
+        .expect("complete child route must begin")
+        .expect("complete child needs an enable effect");
+    let _ = coordinator.take_new_effects();
+    let restore = coordinator
+        .begin_drag_routing(pointer, binding.surface(), PointerDragInputMode::Preserve)
+        .expect("changing to content routing must preserve restoration")
+        .expect("the original enable still needs an ordered restore");
+    assert_ne!(restore, enable);
+    assert_eq!(coordinator.drag_source(pointer), Some(binding));
+    assert_eq!(coordinator.confirmed_drag_source(pointer), None);
+    assert_eq!(coordinator.drag_route_effect(pointer), None);
+    assert_eq!(
+        take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+        restore
+    );
+
+    coordinator
+        .publish_snapshot(&routing_snapshot(
+            binding,
+            2,
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(None),
+        ))
+        .expect("receiving state alone cannot settle the old enable");
+    assert_eq!(coordinator.confirmed_drag_source(pointer), None);
+    assert!(coordinator.take_new_effects().is_empty());
+
+    coordinator
+        .publish_snapshot(&routing_snapshot(
+            binding,
+            3,
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+            InputEffectAcknowledgement::known(Some(restore)),
+        ))
+        .expect("the exact restore acknowledgement must settle the obligation");
+    assert_eq!(coordinator.confirmed_drag_source(pointer), Some(binding));
+    assert!(!coordinator.pointer_passthrough.contains_binding(binding));
+    assert!(coordinator.take_new_effects().is_empty());
+}
+
+#[test]
 fn pointer_hit_test_lease_restores_only_after_the_last_holder() {
     let (mut coordinator, binding) = routing_coordinator(
         WindowInputState::ReceivesInput,
@@ -2593,13 +2712,13 @@ fn pointer_hit_test_lease_restores_only_after_the_last_holder() {
 
     assert!(
         coordinator
-            .begin_drag_routing(first, binding.surface())
+            .begin_drag_routing(first, binding.surface(), PointerDragInputMode::PassThrough)
             .expect("first lease must begin")
             .is_some()
     );
     assert_eq!(
         coordinator
-            .begin_drag_routing(second, binding.surface())
+            .begin_drag_routing(second, binding.surface(), PointerDragInputMode::PassThrough)
             .expect("second lease holder must begin"),
         None
     );
@@ -2680,10 +2799,10 @@ fn ending_all_pointer_passthrough_holders_is_atomic() {
     let first = PointerId::new(1);
     let second = PointerId::new(2);
     let _ = coordinator
-        .begin_drag_routing(first, binding.surface())
+        .begin_drag_routing(first, binding.surface(), PointerDragInputMode::PassThrough)
         .expect("first route holder must begin");
     let _ = coordinator
-        .begin_drag_routing(second, binding.surface())
+        .begin_drag_routing(second, binding.surface(), PointerDragInputMode::PassThrough)
         .expect("second route holder must begin");
     coordinator
         .end_all_drag_routing()
@@ -2702,7 +2821,11 @@ fn wrong_effect_and_stale_capture_cannot_attribute_a_late_enable() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -2835,7 +2958,11 @@ fn unknown_acknowledgement_does_not_erase_known_input_state_authority() {
         .expect("unknown acknowledgement authority must publish");
 
     let enable = coordinator
-        .begin_drag_routing(PointerId::new(1), binding.surface())
+        .begin_drag_routing(
+            PointerId::new(1),
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must remain total")
         .expect("known receiving state must request passthrough");
     assert!(matches!(
@@ -2862,7 +2989,11 @@ fn newer_passthrough_state_with_unknown_ack_does_not_retry_failed_enable() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -2944,7 +3075,11 @@ fn late_enable_after_active_failure_still_restores_after_release() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3002,7 +3137,11 @@ fn lost_enable_acknowledgement_cannot_block_restore_queue() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3042,7 +3181,11 @@ fn control_loss_between_enable_and_release_cannot_block_the_first_restore() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3121,7 +3264,11 @@ fn versioned_gap_watermark_allows_newer_safe_state_to_settle_failed_restore() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3201,7 +3348,11 @@ fn stale_pre_restore_receiving_state_cannot_settle_a_failed_restore() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3266,7 +3417,11 @@ fn safe_state_keeps_requested_restore_as_the_next_drag_predecessor() {
     );
     let first_pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(first_pointer, binding.surface())
+        .begin_drag_routing(
+            first_pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3306,7 +3461,11 @@ fn safe_state_keeps_requested_restore_as_the_next_drag_predecessor() {
     ));
 
     let second_enable = coordinator
-        .begin_drag_routing(PointerId::new(2), binding.surface())
+        .begin_drag_routing(
+            PointerId::new(2),
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("a new drag must preserve the pointer-input lane")
         .expect("the new drag must request pass-through again");
     assert!(matches!(
@@ -3333,7 +3492,11 @@ fn restore_failure_requires_a_safe_observation_newer_than_its_report() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3419,7 +3582,11 @@ fn preexisting_passthrough_needs_neither_control_capability_nor_restore() {
 
     assert_eq!(
         coordinator
-            .begin_drag_routing(pointer, binding.surface())
+            .begin_drag_routing(
+                pointer,
+                binding.surface(),
+                PointerDragInputMode::PassThrough
+            )
             .expect("existing passthrough must be leased"),
         None
     );
@@ -3449,7 +3616,11 @@ fn receiving_source_without_hit_test_control_still_freezes_the_source() {
 
     assert_eq!(
         coordinator
-            .begin_drag_routing(pointer, binding.surface())
+            .begin_drag_routing(
+                pointer,
+                binding.surface(),
+                PointerDragInputMode::PassThrough
+            )
             .expect("missing control must still freeze the drag source"),
         None
     );
@@ -3475,7 +3646,11 @@ fn definitive_enable_failure_waits_for_a_new_fact_edge_before_retry() {
     );
     let pointer = PointerId::new(1);
     let first = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("initial enable must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3564,7 +3739,11 @@ fn unsupported_and_indeterminate_enable_attempts_do_not_retry_each_snapshot() {
             PlatformCapability::Supported,
         );
         let first = coordinator
-            .begin_drag_routing(PointerId::new(1), binding.surface())
+            .begin_drag_routing(
+                PointerId::new(1),
+                binding.surface(),
+                PointerDragInputMode::PassThrough,
+            )
             .expect("initial enable must begin")
             .expect("receiving input must request passthrough");
         let _ = coordinator.take_new_effects();
@@ -3605,7 +3784,11 @@ fn late_enable_after_drag_end_cannot_overtake_the_queued_restore() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("enable must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3687,7 +3870,11 @@ fn failed_restore_waits_for_a_capability_edge_before_retry() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("enable must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3787,7 +3974,11 @@ fn indeterminate_restore_is_not_reissued_concurrently() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("enable must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -3857,7 +4048,11 @@ fn explicit_destruction_tombstone_terminates_active_and_released_pointer_sagas()
         );
         let pointer = PointerId::new(1);
         let enable = coordinator
-            .begin_drag_routing(pointer, binding.surface())
+            .begin_drag_routing(
+                pointer,
+                binding.surface(),
+                PointerDragInputMode::PassThrough,
+            )
             .expect("drag routing must begin")
             .expect("enable effect must exist");
         let _ = coordinator.take_new_effects();
@@ -3912,7 +4107,11 @@ fn window_unavailable_waits_for_explicit_destruction_without_retrying() {
     );
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("enable effect must exist");
     let _ = coordinator.take_new_effects();
@@ -4819,6 +5018,111 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
 }
 
 #[test]
+fn cross_epoch_create_failure_settles_only_its_exact_unobserved_retirement() {
+    for observed in [false, true] {
+        for destructive in [false, true] {
+            let mut coordinator = ViewportCoordinator::default();
+            let binding = coordinator
+                .registry
+                .reserve(
+                    WorkspaceEpoch::default(),
+                    SurfaceId::new(42),
+                    ViewportRole::Child,
+                )
+                .unwrap();
+            let create = coordinator
+                .effects
+                .request(PlatformEffect::CreateWindow {
+                    binding,
+                    placement: PhysicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    role: ViewportRole::Child,
+                    strategy: crate::platform::NativeCreateStrategy::Staged,
+                })
+                .unwrap();
+            let _ = coordinator.take_new_effects();
+            coordinator.registry.discard_unobserved(binding).unwrap();
+            coordinator
+                .binding_cleanup
+                .begin(BindingCleanupRequest {
+                    binding,
+                    role: ViewportRole::Child,
+                    ownership: ViewportOwnership::RuntimeOwned,
+                    origin: BindingRetirementOrigin::NativeCreateAborted { create },
+                    status: BindingRetirementStatus::AwaitingAppearance,
+                    observed,
+                    input_observations: Default::default(),
+                    close_observations: Default::default(),
+                    may_reappear: true,
+                    cleanup: BindingCleanupAction::CompensateCreate { create },
+                    retained_staging_resource: None,
+                    purpose: BindingCleanupPurpose::Retired,
+                })
+                .unwrap();
+            if destructive {
+                coordinator
+                    .binding_cleanup
+                    .accept_cleanup_effect(binding, EffectId::new(99))
+                    .unwrap();
+            }
+            let current_epoch = WorkspaceEpoch::new(1);
+            let result = EffectResult::new(
+                create,
+                binding.epoch(),
+                EffectDispatchResult::DispatchFailed(
+                    crate::effect::DispatchFailureReason::ProviderStopped,
+                ),
+            );
+            let before = coordinator.clone();
+            let foreign = ViewportCoordinator::new(EngineAuthorityDomainId::new_for_test(2))
+                .create_platform_provider()
+                .unwrap();
+            assert_eq!(
+                coordinator
+                    .report_effect_from(foreign, current_epoch, result)
+                    .unwrap(),
+                if observed || destructive {
+                    EffectTransition::StaleEpoch
+                } else {
+                    EffectTransition::ProviderMismatch
+                }
+            );
+            assert_eq!(coordinator, before);
+            for invalid in [
+                EffectResult::new(create, WorkspaceEpoch::new(2), result.result()),
+                EffectResult::new(
+                    create,
+                    binding.epoch(),
+                    EffectDispatchResult::Indeterminate(
+                        crate::effect::EffectIndeterminateReason::AcknowledgementLost,
+                    ),
+                ),
+            ] {
+                assert_eq!(
+                    coordinator.report_effect(current_epoch, invalid).unwrap(),
+                    EffectTransition::StaleEpoch
+                );
+                assert_eq!(coordinator, before);
+            }
+            assert_eq!(
+                coordinator.report_effect(current_epoch, result).unwrap(),
+                if observed || destructive {
+                    EffectTransition::StaleEpoch
+                } else {
+                    EffectTransition::Applied
+                }
+            );
+            if observed || destructive {
+                assert_eq!(coordinator, before);
+            } else {
+                assert!(!coordinator.binding_cleanup.contains_key(&binding));
+                assert!(coordinator.binding_cleanup.is_terminal(binding));
+                assert!(coordinator.take_new_effects().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn old_cleanup_result_requires_a_current_exact_binding_continuation() {
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let first_epoch = WorkspaceEpoch::new(1);
@@ -5219,7 +5523,11 @@ fn retired_observed_window_restores_input_before_cleanup_can_fail() {
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let pointer = PointerId::new(1);
     let enable = coordinator
-        .begin_drag_routing(pointer, binding.surface())
+        .begin_drag_routing(
+            pointer,
+            binding.surface(),
+            PointerDragInputMode::PassThrough,
+        )
         .expect("drag routing must begin")
         .expect("receiving input must request passthrough");
     let _ = coordinator.take_new_effects();
@@ -5325,7 +5633,11 @@ fn hidden_and_minimized_windows_cannot_start_pointer_routing() {
         );
         assert_eq!(
             coordinator
-                .begin_drag_routing(PointerId::new(1), binding.surface())
+                .begin_drag_routing(
+                    PointerId::new(1),
+                    binding.surface(),
+                    PointerDragInputMode::PassThrough
+                )
                 .expect("non-routeable presentation is a supported no-op"),
             None
         );

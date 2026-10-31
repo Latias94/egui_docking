@@ -964,9 +964,15 @@ impl DockEngine {
                             .physical_cross_surface_drag_capability()
                             .is_supported()
                     {
+                        let drag = self.interaction.active_drag(session).map_err(|_| {
+                            EngineError::ReductionCauseInvariant {
+                                detail: "new native drag lost its active payload",
+                            }
+                        })?;
+                        let input = self.native_drag_input_mode(drag);
                         let _ = self
                             .viewport
-                            .begin_drag_routing(owner.pointer(), source_surface)
+                            .begin_drag_routing(owner.pointer(), source_surface, input)
                             .map_err(|source| EngineError::Viewport {
                                 input: self.last_input,
                                 source,
@@ -2448,7 +2454,7 @@ impl DockEngine {
         }
         if presentation.surface() != drag.source_surface && drag.owner.is_desktop() {
             let capability = self.viewport.physical_cross_surface_drag_capability();
-            if !capability.is_supported() || !self.physical_drag_has_route(drag) {
+            if !capability.is_supported() || !self.physical_drag_has_route(drag, edge) {
                 return Ok(PreviewEvaluation::without_affordance(
                     PreviewDecision::Clear(Self::physical_drag_preview_status(capability)),
                 ));
@@ -2631,7 +2637,7 @@ impl DockEngine {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         }
         let capability = self.viewport.physical_native_drag_capability();
-        if !capability.is_supported() || !self.physical_drag_has_route(drag) {
+        if !capability.is_supported() || !self.physical_drag_has_route(drag, edge) {
             let status = Self::physical_drag_preview_status(capability);
             return Ok(PreviewDecision::Clear(status));
         }
@@ -2771,10 +2777,28 @@ impl DockEngine {
         })
     }
 
-    fn physical_drag_has_route(&self, drag: &crate::interaction::ActiveDrag) -> bool {
-        self.viewport
-            .confirmed_drag_source(drag.owner.pointer())
-            .is_some_and(|binding| binding.surface() == drag.source_surface)
+    fn physical_drag_has_route(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+        edge: &PointerEdge,
+    ) -> bool {
+        let Some(binding) = self.viewport.confirmed_drag_source(drag.owner.pointer()) else {
+            return false;
+        };
+        if binding.surface() != drag.source_surface {
+            return false;
+        }
+        if self.viewport.drag_input_mode(drag.owner.pointer())
+            == Some(crate::frame::PointerDragInputMode::Preserve)
+        {
+            // Input-state observation cannot replace the current edge's independent
+            // delivery/capture facts. Release keeps its validated pre-edge capture.
+            edge.delivery_owner() == Authority::Known(PointerEventDeliveryOwner::Native(binding))
+                && self.interaction.active_journal_capture_authority()
+                    == Some(Authority::Known(PointerCaptureOwner::Native(binding)))
+        } else {
+            true
+        }
     }
 
     fn physical_drag_preview_status(capability: PlatformCapability) -> PreviewResolutionStatus {

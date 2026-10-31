@@ -981,7 +981,6 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
         child_binding,
         placement,
         request,
-        restore_acknowledgement,
     } = request_native_create();
     let workspace = session.engine.workspace().clone();
     let version = session.version();
@@ -999,13 +998,7 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
     session
         .report_managed_native_snapshot(
             [
-                (
-                    root_binding,
-                    root_window_facts().with_input(
-                        NativeWindowInputState::ReceivesInput,
-                        Some(restore_acknowledgement),
-                    ),
-                ),
+                (root_binding, root_window_facts()),
                 (
                     child_binding,
                     NativeWindowFacts::live()

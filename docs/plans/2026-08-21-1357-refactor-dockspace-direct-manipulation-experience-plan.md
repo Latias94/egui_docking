@@ -27,8 +27,11 @@ review_status: independent-coherence-and-feasibility-reviewed
 Current readiness (2026-11-01): the complete plan remains in progress. The
 renderer-neutral public host, local/contained egui behavior, and U3c complete
 single-batch Burst matrix have qualified checkpoints, including U12's public
-host/package acceptance. No new core blocker was confirmed in the current
-bounded review. Continuous X11 input, finite center/edge/nested physical targets,
+host/package acceptance. The latest real-query journey exposed and corrected
+whole-window input exclusion during External Root content dragging; native
+never-admitted cancellation and cross-reset exact retirement now pass their
+final native gates. Continuous
+X11 input, finite center/edge/nested physical targets,
 fractional create placement, selected-capacity models and W16/O256 real windows
 have scoped qualifications. Finite native stationary scheduling is qualified
 with truthful missing-fact rejection and same-gesture recovery. The native
@@ -1866,6 +1869,56 @@ tokens already correlate results, callback keys and retirement: keep those Copy
 and do not create a second press-owned callback lifecycle. A mismatched sample
 must still settle its original terminal receipt. Identity alone grants no
 positive capture/delivery or ancestor/freeze proof.
+
+Expected-press propagation is now qualified at the stated scope. Winit checks
+an optional expected identity before/after sampling; eframe freezes it in the existing
+prepared/queued command while results, callback keys and retirement remain
+Copy. The existing native Primary row and Preparation/Attempt retain that same
+identity. Admission rechecks the frozen value, and continuation conversion
+requires two present equal identities. Ordinary no-identity queries can still
+settle their original receipts but cannot generate core continuation input.
+The affected models retain budget, ordinal/time, drop/retry and terminal-owner
+assertions; former fake positive/stale-artifact claims are removed. A
+snapshot-only control removing the identity gate fails on the unwanted extra
+core record, then exact restoration passes. The expanded actual X11 fixture now
+proves sealed press lineage and request-update/late-result ordering, with
+Unknown sampling unable to select. The same real journey revealed that content
+drags incorrectly excluded their entire source window from native hit testing.
+The existing route owner now preserves input except when dragging the complete
+sole main root of a runtime-owned Child without contained siblings. Both
+begin-drag and handoff share that decision. The final core checkpoint passes
+workspace1,948 and public148/176. Native normal572, including a fresh 10,000
+lifetime case, and noassert571 pass; the latter skips that just-run long case.
+Native qualification additionally
+exposed a missing quiescence handoff when cancelling a never-admitted Create;
+that route now transfers to the existing prepaid retirement owner before its
+affine request becomes an exact negative result in the existing ordered
+pending-result owner. A dropped cancellation candidate retains the same exact
+owner. After layout reset, only the original unobserved create's definitive
+failure may finish that appearance wait across epochs; original provider and
+request epoch still gate it, and observed windows/destructive successors cannot
+use the exception. Final real-window refresh passes default/bounded macOS
+redock, six pressure cases per platform, the retained-query journey and all
+fifteen X11 physical entries. Both packages verify and their extracted public
+consumers pass148/176, engine example and official-egui15, with registry-only
+official dependencies and core framework isolation. Successful OS stationary
+capture/delivery, broader U7/U8/U10/U11 and remote-reproducible U9 delivery
+remain subsequent requirements; the complete Goal is not closed by this slice.
+
+The next native input slice must keep its protocol claims explicit. An
+expected press, logical Primary-down and `XIQueryPointer` do not establish
+current grab ownership or freedom from protocol freeze. An explicit
+source-directed asynchronous grab is a state-changing acquisition, not proof
+of uninterrupted earlier capture; ancestor unmap and same-press reacquisition
+must revoke continuity. Keep stationary routes Unknown until an independently
+qualified protocol path can satisfy the contract. The
+[XIQueryPointer](https://xorg.freedesktop.org/archive/X11R7.5/doc/man/man3/XIQueryPointer.3.html)
+and [XIGrabDevice](https://xorg.freedesktop.org/archive/X11R7.5/doc/man/man3/XIGrabDevice.3.html)
+protocol interfaces define the separate query/acquisition boundaries.
+Separately, consider
+splitting content routing from whole-window pass-through capability so a
+Preserve source need not require a control effect it never dispatches. These
+are independent follow-up units, not permission to infer absent authority.
 
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete

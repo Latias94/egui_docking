@@ -34,8 +34,8 @@ Baselines:
 - public winit fork: `f378b50f29cafafec31cd8675c17646b4ef57d70`
 
 The public revisions above are historical publication baselines. Current
-tracked native Git pins select local egui `6e601d79b88baee69148e9a15496d4c2e12d081e`
-and Winit `cd1a739a231248a5bb567db65ca64dcf890a9ab5`; egui's internal Winit
+tracked native Git pins select local egui `687558fd469dc4849783c5ae3b9fd7244a0f92c5`
+and Winit `8334294b2a8b21cf68269d1af931a17e68d21559`; egui's internal Winit
 dependency and the integration lockfile agree. Locked/offline qualification
 uses locally seeded Git objects without path overrides. These commits remain
 unpublished, and remote-only checkout/CI reproduction is still unqualified.
@@ -46,9 +46,12 @@ sequence of the original edge's window-validation request. Release, missing
 Primary state, local mutation and route retirement revoke its active use;
 multi-button capture can remain independently valid. Other backends and modeled
 inputs explicitly lack the token. Identity alone supplies no fresh capture or
-delivery, and the observation API has not yet adopted an expected press. The
-next adapter slice must preserve that original identity without a second
-callback-key/retirement lifecycle.
+delivery. Queries optionally require that exact identity before and after
+sampling. Eframe freezes it in its existing prepared command; the command's
+opaque token continues to identify its result and retirement without another
+press-owned callback lifecycle. The native adapter rechecks identity at
+admission and requires two present equal identities before recording a
+continuation. An ordinary no-identity query still settles its own receipt.
 
 The 0.37 branch merges upstream stable `0.37.0` into the minimal native-seam
 branch. It preserves the same Winit event-time revision. No old hosted-cycle
