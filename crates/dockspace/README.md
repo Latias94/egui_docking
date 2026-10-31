@@ -448,9 +448,10 @@ still validate the actual payloads and complete batch admission.
 The synchronous `begin_native_host_frame` convenience remains available for
 hosts deliberately draining a complete interval; it does not enforce a time
 budget. The working egui native coordinator uses the budgeted protocol and
-exact neutral close holds under a local, unpublished fork override. Its tracked
-dependency pins do not yet reproduce that adapter. See `docs/VALIDATION.md` for
-the separately qualified core, adapter-model, and real-window evidence.
+exact neutral close holds. Its aligned Git dependency pins resolve the qualified
+local forks without path overrides, but those commits remain unpublished and
+remote-only checkout reproduction is not established. See `docs/VALIDATION.md`
+for the separately qualified core, adapter-model, and real-window evidence.
 
 When a buffered managed host exhausts its own ingress capacity, it must freeze
 ordinary admission and commit all previously accepted input before invoking

@@ -348,21 +348,23 @@ Positive stationary and the remaining U7/U8/U10 criteria stay open.
 
 ## Dependency reproducibility and open scope
 
-Current native results depend on unpublished local overrides:
+Current native Git pins are aligned with the qualified local sources:
 
-| Dependency | Locally qualified revision | Tracked remote revision |
+| Dependency | Locally qualified revision | Tracked Git revision |
 | --- | --- | --- |
-| egui/eframe fork | `8231fb5ab0f37b72684f1c0f7807716be16c877e` | `0716beee5b7284389f2e80ffb6b24b5af6ae2910` |
-| Winit fork | `6c10c87da2a06871371de7d30fedc656cf7c3681` | `f378b50f29cafafec31cd8675c17646b4ef57d70` |
+| egui/eframe fork | `aa54db470bed739062e00d6b1514015bbdd9c686` | `aa54db470bed739062e00d6b1514015bbdd9c686` |
+| Winit fork | `3084fc09a7dca269d41d7aaa955369e365db6a71` | `3084fc09a7dca269d41d7aaa955369e365db6a71` |
 
 The tracked revisions are visible in the
 [native workspace manifest](../integration/egui-fork-workspace/Cargo.toml) and
 [smoke manifest](../integration/egui-native-smoke/Cargo.toml).
 The [2026-10-30 Touch-fact record](VALIDATION.md#2026-10-30-native-touch-event-time-coordinate-pairs)
-identifies the local revisions; the 2026-10-31 edge record retains those
-overrides and reports a failing direct tracked-pin check because required native
-host seams are absent. A clean checkout using only the tracked remote pins
-cannot reproduce this native qualification.
+identifies its historical local revisions; the 2026-10-31 edge record retains
+its older overrides and failing tracked-pin check. The current aligned pair
+passes locked/offline Git-source qualification without path overrides using
+locally seeded Cargo Git objects. Those commits are not published. Remote-only
+clean-checkout reproduction and the separately owned CI checkout refs remain
+open; local Git-cache availability does not establish either.
 
 Validation references such as `/tmp/dockspace-physical-edge-qualification.json`
 and `/tmp/dockspace-physical-load-final-qualification.json` identify local

@@ -193,15 +193,15 @@ restore candidates are not product interfaces.
 ## egui and native references
 
 The publishable crates use official egui and eframe `0.37.0`. The excluded
-native workspace still pins the last published egui/eframe fork baseline,
-`0716beee5b7284389f2e80ffb6b24b5af6ae2910`, with Winit pinned at
-`f378b50f29cafafec31cd8675c17646b4ef57d70`. Current native qualification requires
-newer local, unpublished egui and Winit revisions through explicit Cargo
-overrides. Their exact source revisions and qualification limits are recorded
-in [`docs/VALIDATION.md`](docs/VALIDATION.md). The tracked native manifests and
-CI cannot yet reproduce the newer work from their remote pins alone. The
-manifest, lockfile, CI, and this document must move together when those forks
-are published.
+native workspace pins egui/eframe fork
+`aa54db470bed739062e00d6b1514015bbdd9c686` and Winit
+`3084fc09a7dca269d41d7aaa955369e365db6a71`. The egui fork's own Winit dependency,
+all integration patches, inspection dependency and lockfiles select that same
+pair. Local qualification resolves these Git revisions without path overrides,
+using Git objects seeded from the local forks. The commits remain unpublished;
+remote-only clean-checkout and CI reproduction are not established. CI retains
+its separately owned checkout configuration. Exact source and qualification
+limits are recorded in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 

@@ -33,6 +33,13 @@ Baselines:
 - upstream winit `0.30.13`: `e9809ef5`
 - public winit fork: `f378b50f29cafafec31cd8675c17646b4ef57d70`
 
+The public revisions above are historical publication baselines. Current
+tracked native Git pins select local egui `aa54db470bed739062e00d6b1514015bbdd9c686`
+and Winit `3084fc09a7dca269d41d7aaa955369e365db6a71`; egui's internal Winit
+dependency and the integration lockfile agree. Locked/offline qualification
+uses locally seeded Git objects without path overrides. These commits remain
+unpublished, and remote-only checkout/CI reproduction is still unqualified.
+
 The 0.37 branch merges upstream stable `0.37.0` into the minimal native-seam
 branch. It preserves the same Winit event-time revision. No old hosted-cycle
 or egui_tiles runtime is reintroduced. The migration adapts upstream root UI,
@@ -107,14 +114,14 @@ and retirement boundaries, or when the native validation adapter no longer
 requires active querying. Component tests and their real-X11 limits are recorded
 in `docs/VALIDATION.md`; they do not certify automatic stationary behavior.
 
-### Local close-hold prerequisite (not yet pinned)
+### Local close-hold prerequisite
 
 The local egui fork adds neutral close ownership in
-`b4ec9ff8bc719321442cf421fc7f5a496b80154d`. This commit is not pushed and is not
-the native workspace's dependency revision. The published/pinned baseline above
-remains unchanged. The working adapter consumes this API under explicit local
-Cargo overrides, but this is not a remotely reproducible native dependency or a
-completed budgeted native-driver migration.
+`b4ec9ff8bc719321442cf421fc7f5a496b80154d`. The current local tracked revision
+includes that seam and the later driver work. The historical published baseline
+above remains unchanged; the local Git-pin qualification is not remote
+dependency reproduction. Its exact current driver evidence is recorded in
+`docs/VALIDATION.md`.
 
 Buffered input cannot use `CancelClose` as a scheduling hold: it would consume
 the real request and publish a policy cancellation before core decided. Instead,

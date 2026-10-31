@@ -159,11 +159,12 @@ claims. Earlier authority/conformance plans, pointer-journal design documents
 and Open-GPUI catalogs remain historical design/reference material where their
 API names or ownership differ from this source. Open-GPUI cutover is deferred.
 
-The latest native qualification uses unpublished local egui `8231fb5a` and
-Winit `6c10c87d`; earlier records retain their own fork revisions. Tracked
-remote pins remain `0716beee` and `f378b50f`. Required seams
-are missing from that tracked pair, so a remote-only clean checkout cannot
-reproduce these native results. Full revisions and evidence are in
+Current tracked native Git pins select egui `aa54db470` and Winit `3084fc09`;
+the egui fork's internal dependency and both lockfiles agree. The aligned pair
+passes locked/offline qualification without path overrides using locally
+seeded Git objects. Both commits remain unpublished, so remote-only checkout
+and CI reproduction are not established. Earlier records retain their own
+fork revisions and overrides. Full revisions and evidence are in
 [platform support](../PLATFORM_SUPPORT.md#dependency-reproducibility-and-open-scope).
 
 The [subsequent W16/O256 real-output record](../VALIDATION.md#2026-10-31-simultaneous-w16-roster-and-o256-real-outputs)

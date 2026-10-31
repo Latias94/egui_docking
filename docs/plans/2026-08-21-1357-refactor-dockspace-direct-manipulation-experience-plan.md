@@ -330,9 +330,11 @@ Native window focus and pane-content focus still require actual host facts and a
 The 2026-10-27 selection audit chose egui/eframe 0.37.0, released 2026-10-15,
 with Rust 1.95 still matching this workspace. The current workspace and official
 harness now pin the matched 0.37.0 family. The optional native adapter is locally
-qualified against the rebased, unpublished 0.37 fork; its tracked pins still name
-the earlier fork and are not evidence that a clean checkout can reproduce the
-new native seams. Winit remains on the reviewed 0.30.13 fork; prerelease 0.31 work
+qualified against the rebased, unpublished 0.37 fork. Its current Git pins and
+lockfiles align with local egui `aa54db470` and Winit `3084fc09`, with
+locked/offline qualification and no path overrides. The local Git objects are
+not evidence of remote clean-checkout reproducibility. Winit remains on the
+reviewed 0.30.13 fork; prerelease 0.31 work
 is not a prerequisite. The updated local egui_tiles checkout is reference
 material; it is not a runtime dependency.
 
@@ -2566,6 +2568,16 @@ correlation, close control, callback geometry and pointer-observation seams are
 current consumers, so deletion must follow actual dependency use rather than
 the number of fork-history commits.
 
+The subsequent 2026-11-01 alignment closes that inner/outer source-selection
+gap locally. egui/eframe commit `aa54db470` pins Winit `3084fc09` internally;
+all eight integration patches, smoke inspection and both relevant lockfiles
+select the same pair without changing registry dependency versions. Git-source
+metadata and locked/offline tests resolve the actual commits without path
+overrides after locally seeding Cargo's Git objects. Both commits remain
+unpublished. The separately owned CI checkout refs are preserved, and remote
+clean-checkout reproduction remains an explicit U9 boundary. Exact results and
+the distinction from historical path-based gates are in `docs/VALIDATION.md`.
+
 ---
 
 ## Verification Contract
@@ -2617,7 +2629,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace pins egui fork `0716beee5b7284389f2e80ffb6b24b5af6ae2910` and Winit fork `f378b50f29cafafec31cd8675c17646b4ef57d70`; current native qualification uses explicit overrides to local egui fork `8231fb5ab0f37b72684f1c0f7807716be16c877e` and Winit fork `3084fc09` (the single-Focus model gates freeze `6c10c87d` independently). That unpublished local qualification does not establish reproducibility from the tracked remote pins. Native dependency packaging remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `aa54db470bed739062e00d6b1514015bbdd9c686` and Winit fork `3084fc09a7dca269d41d7aaa955369e365db6a71`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.

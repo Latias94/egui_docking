@@ -15,6 +15,72 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 archive refresh after cleanup and Git alignment
+
+Both publishable archives are refreshed after the `237934b` Root-close/Focus
+cleanup and current dependency documentation. Cargo packages and verifies core
+and official adapter together, all features and locked/offline. The archives
+contain the same 280/42 files and 274/36 Rust paths; every Rust file and both
+crate READMEs match current source bytes. Their SHA-256 values are:
+
+| Archive | SHA-256 |
+| --- | --- |
+| `dockspace-0.1.0.crate` | `06003a9646630f571e24b69151026213256d7430fa2db3de4d06dbc8eb6c38ec` |
+| `egui_dockspace-0.1.0.crate` | `7c40279ea07442afd81c6aab33e2f24c49bf27a570704c5a00cffb1b7d9eeccd` |
+
+Independent consumers depend only on the extracted packages. Public default
+148, public serde 176, official-egui 15, the self-drawn engine example and core
+dependency isolation pass. Consumer metadata confirms the entire egui 0.37
+family remains registry-sourced; only extracted core patches the adapter's
+core dependency. The temporary fixture reuses its previous paths for build
+cache economy. Its missing locks and source files were reconstructed from the
+exact current harnesses before testing; the earlier locked failure remains in
+the log and is not counted as validation.
+
+Evidence is `/tmp/dockspace-aligned-package-source.json`,
+`/tmp/dockspace-aligned-package-qualification.json`,
+`/tmp/dockspace-aligned-package-official-metadata.json` and matching
+`/tmp/dockspace-aligned-package*.log` files. The yanked Windows transitive
+`clipboard-win 5.4.1` warning is retained without a lockfile change or Windows
+qualification claim. No crate publication, native remote reproducibility or
+overall completion is implied.
+
+## 2026-11-01 aligned native Git dependency sources
+
+Local egui commit `aa54db470bed739062e00d6b1514015bbdd9c686` pins Winit
+`3084fc09a7dca269d41d7aaa955369e365db6a71` in its workspace dependency,
+registry patch and lockfile. All eight native egui-family patches, smoke's
+direct inspection dependency and the shared integration lockfile select the
+same pair. Only Git revisions/source IDs change; registry package versions,
+checksums and dependency edges are preserved. The root/official/product
+manifests and lockfiles retain official egui 0.37.0 and are unaffected.
+
+The inner egui workspace passes locked/offline `eframe`/`egui-winit` library
+checks with glow/X11 features and no path overrides. Full outer metadata places
+every egui/inspection/default-font package in the exact egui Git checkout and
+Winit/dpi in its exact Git checkout, with one instance each. The tracked outer
+workspace then passes 569 all-feature/all-target tests across seven binaries,
+without path overrides. Two tests are skipped: the opt-in OS fixture and this
+slice's unchanged 10,000-lifetime case, already freshly run in both assertion
+modes in the preceding single-Focus qualification. No additional soak or
+assertion-disabled Git-source run is claimed.
+
+Cargo's Git objects were seeded from the local fork repositories before these
+offline checks. The commits are not pushed. This proves coherent exact Git
+source selection on this machine, not remote fetch availability or clean remote
+checkout reproduction. The separately owned CI checkout configuration remains
+untouched and is not declared aligned or passing. The existing Python launcher
+already uses tracked pins; no override switch or source-analysis script is added.
+
+Evidence is `/tmp/dockspace-egui-inner-git-check.log`,
+`/tmp/dockspace-native-repin-metadata.json`,
+`/tmp/dockspace-native-repin-git-tests.log` and
+`/tmp/dockspace-native-repin-git-qualification.json`. Independent review checks
+both clean fork checkouts, exact metadata paths, five source-selection files
+and unchanged official dependency bytes, finding no confirmed P1/P2. Earlier
+path-override qualifications retain their historical source revisions. Remote
+publication/reproduction, positive stationary input and full U9 remain open.
+
 ## 2026-11-01 X11 local mutation capture revocation
 
 Local Winit fork `3084fc09` moves the existing implicit capture state into one
