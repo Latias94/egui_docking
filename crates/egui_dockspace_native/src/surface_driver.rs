@@ -591,6 +591,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             prepared_retirements
         };
         let frame_surfaces = host_frame.frame.surfaces();
+        // A queued native callback can outlive this surface's presentation
+        // eligibility. Only the current frame roster permits paint or measure.
+        let surface_outside_frame = !frame_surfaces.contains(&surface);
         no_frame_invalidations.select_for_surfaces(&frame_surfaces, true);
         for viewport in &no_frame_invalidations.repaint_viewports {
             context.request_repaint_once_of(*viewport);
@@ -609,12 +612,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
             surface == root_surface && context.input(|input| input.viewport().close_requested());
         let retain_previous_output = control_output
             || root_is_closing
+            || surface_outside_frame
             || native_input_pending
             || should_retain_previous_output(output_prefix_pending, reduced_callback)
             || no_frame_invalidation_pending
             || !no_frame_invalidations.is_empty();
         if surface != root_surface
-            && (native_input_pending
+            && (surface_outside_frame
+                || native_input_pending
                 || retained_pass_requires_semantic_retry(
                     retain_previous_output,
                     surface_is_presented,
@@ -827,7 +832,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
             coordinator.session().presented_surface(surface).is_some(),
             self.application_actions.has_queued() || report.repaint_surfaces().contains(&surface),
         );
-        let durable_armed = internal_action_settled
+        let durable_armed = surface_outside_frame
+            || internal_action_settled
             || native_input_pending
             || application_action_settled
             || native_admission_settled
