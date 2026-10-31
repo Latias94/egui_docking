@@ -10,6 +10,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Latias94/egui_docking"
 publish = false
 
+[features]
+default = []
+serde = ["dockspace/serde", "egui_dockspace/serde"]
+
 [dependencies]
 dockspace = { path = "../dockspace", default-features = false }
 egui_dockspace = { path = "../egui_dockspace", default-features = false, features = ["native-render-support"] }

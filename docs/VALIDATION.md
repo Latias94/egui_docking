@@ -15,6 +15,91 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-10-31 native defaults and document restore
+
+The slice following `6effe1c` adds `request_layout_reset` and optional native
+`serde` capture/restore to the existing single application command/result slot.
+Preparation checks the configured host before queue admission. An obsolete
+queued replacement returns typed `Stale` without overwriting newer published
+state or entering shutdown. Save rejects an occupied command or result slot,
+preserving a queued restore's prepared document sidecars. Layout and persistence
+errors retain their original typed source.
+
+The replacement report preserves exact native prefix results and their causal
+order, then emits the unique layout/document terminal. Superseded product
+results remain omitted. The bridge holds its existing mutex while it prepays
+successor resource backing, commits core and installs the same physical root
+window's new exact route. Failure before publication releases speculative rows.
+The existing resource row retains the predecessor until old output and property
+receipts settle; neither callback lookup nor a late renderer terminal retargets
+them to the successor. Fresh native facts and exact Presented establish new
+input/focus authority. No second window lifecycle registry is introduced.
+
+The current facade accepts a single incoming configured host surface, including
+contained windows. Existing children retired by reset follow the established
+effect/Destroyed/cleanup path. Additional incoming logical surfaces require
+explicit future native window recreation. The example owns an immutable default
+and eight bounded named JSON slots; recognized unavailable pane content keeps
+its identity and draws a reloadable placeholder. Application data stays outside
+the layout document.
+
+Independent review identified two boundaries missing from the initial green
+journeys. Retained root predecessors now enter the existing retirement store
+without a Destroyed requirement, retain a core terminal guard and report exact
+producer quiescence after all old references finish. An eight-reset model uses
+only two producer/resource slots; delayed property/output receipts block early
+release. A public-host model also drops and retries the original quiescence
+prefix before the guard compacts. The original missing-candidate and subsequent
+missing-core-guard failures were both observed before repair. Locked document
+restore now rejects before queue admission with `OperationConflict`; Busy and
+Stopped retain precedence. Its original incorrect `Ok(())` admission was also
+observed red, and the repaired test continues through unlock, restore and save.
+
+All 43 final checks pass against 472 frozen source, manifest, script and
+lockfile paths. The focused 24 native coordinator/application tests also pass.
+Final results are:
+
+| Final gate | Result and scope |
+| --- | --- |
+| Workspace | 1,907/1,907 with all features and targets |
+| Public engine host / egui consumers | default 137/137, serde 149/149; product 114/114, official 15/15 |
+| Native default | 554/554, including one same-coordinator 10,000-lifetime soak; opt-in wall-time case skipped |
+| Native serde / assertion-disabled serde | 557/557 each; these repeats exclude the already covered long soak and retain the opt-in wall-time skip |
+| Linux library | 513/513 normally and assertion-disabled; long soak excluded, wall-time and renderer-specific cases ignored here |
+| Real renderer old output | The renderer-specific Linux test runs explicitly and passes with two producer/resource slots; old output blocks quiescence, then releases only its predecessor |
+| Real-window workflows | macOS and X11 default/bounded lifecycle; X11 six basic and seven serde real focused edits, fresh Default presentation, missing content draw/reload, two destroyed children and final quiescence |
+| Pressure | Six optimized output-pressure modes on each platform, including W16/O256/control2/protected1 cross-saturation |
+| Quality | Core/native correctness/suspicious Clippy, strict rustdoc, ten doctests and workspace/native/public formatting |
+
+The six pressure modes keep their complete timing samples. macOS peaks at
+2,374,009 resident and 3,488,528 reserved bytes; Linux peaks at 2,374,905 and
+3,489,688 bytes under the selected 4,194,304-byte allowance. The summed
+`over_2ms` counters are eight on macOS and thirteen on Linux. Their largest
+recorded service boundaries are 11.1255 ms in Bootstrap and 3.610917 ms in
+Draining, respectively. These checks prove
+bounded storage, exact terminal ordering and cleanup; they do not establish a
+hard 2-ms service guarantee. Renderer time and terminal-delay fixture backing
+retain their separately labelled measurement scope.
+
+Current artifacts are `/tmp/dockspace-native-layout-source.json` and
+`/tmp/dockspace-native-layout-qualification.json`, including all commands,
+timestamps, raw logs, timing samples and source hashes. The tracked native
+lockfile adds only the six packages required by serde. Both fork worktrees stay
+clean at egui `92c921f7235c87ae28ea09ae522ef55fd8333b41` and Winit
+`6c10c87da2a06871371de7d30fedc656cf7c3681`; qualification still uses explicit
+local overrides. The old tracked remote pins remain insufficient to reproduce
+this native source.
+
+Independent review found no remaining confirmed P1/P2 in this slice. Provider
+handoff interleaved with replacement, a mixed old-Destroyed/successor-live
+snapshot and combined speculative-prepay/commit-failure watermark assertions
+remain outside this review's executed combinations. The previous full physical
+insertion and 1 kHz matrices retain their dated source scope. Complete native
+multi-surface document recreation, host removal/rebinding, clipped/overflow tab
+insertion, positive OS stationary capture/delivery, combined service admission,
+platform certification and U9 packaging remain open. This qualifies the
+single-host defaults/document slice; U10, U7/U8, U9 and the full Goal remain active.
+
 ## 2026-10-31 terminal replacement after bounded native replay
 
 The slice following `a136e86` adds public

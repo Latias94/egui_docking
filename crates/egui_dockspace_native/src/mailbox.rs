@@ -1767,6 +1767,89 @@ impl CursorPrefixClaim<'_> {
 }
 
 impl NativeHostState {
+    fn workspace_replacement_route(
+        &self,
+        successor: NativeSurfaceBinding,
+    ) -> Option<(ViewportId, NativeSurfaceBinding)> {
+        let viewport = self.viewports.viewport(successor.surface())?;
+        let predecessor = self.viewports.binding(viewport)?;
+        (predecessor != successor && predecessor.window_token() == successor.window_token())
+            .then_some((viewport, predecessor))
+    }
+
+    /// The speculative rows carry backing promises, never callback authority.
+    /// Holding this lock through publication prevents another owner spending them.
+    fn prepare_workspace_replacement(
+        &mut self,
+        bindings: impl Iterator<Item = NativeSurfaceBinding>,
+    ) -> Result<(), NativeRuntimeError> {
+        self.refresh_window_resource_references();
+        for successor in bindings {
+            let Some((viewport, predecessor)) = self.workspace_replacement_route(successor) else {
+                continue;
+            };
+            self.viewports
+                .validate_same_window_replacement(viewport, predecessor, successor)
+                .map_err(|_| {
+                    NativeHostProtocolError::NativeAdmissionRouteChanged(successor.surface())
+                })?;
+            let window = self
+                .viewports
+                .window(viewport)
+                .expect("validated same-window replacement retains its physical window");
+            if self.retirements.has_quiescence_owner(successor)
+                || self.retirements.owns_window(window, None)
+            {
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    successor.surface(),
+                )
+                .into());
+            }
+            if !self.can_admit_binding(successor) {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+            }
+            self.window_resources
+                .prepare_workspace_replacement(viewport, successor)?;
+        }
+        Ok(())
+    }
+
+    /// Every fallible capacity and receipt check ran under this same lock.
+    fn commit_workspace_replacement(&mut self, report: &HostFrameReport) {
+        if !report.inputs().iter().any(|input| {
+            matches!(
+                input,
+                dockspace::runtime::HostInputOutcome::LayoutReset { .. }
+                    | dockspace::runtime::HostInputOutcome::DocumentRestored { .. }
+            )
+        }) {
+            self.window_resources.abort_workspace_replacement();
+            return;
+        }
+        for &successor in report.native_bindings() {
+            let Some((viewport, predecessor)) = self.workspace_replacement_route(successor) else {
+                continue;
+            };
+            let window = self
+                .viewports
+                .window(viewport)
+                .expect("prepaid replacement retains its current window");
+            let displaced = self
+                .viewports
+                .replace(viewport, predecessor, window, successor)
+                .expect("same-lock replacement was validated before core publication");
+            debug_assert!(displaced.is_none());
+            self.window_resources
+                .retain_workspace_predecessor(viewport, predecessor);
+            self.window_resources.retire(viewport, predecessor);
+            self.window_resources
+                .commit_host_reference(viewport, successor);
+            self.retirements.commit_workspace_replacement(predecessor);
+        }
+        self.refresh_window_resource_references();
+        self.invalidate_viewport_roster();
+    }
+
     fn refresh_window_resource_references(&mut self) {
         let Self {
             viewports,
@@ -3773,35 +3856,76 @@ impl NativeHostBridge {
         include_staging: bool,
     ) -> Result<(HostFrameReport, Vec<ViewportId>), NativeRuntimeError> {
         let mut records = self.lock();
-        let include_staging = include_staging && records.mode.accepts_new_work();
-        let NativeHostState {
-            viewports,
-            window_resources,
-            ..
-        } = &mut *records;
-        let mut route_error = None;
-        let requests = frame
-            .native_staging_paints()
-            .filter(|_| include_staging)
-            .map_while(|request| {
-                let viewport = viewports.viewport(request.surface());
-                match viewport {
-                    Some(viewport) if viewports.binding(viewport) == Some(request.binding()) => {
-                        Some((viewport, request))
-                    }
-                    _ => {
-                        route_error = Some(NativeHostProtocolError::OutputRouteAttachmentFailed);
-                        None
-                    }
-                }
-            });
-        let prepared = window_resources.prepare_staging(requests)?;
-        if let Some(error) = route_error {
-            return Err(error.into());
+        if let Err(error) = records.prepare_workspace_replacement(frame.proposed_native_bindings())
+        {
+            records.window_resources.abort_workspace_replacement();
+            return Err(error);
         }
-        let report = frame.commit()?;
-        let wake = window_resources.commit_staging(prepared);
-        Ok((report, wake))
+        let include_staging = include_staging && records.mode.accepts_new_work();
+        let committed = (|| {
+            let NativeHostState {
+                viewports,
+                window_resources,
+                ..
+            } = &mut *records;
+            let mut route_error = None;
+            let requests = frame
+                .native_staging_paints()
+                .filter(|_| include_staging)
+                .map_while(|request| {
+                    let viewport = viewports.viewport(request.surface());
+                    match viewport {
+                        Some(viewport)
+                            if viewports.binding(viewport) == Some(request.binding()) =>
+                        {
+                            Some((viewport, request))
+                        }
+                        _ => {
+                            route_error =
+                                Some(NativeHostProtocolError::OutputRouteAttachmentFailed);
+                            None
+                        }
+                    }
+                });
+            let prepared = window_resources.prepare_staging(requests)?;
+            if let Some(error) = route_error {
+                return Err(error.into());
+            }
+            let report = frame.commit()?;
+            let wake = window_resources.commit_staging(prepared);
+            Ok((report, wake))
+        })();
+        match committed {
+            Ok((report, wake)) => {
+                records.commit_workspace_replacement(&report);
+                Ok((report, wake))
+            }
+            Err(error) => {
+                records.window_resources.abort_workspace_replacement();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn workspace_replacement_predecessor(
+        &self,
+        successor: NativeSurfaceBinding,
+    ) -> Option<(ViewportId, NativeSurfaceBinding)> {
+        self.lock()
+            .window_resources
+            .workspace_predecessor(successor)
+    }
+
+    pub(crate) fn finish_workspace_replacement(
+        &self,
+        viewport: ViewportId,
+        predecessor: NativeSurfaceBinding,
+    ) {
+        let mut records = self.lock();
+        records
+            .window_resources
+            .finish_workspace_predecessor(viewport, predecessor);
+        records.refresh_window_resource_references();
     }
 
     pub(crate) fn has_pending_coordinator_work(&self) -> bool {

@@ -1,8 +1,9 @@
-//! Exact child-window retirement state owned by the native adapter.
+//! Exact native binding retirement state owned by the native adapter.
 //!
 //! Core owns lifecycle meaning. This module only retains the affine close
 //! acknowledgement and the exact eframe route until the operating system
-//! reports destruction and the corresponding core frame commits.
+//! reports destruction and the corresponding core frame commits. A retained
+//! root window's replaced binding needs quiescence without physical destruction.
 
 use std::mem::size_of;
 
@@ -125,6 +126,7 @@ struct PendingRetirement {
 enum RetirementKind {
     Window(PendingRetirement),
     Unmaterialized(NativeCreateReceipt),
+    WorkspaceReplaced,
 }
 
 #[derive(Debug)]
@@ -137,14 +139,14 @@ impl RetirementEntry {
     fn pending(&self) -> Option<&PendingRetirement> {
         match &self.kind {
             RetirementKind::Window(pending) => Some(pending),
-            RetirementKind::Unmaterialized(_) => None,
+            RetirementKind::Unmaterialized(_) | RetirementKind::WorkspaceReplaced => None,
         }
     }
 
     fn pending_mut(&mut self) -> Option<&mut PendingRetirement> {
         match &mut self.kind {
             RetirementKind::Window(pending) => Some(pending),
-            RetirementKind::Unmaterialized(_) => None,
+            RetirementKind::Unmaterialized(_) | RetirementKind::WorkspaceReplaced => None,
         }
     }
 
@@ -155,6 +157,7 @@ impl RetirementEntry {
                     && pending.window.destroyed_committed()
             }
             RetirementKind::Unmaterialized(receipt) => receipt.is_committed(),
+            RetirementKind::WorkspaceReplaced => true,
         }
     }
 }
@@ -290,6 +293,31 @@ impl NativeRetirementState {
             .any(|entry| entry.binding.same_window_lifetime(binding))
     }
 
+    /// The successor has inherited the physical receipt under the publication lock.
+    /// Only exact old outputs, callbacks and sidecars can now delay quiescence.
+    /// Route admission already prepaid this lifetime's terminal backing.
+    pub(crate) fn commit_workspace_replacement(&mut self, binding: NativeSurfaceBinding) {
+        debug_assert!(!self.has_quiescence_owner(binding));
+        assert!(
+            self.entries.len() < self.entries.capacity()
+                && self
+                    .entry_limit
+                    .is_none_or(|limit| self.entries.len() < limit),
+            "workspace replacement must prepay its retired lifetime before publication"
+        );
+        let index = self
+            .entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .expect_err("the replaced current route has no retirement owner");
+        self.entries.insert(
+            index,
+            RetirementEntry {
+                binding,
+                kind: RetirementKind::WorkspaceReplaced,
+            },
+        );
+    }
+
     pub(crate) fn is_quiescence_candidate(&self, binding: NativeSurfaceBinding) -> bool {
         self.entries
             .binary_search_by_key(&binding, |entry| entry.binding)
@@ -318,7 +346,7 @@ impl NativeRetirementState {
     pub(crate) fn create_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
         self.entries.iter().filter_map(|entry| match &entry.kind {
             RetirementKind::Unmaterialized(receipt) => receipt.ingress(),
-            RetirementKind::Window(_) => None,
+            RetirementKind::Window(_) | RetirementKind::WorkspaceReplaced => None,
         })
     }
 
@@ -330,7 +358,7 @@ impl NativeRetirementState {
             .iter_mut()
             .find_map(|entry| match &mut entry.kind {
                 RetirementKind::Unmaterialized(receipt) => receipt.take_ingress(capture_ordinal),
-                RetirementKind::Window(_) => None,
+                RetirementKind::Window(_) | RetirementKind::WorkspaceReplaced => None,
             })
     }
 

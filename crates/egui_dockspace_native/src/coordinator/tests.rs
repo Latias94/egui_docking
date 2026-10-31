@@ -35,6 +35,7 @@ mod storage;
 mod touch;
 mod wheel;
 mod work_area;
+mod workspace_replacement;
 
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);

@@ -2,9 +2,8 @@
 
 use dockspace::model::{DockspaceView, SurfaceId};
 use dockspace::runtime::{
-    DockspaceSubmittedAction, HostFrameReport, HostInputOutcome, HostWindowToken,
-    NativeInputBudget, PreparedPaneFocusObservation, PreparedSurfaceAction,
-    SurfaceUnavailableReason,
+    HostFrameReport, HostInputOutcome, HostWindowToken, NativeInputBudget,
+    PreparedPaneFocusObservation, PreparedSurfaceAction, SurfaceUnavailableReason,
 };
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{self, Id, ViewportId};
@@ -13,7 +12,7 @@ use eframe::{NativeHostWake, NativeOutputToken};
 use egui_dockspace::DockspaceActionStatus;
 use egui_dockspace::{DockStyle, PaneView};
 
-use crate::application_action::NativeApplicationActions;
+use crate::application_action::{NativeApplicationActions, NativeSubmittedApplicationAction};
 use crate::close_control::NativeWindowClosePolicy;
 #[cfg(test)]
 use crate::coordinator::split_no_frame_invalidations_for_frame;
@@ -1168,6 +1167,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             context.request_repaint_once_of(token.viewport_id());
             return Ok(false);
         }
+        let published = self.coordinator.session().version();
         let Some(mut host_frame) = self.coordinator.poll_resolved_host_frame(context, budget)?
         else {
             require_durable_root_cycle(&self.coordinator, token, true)?;
@@ -1199,7 +1199,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .application_actions
                 .take()
                 .ok_or(NativeHostProtocolError::MultipassOutputChanged)?;
-            Some(action.submit(&mut host_frame.frame)?)
+            Some(action.submit(&mut host_frame.frame, published)?)
         } else {
             None
         };
@@ -1267,19 +1267,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
         context: &egui::Context,
         token: Option<NativeOutputToken>,
         surface: SurfaceId,
-        submitted_application_action: Option<DockspaceSubmittedAction>,
+        submitted_application_action: Option<NativeSubmittedApplicationAction>,
         mut report: HostFrameReport,
         budget: &mut NativeInputBudget,
         follow_up: bool,
     ) -> Result<(), NativeRuntimeError> {
-        let submitted_application_outcome = submitted_application_action
-            .and_then(|submitted| report.submitted_action_outcome(submitted));
         let application_action_settled = self
             .application_actions
-            .settle(
-                submitted_application_outcome,
-                report.presentation_transitions(),
-            )
+            .settle_submission(submitted_application_action, &report)
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         let _ = self.coordinator.settle_host_frame_report(&report)?;
         let native_close_settled = self.coordinator.settle_close_control_report(&report)?;

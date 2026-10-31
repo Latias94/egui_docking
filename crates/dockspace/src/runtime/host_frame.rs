@@ -134,6 +134,34 @@ impl DockspaceHostFrame<'_> {
         self.native_input_pending
     }
 
+    /// Returns exact native binding identities proposed by a terminal replacement.
+    ///
+    /// Hosts may use this candidate roster to prepay resources before commit.
+    /// It grants no current binding, routing, focus or presentation authority.
+    /// Dropping or failing the frame discards these proposals; install them only
+    /// after the complete committed report confirms its successor roster.
+    /// Ordinary frames and sessions without native hosting return no entries.
+    pub fn proposed_native_bindings(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        let provider = self
+            .replacement_submitted
+            .then(|| {
+                self.session
+                    .native
+                    .as_ref()
+                    .map(super::native::RuntimeNativeState::provider)
+            })
+            .flatten();
+        self.frame
+            .view()
+            .viewport()
+            .registry()
+            .records()
+            .filter_map(move |(_, record)| {
+                provider
+                    .map(|provider| NativeSurfaceBinding::from_binding(provider, record.binding()))
+            })
+    }
+
     /// Returns the post-input product view without exposing runtime node identities.
     #[must_use]
     pub fn view(&self) -> DockspaceView<'_> {

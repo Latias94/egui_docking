@@ -697,6 +697,13 @@ call `frame.submit_layout_reset(&reset)` when `native_input_pending()` is false.
 Partial committed prefixes remain separate; an atomic group paused in a private
 candidate resumes without repeating its already answered receiver questions.
 The reset is appended to that final candidate rather than restarting replay.
+The committed report retains the exact native prefix outcomes needed to settle
+the original snapshot, focus and close records, followed by the unique terminal
+replacement. Product outcomes superseded by that replacement remain omitted.
+An integrating native host can inspect `frame.proposed_native_bindings()` to
+prepay resources for the replacement before committing. These proposals confer
+no current route or presentation authority; install successors only after the
+complete committed report confirms their exact identities.
 `begin_layout_reset_frame` and `begin_native_layout_reset_frame` remain
 synchronous conveniences over the same submission path. Retired root, surface
 and contained identities are rebased against the current candidate; stable pane

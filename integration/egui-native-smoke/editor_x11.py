@@ -4,8 +4,9 @@ Run in an isolated X11 test display with a window manager and xdotool. Build
 the native basic example separately, then pass its executable as the sole
 argument. Diagnostic rectangles only locate real input; the app checks current
 presentation, stable pane identity, exact text and lifecycle quiescence.
-Five edits and the second child close use real X11 input. Content close/Allow,
-reopening and arrangement lock/rejected move/select/unlock are programmatic.
+Six edits (seven with serde) and the second child close use real X11 input.
+Close/Allow/reopen, lock/rejected move/select/unlock, Default, JSON capture and
+restore, content unload/reload and explicit selection are programmatic.
 """
 
 from __future__ import annotations
@@ -68,25 +69,22 @@ def run(binary: Path) -> None:
         lines.put(None)
 
     threading.Thread(target=read_output, daemon=True).start()
-    edits = ["ROOT_EDIT", "CHILD_EDIT", "BACK_EDIT", "RECOVERED_EDIT", "REOPENED_EDIT"]
+    edit_items = {
+        "ROOT_EDIT": "4",
+        "CHILD_EDIT": "4",
+        "BACK_EDIT": "4",
+        "RECOVERED_EDIT": "4",
+        "REOPENED_EDIT": "4",
+        "RESET_EDIT": "2",
+        "RESTORED_EDIT": "4",
+    }
+    edits: list[str] = []
+    profile: str | None = None
     markers = iter(edits)
-    expected = next(markers)
+    expected = "PROFILE"
     accepted: list[str] = []
-    programmatic = iter(
-        [
-            "close-requested",
-            "allow-close",
-            "closed",
-            "reopen",
-            "reopen-focus",
-            "lock",
-            "locked-move-rejected",
-            "select-while-locked",
-            "unlock",
-            "quiescent",
-        ]
-    )
-    expected_programmatic = next(programmatic)
+    programmatic = iter([])
+    expected_programmatic = "PROFILE"
     children: list[str] = []
     os_close_sent = False
     complete = False
@@ -104,14 +102,45 @@ def run(binary: Path) -> None:
             print(line, end="", flush=True)
             if "editor-smoke: FAIL" in line:
                 raise RuntimeError(line.strip())
+            if "editor-smoke: profile=" in line:
+                match = re.search(r"editor-smoke: profile=(basic|serde) edits=(\d+)", line)
+                if match is None or profile is not None:
+                    raise RuntimeError("expected one exact basic/serde workflow profile")
+                profile, count = match.groups()
+                edits = [
+                    "ROOT_EDIT", "CHILD_EDIT", "BACK_EDIT", "RECOVERED_EDIT",
+                    "REOPENED_EDIT", "RESET_EDIT",
+                ]
+                operations = [
+                    "close-requested", "allow-close", "closed", "reopen", "reopen-focus",
+                    "lock", "locked-move-rejected", "select-while-locked", "unlock",
+                    "quiescent", "default-reset", "default-presented", "default-select",
+                ]
+                if profile == "serde":
+                    edits.append("RESTORED_EDIT")
+                    operations.extend([
+                        "capture-preset", "restore-close-requested", "restore-allow-close",
+                        "restore-closed", "unload", "document-restored", "missing-placeholder",
+                        "reload", "restore-select",
+                    ])
+                operations.append("final-quiescence")
+                if int(count) != len(edits):
+                    raise RuntimeError("the workflow profile declared the wrong OS edit count")
+                markers = iter(edits)
+                expected = next(markers)
+                programmatic = iter(operations)
+                expected_programmatic = next(programmatic)
+                continue
             match = re.search(
-                r"editor-smoke: input=(\w+) window=(root|child) x=([\d.]+) y=([\d.]+)",
+                r"editor-smoke: input=(\w+) item=(\d+) window=(root|child) x=([\d.]+) y=([\d.]+)",
                 line,
             )
             if match:
-                marker, kind, x, y = match.groups()
-                if marker != expected:
-                    raise RuntimeError(f"expected {expected}, got {marker}")
+                marker, item, kind, x, y = match.groups()
+                if marker != expected or edit_items.get(marker) != item:
+                    raise RuntimeError(
+                        f"expected {expected} and its exact item, got {marker} item={item}"
+                    )
                 expected_kind = "child" if marker == "CHILD_EDIT" else "root"
                 if kind != expected_kind:
                     raise RuntimeError(f"expected {marker} in {expected_kind}, got {kind}")
@@ -119,6 +148,12 @@ def run(binary: Path) -> None:
                     raise RuntimeError(
                         "the fifth OS edit was requested before close/Allow/reopen"
                     )
+                if marker == "RESET_EDIT" and expected_programmatic != (
+                    "capture-preset" if profile == "serde" else "final-quiescence"
+                ):
+                    raise RuntimeError("RESET_EDIT preceded fresh Default presentation/select")
+                if marker == "RESTORED_EDIT" and expected_programmatic != "final-quiescence":
+                    raise RuntimeError("RESTORED_EDIT preceded missing placeholder/reload/select")
                 if kind == "root":
                     for retired in children:
                         assert_destroyed(retired)
@@ -126,11 +161,14 @@ def run(binary: Path) -> None:
                 if kind == "child":
                     children.append(target)
                 xdotool("windowactivate", "--sync", target)
-                if marker == "REOPENED_EDIT":
-                    # The actual TextEdit has already confirmed restored focus.
-                    # Its geometric center may lie behind the surviving floating
-                    # Preview; typing here verifies focus without a new click.
-                    print("editor-x11: fifth edit uses the restored widget focus", flush=True)
+                if marker in {"REOPENED_EDIT", "RESET_EDIT", "RESTORED_EDIT"}:
+                    # Wait for focused=<marker> from the actual TextEdit. A click
+                    # here would replace the focus transfer being verified; its
+                    # center may also lie behind the surviving floating Preview.
+                    print(
+                        f"editor-x11: {marker} item={item} waits for actual widget focus without clicking",
+                        flush=True,
+                    )
                     continue
                 local_x, local_y = round(float(x)), round(float(y))
                 xdotool("mousemove", "--window", target, str(local_x), str(local_y))
@@ -159,9 +197,12 @@ def run(binary: Path) -> None:
                     time.sleep(0.4)
                 xdotool("click", "1")
             elif "editor-smoke: focused=" in line:
-                marker = line.strip().split("focused=", 1)[1]
-                if marker != expected:
-                    raise RuntimeError(f"expected focused {expected}, got {marker}")
+                match = re.search(r"editor-smoke: focused=(\w+) item=(\d+)", line)
+                if match is None:
+                    raise RuntimeError("focused diagnostic omitted its stable item")
+                marker, item = match.groups()
+                if marker != expected or edit_items.get(marker) != item:
+                    raise RuntimeError(f"expected focused {expected}, got {marker} item={item}")
                 xdotool("key", "--clearmodifiers", "ctrl+End")
                 xdotool("type", "--clearmodifiers", "--delay", "1", marker)
                 expected = next(markers, "COMPLETE")
@@ -175,7 +216,7 @@ def run(binary: Path) -> None:
                 if (
                     len(accepted) >= len(edits)
                     or marker != edits[len(accepted)]
-                    or item != "4"
+                    or edit_items.get(marker) != item
                 ):
                     raise RuntimeError(f"unexpected accepted OS edit: {marker} item={item}")
                 accepted.append(marker)
@@ -194,13 +235,19 @@ def run(binary: Path) -> None:
                     raise RuntimeError(
                         f"expected programmatic {expected_programmatic}, got {operation}"
                     )
-                expected_edits = (
-                    edits[:4]
-                    if operation in {
-                        "close-requested", "allow-close", "closed", "reopen", "reopen-focus"
-                    }
-                    else edits
-                )
+                if operation in {
+                    "close-requested", "allow-close", "closed", "reopen", "reopen-focus"
+                }:
+                    expected_edits = edits[:4]
+                elif operation in {
+                    "lock", "locked-move-rejected", "select-while-locked", "unlock",
+                    "quiescent", "default-reset", "default-presented", "default-select",
+                }:
+                    expected_edits = edits[:5]
+                elif operation == "final-quiescence":
+                    expected_edits = edits
+                else:
+                    expected_edits = edits[:6]
                 if accepted != expected_edits:
                     raise RuntimeError(
                         f"programmatic {operation} preceded its required OS edits"
@@ -208,10 +255,10 @@ def run(binary: Path) -> None:
                 expected_programmatic = next(programmatic, "COMPLETE")
             elif "editor-smoke: complete;" in line:
                 if expected != "COMPLETE" or accepted != edits:
-                    raise RuntimeError("the application completed before all five OS edits")
+                    raise RuntimeError("the application completed before all required OS edits")
                 if expected_programmatic != "COMPLETE":
                     raise RuntimeError(
-                        "the application completed before close/reopen/lock quiescence"
+                        "the application completed before Default/restore quiescence"
                     )
                 if not os_close_sent or len(children) != 2:
                     raise RuntimeError("the workflow did not exercise two child lifetimes")
@@ -224,9 +271,9 @@ def run(binary: Path) -> None:
         for retired in children:
             assert_destroyed(retired)
         print(
-            "editor-x11: five real focused edits on the same Inspector item, "
+            f"editor-x11: {len(edits)} real focused edits with exact Inspector/Document items, "
             "two destroyed child windows, programmatic close/Allow/reopen and "
-            "lock/rejected move/select/unlock with final quiescence verified"
+            f"lock/rejected move/select/unlock, Default and {profile} profile with final quiescence verified"
         )
     finally:
         if process.poll() is None:

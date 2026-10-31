@@ -205,8 +205,24 @@ its only presentation returns `NativeActionRequestError::HostSurfaceRequired`,
 including an exact Allow for a chrome-created plan. Closing individual panes in
 a central root retains its empty dock area and permits reopening. Closing a
 complete root when another presentation remains uses the ordinary atomic close.
-Native host replacement, defaults/presets and document restore remain later
-layout-management work; this boundary is not a complete U10 readiness claim.
+`request_layout_reset(default)` queues an application-owned default through the
+same slot. The optional native `serde` feature adds `save_document_json()` and
+`request_document_restore_json(bytes, recognize)`. Preparation validates the
+configured host before occupying the slot; an obsolete queued replacement
+returns `NativeActionStatus::Stale` without stopping the runtime. A successful
+`LayoutReset` or `DocumentRestored` result confirms logical publication. Fresh
+native facts and exact presentation still establish the successor's input and
+focus authority. Old renderer outputs and command receipts retain their original
+binding until their own terminal settlement.
+
+The current facade accepts replacement layouts containing only its configured
+host surface, including contained windows. Resetting from a live child retires
+that child through the existing destruction protocol. Recreating additional
+native windows from a multi-surface document remains subsequent work. The
+example owns its immutable default and at most eight named JSON presets; it
+retains recognized unavailable panes as reloadable placeholders. Full U10
+acceptance remains open; see the dated qualification in
+[`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 Hosts that own official crates.io egui's complete run use the Dockspace wrapper
 to bind local settlement to that run without application-managed frame counts:
@@ -307,6 +323,11 @@ a child OS window automatically:
 cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --locked -j1
 ```
 
+Add `--features serde` to enable application-owned named JSON presets. The
+example's preset profile requires all eight panes in the root host and waits
+for current presentation and native cleanup before saving. Default layout works
+without serde. Both operations keep application pane data outside the layout.
+
 The example exposes all three presentation paths without conflating their
 evidence. Use the contained title bar to move or resize the same-surface window,
 or open its **⋮** menu for **Dock Back** and **Move to New Window**. The toolbar
@@ -324,7 +345,9 @@ pointer authority unavailable until equivalent platform-fact tests land. X11
 is the current certified physical reference backend.
 
 The finite `--smoke` mode locates real editable content and checks application
-text through native first-live, Dock Back and OS-close recovery. In an isolated
+text through native first-live, Dock Back, OS-close recovery and a fresh Default
+presentation. With serde it also restores an unloaded pane's placeholder,
+reloads it and verifies another real focused edit. In an isolated
 Linux X11 display with a window manager and `xdotool`, run
 `python3 integration/egui-native-smoke/editor_x11.py /path/to/examples/basic`
 after building the example. The external driver supplies actual pointer,

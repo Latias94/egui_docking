@@ -20,6 +20,7 @@ mod event;
 mod focus_control;
 mod host_frame;
 mod input_control;
+mod layout_management;
 mod lifecycle_progress;
 mod mailbox;
 mod pass_actions;
@@ -40,4 +41,5 @@ pub use application_action::{
 pub use close_control::NativeWindowClosePolicy;
 pub use coordinator::NativeStorageLimit;
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
+pub use layout_management::NativeLayoutRequestError;
 pub use lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};

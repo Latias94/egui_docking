@@ -69,6 +69,7 @@ use effect_dispatch::ViewportFailureOrigin;
 mod shutdown;
 mod stationary;
 mod storage;
+mod workspace_replacement;
 use stationary::NativeStationaryState;
 pub use storage::NativeStorageLimit;
 pub(crate) use storage::{
@@ -1034,10 +1035,11 @@ impl NativeCoordinator {
             report.inputs(),
             report.native_input_pending(),
         )?;
+        let rebound = self.settle_workspace_replacement(report)?;
         // First-live output acknowledgements and partial input commits can
         // change authority without settling a queued platform snapshot.
         self.refresh_local_coordinates();
-        Ok(settled)
+        Ok(settled || rebound)
     }
 
     fn refresh_local_coordinates(&self) {

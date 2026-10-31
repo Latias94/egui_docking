@@ -5,7 +5,7 @@ use std::fmt;
 use crate::engine::{EngineInput, HostFrameView, rebase_workspace_presentation_identities};
 use crate::graph::Workspace;
 use crate::ids::EngineAuthorityDomainId;
-use crate::model::{DockspaceLayout, WorkspaceVersion};
+use crate::model::{DockspaceLayout, DockspaceView, WorkspaceVersion};
 
 use super::{
     DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession, NativeReceiverAnswer,
@@ -171,6 +171,17 @@ impl DockspaceHostFrame<'_> {
 }
 
 impl PreparedDockspaceLayoutReset {
+    /// Returns a read-only projection of the declared layout before replacement.
+    ///
+    /// This view grants no presentation authority. The terminal replacement may
+    /// rebase [`RootId`](crate::model::RootId), [`SurfaceId`](crate::model::SurfaceId),
+    /// and [`FloatingPresentationId`](crate::model::FloatingPresentationId) values
+    /// before publication.
+    #[must_use]
+    pub fn view(&self) -> DockspaceView<'_> {
+        DockspaceView::new(&self.workspace)
+    }
+
     pub(super) fn replacement_input(
         &self,
         frame: HostFrameView<'_>,

@@ -19,6 +19,26 @@ use crate::interaction::InteractionOutcome;
 use crate::model::SurfaceId;
 use crate::transition::InputOutcome;
 
+/// Native boundary results still settle their original host records after replacement.
+fn native_replacement_prefix_outcome(outcome: &HostInputOutcome) -> bool {
+    matches!(
+        outcome,
+        HostInputOutcome::NativeInputDeviceRemoval
+            | HostInputOutcome::NativeInputBindingRetired { .. }
+            | HostInputOutcome::NativeInputCancelledForOverload
+            | HostInputOutcome::NativeSurfaceRegistered { .. }
+            | HostInputOutcome::NativeSurfaceRegistrationRejected { .. }
+            | HostInputOutcome::NativePlatformSnapshotApplied { .. }
+            | HostInputOutcome::NativeCloseObservationApplied { .. }
+            | HostInputOutcome::NativeFocusObservationApplied
+            | HostInputOutcome::NativeSurfaceCloseRequested { .. }
+            | HostInputOutcome::NativeSurfaceCloseRejected { .. }
+            | HostInputOutcome::NativeSurfaceCloseCancellationRequired { .. }
+            | HostInputOutcome::NativePlatformSnapshotStale
+            | HostInputOutcome::NativePlatformProviderRejected
+    )
+}
+
 impl HostFrameReport {
     pub(super) fn from_transition(
         frame_attempt: crate::ids::HostPresentationAttemptId,
@@ -65,161 +85,157 @@ impl HostFrameReport {
             };
             Some((reduced.causal_ordinal().get(), outcome))
         });
+        for reduced in transition.reduced_inputs() {
+            let outcome = match reduced.outcome() {
+                InputOutcome::NativeInputDeviceRemoval => {
+                    Some(HostInputOutcome::NativeInputDeviceRemoval)
+                }
+                InputOutcome::NativeInputBindingRetired { binding } => {
+                    native_provider.map(|provider| HostInputOutcome::NativeInputBindingRetired {
+                        binding: NativeSurfaceBinding::from_binding(provider, *binding),
+                    })
+                }
+                InputOutcome::NativeInputCancelledForOverload => {
+                    Some(HostInputOutcome::NativeInputCancelledForOverload)
+                }
+                InputOutcome::ProductActionProcessed { outcome, .. } => {
+                    Some(product_action_host_outcome(outcome, reduced.cause()))
+                }
+                InputOutcome::ProductActionRejected { reason, .. } => {
+                    Some(HostInputOutcome::ProductActionRejected(*reason))
+                }
+                InputOutcome::PolicyReplaced { changed, version } => {
+                    Some(HostInputOutcome::PolicyReplaced {
+                        changed: *changed,
+                        version: *version,
+                    })
+                }
+                InputOutcome::ContentCloseRequested { plan, reused, .. } => {
+                    Some(HostInputOutcome::CloseRequested {
+                        plan: DockspaceClosePlan::from_core(plan),
+                        reused: *reused,
+                        origin: HostCloseRequestOrigin::Application,
+                    })
+                }
+                InputOutcome::ContentCloseRejected { target, reason, .. } => {
+                    Some(HostInputOutcome::CloseRejected(
+                        DockspaceCloseRequestRejection::from_core(*target, reason),
+                    ))
+                }
+                InputOutcome::CloseDecisionProcessed {
+                    resolution,
+                    plan,
+                    application,
+                    changed,
+                    ..
+                } => Some(HostInputOutcome::CloseDecisionProcessed {
+                    resolution: DockspaceCloseResolution::from_core(*resolution),
+                    plan: plan.as_ref().map(DockspaceClosePlan::from_core),
+                    application: application.as_ref().map(map_close_application),
+                    changed: *changed,
+                }),
+                InputOutcome::ViewportRegistered { binding } => {
+                    native_provider.map(|provider| HostInputOutcome::NativeSurfaceRegistered {
+                        binding: NativeSurfaceBinding::from_binding(provider, *binding),
+                    })
+                }
+                InputOutcome::ViewportRegistrationRejected { surface } => {
+                    Some(HostInputOutcome::NativeSurfaceRegistrationRejected { surface: *surface })
+                }
+                InputOutcome::PlatformSnapshotPublished {
+                    native_close_edges, ..
+                } => native_provider.map(|provider| {
+                    HostInputOutcome::NativePlatformSnapshotApplied {
+                        close_requests: native_close_edges
+                            .iter()
+                            .copied()
+                            .map(|edge| NativeSurfaceCloseRequest::from_edge(provider, edge))
+                            .collect(),
+                    }
+                }),
+                InputOutcome::NativeCloseObservationPublished {
+                    native_close_edges, ..
+                } => native_provider.map(|provider| {
+                    HostInputOutcome::NativeCloseObservationApplied {
+                        close_requests: native_close_edges
+                            .iter()
+                            .copied()
+                            .map(|edge| NativeSurfaceCloseRequest::from_edge(provider, edge))
+                            .collect(),
+                    }
+                }),
+                InputOutcome::GlobalFocusObservationPublished { .. } => {
+                    Some(HostInputOutcome::NativeFocusObservationApplied)
+                }
+                InputOutcome::SurfaceCloseRequested {
+                    edge,
+                    request,
+                    plan,
+                    ..
+                } => {
+                    native_provider.map(|provider| HostInputOutcome::NativeSurfaceCloseRequested {
+                        close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
+                        disposition: request.disposition(),
+                        plan: DockspaceClosePlan::from_core(plan),
+                    })
+                }
+                InputOutcome::SurfaceCloseRejected {
+                    edge,
+                    request,
+                    reason,
+                    ..
+                } => native_provider.map(|provider| HostInputOutcome::NativeSurfaceCloseRejected {
+                    close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
+                    disposition: request.disposition(),
+                    reason: NativeSurfaceCloseRejection::from(reason),
+                }),
+                InputOutcome::SurfaceCloseCancellationRequested { edge, plan, .. } => {
+                    native_provider.map(|provider| {
+                        HostInputOutcome::NativeSurfaceCloseCancellationRequired {
+                            close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
+                            plan: DockspaceClosePlan::from_core(plan),
+                        }
+                    })
+                }
+                InputOutcome::PlatformEffectReported { .. } => None,
+                InputOutcome::PlatformSnapshotStale { .. } => {
+                    Some(HostInputOutcome::NativePlatformSnapshotStale)
+                }
+                InputOutcome::PlatformProviderRejected { .. } => {
+                    Some(HostInputOutcome::NativePlatformProviderRejected)
+                }
+                InputOutcome::StaleRejected {
+                    expected,
+                    accepted_base,
+                } => Some(HostInputOutcome::StaleRejected {
+                    expected: *expected,
+                    accepted: *accepted_base,
+                }),
+                InputOutcome::InteractionProcessed { outcome, .. } => {
+                    interaction_host_outcome(outcome, reduced.cause(), transition.after())
+                }
+                _ => None,
+            };
+            if let Some(outcome) = outcome {
+                if replacement.is_some() && !native_replacement_prefix_outcome(&outcome) {
+                    continue;
+                }
+                let submitted = (reduced.source() == super::host_frame::APPLICATION_INPUT_SOURCE)
+                    .then(|| {
+                        DockspaceSubmittedAction::new(frame_attempt, reduced.source_sequence())
+                    });
+                ordered_inputs.push((
+                    reduced.causal_ordinal().get(),
+                    0_usize,
+                    0_usize,
+                    submitted,
+                    outcome,
+                ));
+            }
+        }
         if let Some((ordinal, outcome)) = replacement {
             ordered_inputs.push((ordinal, 0, 0, None, outcome));
         } else {
-            for reduced in transition.reduced_inputs() {
-                let outcome = match reduced.outcome() {
-                    InputOutcome::NativeInputDeviceRemoval => {
-                        Some(HostInputOutcome::NativeInputDeviceRemoval)
-                    }
-                    InputOutcome::NativeInputBindingRetired { binding } => {
-                        native_provider.map(|provider| {
-                            HostInputOutcome::NativeInputBindingRetired {
-                                binding: NativeSurfaceBinding::from_binding(provider, *binding),
-                            }
-                        })
-                    }
-                    InputOutcome::NativeInputCancelledForOverload => {
-                        Some(HostInputOutcome::NativeInputCancelledForOverload)
-                    }
-                    InputOutcome::ProductActionProcessed { outcome, .. } => {
-                        Some(product_action_host_outcome(outcome, reduced.cause()))
-                    }
-                    InputOutcome::ProductActionRejected { reason, .. } => {
-                        Some(HostInputOutcome::ProductActionRejected(*reason))
-                    }
-                    InputOutcome::PolicyReplaced { changed, version } => {
-                        Some(HostInputOutcome::PolicyReplaced {
-                            changed: *changed,
-                            version: *version,
-                        })
-                    }
-                    InputOutcome::ContentCloseRequested { plan, reused, .. } => {
-                        Some(HostInputOutcome::CloseRequested {
-                            plan: DockspaceClosePlan::from_core(plan),
-                            reused: *reused,
-                            origin: HostCloseRequestOrigin::Application,
-                        })
-                    }
-                    InputOutcome::ContentCloseRejected { target, reason, .. } => {
-                        Some(HostInputOutcome::CloseRejected(
-                            DockspaceCloseRequestRejection::from_core(*target, reason),
-                        ))
-                    }
-                    InputOutcome::CloseDecisionProcessed {
-                        resolution,
-                        plan,
-                        application,
-                        changed,
-                        ..
-                    } => Some(HostInputOutcome::CloseDecisionProcessed {
-                        resolution: DockspaceCloseResolution::from_core(*resolution),
-                        plan: plan.as_ref().map(DockspaceClosePlan::from_core),
-                        application: application.as_ref().map(map_close_application),
-                        changed: *changed,
-                    }),
-                    InputOutcome::ViewportRegistered { binding } => {
-                        native_provider.map(|provider| HostInputOutcome::NativeSurfaceRegistered {
-                            binding: NativeSurfaceBinding::from_binding(provider, *binding),
-                        })
-                    }
-                    InputOutcome::ViewportRegistrationRejected { surface } => {
-                        Some(HostInputOutcome::NativeSurfaceRegistrationRejected {
-                            surface: *surface,
-                        })
-                    }
-                    InputOutcome::PlatformSnapshotPublished {
-                        native_close_edges, ..
-                    } => native_provider.map(|provider| {
-                        HostInputOutcome::NativePlatformSnapshotApplied {
-                            close_requests: native_close_edges
-                                .iter()
-                                .copied()
-                                .map(|edge| NativeSurfaceCloseRequest::from_edge(provider, edge))
-                                .collect(),
-                        }
-                    }),
-                    InputOutcome::NativeCloseObservationPublished {
-                        native_close_edges, ..
-                    } => native_provider.map(|provider| {
-                        HostInputOutcome::NativeCloseObservationApplied {
-                            close_requests: native_close_edges
-                                .iter()
-                                .copied()
-                                .map(|edge| NativeSurfaceCloseRequest::from_edge(provider, edge))
-                                .collect(),
-                        }
-                    }),
-                    InputOutcome::GlobalFocusObservationPublished { .. } => {
-                        Some(HostInputOutcome::NativeFocusObservationApplied)
-                    }
-                    InputOutcome::SurfaceCloseRequested {
-                        edge,
-                        request,
-                        plan,
-                        ..
-                    } => native_provider.map(|provider| {
-                        HostInputOutcome::NativeSurfaceCloseRequested {
-                            close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
-                            disposition: request.disposition(),
-                            plan: DockspaceClosePlan::from_core(plan),
-                        }
-                    }),
-                    InputOutcome::SurfaceCloseRejected {
-                        edge,
-                        request,
-                        reason,
-                        ..
-                    } => native_provider.map(|provider| {
-                        HostInputOutcome::NativeSurfaceCloseRejected {
-                            close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
-                            disposition: request.disposition(),
-                            reason: NativeSurfaceCloseRejection::from(reason),
-                        }
-                    }),
-                    InputOutcome::SurfaceCloseCancellationRequested { edge, plan, .. } => {
-                        native_provider.map(|provider| {
-                            HostInputOutcome::NativeSurfaceCloseCancellationRequired {
-                                close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
-                                plan: DockspaceClosePlan::from_core(plan),
-                            }
-                        })
-                    }
-                    InputOutcome::PlatformEffectReported { .. } => None,
-                    InputOutcome::PlatformSnapshotStale { .. } => {
-                        Some(HostInputOutcome::NativePlatformSnapshotStale)
-                    }
-                    InputOutcome::PlatformProviderRejected { .. } => {
-                        Some(HostInputOutcome::NativePlatformProviderRejected)
-                    }
-                    InputOutcome::StaleRejected {
-                        expected,
-                        accepted_base,
-                    } => Some(HostInputOutcome::StaleRejected {
-                        expected: *expected,
-                        accepted: *accepted_base,
-                    }),
-                    InputOutcome::InteractionProcessed { outcome, .. } => {
-                        interaction_host_outcome(outcome, reduced.cause(), transition.after())
-                    }
-                    _ => None,
-                };
-                if let Some(outcome) = outcome {
-                    let submitted = (reduced.source()
-                        == super::host_frame::APPLICATION_INPUT_SOURCE)
-                        .then(|| {
-                            DockspaceSubmittedAction::new(frame_attempt, reduced.source_sequence())
-                        });
-                    ordered_inputs.push((
-                        reduced.causal_ordinal().get(),
-                        0_usize,
-                        0_usize,
-                        submitted,
-                        outcome,
-                    ));
-                }
-            }
             for (edge_index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
                 for (outcome_index, outcome) in edge.interaction_outcomes().iter().enumerate() {
                     if let Some(outcome) =

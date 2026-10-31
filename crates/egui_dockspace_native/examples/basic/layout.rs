@@ -1,11 +1,15 @@
-//! Application inventory and decisions projected from the core close plans.
+//! Application inventory, bounded presets and decisions from core close plans.
 
 use dockspace::close::{CloseDecision, CloseItemDecisionState, DeferredCloseDecision};
 use dockspace::model::{DockAnchor, DockPlacement};
 use dockspace::runtime::DockspaceCloseResolution;
-use egui_dockspace_native::NativeActionRequestError;
 
 use super::*;
+
+#[cfg(feature = "serde")]
+const MAX_PRESETS: usize = 8;
+#[cfg(feature = "serde")]
+const MAX_PRESET_NAME_CHARS: usize = 64;
 
 impl NativeExampleApp {
     pub(super) fn controls_available(&self) -> bool {
@@ -26,6 +30,18 @@ impl NativeExampleApp {
                 let request = self.dockspace.request_set_arrangement_locked(locked);
                 self.begin_layout_action("Change arrangement lock", request);
             }
+            if ui
+                .add_enabled(
+                    self.controls_available() && !committed_locked,
+                    egui::Button::new("Default layout"),
+                )
+                .clicked()
+            {
+                let request = self
+                    .dockspace
+                    .request_layout_reset(self.default_layout.clone());
+                self.begin_layout_action("Default layout", request);
+            }
             ui.menu_button("Pane inventory (8)", |ui| self.show_pane_inventory(ui));
             ui.small(if committed_locked {
                 "Arrangement locked; pane selection and content editing remain available."
@@ -33,7 +49,142 @@ impl NativeExampleApp {
                 "Pane data stays in the application registry when closed."
             });
         });
+        #[cfg(feature = "serde")]
+        self.show_preset_controls(ui);
         self.show_close_decisions(ui);
+    }
+
+    pub(super) fn all_root_profile(&self) -> bool {
+        let items = self
+            .dockspace
+            .with_panes(|panes| panes.panes.keys().copied().collect::<Vec<_>>());
+        self.dockspace.with_view(|view| {
+            items.len() == 8
+                && view.surfaces().count() == 1
+                && view.surface(SURFACE).is_some()
+                && items.iter().all(|item| {
+                    view.item(*item)
+                        .is_some_and(|pane| pane.surface() == SURFACE)
+                })
+        }) == Some(true)
+    }
+
+    #[cfg(feature = "serde")]
+    fn show_preset_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Preset:");
+            ui.add_enabled(
+                self.controls_available(),
+                egui::TextEdit::singleline(&mut self.preset_name)
+                    .char_limit(MAX_PRESET_NAME_CHARS)
+                    .desired_width(140.0),
+            );
+            if ui
+                .add_enabled(
+                    self.controls_available()
+                        && self.all_root_profile()
+                        && self.dockspace.is_surface_presented(SURFACE)
+                        && self.dockspace.is_quiescent(),
+                    egui::Button::new("Save JSON preset"),
+                )
+                .on_disabled_hover_text(
+                    "Bring all eight panes back to the root host and wait for presentation and native cleanup.",
+                )
+                .clicked()
+                && let Err(error) = self.save_named_preset()
+            {
+                self.status = Some(error);
+            }
+            if ui
+                .add_enabled(
+                    self.controls_available()
+                        && !self.dockspace.arrangement_locked()
+                        && self.presets.contains_key(self.preset_name.trim()),
+                    egui::Button::new("Restore JSON preset"),
+                )
+                .clicked()
+            {
+                let request = self.request_named_preset();
+                self.begin_layout_action("Restore JSON preset", request);
+            }
+            ui.menu_button(format!("Saved ({}/{MAX_PRESETS})", self.presets.len()), |ui| {
+                for name in self.presets.keys() {
+                    if ui
+                        .add_enabled(self.controls_available(), egui::Button::new(name))
+                        .clicked()
+                    {
+                        self.preset_name.clone_from(name);
+                        ui.close();
+                    }
+                }
+            });
+            if ui
+                .add_enabled(
+                    self.controls_available()
+                        && self.presets.contains_key(self.preset_name.trim()),
+                    egui::Button::new("Remove preset"),
+                )
+                .clicked()
+            {
+                self.presets.remove(self.preset_name.trim());
+            }
+        });
+        ui.small(
+            "Session-only JSON · up to 8 names, 64 characters each; saving replaces that name's slot. \
+             Profile: all eight panes in the root host, including contained windows. New logical surfaces do not create OS windows.",
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    pub(super) fn save_named_preset(&mut self) -> Result<(), String> {
+        let name = self.preset_name.trim();
+        if name.is_empty() || self.preset_name.chars().count() > MAX_PRESET_NAME_CHARS {
+            return Err("Choose a preset name of 1–64 characters.".to_owned());
+        }
+        if !self.presets.contains_key(name) && self.presets.len() >= MAX_PRESETS {
+            return Err(
+                "All eight preset slots are full; overwrite or remove a saved name.".to_owned(),
+            );
+        }
+        if self.action.is_pending()
+            || !self.all_root_profile()
+            || !self.dockspace.is_surface_presented(SURFACE)
+            || !self.dockspace.is_quiescent()
+        {
+            return Err(
+                "Saving requires all eight panes in the presented, quiescent root host.".to_owned(),
+            );
+        }
+        let json = self
+            .dockspace
+            .save_document_json()
+            .map_err(|error| error.to_string())?;
+        self.presets.insert(name.to_owned(), json);
+        self.status = Some(format!(
+            "Saved JSON preset '{name}' (all-root profile; pane data stays in the application)."
+        ));
+        Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    pub(super) fn request_named_preset(&self) -> Result<(), String> {
+        let json = self
+            .presets
+            .get(self.preset_name.trim())
+            .ok_or("Choose a saved JSON preset.")?;
+        // Recognition includes closed and unloaded panes, independently of content availability.
+        let keys = self.dockspace.with_panes(|panes| {
+            panes
+                .panes
+                .values()
+                .map(|pane| pane.key)
+                .collect::<Vec<_>>()
+        });
+        self.dockspace
+            .request_document_restore_json(json, |document, key| {
+                document == DOCUMENT_ID && keys.contains(&key)
+            })
+            .map_err(|error| error.to_string())
     }
 
     fn show_pane_inventory(&mut self, ui: &mut egui::Ui) {
@@ -41,10 +192,10 @@ impl NativeExampleApp {
             panes
                 .panes
                 .iter()
-                .map(|(&item, pane)| (item, pane.title))
+                .map(|(&item, pane)| (item, pane.title, pane.loaded))
                 .collect::<Vec<_>>()
         });
-        for (item, title) in inventory {
+        for (item, title, loaded) in inventory {
             let Some(location) = self.dockspace.with_view(|view| {
                 view.item(item)
                     .map(|pane| (pane.root(), pane.is_selected()))
@@ -101,6 +252,30 @@ impl NativeExampleApp {
                             self.reopen_pane(item);
                             ui.close();
                         }
+                    }
+                    if ui
+                        .add_enabled(
+                            self.controls_available(),
+                            egui::Button::new(if loaded {
+                                "Unload content"
+                            } else {
+                                "Reload content"
+                            }),
+                        )
+                        .clicked()
+                    {
+                        self.dockspace.with_panes_mut(|panes| {
+                            panes
+                                .panes
+                                .get_mut(&item)
+                                .expect("inventory pane")
+                                .set_loaded(!loaded);
+                        });
+                        self.status = Some(format!(
+                            "{title}: content {}; key, title and data retained.",
+                            if loaded { "unloaded" } else { "reloaded" },
+                        ));
+                        ui.close();
                     }
                 });
             });
@@ -237,10 +412,10 @@ impl NativeExampleApp {
             });
     }
 
-    fn begin_layout_action(
+    fn begin_layout_action<E: std::fmt::Display>(
         &mut self,
         operation: &'static str,
-        request: Result<(), NativeActionRequestError>,
+        request: Result<(), E>,
     ) {
         match request {
             Ok(()) => {
@@ -326,6 +501,13 @@ pub(super) fn describe_status(status: &NativeActionStatus) -> String {
         } => format!(
             "Arrangement {} (changed: {changed}); pane selection and content editing remain available.",
             if *locked { "locked" } else { "unlocked" }
+        ),
+        NativeActionStatus::LayoutReset { previous, current } => format!(
+            "Default layout logically committed ({previous:?} → {current:?}); waiting for fresh presented output and native quiescence."
+        ),
+        #[cfg(feature = "serde")]
+        NativeActionStatus::DocumentRestored { previous, current } => format!(
+            "Document logically restored ({previous:?} → {current:?}); waiting for fresh presented output and native quiescence."
         ),
     }
 }

@@ -10,6 +10,8 @@ use dockspace::model::{
 };
 use dockspace::policy::{CloseCapability, DockPolicy};
 use dockspace::runtime::DockspaceSession;
+#[cfg(feature = "serde")]
+use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use eframe::egui;
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::{NativeActionStatus, NativeDockspaceApp};
@@ -26,6 +28,8 @@ const CONSOLE: ItemId = ItemId::new(5);
 const HISTORY: ItemId = ItemId::new(6);
 const PROFILER: ItemId = ItemId::new(7);
 const ASSETS: ItemId = ItemId::new(8);
+#[cfg(feature = "serde")]
+const DOCUMENT_ID: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"native-editor-v1");
 
 #[path = "basic/layout.rs"]
 mod layout;
@@ -36,19 +40,40 @@ fn main() -> eframe::Result {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     policy.set_close_capability(CloseCapability::DeferredAllowed);
-    let session = DockspaceSession::from_layout(example_layout(), policy)
+    let panes = ExamplePanes::new();
+    let default_layout = example_layout();
+    #[cfg(feature = "serde")]
+    let session = {
+        let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT_ID);
+        // BTreeMap visits the original ItemIds in their allocation order, 1..=8.
+        for (&item, pane) in &panes.panes {
+            assert_eq!(
+                bootstrap.ensure_item(pane.key).expect("the eight keys fit"),
+                item,
+            );
+        }
+        DockspaceSession::from_persistent_layout(default_layout.clone(), policy, bootstrap)
+            .expect("the static native document is valid")
+    };
+    #[cfg(not(feature = "serde"))]
+    let session = DockspaceSession::from_layout(default_layout.clone(), policy)
         .expect("the static native example layout is valid");
     let dockspace = NativeDockspaceApp::new(
         egui::Id::unique("native-dockspace-example"),
         session,
         SURFACE,
-        ExamplePanes::new(),
+        panes,
         DockStyle::default(),
     )
     .expect("the native coordinator initializes");
     let native_host = dockspace.native_host_handler();
     let app = NativeExampleApp {
         dockspace,
+        default_layout,
+        #[cfg(feature = "serde")]
+        presets: BTreeMap::new(),
+        #[cfg(feature = "serde")]
+        preset_name: "Working".to_owned(),
         action: ExampleActionState::Idle,
         status: None,
         smoke: std::env::args()
@@ -69,6 +94,11 @@ fn main() -> eframe::Result {
 
 struct NativeExampleApp {
     dockspace: NativeDockspaceApp<ExamplePanes>,
+    default_layout: DockspaceLayout,
+    #[cfg(feature = "serde")]
+    presets: BTreeMap<String, Vec<u8>>,
+    #[cfg(feature = "serde")]
+    preset_name: String,
     action: ExampleActionState,
     status: Option<String>,
     smoke: Option<smoke::EditorSmoke>,
@@ -82,6 +112,7 @@ enum ExampleActionState {
     AwaitingFirstPresentation(SurfaceId),
     AwaitingDockBackOutcome(RootId),
     AwaitingLayoutOutcome(&'static str),
+    AwaitingFreshPresentation(&'static str),
     AwaitingSmokeOutcome(&'static str),
 }
 
@@ -116,7 +147,7 @@ impl eframe::App for NativeExampleApp {
 
 impl NativeExampleApp {
     fn show_controls(&mut self, ui: &mut egui::Ui) {
-        self.finish_first_live_wait();
+        self.finish_presentation_wait();
         let inspector = self
             .dockspace
             .with_view(|view| view.item(INSPECTOR).map(InspectorLocation::from))
@@ -177,6 +208,11 @@ impl NativeExampleApp {
                 ExampleActionState::AwaitingLayoutOutcome(operation)
                 | ExampleActionState::AwaitingSmokeOutcome(operation) => {
                     ui.label(format!("{operation}: waiting for the committed result…"));
+                }
+                ExampleActionState::AwaitingFreshPresentation(operation) => {
+                    ui.label(format!(
+                        "{operation}: logically committed; waiting for fresh presented output and native quiescence…"
+                    ));
                 }
                 _ => {
                     ui.label("Creating and presenting the native child window…");
@@ -271,11 +307,20 @@ impl NativeExampleApp {
                      beside the current Document, or in the current main root when Document is closed. \
                      Lock arrangement disables layout changes while selection and content editing remain available.",
                 );
+                ui.label(
+                    "6. Default layout restores the application's immutable layout while retaining all eight pane identities and their data. \
+                     Inventory can temporarily unload content; its recoverable placeholder keeps the title, key and data for Reload content.",
+                );
+                #[cfg(feature = "serde")]
+                ui.label(
+                    "7. Save and restore up to eight named JSON presets in application memory. Saving requires all eight panes in the root host, \
+                     including its contained windows. Restore commits the logical document first; wait for fresh presented output before editing. \
+                     New logical surfaces do not automatically create OS windows; this example's presets demonstrate the all-root profile.",
+                );
                 ui.small(
                     "Physical promotion is intentionally fail-closed when the host cannot provide exact cross-window pointer facts. \
                      X11 is the physical reference; macOS has programmatic hosting evidence. \
-                     Other platforms and mixed DPI require their own qualification. Use the presentation commands when physical facts are unavailable. \
-                     Layout presets and document restore are demonstrated separately by the official workspace_persistence example.",
+                     Other platforms and mixed DPI require their own qualification. Use the presentation commands when physical facts are unavailable.",
                 );
             });
     }
@@ -339,8 +384,7 @@ impl NativeExampleApp {
                     Some("Inspector was presented back in the root dockspace.".to_owned());
             }
             (_, Ok(status)) => {
-                self.action = ExampleActionState::Idle;
-                self.status = Some(layout::describe_status(&status));
+                self.record_action_status(&status);
             }
             (_, Err(error)) => {
                 self.action = ExampleActionState::Idle;
@@ -349,13 +393,38 @@ impl NativeExampleApp {
         }
     }
 
-    fn finish_first_live_wait(&mut self) {
-        let ExampleActionState::AwaitingFirstPresentation(surface) = self.action else {
-            return;
+    fn record_action_status(&mut self, status: &NativeActionStatus) {
+        self.action = match status {
+            NativeActionStatus::LayoutReset { .. } => {
+                ExampleActionState::AwaitingFreshPresentation("Default layout")
+            }
+            #[cfg(feature = "serde")]
+            NativeActionStatus::DocumentRestored { .. } => {
+                ExampleActionState::AwaitingFreshPresentation("Document restore")
+            }
+            _ => ExampleActionState::Idle,
         };
-        if self.dockspace.is_surface_presented(surface) {
-            self.action = ExampleActionState::Idle;
-            self.status = Some("Native child reached its first live presentation.".to_owned());
+        self.status = Some(layout::describe_status(status));
+    }
+
+    fn finish_presentation_wait(&mut self) {
+        match self.action {
+            ExampleActionState::AwaitingFirstPresentation(surface)
+                if self.dockspace.is_surface_presented(surface) =>
+            {
+                self.action = ExampleActionState::Idle;
+                self.status = Some("Native child reached its first live presentation.".to_owned());
+            }
+            ExampleActionState::AwaitingFreshPresentation(operation)
+                if self.dockspace.is_surface_presented(SURFACE)
+                    && self.dockspace.is_quiescent() =>
+            {
+                self.action = ExampleActionState::Idle;
+                self.status = Some(format!(
+                    "{operation}: fresh root output is presented; native work is quiescent."
+                ));
+            }
+            _ => {}
         }
     }
 }
@@ -425,12 +494,24 @@ fn example_layout() -> DockspaceLayout {
 }
 
 struct ExamplePane {
+    key: &'static str,
     title: &'static str,
     text: String,
+    loaded: bool,
+    missing_painted: bool,
     widgets: Vec<egui::Id>,
     zoom: f32,
     pan: egui::Vec2,
     input: Option<(egui::ViewportId, egui::Rect, bool, f32)>,
+}
+
+impl ExamplePane {
+    fn set_loaded(&mut self, loaded: bool) {
+        self.loaded = loaded;
+        self.missing_painted = false;
+        self.widgets.clear();
+        self.input = None;
+    }
 }
 
 struct ExamplePanes {
@@ -441,19 +522,22 @@ impl ExamplePanes {
     fn new() -> Self {
         Self {
             panes: [
-                (OUTLINE, "Outline", "Scene\n  Camera\n  Directional light\n  Player\n    Mesh\n    Controller"),
-                (EDITOR, "Document", "// Application-owned document\nfn update(scene: &mut Scene) {\n    scene.player.translate([1.0, 0.0, 0.0]);\n}\n\nEdit this document, then move or dock its tab.\n"),
-                (PREVIEW, "Preview", "Application-drawn scene"),
-                (INSPECTOR, "Inspector", "Object: Player\nPosition: [0, 0, 0]\nMesh: player.mesh\n\nThese editable notes survive moving this group into a native window and docking it back.\n"),
-                (CONSOLE, "Console", "Ready. Application log; scroll to inspect older messages."),
-                (HISTORY, "History", "Selected Player\nMoved Player\nChanged light intensity\nSaved scene"),
-                (PROFILER, "Profiler", "Illustrative frame samples — no live engine attached"),
-                (ASSETS, "Assets", "scenes/main.scene\nmeshes/player.mesh\nmaterials/default.mat\ntextures/grid.png"),
+                (OUTLINE, "pane/outline", "Outline", "Scene\n  Camera\n  Directional light\n  Player\n    Mesh\n    Controller"),
+                (EDITOR, "pane/document", "Document", "// Application-owned document\nfn update(scene: &mut Scene) {\n    scene.player.translate([1.0, 0.0, 0.0]);\n}\n\nEdit this document, then move or dock its tab.\n"),
+                (PREVIEW, "pane/preview", "Preview", "Application-drawn scene"),
+                (INSPECTOR, "pane/inspector", "Inspector", "Object: Player\nPosition: [0, 0, 0]\nMesh: player.mesh\n\nThese editable notes survive moving this group into a native window and docking it back.\n"),
+                (CONSOLE, "pane/console", "Console", "Ready. Application log; scroll to inspect older messages."),
+                (HISTORY, "pane/history", "History", "Selected Player\nMoved Player\nChanged light intensity\nSaved scene"),
+                (PROFILER, "pane/profiler", "Profiler", "Illustrative frame samples — no live engine attached"),
+                (ASSETS, "pane/assets", "Assets", "scenes/main.scene\nmeshes/player.mesh\nmaterials/default.mat\ntextures/grid.png"),
             ]
             .into_iter()
-            .map(|(item, title, text)| (item, ExamplePane {
+            .map(|(item, key, title, text)| (item, ExamplePane {
+                key,
                 title,
                 text: text.to_owned(),
+                loaded: true,
+                missing_painted: false,
                 widgets: Vec::with_capacity(3),
                 zoom: 1.0,
                 pan: egui::Vec2::ZERO,
@@ -530,7 +614,23 @@ impl PaneView for ExamplePanes {
         // Only widgets actually registered in this content callback qualify.
         pane.widgets.clear();
         pane.input = None;
+        pane.missing_painted = false;
         ui.heading(pane.title);
+        if !pane.loaded {
+            let placeholder = ui.label("Recoverable missing content — temporarily unloaded.");
+            pane.missing_painted = ui.is_rect_visible(placeholder.rect);
+            ui.small(format!(
+                "{} · title and application data retained",
+                pane.key
+            ));
+            let reload = ui.button("Reload content");
+            pane.widgets.push(reload.id);
+            if reload.clicked() {
+                pane.set_loaded(true);
+                ui.ctx().request_repaint();
+            }
+            return;
+        }
         if item == PREVIEW {
             paint_canvas(pane, ui);
         } else if item == CONSOLE {
@@ -574,10 +674,9 @@ impl PaneView for ExamplePanes {
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
         self.panes
-            .contains_key(&item)
-            .then_some(item)
-            .filter(|item| ![PREVIEW, CONSOLE, PROFILER].contains(item))
-            .map(pane_focus_id)
+            .get(&item)
+            .filter(|pane| pane.loaded && ![PREVIEW, CONSOLE, PROFILER].contains(&item))
+            .map(|_| pane_focus_id(item))
     }
 
     fn minimum_size(&self, item: ItemId) -> egui::Vec2 {

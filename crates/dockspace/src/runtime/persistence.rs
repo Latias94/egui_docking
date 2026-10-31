@@ -11,7 +11,7 @@ use crate::document::{
     RuntimeDocumentRestoreError,
 };
 use crate::external_item_key::{ExternalItemKeyMapError, ExternalItemKeyRestoreError};
-use crate::model::{DockspaceLayout, ItemId};
+use crate::model::{DockspaceLayout, DockspaceView, ItemId};
 use crate::persistence::SnapshotRestoreError;
 use crate::policy::DockPolicy;
 use crate::presentation_config::DockPresentationConfig;
@@ -94,6 +94,19 @@ impl fmt::Debug for DockspaceDocumentBootstrap {
 #[must_use = "a prepared document restore should be submitted or intentionally discarded"]
 pub struct PreparedDockspaceDocumentRestore {
     inner: PreparedRuntimeDocumentRestore,
+}
+
+impl PreparedDockspaceDocumentRestore {
+    /// Returns a read-only projection of the declared layout before replacement.
+    ///
+    /// This view grants no presentation authority. The terminal replacement may
+    /// rebase [`RootId`](crate::model::RootId), [`SurfaceId`](crate::model::SurfaceId),
+    /// and [`FloatingPresentationId`](crate::model::FloatingPresentationId) values
+    /// before publication.
+    #[must_use]
+    pub fn view(&self) -> DockspaceView<'_> {
+        DockspaceView::new(self.inner.workspace())
+    }
 }
 
 impl fmt::Debug for PreparedDockspaceDocumentRestore {

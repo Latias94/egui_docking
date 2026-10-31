@@ -73,6 +73,7 @@ struct NativeWindowResource {
     binding: NativeSurfaceBinding,
     retired: bool,
     retained_by_host: bool,
+    workspace_replacement: WorkspaceReplacementResource,
     create_rect: Option<NativePhysicalRect>,
     hidden_render: bool,
     staging: Option<StagingReceipt>,
@@ -83,9 +84,17 @@ struct NativeWindowResource {
     no_frame: Option<PendingNoFrameInvalidation>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceReplacementResource {
+    None,
+    Prepared,
+    Predecessor,
+}
+
 impl NativeWindowResource {
     fn is_empty(&self) -> bool {
         !self.retained_by_host
+            && self.workspace_replacement == WorkspaceReplacementResource::None
             && (!self.created || self.retired)
             && self.create_ack.is_none()
             && self.presentation_ack.is_none()
@@ -101,7 +110,8 @@ impl NativeWindowResource {
     }
 
     fn has_pending_work(&self) -> bool {
-        self.create_ack.is_some()
+        self.workspace_replacement != WorkspaceReplacementResource::None
+            || self.create_ack.is_some()
             || self.presentation_ack.is_some()
             || self.no_frame.is_some()
             || self.create_rect.is_some()
@@ -227,6 +237,67 @@ impl NativeWindowResources {
         Ok(())
     }
 
+    /// Pins prepaid backing only; the caller holds the host lock until publication.
+    pub(super) fn prepare_workspace_replacement(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeHostProtocolError> {
+        self.prepare_host_reference(viewport, binding)?;
+        if self.resource(viewport, binding).is_none() {
+            self.insert_owner(viewport, binding);
+        }
+        self.resource_mut(viewport, binding)
+            .expect("the prepaid successor owner exists")
+            .workspace_replacement = WorkspaceReplacementResource::Prepared;
+        Ok(())
+    }
+
+    /// Failed candidate preparation releases every speculative exact owner.
+    pub(super) fn abort_workspace_replacement(&mut self) {
+        self.entries.retain(|resource| {
+            resource.workspace_replacement != WorkspaceReplacementResource::Prepared
+        });
+    }
+
+    pub(super) fn retain_workspace_predecessor(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        self.resource_mut(viewport, binding)
+            .expect("the attached predecessor retains its host resource")
+            .workspace_replacement = WorkspaceReplacementResource::Predecessor;
+    }
+
+    pub(super) fn workspace_predecessor(
+        &self,
+        successor: NativeSurfaceBinding,
+    ) -> Option<(ViewportId, NativeSurfaceBinding)> {
+        self.entries.iter().find_map(|resource| {
+            (resource.workspace_replacement == WorkspaceReplacementResource::Predecessor
+                && resource.binding.surface() == successor.surface()
+                && resource.binding.window_token() == successor.window_token())
+            .then_some((resource.viewport, resource.binding))
+        })
+    }
+
+    pub(super) fn finish_workspace_predecessor(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        let resource = self
+            .resource_mut(viewport, binding)
+            .expect("settlement retains its exact predecessor resource");
+        debug_assert_eq!(
+            resource.workspace_replacement,
+            WorkspaceReplacementResource::Predecessor
+        );
+        resource.workspace_replacement = WorkspaceReplacementResource::None;
+        self.prune(viewport, binding);
+    }
+
     /// Pins a successfully published route or output using its prepared backing.
     /// The pin neither revives a retired owner nor retires another exact binding.
     pub(super) fn commit_host_reference(
@@ -241,9 +312,13 @@ impl NativeWindowResources {
             );
             self.insert_owner(viewport, binding);
         }
-        self.resource_mut(viewport, binding)
-            .expect("the exact prepared host owner is present")
-            .retained_by_host = true;
+        let resource = self
+            .resource_mut(viewport, binding)
+            .expect("the exact prepared host owner is present");
+        resource.retained_by_host = true;
+        if resource.workspace_replacement == WorkspaceReplacementResource::Prepared {
+            resource.workspace_replacement = WorkspaceReplacementResource::None;
+        }
     }
 
     /// Recomputes backing retention from all current routes and retained outputs.
@@ -493,6 +568,7 @@ impl NativeWindowResources {
             binding,
             retired: false,
             retained_by_host: false,
+            workspace_replacement: WorkspaceReplacementResource::None,
             create_rect: None,
             hidden_render: false,
             staging: None,

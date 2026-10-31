@@ -755,6 +755,15 @@ impl ViewportCoordinator {
             .map_err(ViewportCoordinatorError::Registry)?;
         let rebound_map: BTreeMap<ViewportBinding, ViewportBinding> =
             registry.retained().iter().copied().collect();
+        // A retained window's old incarnation still owns its producer lane until
+        // exact ingress quiescence, even though no physical destruction occurs.
+        if let Some(provider) = candidate.platform_provider() {
+            for &(predecessor, _) in registry.retained() {
+                candidate
+                    .binding_cleanup
+                    .record_terminal_binding_guard(predecessor, provider);
+            }
+        }
 
         candidate
             .effects

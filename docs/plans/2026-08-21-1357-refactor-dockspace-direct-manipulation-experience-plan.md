@@ -2183,6 +2183,28 @@ public host 134/134 default and 145/145 serde, the native compatibility gates
 and five real X11 edits. It prepares the native facade's default/preset/document
 work without completing host rebinding or application preset storage in this slice.
 
+Native default/document integration now passes 43 final checks. The existing
+single command/result slot prepares layout reset and optional serde restore,
+rejects busy save and returns stale queued replacement as a nonfatal typed
+result. The core report retains original native prefix settlements before its
+unique replacement terminal. Under the existing bridge lock, native resource
+backing is prepaid before core publication and retained physical root windows
+receive exact successor routes after commit. Old output/property receipts keep
+their original binding. Fresh presentation reestablishes input and focus.
+The current facade accepts a single incoming host surface, retires old children
+through the shared protocol and explicitly rejects automatic multi-surface
+window recreation. The native example adds immutable defaults, eight named JSON
+slots and recoverable missing-pane content. Independent review exposed and
+closed predecessor producer-slot retention and locked-restore admission gaps.
+The shared retirement owner and core terminal guard reclaim old roots after
+exact quiescence; a two-slot model repeats eight resets. Core 1,907, public host
+137/149, native default 554 including 10,000 lifetimes, serde/noassert 557 each
+and Linux library 513 in both modes pass. X11 six/seven real focused edit
+journeys, an explicit real-renderer old-output test and both platforms' six
+pressure modes pass. Real over-2-ms timing remains recorded without a hard
+real-time claim. Full native multi-surface restore, overflow insertion and
+the remaining U7/U8/U9/U10/U11 criteria remain open.
+
 ### U11. Certify Windows and macOS capability claims
 
 - **Goal:** Add verified native platforms without delaying generic core delivery.

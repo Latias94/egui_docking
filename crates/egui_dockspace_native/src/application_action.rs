@@ -5,12 +5,15 @@ use dockspace::close::{
 };
 use dockspace::model::{DockspaceActionOutcome, SurfaceId, WorkspaceVersion};
 use dockspace::policy::DockPolicy;
+#[cfg(feature = "serde")]
+use dockspace::runtime::PreparedDockspaceDocumentRestore;
 use dockspace::runtime::{
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspaceHostFrame,
     DockspacePresentationTransition, DockspacePresentationTransitionId,
     DockspacePresentationTransitionResult, DockspaceRuntimeError, DockspaceSubmittedAction,
-    HostInputOutcome, PreparedCloseRequest, PreparedDockAction,
+    HostFrameReport, HostInputOutcome, PreparedCloseRequest, PreparedDockAction,
+    PreparedDockspaceLayoutReset,
 };
 use egui_dockspace::DockspaceActionStatus;
 
@@ -154,7 +157,24 @@ pub enum NativeActionStatus {
         /// Workspace version after the configuration input.
         version: WorkspaceVersion,
     },
-    /// A content-close request was prepared from an obsolete workspace version.
+    /// An application default or preset replaced the logical layout.
+    ///
+    /// Native bindings and output authority still require their fresh observations.
+    LayoutReset {
+        /// Candidate version immediately before the terminal replacement.
+        previous: WorkspaceVersion,
+        /// Workspace version published by the replacement.
+        current: WorkspaceVersion,
+    },
+    /// A prepared document and its durable sidecars published atomically.
+    #[cfg(feature = "serde")]
+    DocumentRestored {
+        /// Candidate version immediately before the terminal replacement.
+        previous: WorkspaceVersion,
+        /// Workspace version published by the replacement.
+        current: WorkspaceVersion,
+    },
+    /// An application command was prepared from an obsolete workspace version.
     Stale {
         /// Version frozen when the command was queued.
         expected: WorkspaceVersion,
@@ -187,6 +207,9 @@ pub(crate) enum NativeApplicationCommand {
         decision: DeferredCloseDecision,
     },
     ArrangementLock(Box<DockPolicy>),
+    LayoutReset(Box<PreparedDockspaceLayoutReset>),
+    #[cfg(feature = "serde")]
+    DocumentRestore(Box<PreparedDockspaceDocumentRestore>),
 }
 
 impl From<PreparedDockAction> for NativeApplicationAction {
@@ -219,7 +242,16 @@ impl NativeApplicationAction {
     pub(crate) fn submit(
         self,
         frame: &mut DockspaceHostFrame<'_>,
+        published: WorkspaceVersion,
     ) -> Result<NativeApplicationSubmission, DockspaceRuntimeError> {
+        if self.is_replacement() && self.expected != published {
+            return Ok(NativeApplicationSubmission::Terminal(
+                NativeActionStatus::Stale {
+                    expected: self.expected,
+                    accepted: published,
+                },
+            ));
+        }
         let submitted = match self.command {
             NativeApplicationCommand::Dock(action) => frame.submit_prepared_action(action)?,
             NativeApplicationCommand::Close(request) => {
@@ -238,6 +270,17 @@ impl NativeApplicationAction {
             NativeApplicationCommand::ArrangementLock(policy) => {
                 return Ok(NativeApplicationSubmission::Configuration(policy));
             }
+            NativeApplicationCommand::LayoutReset(reset) => {
+                return Ok(NativeApplicationSubmission::Replacement(
+                    NativeWorkspaceReplacement::Layout(reset),
+                ));
+            }
+            #[cfg(feature = "serde")]
+            NativeApplicationCommand::DocumentRestore(restore) => {
+                return Ok(NativeApplicationSubmission::Replacement(
+                    NativeWorkspaceReplacement::Document(restore),
+                ));
+            }
         };
         Ok(NativeApplicationSubmission::Input(submitted))
     }
@@ -253,6 +296,20 @@ impl NativeApplicationAction {
             NativeApplicationCommand::ArrangementLock(policy) => {
                 NativeActionExpectation::ArrangementLock(policy.arrangement_locked())
             }
+            NativeApplicationCommand::LayoutReset(_) => NativeActionExpectation::LayoutReset,
+            #[cfg(feature = "serde")]
+            NativeApplicationCommand::DocumentRestore(_) => {
+                NativeActionExpectation::DocumentRestore
+            }
+        }
+    }
+
+    const fn is_replacement(&self) -> bool {
+        match self.command {
+            NativeApplicationCommand::LayoutReset(_) => true,
+            #[cfg(feature = "serde")]
+            NativeApplicationCommand::DocumentRestore(_) => true,
+            _ => false,
         }
     }
 }
@@ -261,17 +318,46 @@ impl NativeApplicationAction {
 pub(crate) enum NativeApplicationSubmission {
     Input(DockspaceSubmittedAction),
     Configuration(Box<DockPolicy>),
+    Replacement(NativeWorkspaceReplacement),
+    Terminal(NativeActionStatus),
+}
+
+pub(crate) enum NativeWorkspaceReplacement {
+    Layout(Box<PreparedDockspaceLayoutReset>),
+    #[cfg(feature = "serde")]
+    Document(Box<PreparedDockspaceDocumentRestore>),
+}
+
+/// Exact correlation within the committed frame; replacement is its unique terminal input.
+pub(crate) enum NativeSubmittedApplicationAction {
+    Input(DockspaceSubmittedAction),
+    LayoutReset,
+    #[cfg(feature = "serde")]
+    DocumentRestore,
+    Terminal(NativeActionStatus),
 }
 
 impl NativeApplicationSubmission {
-    /// Appends configuration after all earlier local and focus input.
+    /// Appends configuration or replacement after all earlier local and focus input.
     pub(crate) fn finish(
         self,
         frame: &mut DockspaceHostFrame<'_>,
-    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+    ) -> Result<NativeSubmittedApplicationAction, DockspaceRuntimeError> {
         match self {
-            Self::Input(submitted) => Ok(submitted),
-            Self::Configuration(policy) => frame.replace_policy(*policy),
+            Self::Input(submitted) => Ok(NativeSubmittedApplicationAction::Input(submitted)),
+            Self::Configuration(policy) => frame
+                .replace_policy(*policy)
+                .map(NativeSubmittedApplicationAction::Input),
+            Self::Replacement(NativeWorkspaceReplacement::Layout(reset)) => {
+                frame.submit_layout_reset(&reset)?;
+                Ok(NativeSubmittedApplicationAction::LayoutReset)
+            }
+            #[cfg(feature = "serde")]
+            Self::Replacement(NativeWorkspaceReplacement::Document(restore)) => {
+                frame.submit_document_restore(&restore)?;
+                Ok(NativeSubmittedApplicationAction::DocumentRestore)
+            }
+            Self::Terminal(status) => Ok(NativeSubmittedApplicationAction::Terminal(status)),
         }
     }
 }
@@ -282,6 +368,20 @@ enum NativeActionExpectation {
     Close,
     CloseDecision,
     ArrangementLock(bool),
+    LayoutReset,
+    #[cfg(feature = "serde")]
+    DocumentRestore,
+}
+
+impl NativeActionExpectation {
+    const fn is_replacement(self) -> bool {
+        match self {
+            Self::LayoutReset => true,
+            #[cfg(feature = "serde")]
+            Self::DocumentRestore => true,
+            _ => false,
+        }
+    }
 }
 
 /// Single-slot queue consumed only by the final root pass.
@@ -343,6 +443,46 @@ impl NativeApplicationActions {
             kind: action.expectation(),
         };
         Some(action)
+    }
+
+    pub(crate) fn settle_submission(
+        &mut self,
+        submitted: Option<NativeSubmittedApplicationAction>,
+        report: &HostFrameReport,
+    ) -> Result<bool, ()> {
+        let input = match submitted {
+            Some(NativeSubmittedApplicationAction::Input(submitted)) => {
+                report.submitted_action_outcome(submitted)
+            }
+            Some(NativeSubmittedApplicationAction::LayoutReset) => report
+                .inputs()
+                .iter()
+                .find(|input| matches!(input, HostInputOutcome::LayoutReset { .. })),
+            #[cfg(feature = "serde")]
+            Some(NativeSubmittedApplicationAction::DocumentRestore) => report
+                .inputs()
+                .iter()
+                .find(|input| matches!(input, HostInputOutcome::DocumentRestored { .. })),
+            Some(NativeSubmittedApplicationAction::Terminal(status)) => {
+                let NativeApplicationActionState::UncommittedFrame { expected, kind } = self.state
+                else {
+                    return Err(());
+                };
+                let NativeActionStatus::Stale {
+                    expected: stale, ..
+                } = status
+                else {
+                    return Err(());
+                };
+                if expected != stale || !kind.is_replacement() {
+                    return Err(());
+                }
+                self.state = NativeApplicationActionState::Terminal(Ok(status));
+                return Ok(true);
+            }
+            None => None,
+        };
+        self.settle(input, report.presentation_transitions())
     }
 
     pub(crate) fn settle(
@@ -441,6 +581,25 @@ impl NativeApplicationActions {
                             locked: *locked,
                             changed: *changed,
                             version: *version,
+                        },
+                    ),
+                    (
+                        NativeActionExpectation::LayoutReset,
+                        HostInputOutcome::LayoutReset { previous, current },
+                    ) => {
+                        ReductionSettlement::ApplicationTerminal(NativeActionStatus::LayoutReset {
+                            previous: *previous,
+                            current: *current,
+                        })
+                    }
+                    #[cfg(feature = "serde")]
+                    (
+                        NativeActionExpectation::DocumentRestore,
+                        HostInputOutcome::DocumentRestored { previous, current },
+                    ) => ReductionSettlement::ApplicationTerminal(
+                        NativeActionStatus::DocumentRestored {
+                            previous: *previous,
+                            current: *current,
                         },
                     ),
                     _ => {

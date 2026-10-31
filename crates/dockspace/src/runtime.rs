@@ -241,8 +241,9 @@ pub enum HostInputOutcome {
     NativeInputCancelledForOverload,
     /// One validated document atomically replaced the complete workspace.
     ///
-    /// Earlier input outcomes from the same frame are intentionally omitted
-    /// because the replacement superseded their product-visible state.
+    /// Earlier product outcomes from this frame are omitted because replacement
+    /// supersedes their visible state. Native boundary outcomes retain their
+    /// causal order so the host can settle the original callback records.
     DocumentRestored {
         /// Workspace version immediately before replacement.
         previous: WorkspaceVersion,
@@ -252,6 +253,7 @@ pub enum HostInputOutcome {
     /// One validated application layout atomically replaced the workspace.
     ///
     /// Earlier product outcomes in this frame are superseded by this layout.
+    /// Native boundary results retain their original host settlement identity.
     LayoutReset {
         /// Workspace version immediately before replacement.
         previous: WorkspaceVersion,

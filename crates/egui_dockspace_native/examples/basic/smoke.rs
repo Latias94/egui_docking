@@ -1,6 +1,6 @@
-//! Finite real-window workflow with five edits supplied by an external OS-input owner.
+//! Finite real-window workflow with six OS edits, or seven with JSON persistence.
 //!
-//! Close decisions, reopening and arrangement locking use public application APIs.
+//! Close, reopen, locking, default reset and JSON restore use public application APIs.
 //! Diagnostic content rectangles locate input only; presented surfaces and native
 //! quiescence remain the product readiness checks.
 
@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use dockspace::close::{CloseDecision, CloseItemDecisionState, ClosePlanTarget, CloseRequestId};
 use dockspace::model::{DockAnchor, DockPlacement, DockspaceActionRejection};
 use dockspace::runtime::{DockspaceCloseOutcome, DockspaceCloseResolution};
-use egui_dockspace_native::NativeActionRequestError;
 
 use super::*;
 
@@ -33,6 +32,19 @@ enum Stage {
     RejectLockedMove(InspectorLocation),
     SelectWhileLocked,
     UnlockArrangement,
+    OriginalQuiescence,
+    DefaultReset,
+    DefaultPresented,
+    SelectResetEditor,
+    ResetInput,
+    #[cfg(feature = "serde")]
+    DocumentRestore,
+    #[cfg(feature = "serde")]
+    RestoredPlaceholder,
+    #[cfg(feature = "serde")]
+    SelectRestoredInspector,
+    #[cfg(feature = "serde")]
+    RestoredInput,
     FinalQuiescence,
     Complete,
 }
@@ -40,17 +52,32 @@ enum Stage {
 pub(super) struct EditorSmoke {
     stage: Stage,
     started: Instant,
-    expected: String,
+    expected: BTreeMap<ItemId, String>,
+    restore_after_close: bool,
     announced: bool,
     focus_announced: bool,
 }
 
 impl EditorSmoke {
     pub(super) fn new() -> Self {
+        eprintln!(
+            "editor-smoke: profile={} edits={}",
+            if cfg!(feature = "serde") {
+                "serde"
+            } else {
+                "basic"
+            },
+            if cfg!(feature = "serde") { 7 } else { 6 },
+        );
+        let panes = ExamplePanes::new();
         Self {
             stage: Stage::RootInput,
             started: Instant::now(),
-            expected: ExamplePanes::new().panes[&INSPECTOR].text.clone(),
+            expected: [INSPECTOR, EDITOR]
+                .into_iter()
+                .map(|item| (item, panes.panes[&item].text.clone()))
+                .collect(),
+            restore_after_close: false,
             announced: false,
             focus_announced: false,
         }
@@ -66,7 +93,13 @@ impl EditorSmoke {
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
         } else if matches!(self.stage, Stage::Complete) {
             eprintln!(
-                "editor-smoke: complete; eight stable panes, five real edits, two child lifetimes, first-live, Dock Back, OS-close recovery, programmatic close/Allow/reopen and lock/rejected move/select/unlock, final quiescence verified"
+                "editor-smoke: complete; eight stable panes, {} real edits, two child lifetimes, first-live, Dock Back, OS-close recovery, programmatic close/Allow/reopen, lock/rejected move/select/unlock and Default reset{}, fresh presentation and final quiescence verified",
+                if cfg!(feature = "serde") { 7 } else { 6 },
+                if cfg!(feature = "serde") {
+                    ", named JSON restore with a drawn missing placeholder and explicit reload/select"
+                } else {
+                    ""
+                },
             );
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
         } else {
@@ -107,6 +140,8 @@ impl EditorSmoke {
             self.stage,
             Stage::AllowInspector(_) | Stage::ClosedInspector | Stage::ReopenInspector
         );
+        #[cfg(feature = "serde")]
+        let may_be_closed = may_be_closed || matches!(self.stage, Stage::DocumentRestore);
         let location = app
             .dockspace
             .with_view(|view| {
@@ -124,7 +159,7 @@ impl EditorSmoke {
             Stage::RootInput
                 if location.is_some_and(|location| self.ready(app, location, false)) =>
             {
-                if self.input(app, "ROOT_EDIT", false)? {
+                if self.input(app, INSPECTOR, "ROOT_EDIT", false)? {
                     app.request_inspector_window(location.expect("ready Inspector").root);
                     self.expect_presentation_request(app)?;
                     self.set_stage(Stage::FirstChild);
@@ -139,7 +174,7 @@ impl EditorSmoke {
             Stage::ChildInput
                 if location.is_some_and(|location| self.ready(app, location, true)) =>
             {
-                if self.input(app, "CHILD_EDIT", true)? {
+                if self.input(app, INSPECTOR, "CHILD_EDIT", true)? {
                     app.request_inspector_dock_back(location.expect("ready Inspector").root);
                     self.expect_presentation_request(app)?;
                     self.set_stage(Stage::DockBack);
@@ -154,7 +189,7 @@ impl EditorSmoke {
             Stage::BackInput
                 if location.is_some_and(|location| self.ready(app, location, false)) =>
             {
-                if self.input(app, "BACK_EDIT", false)? {
+                if self.input(app, INSPECTOR, "BACK_EDIT", false)? {
                     app.request_inspector_window(location.expect("ready Inspector").root);
                     self.expect_presentation_request(app)?;
                     self.set_stage(Stage::SecondChild);
@@ -181,7 +216,7 @@ impl EditorSmoke {
             Stage::RecoveredInput
                 if location.is_some_and(|location| self.ready(app, location, false)) =>
             {
-                if self.input(app, "RECOVERED_EDIT", false)? {
+                if self.input(app, INSPECTOR, "RECOVERED_EDIT", false)? {
                     let request = app.dockspace.request_close_item(INSPECTOR);
                     self.submit(
                         app,
@@ -217,7 +252,12 @@ impl EditorSmoke {
                     }
                     self.check_text(app)?;
                     eprintln!(
-                        "editor-smoke: programmatic=close-requested item={} awaiting=Allow",
+                        "editor-smoke: programmatic={} item={} awaiting=Allow",
+                        if self.restore_after_close {
+                            "restore-close-requested"
+                        } else {
+                            "close-requested"
+                        },
                         INSPECTOR.get()
                     );
                     let request = app.dockspace.request_close_decision(
@@ -249,7 +289,12 @@ impl EditorSmoke {
                     }
                     self.check_text(app)?;
                     eprintln!(
-                        "editor-smoke: programmatic=allow-close item={}",
+                        "editor-smoke: programmatic={} item={}",
+                        if self.restore_after_close {
+                            "restore-allow-close"
+                        } else {
+                            "allow-close"
+                        },
                         INSPECTOR.get()
                     );
                     self.set_stage(Stage::ClosedInspector);
@@ -267,9 +312,37 @@ impl EditorSmoke {
                         );
                     }
                     eprintln!(
-                        "editor-smoke: programmatic=closed item={} registry=8 text=preserved",
+                        "editor-smoke: programmatic={} item={} registry=8 text=preserved",
+                        if self.restore_after_close {
+                            "restore-closed"
+                        } else {
+                            "closed"
+                        },
                         INSPECTOR.get()
                     );
+                    #[cfg(feature = "serde")]
+                    if self.restore_after_close {
+                        app.dockspace.with_panes_mut(|panes| {
+                            panes
+                                .panes
+                                .get_mut(&INSPECTOR)
+                                .expect("Inspector")
+                                .set_loaded(false);
+                        });
+                        self.check_text(app)?;
+                        eprintln!(
+                            "editor-smoke: programmatic=unload item={} key=pane/inspector data=retained",
+                            INSPECTOR.get()
+                        );
+                        let request = app.request_named_preset();
+                        self.submit(
+                            app,
+                            request,
+                            "Smoke: restore named all-root JSON preset",
+                            Stage::DocumentRestore,
+                        )?;
+                        return Ok(());
+                    }
                     let request = app.dockspace.request_open_item(
                         INSPECTOR,
                         DockPlacement::Center(DockAnchor::Item(EDITOR)),
@@ -343,7 +416,7 @@ impl EditorSmoke {
                         INSPECTOR.get()
                     );
                 }
-                if self.input(app, "REOPENED_EDIT", false)? {
+                if self.input(app, INSPECTOR, "REOPENED_EDIT", false)? {
                     let request = app.dockspace.request_set_arrangement_locked(true);
                     self.submit(
                         app,
@@ -464,10 +537,10 @@ impl EditorSmoke {
                         return Err(format!("arrangement unlock did not commit: {status:?}"));
                     }
                     eprintln!("editor-smoke: programmatic=unlock locked=false");
-                    self.set_stage(Stage::FinalQuiescence);
+                    self.set_stage(Stage::OriginalQuiescence);
                 }
             }
-            Stage::FinalQuiescence
+            Stage::OriginalQuiescence
                 if location.is_some_and(|location| self.ready(app, location, false)) =>
             {
                 self.check_text(app)?;
@@ -481,6 +554,201 @@ impl EditorSmoke {
                 eprintln!(
                     "editor-smoke: programmatic=quiescent item={} registry=8",
                     INSPECTOR.get()
+                );
+                let request = app
+                    .dockspace
+                    .request_layout_reset(app.default_layout.clone());
+                self.submit(app, request, "Smoke: Default layout", Stage::DefaultReset)?;
+            }
+            Stage::DefaultReset => {
+                if let Some(status) = self.take_status(app)? {
+                    if !matches!(status, NativeActionStatus::LayoutReset { previous, current } if previous != current)
+                    {
+                        return Err(format!("Default did not replace the layout: {status:?}"));
+                    }
+                    self.check_text(app)?;
+                    eprintln!(
+                        "editor-smoke: programmatic=default-reset logically-committed=true fresh-presented=required"
+                    );
+                    self.set_stage(Stage::DefaultPresented);
+                }
+            }
+            Stage::DefaultPresented if self.settled(app) => {
+                self.check_text(app)?;
+                let default_panes = app.dockspace.with_view(|view| {
+                    view.item(EDITOR).is_some_and(|pane| {
+                        pane.is_selected() && pane.tabs().items() == [EDITOR, HISTORY, PROFILER]
+                    }) && view.item(INSPECTOR).is_some_and(|pane| {
+                        pane.is_selected()
+                            && pane.contained().is_some()
+                            && pane.tabs().items() == [PREVIEW, INSPECTOR]
+                    })
+                }) == Some(true);
+                if !app.all_root_profile() || !default_panes {
+                    return Err("Default did not restore all eight IDs and the default tab groups to the root host".to_owned());
+                }
+                eprintln!(
+                    "editor-smoke: programmatic=default-presented registry=8 text=preserved fresh-presented=true quiescent=true"
+                );
+                let request = app.dockspace.request_select_item(EDITOR);
+                self.submit(
+                    app,
+                    request,
+                    "Smoke: focus Document after Default",
+                    Stage::SelectResetEditor,
+                )?;
+            }
+            Stage::SelectResetEditor => {
+                if let Some(status) = self.take_status(app)? {
+                    if !matches!(
+                        status,
+                        NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                            DockspaceActionOutcome::Selected { item: EDITOR, .. }
+                        ))
+                    ) {
+                        return Err(format!("Document select after Default failed: {status:?}"));
+                    }
+                    eprintln!(
+                        "editor-smoke: programmatic=default-select item={}",
+                        EDITOR.get()
+                    );
+                    self.set_stage(Stage::ResetInput);
+                }
+            }
+            Stage::ResetInput if self.settled(app) => {
+                if self.input(app, EDITOR, "RESET_EDIT", false)? {
+                    self.check_text(app)?;
+                    #[cfg(feature = "serde")]
+                    {
+                        "Default all-root".clone_into(&mut app.preset_name);
+                        app.save_named_preset()?;
+                        eprintln!(
+                            "editor-smoke: programmatic=capture-preset profile=default-all-root slots=1 registry=8"
+                        );
+                        self.restore_after_close = true;
+                        let request = app.dockspace.request_close_item(INSPECTOR);
+                        self.submit(
+                            app,
+                            request,
+                            "Smoke: close Inspector before JSON restore",
+                            Stage::CloseInspector,
+                        )?;
+                    }
+                    #[cfg(not(feature = "serde"))]
+                    self.set_stage(Stage::FinalQuiescence);
+                }
+            }
+            #[cfg(feature = "serde")]
+            Stage::DocumentRestore => {
+                if let Some(status) = self.take_status(app)? {
+                    if !matches!(status, NativeActionStatus::DocumentRestored { previous, current } if previous != current)
+                    {
+                        return Err(format!("JSON document restore did not commit: {status:?}"));
+                    }
+                    // Require a placeholder callback after this terminal result, too.
+                    app.dockspace.with_panes_mut(|panes| {
+                        panes
+                            .panes
+                            .get_mut(&INSPECTOR)
+                            .expect("Inspector")
+                            .missing_painted = false;
+                    });
+                    self.check_text(app)?;
+                    eprintln!(
+                        "editor-smoke: programmatic=document-restored logically-committed=true fresh-presented=required"
+                    );
+                    self.set_stage(Stage::RestoredPlaceholder);
+                }
+            }
+            #[cfg(feature = "serde")]
+            Stage::RestoredPlaceholder if self.settled(app) => {
+                self.check_text(app)?;
+                if !app.all_root_profile() || !location.is_some_and(InspectorLocation::is_contained)
+                {
+                    return Err(
+                        "JSON restore did not restore the all-root Inspector profile".to_owned(),
+                    );
+                }
+                let missing_drawn = app.dockspace.with_panes(|panes| {
+                    let pane = &panes.panes[&INSPECTOR];
+                    !pane.loaded
+                        && pane.key == "pane/inspector"
+                        && pane.title == "Inspector"
+                        && pane.missing_painted
+                        && pane.input.is_none()
+                        && panes.focus_target(INSPECTOR).is_none()
+                });
+                if !missing_drawn {
+                    return Ok(());
+                }
+                eprintln!(
+                    "editor-smoke: programmatic=missing-placeholder item={} actual-draw=true fresh-presented=true focus-target=none",
+                    INSPECTOR.get()
+                );
+                app.dockspace.with_panes_mut(|panes| {
+                    panes
+                        .panes
+                        .get_mut(&INSPECTOR)
+                        .expect("Inspector")
+                        .set_loaded(true);
+                });
+                eprintln!(
+                    "editor-smoke: programmatic=reload item={} data=retained",
+                    INSPECTOR.get()
+                );
+                let request = app.dockspace.request_select_item(INSPECTOR);
+                self.submit(
+                    app,
+                    request,
+                    "Smoke: new Inspector focus after reload",
+                    Stage::SelectRestoredInspector,
+                )?;
+            }
+            #[cfg(feature = "serde")]
+            Stage::SelectRestoredInspector => {
+                if let Some(status) = self.take_status(app)? {
+                    if !matches!(
+                        status,
+                        NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                            DockspaceActionOutcome::Selected {
+                                item: INSPECTOR,
+                                ..
+                            }
+                        ))
+                    ) {
+                        return Err(format!("Inspector select after reload failed: {status:?}"));
+                    }
+                    eprintln!(
+                        "editor-smoke: programmatic=restore-select item={}",
+                        INSPECTOR.get()
+                    );
+                    self.set_stage(Stage::RestoredInput);
+                }
+            }
+            #[cfg(feature = "serde")]
+            Stage::RestoredInput
+                if location.is_some_and(|location| self.ready(app, location, false)) =>
+            {
+                if self.input(app, INSPECTOR, "RESTORED_EDIT", false)? {
+                    self.set_stage(Stage::FinalQuiescence);
+                }
+            }
+            Stage::FinalQuiescence if self.settled(app) => {
+                self.check_text(app)?;
+                if !app.all_root_profile()
+                    || app.dockspace.arrangement_locked()
+                    || !app.dockspace.pending_content_close_plans().is_empty()
+                    || !app
+                        .dockspace
+                        .with_panes(|panes| panes.panes.values().all(|pane| pane.loaded))
+                {
+                    return Err(
+                        "the final all-root profile has missing panes, a lock or pending decisions"
+                            .to_owned(),
+                    );
+                }
+                eprintln!(
+                    "editor-smoke: programmatic=final-quiescence registry=8 text=preserved fresh-presented=true"
                 );
                 self.set_stage(Stage::Complete);
             }
@@ -509,10 +777,10 @@ impl EditorSmoke {
             .ok_or_else(|| format!("presentation request was not accepted: {:?}", app.status))
     }
 
-    fn submit(
+    fn submit<E: std::fmt::Display>(
         &mut self,
         app: &mut NativeExampleApp,
-        request: Result<(), NativeActionRequestError>,
+        request: Result<(), E>,
         operation: &'static str,
         stage: Stage,
     ) -> Result<(), String> {
@@ -532,16 +800,17 @@ impl EditorSmoke {
         let Some(status) = app.dockspace.take_action_status() else {
             return Ok(None);
         };
-        app.action = ExampleActionState::Idle;
         let status =
             status.map_err(|error| format!("programmatic smoke action interrupted: {error}"))?;
-        app.status = Some(super::layout::describe_status(&status));
+        app.record_action_status(&status);
         Ok(Some(status))
     }
 
     fn check_text(&self, app: &NativeExampleApp) -> Result<(), String> {
         app.dockspace.with_panes(|panes| {
-            (panes.panes[&INSPECTOR].text == self.expected)
+            self.expected
+                .iter()
+                .all(|(item, expected)| panes.panes[item].text == *expected)
                 .then_some(())
                 .ok_or_else(|| {
                     "a layout or presentation action changed application-owned text".to_owned()
@@ -552,12 +821,13 @@ impl EditorSmoke {
     fn input(
         &mut self,
         app: &NativeExampleApp,
+        item: ItemId,
         marker: &str,
         native: bool,
     ) -> Result<bool, String> {
         let (text, input) = app.dockspace.with_panes(|panes| {
-            let inspector = &panes.panes[&INSPECTOR];
-            (inspector.text.clone(), inspector.input)
+            let pane = &panes.panes[&item];
+            (pane.text.clone(), pane.input)
         });
         let Some((viewport, rect, focused, scale)) = input else {
             return Ok(false);
@@ -567,7 +837,8 @@ impl EditorSmoke {
         }
         if !self.announced {
             eprintln!(
-                "editor-smoke: input={marker} window={} x={:.1} y={:.1}",
+                "editor-smoke: input={marker} item={} window={} x={:.1} y={:.1}",
+                item.get(),
                 if native { "child" } else { "root" },
                 rect.center().x * scale,
                 rect.center().y * scale,
@@ -575,14 +846,14 @@ impl EditorSmoke {
             self.announced = true;
         }
         if focused && !self.focus_announced {
-            eprintln!("editor-smoke: focused={marker}");
+            eprintln!("editor-smoke: focused={marker} item={}", item.get());
             self.focus_announced = true;
         }
-        if text == format!("{}{marker}", self.expected) && focused {
-            self.expected = text;
+        if text == format!("{}{marker}", self.expected[&item]) && focused {
+            self.expected.insert(item, text);
             eprintln!(
                 "editor-smoke: accepted real focused edit {marker} item={}",
-                INSPECTOR.get()
+                item.get()
             );
             return Ok(true);
         }

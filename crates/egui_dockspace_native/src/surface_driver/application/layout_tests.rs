@@ -1,0 +1,648 @@
+//! Layout commands use the native application's bounded command and result slot.
+
+use std::error::Error;
+
+use dockspace::model::{
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
+    SurfaceId,
+};
+use dockspace::policy::DockPolicy;
+use dockspace::runtime::{
+    DockspaceRuntimeError, DockspaceSession, HostFrameReport, HostInputOutcome,
+    NativeReceiverAnswer, SurfaceUnavailableReason,
+};
+use eframe::egui;
+use egui_dockspace::{DockStyle, PaneView};
+
+use crate::error::NativeHostProtocolError;
+use crate::{
+    NativeActionRequestError, NativeActionStatus, NativeLayoutRequestError, NativeRuntimeErrorKind,
+    NativeWindowClosePolicy,
+};
+
+use super::NativeRuntimeState;
+
+const SURFACE: SurfaceId = SurfaceId::new(1);
+const OTHER_SURFACE: SurfaceId = SurfaceId::new(2);
+const ROOT: RootId = RootId::new(10);
+const PRESET_ROOT: RootId = RootId::new(1);
+const FIRST: ItemId = ItemId::new(1);
+const SECOND: ItemId = ItemId::new(2);
+const THIRD: ItemId = ItemId::new(3);
+
+struct Panes(Vec<(ItemId, String)>);
+
+impl PaneView for Panes {
+    fn title(&self, _item: ItemId) -> Option<egui::WidgetText> {
+        Some("Layout command pane".into())
+    }
+
+    fn ui(&mut self, _item: ItemId, _ui: &mut egui::Ui) {}
+}
+
+fn surface(
+    id: SurfaceId,
+    root: RootId,
+    items: &[ItemId],
+    selected: ItemId,
+) -> DockspaceSurfaceLayout {
+    DockspaceSurfaceLayout::new(
+        id,
+        DockspaceRootLayout::new(
+            root,
+            DockspaceNode::central_tabs_with_selection(items.iter().copied(), Some(selected))
+                .unwrap(),
+        ),
+    )
+}
+
+fn layout(root: RootId, items: &[ItemId], selected: ItemId) -> DockspaceLayout {
+    DockspaceLayout::new([surface(SURFACE, root, items, selected)]).unwrap()
+}
+
+fn state_from_session(session: DockspaceSession) -> NativeRuntimeState<Panes> {
+    NativeRuntimeState::new(
+        egui::Id::unique("native-layout-command-regressions"),
+        session,
+        SURFACE,
+        Panes(vec![
+            (FIRST, "unsaved first pane".to_owned()),
+            (SECOND, "unsaved second pane".to_owned()),
+        ]),
+        DockStyle::default(),
+        NativeWindowClosePolicy::Cancel,
+    )
+    .unwrap()
+}
+
+fn test_state() -> NativeRuntimeState<Panes> {
+    state_from_session(
+        DockspaceSession::from_layout(layout(ROOT, &[FIRST, SECOND], FIRST), DockPolicy::default())
+            .unwrap(),
+    )
+}
+
+fn commit_queued(
+    state: &mut NativeRuntimeState<Panes>,
+    local_selection: Option<ItemId>,
+) -> HostFrameReport {
+    let action = state.application_actions.take().unwrap();
+    let published = state.coordinator.session().version();
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(!frame.native_input_pending());
+    let submission = action.submit(&mut frame.frame, published).unwrap();
+    if let Some(item) = local_selection {
+        frame.frame.select_item_current(item).unwrap();
+        assert!(frame.frame.view().item(item).unwrap().is_selected());
+    }
+    let submitted = submission.finish(&mut frame.frame).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert!(
+        state
+            .application_actions
+            .settle_submission(Some(submitted), &report)
+            .unwrap()
+    );
+    state.coordinator.settle_host_frame_report(&report).unwrap();
+    report
+}
+
+fn take(state: &mut NativeRuntimeState<Panes>) -> NativeActionStatus {
+    let status = state.take_action_status().unwrap().unwrap();
+    assert!(state.take_action_status().is_none());
+    status
+}
+
+fn assert_queue_error(error: NativeLayoutRequestError, expected: NativeActionRequestError) {
+    assert_eq!(error.kind(), NativeRuntimeErrorKind::OperationConflict);
+    assert_eq!(
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<NativeActionRequestError>(),
+        Some(&expected)
+    );
+}
+
+#[test]
+fn queued_reset_is_stale_after_publication_and_repeated_resets_rebase_retired_roots() {
+    let mut state = test_state();
+    let panes = state.panes.0.clone();
+    let defaults = layout(PRESET_ROOT, &[FIRST, THIRD], THIRD);
+    let mut previous_root = ROOT;
+    for round in 0..2 {
+        let before = state.coordinator.session().version();
+        state.request_layout_reset(defaults.clone()).unwrap();
+        assert_eq!(state.coordinator.session().version(), before);
+        assert_queue_error(
+            state
+                .request_layout_reset(DockspaceLayout::empty())
+                .unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        assert_eq!(
+            state.request_select_item(FIRST),
+            Err(NativeActionRequestError::Busy)
+        );
+        let report = commit_queued(&mut state, Some(if round == 0 { SECOND } else { FIRST }));
+        if round == 0 {
+            assert!(
+                report
+                    .inputs()
+                    .iter()
+                    .any(|input| matches!(input, HostInputOutcome::NativeSurfaceRegistered { .. }))
+            );
+            assert!(!matches!(
+                report.inputs().first(),
+                Some(HostInputOutcome::LayoutReset { .. })
+            ));
+        }
+        let mut terminals = report.inputs().iter().filter_map(|input| match input {
+            HostInputOutcome::LayoutReset { previous, current } => Some((*previous, *current)),
+            _ => None,
+        });
+        let (previous, current) = terminals.next().unwrap();
+        assert!(terminals.next().is_none());
+        assert_ne!(previous, report.before());
+        assert_eq!(current, state.coordinator.session().version());
+        assert!(
+            !report
+                .inputs()
+                .iter()
+                .any(|input| matches!(input, HostInputOutcome::ProductActionApplied(_)))
+        );
+        assert_eq!(
+            state.request_select_item(FIRST),
+            Err(NativeActionRequestError::Busy)
+        );
+        assert_eq!(
+            take(&mut state),
+            NativeActionStatus::LayoutReset { previous, current }
+        );
+
+        let restored = state.coordinator.session().view().item(THIRD).unwrap();
+        assert_eq!(restored.surface(), SURFACE);
+        assert_eq!(restored.tabs().items(), &[FIRST, THIRD]);
+        assert!(restored.is_selected());
+        assert!(restored.root().get() > previous_root.get());
+        previous_root = restored.root();
+        assert!(state.coordinator.session().view().item(SECOND).is_none());
+        assert_eq!(state.panes.0, panes);
+        assert!(state.shutdown.is_none());
+    }
+
+    let before = state.coordinator.session().version();
+    state.request_layout_reset(defaults.clone()).unwrap();
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame.frame.select_item_current(FIRST).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    state.coordinator.settle_host_frame_report(&report).unwrap();
+    let accepted = state.coordinator.session().version();
+    assert_ne!(before, accepted);
+
+    let stale = commit_queued(&mut state, None);
+    assert_eq!(stale.after(), accepted);
+    assert!(
+        !stale
+            .inputs()
+            .iter()
+            .any(|input| matches!(input, HostInputOutcome::LayoutReset { .. }))
+    );
+    assert_queue_error(
+        state.request_layout_reset(defaults).unwrap_err(),
+        NativeActionRequestError::Busy,
+    );
+    assert_eq!(
+        take(&mut state),
+        NativeActionStatus::Stale {
+            expected: before,
+            accepted
+        }
+    );
+    let retained = state.coordinator.session().view().item(FIRST).unwrap();
+    assert!(retained.is_selected());
+    assert_eq!(retained.root(), previous_root);
+    assert_eq!(state.panes.0, panes);
+    assert!(state.shutdown.is_none());
+    state.request_select_item(THIRD).unwrap();
+    commit_queued(&mut state, None);
+    assert!(matches!(
+        take(&mut state),
+        NativeActionStatus::Dock(egui_dockspace::DockspaceActionStatus::Applied(
+            dockspace::model::DockspaceActionOutcome::Selected { item: THIRD, .. }
+        ))
+    ));
+}
+
+#[test]
+fn lock_and_host_validation_leave_the_slot_free_and_stopped_takes_precedence() {
+    let mut state = test_state();
+    let panes = state.panes.0.clone();
+    state.request_set_arrangement_locked(true).unwrap();
+    commit_queued(&mut state, None);
+    assert!(matches!(
+        take(&mut state),
+        NativeActionStatus::ArrangementLockChanged { locked: true, .. }
+    ));
+    let before = state.coordinator.session().version();
+    let error = state
+        .request_layout_reset(layout(PRESET_ROOT, &[FIRST, THIRD], THIRD))
+        .unwrap_err();
+    assert_eq!(error.kind(), NativeRuntimeErrorKind::OperationConflict);
+    assert_eq!(
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<DockspaceRuntimeError>()
+            .unwrap()
+            .kind(),
+        NativeRuntimeErrorKind::OperationConflict
+    );
+    assert!(!state.application_actions.is_occupied());
+    assert_eq!(state.coordinator.session().version(), before);
+
+    state.request_set_arrangement_locked(false).unwrap();
+    commit_queued(&mut state, None);
+    take(&mut state);
+    let before = state.coordinator.session().version();
+    let missing_host =
+        DockspaceLayout::new([surface(OTHER_SURFACE, ROOT, &[FIRST], FIRST)]).unwrap();
+    let extra_surface = DockspaceLayout::new([
+        surface(SURFACE, ROOT, &[FIRST], FIRST),
+        surface(OTHER_SURFACE, RootId::new(11), &[SECOND], SECOND),
+    ])
+    .unwrap();
+    assert!(
+        state
+            .coordinator
+            .session()
+            .prepare_layout_reset(extra_surface.clone())
+            .is_ok()
+    );
+    for (candidate, kind) in [
+        (
+            missing_host.clone(),
+            NativeRuntimeErrorKind::InvalidConfiguration,
+        ),
+        (extra_surface, NativeRuntimeErrorKind::Unsupported),
+    ] {
+        assert_eq!(
+            state.request_layout_reset(candidate).unwrap_err().kind(),
+            kind
+        );
+        assert!(!state.application_actions.is_occupied());
+        assert!(state.take_action_status().is_none());
+        assert_eq!(state.coordinator.session().version(), before);
+        assert_eq!(state.panes.0, panes);
+        assert!(state.shutdown.is_none());
+    }
+
+    state
+        .request_layout_reset(layout(PRESET_ROOT, &[FIRST], FIRST))
+        .unwrap();
+    state.stop_current_output(NativeHostProtocolError::RootSurfaceUnavailable(SURFACE).into());
+    assert!(state.application_actions.is_occupied());
+    assert_queue_error(
+        state
+            .request_layout_reset(missing_host.clone())
+            .unwrap_err(),
+        NativeActionRequestError::Stopped,
+    );
+    #[cfg(feature = "serde")]
+    {
+        assert_queue_error(
+            state
+                .request_document_restore_json(b"{", |_, _| {
+                    panic!("shutdown must take precedence over the occupied slot and JSON decoding")
+                })
+                .unwrap_err(),
+            NativeActionRequestError::Stopped,
+        );
+        assert_queue_error(
+            state.save_document_json().unwrap_err(),
+            NativeActionRequestError::Stopped,
+        );
+    }
+    assert!(state.take_action_status().unwrap().is_err());
+    assert!(state.take_action_status().is_none());
+    assert_queue_error(
+        state.request_layout_reset(missing_host).unwrap_err(),
+        NativeActionRequestError::Stopped,
+    );
+    assert_eq!(state.panes.0, panes);
+}
+
+#[cfg(feature = "serde")]
+mod persistence {
+    use std::cell::RefCell;
+
+    use dockspace::runtime::{
+        DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
+        DockspacePersistenceErrorKind,
+    };
+
+    use super::*;
+
+    const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x4c; 16]);
+
+    fn persistent_state() -> NativeRuntimeState<Panes> {
+        let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
+        assert_eq!(bootstrap.ensure_item("pane:first").unwrap(), FIRST);
+        assert_eq!(bootstrap.ensure_item("pane:second").unwrap(), SECOND);
+        state_from_session(
+            DockspaceSession::from_persistent_layout(
+                layout(ROOT, &[FIRST, SECOND], FIRST),
+                DockPolicy::default(),
+                bootstrap,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn recognize(document: DockspaceDocumentId, key: &str) -> bool {
+        document == DOCUMENT && matches!(key, "pane:first" | "pane:second" | "pane:new")
+    }
+
+    #[test]
+    fn locked_restore_rejects_without_occupying_slot_and_unlock_allows_restore_and_save() {
+        let mut state = persistent_state();
+        let panes = state.panes.0.clone();
+        let saved = state.save_document_json().unwrap();
+        state.request_set_arrangement_locked(true).unwrap();
+        commit_queued(&mut state, None);
+        assert!(state.arrangement_locked());
+        assert_queue_error(
+            state
+                .request_document_restore_json(&saved, |_, _| {
+                    panic!("the unconsumed result must take precedence over arrangement lock")
+                })
+                .unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        assert!(matches!(
+            take(&mut state),
+            NativeActionStatus::ArrangementLockChanged { locked: true, .. }
+        ));
+
+        let before = state.coordinator.session().version();
+        let generation = state.coordinator.session().next_document_generation();
+        let error: NativeLayoutRequestError = state
+            .request_document_restore_json(&saved, recognize)
+            .unwrap_err();
+        assert_eq!(error.kind(), NativeRuntimeErrorKind::OperationConflict);
+        assert!(error.source().is_none());
+        assert!(!state.application_actions.is_occupied());
+        assert!(state.take_action_status().is_none());
+        assert!(state.shutdown.is_none());
+        assert_eq!(state.coordinator.session().version(), before);
+        assert_eq!(
+            state.coordinator.session().next_document_generation(),
+            generation
+        );
+        assert_eq!(state.panes.0, panes);
+
+        state.request_set_arrangement_locked(false).unwrap();
+        assert_queue_error(
+            state
+                .request_document_restore_json(&saved, |_, _| {
+                    panic!("the queued unlock must take precedence over arrangement lock")
+                })
+                .unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        commit_queued(&mut state, None);
+        assert!(matches!(
+            take(&mut state),
+            NativeActionStatus::ArrangementLockChanged { locked: false, .. }
+        ));
+        assert!(!state.arrangement_locked());
+
+        state
+            .request_document_restore_json(&saved, recognize)
+            .unwrap();
+        let report = commit_queued(&mut state, None);
+        assert_eq!(
+            take(&mut state),
+            NativeActionStatus::DocumentRestored {
+                previous: report.before(),
+                current: report.after(),
+            }
+        );
+        let saved_again = state.save_document_json().unwrap();
+        let restored =
+            DockspaceSession::from_document_json(&saved_again, DockPolicy::default(), recognize)
+                .unwrap();
+        assert_eq!(restored.document_id(), Some(DOCUMENT));
+        assert_eq!(restored.external_key_for_item(FIRST), Some("pane:first"));
+        assert_eq!(restored.external_key_for_item(SECOND), Some("pane:second"));
+        assert!(restored.view().item(FIRST).unwrap().is_selected());
+        assert!(!state.application_actions.is_occupied());
+        assert!(state.shutdown.is_none());
+        assert_eq!(state.panes.0, panes);
+
+        state.request_set_arrangement_locked(true).unwrap();
+        commit_queued(&mut state, None);
+        assert!(state.arrangement_locked());
+        state.stop_current_output(NativeHostProtocolError::RootSurfaceUnavailable(SURFACE).into());
+        assert_queue_error(
+            state
+                .request_document_restore_json(&saved_again, |_, _| {
+                    panic!("shutdown must take precedence over arrangement lock and the unconsumed result")
+                })
+                .unwrap_err(),
+            NativeActionRequestError::Stopped,
+        );
+    }
+
+    #[test]
+    fn capture_and_external_restore_publish_known_and_new_keys_without_replacing_panes() {
+        let mut state = persistent_state();
+        let panes = state.panes.0.clone();
+        let captured = state.save_document_json().unwrap();
+        let generation = state.coordinator.session().next_document_generation();
+        let mut external =
+            DockspaceSession::from_document_json(&captured, DockPolicy::default(), recognize)
+                .unwrap();
+        assert_eq!(external.ensure_external_item("pane:new").unwrap(), THIRD);
+        let reset = external
+            .prepare_layout_reset(layout(PRESET_ROOT, &[FIRST, THIRD], THIRD))
+            .unwrap();
+        let mut frame = external.begin_layout_reset_frame(&reset).unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap();
+        let saved = external.save_document_json().unwrap();
+
+        let recognized = RefCell::new(Vec::new());
+        state
+            .request_document_restore_json(&saved, |document, key| {
+                recognized.borrow_mut().push(key.to_owned());
+                recognize(document, key)
+            })
+            .unwrap();
+        assert_eq!(
+            state
+                .coordinator
+                .session()
+                .item_id_for_external_key("pane:new"),
+            None
+        );
+        assert_queue_error(
+            state.save_document_json().unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        assert_eq!(
+            state.coordinator.session().next_document_generation(),
+            generation
+        );
+        assert_queue_error(
+            state
+                .request_layout_reset(layout(PRESET_ROOT, &[FIRST], FIRST))
+                .unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+
+        let report = commit_queued(&mut state, Some(SECOND));
+        assert_queue_error(
+            state.save_document_json().unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        let NativeActionStatus::DocumentRestored { previous, current } = take(&mut state) else {
+            panic!(
+                "the exact document terminal must settle despite native registration and local selection"
+            );
+        };
+        assert_ne!(previous, report.before());
+        assert_eq!(current, report.after());
+        assert_eq!(
+            report.inputs().last(),
+            Some(&HostInputOutcome::DocumentRestored { previous, current })
+        );
+        assert!(
+            report
+                .inputs()
+                .iter()
+                .any(|input| matches!(input, HostInputOutcome::NativeSurfaceRegistered { .. }))
+        );
+        assert!(
+            !report
+                .inputs()
+                .iter()
+                .any(|input| matches!(input, HostInputOutcome::ProductActionApplied(_)))
+        );
+        let mut recognized = recognized.into_inner();
+        recognized.sort();
+        assert_eq!(recognized, ["pane:first", "pane:new", "pane:second"]);
+        assert_eq!(
+            state
+                .coordinator
+                .session()
+                .item_id_for_external_key("pane:first"),
+            Some(FIRST)
+        );
+        assert_eq!(
+            state
+                .coordinator
+                .session()
+                .item_id_for_external_key("pane:new"),
+            Some(THIRD)
+        );
+        assert!(
+            state
+                .coordinator
+                .session()
+                .view()
+                .item(THIRD)
+                .unwrap()
+                .is_selected()
+        );
+        assert!(state.coordinator.session().view().item(SECOND).is_none());
+        assert_eq!(state.panes.0, panes);
+        assert!(state.shutdown.is_none());
+
+        let saved_again = state.save_document_json().unwrap();
+        let restored =
+            DockspaceSession::from_document_json(&saved_again, DockPolicy::default(), recognize)
+                .unwrap();
+        assert_eq!(restored.document_id(), Some(DOCUMENT));
+        assert_eq!(restored.external_key_for_item(SECOND), Some("pane:second"));
+        assert_eq!(restored.external_key_for_item(THIRD), Some("pane:new"));
+        assert!(restored.view().item(THIRD).unwrap().is_selected());
+    }
+
+    #[test]
+    fn malformed_restore_keeps_typed_source_and_busy_rejects_before_decoding() {
+        let mut state = persistent_state();
+        let panes = state.panes.0.clone();
+        let before = state.coordinator.session().version();
+        let generation = state.coordinator.session().next_document_generation();
+        let error = state
+            .request_document_restore_json(b"{", |_, _| {
+                panic!("malformed JSON must fail before identity recognition");
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), NativeRuntimeErrorKind::Persistence);
+        assert_eq!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<DockspacePersistenceError>()
+                .unwrap()
+                .kind(),
+            DockspacePersistenceErrorKind::InvalidDocument
+        );
+        assert!(!state.application_actions.is_occupied());
+        assert!(state.take_action_status().is_none());
+        assert!(state.shutdown.is_none());
+        assert_eq!(state.coordinator.session().version(), before);
+        assert_eq!(
+            state.coordinator.session().next_document_generation(),
+            generation
+        );
+
+        state.request_select_item(SECOND).unwrap();
+        assert_queue_error(
+            state
+                .request_document_restore_json(b"{", |_, _| {
+                    panic!("the occupied slot must be checked first")
+                })
+                .unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        assert_queue_error(
+            state.save_document_json().unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        commit_queued(&mut state, None);
+        assert_queue_error(
+            state
+                .request_document_restore_json(b"{", |_, _| {
+                    panic!("the unconsumed result owns the slot")
+                })
+                .unwrap_err(),
+            NativeActionRequestError::Busy,
+        );
+        assert!(matches!(
+            take(&mut state),
+            NativeActionStatus::Dock(egui_dockspace::DockspaceActionStatus::Applied(
+                dockspace::model::DockspaceActionOutcome::Selected { item: SECOND, .. }
+            ))
+        ));
+        assert_eq!(state.panes.0, panes);
+        assert!(state.shutdown.is_none());
+        state.save_document_json().unwrap();
+    }
+}

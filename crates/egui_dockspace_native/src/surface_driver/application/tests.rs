@@ -65,12 +65,13 @@ fn state_with_content(content: DockspaceNode, companion: bool) -> NativeRuntimeS
 
 fn commit_queued(state: &mut NativeRuntimeState<Panes>) {
     let action = state.application_actions.take().unwrap();
+    let published = state.coordinator.session().version();
     let mut frame = state
         .coordinator
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
     assert!(!frame.native_input_pending());
-    let submission = action.submit(&mut frame.frame).unwrap();
+    let submission = action.submit(&mut frame.frame, published).unwrap();
     let submitted = submission.finish(&mut frame.frame).unwrap();
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -78,10 +79,7 @@ fn commit_queued(state: &mut NativeRuntimeState<Panes>) {
     let report = frame.commit().unwrap();
     state
         .application_actions
-        .settle(
-            report.submitted_action_outcome(submitted),
-            report.presentation_transitions(),
-        )
+        .settle_submission(Some(submitted), &report)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
 }
@@ -465,11 +463,12 @@ fn configuration_follows_local_selection_and_lock_keeps_selection_available() {
     let mut state = state();
     state.request_set_arrangement_locked(true).unwrap();
     let action = state.application_actions.take().unwrap();
+    let published = state.coordinator.session().version();
     let mut frame = state
         .coordinator
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
-    let submission = action.submit(&mut frame.frame).unwrap();
+    let submission = action.submit(&mut frame.frame, published).unwrap();
     frame.frame.select_item_current(SECOND).unwrap();
     let submitted = submission.finish(&mut frame.frame).unwrap();
     frame
@@ -478,10 +477,7 @@ fn configuration_follows_local_selection_and_lock_keeps_selection_available() {
     let report = frame.commit().unwrap();
     state
         .application_actions
-        .settle(
-            report.submitted_action_outcome(submitted),
-            report.presentation_transitions(),
-        )
+        .settle_submission(Some(submitted), &report)
         .unwrap();
     assert!(matches!(
         take(&mut state),
@@ -548,12 +544,13 @@ fn exact_close_submission_ignores_other_close_requests_in_the_same_frame() {
     let mut state = state();
     state.request_close_item(FIRST).unwrap();
     let action = state.application_actions.take().unwrap();
+    let published = state.coordinator.session().version();
     let mut frame = state
         .coordinator
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
     frame.frame.request_close_item_current(SECOND).unwrap();
-    let submission = action.submit(&mut frame.frame).unwrap();
+    let submission = action.submit(&mut frame.frame, published).unwrap();
     frame.frame.request_close_item_current(THIRD).unwrap();
     let submitted = submission.finish(&mut frame.frame).unwrap();
     frame
@@ -570,10 +567,7 @@ fn exact_close_submission_ignores_other_close_requests_in_the_same_frame() {
     );
     state
         .application_actions
-        .settle(
-            report.submitted_action_outcome(submitted),
-            report.presentation_transitions(),
-        )
+        .settle_submission(Some(submitted), &report)
         .unwrap();
     let NativeActionStatus::CloseRequested { plan, .. } = take(&mut state) else {
         panic!("the submitted close result must be correlated")

@@ -406,27 +406,10 @@ impl NativeViewportMap {
     ) -> Result<Option<NativeWindowReceipt>, NativeViewportBindingError> {
         let same_window = self.window(viewport) == Some(successor_window);
         let current = if same_window {
-            let current = self
-                .route(viewport)
-                .map(NativeViewportRoute::snapshot)
-                .ok_or(NativeViewportBindingError::ViewportUnbound { viewport })?;
-            Self::validate_binding(viewport, expected, current)?;
-            self.validate_create_settled(viewport, expected)?;
-            if successor.surface() != expected.surface()
-                || self.prepared_retirements.contains(&expected)
-                || !self.route(viewport).is_some_and(|route| {
-                    route
-                        .terminal
-                        .as_ref()
-                        .is_some_and(NativeWindowReceipt::is_awaiting)
-                })
-            {
-                return Err(NativeViewportBindingError::BindingNotCurrent {
-                    viewport,
-                    surface: expected.surface(),
-                });
-            }
-            current
+            self.validate_same_window_replacement(viewport, expected, successor)?;
+            self.route(viewport)
+                .expect("validated same-window replacement retains its route")
+                .snapshot()
         } else {
             self.validate_replacement(viewport, expected, successor)?
         };
@@ -453,6 +436,34 @@ impl NativeViewportMap {
         let terminal = self.take_window_receipt(viewport, expected);
         self.insert(viewport, Some(successor_window), successor);
         Ok(terminal)
+    }
+
+    /// Validates the allocation-free receipt migration before a core publication.
+    pub(crate) fn validate_same_window_replacement(
+        &self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        let route = self
+            .route(viewport)
+            .ok_or(NativeViewportBindingError::ViewportUnbound { viewport })?;
+        Self::validate_binding(viewport, expected, route.snapshot())?;
+        self.validate_create_settled(viewport, expected)?;
+        if successor.surface() != expected.surface()
+            || route.window.is_none()
+            || self.prepared_retirements.contains(&expected)
+            || !route
+                .terminal
+                .as_ref()
+                .is_some_and(NativeWindowReceipt::is_awaiting)
+        {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: expected.surface(),
+            });
+        }
+        self.validate_window_unclaimed(viewport, route.window.expect("the window was checked"))
     }
 
     pub(crate) fn remove_viewport(

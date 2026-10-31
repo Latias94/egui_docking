@@ -4,7 +4,7 @@ use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanTarget, CloseRequestId,
     DeferredCloseDecision, DeferredCloseToken,
 };
-use dockspace::model::{DockPlacement, ItemId, NativeWindowPlacement, RootId};
+use dockspace::model::{DockPlacement, DockspaceLayout, ItemId, NativeWindowPlacement, RootId};
 use dockspace::runtime::DockspaceClosePlan;
 use egui_dockspace::PaneView;
 
@@ -14,11 +14,86 @@ use crate::application_action::{
 };
 
 use super::NativeRuntimeState;
+use crate::NativeLayoutRequestError;
 
 #[cfg(test)]
 mod tests;
 
 impl<P: PaneView> NativeRuntimeState<P> {
+    pub(crate) fn request_layout_reset(
+        &mut self,
+        layout: DockspaceLayout,
+    ) -> Result<(), NativeLayoutRequestError> {
+        self.ensure_application_slot_available()?;
+        self.validate_replacement_host(layout.view())?;
+        let reset = self.coordinator.session().prepare_layout_reset(layout)?;
+        let action = NativeApplicationAction::new(
+            self.coordinator.session().version(),
+            NativeApplicationCommand::LayoutReset(Box::new(reset)),
+        );
+        self.enqueue_application_action(action)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn request_document_restore_json(
+        &mut self,
+        bytes: &[u8],
+        recognize: impl Fn(dockspace::runtime::DockspaceDocumentId, &str) -> bool,
+    ) -> Result<(), NativeLayoutRequestError> {
+        self.ensure_application_slot_available()?;
+        if self.arrangement_locked() {
+            return Err(NativeLayoutRequestError::new_arrangement_locked());
+        }
+        let restore = self
+            .coordinator
+            .session()
+            .prepare_document_restore_json(bytes, recognize)?;
+        self.validate_replacement_host(restore.view())?;
+        let action = NativeApplicationAction::new(
+            self.coordinator.session().version(),
+            NativeApplicationCommand::DocumentRestore(Box::new(restore)),
+        );
+        self.enqueue_application_action(action)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn save_document_json(&mut self) -> Result<Vec<u8>, NativeLayoutRequestError> {
+        self.ensure_application_slot_available()?;
+        self.coordinator.save_document_json().map_err(Into::into)
+    }
+
+    fn ensure_application_slot_available(&self) -> Result<(), NativeActionRequestError> {
+        if self.shutdown.is_some() {
+            return Err(NativeActionRequestError::stopped());
+        }
+        if self.application_actions.is_occupied() {
+            return Err(NativeActionRequestError::busy());
+        }
+        Ok(())
+    }
+
+    fn validate_replacement_host(
+        &self,
+        view: dockspace::model::DockspaceView<'_>,
+    ) -> Result<(), NativeLayoutRequestError> {
+        if view.surface(self.root_surface).is_none() {
+            return Err(NativeLayoutRequestError::new_host_surface_missing(
+                self.root_surface,
+            ));
+        }
+        if let Some(unhosted) = view
+            .surfaces()
+            .find(|surface| surface.id() != self.root_surface)
+        {
+            return Err(NativeLayoutRequestError::new_unhosted_surface(
+                unhosted.id(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn request_dock_root(
         &mut self,
         root: RootId,
@@ -129,12 +204,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         &mut self,
         action: impl Into<NativeApplicationAction>,
     ) -> Result<(), NativeActionRequestError> {
-        if self.shutdown.is_some() {
-            return Err(NativeActionRequestError::stopped());
-        }
-        if self.application_actions.is_occupied() {
-            return Err(NativeActionRequestError::busy());
-        }
+        self.ensure_application_slot_available()?;
         let action = action.into();
         if self.content_close_removes_host_surface(&action.command) {
             return Err(NativeActionRequestError::HostSurfaceRequired {
@@ -231,3 +301,5 @@ impl<P: PaneView> NativeRuntimeState<P> {
         self.application_actions.take_result()
     }
 }
+#[cfg(test)]
+mod layout_tests;

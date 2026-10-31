@@ -526,6 +526,10 @@ pub(crate) struct PendingRuntimeDocumentRestore {
 }
 
 impl PreparedRuntimeDocumentRestore {
+    pub(crate) fn workspace(&self) -> &Workspace {
+        self.restored.restore.workspace()
+    }
+
     pub(crate) fn item_identity_scope(&self) -> Arc<BTreeSet<ItemId>> {
         Arc::clone(&self.item_identity_scope)
     }

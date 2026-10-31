@@ -6,7 +6,7 @@ use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
 use dockspace::model::{
-    DockPlacement, DockspaceView, ItemId, NativeWindowPlacement, RootId, SurfaceId,
+    DockPlacement, DockspaceLayout, DockspaceView, ItemId, NativeWindowPlacement, RootId, SurfaceId,
 };
 use dockspace::runtime::DockspaceClosePlan;
 use dockspace::runtime::DockspaceSession;
@@ -25,7 +25,9 @@ use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErr
 use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::mailbox::DeferredViewportPaint;
 use crate::surface_driver::{NativeErrorPresentation, NativeRuntimeState, NativeSurfaceUpdate};
-use crate::{NativeActionFailure, NativeActionRequestError, NativeActionStatus};
+use crate::{
+    NativeActionFailure, NativeActionRequestError, NativeActionStatus, NativeLayoutRequestError,
+};
 
 /// Fork-backed eframe application whose [`DockspaceSession`] is the sole graph authority.
 ///
@@ -466,6 +468,68 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     #[must_use]
     pub fn arrangement_locked(&self) -> bool {
         lock_state(&self.state).arrangement_locked()
+    }
+
+    /// Queues an application-owned default or preset layout in the existing slot.
+    ///
+    /// The layout must contain only this application's logical host surface.
+    /// Native input and final-pass local actions precede the terminal replacement.
+    /// Root bindings rejoin their existing physical windows with fresh authority;
+    /// retired child windows finish their existing cleanup. New logical surfaces
+    /// do not implicitly create OS windows. Consume `LayoutReset`, then wait for
+    /// fresh presentation with [`Self::is_surface_presented`] before interacting.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original queue or core preparation error, a missing host
+    /// error, or `Unsupported` for additional logical surfaces. A layout made
+    /// stale before execution reports `Stale` as its queued terminal result
+    /// without stopping the native runtime.
+    pub fn request_layout_reset(
+        &self,
+        layout: DockspaceLayout,
+    ) -> Result<(), NativeLayoutRequestError> {
+        lock_state(&self.state).request_layout_reset(layout)
+    }
+
+    /// Captures JSON for the current committed document without taking pane data.
+    ///
+    /// The application owns storage and preset names. Accepted but unpublished
+    /// native input is not part of this snapshot. Capture is refused while an
+    /// application command or unconsumed result owns the single slot, so saving
+    /// cannot invalidate a queued document restore's sidecar preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a queue/shutdown or original persistence capture error. The session
+    /// must have been constructed with a document bootstrap or validated document.
+    #[cfg(feature = "serde")]
+    pub fn save_document_json(&self) -> Result<Vec<u8>, NativeLayoutRequestError> {
+        lock_state(&self.state).save_document_json()
+    }
+
+    /// Queues one complete document restore after its ordered native prefix.
+    ///
+    /// Identity recognition includes closed and temporarily unloaded panes. A
+    /// recognized missing pane may render an application-owned placeholder. The
+    /// document must contain only the configured host surface and retain the
+    /// current lineage.
+    /// Keys and declared identities remain core-owned; current presentation and
+    /// focus require fresh native binding and output observations after restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original queue, decoding, identity or preparation failure, or
+    /// a missing host or unsupported additional surface before accepting the
+    /// command. A queued stale workspace reports `Stale` without replacing newer
+    /// committed state.
+    #[cfg(feature = "serde")]
+    pub fn request_document_restore_json(
+        &self,
+        bytes: &[u8],
+        recognize: impl Fn(dockspace::runtime::DockspaceDocumentId, &str) -> bool,
+    ) -> Result<(), NativeLayoutRequestError> {
+        lock_state(&self.state).request_document_restore_json(bytes, recognize)
     }
 
     /// Takes the exact terminal status of the last queued application action.
