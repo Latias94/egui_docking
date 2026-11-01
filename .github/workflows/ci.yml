@@ -212,6 +212,11 @@ jobs:
         with:
           shared-key: fork-native
 
+      - name: Install native framework build dependencies
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install --no-install-recommends -y libwayland-dev
+
       - name: Check native workspace formatting
         run: >-
           cargo fmt
