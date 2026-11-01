@@ -118,6 +118,8 @@ pub(crate) struct NativeCoordinator {
     input_control: NativeInputControl,
     lifecycle_progress: NativeLifecycleProgress,
     stationary: NativeStationaryState,
+    #[cfg(test)]
+    report_observer: Option<Arc<dyn Fn(&HostFrameReport) + Send + Sync>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,6 +384,46 @@ impl std::fmt::Debug for NativeCoordinator {
 }
 
 impl NativeCoordinator {
+    /// Observes committed reports at their existing adapter settlement boundary.
+    #[cfg(test)]
+    pub(crate) fn observe_reports_for_test(
+        &mut self,
+        observer: impl Fn(&HostFrameReport) + Send + Sync + 'static,
+    ) {
+        assert!(self.report_observer.is_none());
+        self.report_observer = Some(Arc::new(observer));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_translation_clock_cost_for_test(
+        &mut self,
+        ticks: Arc<std::sync::atomic::AtomicU64>,
+        cost_nanos: u64,
+    ) {
+        self.pointer_translator
+            .set_translation_clock_cost_for_test(ticks, cost_nanos);
+    }
+
+    /// Reports a recording renderer's affine output without minting an eframe token.
+    #[cfg(test)]
+    pub(crate) fn report_model_presentation_for_test(
+        &mut self,
+        output: PaintedSurfaceOutput,
+        result: SurfacePresentationResult,
+    ) -> Result<(), dockspace::runtime::SurfacePresentationReportError> {
+        self.session.report_surface_presentation(output, result)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn report_model_staging_presentation_for_test(
+        &mut self,
+        output: dockspace::runtime::PaintedNativeStagingOutput,
+        result: SurfacePresentationResult,
+    ) -> Result<(), dockspace::runtime::NativeStagingPresentationReportError> {
+        self.session
+            .report_native_staging_presentation(output, result)
+    }
+
     /// Enrolls the one managed desktop provider for a session.
     ///
     /// # Errors
@@ -556,6 +598,8 @@ impl NativeCoordinator {
             input_control,
             lifecycle_progress: NativeLifecycleProgress::default(),
             stationary: NativeStationaryState::default(),
+            #[cfg(test)]
+            report_observer: None,
         };
         if let Some(producer) =
             storage_limit.and_then(NativeInputStorageLimit::producer_storage_limit)
@@ -995,6 +1039,10 @@ impl NativeCoordinator {
         &mut self,
         report: &HostFrameReport,
     ) -> Result<bool, NativeRuntimeError> {
+        #[cfg(test)]
+        if let Some(observer) = &self.report_observer {
+            observer(report);
+        }
         let settled = self.settle_host_frame_inputs_with_pending(
             report.inputs(),
             report.native_input_pending(),

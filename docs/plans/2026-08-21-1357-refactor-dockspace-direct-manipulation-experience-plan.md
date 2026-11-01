@@ -47,8 +47,8 @@ The next completion work is concrete:
 | --- | --- |
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
-| U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The unreachable Root-close chain, duplicate ordinary command Vec and configurable command-slot quota are removed; one existing Focus owner remains. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples; repeated deadline exhaustion with simultaneous runnable owners remains open. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
-| U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
+| U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The elapsed-time model qualifies five expired turns, ready close/create and an accepted release through the shared-budget core continuation, with continuous feedback counting through drain. All 527 affected library cases pass on macOS and Linux, also without Linux native assertions. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples. Broader owner/platform and service-only terminal combinations retain their limits; 2 ms is a cooperative threshold. |
+| U7/U10 positive stationary input | Qualify a finite Q1 root query / G2 fresh XI2 regrab sample with exact original claim and native FIFO rejection through the final reply. Never drain and reuse Q1. Then connect independently proven capture/delivery facts before enabling automatic OS selection/scrolling; existing negative journeys do not close the positive criterion. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
 | U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
 
@@ -2066,6 +2066,34 @@ create bindings or empty-frame publication. Source content remains until its
 actual lifecycle terminal; policy approval alone cannot remove it. Dispatch
 time is frozen in this model. It does not qualify repeated elapsed-time expiry,
 successful OS close, or an accepted release under that same service load.
+
+The following elapsed-time model separates source, close target and a waiting
+bootstrap. Five sixteen-record refills retain one-millisecond arrival times;
+a cfg(test) completed-translation cost advances the same pure-read clock by
+3 ms. Five turns exhaust elapsed time with record allowance remaining, and a
+spent budget cannot claim again. Close/create progress in the third turn while
+refill continues. The shared-budget public core continuation observes one exact
+release terminal at 35 ms; finite drain returns Wait at controlled95 ms. A
+fixed report observer verifies that all later service/close/drain reports and
+two Waits never repeat its exact manipulation or artifact settlement. This
+is a model of cooperative expiry and coexistence, not service-only terminal
+observation, measured CPU cost, arbitrary perpetual overload or hard real time.
+Final qualification passes 527 macOS library cases and 527 Linux cases in both
+native assertion modes, the isolated real O256 case, Clippy and formatting.
+The unchanged 10,000-lifetime case is not repeated. Production binaries exclude
+all probes, report observers and recording-renderer wrappers.
+
+Test-only Winit `a4b051c4` also confirms same-client XI2 regrab Success before
+foreign freeze and Frozen during the queued real release. The original five
+presses, Unknown observations and exactly-once delivery remain verified.
+Regrab supplies a check at server execution, not old-lease continuity or an
+atomic position/hover/capture sample. Qualify that stronger sampling contract
+before exposing known capture/delivery or positive stationary behavior.
+The bounded next experiment is Q1 root query, actual G2 XI2 regrab, then exact
+claim revalidation and refusal if any native event is queued through the final
+reply. Do not dispatch/drain and reuse Q1. Source mutation or crossing, queued
+release, foreign freeze and indeterminate regrab must retain cleanup and reject
+publication without introducing another capture registry or clock.
 
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete

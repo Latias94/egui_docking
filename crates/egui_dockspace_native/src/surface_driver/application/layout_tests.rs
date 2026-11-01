@@ -348,6 +348,8 @@ fn lock_and_host_validation_leave_the_slot_free_and_stopped_takes_precedence() {
 
 #[cfg(feature = "serde")]
 mod persistence {
+    mod service_deadline_tests;
+
     use std::cell::RefCell;
 
     use dockspace::geometry::{PhysicalRect, ScaleFactor};

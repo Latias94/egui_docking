@@ -75,7 +75,11 @@ acquisition command yet. Test-only Winit `beb11f6c` verifies a distinct client's
 paired-keyboard freeze while our pointer effect remains Acquired: a real release
 stays logically down and undelivered even after checked AsyncDevice and AsyncPair
 on our original connection. Foreign ungrab delivers it once. These requests
-therefore cannot establish fresh capture or delivery. See the counterexample and
+therefore cannot establish fresh capture or delivery. The follow-up test-only
+commit `a4b051c4` verifies same-client XI2 regrab Success before the freeze and
+Frozen during it. Regrab can add a server-execution-time check, but separate
+position/hover and capture replies still need a qualified common sampling
+boundary. Current queries remain Unknown. See the counterexample and
 dated explicit-effect evidence in
 [`VALIDATION.md`](../VALIDATION.md#2026-11-01-serialized-x11-capture-effects-and-exact-cleanup).
 

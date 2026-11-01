@@ -15,6 +15,84 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 elapsed-time service coexistence and XI2 regrab cross-check
+
+The finite elapsed-service fixture separates the release source, tokenless
+close target and waiting native bootstrap into three logical surfaces. It
+establishes the source through actual core Create acknowledgement, PreShow,
+Show acknowledgement, PostShow and exact first-live acceptance before arming
+the reorder. The source route must bind before a hidden snapshot can publish
+its staging request; the initial fixture bound it too late and correctly
+failed with OutputRouteAttachmentFailed. No production rule was weakened.
+
+A cfg(test)-only callback cost advances the fixture's existing nanosecond
+clock by 3 ms after real pointer translation. Clock reads remain pure; cloned
+translation candidates share the same fixture clock. Five live turns each
+receive sixteen idle records at one-millisecond intervals, and all five
+exhaust elapsed time with record allowance still available. Reusing a spent
+budget cannot claim another successor, append input or publish another version.
+The same close/create owners progress in the third turn while refill continues,
+with one stable child binding and preserved close-source content. After finite
+drainage, pending external creation returns Wait rather than empty-frame polling.
+
+The accepted release retains its original manipulation and affine output.
+Returning that exact output settles its artifact once and yields one Dock
+terminal after 35 ms on the controlled clock, preserving the pending
+manipulation identity. The source tabs become `[Second, First]`; unrelated close
+and waiting-child content retain their surfaces. Total controlled time is
+95 ms, within the explicit 100 ms assertion, and measured/reserved input data
+stay inside the selected 4 MiB profile. A fixed fixture observer on the existing
+report-settlement boundary continues counting the exact manipulation and
+artifact through all later service/close reports, drain and two final Waits.
+Both counts stay exactly one; the test does not stop observing after its first
+terminal. It counts artifact settlement, including retirement, rather than
+claiming that the old preview remains current after docking. Deliberate source
+mutation/stale-output rejection belongs to the existing separate regressions.
+
+Release feedback is observed through the existing public core continuation
+sharing the service turn's one budget before service consumes that report.
+This is not service-only terminal observation, a real 1 kHz run, measured CPU
+cost, OS/GPU latency or a hard real-time bound. The injected callback may run
+past the cooperative 2 ms deadline; subsequent work must yield. This closes
+the finite elapsed-time coexistence model, not arbitrary perpetual overload
+or every runnable-owner/backend combination. Production layout and runtime
+code exclude the probe and recording-renderer wrappers through cfg(test).
+
+The adjacent test-only Winit commit `a4b051c4590fbef1f43ec0a7d3bdf4557f481e60`
+extends the same five-press real X11 case. Same-client XI2 Async/Async regrab
+using the production pointer mask succeeds before foreign freeze and returns
+Frozen while a distinct client's paired keyboard freezes the actual release.
+All Unknown observations and exactly-once release checks remain. The real case
+passes in 0.46 seconds, with correctness/suspicious Clippy and nightly format
+checks. The original claim cleans up first; an exact own-client/device guard
+covers an indeterminate test-only regrab after that final press. No successor
+grab exists in this cleanup path.
+
+Regrab success supplies a server-execution-time freeze check. It replaces the
+server grab and does not prove old-lease continuity, physical button state or
+atomic consistency with a separate earlier position/hover query. Current
+production pins and capture/delivery Unknown remain unchanged; positive
+stationary input is still open. Local regrab evidence is
+`/tmp/dockspace-x11-regrab-qualification.json`. Final affected gates pass 527
+macOS library cases, 527 Linux library cases and the same 527 Linux cases with
+native debug assertions disabled. The just-qualified 10,000-lifetime case is
+excluded; production lifecycle code is unchanged. The isolated real O256 case
+also passes with the final test-only layout, sampling
+2,143,997/3,267,728 owned/reserved bytes. Correctness/suspicious Clippy,
+formatting and patch integrity pass; existing advisory warnings are retained.
+Final source hashes and commands are in
+`/tmp/dockspace-elapsed-observer-qualification.json`. Independent review's
+feedback-observation P2 is fixed and re-reviewed. Earlier focused/source
+records remain diagnostic evidence, rather than final-source qualification.
+
+The next finite sampling experiment must bracket a root position/hover query
+with an actual same-client XI2 regrab, reject any queued native event through
+the final reply, and revalidate the exact original active capture claim. It
+must not drain events and reuse the old query. The production Enter/Leave and
+Motion/Button mask is part of this prerequisite: a foreign hierarchy change
+or thawed queued input must invalidate the sample before publication. This is
+a proposed boundary, not implemented support or a complete protocol proof.
+
 ## 2026-11-01 combined lifecycle owners at O256 and foreign freeze counterexample
 
 The existing W4/A1/E2/M4/L2 finite lifecycle model now admits 256 original
@@ -76,7 +154,7 @@ source/device release and retires the original press. The complete five-press
 case passes in 0.39 seconds; foreign grab and injected-button cleanup use RAII.
 
 The integration's production Winit pin remains `39a8165d`; the subsequent fork
-commit changes only this test and does not require a runtime repin. The core,
+commits change only this test and do not require a runtime repin. The core,
 egui fork and native production sources retain their preceding qualification.
 Positive stationary input, the elapsed-time service/deadline combination and the
 remaining U7/U8/U9/U10/U11 criteria stay open. Current local logs are

@@ -27,6 +27,8 @@ pub(crate) struct NativePointerTranslator {
     devices: BTreeMap<NativeInputDeviceKey, NativePointerDeviceEntry>,
     next_device_identity: u64,
     next_scroll_sequence: u64,
+    #[cfg(test)]
+    translation_clock_cost: Option<(std::sync::Arc<std::sync::atomic::AtomicU64>, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +101,17 @@ pub(crate) enum NativePointerTranslation {
 }
 
 impl NativePointerTranslator {
+    /// Charges completed callback work to the fixture's existing nanosecond clock.
+    /// Clock reads remain pure, and cloned retry candidates share the same source.
+    #[cfg(test)]
+    pub(crate) fn set_translation_clock_cost_for_test(
+        &mut self,
+        ticks: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        cost_nanos: u64,
+    ) {
+        self.translation_clock_cost = Some((ticks, cost_nanos));
+    }
+
     /// Counts inline storage, device/tombstone entries and button entries.
     /// B-tree node and allocator overhead are excluded.
     pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
@@ -246,6 +259,14 @@ impl NativePointerTranslator {
         resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
         let translation = self.translate(record, resolve_work_area);
+        #[cfg(test)]
+        if let Some((ticks, cost)) = &self.translation_clock_cost {
+            let _ = ticks.fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |current| Some(current.saturating_add(*cost)),
+            );
+        }
         let NativePointerTranslation::Input(input) = translation else {
             return translation;
         };
