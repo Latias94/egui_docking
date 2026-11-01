@@ -141,7 +141,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/winit
-          ref: f378b50f29cafafec31cd8675c17646b4ef57d70
+          ref: 2664589f0bd6fd03b2a5490f23bcd692853e63dd
           path: .ci/winit-fork
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -192,14 +192,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: 0716beee5b7284389f2e80ffb6b24b5af6ae2910
+          ref: 56e3db49b66096b58a23b8eb762bdc0a73ae043c
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
         uses: actions/checkout@v4
         with:
           repository: Latias94/winit
-          ref: f378b50f29cafafec31cd8675c17646b4ef57d70
+          ref: 2664589f0bd6fd03b2a5490f23bcd692853e63dd
           path: .ci/winit-fork
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
