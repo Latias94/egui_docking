@@ -424,7 +424,7 @@ fn parse_optional_u32_property(
     max_items: usize,
     name: &str,
 ) -> Result<Option<Vec<u32>>, String> {
-    if reply.type_ == AtomEnum::NONE.into() {
+    if reply.type_ == u32::from(AtomEnum::NONE) {
         if reply.format == 0
             && reply.length == 0
             && reply.bytes_after == 0

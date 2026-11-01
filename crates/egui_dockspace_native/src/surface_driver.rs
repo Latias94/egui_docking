@@ -309,6 +309,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
     ) -> Result<bool, NativeRuntimeError> {
         let bridge = self.coordinator.dispatch_bridge();
         self.abandon_unfinalized_output_passes(context)?;
+        self.coordinator
+            .drive_pointer_capture(context, budget, self.shutdown.is_none())?;
         loop {
             let before = budget.remaining_records();
             let pending_output = self.coordinator.has_pending_output_prefix();
@@ -928,6 +930,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .map_err(map_pass_action_error)?;
         }
         coordinator.dispatch_viewport_commands(&context)?;
+        coordinator.drive_pointer_capture(&context, budget, self.shutdown.is_none())?;
         if let Some(command) = coordinator.pointer_passthrough_command() {
             if !coordinator.dispatch_pointer_passthrough(&context, command) {
                 let removed = coordinator.fail_pointer_passthrough_dispatch(command);
@@ -1362,7 +1365,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             false
         };
         let native_close_progress = native_close_progress?;
-        let commands_dispatched = self.dispatch_post_commit(context)?;
+        let commands_dispatched = self.dispatch_post_commit(context)?
+            | self
+                .coordinator
+                .drive_pointer_capture(context, budget, self.shutdown.is_none())?;
         for repaint_surface in report.repaint_surfaces() {
             match self.coordinator.repaint_viewport(*repaint_surface) {
                 Some(egui::ViewportId::ROOT) | None if *repaint_surface == self.root_surface => {

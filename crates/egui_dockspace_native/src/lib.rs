@@ -24,6 +24,7 @@ mod layout_management;
 mod lifecycle_progress;
 mod mailbox;
 mod pass_actions;
+mod pointer_capture;
 mod pointer_event;
 mod pointer_observation;
 mod receiver;

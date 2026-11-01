@@ -48,7 +48,7 @@ The next completion work is concrete:
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
 | U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The elapsed-time model qualifies five expired turns, ready close/create and an accepted release through the shared-budget core continuation, with continuous feedback counting through drain. All 527 affected library cases pass on macOS and Linux, also without Linux native assertions. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples. Broader owner/platform and service-only terminal combinations retain their limits; 2 ms is a cooperative threshold. |
-| U7/U10 positive stationary input | Winit `3199a442` qualifies finite direct-root Q1/G2 capture sampling with exact claim, final native FIFO rejection and interval invalidation across completed native expansion. Connect eframe/native acquisition, cleanup and the core acquisition event, then qualify positive stationary journeys and ordinary window-manager sources. Component evidence does not close the product criterion. |
+| U7/U10 positive stationary input | Winit `3199a442` and eframe `97ebef041` now connect finite direct-root sampling, native acquisition/release and the core acquisition event through existing owners. Pending-deadline and late-query real-backend/recording-host regressions, public160/188, native529 in both assertion modes/platforms and the scoped real-window/physical refresh pass. Ordinary window-manager sources and complete positive eframe/GPU stationary journeys remain the product criterion. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
 | U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
 
@@ -2109,6 +2109,38 @@ The integration still selects the old Git pins. Connect automatic acquisition
 and exact cleanup through eframe/native, record the existing core acquisition
 event, and certify non-direct-root source/hover and positive product journeys
 before closing stationary or overall native acceptance.
+
+The subsequent automatic-capture slice connects eframe `97ebef041` and Winit
+`3199a442` through the existing native gesture, property queue, window resource
+and ordered receipt. A read-only public capture requirement precedes finite
+timed work and retains exact gesture identity across target changes. Pending
+input does not imply release. Acquisition and release share one prepaid callback
+slot; a resource hold preserves cleanup backing after retirement. Pending
+acquisition cannot consume the old timed deadline, and a previously queued query
+must report its first fresh capture through CaptureAcquired before ordinary timed
+work. The two real-XTest/recording-host journeys and targeted negative controls
+pass alongside workspace1,953/public160/188, native529 in both assertion modes
+on macOS/Linux, all four 10,000-lifetime soaks, strict docs/lints, programmatic
+windows, all six pressure scenarios on both platforms and the five scoped
+physical refreshes. This does not certify an
+eframe/GPU stationary product journey or ordinary WM-framed source/hover. Full
+source scope, independent reviews, prior fixture failure and gate results are
+recorded in `docs/VALIDATION.md`.
+
+The next ordinary-WM experiment is bounded. Source eligibility should retain
+the exact owned window/root/device/press and current Viewable/grab checks rather
+than add an ancestry registry. For hover, use earlier child replies only to
+discover the next query object. A terminal XIQueryPointer reply which directly
+names a live owned child supplies its own root coordinates and hover together;
+never combine Q1 coordinates with a later child. Xorg's
+[query implementation](https://raw.githubusercontent.com/mirror/xserver/master/Xi/xiquerypointer.c)
+walks the current sprite's ancestor chain when populating that reply. This is a
+candidate extension, not qualified support. Before removing direct-root gates,
+real tests must prove actual WM reparenting, a foreign InputOnly sibling inside
+the same frame, and ancestor-only unmap/remap at both sampling checkpoints.
+Unknown/depth-limit/query-failure cases stay Unknown. In particular, verify the
+existing XI NotifyUngrab revocation on ancestor loss instead of assuming source
+UnmapNotify or adding a speculative frame-to-client authority cache.
 
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete

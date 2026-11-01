@@ -320,9 +320,13 @@ cannot supply those observations.
 
 The [native pointer observation prerequisite](VALIDATION.md#2026-10-30-native-pointer-observation-prerequisite)
 can query a limited X11 desktop point/root-child hover with exact device/window
-correlation. **Fresh native stationary capture and delivery remain `Unknown`.**
-`XIQueryPointer` does not identify a current grab owner, and retained implicit
-capture cannot repair that gap. The seam reports observations without
+correlation. Ordinary and implicit-only queries retain Unknown capture and
+delivery: `XIQueryPointer` does not identify a current grab owner, and retained
+implicit capture cannot repair that gap. The later
+[finite fresh sample](VALIDATION.md#2026-11-01-finite-fresh-x11-capture-sampling)
+can publish known routes only by refreshing an exact active explicit capture
+for a viewable direct-root source, then rejecting queued or intervening native
+events. The seam reports observations without
 synthesizing motion. The adapter uses that result seam for finite Desktop Mouse
 scheduling: deadlines request wakes, only final passes dispatch, and one query
 keeps its existing command receipt until full ordered commit. Queries can
@@ -341,8 +345,16 @@ adds a press-correlated X11 acquire/release operation for viewable direct-root
 sources and exact enabled master pointers. It serializes ordinary application
 grabs and keeps exact cleanup after revocation. Release invalidates the old
 implicit owner and requires a new server-sync/FIFO boundary. `Acquired` reports
-operation settlement only. Fresh queries still leave capture/delivery Unknown,
-and the native adapter does not automatically acquire this operation yet.
+operation settlement only. The native adapter now connects capture acquisition,
+its exact callback receipt and release to the existing gesture and resource row.
+The public read-only capture requirement is available before finite timed work;
+pending input temporarily hides it and does not prove cleanup. Pending acquire
+defers old timed queries. A first fresh capture sample restarts the interval,
+including a query prepared before acquisition settled. Failed unchanged samples
+remain bounded. The integration passes its
+[scoped qualification](VALIDATION.md#2026-11-01-native-capture-acquisition-and-ordered-release-integration);
+the real backend test uses recording core receivers and simulated eframe receipt transport. Ordinary
+WM-framed sources and a complete eframe/GPU stationary journey remain open.
 
 Incomplete stationary observations revoke only their pending timed action;
 they do not infer delivery or capture loss. Explicit None/Foreign/mismatched
@@ -398,8 +410,8 @@ Current native Git pins are aligned with the qualified local sources:
 
 | Dependency | Locally qualified revision | Tracked Git revision |
 | --- | --- | --- |
-| egui/eframe fork | `9729e354a1985cd9d8bbc7ca6306c68656635e06` | `9729e354a1985cd9d8bbc7ca6306c68656635e06` |
-| Winit fork | `39a8165dd434c33fc2f7198d922a4d3a4d76bbb6` | `39a8165dd434c33fc2f7198d922a4d3a4d76bbb6` |
+| egui/eframe fork | `97ebef0412e07811dc070afeb44fa3f34dad52e0` | `97ebef0412e07811dc070afeb44fa3f34dad52e0` |
+| Winit fork | `3199a442b10a8d6d5b85529599c4cdeb24df1320` | `3199a442b10a8d6d5b85529599c4cdeb24df1320` |
 
 The tracked revisions are visible in the
 [native workspace manifest](../integration/egui-fork-workspace/Cargo.toml) and
@@ -420,9 +432,9 @@ pressure, finite physical targets and measured active service; earlier results
 retain their separate source scope. The extracted core/official-adapter archive
 gate passes independently of these optional-native fork dependencies.
 
-Still open are broader combined close/create/command owner capacity and hard
-host-service bounds; arbitrary overflow/nested and mixed-DPI physical coverage; fresh
-stationary capture and successful automatic execution, and
+Still open are broader combined close/create/command owner capacity and measured
+host-service combinations; arbitrary overflow/nested and mixed-DPI physical coverage;
+ordinary-window stationary capture and successful complete automatic execution, and
 native-local/Touch OS evidence; Windows/macOS platform certification; the complete
 native layout-management showcase; and U9 dependency publication, clean-checkout
 reproduction and remaining evidence/deletion closure. The finite target,

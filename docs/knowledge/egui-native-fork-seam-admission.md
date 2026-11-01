@@ -34,8 +34,8 @@ Baselines:
 - public winit fork: `f378b50f29cafafec31cd8675c17646b4ef57d70`
 
 The public revisions above are historical publication baselines. Current
-tracked native Git pins select local egui `9729e354a1985cd9d8bbc7ca6306c68656635e06`
-and Winit `39a8165dd434c33fc2f7198d922a4d3a4d76bbb6`; egui's internal Winit
+tracked native Git pins select local egui `97ebef0412e07811dc070afeb44fa3f34dad52e0`
+and Winit `3199a442b10a8d6d5b85529599c4cdeb24df1320`; egui's internal Winit
 dependency and the integration lockfile agree. Locked/offline qualification
 uses locally seeded Git objects without path overrides. These commits remain
 unpublished, and remote-only checkout/CI reproduction is still unqualified.
@@ -69,9 +69,9 @@ closes the existing FIFO fence before and after the checked native operation.
 Reentrant synchronization cannot reopen admission while release dispatch is
 in flight. A later all-up and genuine new press can establish a new owner;
 queued presses and old release claims cannot acquire or ungrab a successor.
-The public `Acquired` result reports only the settled operation effect. Fresh
-capture and delivery queries remain `Unknown`, and eframe has no automatic
-acquisition command yet. Test-only Winit `beb11f6c` verifies a distinct client's
+The public `Acquired` result reports only the settled operation effect. A
+separate fresh sample is required before publishing capture/delivery. Test-only
+Winit `beb11f6c` verifies a distinct client's
 paired-keyboard freeze while our pointer effect remains Acquired: a real release
 stays logically down and undelivered even after checked AsyncDevice and AsyncPair
 on our original connection. Foreign ungrab delivers it once. These requests
@@ -79,7 +79,8 @@ therefore cannot establish fresh capture or delivery. The follow-up test-only
 commit `a4b051c4` verifies same-client XI2 regrab Success before the freeze and
 Frozen during it. Regrab can add a server-execution-time check, but separate
 position/hover and capture replies still need a qualified common sampling
-boundary. Current queries remain Unknown. See the counterexample and
+boundary. The finite sampling implementation below supplies that additional
+boundary; ordinary and implicit-only queries remain Unknown. See the counterexample and
 dated explicit-effect evidence in
 [`VALIDATION.md`](../VALIDATION.md#2026-11-01-serialized-x11-capture-effects-and-exact-cleanup).
 
@@ -92,12 +93,27 @@ even if the queue is empty afterward. Source retirement and indeterminate
 refresh keep the original native cleanup; ordinary grab mutation cannot pass it.
 This finite profile requires a viewable direct-root source and does not infer a
 deeper hover from an unknown foreign or window-manager frame. The integration
-still selects the preceding production Git pins; automatic acquisition and full
-native stationary execution are not enabled by this component checkpoint.
+now selects these exact commits and connects acquisition and release through
+eframe's property queue and the native gesture owner. Full positive native
+stationary execution remains outside the component checkpoint.
 The two-platform pure state cases, four real X11 gates, strict documentation and
 three precise negative controls are recorded in the dated validation section.
 Remove or replace this seam when upstream can supply an equivalent exact active
 capture sample and mutation-safe cleanup at an ordered native boundary.
+
+Eframe's capture command freezes the exact window/device/original press/action,
+with one opaque result or retirement. Pending leaves the request unsettled;
+acquisition may not yet have dispatched, while release retains its exact duty.
+Window mismatch or absent active loop reports NotExecuted and proves no cleanup.
+The native adapter keeps one capture duty on its existing stationary owner and
+one terminal receipt on the original window resource. It retains that row after
+retirement until exact release or Destroyed. A pending acquisition defers old
+deadline queries; the first fresh sample reports the existing core acquisition
+event and starts a new interval without selecting or scrolling. The isolated
+real-X11 test uses recording core receivers and simulated eframe receipt transport;
+it does not certify a complete eframe/GPU stationary journey. Remove the command
+seam when upstream provides equivalent press-correlated, successor-safe operation
+and retirement results coordinated with ordinary grabs.
 
 The 0.37 branch merges upstream stable `0.37.0` into the minimal native-seam
 branch. It preserves the same Winit event-time revision. No old hosted-cycle
@@ -164,9 +180,10 @@ The current adapter enrolls a finite Desktop Mouse scheduler on the existing
 core continuation and bounded request owner. It preserves raw/output ordering,
 sample time and the expected original press identity outside the fork; unowned
 observation retirements remain Unreserved. A terminal Unknown or unavailable
-result cannot retry the same core token. The X11 query still lacks independent
-capture, delivery, ancestry and freeze proof, so it cannot execute a positive
-stationary mutation. Unsupported backends remain Unsupported; Unknown capture
+result cannot retry the same core token. The finite explicit-capture refresh
+above adds independent source capture and delivery evidence for its direct-root
+profile. Ordinary WM ancestry and complete positive product journeys remain
+unqualified. Unsupported backends remain Unsupported; Unknown capture
 never inherits the expected source identity. The public core's explicit
 fact-based stationary contract remains independent.
 
@@ -305,14 +322,14 @@ journey. These remain local, unpublished-fork results.
 
 Instrumentation wrappers around `NativeHostHandler` must forward both
 `before_output_input` and `on_service`, as well as the existing native
-observations and output terminals. The default service callback intentionally
+observations, capture results/retirements and output terminals. The default service callback intentionally
 does no work for unmanaged/default handlers. Dropping the installed host's
 service request would leave its real output obligations unsettled.
 
 | Seam | Missing upstream fact | Affected platforms | Minimal patch boundary | Checked evidence | Removal or upstream condition |
 | --- | --- | --- | --- | --- | --- |
 | Event-time pointer facts | A pointer event must carry its own surface-local position, optional desktop position, modifiers, hover route, and capture route. Callback-time cursor or window queries cannot reconstruct these facts. | All native platforms. Exact fields differ: unavailable facts remain absent. | Add graph-neutral fields to winit pointer events and observe the immutable event in eframe before egui-winit translation. No dock identity or receiver decision enters either fork. | winit platform translations plus `event_ordinals_preserve_cross_window_facts`, `event_ordinals_preserve_cross_window_wheel_facts`, and the native adapter's exact/unknown wheel translation tests. | Remove when upstream winit carries equivalent event-time facts and upstream eframe exposes an ordered pre-translation observer. |
-| Explicit source capture effect | A docking-owned drag needs a finite source-directed operation with exact cleanup; ordinary cursor confinement must not race an old device ungrab. | X11 viewable direct-root sources and exact enabled master pointers. Other source profiles remain unavailable. | Extend the existing device row with acquisition and retirement duties, reserve ordinary grab mutations across native dispatch, and expose press-correlated acquire/release effect results. Keep queried capture and delivery unknown. | 50 pure state cases, five ordinary-dispatch cases, Linux library checks and the real `x11_explicit_capture` test; exact qualification is recorded separately in `VALIDATION.md`. | Remove when upstream exposes equivalent exact original-press capture effects and successor-safe cleanup coordinated with ordinary grabs. |
+| Explicit source capture effect | A docking-owned drag needs a finite source-directed operation with exact cleanup; ordinary cursor confinement must not race an old device ungrab. | X11 viewable direct-root sources and exact enabled master pointers. Other source profiles remain unavailable. | Extend the existing device row with acquisition, sampling and retirement phases, reserve ordinary grab mutations across native dispatch, and expose press-correlated acquire/release commands through eframe's existing property queue. Known sample routes require a fresh checked refresh. | Pure owner/ordinary-dispatch cases, four real sampling gates, eframe command tests and the isolated real-backend/recording-host receipt journey; exact qualifications remain separate in `VALIDATION.md`. | Remove when upstream exposes equivalent exact original-press capture effects, fresh samples and successor-safe cleanup coordinated with ordinary grabs. |
 | Ordered device removal | Per-window callbacks cannot prove when a raw physical device disappears relative to button, scroll, touch, and capture records. Winit also states that raw-device IDs may not match the virtual IDs carried by window events, so targeting one window-input identity would invent correlation. | All native platforms. | Eframe forwards only a typed `NativeDeviceRemoval { ordinal }` before handling `DeviceEvent::Removed`. The adapter atomically terminates its complete input roster; the seam exposes neither the uncorrelated raw ID, raw motion, nor docking state. | `device_removal_callback_preserves_global_native_event_order` plus the native adapter's multi-contact, fixed-virtual-ID/master-device mismatch, complete-roster cancellation, tail-event, and ID-reuse tests. | Remove when upstream exposes an ordered removal boundary plus a proven raw-to-window device correlation, or an equivalent virtual-input reset callback. |
 | Completed-pass hit snapshot | Multipass egui can replace an earlier widget tree. A native receiver resolver needs the final pass's known-empty or known-hit result, not raw rectangles rebuilt by an adapter. | All egui renderers. | Add a read-only, completed-pass widget hit query to egui. It contains widget identity and hit semantics only, never dock topology. | `last_pass_hit_test_distinguishes_unknown_from_known_empty` and `last_pass_hit_test_uses_the_final_multipass_widgets`. | Remove when upstream egui exposes an equivalent final-pass hit-test snapshot or receiver query. |
 | Completed-pass scroll routing | Ordinary hover does not reveal which nested `ScrollArea` accepts one modifier-projected scroll edge, whether it is saturated, or whether a locked smooth sequence still owns the frontmost receiver. | All egui renderers. | Retain ordered, clipped scroll candidates in the final pass. Product candidates use opaque widget identities; framework `ScrollArea` records reuse its live direction, multiplier, offset, and saturation checks. The query is read-only and never exposes dock identities. | `last_pass_scroll_hit_distinguishes_unknown_from_known_empty`, `last_pass_scroll_hit_uses_the_final_multipass_candidates`, `nested_scroll_hit_respects_direction_and_saturation`, `smooth_scroll_begin_is_blocked_by_any_scroll_area_capacity`, `locked_scroll_hit_does_not_retarget_and_framework_scroll_blocks`, and the native adapter's exact delivery-query test. | Remove when upstream egui exposes an equivalent final-pass scroll receiver query with nested direction, saturation, and locked-owner semantics. |

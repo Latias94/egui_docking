@@ -104,6 +104,12 @@ without fabricating motion. Core restarts stationary timing from that accepted
 observation, rather than crediting dwell from before capture was acquired.
 The source input requirement is a read-only projection; actual OS acquisition,
 current capture/delivery proof and exact release remain host responsibilities.
+The native adapter now connects those operations through the existing gesture,
+window resource and ordered callback receipt. The public capture request also
+exists before timed work begins. Pending acquisition defers the old deadline;
+first fresh evidence restarts timing. Positive X11 capture is still limited to
+viewable direct-root sources, and its recording-host integration test does not
+certify a complete eframe/GPU stationary journey or ordinary WM-framed sources.
 
 Native binding retention now uses `terminal_binding_guards()` in the diagnostic
 manifest. It covers observed destruction and conclusively never-created

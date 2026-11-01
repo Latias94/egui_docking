@@ -38,6 +38,7 @@ use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWind
 use crate::focus_control::{NativeGlobalFocusRecord, NativeViewportFocusRecord};
 use crate::input_control::NativePointerPassthroughRecord;
 use crate::lifecycle_progress::NativeOutputBacklog;
+use crate::pointer_capture::{NativePointerCaptureKey, NativePointerCaptureRecord};
 use crate::pointer_event::NativePointerTranslator;
 use crate::pointer_observation::{NativePointerObservationKey, NativePointerObservationRecord};
 use crate::retirement::{
@@ -83,6 +84,7 @@ pub(crate) enum HostRecord {
     ViewportFocus(NativeViewportFocusRecord),
     ViewportPointerPassthrough(NativePointerPassthroughRecord),
     PointerObservation(NativePointerObservationKey),
+    PointerCapture(NativePointerCaptureKey),
     ViewportCloseCancelled(NativeViewportCloseCancellationRecord),
     ViewportRoster(NativeViewportRosterEnvelope),
     ViewportCreateFailed(NativeViewportCreateFailureRecord),
@@ -103,6 +105,7 @@ impl HostRecord {
             }
             Self::DeviceRemoval(_)
             | Self::PointerObservation(_)
+            | Self::PointerCapture(_)
             | Self::GlobalFocus(_)
             | Self::ViewportFocus(_)
             | Self::ViewportCloseCancelled(_)
@@ -3144,6 +3147,7 @@ impl NativeHostState {
                     | HostRecord::ViewportFocus(_)
                     | HostRecord::ViewportPointerPassthrough(_)
                     | HostRecord::PointerObservation(_)
+                    | HostRecord::PointerCapture(_)
                     | HostRecord::ViewportCloseCancelled(_)
                     | HostRecord::ViewportRoster(_)
                     | HostRecord::ViewportCreateFailed(_)
@@ -3402,7 +3406,9 @@ impl NativeHostState {
                 HostRecord::ViewportPointerPassthrough(input) => input.references_binding(binding),
                 // Binding retention belongs to the exact pending close, not a
                 // callback-time route lookup which may now name its successor.
-                HostRecord::ViewportCloseCancelled(_) | HostRecord::PointerObservation(_) => false,
+                HostRecord::ViewportCloseCancelled(_)
+                | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_) => false,
                 HostRecord::ViewportRoster(roster) => roster
                     .roster()
                     .observations()
@@ -3646,6 +3652,88 @@ impl NativeHostBridge {
         records.transfer_front_record();
         records.event_boundary_pending = true;
         true
+    }
+
+    pub(crate) fn reserve_pointer_capture(
+        &self,
+        key: NativePointerCaptureKey,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let mut records = self.lock();
+        if records.attachment != HostAttachmentState::Attached
+            || !records.mode.accepts_terminal_callbacks()
+        {
+            return false;
+        }
+        if key.action == eframe::NativeViewportPointerCaptureAction::Acquire
+            && (!records.mode.accepts_new_work()
+                || !matches!(records.admission, NativeAdmission::Running)
+                || records.event_boundary_pending
+                || records.front_record().is_some()
+                || records
+                    .viewports
+                    .binding_for_event(key.window, Some(key.viewport))
+                    != Some(binding)
+                || !records.admit_ordinary())
+        {
+            return false;
+        }
+        // Release spends the original prepaid resource receipt even during
+        // overload or quarantine. It cannot authorize a new native acquisition.
+        records.window_resources.reserve_capture(key, binding)
+    }
+
+    pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+        self.lock().window_resources.capture_pending(key)
+    }
+
+    pub(crate) fn release_capture_binding(&self, binding: NativeSurfaceBinding) {
+        self.lock()
+            .window_resources
+            .release_capture_binding(binding);
+    }
+
+    pub(crate) fn front_pointer_capture(
+        &self,
+    ) -> Option<(NativePointerCaptureRecord, std::time::Duration)> {
+        let records = self.lock();
+        if !records.front_dispatchable() {
+            return None;
+        }
+        let ingress = records.front_ingress()?;
+        let HostRecord::PointerCapture(key) = ingress.record() else {
+            return None;
+        };
+        Some((
+            records.window_resources.capture_record(*key)?,
+            ingress.captured_at(),
+        ))
+    }
+
+    pub(crate) fn acknowledge_pointer_capture(&self, key: NativePointerCaptureKey) -> bool {
+        let mut records = self.lock();
+        if !matches!(records.front_dispatch_record(), Some(HostRecord::PointerCapture(current)) if *current == key)
+        {
+            return false;
+        }
+        records.transfer_front_record();
+        records.event_boundary_pending = true;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_pointer_capture_for_test(
+        &self,
+        record: NativePointerCaptureRecord,
+    ) -> bool {
+        let mut records = self.lock();
+        let NativeHostState {
+            window_resources,
+            journal,
+            ..
+        } = &mut *records;
+        window_resources.receive_capture_record(record, |record| journal.reserve(record))
+            == CommandCallbackAdmission::First
     }
 
     pub(crate) fn reserve_viewport_route(
@@ -4336,6 +4424,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
@@ -4357,6 +4446,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
@@ -4378,6 +4468,7 @@ impl NativeHostBridge {
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
@@ -4401,6 +4492,7 @@ impl NativeHostBridge {
                 | HostRecord::GlobalFocus(_)
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
@@ -4425,6 +4517,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportVisibility(_)
@@ -4450,6 +4543,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
@@ -4471,6 +4565,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
@@ -4494,6 +4589,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreated(_)
@@ -4515,6 +4611,7 @@ impl NativeHostBridge {
                     | HostRecord::ViewportFocus(_)
                     | HostRecord::ViewportPointerPassthrough(_)
                     | HostRecord::PointerObservation(_)
+                    | HostRecord::PointerCapture(_)
                     | HostRecord::ViewportCloseCancelled(_)
                     | HostRecord::ViewportRoster(_)
                     | HostRecord::ViewportCreateFailed(_)
@@ -4712,6 +4809,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportFocus(_)
                 | HostRecord::ViewportPointerPassthrough(_)
                 | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
                 | HostRecord::ViewportCloseCancelled(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
@@ -6024,6 +6122,28 @@ impl NativeHostHandler for NativeHostBridge {
             NativeHostWake::Wait
         }
     }
+
+    fn on_viewport_pointer_capture(
+        &self,
+        result: eframe::NativeViewportPointerCaptureResult,
+    ) -> NativeHostWake {
+        let mut records = self.lock();
+        if !records.mode.accepts_terminal_callbacks() {
+            return NativeHostWake::Wait;
+        }
+        let NativeHostState {
+            window_resources,
+            journal,
+            ..
+        } = &mut *records;
+        if window_resources.accept_capture(result, |record| journal.reserve(record))
+            == CommandCallbackAdmission::First
+        {
+            NativeHostWake::RepaintRootAfterCurrent
+        } else {
+            NativeHostWake::Wait
+        }
+    }
     fn on_viewport_property_command_retired(
         &self,
         retirement: eframe::NativeViewportPropertyCommandRetirement,
@@ -6059,6 +6179,7 @@ impl NativeHostHandler for NativeHostBridge {
             ..
         } = &mut *records;
         window_resources.detach_observation(|record| journal.reserve(record));
+        window_resources.detach_capture(|record| journal.reserve(record));
     }
 
     fn begin_deferred_viewport_create(

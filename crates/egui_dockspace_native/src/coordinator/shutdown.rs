@@ -112,14 +112,20 @@ impl NativeCoordinator {
         budget: &mut NativeInputBudget,
     ) -> NativeShutdownAdvance {
         let mut presentation_transitions = self.take_internal_presentation_transitions();
+        let capture_dispatched = self.drive_pointer_capture(context, budget, false);
         let input_enable_cancelled = self.cancel_quarantined_input_results();
         let (pending_effect_reported, pending_effect_error) =
             self.report_pending_effect_results_until_blocked();
         let mut errors = pending_effect_error.into_iter().collect::<Vec<_>>();
+        let capture_dispatched = capture_dispatched.unwrap_or_else(|error| {
+            errors.push(error);
+            false
+        });
         let output_prefix_pending = self.bridge.has_pending_output_prefix();
         let quiescence_recorded =
             self.try_report_retirement_quiescence_into(|error| errors.push(error));
         let mut progress = pending_effect_reported
+            || capture_dispatched
             || input_enable_cancelled
             || output_prefix_pending
             || quiescence_recorded;

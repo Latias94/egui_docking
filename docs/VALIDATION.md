@@ -15,6 +15,93 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 native capture acquisition and ordered release integration
+
+This slice connects the finite platform operation to the existing core gesture,
+eframe property queue, native window resource and ordered callback journal.
+Core adds only the read-only `NativePointerCaptureRequest`: its opaque equality
+includes the exact owner/session, source binding and frozen source-input
+treatment, independently of hover targets or finite timed work. Pending accepted
+input temporarily hides it and cannot prove native cleanup. Local, Touch,
+unknown-device and invalid source streams cannot acquire this requirement.
+
+Local egui/eframe `97ebef0412e07811dc070afeb44fa3f34dad52e0` pins Winit
+`3199a442b10a8d6d5b85529599c4cdeb24df1320`. All eight native workspace patches,
+smoke inspection and both relevant lockfiles select the same pair. Qualification
+uses those exact Git objects seeded locally, without path overrides. Neither
+commit is published; remote clean-checkout reproduction and independently owned
+CI refs remain open. Eframe library tests pass macOS104/Linux99; Glow/WGPU
+all-target checks and correctness/suspicious Clippy pass on both platforms.
+Strict eframe rustdoc and formatting pass. The first minimal-feature docs run
+found existing links to optional inspection/persistence items; the complete
+documentation feature set passes without suppressing warnings.
+
+Acquire and Release commands freeze the original real press, device, window,
+action and opaque command identity. Eframe invokes each command once and leaves
+Pending polling to the host. Window mismatch or missing active loop is explicit
+NotExecuted, independent of backend Unavailable. Native reserves one shared
+capture terminal slot through full commit and preserves the original callback
+ordinal/time across duplicate, foreign, dropped-frame and retry paths. A fixed
+hold in the existing resource row prevents retired cleanup backing from being
+pruned after acquisition. A bounded two-slot model verifies exact release,
+foreign-release isolation and backing reuse. Unexecuted cleanup with a possible
+native duty retains that obligation until exact release or Destroyed; it cannot
+manufacture quiescence.
+
+The isolated Linux test uses two actual XTest presses, real Winit capture and
+fresh source capture/delivery samples, recording core receivers and simulated
+eframe receipt transport. It exercises Pending/full-commit retry, duplicate and
+foreign receipts, one accepted acquisition event, real Primary release and final
+resource/gesture quiescence. It does not run an eframe host or GPU renderer.
+The first fixture incorrectly expected a continuation while native input was
+pending after frame drop; its assertion now follows the public `None` contract
+and also verifies the native duty remains retained.
+
+Independent review found two real ordering defects. An acquisition unresolved
+past the old deadline now defers ordinary observations at prepare/admit/reduce.
+A query already queued before acquisition converts its first fresh facts to
+CaptureAcquired even if the old ordinary deadline is due. Timing restarts from
+the actual sample without selecting or scrolling. A newly settled acquisition
+can rearm one previously blocked challenge; its failed sample is bounded again.
+The Pending-deadline case failed on the original implementation. Temporarily
+removing late-query conversion also fails the exact no-selection assertion;
+the original source hash is restored before final qualification. Both real
+journeys pass on the repaired source. Independent core, eframe and native reviews
+report no remaining confirmed P1/P2 within this slice.
+
+The core API is committed locally as `677f291`. Frozen broader qualification
+passes workspace1,953, public160/serde188, product114, official15 and ten doctests.
+The macOS native workspace passes575; its assertion-disabled library passes529.
+Linux native libraries pass529 normally and529 without native debug assertions,
+with five platform tests ignored in those broad runs. All four native runs
+include the unchanged same-coordinator 10,000-lifetime soak. The real capture
+journey passes separately normally and without native assertions, and the real
+close/create/age journey passes independently. Those finite real tests do not
+turn the other ignored platform cases into broad-run passes.
+
+Root/native correctness/suspicious Clippy, strict rustdoc, core dependency
+isolation, final formatting and exact Git-source metadata pass. The first Linux
+all-target Clippy exposed an existing ambiguous `AtomEnum::NONE.into()` in the
+physical smoke's property parser under serde. Explicit `u32::from` fixes that
+comparison without changing parsing; the Linux all-target gate passes on retry.
+Core and native library source hashes remain unchanged across this fixture fix.
+Mac default/bounded redock and all six macOS/Linux pressure scenarios pass.
+Rebuilt Linux physical guide, non-guide center, nested edge, stationary-negative
+and 1 kHz load journeys pass. Broader physical target variants retain their
+earlier source scope rather than being relabelled fresh.
+
+Source hashes and commands are in
+`/tmp/dockspace-capture-qualified-source.json`,
+`/tmp/dockspace-capture-eframe-gates.json`,
+`/tmp/dockspace-capture-core-gates.json` and
+`/tmp/dockspace-capture-native-qualification.json`, with follow-up window/lint
+gates in `/tmp/dockspace-capture-followup-qualification.json`, exact dependency
+selection in `/tmp/dockspace-capture-final-metadata.json` and scoped independent
+review in `/tmp/dockspace-capture-independent-reviews.json`. Ordinary WM-framed
+source/hover, a complete positive eframe/GPU stationary journey, native-local and
+Touch OS input, and the remaining U7/U8/U9/U10/U11 boundaries remain open. The
+next WM test is an unqualified draft and is excluded from this source snapshot.
+
 ## 2026-11-01 finite fresh X11 capture sampling
 
 Local Winit commit `3199a442b10a8d6d5b85529599c4cdeb24df1320` qualifies a finite fresh capture observation on the

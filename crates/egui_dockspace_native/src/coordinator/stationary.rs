@@ -8,6 +8,8 @@ use crate::pointer_observation::NativePointerObservationKey;
 
 #[derive(Debug, Default)]
 pub(super) struct NativeStationaryState {
+    pub(super) capture: Option<super::capture::NativeCaptureDuty>,
+    pub(super) capture_blocked: Option<dockspace::runtime::NativePointerCaptureRequest>,
     prepared: Option<(NativeOutputToken, NativeStationaryPreparation)>,
     attempt: Option<StationaryAttempt>,
     blocked: Option<PointerContinuationToken>,
@@ -19,6 +21,7 @@ pub(super) struct NativeStationaryPreparation {
     request: NativePointerContinuation,
     key: NativePointerObservationKey,
     expected_press: Option<PointerPressToken>,
+    acquisition: bool,
     command:
         eframe::PreparedNativeViewportCommand<eframe::NativeViewportPointerObservationCommandToken>,
 }
@@ -38,6 +41,7 @@ struct StationaryAttempt {
     request: NativePointerContinuation,
     key: NativePointerObservationKey,
     expected_press: Option<PointerPressToken>,
+    acquisition: bool,
 }
 
 fn same_active_press<I: Eq>(expected: Option<&I>, current: Option<&I>) -> bool {
@@ -46,11 +50,27 @@ fn same_active_press<I: Eq>(expected: Option<&I>, current: Option<&I>) -> bool {
 
 impl NativeStationaryState {
     pub(super) fn has_pending_work(&self) -> bool {
-        self.attempt.is_some()
+        self.attempt.is_some() || self.capture.is_some()
     }
 }
 
 impl NativeCoordinator {
+    pub(super) fn rearm_stationary_after_capture_acquisition(
+        &mut self,
+        request: dockspace::runtime::NativePointerCaptureRequest,
+    ) {
+        if self.session.native_pointer_capture_request() == Some(request)
+            && let Some(continuation) = self.session.native_pointer_continuation()
+            && continuation.pointer() == request.pointer()
+            && continuation.source_binding() == request.source_binding()
+            && self.stationary.blocked == Some(continuation.token())
+        {
+            // A newly settled native acquisition permits one fresh sample.
+            // Its own failure blocks the unchanged challenge again.
+            self.stationary.blocked = None;
+        }
+    }
+
     pub(crate) fn stage_stationary_observation(
         &mut self,
         context: &eframe::egui::Context,
@@ -160,7 +180,9 @@ impl NativeCoordinator {
             return None;
         }
         let request = self.session.native_pointer_continuation()?;
-        if request.local_coordinates().is_some() || self.stationary.blocked == Some(request.token())
+        if request.local_coordinates().is_some()
+            || self.stationary.blocked == Some(request.token())
+            || self.capture_acquisition_pending_for(request)
         {
             return None;
         }
@@ -170,7 +192,9 @@ impl NativeCoordinator {
         let expected_press = expected_press.cloned();
         let (viewport, window) = self.exact_window_route_for_binding(request.source_binding())?;
         let now = self.bridge.observation_time();
-        if now < request.deadline() {
+        let acquisition =
+            self.capture_is_acquired_for(request) && request.capture_acquired_event().is_some();
+        if !acquisition && now < request.deadline() {
             context.request_repaint_after_for(request.deadline() - now, ViewportId::ROOT);
             return None;
         }
@@ -193,6 +217,7 @@ impl NativeCoordinator {
             request,
             key,
             expected_press,
+            acquisition,
             command,
         })
     }
@@ -207,6 +232,7 @@ impl NativeCoordinator {
             request,
             key,
             expected_press,
+            acquisition,
             command,
         } = prepared;
         if self.stationary.attempt.is_some()
@@ -214,6 +240,7 @@ impl NativeCoordinator {
             || self.has_pending_callback_records()
             || self.bridge.callback_boundary_pending()
             || self.session.native_pointer_continuation() != Some(request)
+            || self.capture_acquisition_pending_for(request)
             || self.stationary.blocked == Some(request.token())
             || self
                 .pointer_translator
@@ -221,7 +248,8 @@ impl NativeCoordinator {
                 != Some((key.device, expected_press.as_ref()))
             || self.exact_window_route_for_binding(request.source_binding())
                 != Some((key.viewport, key.window))
-            || self.bridge.observation_time() < request.deadline()
+            || (!acquisition && self.bridge.observation_time() < request.deadline())
+            || (acquisition && !self.capture_is_acquired_for(request))
             || !self
                 .bridge
                 .reserve_pointer_observation(key, request.source_binding())
@@ -232,6 +260,7 @@ impl NativeCoordinator {
             request,
             key,
             expected_press,
+            acquisition,
         });
         Some(command)
     }
@@ -275,11 +304,26 @@ impl NativeCoordinator {
             && same_active_press(attempt.expected_press.as_ref(), current_press)
             && self.exact_window_route_for_binding(attempt.request.source_binding())
                 == Some((attempt.key.viewport, attempt.key.window))
-            && captured_at >= attempt.request.deadline()
+            && !self.capture_acquisition_pending_for(attempt.request)
         {
             let work_areas = &self.work_areas;
-            record.into_input(attempt.request, captured_at, |point| {
-                work_areas.binding_at(point)
+            // A query prepared before the acquire receipt may execute after it.
+            // Its first fresh evidence must restart the interval, even when the
+            // old ordinary deadline is already due.
+            let acquisition = attempt.acquisition
+                || (self.capture_is_acquired_for(attempt.request)
+                    && attempt.request.capture_acquired_event().is_some());
+            let event = if acquisition {
+                attempt.request.capture_acquired_event()
+            } else if captured_at >= attempt.request.deadline() {
+                Some(attempt.request.event())
+            } else {
+                None
+            };
+            event.and_then(|event| {
+                record.into_input_event(attempt.request, event, captured_at, |point| {
+                    work_areas.binding_at(point)
+                })
             })
         } else {
             None

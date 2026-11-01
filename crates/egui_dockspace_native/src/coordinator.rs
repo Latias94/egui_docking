@@ -64,6 +64,7 @@ use crate::work_area::{FrozenWorkAreaRoster, NativeWorkAreaState, PreparedWorkAr
 mod close_driver;
 mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
+mod capture;
 mod shutdown;
 mod stationary;
 mod storage;
@@ -1312,6 +1313,7 @@ impl NativeCoordinator {
             || self.bridge.retirement_references_cleanup(binding)
             || self.focus_control.references_binding(binding)
             || self.input_control.references_binding(binding)
+            || self.capture_references_binding(binding)
     }
 
     pub(crate) fn try_report_pending_effect_results(&mut self) -> Result<bool, NativeRuntimeError> {
@@ -1642,6 +1644,9 @@ impl NativeCoordinator {
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_pointer_observation()? {
+            return Ok(Some(std::num::NonZeroUsize::MIN));
+        }
+        if self.reduce_next_pointer_capture()? {
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_global_focus()? {
@@ -2267,6 +2272,7 @@ impl NativeCoordinator {
                 }
             }
             winit::event::WindowEvent::Destroyed => {
+                self.capture_window_destroyed(binding, record.window_id());
                 let accepted_close = self.bridge.with_close_control(|control| {
                     control
                         .accepted_destroyed_matches(record, binding)

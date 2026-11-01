@@ -22,6 +22,7 @@ use crate::coordinator::PendingNoFrameInvalidation;
 use crate::error::NativeHostProtocolError;
 use crate::focus_control::NativeViewportFocusRecord;
 use crate::input_control::NativePointerPassthroughRecord;
+use crate::pointer_capture::{NativePointerCaptureKey, NativePointerCaptureRecord};
 use crate::pointer_observation::{NativePointerObservationKey, NativePointerObservationRecord};
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
@@ -73,6 +74,7 @@ struct NativeWindowResource {
     binding: NativeSurfaceBinding,
     retired: bool,
     retained_by_host: bool,
+    capture_duty_held: bool,
     workspace_replacement: WorkspaceReplacementResource,
     create_rect: Option<NativePhysicalRect>,
     hidden_render: bool,
@@ -94,6 +96,7 @@ enum WorkspaceReplacementResource {
 impl NativeWindowResource {
     fn is_empty(&self) -> bool {
         !self.retained_by_host
+            && !self.capture_duty_held
             && self.workspace_replacement == WorkspaceReplacementResource::None
             && (!self.created || self.retired)
             && self.create_ack.is_none()
@@ -110,7 +113,8 @@ impl NativeWindowResource {
     }
 
     fn has_pending_work(&self) -> bool {
-        self.workspace_replacement != WorkspaceReplacementResource::None
+        self.capture_duty_held
+            || self.workspace_replacement != WorkspaceReplacementResource::None
             || self.create_ack.is_some()
             || self.presentation_ack.is_some()
             || self.no_frame.is_some()
@@ -568,6 +572,7 @@ impl NativeWindowResources {
             binding,
             retired: false,
             retained_by_host: false,
+            capture_duty_held: false,
             workspace_replacement: WorkspaceReplacementResource::None,
             create_rect: None,
             hidden_render: false,
@@ -984,6 +989,7 @@ impl NativeWindowResources {
     ) -> CommandCallbackAdmission {
         let viewport = match &retirement {
             NativeViewportPropertyCommandRetirement::PointerObservation { viewport_id, .. }
+            | NativeViewportPropertyCommandRetirement::PointerCapture { viewport_id, .. }
             | NativeViewportPropertyCommandRetirement::Focus { viewport_id, .. }
             | NativeViewportPropertyCommandRetirement::Visibility { viewport_id, .. }
             | NativeViewportPropertyCommandRetirement::PointerPassthrough { viewport_id, .. } => {
@@ -1097,6 +1103,131 @@ impl NativeWindowResources {
         owner.callbacks.accept_observation(
             NativePointerObservationRecord::retired(key, owner.binding),
             || make_ingress(HostRecord::PointerObservation(key)),
+        );
+    }
+
+    pub(super) fn reserve_capture(
+        &mut self,
+        key: NativePointerCaptureKey,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        // Acquire and release share one session-wide receipt until full commit.
+        if let Some(owner) = self
+            .entries
+            .iter()
+            .find(|owner| owner.callbacks.has_capture_token(key.token))
+        {
+            return owner.viewport == key.viewport
+                && owner.binding == binding
+                && owner.callbacks.matches_capture(key);
+        }
+        if self
+            .entries
+            .iter()
+            .any(|owner| owner.callbacks.has_pending_capture())
+        {
+            return false;
+        }
+        if matches!(
+            key.action,
+            eframe::NativeViewportPointerCaptureAction::Release
+        ) {
+            // Cleanup reuses the exact retained owner, including after retirement.
+            return self
+                .resource_mut(key.viewport, binding)
+                .is_some_and(|owner| owner.callbacks.reserve_capture(key));
+        }
+        self.command_owner(key.viewport, binding)
+            .is_some_and(|owner| {
+                if !owner.callbacks.reserve_capture(key) {
+                    return false;
+                }
+                owner.capture_duty_held = true;
+                true
+            })
+    }
+
+    pub(super) fn release_capture_binding(&mut self, binding: NativeSurfaceBinding) {
+        if let Some(owner) = self
+            .entries
+            .iter_mut()
+            .find(|owner| owner.binding == binding)
+        {
+            owner.capture_duty_held = false;
+        }
+        self.entries.retain(|resource| !resource.is_empty());
+    }
+
+    pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+        self.entries
+            .iter()
+            .any(|owner| owner.callbacks.capture_pending(key))
+    }
+
+    pub(super) fn capture_record(
+        &self,
+        key: NativePointerCaptureKey,
+    ) -> Option<NativePointerCaptureRecord> {
+        self.entries
+            .iter()
+            .find_map(|owner| owner.callbacks.capture_record(key))
+    }
+
+    pub(super) fn accept_capture(
+        &mut self,
+        result: eframe::NativeViewportPointerCaptureResult,
+        make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
+    ) -> CommandCallbackAdmission {
+        let key = NativePointerCaptureKey::from_result(result);
+        let Some(owner) = self
+            .entries
+            .iter_mut()
+            .find(|owner| owner.callbacks.matches_capture(key))
+        else {
+            return CommandCallbackAdmission::Unreserved;
+        };
+        let record = NativePointerCaptureRecord::capture(result, owner.binding);
+        owner
+            .callbacks
+            .accept_capture(record, || make_ingress(HostRecord::PointerCapture(key)))
+    }
+
+    #[cfg(test)]
+    pub(super) fn receive_capture_record(
+        &mut self,
+        record: NativePointerCaptureRecord,
+        make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
+    ) -> CommandCallbackAdmission {
+        let key = record.key();
+        let Some(owner) = self.entries.iter_mut().find(|owner| {
+            owner.binding == record.binding() && owner.callbacks.matches_capture(key)
+        }) else {
+            return CommandCallbackAdmission::Unreserved;
+        };
+        owner
+            .callbacks
+            .accept_capture(record, || make_ingress(HostRecord::PointerCapture(key)))
+    }
+
+    pub(super) fn detach_capture(
+        &mut self,
+        make_ingress: impl FnOnce(HostRecord) -> ReservedHostRecord,
+    ) {
+        let Some(owner) = self
+            .entries
+            .iter_mut()
+            .find(|owner| owner.callbacks.awaiting_capture().is_some())
+        else {
+            return;
+        };
+        let key = owner
+            .callbacks
+            .awaiting_capture()
+            .expect("the single pending capture was checked");
+        // Detachment settles dispatch only; it does not prove native release.
+        owner.callbacks.accept_capture(
+            NativePointerCaptureRecord::retired(key, owner.binding),
+            || make_ingress(HostRecord::PointerCapture(key)),
         );
     }
 

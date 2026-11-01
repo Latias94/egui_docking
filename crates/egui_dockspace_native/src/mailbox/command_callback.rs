@@ -11,6 +11,7 @@ use winit::window::WindowId;
 use super::{HostRecord, journal::ReservedHostRecord};
 use crate::focus_control::NativeViewportFocusRecord;
 use crate::input_control::NativePointerPassthroughRecord;
+use crate::pointer_capture::{NativePointerCaptureKey, NativePointerCaptureRecord};
 use crate::pointer_observation::{NativePointerObservationKey, NativePointerObservationRecord};
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
@@ -132,6 +133,8 @@ pub(super) struct NativeCommandCallbacks {
     visibility: CallbackSlot<(NativeViewportVisibilityCommandToken, WindowId, bool)>,
     observation: CallbackSlot<NativePointerObservationKey>,
     observation_record: Option<NativePointerObservationRecord>,
+    capture: CallbackSlot<NativePointerCaptureKey>,
+    capture_record: Option<NativePointerCaptureRecord>,
 }
 
 impl NativeCommandCallbacks {
@@ -140,6 +143,7 @@ impl NativeCommandCallbacks {
             && self.focus.is_empty()
             && self.visibility.is_empty()
             && self.observation.is_empty()
+            && self.capture.is_empty()
     }
 
     pub(super) fn has_pending_work(&self) -> bool {
@@ -147,6 +151,7 @@ impl NativeCommandCallbacks {
             || self.focus.has_pending_work()
             || self.visibility.has_pending_work()
             || self.observation.has_pending_work()
+            || self.capture.has_pending_work()
     }
 
     pub(super) fn reserve_observation(&mut self, key: NativePointerObservationKey) -> bool {
@@ -211,6 +216,9 @@ impl NativeCommandCallbacks {
     pub(super) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.observation_record
             .is_some_and(|record| record.references_binding(binding))
+            || self
+                .capture_record
+                .is_some_and(|record| record.references_binding(binding))
     }
 
     pub(super) fn accept_observation(
@@ -221,6 +229,77 @@ impl NativeCommandCallbacks {
         let admission = self.observation.accept(record.key(), reserve);
         if admission == CommandCallbackAdmission::First {
             self.observation_record = Some(record);
+        }
+        admission
+    }
+
+    pub(super) fn reserve_capture(&mut self, key: NativePointerCaptureKey) -> bool {
+        if self
+            .capture
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.key.token == key.token && receipt.key != key)
+        {
+            return false;
+        }
+        if self.capture.contains(&key) {
+            return true;
+        }
+        if !self.capture.reserve(key) {
+            return false;
+        }
+        self.capture_record = None;
+        true
+    }
+
+    pub(super) fn has_capture_token(
+        &self,
+        token: eframe::NativeViewportPointerCaptureCommandToken,
+    ) -> bool {
+        self.capture
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.key.token == token)
+    }
+
+    pub(super) fn matches_capture(&self, key: NativePointerCaptureKey) -> bool {
+        self.capture.contains(&key)
+    }
+
+    pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+        self.capture.contains(&key) && self.capture.has_pending_work()
+    }
+
+    pub(super) fn has_pending_capture(&self) -> bool {
+        self.capture.has_pending_work()
+    }
+
+    pub(super) fn awaiting_capture(&self) -> Option<NativePointerCaptureKey> {
+        self.capture
+            .receipt
+            .as_ref()
+            .filter(|receipt| receipt.state == ReceiptState::Awaiting)
+            .map(|receipt| receipt.key)
+    }
+
+    pub(super) fn capture_record(
+        &self,
+        key: NativePointerCaptureKey,
+    ) -> Option<NativePointerCaptureRecord> {
+        self.capture
+            .contains(&key)
+            .then_some(self.capture_record)
+            .flatten()
+    }
+
+    pub(super) fn accept_capture(
+        &mut self,
+        record: NativePointerCaptureRecord,
+        reserve: impl FnOnce() -> ReservedHostRecord,
+    ) -> CommandCallbackAdmission {
+        let admission = self.capture.accept(record.key(), reserve);
+        if admission == CommandCallbackAdmission::First {
+            self.capture_record = Some(record);
         }
         admission
     }
@@ -355,6 +434,19 @@ impl NativeCommandCallbacks {
                 window: *expected_window_id,
                 device: *device_id,
             }),
+            NativeViewportPropertyCommandRetirement::PointerCapture {
+                viewport_id,
+                token,
+                expected_window_id,
+                device_id,
+                action,
+            } => self.matches_capture(NativePointerCaptureKey {
+                token: *token,
+                viewport: *viewport_id,
+                window: *expected_window_id,
+                device: *device_id,
+                action: *action,
+            }),
             NativeViewportPropertyCommandRetirement::Focus { token, .. } => {
                 self.has_focus_token(*token)
             }
@@ -400,6 +492,27 @@ impl NativeCommandCallbacks {
                     NativePointerObservationRecord::retired(key, binding),
                     || make_ingress(HostRecord::PointerObservation(key)),
                 )
+            }
+            NativeViewportPropertyCommandRetirement::PointerCapture {
+                viewport_id,
+                token,
+                expected_window_id,
+                device_id,
+                action,
+            } => {
+                let key = NativePointerCaptureKey {
+                    token,
+                    viewport: viewport_id,
+                    window: expected_window_id,
+                    device: device_id,
+                    action,
+                };
+                if viewport_id != viewport {
+                    return CommandCallbackAdmission::Unreserved;
+                }
+                self.accept_capture(NativePointerCaptureRecord::retired(key, binding), || {
+                    make_ingress(HostRecord::PointerCapture(key))
+                })
             }
             NativeViewportPropertyCommandRetirement::Focus { viewport_id, token } => {
                 let Some(receipt) = self.focus.receipt.as_ref() else {
@@ -469,6 +582,7 @@ impl NativeCommandCallbacks {
             self.focus.ingress(),
             self.visibility.ingress(),
             self.observation.ingress(),
+            self.capture.ingress(),
         ]
         .into_iter()
         .flatten()
@@ -480,6 +594,7 @@ impl NativeCommandCallbacks {
             .or_else(|| self.focus.take_ingress(ordinal))
             .or_else(|| self.visibility.take_ingress(ordinal))
             .or_else(|| self.observation.take_ingress(ordinal))
+            .or_else(|| self.capture.take_ingress(ordinal))
     }
 
     pub(super) fn commit_transferred(&mut self) {
@@ -487,6 +602,7 @@ impl NativeCommandCallbacks {
         self.focus.commit_transferred();
         self.visibility.commit_transferred();
         self.observation.commit_transferred();
+        self.capture.commit_transferred();
         if self
             .observation
             .receipt
@@ -494,6 +610,14 @@ impl NativeCommandCallbacks {
             .is_some_and(|receipt| receipt.state == ReceiptState::Committed)
         {
             self.observation_record = None;
+        }
+        if self
+            .capture
+            .receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.state == ReceiptState::Committed)
+        {
+            self.capture_record = None;
         }
     }
 }

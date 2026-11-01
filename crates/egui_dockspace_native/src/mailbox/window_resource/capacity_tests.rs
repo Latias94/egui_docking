@@ -136,6 +136,41 @@ fn two_entries_retain_the_old_received_owner_through_successor_admission_and_ful
 }
 
 #[test]
+fn settled_capture_retains_retired_cleanup_backing_until_its_exact_release() {
+    let (first, next) = bindings();
+    let viewport = ViewportId::ROOT;
+    let peer = ViewportId::from_hash_of("capture-cleanup-capacity");
+    let rect = NativePhysicalRect::new(0, 0, 640, 480);
+    let mut resources = NativeWindowResources::with_capacity_limit(2).unwrap();
+    let bytes = resources.owned_data_capacity_bytes();
+    let backing = resources.entries.as_ptr();
+    // Model the resource hold after a settled acquisition. The real press and
+    // backend acquisition are exercised by the isolated X11 capture journey.
+    resources
+        .command_owner(viewport, first)
+        .unwrap()
+        .capture_duty_held = true;
+    resources.retire(viewport, first);
+    resources.refresh_host_references(|_, _| false);
+    resources.commit_transferred_callbacks();
+    assert!(resources.references_binding(first));
+    assert!(resources.has_pending_work());
+    assert!(resources.reserve_create(viewport, next, rect));
+    assert!(!resources.reserve_create(peer, next, rect));
+
+    resources.release_capture_binding(next);
+    resources.commit_transferred_callbacks();
+    assert!(resources.references_binding(first));
+    assert_eq!(resources.entries.len(), 2);
+    resources.release_capture_binding(first);
+    assert!(!resources.references_binding(first));
+    assert_eq!(resources.create(viewport).unwrap().binding, next);
+    assert!(resources.reserve_create(peer, next, rect));
+    assert_eq!(resources.owned_data_capacity_bytes(), bytes);
+    assert_eq!(resources.entries.as_ptr(), backing);
+}
+
+#[test]
 fn oversized_staging_batch_preserves_existing_basis_and_every_owner() {
     let [first, newer] = reissued_staging_requests();
     let viewport = ViewportId::ROOT;

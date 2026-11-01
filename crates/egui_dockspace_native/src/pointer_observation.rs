@@ -85,9 +85,10 @@ impl NativePointerObservationRecord {
             })
     }
 
-    pub(crate) fn into_input(
+    pub(crate) fn into_input_event(
         self,
         request: NativePointerContinuation,
+        event: dockspace::runtime::NativePointerEvent,
         captured_at: Duration,
         resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> Option<NativePointerInput> {
@@ -98,7 +99,7 @@ impl NativePointerObservationRecord {
         Some(
             NativePointerInput::new(
                 request.pointer(),
-                request.event(),
+                event,
                 sample.desktop_location(resolve_work_area),
                 sample.delivery,
                 sample.capture,

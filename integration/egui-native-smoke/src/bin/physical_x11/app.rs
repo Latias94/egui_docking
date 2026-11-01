@@ -675,6 +675,13 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         self.inner.on_viewport_property_command_retired(retirement)
     }
 
+    fn on_viewport_pointer_capture(
+        &self,
+        result: eframe::NativeViewportPointerCaptureResult,
+    ) -> eframe::NativeHostWake {
+        self.inner.on_viewport_pointer_capture(result)
+    }
+
     fn on_viewport_pointer_observation(
         &self,
         result: eframe::NativeViewportPointerObservationResult,
