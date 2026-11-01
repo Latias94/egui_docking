@@ -542,6 +542,19 @@ pub(super) fn tab_half_geometry(tree: &TreeUpdate) -> Result<TabHalfGeometry, Pa
 pub(super) fn overflow_tab_geometry(
     tree: &TreeUpdate,
 ) -> Result<OverflowTabGeometry, PaneCenterError> {
+    overflow_tab_geometry_for_selection(tree, true)
+}
+
+pub(super) fn stationary_overflow_geometry(
+    tree: &TreeUpdate,
+) -> Result<OverflowTabGeometry, PaneCenterError> {
+    overflow_tab_geometry_for_selection(tree, false)
+}
+
+fn overflow_tab_geometry_for_selection(
+    tree: &TreeUpdate,
+    expected_selected: bool,
+) -> Result<OverflowTabGeometry, PaneCenterError> {
     let read = |label: &'static str| -> Result<_, PaneCenterError> {
         let node = semantic_node(
             tree,
@@ -601,7 +614,9 @@ pub(super) fn overflow_tab_geometry(
     let viewport_width = viewport.max_x - viewport.min_x;
     let full_width = full.max_x - full.min_x;
     let visible_width = visible.max_x - visible.min_x;
-    if main.is_selected() != Some(true)
+    // The product renderer clears this optional field for an unselected Tab.
+    // The stationary journey also checks the exact public model selection.
+    if main.is_selected().unwrap_or(false) != expected_selected
         || viewport_width <= OVERFLOW_TAB_WIDTH
         || viewport_width >= 2.0 * OVERFLOW_TAB_WIDTH
         || (full_width - OVERFLOW_TAB_WIDTH).abs() > 1.0
@@ -816,6 +831,88 @@ pub(super) fn overflow_tab_point(
         .map_err(PaneCenterError::Coordinates)?;
     let margin = 2.0 / f64::from(pixels_per_point);
     if !client.contains(physical) || !strictly_inside(safe, point, margin) {
+        return Err(PaneCenterError::NoSafeOverflowTabPoint);
+    }
+    let overlaps = |bounds: LogicalBounds| {
+        point.x >= bounds.min_x - margin
+            && point.x <= bounds.max_x + margin
+            && point.y >= bounds.min_y - margin
+            && point.y <= bounds.max_y + margin
+    };
+    if geometry.controls.into_iter().flatten().any(overlaps) {
+        return Err(PaneCenterError::ControlCovered);
+    }
+    for guide in guides {
+        if overlaps(guide.bounds) {
+            return Err(PaneCenterError::GuideCovered { label: guide.label });
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let logical = egui::pos2(point.x as f32, point.y as f32);
+    Ok((physical, logical))
+}
+
+pub(super) fn stationary_overflow_edge_point(
+    geometry: OverflowTabGeometry,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    band: f64,
+    guides: &[ActualGuideHit],
+) -> Result<(PhysicalPoint, egui::Pos2), PaneCenterError> {
+    if !pixels_per_point.is_finite() || pixels_per_point <= 0.0 {
+        return Err(PaneCenterError::Coordinates(CoordinateError::InvalidScale));
+    }
+    if (geometry.full.max_x - geometry.full.min_x - OVERFLOW_TAB_WIDTH).abs()
+        > 1.0 / f64::from(pixels_per_point)
+    {
+        return Err(PaneCenterError::InvalidOverflowTabGeometry);
+    }
+    if !band.is_finite() || band <= 0.0 {
+        return Err(PaneCenterError::NoSafeOverflowTabPoint);
+    }
+    let mut viewport = geometry.viewport;
+    // Match edge_content_viewport using the renderer's leading/trailing placements.
+    // Reserved controls lie outside the viewport; Close never trims its content.
+    for (label, control) in OVERFLOW_TAB_CONTROL_LABELS
+        .into_iter()
+        .zip(geometry.controls)
+    {
+        let Some(control) = control else {
+            continue;
+        };
+        if control.max_x <= viewport.min_x
+            || control.min_x >= viewport.max_x
+            || control.max_y <= viewport.min_y
+            || control.min_y >= viewport.max_y
+        {
+            continue;
+        }
+        match label {
+            "Scroll tabs backward" => viewport.min_x = viewport.min_x.max(control.max_x),
+            "Scroll tabs forward" | "Show hidden tabs" => {
+                viewport.max_x = viewport.max_x.min(control.min_x);
+            }
+            _ => {}
+        }
+    }
+    if viewport.max_x <= viewport.min_x {
+        return Err(PaneCenterError::NoSafeOverflowTabPoint);
+    }
+    let band = band.min((viewport.max_x - viewport.min_x) * 0.5);
+    let edge_band = LogicalBounds {
+        min_x: viewport.max_x - band,
+        ..viewport
+    };
+    let physical = viewport_logical_to_desktop(client, pixels_per_point, edge_band.center())
+        .map_err(PaneCenterError::Coordinates)?;
+    let point = desktop_to_viewport_logical(client, pixels_per_point, physical)
+        .map_err(PaneCenterError::Coordinates)?;
+    let margin = 2.0 / f64::from(pixels_per_point);
+    // This single band midpoint must remain in Main's visible body after pixel rounding.
+    if !client.contains(physical)
+        || !strictly_inside(edge_band, point, margin)
+        || !strictly_inside(geometry.visible, point, margin)
+    {
         return Err(PaneCenterError::NoSafeOverflowTabPoint);
     }
     let overlaps = |bounds: LogicalBounds| {
@@ -1863,6 +1960,155 @@ mod tests {
         assert_eq!(
             overflow_tab_geometry(&unselected),
             Err(PaneCenterError::InvalidOverflowTabGeometry)
+        );
+    }
+
+    #[test]
+    fn stationary_overflow_requires_unselected_main_and_trims_only_intersecting_strip_controls() {
+        let mut update = overflow_tree();
+        assert_eq!(
+            stationary_overflow_geometry(&update),
+            Err(PaneCenterError::InvalidOverflowTabGeometry)
+        );
+        update.nodes[3].1.clear_selected();
+        let cleared = stationary_overflow_geometry(&update).unwrap();
+        update.nodes[3].1.set_selected(false);
+        assert_eq!(stationary_overflow_geometry(&update), Ok(cleared));
+        assert_eq!(
+            overflow_tab_geometry(&update),
+            Err(PaneCenterError::InvalidOverflowTabGeometry)
+        );
+        update.nodes.extend([
+            (
+                NodeId::from(5_u64),
+                node(
+                    Role::Button,
+                    Some("Scroll tabs backward"),
+                    None,
+                    Rect::new(24.75, 12.25, 52.75, 40.25),
+                ),
+            ),
+            (
+                NodeId::from(6_u64),
+                node(
+                    Role::Button,
+                    Some("Scroll tabs forward"),
+                    None,
+                    Rect::new(696.75, 12.25, 724.75, 40.25),
+                ),
+            ),
+            (
+                NodeId::from(7_u64),
+                node(
+                    Role::Button,
+                    Some("Close Main"),
+                    None,
+                    Rect::new(600.75, 20.0, 616.75, 36.0),
+                ),
+            ),
+            (
+                NodeId::from(8_u64),
+                node(
+                    Role::Button,
+                    Some("Show hidden tabs"),
+                    None,
+                    Rect::new(724.75, 12.25, 752.75, 40.25),
+                ),
+            ),
+        ]);
+        let client = PhysicalBounds {
+            min_x: -500,
+            min_y: 300,
+            max_x: 1000,
+            max_y: 1200,
+        };
+        // A large configured band clamps to half the effective viewport, so both
+        // leading and trailing overlays affect this single midpoint. Close does not.
+        for (menu_bounds, expected) in [
+            (
+                Rect::new(724.75, 12.25, 752.75, 40.25),
+                (PhysicalPoint { x: 304, y: 339 }, egui::pos2(536.0, 26.0)),
+            ),
+            (
+                Rect::new(678.75, 12.25, 696.75, 40.25),
+                (PhysicalPoint { x: 283, y: 339 }, egui::pos2(522.0, 26.0)),
+            ),
+            (
+                Rect::new(678.75, 40.25, 696.75, 68.25),
+                (PhysicalPoint { x: 304, y: 339 }, egui::pos2(536.0, 26.0)),
+            ),
+        ] {
+            update.nodes[7].1.set_bounds(menu_bounds);
+            let geometry = stationary_overflow_geometry(&update).unwrap();
+            assert_eq!(
+                stationary_overflow_edge_point(geometry, client, 1.5, 1000.0, &[]),
+                Ok(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn stationary_overflow_edge_rejects_rounded_band_control_and_guide_collisions() {
+        let mut update = overflow_tree();
+        update.nodes[3].1.set_selected(false);
+        let geometry = stationary_overflow_geometry(&update).unwrap();
+        let client = PhysicalBounds {
+            min_x: -500,
+            min_y: 300,
+            max_x: 1000,
+            max_y: 1200,
+        };
+        assert_eq!(
+            stationary_overflow_edge_point(geometry, client, 1.5, 20.0, &[]),
+            Ok((PhysicalPoint { x: 572, y: 339 }, egui::pos2(714.6667, 26.0)))
+        );
+        // The midpoint clears two physical pixels before rounding, but the rounded
+        // desktop point falls inside the narrow band's safety margin.
+        assert_eq!(
+            stationary_overflow_edge_point(geometry, client, 1.5, 2.6875, &[]),
+            Err(PaneCenterError::NoSafeOverflowTabPoint)
+        );
+        for band in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            assert_eq!(
+                stationary_overflow_edge_point(geometry, client, 1.5, band, &[]),
+                Err(PaneCenterError::NoSafeOverflowTabPoint)
+            );
+        }
+        // The unrounded x=714.75 misses this margin; the rounded x=714.6667 does not.
+        for label in OVERFLOW_TAB_CONTROL_LABELS.into_iter().take(3) {
+            let mut blocked = update.clone();
+            blocked.nodes.push((
+                NodeId::from(5_u64),
+                node(
+                    Role::Button,
+                    Some(label),
+                    None,
+                    Rect::new(697.375, 20.0, 713.375, 36.0),
+                ),
+            ));
+            assert_eq!(
+                stationary_overflow_edge_point(
+                    stationary_overflow_geometry(&blocked).unwrap(),
+                    client,
+                    1.5,
+                    20.0,
+                    &[],
+                ),
+                Err(PaneCenterError::ControlCovered)
+            );
+        }
+        let guide = ActualGuideHit {
+            label: "Dockspace center drop guide",
+            bounds: LogicalBounds {
+                min_x: 697.375,
+                min_y: 20.0,
+                max_x: 713.375,
+                max_y: 36.0,
+            },
+        };
+        assert_eq!(
+            stationary_overflow_edge_point(geometry, client, 1.5, 20.0, &[guide]),
+            Err(PaneCenterError::GuideCovered { label: guide.label })
         );
     }
 

@@ -15,9 +15,10 @@ use winit::event::PointerWindowRoute;
 #[cfg(test)]
 use super::super::app::SharedState;
 use super::super::app::{
-    CENTER_DROP_GUIDE_LABEL, CHILD_CLOSE_LABEL, CHILD_TAB_LABEL, PointerPassthroughObservation,
-    ProductObservation, ProductPhase, ROOT_TARGET_LABEL, ROOT_WINDOW_TITLE, RedockLayout, Shared,
-    SourceSelection, StationaryMode,
+    CENTER_DROP_GUIDE_LABEL, CHILD_CLOSE_LABEL, CHILD_TAB_LABEL, OverflowOutput,
+    PointerPassthroughObservation, ProductObservation, ProductPhase, ROOT_TARGET_LABEL,
+    ROOT_WINDOW_TITLE, RedockLayout, Shared, SourceSelection, StationaryMode,
+    StationaryOverflowProbe, StationaryPress,
 };
 use super::super::assertions::{
     ActualGuideHit, DockPreviewEmission, LogicalBounds, NestedPaneCase, OverflowTabGeometry,
@@ -29,9 +30,10 @@ use super::super::assertions::{
     pane_center_geometry, pane_center_point, pane_edge_point, point_towards,
     pointer_barrier_is_satisfied, pointer_observation_for_barrier, semantic_baseline_after_missing,
     semantic_bounds, semantic_node, semantic_snapshot_is_stable, semantic_tree_summary,
-    tab_drag_point, tab_half_geometry, tab_half_point, two_stage_ingress_points,
-    verify_center_preview, verify_edge_preview, verify_nested_pane_preview,
-    verify_overflow_tab_preview, verify_tab_half_preview, viewport_logical_to_desktop,
+    stationary_overflow_edge_point, stationary_overflow_geometry, tab_drag_point,
+    tab_half_geometry, tab_half_point, two_stage_ingress_points, verify_center_preview,
+    verify_edge_preview, verify_nested_pane_preview, verify_overflow_tab_preview,
+    verify_tab_half_preview, viewport_logical_to_desktop,
 };
 use super::super::pointer_load::{
     POINTER_LOAD_ENV, POINTER_LOAD_MOVES, begin_pointer_load, finish_pointer_load,
@@ -666,6 +668,10 @@ impl PhysicalDriver {
                 StationaryMode::Negative => eprintln!(
                     "physical-smoke: stationary-negative full-eframe/GPU journey; after real tear-off/first-live, cross-window Observed query denied stationary selection; same held gesture redocked [Anchor, Main, Child], DestroyNotify/quiescence verified; no successful stationary dwell claimed"
                 ),
+                StationaryMode::Overflow | StationaryMode::OverflowCancel => eprintln!(
+                    "physical-smoke: {} full-eframe/GPU journey; exact ROOT Presented overflow outputs and original Child press/capture verified; same held gesture redocked [Anchor, Main, Child], DestroyNotify/quiescence verified",
+                    probe.mode.label(),
+                ),
                 StationaryMode::Disabled => {
                     return Err("a disabled stationary probe cannot qualify".to_owned());
                 }
@@ -1231,6 +1237,16 @@ fn stationary_while_pressed(
     target: StationaryTarget,
     source_ingress_step: u64,
 ) -> Result<(ViewportTreeSnapshot, ViewportTreeSnapshot), String> {
+    if target.mode.is_overflow() {
+        return stationary_overflow_while_pressed(
+            shared,
+            inspection,
+            desktop,
+            request,
+            target,
+            source_ingress_step,
+        );
+    }
     let deadline = bounded_stage_deadline(request.deadline, Duration::from_secs(5));
     let main_selector = SemanticSelector {
         role: egui::accesskit::Role::Tab,
@@ -1679,6 +1695,333 @@ fn stationary_while_pressed(
         probe.repeat_finalizations
     );
     Ok((after, after_scene))
+}
+
+fn wait_for_stationary_overflow_output(
+    shared: &Shared,
+    press: &StationaryPress,
+    index: usize,
+    deadline: Instant,
+) -> Result<OverflowOutput, String> {
+    let (lock, changed) = &**shared;
+    let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        if let Some(error) = &state.fatal_error {
+            return Err(format!("stationary overflow: {error}"));
+        }
+        let probe = state
+            .stationary
+            .as_ref()
+            .ok_or("stationary probe is absent")?;
+        if probe.invalidation.is_some()
+            || probe.press.as_ref() != Some(press)
+            || probe.selection != Some(SourceSelection::INACTIVE_MAIN)
+        {
+            return Err(format!(
+                "stationary overflow lost its hold/model: {probe:?}"
+            ));
+        }
+        if let Some(output) = probe
+            .overflow
+            .as_ref()
+            .and_then(|overflow| overflow.outputs[index])
+            .filter(|output| output.presented.is_some())
+        {
+            return Ok(output);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "stationary overflow: no exact Presented slot={index} before deadline: {probe:?}"
+            ));
+        }
+        let (next, _) = changed
+            .wait_timeout(state, deadline.saturating_duration_since(now))
+            .unwrap_or_else(PoisonError::into_inner);
+        state = next;
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn stationary_overflow_while_pressed(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    desktop: &X11Desktop,
+    request: GuideDragRequest<'_>,
+    target: StationaryTarget,
+    source_ingress_step: u64,
+) -> Result<(ViewportTreeSnapshot, ViewportTreeSnapshot), String> {
+    let deadline = bounded_stage_deadline(request.deadline, Duration::from_secs(5));
+    let (scene, _) = wait_for_stable_selector_bounds(
+        shared,
+        inspection,
+        ViewportId::ROOT,
+        SemanticSelector {
+            role: egui::accesskit::Role::Tab,
+            text: SemanticText::Label("Main"),
+        },
+        deadline,
+        "stationary overflow inactive Main before motion",
+    )?;
+    let initial = stationary_overflow_geometry(&scene.tree)
+        .map_err(|error| format!("stationary overflow initial geometry: {error:?}"))?;
+    let config = dockspace::runtime::DockPresentationConfig::default();
+    let step = config.tab_strip_scroll_line_extent();
+    if initial.maximum - initial.offset < step * 2.0 {
+        return Err(format!(
+            "stationary overflow requires two complete steps: initial={initial:?}, step={step}"
+        ));
+    }
+    let root = desktop.window_for_title(request.target_window_title)?;
+    let guides = actual_guide_hits(&scene.tree)
+        .map_err(|error| format!("stationary overflow guides: {error:?}"))?;
+    let (point, logical) = stationary_overflow_edge_point(
+        initial,
+        root.bounds,
+        scene.pixels_per_point,
+        config.tab_strip_edge_scroll_band(),
+        &guides,
+    )
+    .map_err(|error| format!("stationary overflow rounded edge point: {error:?}"))?;
+    let press = {
+        let mut state = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.observation.phase != ProductPhase::ChildFirstLive
+            || request.target_viewport != ViewportId::ROOT
+            || request.source_viewport == ViewportId::ROOT
+            || root.window == target.source_window
+        {
+            return Err(
+                "stationary overflow requires a distinct first-live Child source".to_owned(),
+            );
+        }
+        let probe = state
+            .stationary
+            .as_mut()
+            .ok_or("stationary probe is absent")?;
+        let press = probe
+            .press
+            .clone()
+            .ok_or("stationary overflow has no real press")?;
+        if probe.complete
+            || probe.target.is_some()
+            || probe.result.is_some()
+            || probe.invalidation.is_some()
+            || probe.selection != Some(SourceSelection::INACTIVE_MAIN)
+            || press.viewport != request.source_viewport
+            || u64::from(press.window) != u64::from(target.source_window)
+        {
+            return Err(format!("stationary overflow cannot arm: {probe:?}"));
+        }
+        probe.target = Some(point);
+        probe.overflow = Some(StationaryOverflowProbe::new(initial, root.window));
+        probe.stress_active = true;
+        press
+    };
+    desktop.move_pointer(point)?;
+    desktop.assert_pointer(point, Some(true))?;
+    let hovered = input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source_ingress_step,
+        request.source_client,
+        request.source_pixels_per_point,
+        point,
+        true,
+        deadline,
+        "stationary overflow one real motion into the effective right band",
+    )?;
+    let first = wait_for_stationary_overflow_output(shared, &press, 1, deadline)?;
+    let mut source_step = hovered.step;
+    let held_point = if target.mode == StationaryMode::OverflowCancel {
+        let exit = request.routed_ingress;
+        let logical_exit = desktop_to_viewport_logical(root.bounds, scene.pixels_per_point, exit)
+            .map_err(|error| format!("stationary overflow exit point: {error:?}"))?;
+        if initial.viewport.contains(logical_exit) {
+            return Err("stationary overflow control exit remains in the tab strip".to_owned());
+        }
+        shared
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stationary
+            .as_mut()
+            .unwrap()
+            .overflow
+            .as_mut()
+            .unwrap()
+            .exit_target = Some(exit);
+        desktop.move_pointer(exit)?;
+        desktop.assert_pointer(exit, Some(true))?;
+        source_step = input_barrier(
+            shared,
+            inspection,
+            request.source_viewport,
+            source_step,
+            request.source_client,
+            request.source_pixels_per_point,
+            exit,
+            true,
+            deadline,
+            "stationary overflow control exit reached the held source UI",
+        )?
+        .step;
+        {
+            let mut state = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let overflow = state
+                .stationary
+                .as_mut()
+                .unwrap()
+                .overflow
+                .as_mut()
+                .unwrap();
+            if overflow.exit_observed_at.is_none() {
+                return Err("the source UI exit lacks its original native motion".to_owned());
+            }
+            // Count the quiet interval only after observing the exact source UI position.
+            overflow.stop_after = config
+                .tab_strip_edge_scroll_interval()
+                .and_then(|interval| Instant::now().checked_add(interval * 2));
+        }
+        // Inspection requests a normal repaint; it creates no native pointer facts.
+        inspection.tree(ViewportId::ROOT, deadline)?;
+        exit
+    } else {
+        point
+    };
+    let last = wait_for_stationary_overflow_output(shared, &press, 2, deadline)?;
+    // Glow executes viewport commands after reporting Presented. Keep the sticky
+    // query/capture checks alive through the following fresh source pass.
+    let terminal_source = if target.mode == StationaryMode::OverflowCancel {
+        Some(input_barrier(
+            shared,
+            inspection,
+            request.source_viewport,
+            source_step,
+            request.source_client,
+            request.source_pixels_per_point,
+            held_point,
+            true,
+            deadline,
+            "stationary overflow control crossed terminal commands and fresh source UI",
+        )?)
+    } else {
+        None
+    };
+    let mut state = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let probe = state
+        .stationary
+        .as_mut()
+        .ok_or("stationary probe is absent")?;
+    if probe.invalidation.is_some()
+        || probe.press.as_ref() != Some(&press)
+        || probe.selection != Some(SourceSelection::INACTIVE_MAIN)
+    {
+        return Err(format!(
+            "stationary overflow final hold/model was invalidated: {probe:?}"
+        ));
+    }
+    let capture = probe
+        .capture
+        .ok_or("stationary overflow has no actual Acquired callback")?;
+    if !probe.capture_pending
+        || capture.viewport_id() != press.viewport
+        || capture.expected_window_id() != press.window
+        || capture.device_id() != press.device
+        || capture.action() != eframe::NativeViewportPointerCaptureAction::Acquire
+        || capture.status() != eframe::NativeViewportPointerCaptureStatus::Acquired
+        || probe.repeated_output.is_none()
+        || probe.repeat_finalizations < 2
+        || probe.slow_suffixes < 2
+    {
+        return Err(format!(
+            "stationary overflow lacks real capture/repeat pressure: {probe:?}"
+        ));
+    }
+    let overflow = probe.overflow.as_ref().unwrap();
+    let baseline = overflow.outputs[0].ok_or("stationary overflow has no first-sample baseline")?;
+    for output in [baseline, first, last] {
+        let eframe::NativeViewportPointerObservation::Observed { facts, delivery } =
+            output.sample.observation()
+        else {
+            return Err(format!(
+                "stationary overflow requires actual Observed samples: {output:?}"
+            ));
+        };
+        let source = PointerWindowRoute::Window(press.window);
+        if output.sample.viewport_id() != press.viewport
+            || output.sample.expected_window_id() != press.window
+            || output.sample.device_id() != press.device
+            || !matches!(facts.hover, PointerWindowRoute::Window(window) if u64::from(window) == u64::from(root.window))
+            || facts.capture != source
+            || delivery != source
+            || !facts.desktop_position.is_some_and(|position| {
+                position.x == f64::from(point.x) && position.y == f64::from(point.y)
+            })
+        {
+            return Err(format!(
+                "stationary overflow sample lost its actual route: {output:?}"
+            ));
+        }
+    }
+    if target.mode == StationaryMode::OverflowCancel
+        && (overflow.exit_observed_at.is_none()
+            || overflow
+                .stop_after
+                .is_none_or(|after| last.presented.unwrap().1 < after)
+            || first.sample.token() != last.sample.token()
+            || probe.latest_result.map(|latest| latest.token()) != Some(first.sample.token()))
+    {
+        return Err(format!(
+            "stationary overflow control did not stop after accepted exit: {probe:?}"
+        ));
+    }
+    let outputs = [baseline, first, last].map(|row| {
+        (
+            row.token,
+            row.presented.unwrap().0.ordinal().get(),
+            row.geometry.offset,
+            row.sample.token(),
+        )
+    });
+    let intervals = [
+        first
+            .sample_interval
+            .0
+            .saturating_duration_since(baseline.sample_interval.1),
+        last.sample_interval
+            .0
+            .saturating_duration_since(first.sample_interval.1),
+    ];
+    let quiet = overflow
+        .exit_observed_at
+        .map(|at| last.presented.unwrap().1.saturating_duration_since(at));
+    eprintln!(
+        "physical-smoke: {} exact-output barrier: initial_offset={} maximum={} fixed_edge={logical:?}/{point:?} outputs(token,ordinal,offset,sample)={outputs:?} conservative_sample_intervals={intervals:?} quiet_after_native_exit={quiet:?}; real renderer Presented terminals forwarded in order; subsequent steps use the existing core presentation barrier, no fabricated core-commit receipt",
+        target.mode.label(),
+        initial.offset,
+        initial.maximum,
+    );
+    probe.finish();
+    drop(state);
+    desktop.assert_pointer(held_point, Some(true))?;
+    let after = if let Some(after) = terminal_source {
+        after
+    } else {
+        input_barrier(
+            shared,
+            inspection,
+            request.source_viewport,
+            source_step,
+            request.source_client,
+            request.source_pixels_per_point,
+            held_point,
+            true,
+            deadline,
+            "stationary overflow source remains held after exact output steps",
+        )?
+    };
+    Ok((after, scene))
 }
 
 fn native_drag_preview_barrier(

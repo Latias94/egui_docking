@@ -20,8 +20,9 @@ use winit::event::{DeviceId, ElementState, MouseButton, PointerPressToken, Windo
 use winit::window::WindowId;
 
 use super::assertions::{
-    NestedPaneCase, PHYSICAL_TARGET_ENV, POINTER_DIAGNOSTIC_LABEL, PaneEdgeCase, PhysicalBounds,
-    PhysicalPoint, ROOT_PANE_CONTENT_LABEL,
+    NestedPaneCase, OverflowTabGeometry, PHYSICAL_TARGET_ENV, POINTER_DIAGNOSTIC_LABEL,
+    PaneEdgeCase, PhysicalBounds, PhysicalPoint, ROOT_PANE_CONTENT_LABEL,
+    stationary_overflow_geometry,
 };
 use super::driver;
 use super::pointer_load::{
@@ -49,9 +50,15 @@ pub(super) enum StationaryMode {
     Disabled,
     Negative,
     Positive,
+    Overflow,
+    OverflowCancel,
 }
 
 impl StationaryMode {
+    pub(super) const fn is_overflow(self) -> bool {
+        matches!(self, Self::Overflow | Self::OverflowCancel)
+    }
+
     const fn enabled(self) -> bool {
         !matches!(self, Self::Disabled)
     }
@@ -61,6 +68,8 @@ impl StationaryMode {
             Self::Disabled => "stationary-disabled",
             Self::Negative => "stationary-negative",
             Self::Positive => "stationary-positive",
+            Self::Overflow => "stationary-overflow",
+            Self::OverflowCancel => "stationary-overflow-cancel",
         }
     }
 }
@@ -196,6 +205,42 @@ pub(super) struct SourceSelection {
     pub(super) child_selected: bool,
 }
 
+/// Stats from one real pass, retained only in the three finite journey slots.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct OverflowOutput {
+    pub(super) token: eframe::NativeOutputToken,
+    pub(super) geometry: OverflowTabGeometry,
+    pub(super) sample: eframe::NativeViewportPointerObservationResult,
+    pub(super) sample_interval: (Instant, Instant),
+    terminal_pass: bool,
+    pub(super) presented: Option<(eframe::NativeOutputResult, Instant)>,
+}
+
+#[derive(Debug)]
+pub(super) struct StationaryOverflowProbe {
+    pub(super) initial: OverflowTabGeometry,
+    pub(super) window: u32,
+    pub(super) outputs: [Option<OverflowOutput>; 3],
+    semantic_output: Option<eframe::NativeOutputToken>,
+    pub(super) exit_target: Option<PhysicalPoint>,
+    pub(super) exit_observed_at: Option<Instant>,
+    pub(super) stop_after: Option<Instant>,
+}
+
+impl StationaryOverflowProbe {
+    pub(super) fn new(initial: OverflowTabGeometry, window: u32) -> Self {
+        Self {
+            initial,
+            window,
+            outputs: [None; 3],
+            semantic_output: None,
+            exit_target: None,
+            exit_observed_at: None,
+            stop_after: None,
+        }
+    }
+}
+
 impl SourceSelection {
     pub(super) const INACTIVE_MAIN: Self = Self {
         main_selected: false,
@@ -237,12 +282,175 @@ pub(super) struct StationaryProbe {
     pub(super) repeat_finalizations: usize,
     pub(super) slow_suffixes: usize,
     pub(super) complete: bool,
+    pub(super) overflow: Option<StationaryOverflowProbe>,
 }
 
 impl StationaryProbe {
     pub(super) fn finish(&mut self) {
         self.complete = true;
         self.input_blocker = None;
+    }
+
+    fn observe_overflow_output(
+        &mut self,
+        token: eframe::NativeOutputToken,
+        output: &egui::FullOutput,
+    ) {
+        let Some(overflow) = &mut self.overflow else {
+            return;
+        };
+        if overflow.semantic_output != Some(token)
+            || u64::from(token.window_id()) != u64::from(overflow.window)
+            || !self.hover_observed
+        {
+            return;
+        }
+        let Some((sample, sample_interval)) = self.latest_result.zip(self.latest_result_interval)
+        else {
+            return;
+        };
+        let Some(tree) = &output.platform_output.accesskit_update else {
+            self.invalidation
+                .get_or_insert("a semantic overflow output omitted its AccessKit stats");
+            return;
+        };
+        let geometry = match stationary_overflow_geometry(tree) {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                eprintln!("stationary overflow output: {error:?}");
+                self.invalidation
+                    .get_or_insert("the current overflow geometry or selection is invalid");
+                return;
+            }
+        };
+        let config = dockspace::runtime::DockPresentationConfig::default();
+        let step = config.tab_strip_scroll_line_extent();
+        let delta = geometry.offset - overflow.initial.offset;
+        let close = |left: f64, right: f64| (left - right).abs() < 0.01;
+        if geometry.viewport != overflow.initial.viewport
+            || !close(geometry.maximum, overflow.initial.maximum)
+            || !close(geometry.full.min_x, overflow.initial.full.min_x - delta)
+            || !close(geometry.full.max_x, overflow.initial.full.max_x - delta)
+            || geometry.full.min_y != overflow.initial.full.min_y
+            || geometry.full.max_y != overflow.initial.full.max_y
+        {
+            self.invalidation
+                .get_or_insert("overflow stats changed beyond the expected tab translation");
+            return;
+        }
+        let index = if close(delta, 0.0) {
+            0
+        } else if close(delta, step) {
+            if self.mode == StationaryMode::OverflowCancel
+                && overflow
+                    .stop_after
+                    .is_some_and(|after| Instant::now() >= after)
+            {
+                2
+            } else {
+                1
+            }
+        } else if self.mode == StationaryMode::Overflow && close(delta, step * 2.0) {
+            2
+        } else {
+            self.invalidation
+                .get_or_insert("overflow skipped a step or scrolled after leaving the edge band");
+            return;
+        };
+        if overflow.outputs[index].is_some_and(|row| row.presented.is_some()) {
+            return;
+        }
+        overflow.outputs[index] = Some(OverflowOutput {
+            token,
+            geometry,
+            sample,
+            sample_interval,
+            terminal_pass: false,
+            presented: None,
+        });
+    }
+
+    fn finalize_overflow_output(
+        &mut self,
+        token: eframe::NativeOutputToken,
+        disposition: egui::OutputPassDisposition,
+    ) {
+        let Some(overflow) = &mut self.overflow else {
+            return;
+        };
+        for row in &mut overflow.outputs {
+            if row.is_some_and(|row| row.token == token && row.presented.is_none()) {
+                match disposition {
+                    egui::OutputPassDisposition::Repeat => *row = None,
+                    egui::OutputPassDisposition::Terminal => {
+                        row.as_mut().unwrap().terminal_pass = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn present_overflow_output(&mut self, result: eframe::NativeOutputResult) {
+        let Some(overflow) = &mut self.overflow else {
+            return;
+        };
+        let Some(index) = overflow
+            .outputs
+            .iter()
+            .position(|row| row.is_some_and(|row| row.token == result.token()))
+        else {
+            return;
+        };
+        let row = overflow.outputs[index].unwrap();
+        if !row.terminal_pass || row.presented.is_some() {
+            self.invalidation
+                .get_or_insert("overflow terminal did not match one finalized terminal pass");
+            return;
+        }
+        if result.status() != eframe::NativeOutputStatus::Presented {
+            overflow.outputs[index] = None;
+            return;
+        }
+        if index > 0 {
+            let previous =
+                overflow.outputs[index - 1].filter(|previous| previous.presented.is_some());
+            let Some(previous) = previous else {
+                self.invalidation.get_or_insert(
+                    "overflow advanced without the preceding exact Presented output",
+                );
+                return;
+            };
+            let (previous_result, previous_at) = previous.presented.unwrap();
+            let stopping = self.mode == StationaryMode::OverflowCancel && index == 2;
+            let interval = dockspace::runtime::DockPresentationConfig::default()
+                .tab_strip_edge_scroll_interval()
+                .expect("the overflow smoke enables its finite interval");
+            if previous.token == row.token
+                || previous_result.ordinal() >= result.ordinal()
+                || (!stopping
+                    && (previous.sample.token() == row.sample.token()
+                        || row.sample_interval.0 < previous_at
+                        || row
+                            .sample_interval
+                            .0
+                            .saturating_duration_since(previous.sample_interval.1)
+                            < interval))
+            {
+                self.invalidation.get_or_insert(
+                    "overflow did not wait for exact presentation and a fresh interval",
+                );
+                return;
+            }
+        }
+        overflow.outputs[index].as_mut().unwrap().presented = Some((result, Instant::now()));
+        eprintln!(
+            "physical-smoke: {} exact ROOT Presented slot={index} token={:?} ordinal={} offset={} sample={:?}; terminal forwarded, not a direct core-commit receipt",
+            self.mode.label(),
+            row.token,
+            result.ordinal().get(),
+            row.geometry.offset,
+            row.sample.token(),
+        );
     }
 
     fn observe_event(&mut self, event: eframe::NativeWindowEvent<'_>) {
@@ -282,17 +490,34 @@ impl StationaryProbe {
                 device_id, facts, ..
             } => {
                 if let Some(target) = self.target {
-                    if self.mode == StationaryMode::Positive && self.result.is_some() {
-                        self.invalidation.get_or_insert(
-                            "native motion interrupted the positive stationary dwell",
-                        );
-                    } else if self.press.as_ref().is_some_and(|press| {
+                    let source_matches = self.press.as_ref().is_some_and(|press| {
                         event.viewport_id() == Some(press.viewport)
                             && event.window_id() == press.window
                             && *device_id == press.device
-                    }) && facts.desktop_position.is_some_and(|point| {
-                        point.x == f64::from(target.x) && point.y == f64::from(target.y)
-                    }) {
+                    });
+                    if source_matches
+                        && let Some(overflow) = &mut self.overflow
+                        && overflow.exit_observed_at.is_none()
+                        && overflow.exit_target.is_some_and(|point| {
+                            facts.desktop_position.is_some_and(|position| {
+                                position.x == f64::from(point.x) && position.y == f64::from(point.y)
+                            })
+                        })
+                    {
+                        overflow.exit_observed_at = Some(Instant::now());
+                        return;
+                    }
+                    if (self.mode == StationaryMode::Positive && self.result.is_some())
+                        || (self.mode.is_overflow() && self.hover_observed)
+                    {
+                        self.invalidation.get_or_insert(
+                            "native motion interrupted the positive stationary dwell",
+                        );
+                    } else if source_matches
+                        && facts.desktop_position.is_some_and(|point| {
+                            point.x == f64::from(target.x) && point.y == f64::from(target.y)
+                        })
+                    {
                         self.hover_observed = true;
                     } else {
                         self.invalidation
@@ -401,11 +626,11 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         smoke_layout()
     };
     let mut style = DockStyle::default();
-    if overflow_target {
+    if overflow_target || stationary_mode.is_overflow() {
         style.tab_min_width = 400.0;
         style.tab_max_width = 400.0;
     }
-    let presentation = if overflow_target {
+    let presentation = if overflow_target || stationary_mode.is_overflow() {
         dockspace::runtime::DockPresentationConfig::builder()
             .tab_min_width(400.0)
             .tab_max_width(400.0)
@@ -463,9 +688,11 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                     ROOT_WINDOW_TITLE.to_owned(),
                 )));
             egui_inspection::serve(&creation.egui_ctx, &inspection_endpoint.to_string())?;
-            creation
-                .egui_ctx
-                .add_plugin(PhysicalSemanticProbe::default());
+            creation.egui_ctx.add_plugin(PhysicalSemanticProbe {
+                diagnostic_enabled: false,
+                overflow_enabled: stationary_mode.is_overflow(),
+                shared: Arc::clone(&app_shared),
+            });
             let driver_context = creation.egui_ctx.clone();
             let driver_shared = Arc::clone(&app_shared);
             std::thread::Builder::new()
@@ -513,9 +740,11 @@ fn stationary_mode_from_env(measure_pointer_load: bool) -> Result<StationaryMode
         Err(std::env::VarError::NotPresent) => return Ok(StationaryMode::Disabled),
         Ok(value) if value == "negative" => StationaryMode::Negative,
         Ok(value) if value == "positive" => StationaryMode::Positive,
+        Ok(value) if value == "overflow" => StationaryMode::Overflow,
+        Ok(value) if value == "overflow-cancel" => StationaryMode::OverflowCancel,
         value => {
             return Err(format!(
-                "{STATIONARY_ENV}: expected positive, negative or an unset variable, found {value:?}"
+                "{STATIONARY_ENV}: expected positive, negative, overflow, overflow-cancel or an unset variable, found {value:?}"
             ));
         }
     };
@@ -552,9 +781,10 @@ fn inspection_endpoint_from_env() -> io::Result<SocketAddr> {
     Ok(*endpoint)
 }
 
-#[derive(Default)]
 struct PhysicalSemanticProbe {
     diagnostic_enabled: bool,
+    overflow_enabled: bool,
+    shared: Shared,
 }
 
 impl egui::Plugin for PhysicalSemanticProbe {
@@ -576,6 +806,24 @@ impl egui::Plugin for PhysicalSemanticProbe {
             self.diagnostic_enabled = true;
         }
         publish_pointer_diagnostic(ui);
+    }
+
+    fn output_hook(&mut self, _: &egui::Context, output: &mut egui::FullOutput) {
+        if !self.overflow_enabled {
+            return;
+        }
+        let Some(token) = eframe::current_native_output_token()
+            .filter(|token| token.viewport_id() == ViewportId::ROOT)
+        else {
+            return;
+        };
+        let mut state = self.shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(probe) = &mut state.stationary
+            && probe.mode.is_overflow()
+            && !probe.complete
+        {
+            probe.observe_overflow_output(token, output);
+        }
     }
 }
 
@@ -776,16 +1024,27 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                         && result.expected_window_id() == press.window
                         && result.device_id() == press.device
                 })
-                && result.action() == eframe::NativeViewportPointerCaptureAction::Acquire
             {
-                match result.status() {
-                    eframe::NativeViewportPointerCaptureStatus::Pending => {
-                        probe.capture_pending = true;
+                if probe.overflow.is_some()
+                    && let Some(acquired) = probe.capture
+                    && (result.action() != eframe::NativeViewportPointerCaptureAction::Acquire
+                        || result.token() != acquired.token()
+                        || result.status() != eframe::NativeViewportPointerCaptureStatus::Acquired)
+                {
+                    probe.invalidation.get_or_insert(
+                        "the exact capture was released or reacquired during stationary overflow",
+                    );
+                }
+                if result.action() == eframe::NativeViewportPointerCaptureAction::Acquire {
+                    match result.status() {
+                        eframe::NativeViewportPointerCaptureStatus::Pending => {
+                            probe.capture_pending = true;
+                        }
+                        eframe::NativeViewportPointerCaptureStatus::Acquired => {
+                            probe.capture.get_or_insert(result);
+                        }
+                        _ => {}
                     }
-                    eframe::NativeViewportPointerCaptureStatus::Acquired => {
-                        probe.capture.get_or_insert(result);
-                    }
-                    _ => {}
                 }
                 eprintln!(
                     "physical-smoke: {} full-eframe/GPU forwarded capture={result:?} host_wake={wake:?}",
@@ -817,6 +1076,16 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 && probe.hover_observed
                 && !probe.complete
             {
+                if probe.mode == StationaryMode::OverflowCancel
+                    && let Some(overflow) = &probe.overflow
+                    && overflow.exit_target.is_some()
+                    && overflow.outputs[1]
+                        .is_some_and(|first| first.sample.token() != result.token())
+                {
+                    probe.invalidation.get_or_insert(
+                        "a new stationary query completed after the overflow control exit",
+                    );
+                }
                 if probe.result.is_none() {
                     probe.result = Some(result);
                     probe.result_at = Some(captured_by);
@@ -914,6 +1183,17 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 probe.repeat_finalizations += 1;
                 changed.notify_all();
             }
+            if let Some(probe) = &mut lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+                && let Some(token) = token
+                && probe.mode.is_overflow()
+                && !probe.complete
+            {
+                probe.finalize_overflow_output(token, disposition);
+                changed.notify_all();
+            }
         }
         wake
     }
@@ -929,7 +1209,20 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         {
             load.service.terminal(result.token());
         }
-        self.inner.on_output(result)
+        let wake = self.inner.on_output(result);
+        if self.stationary_mode.is_overflow() {
+            let (lock, changed) = &*self.shared;
+            if let Some(probe) = &mut lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+                && !probe.complete
+            {
+                probe.present_overflow_output(result);
+                changed.notify_all();
+            }
+        }
+        wake
     }
 
     fn on_viewport_create_failed(
@@ -1064,6 +1357,13 @@ impl eframe::App for PhysicalSmokeApp {
                 shared.stationary.as_mut().is_some_and(|probe| {
                     if !probe.stress_active || probe.complete {
                         return false;
+                    }
+                    if let Some(overflow) = &probe.overflow
+                        && let Some(after) = overflow.stop_after
+                        && overflow.outputs[2].is_none_or(|row| row.presented.is_none())
+                    {
+                        ui.ctx()
+                            .request_repaint_after(after.saturating_duration_since(Instant::now()));
                     }
                     if let Some(token) = eframe::current_native_output_token()
                         && probe.repeated_output.is_none()
@@ -1227,6 +1527,12 @@ impl PhysicalSmokeApp {
             && !probe.complete
         {
             probe.selection = source_selection;
+            if let Some(overflow) = &mut probe.overflow {
+                overflow.semantic_output = stationary_semantic
+                    .then(eframe::current_native_output_token)
+                    .flatten()
+                    .filter(|token| token.viewport_id() == ViewportId::ROOT);
+            }
             if stationary_semantic {
                 probe.model_after_result = stationary_result;
                 if probe.first_model_after_result.is_none()
