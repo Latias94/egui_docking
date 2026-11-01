@@ -439,6 +439,17 @@ impl PointerJournalLedger {
         }
     }
 
+    /// Reads device classification only from this exact active stream.
+    pub(crate) fn stream_device(&self, stream: PointerStreamId) -> Option<PointerDeviceKind> {
+        if self.active_lease() != Some(stream.lease()) {
+            return None;
+        }
+        self.active_streams
+            .get(&stream.pointer())
+            .filter(|active| active.id == stream)
+            .map(|active| active.device)
+    }
+
     /// Checks this exact native stream's observed primary-button continuity.
     ///
     /// A checkpoint's held-button roster has no press origin. Retained capture

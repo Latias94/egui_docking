@@ -110,6 +110,13 @@ also verifies cross-window dwell behind confirmed Applied routing. This public
 contract is qualified in `docs/VALIDATION.md`; it does not certify
 adapter scheduling or OS stationary/Touch observation.
 
+The native stationary fixture also reads the desktop mouse drag's capture
+requirement before timed work exists, checks stable identity across hover
+changes and dropped frames, and distinguishes the next gesture on a reused
+pointer. Pending input hides the projection until commit; local and Touch
+gestures, foreign sources, cancellation and retirement cannot borrow it. These
+queries neither acquire native capture nor prove that native cleanup finished.
+
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,

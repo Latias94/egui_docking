@@ -160,6 +160,33 @@ impl DockEngine {
         })
     }
 
+    pub(crate) fn native_pointer_capture_projection(
+        &self,
+    ) -> Option<(
+        crate::interaction::DragSessionId,
+        GestureOwner,
+        crate::platform::NativeDragSourceInput,
+    )> {
+        let InteractionStatus::Dragging { session } = self.interaction.status() else {
+            return None;
+        };
+        let drag = self.interaction.active_drag(session).ok()?;
+        let owner = drag.owner;
+        if !owner.is_desktop()
+            || !matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+            || self.pointer_journal.stream_device(owner.stream())
+                != Some(crate::pointer_journal::PointerDeviceKind::Mouse)
+            || !self.pointer_continuation_source_is_current(owner)
+            || !(self.presentation_authority_is_current(drag.presentation)
+                || drag.continuation.as_ref().is_some_and(|continuation| {
+                    self.scene_gesture_continuation_is_current(continuation)
+                }))
+        {
+            return None;
+        }
+        Some((session, owner, self.native_drag_source_input(drag)))
+    }
+
     pub(crate) fn native_drag_capture_projection(
         &self,
         token: PointerContinuationToken,

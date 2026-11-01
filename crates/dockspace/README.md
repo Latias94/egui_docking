@@ -171,6 +171,13 @@ input still needs independently captured routing and event-time facts.
 A native desktop drag's continuation exposes core's frozen source-window
 treatment through `source_input()`. This read-only `NativeDragSourceInput`
 projection does not choose a mode, change the OS window or grant capture.
+`DockspaceSession::native_pointer_capture_request()` exposes the current mouse
+drag's exact capture requirement even before a finite stationary action exists.
+Its identity remains stable across hover targets and changes for a new gesture.
+Drain accepted callbacks and commit pending input before comparing it with a
+retained request; a temporary `None` while input is pending does not complete
+native release or cleanup. The host must retain the original native press and
+independently settle its own capture operation.
 When a host explicitly acquires fresh capture after the drag began, submit
 `capture_acquired_event()` through the ordinary native input order with its
 actual observation time and independently proven source delivery/capture.

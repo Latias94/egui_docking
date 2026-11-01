@@ -8,9 +8,44 @@ use super::{
 };
 use crate::geometry::LogicalPoint;
 use crate::ids::SurfaceId;
-use crate::interaction::{GestureLane, GestureOwner, PointerContinuationRequest};
+use crate::interaction::{DragSessionId, GestureLane, GestureOwner, PointerContinuationRequest};
 use crate::pointer_journal::PointerProviderScope;
 use crate::runtime::PointerContinuationToken;
+
+/// Read-only capture requirement for the current native desktop mouse drag.
+///
+/// Equality identifies the exact existing gesture and its frozen source-window
+/// treatment, independently of hover targets and finite stationary requests.
+/// This value supplies no native capture fact or receiver authority. Report a
+/// freshly observed acquisition through the existing finite continuation's
+/// [`NativePointerContinuation::capture_acquired_event`] when one is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativePointerCaptureRequest {
+    owner: GestureOwner,
+    session: DragSessionId,
+    source_binding: NativeSurfaceBinding,
+    source_input: NativeDragSourceInput,
+}
+
+impl NativePointerCaptureRequest {
+    /// Returns the native pointer whose exact existing gesture requires capture.
+    #[must_use]
+    pub const fn pointer(&self) -> NativePointerId {
+        NativePointerId::new(self.owner.pointer().get())
+    }
+
+    /// Returns the exact original source binding required for native capture.
+    #[must_use]
+    pub const fn source_binding(&self) -> NativeSurfaceBinding {
+        self.source_binding
+    }
+
+    /// Returns core's frozen source-window treatment for this drag.
+    #[must_use]
+    pub const fn source_input(&self) -> NativeDragSourceInput {
+        self.source_input
+    }
+}
 
 /// One finite stationary action projected from the committed native gesture.
 ///
@@ -116,6 +151,31 @@ impl NativePointerContinuation {
 }
 
 impl DockspaceSession {
+    /// Returns the committed native desktop mouse drag's capture requirement.
+    ///
+    /// The gesture need not have a finite stationary action. Hover target or
+    /// deadline changes preserve this request's identity; another drag session
+    /// differs even when it reuses the same native pointer and source binding.
+    /// Reading this projection does not record input or advance the gesture.
+    ///
+    /// Hosts must drain accepted raw callbacks and commit pending core input
+    /// before comparing this with a retained request. Pending input temporarily
+    /// returns `None`, which must not be interpreted as completed native cleanup.
+    /// An ended gesture or invalid source also returns `None`; native capture
+    /// release and cleanup still require their own actual host observations.
+    #[must_use]
+    pub fn native_pointer_capture_request(&self) -> Option<NativePointerCaptureRequest> {
+        let (owner, source_binding, _) = self.native_pointer_continuation_source()?;
+        let (session, capture_owner, source_input) =
+            self.engine.native_pointer_capture_projection()?;
+        (capture_owner == owner).then_some(NativePointerCaptureRequest {
+            owner,
+            session,
+            source_binding,
+            source_input,
+        })
+    }
+
     /// Returns the committed joined native gesture's finite stationary request.
     ///
     /// Accepted native input must commit before a request can be returned. Hosts

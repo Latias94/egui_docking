@@ -85,7 +85,6 @@ pub use measurement::{
     TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
     UniformSurfaceMetrics,
 };
-pub use native::NativePointerContinuation;
 pub use native::{
     HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeCreateReadiness,
     NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
@@ -104,6 +103,7 @@ pub use native::{
     NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
     NativeWorkAreaBinding, NativeWorkAreaFacts, NativeWorkAreaRoster,
 };
+pub use native::{NativePointerCaptureRequest, NativePointerContinuation};
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseDisposition,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeDispatchFailure,
