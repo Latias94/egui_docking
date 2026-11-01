@@ -15,6 +15,78 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 finite fresh X11 capture sampling
+
+Local Winit commit `3199a442b10a8d6d5b85529599c4cdeb24df1320` qualifies a finite fresh capture observation on the
+existing exact device/press duty. Only an already Active explicit capture of a
+viewable direct-root source may refresh the same-client XI2 Async/Async grab.
+The observation takes Q1's one root position/hover reply, executes a real G2
+regrab, then rejects pending native events and revalidates the original claim.
+Success can publish source capture/delivery at that sample; ordinary None and
+implicit-only queries retain Unknown. A refused G2 supplies no new proof while
+preserving the original cleanup obligation. An indeterminate result, source
+retirement or release keeps cleanup until that exact native duty finishes.
+
+Sampling is a phase on the existing per-device row. Native expansion marks its
+interval invalid before dispatch, so returning to an empty FIFO cannot restore
+Q1. No additional registry, issuer or clock is added. Ordinary grab reservation
+continues to reject before ungrab. Sample completion after Primary replacement,
+failed cleanup and a newer release claim cannot authorize or release a
+successor. Acquisition and sampling use the same production XI2 event mask,
+including Motion/Button/Enter/Leave required to reject changed query facts.
+
+The first native checks pass explicit known samples over source and peer,
+strict Unknown ordinary/implicit/foreign-frozen samples, and all five real
+presses' original cleanup checks. A separate ignored native library case uses
+the same private observation implementation with two fixed interleave points:
+after Q1 and after a confirmed successful G2. Production supplies a no-op
+closure, with no dynamic hook registration. Source hide at either point rejects
+the entire sample and keeps release Pending through dispatch completion;
+ordinary source/peer confinement cannot ungrab it. A completed native-entry
+guard also rejects Q1 despite an empty final queue, and a fresh query can recover.
+The foreign InputOnly map changes the root query's child to that exact foreign
+window between Q1 and G2. XPeekEvent confirms a selected XI2 Enter/Leave at the
+head without consuming its cookie. The old Q1 is rejected while the crossing
+remains queued, and normal dispatch plus a new query recovers. These private
+checkpoints execute the same observation implementation as the public method;
+they do not expose a production hook.
+
+Final frozen-source gates pass macOS119 and Linux119 pure cases (the same
+57 state tests in two wrappers plus five ordinary-dispatch cases), Linux91
+library cases, all-target compilation, correctness/suspicious Clippy, strict
+rustdoc and exact-path nightly formatting. Four real X11 gates pass separately:
+three-press deterministic interleavings in 0.27 seconds, the five-press explicit
+capture/freeze case in 0.47 seconds, owner mutation in 0.06 seconds and ordinary
+position/hover in 0.34 seconds. Existing wrapper dead-code warnings remain.
+The first final Clippy pass required a semantics-preserving Option `?` rewrite;
+the whole affected gate set then reran on unchanged final source hashes.
+
+Three precise negative controls fail as intended. Bypassing interval validity
+accepts stale Q1; wrongly restoring a retired sample to Active violates automatic
+cleanup phase/claim assertions; omitting the actual native-entry invalidation
+causes the real interleave case to return double Known instead of Unavailable.
+The temporary production mutation was hash-checked and removed before final
+qualification. An earlier cleanup test explicitly called release and could mask
+missing automatic retirement; its final version instead requires Retiring and
+one automatic claim. Evidence is
+`/tmp/dockspace-fresh-sample-qualified-gates.json`,
+`/tmp/dockspace-fresh-sample-qualified-source.json`,
+`/tmp/dockspace-fresh-sample-red-controls.json` and
+`/tmp/dockspace-fresh-sample-red-native-entry.json`. Independent production review
+reported no confirmed P1/P2; final assertion strengthening and real execution
+were performed by the main verification owner.
+
+These facts cover server-logical state at the sample, not physical button state,
+uninterrupted old-grab history, future freedom from freeze, an atomic foreign
+window hierarchy walk or full stationary behavior. An unknown root child,
+including a window-manager frame, stays Unknown. The selected native workspace
+still pins Winit `39a8165d` and egui `9729e354a`; it has no automatic acquisition
+command and is not using this newly committed local sample implementation. Core
+and adapter production source remain unchanged. Eframe/native acquisition,
+exact release/retirement, the core acquisition event, non-direct-root platform
+coverage and positive stationary journeys remain subsequent plan work. This
+component checkpoint does not close U7/U8/U9/U10/U11 or the complete Goal.
+
 ## 2026-11-01 elapsed-time service coexistence and XI2 regrab cross-check
 
 The finite elapsed-service fixture separates the release source, tokenless

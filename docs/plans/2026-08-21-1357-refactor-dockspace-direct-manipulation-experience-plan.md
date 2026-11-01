@@ -48,7 +48,7 @@ The next completion work is concrete:
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
 | U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The elapsed-time model qualifies five expired turns, ready close/create and an accepted release through the shared-budget core continuation, with continuous feedback counting through drain. All 527 affected library cases pass on macOS and Linux, also without Linux native assertions. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples. Broader owner/platform and service-only terminal combinations retain their limits; 2 ms is a cooperative threshold. |
-| U7/U10 positive stationary input | Qualify a finite Q1 root query / G2 fresh XI2 regrab sample with exact original claim and native FIFO rejection through the final reply. Never drain and reuse Q1. Then connect independently proven capture/delivery facts before enabling automatic OS selection/scrolling; existing negative journeys do not close the positive criterion. |
+| U7/U10 positive stationary input | Winit `3199a442` qualifies finite direct-root Q1/G2 capture sampling with exact claim, final native FIFO rejection and interval invalidation across completed native expansion. Connect eframe/native acquisition, cleanup and the core acquisition event, then qualify positive stationary journeys and ordinary window-manager sources. Component evidence does not close the product criterion. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
 | U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
 
@@ -2094,6 +2094,21 @@ claim revalidation and refusal if any native event is queued through the final
 reply. Do not dispatch/drain and reuse Q1. Source mutation or crossing, queued
 release, foreign freeze and indeterminate regrab must retain cleanup and reject
 publication without introducing another capture registry or clock.
+
+That finite experiment now qualifies in local Winit `3199a442`. Sampling pins
+the existing exact active duty; a fresh successful G2, clear native interval and
+final FIFO/press validation may publish source capture/delivery. Ordinary and
+implicit-only queries remain Unknown. Sampling retirement waits for its exact
+native result before automatic cleanup, and a completed native entry invalidates
+Q1 even when the queue becomes empty. Real interleavings cover source hide after
+Q1 and successful G2, ordinary grab exclusion, empty-queue interval history and
+a foreign InputOnly crossing with exact changed root child and peeked XI2 event.
+Mac119/Linux119 pure cases, Linux91 library cases, four real X11 gates, strict
+docs/Clippy/formatting and three precise red controls pass on the final source.
+The integration still selects the old Git pins. Connect automatic acquisition
+and exact cleanup through eframe/native, record the existing core acquisition
+event, and certify non-direct-root source/hover and positive product journeys
+before closing stationary or overall native acceptance.
 
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete

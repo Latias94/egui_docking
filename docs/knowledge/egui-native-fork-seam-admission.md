@@ -83,6 +83,22 @@ boundary. Current queries remain Unknown. See the counterexample and
 dated explicit-effect evidence in
 [`VALIDATION.md`](../VALIDATION.md#2026-11-01-serialized-x11-capture-effects-and-exact-cleanup).
 
+Local Winit `3199a442` qualifies a finite observation. An already
+Active exact explicit duty may sample Q1 root position/hover, refresh its
+same-client XI2 grab at G2, and publish capture/delivery only after the final
+native FIFO and original-identity checks. Sampling stays on the existing device
+row. A nested native expansion permanently invalidates that sample interval,
+even if the queue is empty afterward. Source retirement and indeterminate
+refresh keep the original native cleanup; ordinary grab mutation cannot pass it.
+This finite profile requires a viewable direct-root source and does not infer a
+deeper hover from an unknown foreign or window-manager frame. The integration
+still selects the preceding production Git pins; automatic acquisition and full
+native stationary execution are not enabled by this component checkpoint.
+The two-platform pure state cases, four real X11 gates, strict documentation and
+three precise negative controls are recorded in the dated validation section.
+Remove or replace this seam when upstream can supply an equivalent exact active
+capture sample and mutation-safe cleanup at an ordered native boundary.
+
 The 0.37 branch merges upstream stable `0.37.0` into the minimal native-seam
 branch. It preserves the same Winit event-time revision. No old hosted-cycle
 or egui_tiles runtime is reintroduced. The migration adapts upstream root UI,
