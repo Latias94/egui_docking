@@ -4848,7 +4848,7 @@ fn run_product_magnetic_drag(
                 pointer_button(target, false),
             ]);
             settle_product_magnetic_preview(
-                || advance(vec![Event::PointerMoved(target)]),
+                || panic!("Burst preview must belong to the original raw packet: {case:?}"),
                 Some(initial),
                 target,
                 target_rect,
