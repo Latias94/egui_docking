@@ -15,6 +15,47 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 completion audit and strict Burst/default-feature follow-up
+
+The [completion audit](COMPLETION_AUDIT.md) maps R1–R25, AE1–AE14, implementation
+units, resource budgets, named commands and delivery artifacts to inspected
+current authorities and actual test receipts. All six core/conformance/consumer
+Git trees match qualified `677f291` before the following product-test-only change;
+all274/36 packaged Rust files and both READMEs still byte-match current source.
+The source/tree/archive provenance is
+`/tmp/dockspace-completion-audit-provenance.json`.
+
+Independent review found that the existing complete product Burst executor
+submitted all five edges in one packet but its preview helper could silently
+send another PointerMoved if the first output lacked preview. Earlier passing
+records therefore did not independently prove the stronger no-compensating-input
+claim. The Burst branch now panics instead of requesting that fallback. Its
+initial output must contain the exact magnetic preview; subsequent outcome
+settlement sends only empty input. The original packet's completed egui run may
+contain repeated passes, with raw ingress still consumed once. This is not a
+claim that the first egui pass must be terminal.
+
+The three affected L03 tests pass with default features and again with serde:
+the supported-cadence matrix, the complete60-case matrix and the actual ordinary
+button/editor/scroll/canvas matrices. Other tests are explicitly filtered out,
+not relabelled as a fresh full product run. Exact source hash, commands and logs
+are in `/tmp/dockspace-completion-strict-burst.json`. Independent call-chain
+review confirms that the helper cannot add a run or Move, and fixture time is
+absent so it cannot fabricate a timed continuation.
+
+The plan's literal default-native script is also run independently of the prior
+all-features qualification. `python3.13 scripts/run_egui_fork_harness.py` passes529
+tests with default features, excluding the smoke package, including its actual
+10,000-lifetime same-coordinator soak. One opt-in wall-time test remains skipped
+in this entrypoint and retains its separate dated qualification. Evidence is
+`/tmp/dockspace-completion-native-default.json` and its log. No production logic
+changes in this follow-up. Continuing the default-profile audit then identifies
+an actual remaining implementation gap: Shift is carried for scroll projection
+but does not suppress magnetic dragging. The plan's explicit default suppression
+must be implemented and tested; it cannot be inferred from target lock or scroll
+tests. Remote fork availability, CI-ref alignment and clean-checkout reproduction
+also remain open. The audit does not claim whole-Goal completion.
+
 ## 2026-11-01 real X11 stationary overflow steps
 
 The finite reference-host journey uses `EGUI_DOCKSPACE_PHYSICAL_STATIONARY=overflow`
