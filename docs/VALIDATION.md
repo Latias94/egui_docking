@@ -15,6 +15,107 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## Remote fork publication and clean-checkout delivery
+
+After explicit user authorization, both qualified branches are fast-forwarded
+without force: Winit `dockspace-pointer-facts-0.30.13` from `f378b50f` to
+`2664589f0bd6fd03b2a5490f23bcd692853e63dd`, then egui
+`dockspace-native-seam-0.37` from `0716beee` to
+`56e3db49b66096b58a23b8eb762bdc0a73ae043c`. New empty repositories fetch both
+exact SHAs from GitHub and independently observe the same advertised branch
+heads. The prior `not our ref` result is resolved. Intermittent SSL failures
+are retained separately from missing-object failures. Egui's LFS lock query
+also times out; the final push disables only that query after confirming no
+changed file uses LFS. It does not bypass missing LFS content.
+
+Commit `785e51b` changes only the three CI checkout refs. Commit `1611316`
+generates Winit's ignored source-test lockfile once before locked commands;
+`996fd4c` installs `libwayland-dev` before the Linux framework tests. The full
+X11 run exposes two stale CI names under `monitor::tests`; both tests actually
+pass under `monitor::notify_mask_tests`. Commit `542294b` fixes the two required
+names and their module filter, with a separate literal CI follow-up. The
+pre-existing full eframe-framework and cancel-close workflow changes remain
+unstaged and are not claimed as committed CI coverage. The original independent
+change is preserved.
+Actionlint passes for the updated workflow.
+
+Clean-checkout qualification passes from detached `996fd4c`, followed by the
+corrected CI module/list and real-window gates at `542294b`. The root source
+is cloned with `--no-local --no-hardlinks`; each platform starts with an empty
+Cargo Git cache. Only crates.io registry data and existing target artifacts are
+reused. Exact fork commits are fetched directly from GitHub without local object
+seeding, alternates or dependency path overrides. A slow full-history transfer
+is explicitly interrupted and replaced with a direct remote exact-SHA shallow
+fetch; this transport choice is recorded rather than presented as a completed
+ordinary full-history download. No root branch is pushed and no PR is created.
+The environment and remote receipts are
+`/tmp/dockspace-remote-delivery-environment.json` and
+`/tmp/dockspace-authorized-fork-publish.json`. The current native command
+checkpoint is `996fd4c`; the corrected module/list and window follow-up uses
+`542294b`. Both have the same 500 frozen production/test/package paths as
+`4f57bfb`, compared byte-for-byte in the main repository and clean checkout.
+
+| Clean-checkout gate | Actual result and scope |
+| --- | --- |
+| Dependency source resolution | macOS and Linux each resolve all12 Git-family packages to the published pair in their initially empty Cargo Git caches. No dependency path override, alternate or local object seed is used. |
+| macOS native default | The literal `python3.13 scripts/run_egui_fork_harness.py` entrypoint passes539 with one opt-in measurement skipped, including the same-coordinator10,000-lifetime soak. Native library check also passes. |
+| macOS native default-feature noassert | The exact `--lib` command passes528 with one opt-in measurement skipped, including its10,000-lifetime soak. This is distinct from the earlier all-feature539 result. |
+| Winit macOS facts | All8 pointer-route tests pass, including the7 required CI names. |
+| Fork egui | Complete library passes113, including all8 required output-settlement tests and the completed-pass/elastic/nested-scroll cases. |
+| Fork eframe/Glow | Host-seam54 and Glow deferred-clear5 pass with the committed feature sets. |
+| Fork WGPU | The eframe WGPU host check passes. After installing the missing Wayland development dependency, the exact retained-color-attachment test passes1. |
+| Winit X11 facts | The complete X11 filter passes80 with2 explicit isolated-platform tests ignored. All26 required X11 and7 macOS CI names are independently listed and confirmed executed successfully. The corrected four X11 module commands pass, including the actual `monitor::notify_mask_tests` module. |
+| Linux native default | All-targets passes539 in total:528 library,10 interaction-authority and1 storage-profile tests. Five opt-in platform/measurement tests remain ignored. The library includes its10,000-lifetime soak. |
+| Linux native default-feature noassert | Library passes528 with5 explicit ignores, including its10,000-lifetime soak. |
+| Native artifacts and integrity | Native smoke binaries build, all68 smoke unit tests pass, native-workspace formatting passes, and the final committed workflow passes actionlint. All7 final workflow/list/module gates pass. |
+| Remote-derived real X11 windows | All5 journeys pass: programmatic redock, recover-close and retain-close through real WM Alt-F4, physical guide dragging, and real Shift down/up followed by fresh motion, release, redock, exact DestroyNotify and quiescence. |
+
+The initial source-fork component attempt fails because its ignored workspace
+lockfile is absent; `1611316` generates it before subsequent locked commands.
+The first retained-overlay attempt fails at `wayland-client.pc` discovery,
+before any test runs. `996fd4c` installs the package and the identical test then
+passes. Package-index and installation downloads use bounded network retries;
+their slow transfer is recorded independently from Rust test results. The full
+X11 log also exposes two stale required CI names; the diagnostic identifies the
+exact passed replacements and `542294b` corrects both names and the module
+filter. No test scope is silently removed to hide a failure.
+
+Exact commands, results and resolved earlier attempts are retained in
+`/tmp/dockspace-remote-native-qualification.json`,
+`/tmp/dockspace-remote-native-v2-qualification.json`,
+`/tmp/dockspace-remote-native-v3-qualification.json`,
+`/tmp/dockspace-remote-environment-dependencies.json` and
+`/tmp/dockspace-remote-ci-monitor-name-diagnostic.json`.
+The macOS/Linux Git-package manifests are
+`/tmp/dockspace-remote-mac-resolution-final.json` and
+`/tmp/dockspace-remote-linux-resolution.json`; the eight actually executed
+output-settlement names are checked in
+`/tmp/dockspace-remote-ci-test-membership.json`.
+Final command/name and real-window results are
+`/tmp/dockspace-remote-ci-final-qualification.json`,
+`/tmp/dockspace-remote-winit-ci-membership.json` and
+`/tmp/dockspace-remote-window-qualification.json`.
+The final source/provenance audit is
+`/tmp/dockspace-remote-delivery-final-audit.json`.
+
+This is local CI-equivalent reproduction, not a GitHub Actions run. macOS and
+Linux are arm64 with Rust1.95; Linux uses the isolated one-CPU/4GiB Docker
+environment, Xvfb/Openbox and software GL. It does not expand Windows/macOS
+physical-input, Wayland, NativeLocal/Touch OS, deeper source ancestry or arbitrary
+mixed-DPI claims. The10,000-lifetime runs are coordinator models, not10,000 OS
+windows. The separately owned full-framework and cancel-close CI hunks are not
+counted as committed workflow coverage. Removing only this session's four CI
+commits in memory reproduces their original file hash exactly; the proof is
+`/tmp/dockspace-remote-preserved-user-edits.json`. No root branch is pushed and
+no PR is created.
+
+All remaining U9 delivery checks are complete. The
+[completion audit](COMPLETION_AUDIT.md) closes R1–R25, the acceptance examples,
+implementation units and Definition of Done within the plan's declared profiles.
+Historical qualifications below retain their original source identities and
+resolved failures; the current remote-derived result supersedes their former
+publication blocker.
+
 ## 2026-11-01 ordered magnetic suppression qualification
 
 The completion audit's real Shift gap is now implemented through one semantic
@@ -124,9 +225,10 @@ verification and unused-patch diagnostic remain in
 
 The U4 Shift follow-up is qualified for these host and finite reference profiles.
 Earlier qualification sections keep their historical source scope and are not
-reused as fresh results for this production change. Exact remote fork availability,
-independently owned CI-ref alignment and clean-checkout reproduction remain
-unfinished; no push or PR is performed. The complete Goal remains active.
+reused as fresh results for this production change. At this checkpoint, exact
+remote fork availability, CI-ref alignment and clean-checkout reproduction were
+unfinished, with no push or PR performed. The subsequent explicitly authorized
+publication and remote-derived qualification are recorded above.
 
 ## 2026-11-01 completion audit and strict Burst/default-feature follow-up
 

@@ -2,7 +2,7 @@
 title: Dockspace engine host architecture and direct manipulation - Plan
 type: refactor
 date: 2026-08-21
-revised: 2026-11-01
+revised: 2026-11-02
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -24,11 +24,13 @@ review_status: independent-coherence-and-feasibility-reviewed
 | Stop conditions | Reject duplicate topology owners, renderer-selected targets, traversal receipts presented as GPU proof, lost input boundaries, stale output authority, and capabilities inferred from missing facts. |
 | Completion owner | Each implementation unit owns its replacement behavior, meaningful verification, obsolete-path deletion, and documentation. No compatibility layer is required. |
 
-Current readiness (2026-11-01): finite enabled behavior profiles have qualified
-checkpoints. The completion audit's default Shift magnetic suppression gap is
+Current readiness (2026-11-02): this plan is complete within its declared host
+contracts and finite enabled platform profiles. The completion audit's default
+Shift magnetic suppression gap is
 now implemented and qualified through fresh full gates and paired package
-consumers. The complete plan still awaits reproducible native
-dependency delivery. The
+consumers. Both exact native fork revisions are published and obtainable from
+GitHub; clean-checkout CI-equivalent delivery and five real X11 window journeys
+pass. The
 renderer-neutral public host, local/contained egui behavior, and U3c complete
 single-batch Burst matrix have qualified checkpoints, including U12's public
 host/package acceptance. The latest real-query journey exposed and corrected
@@ -45,9 +47,9 @@ close/reopen/lock slice has 40 passing final checks; the following renderer-neut
 terminal replacement boundary has 22, including the new-key and replay-rollback
 contracts. Both retain their exact source scope in `docs/VALIDATION.md`.
 
-Current acceptance and the remaining delivery boundary are concrete:
+Current acceptance and the completed delivery boundary are concrete:
 
-| Boundary | Current acceptance / remaining work |
+| Boundary | Current acceptance / capability limit |
 | --- | --- |
 | U4 default temporary suppression | Ordered semantic targeting intent clears only magnetic acquisition, preserves explicit targets/contained geometry/frozen releases, and reacquires through fresh Move or Release. All23 fresh library/tool gates, finite window follow-ups, real X11 Shift normal/noassert and six matched-package gates pass. The complete275/36 packaged Rust files and both READMEs byte-match source; registry availability is a separate delivery boundary. |
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. The representative editor, restore, close/reopen/lock and focus workflows retain their finite qualified scope. |
@@ -55,38 +57,44 @@ Current acceptance and the remaining delivery boundary are concrete:
 | U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The elapsed-time model qualifies five expired turns, ready close/create and an accepted release through the shared-budget core continuation, with continuous feedback counting through drain. All 527 affected library cases pass on macOS and Linux, also without Linux native assertions. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples. Broader owner/platform and service-only terminal combinations retain their limits; 2 ms is a cooperative threshold. |
 | U7/U10 positive stationary input | Winit `2664589f` qualifies one root-observed WM parent, terminal-reply hover and exact ancestor revocation; egui `56e3db49b` selects it. Complete positive eframe/Glow hover selection and actual InputOnly negative journeys each pass twice normally and once without native assertions, with conservative capture-interval timing and a compiled early-dwell negative control. All 36 final native/OS checks pass; the final 19-gate overflow qualification closes the remaining substantive finite interaction journey. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
-| U9 reproducible delivery | Current matched core/official-adapter archive consumers pass public163/serde191, official15 and the engine example. The unpublished adapter is explicitly verified against the matching extracted core; ordinary verification against the cached old core fails and is recorded. Local native fork commits and all12 Git-family packages align without path overrides. Obtainable remote revisions and clean-checkout/CI reproduction remain open. |
+| U9 reproducible delivery | Current matched core/official-adapter archive consumers pass public163/serde191, official15 and the engine example. The unpublished adapter is explicitly verified against the matching extracted core; ordinary verification against the cached old core fails and is recorded. Both native fork revisions are published and independently fetched from GitHub; all12 Git-family packages align without path overrides. Clean-checkout native/default/noassert, fork facts/seams, corrected CI/list/module commands and five real X11 window journeys pass. |
 
 Open-GPUI and the user's actual engine remain outside the completion dependencies.
 Exact results, limitations and failed attempts live in `docs/VALIDATION.md`;
 historical checkpoints below retain their original source scope.
 
-Completion review separates unfinished delivery from unclaimed capabilities.
+Completion review separates completed delivery from unclaimed capabilities.
 The real X11 stationary overflow journey, final core/official-adapter archive
 consumers and capability reconciliation now pass their scoped qualifications.
-Native reference delivery still requires obtainable
-fork revisions and a clean remote checkout/CI run; unpublished locally seeded Git
-objects do not satisfy that gate, and this session does not publish them. Historical
+Native reference delivery now has obtainable exact fork revisions and aligned
+CI refs. The clean root clone uses the exact local source commit; its fork
+checkouts and initially empty Cargo Git caches obtain the dependencies directly
+from GitHub, without local object seeding or path overrides. Historical
 finite owner/service/Default/preset/restore qualifications are not reopened as
 new unlimited matrix requirements. Deeper source ancestry, NativeLocal/Touch OS,
 arbitrary mixed-DPI/multi-CRTC and unenabled Windows/macOS input claims remain
 explicit capability limits; adding those positive claims requires separate
 evidence. No current finding requires another core architecture replacement.
-Clean temporary repositories currently fail to fetch both exact fork revisions
-with `not our ref`. The working CI file belongs to a separate change and remains
-untouched; a three-ref-only proposal is prepared for review. See the final
-delivery record in `docs/VALIDATION.md`. The complete Goal remains active.
+Clean temporary repositories now fetch both exact fork revisions successfully.
+The three CI refs, source-test lockfile preparation, Wayland development
+dependency and actual monitor test-module selection are committed while
+preserving the separately owned workflow edits. The final CI/list/module and
+real-window gates pass. See the final delivery record in `docs/VALIDATION.md`.
+The complete Goal is achieved; additional positive platform claims require
+their own evidence without reopening this plan as an unlimited matrix.
 
 The [requirement-by-requirement completion audit](../COMPLETION_AUDIT.md) maps
 R1–R25, all acceptance examples, units, resource budgets and named gates to
-current code and actual evidence. Its default-native entrypoint passes529,
-including the10,000-lifetime soak. Its strict Burst follow-up removes the helper's
+current code and actual evidence. The earlier audit's default-native entrypoint
+passes529; the current remote-derived default entrypoint passes539, each including
+the10,000-lifetime soak. Its strict Burst follow-up removes the helper's
 ability to send a compensating Move; all three affected matrices pass with
 default features and serde. Earlier weaker passing runs are not used as proof
 of that stronger first-packet claim. The following default-profile audit found
 the Shift suppression gap above; its implementation now passes fresh full
-qualification, including the matched-package refresh. The remote dependency/CI
-boundary remains incomplete.
+qualification, including the matched-package refresh. The remote dependency/
+CI-equivalent boundary is also closed. The root branch is not pushed and
+GitHub Actions has not been run for these local commits.
 
 ---
 
@@ -369,11 +377,13 @@ Native window focus and pane-content focus still require actual host facts and a
 
 The 2026-10-27 selection audit chose egui/eframe 0.37.0, released 2026-10-15,
 with Rust 1.95 still matching this workspace. The current workspace and official
-harness now pin the matched 0.37.0 family. The optional native adapter is locally
-qualified against the rebased, unpublished 0.37 fork. Its current Git pins and
-lockfiles align with local egui `56e3db49b` and Winit `2664589f`, with
-locked/offline qualification and no path overrides. The local Git objects are
-not evidence of remote clean-checkout reproducibility. Winit remains on the
+harness now pin the matched 0.37.0 family. The optional native adapter uses the
+rebased, published 0.37 fork. Its current Git pins and lockfiles align with egui
+`56e3db49b` and Winit `2664589f`. Both revisions are first fetched directly from
+GitHub into initially empty Cargo Git caches. Subsequent locked/offline
+qualification and the final command and real-window gates pass without local
+object seeding or dependency path overrides.
+Winit remains on the
 reviewed 0.30.13 fork; prerelease 0.31 work
 is not a prerequisite. The updated local egui_tiles checkout is reference
 material; it is not a runtime dependency.
@@ -2936,11 +2946,19 @@ the distinction from historical path-based gates are in `docs/VALIDATION.md`.
 
 The final aligned pair is egui `56e3db49b` / Winit `2664589f`. All 12 Git-family
 packages resolve those commits without path overrides, and local integration,
-real-window and physical acceptance passes. Remote branch inspection and clean
-exact-SHA fetches confirm both revisions remain unavailable remotely. Publishing
-those already committed branches, applying the prepared three-ref CI proposal
-without discarding its separate working change, and clean-checkout reproduction
-are the remaining delivery actions. They are not inferred from local Git caches.
+real-window and physical acceptance passes. The subsequent explicitly authorized
+delivery publishes both branches through ordinary fast-forward pushes; new empty
+repositories fetch the exact SHAs from GitHub. Commits `785e51b`, `1611316`,
+`996fd4c` and `542294b` align the three CI refs, prepare Winit's source-test
+lockfile, install Wayland headers and select the actual monitor test module
+while preserving the independently owned workflow edits. A
+detached root clone and initially empty platform Cargo Git caches obtain the
+forks directly from GitHub, with no local object seeding, alternates or dependency
+path overrides. The native command gates pass at `996fd4c`; the corrected
+workflow/name/four-module checks and five real-window journeys pass at
+`542294b`. Both checkpoints retain all500 frozen source paths from `4f57bfb`.
+The final delivery audit closes U9 and this plan within the declared capability
+profiles. Exact receipts and resolved failures belong to `docs/VALIDATION.md`.
 
 ---
 
@@ -2993,7 +3011,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `56e3db49b66096b58a23b8eb762bdc0a73ae043c` and Winit fork `2664589f0bd6fd03b2a5490f23bcd692853e63dd`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select the published egui fork `56e3db49b66096b58a23b8eb762bdc0a73ae043c` and Winit fork `2664589f0bd6fd03b2a5490f23bcd692853e63dd`. New empty repositories and initially empty Cargo Git caches retrieve both exact revisions directly from GitHub; native CI-equivalent command/window qualification passes without local object seeding or dependency path overrides. Earlier locally seeded and single-Focus model gates retain their independent source scopes, including `8231fb5a`/`6c10c87d`.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.

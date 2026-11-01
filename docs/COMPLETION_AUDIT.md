@@ -2,17 +2,21 @@
 
 This audit applies the requirements and exit criteria of the
 [canonical plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
-It does not replace or narrow that plan. The implementation baseline is
-`b6185b5`, followed by the test-only Burst qualification described below.
+It does not replace or narrow that plan. The current implementation is
+`4f57bfb`, with CI delivery follow-ups `785e51b`, `1611316`, `996fd4c` and
+`542294b`.
+The earlier `b6185b5` baseline and test-only Burst qualification retain their
+historical source identity below.
 Open-GPUI, an actual game engine and unenabled physical platform claims retain
 the plan's existing scope boundaries.
 
-The overall Goal is **not complete**. Remote availability of the exact native
-fork revisions and clean-checkout/CI reproduction remain unqualified. The plan's
+The overall Goal is **complete within the canonical plan's declared profiles**.
+The exact native fork revisions are published and independently fetched from
+GitHub; clean-checkout/CI-equivalent reproduction passes, including the final
+corrected CI module/list and five real X11 window journeys. The plan's
 default Shift suppression gap is now implemented and qualified through the
 renderer-neutral host, official adapter, native model and finite X11 reference.
-The
-default native entrypoint and the stronger first-packet Burst check pass their
+The default native entrypoint and the stronger first-packet Burst check pass their
 audit follow-up runs; their earlier all-features or weaker results are not used
 as substitutes for those commands.
 
@@ -43,6 +47,7 @@ their qualification record. These checks are recorded in
 | Evidence | Actual result and boundary |
 | --- | --- |
 | Current ordered magnetic suppression | Workspace1958, public163/serde191, product112/serde117 and official15 pass. Native default539, macOS all-targets587, macOS noassert539 and Linux normal/noassert539 pass, each including its10,000-lifetime soak. Tooling, finite window pressure/stationary/input regressions, real Shift normal/noassert and matched extracted-package consumers pass. Frozen source, commands and resolved attempts are recorded by the `dockspace-magnetic-*` receipts in VALIDATION.md. The275/36 packaged Rust files and both READMEs byte-match current source. |
+| Remote-derived delivery | The same500 frozen paths match both main and clean checkout. Independent initially empty Cargo Git caches retrieve the published pair directly from GitHub, and all12 Git-family packages agree. macOS default539/default-feature noassert528 and Linux default539/default-feature noassert528 pass with their10,000-lifetime soaks. Fork egui113, host-seam54, Glow5, WGPU check/retained1, Winit macOS8/X11 80, smoke68, final seven CI/list/module gates and five real X11 journeys pass. Explicit skips/ignores retain their actual counts in the final delivery record. |
 | Core capture gates | Workspace 1,953 and public default 160/serde 188 pass at the matching core/consumer trees. `dockspace-capture-core-gates.json` and individual logs identify commands and test names. |
 | Product/official follow-up | Product 114, official 15, ten doctests, dependency isolation, correctness/suspicious Clippy and strict docs pass in `dockspace-capture-followup-qualification.json`. The stronger Burst first-packet condition passes its separate follow-up below. |
 | Extracted package consumers | Both archives are Cargo-verified. Extracted public default 160/serde 188, official 15 and the engine example pass; framework dependencies remain registry-sourced. `dockspace-capture-package-qualification.json`. |
@@ -89,7 +94,7 @@ and physical evidence.
 | R20: logical surfaces and coordinate domains | Public independent-surface output tests and `window_dpi_and_framebuffer_density_are_independent_for_cross_surface_batches` run eight immediate/deferred/DPI/density combinations without native enrollment. | Qualified; not physical mixed-DPI certification. |
 | R21: owned deferred output | Public owned program survives frame borrow; reversed results and retired/redocked surfaces cannot revive old receivers. All reporting still enters exact committed presentation. | Qualified. |
 | R22: host-owned measurements and time | Fixed/cached measurement APIs, explicit metadata and injected clocks need no widget tree or device. Stationary retry and same-frame contained measurement tests preserve one compile and one continuation. | Qualified. |
-| R23: current egui and minimal seams | Official matched `=0.37.0`, aligned fork pins and seam-removal conditions are documented. Official callback capability-negative and native normal/noassert tests pass. egui_tiles is reference-only; Open-GPUI is deferred. | Qualified locally; remote delivery open. |
+| R23: current egui and minimal seams | Official matched `=0.37.0`, aligned published fork pins and seam-removal conditions are documented. Official callback capability-negative, native normal/noassert and remote-derived CI-equivalent checks pass. egui_tiles is reference-only; Open-GPUI is deferred. | Qualified, including clean-checkout delivery. |
 | R24: portability and structural cost | `owned_output_cost` tests 16/128/1024 panes after releasing frame borrow. Contained batch and selection cost tests count one compile and bounded pane visits at all three sizes. Retained recording bytes are scoped separately from native ingress. | Qualified. |
 | R25: complete representative layout shell | Public closed-catalog reopen, lock/reset/restore focus, recognized-missing recovery and native Default/preset Root-continuation workflows pass. Manual overflow, exact stationary 0/40/80 and exit-stop 40 retain original capture and finish cleanup. | Qualified finite local/X11 shell. |
 
@@ -118,7 +123,7 @@ official0.37 migration and admitted native seams. U7/U8 add bounded ingress,
 scoped/handoff contracts, exact native lifecycle and the enabled X11 profile.
 U10 adds the tested layout shell and overflow ownership. U11's unenabled
 Mac/Windows/Touch/deeper-ancestry claims are capability limits, not silently
-passing platform tests. U9 remains open for the exact delivery actions below.
+passing platform tests. U9's exact delivery actions below are complete.
 
 ## Resource budgets and measurements
 
@@ -163,23 +168,34 @@ reenabling. Full fresh gates and the matched archive refresh now pass; the U4
 default-profile suppression gap is closed.
 
 The current ImGui reference is `d88f238d1d363ef387382b2e29ad12cf96f826ac`, matching
-the plan. The [official egui releases](https://github.com/emilk/egui/releases)
-still identify 0.37.0 as latest stable at this audit; no new dependency migration
-is justified. Earlier research checkpoints preserve their own source scope.
+the plan. The dated 2026-11-01 refresh records 0.37.0 as the latest stable
+[official egui release](https://github.com/emilk/egui/releases) at that checkpoint.
+Current manifests and qualification use that matched baseline. Earlier research
+checkpoints preserve their own source scope.
 
-The following requirements remain **incomplete**:
-
-1. Make Winit `2664589f0bd6fd03b2a5490f23bcd692853e63dd` and egui
-   `56e3db49b66096b58a23b8eb762bdc0a73ae043c` obtainable from their origins.
-   Clean exact-SHA fetches currently return `not our ref` for both.
-2. Align the three CI checkout refs with those commits while preserving the
-   separately owned working CI change. The proposal is
-   `/tmp/dockspace-native-ci-pin-update.patch`; it has only been checked, not applied.
-3. Reproduce the native checkout/build/CI boundary from obtainable revisions,
-   without locally seeded Git objects or path overrides.
+Following explicit user authorization, Winit
+`2664589f0bd6fd03b2a5490f23bcd692853e63dd` and egui
+`56e3db49b66096b58a23b8eb762bdc0a73ae043c` are published through ordinary
+fast-forward pushes, and independent empty repositories fetch both exact SHAs
+from GitHub. Commits `785e51b`, `1611316`, `996fd4c` and `542294b` align the
+three CI refs, generate Winit's ignored source-test lockfile, install the Wayland
+development dependency and select the actual `monitor::notify_mask_tests` module.
+The separately owned workflow changes remain unstaged. Native clean-checkout/
+CI-equivalent reproduction passes with initially empty Cargo Git caches, direct
+remote retrieval and no local object seeding or dependency path overrides. The
+corrected CI's 26 X11 and 7 macOS required names are listed and actually passed;
+all four final X11 module commands pass. Programmatic redock, two real WM-close
+policies, physical guide dragging and real Shift/reacquisition each pass in the
+remote-derived X11 environment. Exact commands, source identities, earlier
+resolved failures and ignored-test limits are in the
+[final delivery record](VALIDATION.md#remote-fork-publication-and-clean-checkout-delivery).
 
 The original CI file hash remains
 `6bee9bedd379f71fa42b8cff9c027ce0491257de31b6baa54b895924327a1ff9`.
-`docs/reviews/` remains outside this work's writes and commits. No push or PR is
-authorized by an automatic Goal continuation. These unresolved delivery items
-prevent marking the complete Goal achieved.
+`docs/reviews/` remains outside this work's writes and commits. The two fork
+pushes have explicit user authorization; the root branch is not pushed and no
+PR is created. Removing only this session's four CI changes in memory reproduces
+that original hash exactly. All R1–R25, acceptance examples, implementation units,
+named gates, package boundaries and Definition of Done now have matching
+evidence within the stated capability limits. No further core architecture
+replacement is required by this audit.

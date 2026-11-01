@@ -1,8 +1,8 @@
 ---
 title: "Dockspace Platform Support"
-status: "Scoped evidence; native qualification incomplete"
-reviewed: "2026-11-01"
-baseline_source_revision: "7809e57"
+status: "Qualified finite profiles; clean-checkout delivery reproduced"
+reviewed: "2026-11-02"
+baseline_source_revision: "4f57bfb"
 ---
 
 # Dockspace Platform Support
@@ -17,7 +17,8 @@ input on that backend.
 This snapshot follows the [canonical engine-host plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md)
 and the dated [validation record](VALIDATION.md). The source-input capability
 split extends baseline `8d43aee`; each physical or model record below identifies
-its own source and scope. Overall U9 and the complete plan remain open.
+its own source and scope. U9's remote-derived delivery qualification is complete;
+the remaining unenabled platform profiles are capability limits.
 Earlier dated qualifications
 retain their historical scope; the 2026-10-31 entries supersede earlier
 physical-smoke coverage limits.
@@ -107,7 +108,7 @@ These bits must be read separately from the evidence:
 
 | Platform | Recorded finite qualification | Remaining platform limit |
 | --- | --- | --- |
-| X11 | Thirteen finite XTest target journeys; complete eframe/Glow stationary hover-selection and real InputOnly negative profiles, each with two fresh passes; a center-only high-rate profile; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
+| X11 | Thirteen finite XTest target journeys; complete eframe/Glow stationary hover-selection and real InputOnly negative profiles, each with two fresh passes; a center-only high-rate profile; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Additional DPI, ancestry, backend or load profiles require separate evidence. |
 | macOS | Real-window default/bounded programmatic tear-off, first-live, redock and retirement; six output-pressure cases. Same-window event-time facts have Winit test coverage, and local mouse geometry has deterministic producer/adapter coverage. | Programmatic and same-window fact evidence does not certify a physical cross-window release. `AuthoritativeButtonState` remains absent; cross-surface physical promotion stays fail-closed. Retina/mixed-DPI and the complete physical matrix remain unqualified. |
 | Windows | Conservative capability mapping and shared host/adapter contracts. | No current Windows real-input/platform certification is established by the cited records. Hovered-window, desktop-pointer and authoritative-button bits remain absent; placement/lifecycle bits alone do not qualify cross-window docking. |
 | Wayland | Limited observation/control mapping; deterministic event-time local mouse geometry and Touch position/geometry-pair contracts. | No compositor/physical-input qualification. Managed native lifecycle, global placement, work area and desktop pointer/hover authority remain unavailable in this mapping. Proven local operations need no global desktop lane. |
@@ -439,15 +440,16 @@ and example qualifications cover replacing that host and restoring Default or
 named presets after rebinding, preserving actual text edits and stable item
 identities. Their [dated evidence](VALIDATION.md#2026-11-01-application-default-and-named-presets-after-root-continuation)
 does not certify arbitrary native layout migration or the entire editor.
-Stationary coverage beyond the finite X11 hover profile and the remaining
-U7/U8/U10 criteria stay open.
+The subsequent stationary overflow/exit qualification completes the remaining
+finite U10 journey. Additional stationary, geometry, owner/service and platform
+combinations require their own evidence before those positive claims are enabled.
 
 ## Dependency reproducibility and open scope
 
-Current native Git pins in the working tree are aligned with the qualified
-local sources:
+Current native Git pins are aligned with the qualified sources and published
+fork branches:
 
-| Dependency | Locally qualified revision | Working-tree Git revision |
+| Dependency | Qualified and published revision | Tracked Git revision |
 | --- | --- | --- |
 | egui/eframe fork | `56e3db49b66096b58a23b8eb762bdc0a73ae043c` | `56e3db49b66096b58a23b8eb762bdc0a73ae043c` |
 | Winit fork | `2664589f0bd6fd03b2a5490f23bcd692853e63dd` | `2664589f0bd6fd03b2a5490f23bcd692853e63dd` |
@@ -462,9 +464,14 @@ passed complete integration gates. The current pair passes component qualificati
 and all 36 final integration checks, including positive and real InputOnly negative
 profiles twice normally and once without native assertions. Qualification uses
 locked/offline Git sources and locally seeded objects, without path overrides.
-Those commits are not published. Remote-only
-clean-checkout reproduction and the separately owned CI checkout refs remain
-open; local Git-cache availability does not establish either.
+That historical qualification is now followed by successful publication and
+exact-SHA GitHub fetches in new empty repositories. Commits `785e51b`,
+`1611316`, `996fd4c` and `542294b` align the three CI checkout refs, generate the
+Winit source-test lockfile, install Wayland headers and select the actual monitor
+test module. A detached clean checkout with separate initially empty Cargo Git
+caches passes native and fork-command qualification;
+all12 Git-family packages resolve the published pair without local object
+seeding or path overrides. The separately owned workflow edits remain unstaged.
 
 Validation references such as `/tmp/dockspace-physical-edge-qualification.json`
 and `/tmp/dockspace-physical-load-final-qualification.json` identify local
@@ -479,9 +486,10 @@ Broader close/create/command combinations, arbitrary overflow/nested geometry,
 mixed DPI, native-local/Touch OS input and macOS/Windows positive stationary
 behavior require separate evidence before those positive claims are enabled.
 They are capability limits, rather than an unlimited completion matrix.
-The remaining delivery boundary is U9 fork publication, the prepared CI-ref
-alignment and clean-checkout reproduction. Clean exact-SHA fetches currently
-return `not our ref` for both forks; see the
-[final delivery check](VALIDATION.md#2026-11-01-final-native-dependency-delivery-check).
+The former `not our ref` publication blocker is resolved. Clean native builds,
+default-feature normal/noassert libraries, framework/fact tests, corrected CI
+module/list commands and five real X11 window journeys pass. This is local
+CI-equivalent reproduction, not a GitHub Actions run; see the
+[remote delivery record](VALIDATION.md#remote-fork-publication-and-clean-checkout-delivery).
 The finite target, positive/negative stationary, active-service and center-load
 results retain their recorded source scope.

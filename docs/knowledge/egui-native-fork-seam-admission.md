@@ -34,11 +34,21 @@ Baselines:
 - public winit fork: `f378b50f29cafafec31cd8675c17646b4ef57d70`
 
 The public revisions above are historical publication baselines. Current
-tracked native Git pins select local egui `56e3db49b66096b58a23b8eb762bdc0a73ae043c`
+tracked native Git pins select egui `56e3db49b66096b58a23b8eb762bdc0a73ae043c`
 and Winit `2664589f0bd6fd03b2a5490f23bcd692853e63dd`; egui's internal Winit
-dependency and the integration lockfile agree. Locked/offline qualification
-uses locally seeded Git objects without path overrides. These commits remain
-unpublished, and remote-only checkout/CI reproduction is still unqualified.
+dependency and the integration lockfile agree. Earlier locked/offline qualification
+used locally seeded Git objects without path overrides. Both exact revisions
+are now published and fetched successfully from GitHub in empty repositories.
+The three CI refs agree, Winit's ignored source-test lockfile is generated
+before locked component tests, and Linux framework tests install Wayland headers.
+The monitor test names and module filter select the actual `notify_mask_tests`
+module. Clean native/fork-command qualification passes with independent initially
+empty Cargo Git caches, direct remote exact-SHA retrieval and no local object
+seeding or dependency path overrides. Default-feature normal/noassert libraries,
+framework/fact tests, corrected CI/list/module commands and five real X11 window
+journeys pass. This is local CI-equivalent reproduction; the root branch is not
+pushed and GitHub Actions is not claimed to have run.
+See the [delivery record](../VALIDATION.md#remote-fork-publication-and-clean-checkout-delivery).
 
 Winit's original Primary-press identity lives on the existing capture row. Its
 opaque Clone token combines a connection-domain allocation with the complete
@@ -188,7 +198,7 @@ events. The renderer-neutral core requires no Winit Touch type.
 
 ### Correlated native pointer observation prerequisite
 
-This local, unpublished seam supplies finite deadline-driven observations without
+This published seam supplies finite deadline-driven observations without
 introducing docking types, gesture tokens, an input queue or a capture registry
 in the forks. `prepare_native_viewport_pointer_observation` reserves a typed
 command identity before enqueueing into the existing property queue. The result
@@ -311,7 +321,7 @@ FullOutput/LogicOutput command replay against a successor. Combined renderer
 library tests pass 75 cases normally and 75 without debug assertions. The
 adapter's exact receipt tests and three real macOS redock runs are recorded in
 `docs/VALIDATION.md`. At this historical checkpoint the commit was not pinned;
-the current tracked revision includes it, while remote publication remains open.
+the current tracked revision includes it and is now published.
 
 Local follow-up `1f7c541fde99fd69192622a1a36cb642de58ed29` reports exact
 pre-dispatch retirement for queued focus, visibility and pointer pass-through
@@ -350,13 +360,14 @@ accepted child/root completion remains contiguous. Remove this result when
 upstream eframe exposes equivalent pre-input output admission with truthful
 defer/terminal ownership. Local model tests do not establish physical keyboard
 input retry or the adapter's complete memory budget. At that checkpoint tracked
-pins remained the published baseline; current local alignment is recorded above.
+pins remained the published baseline; current published alignment is recorded above.
 
 The complete eframe library passes 81 Glow tests, 75 WGPU tests and 81 combined
 renderer tests without eframe debug assertions. Both renderer-only configurations
 also compile with this seam disabled. Adapter qualification passes 339 native
 tests in normal and assertion-disabled builds and the programmatic macOS redock
-journey. These remain local, unpublished-fork results.
+journey. Those results belong to that local, then-unpublished fork checkpoint;
+the current pair and its remote-derived qualification are recorded above.
 
 ## Admitted seams
 

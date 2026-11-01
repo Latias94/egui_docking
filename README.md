@@ -17,8 +17,11 @@ no egui dependency before broader native certification. The recording consumer
 now verifies owned output records, ordered presentation settlement, and commands
 on two logical surfaces, complete ordered gestures, contained content, close
 approval and exact feedback/focus. Finite native throughput, lifecycle, layout
-and stationary profiles also have qualified checkpoints. Reproducible native
-fork delivery remains open; additional platform claims need separate evidence.
+and stationary profiles also have qualified checkpoints. The exact native fork
+revisions are published, and clean-checkout CI-equivalent delivery passes.
+The [completion audit](docs/COMPLETION_AUDIT.md) closes the current plan within
+these documented profiles.
+Additional platform claims need separate evidence.
 The earlier product-boundary plan supplies the persistence and ownership context.
 
 ## Capability matrix
@@ -27,7 +30,7 @@ The earlier product-boundary plan supplies the persistence and ownership context
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Caller-owned official-egui runs support tab select/close/reorder, magnetic center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | An unmodified `eframe::App::ui` callback cannot prove terminal presentation; preview-qualified drag and pane-focus settlement are typed unavailable there |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator with an eight-pane editor example, bounded real-input workflows, a programmatic window smoke, and finite X11/XTest physical drag and stationary profiles | Remote dependency delivery remains open. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
+| `egui_dockspace_native` | Unpublished crate using published exact fork revisions, with an eight-pane editor example, bounded real-input workflows, a programmatic window smoke, and finite X11/XTest physical drag and stationary profiles | Clean-checkout CI-equivalent delivery passes. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
 Caller-owned official-egui runs also retain explicit local touch identities:
@@ -65,8 +68,9 @@ cancelled pending create preserve source ownership. Native enrollment now select
 `DirectPrepared` for an engine-prepared window and renderer, or `Staged` for the
 egui reference host. Both feed the same exact first-live publication and cleanup
 owners. This strategy cutover passes the current core, adapter and reference
-window gates; broader native input and platform readiness remain open. See
-current evidence and remaining gates in
+window gates. Native-local/Touch OS input, macOS/Windows physical cross-window
+input and arbitrary mixed-DPI profiles require their own evidence. See
+current evidence and capability limits in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 An existing complete logical surface can explicitly acquire native hosting
@@ -84,7 +88,8 @@ exact binding pairs let hosts prepay resources and atomically publish the native
 route and their root-surface field. The reference X11 workflow verifies layout
 and JSON Root rebinding, then Default and named-preset restore through their saved
 host identities, fresh content editing and unchanged physical window identity.
-These finite workflows are qualified; reproducible fork delivery remains open.
+These finite workflows and clean-checkout delivery of the published fork pair
+are qualified.
 
 Managed engine hosts can also capture native client coordinates from committed
 size and scale facts without desktop position or work areas. The joined recorder
@@ -229,10 +234,17 @@ native workspace pins egui/eframe fork
 `56e3db49b66096b58a23b8eb762bdc0a73ae043c` and Winit
 `2664589f0bd6fd03b2a5490f23bcd692853e63dd`. The egui fork's own Winit dependency,
 all integration patches, inspection dependency and lockfiles select that same
-pair. Local qualification resolves these Git revisions without path overrides,
-using Git objects seeded from the local forks. The commits remain unpublished;
-remote-only clean-checkout and CI reproduction are not established. CI retains
-its separately owned checkout configuration. Exact source and qualification
+pair. Both branches are published, and new empty repositories fetch their exact
+SHAs directly from GitHub. The three CI checkout refs now agree. A detached
+clean checkout and independent initially empty Cargo Git caches pass the native
+commands without local object seeding or path overrides. Winit's source-fork
+tests first generate their ignored workspace lockfile before locked commands;
+Linux framework tests install Wayland headers, and monitor tests select their
+actual module. Default/noassert libraries, framework seams, source-fork facts
+and five real X11 window journeys pass. This is local CI-equivalent reproduction;
+GitHub Actions has not been run for these local root commits. Separately owned
+workflow edits remain uncommitted.
+Exact source and qualification
 limits are recorded in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
@@ -500,18 +512,19 @@ and terminal waits are excluded; these finite samples establish neither a hard
 
 `dockspace` must still be published before `egui_dockspace`, because the
 adapter's packaged manifest resolves its declared core dependency from the
-registry. Cargo 1.95 can verify both packages before publication when they are
-selected in the same `cargo package` command. Its temporary local registry
-supplies the matching core package while it verifies the adapter's normalized
-manifest.
+registry. The matched-package qualification checks the extracted adapter against
+the same extracted unpublished core through an explicit patch. Ordinary adapter
+verification against an older cached core0.1.0 fails on the new API; it does not
+qualify that mismatched pair. Core's ordinary package verification succeeds.
 
-The 2026-11-01 local gate packages and verifies both crates, then builds independent
-consumers against extracted archives. The core consumer passes its default and
-serde suites and runs the self-drawn host example; the adapter consumer passes
+The 2026-11-01 local gate produces both archives, then checks and tests independent
+consumers against the matching extracted pair. The core consumer passes its
+default and serde suites and runs the self-drawn host example; the adapter consumer passes
 the official egui 0.37 suite. The only patched registry dependency is `dockspace`
 from the extracted core archive; the egui family remains on crates.io.
 This qualifies package contents and downstream use, not registry publication or
-the optional native workspace's unpublished fork dependencies. Exact evidence
+the optional native crate's package publication. The native Git revisions are
+published separately and have their own clean-checkout qualification. Exact evidence
 and the retained lockfile warning are recorded in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
