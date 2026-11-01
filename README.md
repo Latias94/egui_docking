@@ -200,8 +200,8 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.37.0`. The excluded
 native workspace pins egui/eframe fork
-`687558fd469dc4849783c5ae3b9fd7244a0f92c5` and Winit
-`8334294b2a8b21cf68269d1af931a17e68d21559`. The egui fork's own Winit dependency,
+`9729e354a1985cd9d8bbc7ca6306c68656635e06` and Winit
+`39a8165dd434c33fc2f7198d922a4d3a4d76bbb6`. The egui fork's own Winit dependency,
 all integration patches, inspection dependency and lockfiles select that same
 pair. Local qualification resolves these Git revisions without path overrides,
 using Git objects seeded from the local forks. The commits remain unpublished;
@@ -228,6 +228,10 @@ Native queries can freeze the original Primary-press identity. The adapter
 accepts continuation input only while both the frozen and current identities
 are present and equal; ordinary queries without identity still settle their
 own receipts. Identity matching grants no capture or delivery authority.
+The X11 fork also provides a finite explicit source-capture effect with exact
+cleanup coordinated with ordinary cursor grabs. Its `Acquired` result records
+operation settlement; queried capture/delivery remain `Unknown`. Automatic
+native stationary behavior still requires the remaining fresh-fact integration.
 Content drags preserve their source window's native hit regions. Only a
 runtime-owned Child whose complete sole main root is being dragged, without
 contained siblings, uses the correlated pass-through and restore lifecycle.

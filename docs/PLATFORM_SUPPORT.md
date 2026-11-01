@@ -336,6 +336,14 @@ passes native526/526 and the full bounded X11 negative journey. Successful OS
 stationary execution, physical Touch and native-local OS handoff remain
 unqualified.
 
+The [explicit-capture effect prerequisite](VALIDATION.md#2026-11-01-serialized-x11-capture-effects-and-exact-cleanup)
+adds a press-correlated X11 acquire/release operation for viewable direct-root
+sources and exact enabled master pointers. It serializes ordinary application
+grabs and keeps exact cleanup after revocation. Release invalidates the old
+implicit owner and requires a new server-sync/FIFO boundary. `Acquired` reports
+operation settlement only. Fresh queries still leave capture/delivery Unknown,
+and the native adapter does not automatically acquire this operation yet.
+
 Incomplete stationary observations revoke only their pending timed action;
 they do not infer delivery or capture loss. Explicit None/Foreign/mismatched
 owners still use the ordinary cancellation gates. The bounded X11 negative
@@ -390,8 +398,8 @@ Current native Git pins are aligned with the qualified local sources:
 
 | Dependency | Locally qualified revision | Tracked Git revision |
 | --- | --- | --- |
-| egui/eframe fork | `687558fd469dc4849783c5ae3b9fd7244a0f92c5` | `687558fd469dc4849783c5ae3b9fd7244a0f92c5` |
-| Winit fork | `8334294b2a8b21cf68269d1af931a17e68d21559` | `8334294b2a8b21cf68269d1af931a17e68d21559` |
+| egui/eframe fork | `9729e354a1985cd9d8bbc7ca6306c68656635e06` | `9729e354a1985cd9d8bbc7ca6306c68656635e06` |
+| Winit fork | `39a8165dd434c33fc2f7198d922a4d3a4d76bbb6` | `39a8165dd434c33fc2f7198d922a4d3a4d76bbb6` |
 
 The tracked revisions are visible in the
 [native workspace manifest](../integration/egui-fork-workspace/Cargo.toml) and

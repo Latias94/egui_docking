@@ -15,6 +15,75 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 serialized X11 capture effects and exact cleanup
+
+The Winit effect seam is locally committed as
+`39a8165dd434c33fc2f7198d922a4d3a4d76bbb6`; egui
+`9729e354a1985cd9d8bbc7ca6306c68656635e06` aligns its internal dependency
+and crates.io patch. The main integration patches, inspection dependency and
+lockfile select the same pair. Both macOS and Linux now qualify those tracked
+locked Git sources without path overrides, using locally seeded objects. Linux
+uses only a shared target-directory override. Both commits remain unpublished.
+
+Explicit acquisition and cleanup live on the existing device row and original
+Primary identity. Ordinary grab mutations reserve that same connection owner
+across checked ungrab, replacement grab, reply handling and mode publication.
+Existing window modes retain indeterminate native results. Native calls run
+outside the capture mutex. Late success, Primary-up with Secondary held,
+all-up, device removal and unwind keep exact native cleanup duties. Confirmed
+cleanup precedes ordinary takeover; stale claims cannot ungrab a successor.
+
+New red/green regressions closed three release boundaries: queued presses
+cannot qualify immediately after cleanup; reentrant sync/drain cannot open
+admission during unlocked native release; ungrab cannot restore the original
+automatic capture or held Primary identity. Dispatch begin and completion close
+the existing FIFO fence. The released device stays Unknown until all-up and a
+genuine new press; unrelated devices retain their implicit identity while losing
+explicit attempts invalidated by the shared fence.
+
+Fresh fork gates pass 105 pure tests (the same 50 state cases in two production
+module wrappers, plus five ordinary-dispatch cases), Linux library84,
+all-target checks, correctness/suspicious Clippy and strict rustdoc. The real
+X11 explicit-capture case passes acquisition Pending-to-Acquired, ordinary-grab
+rejection, persistent ordinary confinement, source motion over a peer,
+Primary-up with Secondary held, automatic cleanup, stale releases and exact
+successor release delivery. After explicit ungrab with Primary still held,
+actual peer motion retains Unknown capture. Existing real owner-revocation and
+fresh position/hover-query cases also pass. Glow100 and WGPU94 eframe library
+tests pass locked/offline against the new Git source.
+
+The affected native matrix passes normal572 and noassert571; normal includes a
+fresh same-coordinator 10,000-lifetime case in 165.309 seconds, and noassert
+skips that just-run case. Correctness/suspicious Clippy, strict native rustdoc,
+workspace formatting, exact metadata source checks and core dependency
+isolation pass. Linux library525 and the separately invoked retained-query,
+close/create/age OS fixture pass. All 32 window gates pass: the Git-source
+release build, library and lineage gates, default/bounded macOS redock, six
+output-pressure cases per platform, and fifteen physical X11 entries.
+
+The finite 1 kHz journey matches all 1,000 callbacks at 1,003.1 Hz after
+999.8 Hz injection; release-to-model upper bound is 40.161959 ms. Complete
+Root/Child/standalone service maxima are 0.556292/0.557625/1.365292 ms.
+These measurements retain their configured profile and cooperative timing
+scope. Core/public consumer source is unchanged from the preceding acquisition
+timing checkpoint, so its workspace1,953 and public157/185 results are retained
+as prior evidence rather than reported as newly rerun gates.
+
+Evidence is `/tmp/dockspace-explicit-effect-fork-source.json`,
+`/tmp/dockspace-explicit-effect-fork-qualification.json`,
+`/tmp/dockspace-explicit-effect-egui-qualification.json`,
+`/tmp/dockspace-explicit-effect-native-qualification.json`,
+`/tmp/dockspace-explicit-effect-window-qualification.json` and
+`/tmp/dockspace-explicit-effect-integrity-qualification.json`. The qualified
+source inventory is `/tmp/dockspace-explicit-effect-qualified-source.json`.
+The three release red/green controls retain their separate diagnostic logs.
+Test-wrapper dead-code and
+existing advisory Clippy warnings retain their local scope. `Acquired` reports
+the settled operation effect; fresh observation capture/delivery remain Unknown
+and automatic acquisition is not yet wired through eframe. Positive OS
+stationary execution, full U7/U8/U9/U10/U11 and remote-only fork reproduction
+remain open.
+
 ## 2026-11-01 native capture acquisition timing boundary
 
 The core, native, real-window and extracted-package gates pass. Native desktop
@@ -74,9 +143,10 @@ warnings retain their previously documented scope.
 Independent source review found and closed the old-capture precondition,
 Unknown-delivery cancellation, local-token handoff and obsolete acquisition
 capture-loss defects before final qualification. These are source reviews,
-separate from main-thread Cargo execution. The Winit resource model is a
-separately unfinished working-tree draft, not part of these tracked Git-source
-native gates. It dispatches no grab/ungrab and reports no new capture proof.
+separate from main-thread Cargo execution. At this checkpoint the Winit
+resource model was a separately unfinished working-tree draft, outside these
+tracked Git-source native gates. It dispatched no grab/ungrab and reported no
+new capture proof.
 Ordinary application grab mutation and exact cleanup ordering must be settled
 before that model can drive native effects. Positive stationary OS execution
 and the overall Goal remain open.

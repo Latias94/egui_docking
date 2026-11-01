@@ -336,7 +336,7 @@ The 2026-10-27 selection audit chose egui/eframe 0.37.0, released 2026-10-15,
 with Rust 1.95 still matching this workspace. The current workspace and official
 harness now pin the matched 0.37.0 family. The optional native adapter is locally
 qualified against the rebased, unpublished 0.37 fork. Its current Git pins and
-lockfiles align with local egui `687558fd4` and Winit `8334294b`, with
+lockfiles align with local egui `9729e354a` and Winit `39a8165d`, with
 locked/offline qualification and no path overrides. The local Git objects are
 not evidence of remote clean-checkout reproducibility. Winit remains on the
 reviewed 0.30.13 fork; prerelease 0.31 work
@@ -2017,6 +2017,29 @@ the current ignored ungrab error are not completion proof. Validate blocked
 ordinary dispatch, interleaving between ungrab/grab, failed-cleanup retry and
 late predecessor release after application takeover before broadening support.
 
+The explicit-effect prerequisite is now implemented in Winit `39a8165d` and
+selected by egui `9729e354a` (2026-11-01). Both are local commits. Acquisition
+and exact release use the existing device row; ordinary application grab
+dispatch holds a fallible reservation across checked ungrab, replacement grab
+and mode publication. Existing window mode records retain indeterminate native
+results. RAII reports acquisition/release unwind without losing cleanup.
+Primary-up with Secondary held, all-up, device removal and late results cannot
+erase a native duty. Release invalidates the replaced implicit owner, closes
+the existing FIFO fence at begin and completion, and blocks reentrant sync/drain
+while dispatch is in flight. A new all-up/press is required after that boundary.
+The 50 pure state cases, five ordinary-dispatch cases, Linux library84 and three
+real X11 tests pass. Glow100/WGPU94 pass against the aligned locked Git source.
+Main native572/noassert571, Linux525 plus the real retained-query/close/create
+fixture, strict native docs/Clippy and all 32 window gates pass. Both platforms
+use the aligned locked Git sources without path overrides; the Git objects are
+locally seeded and unpublished. The current observation API still reports
+capture/delivery Unknown. Protocol review confirms that checked AsyncDevice
+and AsyncPair requests can legally leave a foreign paired-keyboard freeze
+unchanged. The next minimal experiment must capture that actual counterexample
+before a fresh finite sample and the core acquisition event can be connected. No
+positive stationary behavior or full U7/U8/U9/U10/U11 completion follows from
+this effect prerequisite.
+
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
 roster and 32 original property identities coexist while ordinary input reaches
@@ -2795,7 +2818,7 @@ Real-window and physical evidence is never inferred from a recording renderer.
 
 - Initial core research baseline: `3216855` plus the then-uncommitted U2b work; 2026-10-27 audit evidence is recorded in `docs/VALIDATION.md`.
 - Updated ImGui: `d88f238d1d363ef387382b2e29ad12cf96f826ac`, `repo-ref/imgui/imgui.h` (`ImGuiViewport`, `ImGuiPlatformIO`), `imgui_internal.h` (`ImGuiDockNode`), `imgui.cpp` (docking and viewport update), and platform/renderer backends.
-- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `687558fd469dc4849783c5ae3b9fd7244a0f92c5` and Winit fork `8334294b2a8b21cf68269d1af931a17e68d21559`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
+- Current official adapter dependency: egui `0.37.0`. The tracked native workspace, egui's internal dependency and lockfiles select egui fork `9729e354a1985cd9d8bbc7ca6306c68656635e06` and Winit fork `39a8165dd434c33fc2f7198d922a4d3a4d76bbb6`. Local locked/offline Git-source qualification uses locally seeded objects without path overrides; the commits remain unpublished and remote-only checkout/CI reproduction is not established. Earlier single-Focus model gates retain their independent `8231fb5a`/`6c10c87d` snapshot. Native dependency publication remains U9 work.
 - The dirty `repo-ref/egui` checkout is not the fork currently selected by native manifests; `repo-ref/egui-release` is the reviewed pinned source.
 - Upstream egui 0.37.0 release, workspace manifest, core/epaint/egui-winit/egui-wgpu/eframe changelogs, `Context` and `Plugin` sources were inspected for U15.
 - Exact upstream sources: `https://github.com/emilk/egui/releases/tag/0.37.0`, `https://github.com/emilk/egui/blob/0.37.0/CHANGELOG.md`, `https://github.com/emilk/egui/blob/0.37.0/Cargo.toml`, and the corresponding per-crate changelogs.
